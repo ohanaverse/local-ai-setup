@@ -88,6 +88,11 @@ type fakeModelServer struct {
 	ClockSkew time.Duration
 	// Candidates is what GET candidates answers.
 	Candidates modelapi.CandidateList
+	// GatewayCodes are the statuses GET /v1/models (the gateway's model list)
+	// answers in order, 200 after them; GatewayStatus, when not 0, is what it
+	// answers once they are used up (a gateway that stays down).
+	GatewayCodes  []int
+	GatewayStatus int
 
 	polls     map[string]int
 	jobs      map[string]*modelapi.Problem
@@ -147,6 +152,21 @@ func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/v1/models":
+		f.mu.Lock()
+		code := http.StatusOK
+		if len(f.GatewayCodes) > 0 {
+			code, f.GatewayCodes = f.GatewayCodes[0], f.GatewayCodes[1:]
+		} else if f.GatewayStatus != 0 {
+			code = f.GatewayStatus
+		}
+		f.mu.Unlock()
+		if code != http.StatusOK {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(code)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
 	case "/control/v1/ping":
 		_ = json.NewEncoder(w).Encode(modelapi.Ping{APIMajor: f.APIMajor, Schema: f.Schema, Server: "wt-model"})
 	case "/control/v1/catalog":

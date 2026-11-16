@@ -132,6 +132,7 @@ Every number in that report is self-consistent, which is the point of reading th
 
 ## Gotchas
 
+- **A model started through a model server stops after its idle grace.** `llmbench agent run` isolates and starts its own local models and is not a model-server client session, so this guide's runs are unaffected; but a model you started with `wt smoke` or `wt start` against a configured `wt-model` server for a quick check is stopped by the server once nothing uses it for its idle grace, rather than staying up until you stop it. Start a benchmark's model through the benchmark (see [05-benchmarks](05-benchmarks.md) Step 1), not beforehand.
 - **`--directory llmbench` makes `llmbench/` the working directory.** A relative path passed to `agent run`, `eval run`, `--root` or `--results-dir` resolves from there: `../benchmarks/suites/smoke.toml`, not `benchmarks/suites/smoke.toml`.
 - **`pi` needs no permission-bypass flag** for this harness — tool execution works under `--no-approve` in `--mode json` because non-interactive modes never prompt; see the spec's "Verified against the live setup" for why `--no-approve` is passed anyway (pinning project-trust behavior, not enabling tools).
 - **`route = "direct"` requires a matching `[routes.direct.<provider>]` block** in the suite — preflight fails immediately, naming the missing provider, rather than after an agent has already run.
