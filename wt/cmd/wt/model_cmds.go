@@ -343,7 +343,7 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 			return noTerminalRefusal(err, "--yes", "nothing was stopped")
 		}
 		if !ok {
-			return declined(errors.New("cancelled — nothing was stopped"))
+			return declined("nothing was stopped")
 		}
 	}
 	var failures []error
@@ -637,7 +637,7 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			return noTerminalRefusal(err, "--yes", "nothing was stopped")
 		}
 		if !ok {
-			return declined(fmt.Errorf("cancelled — %s is still running", arg))
+			return declined(arg + " is still running")
 		}
 	}
 	if halt {

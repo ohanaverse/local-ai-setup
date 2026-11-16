@@ -799,7 +799,7 @@ func TestSmokeCmdCwdAtRootWarnsAndProceeds(t *testing.T) {
 	}{
 		{name: "no terminal", tty: false, in: failReader{t}, wantErr: "unknown model"},
 		{name: "terminal, enter", tty: true, in: strings.NewReader("\n"), wantErr: "unknown model"},
-		{name: "terminal, no", tty: true, in: strings.NewReader("n\n"), wantErr: "cancelled — nothing was launched"},
+		{name: "terminal, no", tty: true, in: strings.NewReader("n\n"), wantErr: "approval missing: declined; nothing was launched"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := smokeFixtureConfig(t)

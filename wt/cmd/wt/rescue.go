@@ -182,7 +182,7 @@ func rescueRowReport(answer io.Reader, out, errOut io.Writer, f rescueFlags, sna
 			return rescueFail(out, f, snap.Repo, 3, errors.New("approval missing: pass --yes (there is no terminal to ask); nothing was created"))
 		}
 		if !promptRescue(errOut, answer, plan) {
-			return rescueFail(out, f, snap.Repo, 3, errors.New("not confirmed; nothing was created"))
+			return rescueFail(out, f, snap.Repo, 3, errors.New("approval missing: declined; nothing was created"))
 		}
 	}
 	if f.yes {

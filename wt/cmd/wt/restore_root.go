@@ -213,7 +213,7 @@ func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRoot
 			return restoreRootFail(out, f, snap.Repo, 3, errors.New("approval missing: pass --yes (there is no terminal to ask); nothing was changed"))
 		}
 		if !promptRestoreRoot(errOut, answer, plan) {
-			return restoreRootFail(out, f, snap.Repo, 3, errors.New("not confirmed; nothing was changed"))
+			return restoreRootFail(out, f, snap.Repo, 3, errors.New("approval missing: declined; nothing was changed"))
 		}
 	} else {
 		// Nothing was shown or asked since Preflight read the root, so its

@@ -8,6 +8,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 )
 
 // keepPendingPostExit saves and restores the post-exit state a launch
@@ -122,5 +123,24 @@ func TestSlotProfileLaunchReturnsTheAgentsExitStatus(t *testing.T) {
 	m, _ = updateMsg(m, msg)
 	if got := exitStatusOf(runResult(m, nil)); got != 3 {
 		t.Fatalf("result status = %d, want the agent's exit status 3", got)
+	}
+}
+
+// TestDeclinedGateEndsTheRunWithExit3 pins decision 6: a "no" at the launch
+// question (ok false, no error) is a declined prompt, so the run's error is
+// the one-line approval-missing refusal with exit 3, not a quiet nil.
+func TestDeclinedGateEndsTheRunWithExit3(t *testing.T) {
+	keepPendingPostExit(t)
+	profileApplier = nil
+	msg := runAndWaitCmd(exec.Command("true"), "claude", config.Model{}, func() (bool, error) { return false, nil })()
+	done, ok := msg.(launchDoneMsg)
+	if !ok {
+		t.Fatalf("msg = %#v, want launchDoneMsg", msg)
+	}
+	if done.err == nil || exitcode.Of(done.err) != 3 {
+		t.Fatalf("err = %v (exit %d), want exit 3", done.err, exitcode.Of(done.err))
+	}
+	if want := "approval missing: declined; nothing was launched"; done.err.Error() != want {
+		t.Errorf("err = %q, want %q", done.err.Error(), want)
 	}
 }

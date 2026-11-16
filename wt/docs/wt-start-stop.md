@@ -309,8 +309,8 @@ model wt could list, where a session recorded on another mtplx model is not
 counted. `--yes` skips the question; with no terminal and no
 `--yes`, the command stops, stops nothing and exits 3 with
 `approval missing: pass --yes (there is no terminal to ask); nothing was stopped`.
-A "no" at the question exits 3 too (`cancelled — nothing was stopped`, or
-`cancelled — <target> is still running`).
+A "no" at the question exits 3 too (`approval missing: declined; nothing was stopped`, or
+`approval missing: declined; <target> is still running`).
 
 When a provider is stopped as a whole — `wt stop omlx`, `wt stop mtplx` with
 nothing wt could list, and the same two inside `wt stop --all` — N is every
@@ -353,7 +353,7 @@ stop them first, keep them and start, or cancel? [s/k/N]
   line; one that refuses the connection holds nothing and is not listed.
 - `s` (or `stop`) stops every listed model wt can stop, then starts; `k` (or
   `keep`) starts beside them; anything else, Enter and EOF included, cancels
-  with `cancelled — <ids> still loaded` and changes nothing. When nothing
+  with `approval missing: declined; <ids> still loaded` (exit 3) and changes nothing. When nothing
   listed can be stopped the question is `keep them and start, or cancel? [k/N]`.
 - A start that would also replace or unload a model of its own provider asks
   that y/N first, then this question, then starts once with both answers.
@@ -449,7 +449,7 @@ recently used when a load does not fit.
   start exits 3 with
   `approval missing: pass --replace (there is no terminal to ask); nothing was started`,
   and changes nothing (the same holds for a start that would replace the mtplx
-  model). A "no" exits 3 as well (`cancelled — <id> still running`). If wt cannot size the pool
+  model). A "no" exits 3 as well (`approval missing: declined; <id> still running`). If wt cannot size the pool
   (omlx's status endpoint refused, or its memory limit is off) it names every
   other loaded model.
 - The full-screen `wt` picker's replace dialog, shown when Enter on a model

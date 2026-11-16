@@ -65,8 +65,9 @@ func noTerminalRefusal(err error, flag, state string) error {
 	return err
 }
 
-// declined is an answered "no": exit 3, like a missing approval, with err's
-// own words (which say what is still true).
-func declined(err error) error {
-	return exitcode.New(exitApprovalMissing, err, false)
+// declined is an answered "no": exit 3, like a missing approval, on one line
+// "approval missing: declined; <state>", where state says what did not happen
+// or what is still true ("nothing was stopped", "omlx/x still running").
+func declined(state string) error {
+	return exitcode.New(exitApprovalMissing, errors.New("approval missing: declined; "+state), false)
 }

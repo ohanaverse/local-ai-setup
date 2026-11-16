@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 
@@ -12,7 +11,7 @@ import (
 
 // errCancelled is a "no" at the one launch question: nothing launched. Like
 // every declined prompt it exits 3 (C9) and says so on one line.
-var errCancelled = declined(errors.New("cancelled — nothing was launched"))
+var errCancelled = declined("nothing was launched")
 
 // rootClaimRelease removes this session's claim on the repository root. It is
 // set by holdLaunch and called through releaseRootClaim.

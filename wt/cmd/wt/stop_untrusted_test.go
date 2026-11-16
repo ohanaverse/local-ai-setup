@@ -243,7 +243,7 @@ func TestStopHaltAsksWhenTheFamilyHasLiveSessions(t *testing.T) {
 			halted := stubHalt(t)
 			asked := stubStopConfirm(t, false)
 			err := runStop(io.Discard, stopCfg(), tc.arg, false)
-			if err == nil || !strings.Contains(err.Error(), "cancelled") {
+			if err == nil || !strings.Contains(err.Error(), "approval missing: declined") {
 				t.Fatalf("declined: err = %v, want a cancellation", err)
 			}
 			if !slices.Equal(*asked, []string{tc.want}) {

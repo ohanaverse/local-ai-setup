@@ -393,7 +393,7 @@ func runModelRm(out, errOut io.Writer, cfg *config.Config, ids []string, yes boo
 			return noTerminalRefusal(err, "--yes", "nothing was removed")
 		}
 		if !ok {
-			return declined(errors.New("cancelled — nothing was removed"))
+			return declined("nothing was removed")
 		}
 	}
 	if err := modeladmin.Remove(ids); err != nil {

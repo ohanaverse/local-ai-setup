@@ -185,7 +185,7 @@ func executeRemove(cmd *cobra.Command, a *app, f removeFlags, args []string) err
 			return removeFail(out, f, snap.Repo, 3, errors.New("approval missing: pass --yes (there is no terminal to ask); nothing was removed"))
 		}
 		if !promptRemove(ask, answer, items, runnable) {
-			return removeFail(out, f, snap.Repo, 3, errors.New("not confirmed; nothing was removed"))
+			return removeFail(out, f, snap.Repo, 3, errors.New("approval missing: declined; nothing was removed"))
 		}
 	}
 

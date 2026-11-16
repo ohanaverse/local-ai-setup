@@ -32,11 +32,11 @@ func TestHandOffResultSeparatesWhatChangedNothing(t *testing.T) {
 		}
 		return nil
 	}
-	declined := exit(3, "not confirmed; nothing was changed")
-	if n := asNote(restoreRootHandOffResult(declined, nil)); n == nil || n.Err != declined || n.Text != "restore root: not confirmed; nothing was changed" {
+	declined := exit(3, "approval missing: declined; nothing was changed")
+	if n := asNote(restoreRootHandOffResult(declined, nil)); n == nil || n.Err != declined || n.Text != "restore root: approval missing: declined; nothing was changed" {
 		t.Errorf("a declined R: %+v", n)
 	}
-	if n := asNote(rescueHandOffResult(exit(3, "not confirmed; nothing was created"), nil)); n == nil || n.Text != "rescue: not confirmed; nothing was created" {
+	if n := asNote(rescueHandOffResult(exit(3, "approval missing: declined; nothing was created"), nil)); n == nil || n.Text != "rescue: not confirmed; nothing was created" {
 		t.Errorf("a declined r: %+v", n)
 	}
 	refusedRR := &rootmove.Outcome{Status: rescue.StatusRefused, Code: "default_in_worktree", Reason: "main is checked out in /x"}

@@ -79,10 +79,10 @@ func TestStartForLaunchOwed(t *testing.T) {
 		{"nothing owed is passed on as false", false, false, false, false, []error{nil}, []startCall{{false, false}}, false, ""},
 		{"refused, replaced under --replace", true, true, false, false, []error{occupied(), nil}, []startCall{{false, true}, {true, true}}, false, ""},
 		{"refused, confirmed at the prompt", true, false, true, true, []error{occupied(), nil}, []startCall{{false, true}, {true, true}}, false, ""},
-		{"refused, declined at the prompt", true, false, true, false, []error{occupied()}, []startCall{{false, true}}, true, "cancelled — omlx/other still running"},
+		{"refused, declined at the prompt", true, false, true, false, []error{occupied()}, []startCall{{false, true}}, true, "approval missing: declined; omlx/other still running"},
 		{"refused, no terminal to ask on", true, false, false, false, []error{occupied()}, []startCall{{false, true}}, true, "--replace"},
-		{"occupancy unknown, declined", true, false, true, false, []error{unknown()}, []startCall{{false, true}}, true, "cancelled — mtplx may still be serving a model"},
-		{"refused and declined with nothing owed", false, false, true, false, []error{occupied()}, []startCall{{false, false}}, false, "cancelled"},
+		{"occupancy unknown, declined", true, false, true, false, []error{unknown()}, []startCall{{false, true}}, true, "approval missing: declined; mtplx may still be serving a model"},
+		{"refused and declined with nothing owed", false, false, true, false, []error{occupied()}, []startCall{{false, false}}, false, "approval missing: declined"},
 		{"any other failure", true, false, false, false, []error{boom}, []startCall{{false, true}}, false, "server exited"},
 		{"replace granted, second attempt fails", true, true, false, false, []error{occupied(), boom}, []startCall{{false, true}, {true, true}}, false, "server exited"},
 	}
@@ -794,9 +794,9 @@ func TestSlotProfileFailuresRunNoAgent(t *testing.T) {
 			checks: one(mixed()),
 			seams: func(s *slotSeams) {
 				s.ensureOwed, s.startStill = true, true
-				s.startErr = errors.New("cancelled — omlx/other still running")
+				s.startErr = errors.New("approval missing: declined; omlx/other still running")
 			},
-			want:  "cancelled — omlx/other still running",
+			want:  "approval missing: declined; omlx/other still running",
 			steps: "ensure:openrouter/a;start:omlx/q:owed=true;settle"},
 		{name: "the local model's start fails",
 			checks: one(mixed()),

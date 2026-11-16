@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/charmbracelet/x/term"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
@@ -141,8 +143,8 @@ func stdinTTY() bool { return term.IsTerminal(os.Stdin.Fd()) }
 // no terminal the warnings print and the launch proceeds, stdin never read.
 //
 // A "no" is a choice, not a failure: ok is false and err is nil, nothing is
-// created, claimed, recorded or run, and the run ends as quitting the picker
-// does. A creation that fails once the person continued is a failure, not a
+// created, claimed, recorded or run, and the run commands end it with
+// errLaunchDeclined, exit 3 like every declined prompt (C9). A creation that fails once the person continued is a failure, not a
 // choice: err is that error and nothing is printed here, so it travels out as
 // the run's error and main prints it once and exits non-zero, exactly as
 // cmd/wt's -W path does through refuse. Either way the owed worktree is made
@@ -220,4 +222,18 @@ func (m model) claimLaunch(dir string) {
 		return
 	}
 	rootClaimRelease = release
+}
+
+// errLaunchDeclined is the run's error after a "no" at the launch gate: exit
+// 3, one line, like cmd/wt's confirmLaunch (a declined prompt is approval
+// missing, C9). Not a GateError: it carries no exec status to misread.
+var errLaunchDeclined = exitcode.New(3, errors.New("approval missing: declined; nothing was launched"), false)
+
+// gateEndError is the run's error when the gate returned false: gerr is a
+// creation failure (a GateError, plain exit 1) or nil, a "no".
+func gateEndError(gerr error) error {
+	if gerr != nil {
+		return GateError{Err: gerr}
+	}
+	return errLaunchDeclined
 }

@@ -401,7 +401,7 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 					return restartOwed, false, perr
 				}
 				if !ok {
-					return restartOwed, false, declined(fmt.Errorf("cancelled — %s may still be serving a model", unk.ProviderID))
+					return restartOwed, false, declined(unk.ProviderID + " may still be serving a model")
 				}
 			}
 			replacingMu.Lock()
@@ -425,7 +425,7 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 					return restartOwed, false, perr
 				}
 				if !ok {
-					return restartOwed, false, declined(fmt.Errorf("cancelled — %s still running", names))
+					return restartOwed, false, declined(names + " still running")
 				}
 			}
 		}

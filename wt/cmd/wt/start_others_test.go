@@ -177,7 +177,7 @@ func TestDriveStartAsksAboutOtherProvidersModels(t *testing.T) {
 	}{
 		{"stop", othersStop, 2, []string{"mtplx/qwen3.8-35b", "ollama/gemma4:12b"}, ""},
 		{"keep", othersKeep, 2, nil, ""},
-		{"cancel", othersCancel, 1, nil, "cancelled — mtplx/qwen3.8-35b, ollama/gemma4:12b, mlx_lm_server/p still loaded"},
+		{"cancel", othersCancel, 1, nil, "approval missing: declined; mtplx/qwen3.8-35b, ollama/gemma4:12b, mlx_lm_server/p still loaded"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

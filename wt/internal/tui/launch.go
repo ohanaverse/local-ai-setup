@@ -267,7 +267,9 @@ func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record fun
 			if ok, gerr := gate(); !ok {
 				// A "no" at the launch gate is a choice, not a failure: the
 				// run does not start and nothing is created, claimed,
-				// recorded or summarised, as when quitting the picker. A
+				// recorded or summarised. It is a declined prompt, so it
+				// ends the run with errLaunchDeclined (exit 3), unlike
+				// quitting the picker, which stays exit 0. A
 				// creation that failed after the person continued (gerr
 				// non-nil) is a failure, not a choice: it travels out as the
 				// run's error — as a GateError, so main's exit routing never
@@ -279,9 +281,7 @@ func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record fun
 				// tail (the stop picker — nothing auto-stops) for them.
 				_ = profileCleanup()
 				pendingSurveyState = pendingSurvey{agent: agent, m: m}
-				if gerr != nil {
-					gerr = GateError{Err: gerr}
-				}
+				gerr = gateEndError(gerr)
 				return launchDoneMsg{err: gerr}
 			}
 		}

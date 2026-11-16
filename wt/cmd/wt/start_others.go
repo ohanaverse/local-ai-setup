@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -155,7 +154,7 @@ func othersCancelled(occ *lifecycle.OccupiedError) error {
 		ids[i] = r.Entry.ModelID
 	}
 	if len(ids) == 0 {
-		return declined(errors.New("cancelled — nothing was stopped"))
+		return declined("nothing was stopped")
 	}
-	return declined(fmt.Errorf("cancelled — %s still loaded", strings.Join(ids, ", ")))
+	return declined(strings.Join(ids, ", ") + " still loaded")
 }

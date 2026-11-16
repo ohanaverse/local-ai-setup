@@ -66,7 +66,7 @@ func TestStartDeclinedExits3(t *testing.T) {
 	t.Cleanup(func() { confirmReplace = old })
 	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	stubLifecycleStart(t, []error{occ})
-	wantApproval(t, startForLaunch(&config.Config{}, startTestRow(), false), "cancelled — omlx/other still running")
+	wantApproval(t, startForLaunch(&config.Config{}, startTestRow(), false), "approval missing: declined; omlx/other still running")
 }
 
 func TestStartUnknownOccupancyDeclinedExits3(t *testing.T) {
@@ -77,7 +77,7 @@ func TestStartUnknownOccupancyDeclinedExits3(t *testing.T) {
 	t.Cleanup(func() { confirmReplace = old })
 	unk := &lifecycle.OccupancyUnknownError{ProviderID: "mtplx", Origin: "http://localhost:8003"}
 	stubLifecycleStart(t, []error{unk})
-	wantApproval(t, startForLaunch(&config.Config{}, startTestRow(), false), "cancelled — mtplx may still be serving a model")
+	wantApproval(t, startForLaunch(&config.Config{}, startTestRow(), false), "approval missing: declined; mtplx may still be serving a model")
 }
 
 func TestStartOthersDeclinedExits3(t *testing.T) {
@@ -109,5 +109,5 @@ func TestLaunchQuestionDeclinedExits3(t *testing.T) {
 	// A "no" at the launch warning is a decline like any other.
 	tg := launchwarn.Target{Dir: "/r", IsRoot: true}
 	err := confirmLaunch(tg, nil, strings.NewReader("n\n"), &bytes.Buffer{}, true)
-	wantApproval(t, err, "cancelled — nothing was launched")
+	wantApproval(t, err, "approval missing: declined; nothing was launched")
 }

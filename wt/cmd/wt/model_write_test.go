@@ -279,7 +279,7 @@ func TestModelCommandsThroughTheCommandLine(t *testing.T) {
 	}
 
 	asked := stubConfirmRemove(t, false)
-	if _, err := runWT(t, "model", "rm", "ollama/gemma4:9b"); err == nil || !strings.Contains(err.Error(), "cancelled — nothing was removed") || exitcode.Of(err) != 3 {
+	if _, err := runWT(t, "model", "rm", "ollama/gemma4:9b"); err == nil || !strings.Contains(err.Error(), "approval missing: declined; nothing was removed") || exitcode.Of(err) != 3 {
 		t.Errorf("declined rm: err = %v (exit %d), want a cancellation, exit 3", err, exitcode.Of(err))
 	}
 	if want := "Remove 1 model(s) from the registry (ollama/gemma4:9b)? Weights are not deleted."; *asked != want {

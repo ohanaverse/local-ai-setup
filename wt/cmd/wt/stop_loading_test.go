@@ -110,8 +110,8 @@ func TestStopAsksBeforeEndingALoadingMtplxInUse(t *testing.T) {
 			loading := stubStopLoading(t, nil)
 			asked := stubStopConfirm(t, false)
 			err := tc.run(false)
-			if err == nil || !strings.Contains(err.Error(), "cancelled") || !strings.Contains(err.Error(), tc.declined) || exitcode.Of(err) != 3 {
-				t.Fatalf("declined: err = %v (exit %d), want a cancellation saying %q, exit 3", err, exitcode.Of(err), tc.declined)
+			if err == nil || !strings.Contains(err.Error(), "approval missing: declined") || !strings.Contains(err.Error(), tc.declined) || exitcode.Of(err) != 3 {
+				t.Fatalf("declined: err = %v (exit %d), want a decline saying %q, exit 3", err, exitcode.Of(err), tc.declined)
 			}
 			if !slices.Equal(*asked, []string{tc.question}) {
 				t.Errorf("asked = %q\n want  [%q]", *asked, tc.question)
