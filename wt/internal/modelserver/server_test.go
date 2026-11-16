@@ -328,6 +328,8 @@ func TestNewServerRequiresToken(t *testing.T) {
 		_, err := NewServer(Options{Listen: listen}, d)
 		if err == nil || !strings.Contains(err.Error(), "--token-file") || !strings.Contains(err.Error(), "token is required") {
 			t.Errorf("Listen %q: err = %v, want a required-token error naming --token-file", listen, err)
+		} else if !strings.Contains(err.Error(), "umask 077") || strings.Contains(err.Error(), "tokenCreateCmd") {
+			t.Errorf("Listen %q: err = %v, want the create command, not its Go name", listen, err)
 		}
 		if _, err := NewServer(Options{Listen: listen, Token: "t", IdleGrace: time.Minute}, d); err != nil {
 			t.Errorf("Listen %q with a token: %v", listen, err)

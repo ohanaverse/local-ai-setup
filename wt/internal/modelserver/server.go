@@ -63,7 +63,7 @@ type serverOption func(*Server)
 // host's upstream key, so neither is ever open.
 func NewServer(o Options, d Deps, opts ...serverOption) (*Server, error) {
 	if o.Token == "" {
-		return nil, errors.New("a token is required (create one with +tokenCreateCmd+ and pass --token-file PATH)")
+		return nil, fmt.Errorf("a token is required; create one with '%s' and pass --token-file PATH", tokenCreateCmd)
 	}
 	if o.IdleGrace <= 0 {
 		return nil, fmt.Errorf("the idle grace must be greater than zero, got %s", o.IdleGrace)
