@@ -1457,3 +1457,107 @@ tags = []
 		t.Errorf("Source = %q, want %q", got, SourceManual)
 	}
 }
+
+// TestLastPriceRefresh pins where the date comes from now that nothing
+// stores it: the newest pricing_updated_at among OpenRouter-priced models
+// only. An ollama cloud model's stamp must not count (the ollama flow
+// writes those, and an ollama-only run would silence a notice about prices
+// it never refreshed), a model without a stamp or with a mistyped one is
+// skipped, not fatal, and with no usable stamp the answer is "never". A
+// stamp more than a day ahead of the clock is a typo and is skipped too:
+// counted, a year typed as 2062 would silence the notice for good.
+func TestLastPriceRefresh(t *testing.T) {
+	providers := []Provider{
+		{ID: "ollama", Location: LocationLocal},
+		{ID: "openrouter", Location: LocationCloud},
+	}
+	or := func(id string, stamp any) Model {
+		return Model{ID: id, ProviderID: "openrouter", PricingUpdatedAt: stamp}
+	}
+	ollamaCloud := Model{ID: "ollama/glm:cloud", ProviderID: "ollama", Location: LocationCloud, PricingUpdatedAt: "2026-10-07T00:00:00+00:00"}
+	newest := time.Date(2026, 10, 4, 2, 31, 25, 0, time.UTC)
+	now := time.Date(2026, 10, 7, 9, 0, 0, 0, time.UTC)
+
+	cfg := &Config{Providers: providers, Models: []Model{
+		ollamaCloud,
+		or("openrouter/old", "2026-09-01T00:00:00+00:00"),
+		or("openrouter/newest", "2026-10-03T19:31:25-07:00"),
+		or("openrouter/unstamped", nil),
+		or("openrouter/typo", "last tuesday"),
+		or("openrouter/number", int64(20261004)),
+	}}
+	if got, ok := cfg.LastPriceRefresh(now); !ok || !got.Equal(newest) {
+		t.Errorf("LastPriceRefresh = (%v, %v), want (%v, true)", got, ok, newest)
+	}
+
+	// A date-time a hand edit left as a TOML value, and one with no offset.
+	cfg.Models = []Model{or("openrouter/a", newest), or("openrouter/b", "2026-10-01T08:00:00")}
+	if got, ok := cfg.LastPriceRefresh(now); !ok || !got.Equal(newest) {
+		t.Errorf("with a TOML date-time: LastPriceRefresh = (%v, %v), want (%v, true)", got, ok, newest)
+	}
+
+	// A stamp far in the future is a typo, not a refresh: it is skipped, so
+	// it cannot silence the notice until that date comes. One that is ahead
+	// by less than a day is another machine's clock, and counts.
+	typo := or("openrouter/typo-year", "2062-10-04T02:31:25+00:00")
+	cfg.Models = []Model{typo, or("openrouter/a", newest)}
+	if got, ok := cfg.LastPriceRefresh(now); !ok || !got.Equal(newest) {
+		t.Errorf("with a stamp in 2062: LastPriceRefresh = (%v, %v), want (%v, true)", got, ok, newest)
+	}
+	cfg.Models = []Model{typo}
+	if got, ok := cfg.LastPriceRefresh(now); ok {
+		t.Errorf("with only a stamp in 2062: LastPriceRefresh = (%v, true), want never", got)
+	}
+	ahead := now.Add(23 * time.Hour)
+	cfg.Models = []Model{or("openrouter/skewed", ahead), or("openrouter/a", newest)}
+	if got, ok := cfg.LastPriceRefresh(now); !ok || !got.Equal(ahead) {
+		t.Errorf("with a stamp 23 hours ahead: LastPriceRefresh = (%v, %v), want (%v, true)", got, ok, ahead)
+	}
+
+	cfg.Models = []Model{ollamaCloud, or("openrouter/unstamped", nil)}
+	if got, ok := cfg.LastPriceRefresh(now); ok {
+		t.Errorf("with no stamped OpenRouter model: LastPriceRefresh = (%v, true), want never", got)
+	}
+	if _, ok := (*Config)(nil).LastPriceRefresh(now); ok {
+		t.Error("(*Config)(nil).LastPriceRefresh(now) reported a refresh")
+	}
+}
+
+// TestOpenRouterPricedModel pins the rule the stale-pricing notice and
+// `wt cloud-sync`'s openrouter flow share (#151, simplified in #322): the
+// notice is only worth printing when some model's price comes from
+// OpenRouter, which is a model whose provider_id is "openrouter". Ollama
+// cloud models (priced by ollama.com), native agent models and the models of
+// any other cloud provider never count, or users with no OpenRouter models
+// are nagged after every session about a refresh that has nothing to do.
+func TestOpenRouterPricedModel(t *testing.T) {
+	providers := []Provider{
+		{ID: "ollama", Location: LocationLocal},
+		{ID: "openrouter", Location: LocationCloud},
+		{ID: "claude", Location: LocationCloud, Auth: AuthConfig{Type: "native"}},
+		{ID: "acme", Location: LocationCloud},
+	}
+	ollamaCloud := Model{ID: "ollama/glm:cloud", ProviderID: "ollama", Location: LocationCloud}
+	native := Model{ID: "claude/native", ProviderID: "claude", Native: true}
+	cases := []struct {
+		name   string
+		cfg    *Config
+		models []Model
+		want   bool
+	}{
+		{"nil config", nil, nil, false},
+		{"ollama cloud and native only", &Config{}, []Model{ollamaCloud, native}, false},
+		{"openrouter model", &Config{}, []Model{ollamaCloud, {ID: "openrouter/x", ProviderID: "openrouter"}}, true},
+		{"another cloud provider, not native", &Config{}, []Model{{ID: "acme/x", ProviderID: "acme"}}, false},
+		{"an openrouter model whose provider row is missing", &Config{}, []Model{{ID: "openrouter/x", ProviderID: "openrouter"}}, true},
+	}
+	for _, tc := range cases {
+		if tc.cfg != nil {
+			tc.cfg.Providers = providers
+			tc.cfg.Models = tc.models
+		}
+		if got := tc.cfg.OpenRouterPricedModel(); got != tc.want {
+			t.Errorf("%s: OpenRouterPricedModel = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

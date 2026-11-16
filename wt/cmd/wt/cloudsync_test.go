@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cloudsync"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -394,7 +393,7 @@ func TestCloudSyncStampOnlyRunSkipsTheRouteSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if at, ok := agents.LastPriceRefresh(loaded, cloudSyncClock); !ok || !at.Equal(cloudSyncClock) {
+	if at, ok := loaded.LastPriceRefresh(cloudSyncClock); !ok || !at.Equal(cloudSyncClock) {
 		t.Errorf("LastPriceRefresh after the run = (%v, %v), want %v", at, ok, cloudSyncClock)
 	}
 }
