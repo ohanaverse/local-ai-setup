@@ -65,8 +65,16 @@ type statsSpend func(cmd *cobra.Command, a *app, window time.Duration, asOf time
 // for a registry simply absent at the default path, noRegistry's rule),
 // else from the id's prefix.
 func serverSpend(cmd *cobra.Command, a *app, window time.Duration, asOf time.Time, f statsFilter) (time.Time, func() usageReport, func() error) {
+	return spendFromServer(cmd, a, window, asOf, f, true)
+}
+
+// spendFromServer is serverSpend with the instant chosen per call:
+// serverClock reads it from the model server (production); false keeps the
+// asOf it is handed (statsNow), so a test can pin the report's instant and
+// still run the production collectors against a fake server.
+func spendFromServer(cmd *cobra.Command, a *app, window time.Duration, asOf time.Time, f statsFilter, serverClock bool) (time.Time, func() usageReport, func() error) {
 	ms, openErr := a.openModels(cmd.Context(), "spend is not shown")
-	if openErr == nil {
+	if openErr == nil && serverClock {
 		asOf = ms.client.Now().UTC()
 	}
 	var hostLoadErr error

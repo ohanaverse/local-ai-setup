@@ -88,6 +88,12 @@ type fakeModelServer struct {
 	Pricing   *modelapi.Pricing
 	Spend     modelapi.SpendReport
 	SpendCode string
+	// SpendMsg, when set, is the message a SpendCode answer carries in
+	// place of the default; SpendFn, when set, answers GET spend from the
+	// request's own start and end (as the server's query does) in place of
+	// Spend.
+	SpendMsg  string
+	SpendFn   func(start, end time.Time) modelapi.SpendReport
 	ClockSkew time.Duration
 	// Candidates is what GET candidates answers.
 	Candidates modelapi.CandidateList
@@ -176,10 +182,23 @@ func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(modelapi.Catalog{Schema: f.Schema, Generated: f.Generated, Providers: f.Providers, Rows: f.Rows, Pricing: f.Pricing})
 	case "/control/v1/spend":
 		if f.SpendCode != "" {
-			f.apiErr(w, http.StatusServiceUnavailable, f.SpendCode, "the LiteLLM database is not reachable")
+			msg := "the LiteLLM database is not reachable"
+			if f.SpendMsg != "" {
+				msg = f.SpendMsg
+			}
+			f.apiErr(w, http.StatusServiceUnavailable, f.SpendCode, msg)
 			return
 		}
 		rep := f.Spend
+		if f.SpendFn != nil {
+			start, serr := time.Parse(time.RFC3339Nano, r.URL.Query().Get("start"))
+			end, eerr := time.Parse(time.RFC3339Nano, r.URL.Query().Get("end"))
+			if serr != nil || eerr != nil {
+				f.apiErr(w, http.StatusBadRequest, modelapi.CodeBadRequest, "bad window")
+				return
+			}
+			rep = f.SpendFn(start, end)
+		}
 		if rep.Rows == nil {
 			rep.Rows = []modelapi.SpendRow{}
 		}

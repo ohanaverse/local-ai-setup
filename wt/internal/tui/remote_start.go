@@ -767,7 +767,7 @@ func settleRemoteStart(final tea.Model) {
 // printPendingSummaryAndSurveyTail runs the TUI's post-exit flow once the
 // alt-screen is gone, in the same order as the non-TUI path (issues
 // #115/#116): the client session ends (exitTail; even when nothing
-// launched), then the survey, the summary line, the after-survey stats and
+// launched), then the survey (not for a slot profile), the summary line, the after-survey stats and
 // the pricing notice from the model server's catalog. There is no stop
 // picker. It is extracted from Run() so this ordering is unit-testable
 // without a real tea.Program/TTY.
@@ -778,7 +778,8 @@ func printPendingSummaryAndSurveyTail(tail exitTail) {
 	pendingSummary = ""
 	tail.release()
 	var stats string
-	if launched.agent != "" {
+	// A slot profile is not one model: no survey, as no price notice below.
+	if launched.agent != "" && !launched.profile {
 		stats = runSurvey(launched.agent, launched.m)
 	}
 	if summary != "" {

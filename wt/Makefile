@@ -12,7 +12,7 @@ help:                   # Show available targets
 	@echo "  single-p      - One-P pass over the goroutine-sensitive packages (wt-ci's single-p job and test-all run this)"
 	@echo "  check     - Run lint + format-check + go-format-check"
 	@echo "  test      - Run smoke tests"
-	@echo "  test-agents - Run live one-shot agent smoke tests in both routing modes via wt litellm on/off (snapshots/restores wt's config.toml; requires gateways/agent CLIs)"
+	@echo "  test-agents - BROKEN until its rewrite (Task 20): live agent smoke tests that still flip the retired wt litellm on/off (exit 1)"
 	@echo "  clean     - Remove build artifacts"
 
 BINDIR := $(HOME)/.local/bin

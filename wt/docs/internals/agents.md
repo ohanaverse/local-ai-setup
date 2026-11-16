@@ -21,7 +21,7 @@ Per-agent env/args/config shapes: [docs/wt-agents/](../wt-agents/) `{claude,code
 | Capability | Purpose | Implemented by |
 |---|---|---|
 | `Seeder` | `InstructionPointers()` — the pointer files `wt --init` creates beside AGENTS.md (never on a launch) | claude, copilot |
-| `GatewaySyncer` | pre-launch sync against the gateway (pi → `~/.pi/agent/models.json`: one wt-owned `litellm` block pointing at the gateway, listing the server's non-native models plus the launch target; wt-owned direct blocks from before the model server are removed, a user's own blocks are kept) | pi |
+| `GatewaySyncer` | pre-launch sync against the gateway (pi → `~/.pi/agent/models.json`: one wt-owned `litellm` block pointing at the gateway, listing the server's non-native models plus the launch target; every other block marked `_wtOwned` (the old non-ollama direct blocks) is removed, and an unmarked block — a user's own, or the old local `ollama` block, which was never marked — is left as it is) | pi |
 | `ArgSetter` | passthrough args become argv | shell |
 | `OneShotRunner` | `OneShotArgs(prompt)` for `wt smoke` | claude, codex, copilot, opencode, pi, agy |
 | `StateDirer` | `StateDir(path)` — the agent's own per-working-directory state, which `wt smoke` removes for a temporary row directory | claude, pi |

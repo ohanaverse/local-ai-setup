@@ -6,48 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 )
-
-// startOutputProbe hands a test the writer the flow gave the engine, so the
-// test can print into it later, as the engine's proxy restart does.
-type startOutputProbe struct {
-	mu   sync.Mutex
-	opts lifecycle.Options
-}
-
-func (p *startOutputProbe) set(opts lifecycle.Options) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.opts = opts
-}
-
-func (p *startOutputProbe) print(text string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.opts.Out != nil {
-		fmt.Fprint(p.opts.Out, text)
-	}
-}
-
-// lockedBuffer is a bytes.Buffer two goroutines may use.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
 
 // TestStartOutputKeepsALimitedAmountAndSaysSo verifies the buffer between the
 // engine and the screen: it keeps what it is given up to its limit, cuts at a

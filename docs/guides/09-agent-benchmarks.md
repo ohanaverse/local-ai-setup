@@ -8,7 +8,7 @@ Design rationale, gate taxonomy, and scoring rules: `docs/superpowers/specs/2026
 
 - Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, llmbench runnable via `uv run` — the provider lifecycle runs in-process in `llmbench agent`, no isolation helpers on PATH needed).
 - `pi` installed and on `PATH` — this harness drives `pi --mode json`, not a direct HTTP request, for the agent rows.
-- A working key already seeded into `~/.pi/agent/models.json`'s `litellm` block — launch `wt -A pi` once if you've never done so; the harness reads that key rather than storing its own. Since the model server (2026-11), wt writes that block with the model server's gateway origin and client token, not the LiteLLM proxy's key.
+- A working key already seeded into `~/.pi/agent/models.json`'s `litellm` block — launch `wt -A pi` once if you've never done so; the harness reads that key rather than storing its own. Since the model server (2026-11), wt writes that block with the model server's gateway origin and client token, not the LiteLLM proxy's URL and key, and the harness reads both from it — so an `llmbench agent` run then needs that `wt-model serve` reachable. The harness's own routes are unchanged.
 - `OPENROUTER_API_KEY` available (via `~/Library/LaunchAgents/local.litellm.proxy.plist` or the env) if your suite's `[judge]` model is an OpenRouter model — preflight checks this before running any agent row.
 
 ## TL;DR

@@ -144,7 +144,7 @@ func stopCmd(a *app) *cobra.Command {
 			return runStop(cmd.OutOrStdout(), cfg, arg, yes)
 		},
 	}
-	cmd.Flags().Bool("yes", false, "Skip the confirmation when a target is in use by a live wt session")
+	cmd.Flags().Bool("yes", false, "Answer the model server's question when a model id stopped there is in use by other client sessions (a provider or --all stop on this machine asks nothing)")
 	cmd.Flags().Bool("all", false, "Stop every running local model, then the omlx service and an mtplx wt cannot read or that is still loading")
 	return cmd
 }
@@ -327,6 +327,7 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 			loading += fmt.Sprintf(", and %s is still loading (pid %d)", id, fs.Loading.PID)
 		}
 	}
+	// Unreachable in production since refcount was deleted (defaultStopDeps counts nothing); Phase 3/4 follow-up.
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s)%s%s; stop them all?", inUse, strings.Join(users, ", "), unreadClause(unread, false), loading))
 		if err != nil {
@@ -536,6 +537,7 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			what = fmt.Sprintf("%s is still loading (pid %d) and is", arg, loadingPID)
 		}
 	}
+	// Unreachable in production since refcount was deleted (defaultStopDeps counts nothing); Phase 3/4 follow-up.
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("%s in use by %d live wt session(s) (%s)%s; stop anyway?", what, inUse, strings.Join(users, ", "), blind))
 		if err != nil {

@@ -96,5 +96,5 @@ wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]
 wt cleanup --plain --no-fetch        # which worktrees and branches can go, with the proof (reads only)
 wt remove <path-or-branch> --dry-run --json   # what a removal would do; changes nothing (run real removals only in a scratch repo)
 wt rescue <path-or-branch> --dry-run --json   # what a rescue would copy; changes nothing (run real rescues only in a scratch repo)
-make test-agents                     # live agent × model matrix in both routing modes (flips `wt litellm off|on`, restoring config.toml; --modes current for one pass)
+make test-agents                     # BROKEN until its rewrite (Task 20): the live agent × model matrix still flips `wt litellm off|on`, which exit 1 since 2026-11-15
 ```

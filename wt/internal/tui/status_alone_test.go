@@ -1,33 +1,15 @@
 package tui
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 )
 
 // aloneHint is the line the picker ends with when a status has the screen to
 // itself, as the user reads it.
 const aloneHint = "press a key to go back to the models"
-
-// evictingFailure scripts a start that fails after omlx unloaded n models,
-// printing what the engine prints for each: the eviction, and a route removal
-// that could not be written. Real ids and a real path, so the lines are as
-// long as they are in use.
-func evictingFailure(n int) func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
-	return func(_ int, _ context.Context, _ lifecycle.Target, opts lifecycle.Options) error {
-		for i := range n {
-			fmt.Fprintf(opts.Out, "wt: omlx unloaded omlx/Qwen3.8-27B-4bit-%d to make room (not predicted)\n", i)
-			fmt.Fprint(opts.Out, "wt: LiteLLM route not updated: open /Users/someone/.config/litellm/config.yaml: permission denied\n")
-		}
-		return errors.New("omlx has no room for it")
-	}
-}
 
 // TestStatusAloneLeavesTheOtherScreensTheirKeys verifies the rule is the
 // picker's own and no wider: a status that fits is not taken down by a key

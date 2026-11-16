@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
 // smokeRemoteRun is one `wt smoke` run against the fake model server: stdout,
@@ -378,4 +380,94 @@ func TestSmokeRemoteServerGoneStopsTheRun(t *testing.T) {
 	if n := strings.Count(run.err.Error(), "unreachable") + strings.Count(run.err.Error(), "127.0.0.1"); n == 0 {
 		t.Errorf("err = %v does not name the cause", run.err)
 	}
+}
+
+// stubPickModel replaces the smoke picker with fn and records the models it
+// was offered, until the test ends.
+func stubPickModel(t *testing.T, fn func([]config.Model) (config.Model, bool, error)) *[]string {
+	t.Helper()
+	var offered []string
+	old := pickModelTUI
+	pickModelTUI = func(models []config.Model, _ themes.Theme) (config.Model, bool, error) {
+		for _, m := range models {
+			offered = append(offered, m.ID)
+		}
+		return fn(models)
+	}
+	t.Cleanup(func() { pickModelTUI = old })
+	return &offered
+}
+
+// TestSmokeRemoteWithoutAModelID pins the four ways `wt smoke` with no model
+// id ends on a client session (resolveSmokeModelRemote): with no terminal it
+// refuses before reading the catalog (a picker could not be shown);
+// with a catalog that has no testable model it says so; on a terminal it
+// offers the catalog's candidates to the picker and runs the picked one; and
+// a picker the user leaves runs nothing. Each was a registry-path test once;
+// without them a regression here (a picker opened with no TTY, a silent exit
+// 0 on cancel) would go unseen.
+func TestSmokeRemoteWithoutAModelID(t *testing.T) {
+	t.Run("no terminal", func(t *testing.T) {
+		r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+		stubStdinTTY(t, false)
+		run := smokeOnFake(t, r)
+		if run.err == nil || !strings.Contains(run.err.Error(), "wt smoke needs a TTY to list models") {
+			t.Fatalf("err = %v, want the needs-a-TTY refusal", run.err)
+		}
+		for _, req := range r.f.reqs() {
+			if strings.Contains(req, "catalog") || strings.HasPrefix(req, "POST") {
+				t.Errorf("requests = %v, want no catalog read and no POST before the TTY check", r.f.reqs())
+			}
+		}
+	})
+	t.Run("nothing to test", func(t *testing.T) {
+		blocked := wireRow("openrouter/blocked", modelapi.ActionBlock, 1)
+		blocked.BlockReason = "no route"
+		r := newRemoteRig(t, blocked)
+		stubStdinTTY(t, true)
+		stubPickModel(t, func([]config.Model) (config.Model, bool, error) {
+			t.Fatal("the picker opened with nothing to test")
+			return config.Model{}, false, nil
+		})
+		run := smokeOnFake(t, r)
+		if run.err == nil || !strings.Contains(run.err.Error(), "the model server has no models to test") {
+			t.Fatalf("err = %v, want the no-models-to-test refusal", run.err)
+		}
+	})
+	t.Run("picked", func(t *testing.T) {
+		r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1), wireRow("openrouter/b", modelapi.ActionLaunch, 2))
+		stubGatewayRows(t, r, passRows)
+		stubStdinTTY(t, true)
+		offered := stubPickModel(t, func(models []config.Model) (config.Model, bool, error) {
+			for _, m := range models {
+				if m.ID == "openrouter/b" {
+					return m, true, nil
+				}
+			}
+			return config.Model{}, false, nil
+		})
+		run := smokeOnFake(t, r, "--only", "claude", "--json")
+		if run.err != nil {
+			t.Fatalf("err = %v\nstderr: %s", run.err, run.stderr)
+		}
+		if !slices.Contains(*offered, "openrouter/a") || !slices.Contains(*offered, "openrouter/b") {
+			t.Errorf("offered = %v, want both catalog candidates", *offered)
+		}
+		if !strings.Contains(run.stdout, "openrouter/b") || strings.Contains(run.stdout, `"openrouter/a"`) {
+			t.Errorf("report = %s, want the picked model only", run.stdout)
+		}
+	})
+	t.Run("cancelled", func(t *testing.T) {
+		r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+		stubGatewayRows(t, r, func(agents.Gateway, string) smoke.ExecOutcome {
+			t.Fatal("a row ran after the picker was cancelled")
+			return smoke.ExecOutcome{}
+		})
+		stubStdinTTY(t, true)
+		stubPickModel(t, func([]config.Model) (config.Model, bool, error) { return config.Model{}, false, nil })
+		run := smokeOnFake(t, r)
+		if run.err == nil || !strings.Contains(run.err.Error(), "model selection canceled") {
+			t.Fatalf("err = %v, want model selection canceled", run.err)
+		}
+	})
 }

@@ -95,10 +95,12 @@ gateway token, never `""`.
 
 ### pi — wt's older provider blocks are removed, a user's are kept
 
-Older wt syncs wrote direct-route blocks per registry provider (marked
-`_wtOwned`). The gateway sync (`SyncGateway`) removes every such block and
-keeps only the `litellm` one; a block wt did not create (no marker) is the
-user's and is left alone. Idempotent; safe to re-run.
+Older wt syncs wrote direct-route blocks per registry provider, marking
+the non-ollama ones `_wtOwned`. The gateway sync (`SyncGateway`) removes
+every marked block except `litellm`. An unmarked block is left as it is: a
+user's own, and the local `ollama` block older wt wrote without the marker
+(no wt launch uses it; delete it by hand if you like). Idempotent; safe to
+re-run.
 
 ### codex — custom providers read the API key from an env var
 

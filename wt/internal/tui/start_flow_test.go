@@ -20,18 +20,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
-
-// startCall records one startModel invocation: what was asked to start and
-// with which options.
-type startCall struct {
-	target lifecycle.Target
-	opts   lifecycle.Options
-}
 
 // recvStart reads the next message off the in-flight start's channel with a
 // 2s timeout, so a flow test fails instead of hanging when the engine never
@@ -74,10 +66,6 @@ func TestRunArgsReachModel(t *testing.T) {
 // routeUpdatedLine is the one line lifecycle prints when the launch-time check
 // wrote a route; the tests script the stub to "print" it.
 const routeUpdatedLine = "wt: LiteLLM route for omlx/qwen3.8 updated\n"
-
-// routeWaitingLine is what Run() prints before it waits for a proxy restart
-// the user quit out of.
-const routeWaitingLine = "wt: waiting for the LiteLLM proxy restart…\n"
 
 // signalWriter is a mutex-guarded buffer that closes first on its first
 // write, so a test can wait for a goroutine to have printed something.

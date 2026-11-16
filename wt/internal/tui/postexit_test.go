@@ -57,3 +57,39 @@ func TestPostExitOrder(t *testing.T) {
 		t.Errorf("stdout = %q, want the session ended before the summary line", s)
 	}
 }
+
+// TestProfilePostExitSkipsSurveyAndPriceNotice pins the slot-profile tail
+// (printPendingSummaryAndSurveyTail with pendingSurveyState.profile): the
+// client session ends and the summary prints, but there is no survey and no
+// price notice — both are per model, and a profile session used several. A
+// survey here would record answers under "profile/<name>", which is no model.
+func TestProfilePostExitSkipsSurveyAndPriceNotice(t *testing.T) {
+	prevSummary, prevSurvey, prevRun := pendingSummary, pendingSurveyState, runSurvey
+	t.Cleanup(func() {
+		pendingSummary, pendingSurveyState, runSurvey = prevSummary, prevSurvey, prevRun
+	})
+	var order []string
+	pendingSummary = "wt: claude · profile/mix · 1s"
+	pendingSurveyState = pendingSurvey{agent: "claude", m: config.Model{ID: "profile/mix"}, profile: true}
+	runSurvey = func(string, config.Model) string { order = append(order, "survey"); return "" }
+	tail := exitTail{
+		end:       func() { order = append(order, "end") },
+		priceNote: func() { order = append(order, "notice") },
+	}
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	printPendingSummaryAndSurveyTail(tail)
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	if got := strings.Join(order, ","); got != "end" {
+		t.Errorf("order = %s, want only the session's end (no survey, no notice)", got)
+	}
+	if !strings.Contains(string(out), "profile/mix") {
+		t.Errorf("stdout = %q, want the summary line", out)
+	}
+}

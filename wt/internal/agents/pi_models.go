@@ -22,15 +22,13 @@ type piModelsFile struct {
 // JSON decode only if they are absent — extra fields inside a provider block
 // are dropped, so wt never writes provider blocks it does not own.
 //
-// WTOwned marks a non-ollama block as one wt itself created or has since
-// confirmed ownership of (see syncDirectProviders). Recording this
-// explicitly, instead of re-inferring it from whether the block's current
-// models are all still in the registry's model set, survives a registry
-// model rename/removal — the append-only model list would otherwise
-// permanently retain a defunct id and make the inference misfire forever.
-// omitempty because the whole file is rewritten on every mutation
-// (syncModels); without it every foreign block would gain a spurious
-// "_wtOwned": false the first time anything else in the file changes.
+// WTOwned marks a block wt itself created: the direct-route sync before the
+// model server set it on the non-ollama provider blocks it wrote (never on
+// the local `ollama` block, which predates the marker). The gateway sync
+// (syncGateway) removes every marked block except `litellm`; an unmarked
+// block, a user's own or that old `ollama` one, is left as it is.
+// omitempty, so an unmarked block round-trips with no spurious
+// "_wtOwned": false.
 type piProvider struct {
 	API     string    `json:"api"`
 	APIKey  string    `json:"apiKey"`

@@ -58,10 +58,9 @@ var pendingSummary string
 
 // pendingRouteNotes holds the lines wt has for the user that arise while the
 // alt screen is up, where stderr is not reliably visible. Two things feed it:
-// what the launch-time LiteLLM route check printed (#192) —
-// `wt: LiteLLM route for <id> updated` and any route warning, collected in the
-// check's own buffer (checkLaunchRoute) — and the pre-launch notes about the
-// command being built (queueLaunchNotes). It follows pendingSummary's
+// the model server's notes about the client session (a register it refused,
+// recordRouteNotes) and the pre-launch notes about the command being built
+// (queueLaunchNotes). It follows pendingSummary's
 // capture-then-emit pattern with two emit points: runAndWaitCmd prints it the
 // moment it releases the terminal, above the agent's own output, and Run()
 // prints whatever is left after p.Run() returns (the user quit, or the launch
@@ -211,7 +210,7 @@ func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record fu
 				}
 			}()
 		}
-		// The terminal is the user's again: print what the route check said
+		// The terminal is the user's again: print the pending notes
 		// before the profile prompt or the agent prints anything, so the
 		// lines sit above the agent's own output instead of being lost with
 		// the alt screen.
@@ -258,9 +257,9 @@ func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record fu
 				// reads a git exit status inside it as the agent's own quiet
 				// exit — and main prints it once and exits non-zero, cmd/wt's
 				// -W path through refuse. Either
-				// way the start flow may already have loaded a model and
-				// written its routes; pendingSurveyState keeps the standard
-				// tail (the stop picker — nothing auto-stops) for them.
+				// way the model server may already have started a model for
+				// it; pendingSurveyState keeps the standard tail, which ends
+				// the client session so the server's idle grace can stop it.
 				_ = profileCleanup()
 				pendingSurveyState = pendingSurvey{agent: agent, m: m}
 				gerr = gateEndError(gerr)

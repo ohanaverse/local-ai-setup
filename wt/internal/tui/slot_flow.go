@@ -68,8 +68,9 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func()
 		// GateError: main's one line, non-zero, never a quiet decline and
 		// never a quiet agent exit), and a "no" ends the run with
 		// errLaunchDeclined, exit 3). Either way the profile
-		// tail's state stays: the standard stop picker offers whatever the
-		// start flow left loaded (nothing auto-stops), as after a real exit.
+		// tail's state stays: the tail ends the client session, so the model
+		// server's idle grace stops whatever the start job left loaded, as
+		// after a real exit.
 		if gate != nil {
 			if ok, gerr := gate(); !ok {
 				_ = cleanup()

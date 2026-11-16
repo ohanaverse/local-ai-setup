@@ -5,7 +5,7 @@
 // internal now() seam.
 //
 // These tests read stdout only. Each discards stderr, where `wt stats`
-// writes its notes (here TestMain's "querySpend not stubbed"), so a run
+// writes its notes (here the spend that is not stubbed), so a run
 // does not print them to the terminal; stats_usage_test.go checks the
 // notes.
 package main

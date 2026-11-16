@@ -274,9 +274,9 @@ server's start and stop jobs do on its host.
   unloaded one by one first. mtplx is stopped as `wt stop mtplx` stops it:
   unless its port refuses the connection, also when wt cannot tell what it
   has loaded (then as `Stopping mtplx...`, before omlx), and while it is
-  still loading. It asks once when any of the
-  models, or any provider it is about to stop as a whole, is in use by
-  a live wt session (`--yes` skips the question). Every stop is attempted: if
+  still loading. It asks nothing: the host counts no client sessions (only
+  the model server knows them; see "In-use confirmation" below). Every stop
+  is attempted: if
   one fails the others still run, and the exit code is 1. When ollama's probe
   gives no usable answer, nothing is stopped on ollama, the rest is still
   stopped, and the command exits 1 with
@@ -296,33 +296,17 @@ server's start and stop jobs do on its host.
 
 ### In-use confirmation
 
-The host's `wt stop <provider>` and `--all` count no sessions since the
-local session store was removed (Task 19): a client session's use of a model
-is the model server's to know, and a model-id stop on the server asks about
-the client sessions using it. What follows is the question as the host asks
-it when it does count sessions.
+On this machine `wt stop <provider>` and `wt stop --all` ask nothing about
+sessions: since the local session store was removed (2026-11, with the move
+of every session to the model server), the host counts no sessions, and a
+client session's use of a model is the model server's to know. `--yes` is
+accepted there and changes nothing.
 
-If live wt sessions use the target, wt asks
-`... in use by N live wt session(s) (models); stop anyway? [y/N]` on the
-controlling terminal, default No. N is the total across the models being
-stopped (an mtplx provider counts once) — also for an mtplx stopped through a
-model wt could list, where a session recorded on another mtplx model is not
-counted. `--yes` skips the question; with no terminal and no
-`--yes`, the command stops, stops nothing and exits 3 with
-`approval missing: pass --yes (there is no terminal to ask); nothing was stopped`.
-A "no" at the question exits 3 too (`approval missing: declined; nothing was stopped`, or
-`approval missing: declined; <target> is still running`).
-
-When a provider is stopped as a whole — `wt stop omlx`, `wt stop mtplx` with
-nothing wt could list, and the same two inside `wt stop --all` — N is every
-live wt session on any model of that provider, whether or not wt could see
-the model running, a model with no registry entry included. A provider whose
-port refuses the connection serves nobody, so it is stopped with no question
-— except an mtplx that is still loading, whose sessions are waiting for that
-load: `mtplx is still loading (pid N) and is in use by 1 live wt session(s) (mtplx/m); stop anyway? [y/N]`
-(in `--all`'s question: `..., and mtplx is still loading (pid N); stop them all?`).
-If wt could not tell what the provider has loaded, the question says so:
-`omlx is in use by 1 live wt session(s) (omlx/c), and wt could not tell what it has loaded; stop anyway? [y/N]`.
+A model-id stop (`wt stop <provider>/<name>`) and the bare picker go to the
+model server, which asks before it stops a model other client sessions use:
+the question is asked on this terminal (`--yes` answers it; with no terminal
+and no `--yes` the command exits 3 and stops nothing). See "Start and stop on
+the model server" below.
 
 ## Other providers' models (#412)
 
@@ -334,9 +318,9 @@ provider here) and asks, every time, before it loads:
 
 ```
 starting omlx/qwen3.6-27b-4bit loads it beside models of other providers:
-  mtplx/qwen3.8-35b — memory use unknown (in use by 1 wt session(s))
+  mtplx/qwen3.8-35b — memory use unknown
   ollama/gemma4:12b — 9.6 GB loaded
-  cannot tell whether mlx_lm_server at http://127.0.0.1:8001 is serving a model
+  cannot tell whether mlx_lm_server is serving a model
 stop them first, keep them and start, or cancel? [s/k/N]
 ```
 
@@ -345,7 +329,7 @@ stop them first, keep them and start, or cancel? [s/k/N]
 - Each line is the model's id and the memory its server says it holds:
   `9.6 GB loaded` (ollama), `18.2 GB resident (omlx estimate)`, or
   `memory use unknown` (mtplx, and any server that does not say; never 0 and
-  never a guess), with its live wt session count when sessions use it. An
+  never a guess). An
   mtplx still loading reads `mtplx/<id> (loading)`. An mlx_lm_server pairing's
   figure ends `; wt cannot stop it`: wt has no way to stop one. So does an
   omlx model still loading (`omlx/<id> (loading)`): omlx refuses to unload a
@@ -445,7 +429,7 @@ recently used when a load does not fit.
 - `wt start <omlx model>` loads it **beside** the ones already loaded. Both
   are routed. When the model fits, nothing is asked.
 - When it does not fit, wt names the models omlx is expected to unload, each
-  with its live wt session count, and asks (default No); `--replace` skips
+  with the client sessions the model server counts on it, and asks (default No); `--replace` skips
   the question. Declining changes nothing. With no TTY wt cannot ask: the
   start exits 3 with
   `approval missing: pass --replace (there is no terminal to ask); nothing was started`,
@@ -532,19 +516,19 @@ recently used when a load does not fit.
 - A load wt does not perform is not covered: an agent that dials omlx
   directly and names a model that is not loaded makes omlx load it, and
   possibly evict another, with no prompt. The routes are corrected by
-  `wt litellm sync`; launching a model through wt also writes that model's
-  own route if it is missing.
+  `wt litellm sync`; a launch writes no route itself (a running model the
+  model server knows to be unrouted is started there first, which writes it).
 
 ## A launch on the model server (`[model-server]`)
 
-With a model server configured (`[model-server]` in `config.toml`, or
-`WT_MODEL_URL`/`WT_MODEL_TOKEN_FILE`/`WT_MODEL_TOKEN`), a launch that names its
-directory and its agent (`-W`, `--cwd`, `--root` with `-A`) asks the model
-server instead of the registry ([wt-model-server.md](wt-model-server.md)). A
-`-M` pin is resolved by the server; without one the server's one launchable
-model launches, and when several match the next one after the last launch
-rotates in (the picker still runs on the registry until it moves to the
-server). A model is started only for a pin of an idle model, or for a running
+Every model-driven launch needs a model server (`[model-server]` in
+`config.toml`, or `WT_MODEL_URL`/`WT_MODEL_TOKEN_FILE`/`WT_MODEL_TOKEN`; with
+none configured it refuses before anything starts, exit 1) and reads no
+registry ([wt-model-server.md](wt-model-server.md)). The picker lists the
+server's catalog. A launch that names its directory and its agent (`-W`,
+`--cwd`, `--root` with `-A`) skips the picker: a `-M` pin is resolved by the
+server; without one the server's one launchable model launches, and when
+several match the next one after the last launch rotates in. A model is started only for a pin of an idle model, or for a running
 local model the server says the gateway does not list; a running model whose
 route the server could not read launches as it is. Before the start, the launch
 registers a client session with the model so the server's idle grace counts it,

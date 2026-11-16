@@ -12,8 +12,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
-// recordRouteNotes keeps what a launch-time route check printed: it appends
-// the text to pendingRouteNotes, which is printed on the real terminal once the
+// recordRouteNotes keeps a note for the terminal (the model server's notes
+// about the client session): it appends the text to pendingRouteNotes, which is printed on the real terminal once the
 // alt screen is released — above the agent's output, or after wt exits when
 // the launch did not happen. It does not go in the status line: the launch
 // follows at once, so the only picker screen the user can land on next is the
