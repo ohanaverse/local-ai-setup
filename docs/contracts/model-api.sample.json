@@ -10,7 +10,7 @@
       {"id": "mtplx/org/big-model", "gateway_id": "mtplx/org/big-model", "family": "big", "provider_id": "mtplx", "model_name": "org/big-model", "location": "local", "tags": ["large"], "registered": true, "discovered": false, "state": "blocked", "action": "block", "block_reason": "pack does not fit iogpu.wired_limit_mb", "protocols": ["openai"], "sessions": 0},
       {"id": "omlx/gemma4-9b", "gateway_id": "omlx/gemma4-9b", "family": "gemma4", "provider_id": "omlx", "model_name": "gemma4-9b", "location": "local", "tags": [], "registered": true, "discovered": false, "state": "stopped", "action": "start", "protocols": ["openai"], "sessions": 0},
       {"id": "omlx/qwen3.8-14b", "gateway_id": "omlx/qwen3.8-14b", "family": "qwen3.8", "provider_id": "omlx", "model_name": "qwen3.8-14b", "location": "local", "tags": [], "registered": true, "discovered": false, "state": "loading", "action": "start", "protocols": ["openai"], "sessions": 1},
-      {"id": "omlx/new-pack", "gateway_id": "omlx/new-pack", "family": "new", "provider_id": "omlx", "model_name": "new-pack", "location": "local", "tags": [], "registered": false, "discovered": true, "state": "unknown", "action": "start", "protocols": ["openai"], "sessions": 0}
+      {"id": "omlx/unknown-pack", "gateway_id": "omlx/unknown-pack", "family": "unknown", "provider_id": "omlx", "model_name": "unknown-pack", "location": "local", "tags": [], "registered": true, "discovered": false, "state": "unknown", "action": "start", "protocols": ["openai"], "sessions": 0}
     ]
   },
   "job": {

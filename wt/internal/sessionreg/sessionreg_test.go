@@ -100,6 +100,47 @@ func TestEndedSessionStartsIdleClock(t *testing.T) {
 	}
 }
 
+// TestEndOfLapsedSessionKeepsTheIdleClock checks that an End of a session its
+// TTL already expired does not stamp the idle clock with the end time, because
+// a client deleting a session record long after it stopped heartbeating must
+// not postpone the auto-stop of models that have been idle the whole time.
+func TestEndOfLapsedSessionKeepsTheIdleClock(t *testing.T) {
+	r, c := newReg(time.Minute)
+	_ = r.Register("s1", []string{"m"})
+	c.t = c.t.Add(10 * time.Second)
+	_ = r.Heartbeat("s1", nil) // the last beat
+	t0 := c.t
+	c.t = c.t.Add(2 * time.Hour) // the session lapsed long before this End
+	r.End("s1")
+	if since, seen := r.IdleSince("m"); !seen || !since.Equal(t0) {
+		t.Fatalf("IdleSince = (%v,%v), want the last beat (%v,true)", since, seen, t0)
+	}
+}
+
+// TestLapsedSessionsArePrunedOnRead checks that a read path deletes a session
+// whose TTL lapsed: a server that runs for days otherwise keeps every session
+// whose client crashed without an End. Pruning must not change any answer,
+// since the reads already skip lapsed sessions.
+func TestLapsedSessionsArePrunedOnRead(t *testing.T) {
+	r, c := newReg(time.Minute)
+	for _, id := range []string{"s1", "s2", "s3"} {
+		_ = r.Register(id, []string{"m"})
+	}
+	c.t = c.t.Add(time.Second) // all three still live
+	_ = r.Counts([]string{"m"})
+	if len(r.sessions) != 3 {
+		t.Fatalf("%d sessions after a live read, want 3", len(r.sessions))
+	}
+	c.t = c.t.Add(time.Minute)
+	_ = r.Counts([]string{"m"})
+	if len(r.sessions) != 0 {
+		t.Fatalf("%d sessions after the TTL passed, want all pruned", len(r.sessions))
+	}
+	if got := r.Counts([]string{"m"})["m"]; got != 0 {
+		t.Fatalf("count after pruned = %d, want 0", got)
+	}
+}
+
 // TestUnseenModelIsNotSeen checks that a never-registered model reports
 // not-seen, because auto-stop must not stop models no session ever used.
 func TestUnseenModelIsNotSeen(t *testing.T) {

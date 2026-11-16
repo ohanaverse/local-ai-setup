@@ -4,8 +4,9 @@
 //
 // Compatibility within one APIMajor: a minor version may add optional fields
 // to any response and to any request body. A server therefore ignores unknown
-// request fields and treats an empty request body as an empty JSON object; a
-// client ignores unknown response fields.
+// request fields, treats an empty request body as an empty JSON object, and
+// refuses a body carrying data after its first JSON value; a client ignores
+// unknown response fields.
 package modelapi
 
 const (
@@ -165,7 +166,8 @@ type SessionRegister struct {
 	Models []string `json:"models"`
 }
 
-// SessionBeat refreshes a session's model list.
+// SessionBeat lists the models to add to a live session's set on a heartbeat;
+// removing a model is a re-register (POST sessions).
 type SessionBeat struct {
 	Models []string `json:"models"`
 }

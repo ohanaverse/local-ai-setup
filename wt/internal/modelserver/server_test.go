@@ -284,6 +284,32 @@ func TestHeartbeatAcceptsEmptyBody(t *testing.T) {
 	}
 }
 
+// TestTrailingDataInBodyIsRefused pins that a body carrying a second JSON
+// value after the first is a 400 APIError, applies nothing and submits no
+// job: two requests concatenated into one body must not silently run only
+// the first, while a body that merely ends in whitespace still decodes as
+// one value.
+func TestTrailingDataInBodyIsRefused(t *testing.T) {
+	f := &fakeLife{snap: serverSnap()}
+	_, ts := newTestServer(t, f, nil)
+	st, b := call(t, ts, "POST", "/control/v1/start", `{"model":"omlx/a"}{"model":"omlx/b"}`)
+	e := wantAPIError(t, st, b, http.StatusBadRequest, "bad_request")
+	if !strings.Contains(e.Error, "trailing data") {
+		t.Errorf("error = %q, want it to name the trailing data", e.Error)
+	}
+	st, b = call(t, ts, "POST", "/control/v1/sessions", `{"id":"s1","models":["omlx/a"]}{"id":"s2","models":[]}`)
+	wantAPIError(t, st, b, http.StatusBadRequest, "bad_request")
+	if got := f.callList(); len(got) != 0 {
+		t.Errorf("life calls = %q, want none: nothing in the refused bodies was applied", got)
+	}
+	if st, b := call(t, ts, "POST", "/control/v1/sessions/s1/heartbeat", ""); st != http.StatusGone {
+		t.Errorf("heartbeat of s1 = %d %s, want 410: the register was not applied either", st, b)
+	}
+	if st, b := call(t, ts, "POST", "/control/v1/start", "{\"model\":\"omlx/b\"}\n"); st != http.StatusAccepted {
+		t.Fatalf("start with a trailing newline = %d %s, want 202 (trailing whitespace is not data)", st, b)
+	}
+}
+
 // TestNewServerRequiresToken pins that an empty token is refused on every
 // listen address, loopback or not, with an error naming --token-file, and that
 // a non-empty token is accepted.

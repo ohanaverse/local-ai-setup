@@ -112,11 +112,18 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // decodeBody decodes a JSON request body into v; false means a 400 has been
 // written. Unknown fields are ignored (a newer minor version may add optional
 // request fields) and an empty body is an empty object, so v keeps its zero
-// value; a body that is not valid JSON is a 400.
+// value; a body that is not valid JSON, or one carrying data after its first
+// JSON value (two requests concatenated into one body would silently apply
+// only the first), is a 400.
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid request body: "+err.Error())
+		return false
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "bad_request", "trailing data after the JSON request body")
 		return false
 	}
 	return true
