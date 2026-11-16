@@ -290,6 +290,11 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 	// Step 4: the one local slot model, started only when it needs it.
 	if p.Local != nil && row.Action() == catalog.ActionStart {
 		if serr := startRemote(ctx, ms, *p.Local.Wire, string(othersMode), allowReplace); serr != nil {
+			// Nothing will use the model: take it out of the client session
+			// before ending it (a re-register without it), as the single-model
+			// launch does (launchFilteredRemote) and the picker's twin does
+			// (internal/tui's runRemoteStart drops it on a job error).
+			_ = sess.Remove(context.WithoutCancel(ctx), p.Local.Wire.ID)
 			end()
 			return remoteExit(startStill(serr))
 		}

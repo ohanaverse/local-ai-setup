@@ -85,9 +85,10 @@ go-format-check:        # Fail if any Go file is not gofmt-clean
 single-p:               # Run the goroutine-sensitive packages on one P
 	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 ./cmd/wt ./internal/tui ./internal/lifecycle ./internal/configeditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./cmd/wt-model
 
-test-agents:            # Run live agent smoke tests
-	@command -v wt >/dev/null 2>&1 || { echo "wt not on PATH; ensure ~/.local/bin is in PATH or run: make install"; exit 1; }
-	@scripts/agents-smoke.sh $(ARGS)
+test-agents:            # BROKEN until its rewrite (Task 20): live agent smoke tests that still flip the retired wt litellm on/off (exit 1)
+	@echo "test-agents is broken until its rewrite (Task 20): scripts/agents-smoke.sh still flips 'wt litellm on/off', retired 2026-11-15 (exit 1)." >&2
+	@echo "Run 'wt smoke <model-id> [--only claude,codex]' per model in the meantime." >&2
+	@exit 1
 
 check:                  # Run all quality checks
 	@echo "Running lint..."
