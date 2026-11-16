@@ -37,7 +37,7 @@ func RegistryPath() string {
 		}
 		expanded, err := ExpandHome(override)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "wt: cannot expand %s (%v); using literal path\n", name, err)
+			fmt.Fprintf(os.Stderr, BinaryName+": cannot expand %s (%v); using literal path\n", name, err)
 			return override
 		}
 		return expanded

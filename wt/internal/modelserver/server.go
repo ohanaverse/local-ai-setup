@@ -314,13 +314,13 @@ func controlErrors(mux *http.ServeMux) http.Handler {
 			h.ServeHTTP(p, r)
 			switch p.status {
 			case http.StatusNotFound:
-				writeError(w, http.StatusNotFound, modelapi.CodeNotFound, "no such control endpoint")
+				writeError(w, http.StatusNotFound, modelapi.CodeNotFound, modelapi.MsgNotFound)
 				return
 			case http.StatusMethodNotAllowed:
 				if allow := p.hdr.Get("Allow"); allow != "" {
 					w.Header().Set("Allow", allow)
 				}
-				writeError(w, http.StatusMethodNotAllowed, modelapi.CodeMethodNotAllowed, "method not allowed for this control endpoint")
+				writeError(w, http.StatusMethodNotAllowed, modelapi.CodeMethodNotAllowed, modelapi.MsgMethodNotAllowed)
 				return
 			}
 		}

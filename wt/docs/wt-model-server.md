@@ -52,8 +52,8 @@ or reach it through a tunnel.
 
 | Code | Meaning |
 |---|---|
-| 0 | Stopped cleanly on SIGINT or SIGTERM. |
-| 1 | Any failure: a missing or bad flag, a token file that is missing, empty or too open, an unconfigured LiteLLM proxy, an address that cannot be bound. |
+| 0 | stopped cleanly on SIGINT or SIGTERM |
+| 1 | any failure (a bad flag, an unreadable token file, an unconfigured LiteLLM proxy, an address that cannot be bound) |
 
 A failure prints one line on stderr, `wt-model: <message>`, with the way out
 last, for example `wt-model: token file PATH is accessible by group or other
@@ -101,8 +101,8 @@ All control paths are under `/control/v1/` and answer JSON.
 | `GET /control/v1/jobs/{id}` | A job's state, step text and, once finished, its result. |
 | `POST /control/v1/jobs/{id}/cancel` | Cancel a job. 204. |
 | `POST /control/v1/sessions` | Register a client session and the models it uses: `{"id", "models"}`. Registering again replaces the model set. 204. |
-| `POST /control/v1/sessions/{id}/heartbeat` | Renew a session and add models to its set: `{"models"}`. 204, or 410 `unknown_session` when it has lapsed. |
-| `DELETE /control/v1/sessions/{id}` | End a session. 204, also for an unknown id. |
+| `POST /control/v1/sessions/{id}/heartbeat` | Renew a client session and add models to its set: `{"models"}`. 204, or 410 `unknown_session` when it has lapsed. |
+| `DELETE /control/v1/sessions/{id}` | End a client session. 204, also for an unknown id. |
 | `/v1/*` | The gateway: every path is forwarded to LiteLLM, streaming, with the host's LiteLLM key. |
 
 A request body may carry fields this server does not know (ignored), may be
@@ -118,13 +118,13 @@ path or method the control API does not route also answers this object, with
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `bad_request` | A body that is not valid JSON or has trailing data, a missing `model`, an empty session id |
+| 400 | `bad_request` | A body that is not valid JSON or has trailing data, a missing `model`, an empty client session id |
 | 401 | `unauthorized` | The token is missing or wrong |
 | 404 | `not_found` | No such control endpoint |
 | 404 | `unknown_model` | `resolve` of an id nothing knows |
 | 404 | `unknown_job` | A job id the server does not hold (jobs are in memory and gone after a restart) |
 | 405 | `method_not_allowed` | The path exists for other methods |
-| 410 | `unknown_session` | A heartbeat for a session that is unknown or lapsed: register again |
+| 410 | `unknown_session` | A heartbeat for a client session that is unknown or lapsed: register again |
 
 A job that cannot do what was asked finishes `failed` with one of these
 codes in `result.error`:
@@ -161,26 +161,26 @@ prompt becomes a typed error the client answers by posting again.
 
 A client session is a client-chosen id plus the models it uses.
 
-- A session lives while its last heartbeat is within the TTL of 60 seconds.
+- A client session lives while its last heartbeat is within the TTL of 60 seconds.
   The server enforces only the TTL; clients heartbeat every 20 seconds so two
   missed beats still leave it live.
 - A heartbeat adds models; removing one is a new register.
-- Ending a session, or letting it lapse, starts the idle clock of the models
+- Ending a client session, or letting it lapse, starts the idle clock of the models
   only it used.
 
 **Auto-stop.** Every 30 seconds the server scans for local models to stop. A
-model stops when some session registered it at some point, no live session
+model stops when some client session registered it at some point, no live client session
 uses it now, its idle clock is at least `--idle-grace` old, no job for it is
 queued or running, wt can stop its provider and the probe of that provider is
 trusted. A successful start restarts the model's idle clock. A cloud model, and a model started by
-hand on the host that no session ever registered, is never auto-stopped. After a
+hand on the host that no client session ever registered, is never auto-stopped. After a
 restart of the server the registry is empty, so nothing is auto-stopped until
-a session registers again.
+a client session registers again.
 
-The stop is an ordinary stop job, so a session that registers between the
+The stop is an ordinary stop job, so a client session that registers between the
 scan and the stop still blocks it. On an Exclusive provider (a server that holds one
 model at a time, such as mtplx) the stop takes the whole server, so every
-session on any model of that family counts as a user, both for auto-stop and
+client session on any model of that family counts as a user, both for auto-stop and
 for the `in_use` check of an explicit stop.
 
 ## Startup and shutdown

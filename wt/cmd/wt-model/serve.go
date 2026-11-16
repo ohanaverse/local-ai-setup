@@ -16,7 +16,7 @@ const defaultIdleGrace = 10 * time.Minute
 
 // announceFormat is the one line serve prints on stderr once it is listening;
 // %s is the bound address (ln.Addr(), so an ephemeral port reads as the port
-// the kernel gave). It is the only machine-readable startup signal (S6).
+// the kernel gave). It is the only machine-readable startup signal (S1).
 const announceFormat = "wt-model: listening on %s (gateway /v1, control /control/v1)\n"
 
 // announceLine is announceFormat for addr.

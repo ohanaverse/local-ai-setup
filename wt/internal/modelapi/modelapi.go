@@ -188,6 +188,9 @@ const (
 const (
 	// MsgUnauthorized is the one wording of a 401, control API and gateway.
 	MsgUnauthorized = "missing or wrong bearer token"
+	// MsgNotFound and MsgMethodNotAllowed word the control API's routing errors.
+	MsgNotFound         = "no such control endpoint"
+	MsgMethodNotAllowed = "method not allowed for this control endpoint"
 	// MsgProxyUnavailable is the gateway's 503 wording.
 	MsgProxyUnavailable = "model proxy is restarting"
 

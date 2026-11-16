@@ -52,6 +52,8 @@
   },
   "error_unauthorized": {"error": {"message": "missing or wrong bearer token", "code": "unauthorized"}},
   "error_unknown_model": {"error": {"message": "unknown model \"nope/none\"", "code": "unknown_model"}},
+  "error_not_found": {"error": {"message": "no such control endpoint", "code": "not_found"}},
+  "error_method_not_allowed": {"error": {"message": "method not allowed for this control endpoint", "code": "method_not_allowed"}},
   "gateway_error_unauthorized": {"error": {"message": "missing or wrong bearer token", "type": "authentication_error", "code": "unauthorized"}},
   "gateway_error_proxy_unavailable": {"error": {"message": "model proxy is restarting", "type": "api_error", "code": "proxy_unavailable"}}
 }

@@ -396,7 +396,7 @@ func dropLegacyGateway(path string) (changed bool) {
 	if err := toml.Unmarshal(raw, &probe); err != nil || probe.Gateway == nil {
 		return false
 	}
-	fmt.Fprintln(os.Stderr, "wt: found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by wt (see 'wt litellm status'); this block will be dropped on next save")
+	fmt.Fprintln(os.Stderr, BinaryName+": found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by wt (see 'wt litellm status'); this block will be dropped on next save")
 	return true
 }
 

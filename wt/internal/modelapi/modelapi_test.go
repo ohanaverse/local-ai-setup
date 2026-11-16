@@ -41,6 +41,8 @@ func TestFixtureMatchesTypes(t *testing.T) {
 
 		"error_unauthorized":              &APIError{},
 		"error_unknown_model":             &APIError{},
+		"error_not_found":                 &APIError{},
+		"error_method_not_allowed":        &APIError{},
 		"gateway_error_unauthorized":      &GatewayError{},
 		"gateway_error_proxy_unavailable": &GatewayError{},
 	}
@@ -167,6 +169,8 @@ func TestErrorSamplesUseConstants(t *testing.T) {
 	var doc struct {
 		Unauthorized  APIError     `json:"error_unauthorized"`
 		UnknownModel  APIError     `json:"error_unknown_model"`
+		NotFound      APIError     `json:"error_not_found"`
+		NotAllowed    APIError     `json:"error_method_not_allowed"`
 		GwUnauth      GatewayError `json:"gateway_error_unauthorized"`
 		GwUnavailable GatewayError `json:"gateway_error_proxy_unavailable"`
 	}
@@ -178,6 +182,12 @@ func TestErrorSamplesUseConstants(t *testing.T) {
 	}
 	if doc.UnknownModel.Error.Code != CodeUnknownModel || doc.UnknownModel.Error.Message == "" {
 		t.Errorf("error_unknown_model = %+v", doc.UnknownModel)
+	}
+	if doc.NotFound.Error != (ErrorObject{Message: MsgNotFound, Code: CodeNotFound}) {
+		t.Errorf("error_not_found = %+v", doc.NotFound)
+	}
+	if doc.NotAllowed.Error != (ErrorObject{Message: MsgMethodNotAllowed, Code: CodeMethodNotAllowed}) {
+		t.Errorf("error_method_not_allowed = %+v", doc.NotAllowed)
 	}
 	if doc.GwUnauth.Error != (GatewayErrorObject{Message: MsgUnauthorized, Type: TypeAuthentication, Code: CodeUnauthorized}) {
 		t.Errorf("gateway_error_unauthorized = %+v", doc.GwUnauth)
