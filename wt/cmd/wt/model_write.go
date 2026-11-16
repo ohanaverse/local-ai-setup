@@ -390,10 +390,10 @@ func runModelRm(out, errOut io.Writer, cfg *config.Config, ids []string, yes boo
 	if !yes {
 		ok, err := confirmRemove(fmt.Sprintf("Remove %d model(s) from the registry (%s)? Weights are not deleted.", len(ids), strings.Join(ids, ", ")))
 		if err != nil {
-			return err
+			return noTerminalRefusal(err, "--yes", "nothing was removed")
 		}
 		if !ok {
-			return errors.New("cancelled — nothing was removed")
+			return declined(errors.New("cancelled — nothing was removed"))
 		}
 	}
 	if err := modeladmin.Remove(ids); err != nil {

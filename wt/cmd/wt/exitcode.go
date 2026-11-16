@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os/exec"
 
@@ -36,4 +37,36 @@ func reportExit(err error, w io.Writer) int {
 		return 1
 	}
 	return exitcode.Report("wt", err, w)
+}
+
+// exitApprovalMissing is C9's code 3: the command needed consent it did not
+// get (no --yes and no terminal, or the prompt was declined) and changed
+// nothing.
+const exitApprovalMissing = 3
+
+// errNoTerminal is what a y/N prompt returns when there is no terminal to ask
+// on. The command that asked turns it into approvalMissing, naming its own
+// flag and what it did not do.
+var errNoTerminal = errors.New("there is no terminal to ask")
+
+// approvalMissing is P4's refusal, exit 3: "approval missing: pass <flag>
+// (there is no terminal to ask); <state>", where state says what did not
+// happen ("nothing was stopped").
+func approvalMissing(flag, state string) error {
+	return exitcode.New(exitApprovalMissing, fmt.Errorf("approval missing: pass %s (%s); %s", flag, errNoTerminal.Error(), state), false)
+}
+
+// noTerminalRefusal turns a prompt's errNoTerminal into approvalMissing(flag,
+// state) and passes every other error through.
+func noTerminalRefusal(err error, flag, state string) error {
+	if errors.Is(err, errNoTerminal) {
+		return approvalMissing(flag, state)
+	}
+	return err
+}
+
+// declined is an answered "no": exit 3, like a missing approval, with err's
+// own words (which say what is still true).
+func declined(err error) error {
+	return exitcode.New(exitApprovalMissing, err, false)
 }

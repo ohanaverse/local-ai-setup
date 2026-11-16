@@ -10,10 +10,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 )
 
-// errCancelled is a "no" at the one launch question: nothing launched. It is a
-// choice, not a failure, so the launch paths end the run with status 0 and no
-// message, as quitting the picker does.
-var errCancelled = errors.New("launch cancelled")
+// errCancelled is a "no" at the one launch question: nothing launched. Like
+// every declined prompt it exits 3 (C9) and says so on one line.
+var errCancelled = declined(errors.New("cancelled — nothing was launched"))
 
 // rootClaimRelease removes this session's claim on the repository root. It is
 // set by holdLaunch and called through releaseRootClaim.

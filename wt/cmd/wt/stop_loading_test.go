@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"os"
 	"path/filepath"
@@ -109,8 +110,8 @@ func TestStopAsksBeforeEndingALoadingMtplxInUse(t *testing.T) {
 			loading := stubStopLoading(t, nil)
 			asked := stubStopConfirm(t, false)
 			err := tc.run(false)
-			if err == nil || !strings.Contains(err.Error(), "cancelled") || !strings.Contains(err.Error(), tc.declined) {
-				t.Fatalf("declined: err = %v, want a cancellation saying %q", err, tc.declined)
+			if err == nil || !strings.Contains(err.Error(), "cancelled") || !strings.Contains(err.Error(), tc.declined) || exitcode.Of(err) != 3 {
+				t.Fatalf("declined: err = %v (exit %d), want a cancellation saying %q, exit 3", err, exitcode.Of(err), tc.declined)
 			}
 			if !slices.Equal(*asked, []string{tc.question}) {
 				t.Errorf("asked = %q\n want  [%q]", *asked, tc.question)
@@ -145,8 +146,8 @@ func TestStopOfALoadingMtplxRefusesWithoutATerminal(t *testing.T) {
 		stubStopState(t, families("mtplx", loadingFS(1, "mtplx/big")))
 		loading := stubStopLoading(t, nil)
 		err := run()
-		if err == nil || !strings.Contains(err.Error(), "rerun with --yes") || !strings.Contains(err.Error(), "still loading (pid 4242)") {
-			t.Fatalf("%s: err = %v, want the question and --yes named", name, err)
+		if err == nil || err.Error() != "approval missing: pass --yes (there is no terminal to ask); nothing was stopped" || exitcode.Of(err) != 3 {
+			t.Fatalf("%s: err = %v (exit %d), want --yes named, exit 3", name, err, exitcode.Of(err))
 		}
 		if len(*loading) != 0 {
 			t.Fatalf("%s: loading stops = %v, want nothing signalled", name, *loading)

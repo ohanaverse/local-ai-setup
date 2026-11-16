@@ -550,6 +550,13 @@ openrouter flow's). The other flow may have been applied, or have failed, in
 the same run; its lines say which.
 Every other wt command exits 1 on any error.
 
+cloud-sync is a named exception to the exit table the other wt commands
+share (3 there means approval missing). Here approval missing is not 3:
+with no terminal and no `--yes` the run changes nothing and exits **1**
+(`not applied: there is no terminal to confirm on`), and a "no" at the
+question exits **0** (`not applied (declined)`). 3 stays the ollama flow's
+`the pricing page changed shape`.
+
 The last line on stderr gives the reason: `wt: cloud-sync: the ollama flow
 changed nothing: <why>` (or `the openrouter flow`) for 2 to 5, and `wt: cloud-sync: a step failed; see
 the error lines above` for 1.

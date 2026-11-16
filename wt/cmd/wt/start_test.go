@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"os"
 	"strings"
@@ -104,8 +105,8 @@ func TestStartForLaunchNonInteractiveOccupiedRefuses(t *testing.T) {
 	replaces := stubLifecycleStart(t, []error{occ})
 
 	err := startForLaunch(&config.Config{}, startTestRow(), false)
-	if err == nil || !strings.Contains(err.Error(), "omlx/other") {
-		t.Fatalf("err = %v, want a refusal naming omlx/other", err)
+	if err == nil || exitcode.Of(err) != 3 {
+		t.Fatalf("err = %v, want an approval-missing refusal (exit 3)", err)
 	}
 	if !strings.Contains(err.Error(), "--replace") {
 		t.Errorf("err = %q, want it to name the --replace flag", err)

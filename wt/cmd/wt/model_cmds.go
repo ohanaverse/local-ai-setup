@@ -57,7 +57,7 @@ var (
 func promptStop(question string) (bool, error) {
 	f, err := openTTY()
 	if err != nil {
-		return false, fmt.Errorf("%s — rerun with --yes to confirm", question)
+		return false, errNoTerminal
 	}
 	defer f.Close()
 	if _, err := fmt.Fprintf(f, "%s [y/N] ", question); err != nil {
@@ -340,10 +340,10 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s)%s%s; stop them all?", inUse, strings.Join(users, ", "), unreadClause(unread, false), loading))
 		if err != nil {
-			return err
+			return noTerminalRefusal(err, "--yes", "nothing was stopped")
 		}
 		if !ok {
-			return errors.New("cancelled — nothing was stopped")
+			return declined(errors.New("cancelled — nothing was stopped"))
 		}
 	}
 	var failures []error
@@ -634,10 +634,10 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("%s in use by %d live wt session(s) (%s)%s; stop anyway?", what, inUse, strings.Join(users, ", "), blind))
 		if err != nil {
-			return err
+			return noTerminalRefusal(err, "--yes", "nothing was stopped")
 		}
 		if !ok {
-			return fmt.Errorf("cancelled — %s is still running", arg)
+			return declined(fmt.Errorf("cancelled — %s is still running", arg))
 		}
 	}
 	if halt {

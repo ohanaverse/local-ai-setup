@@ -236,6 +236,11 @@ read the other flow's lines too, it may have been applied.
 | 4 | a flow changed nothing: its plan removes more than half its entries and `--force` was not given | Ask the user; `--force` only on their confirmation |
 | 5 | a flow changed nothing: under `--yes` its plan deletes and no digest, or another plan's, was given (`…: removals not approved`); or (ollama) the registry changed after the plan was printed (`…: the registry changed after the plan was printed`) | Step 1 again; get the user's yes for the new plan; use its digest |
 
+Unlike the other `wt` commands, `cloud-sync` does not use 3 for approval
+missing (there it means the ollama pricing page changed shape): with no
+terminal and no `--yes` it exits 1 (the `not applied: there is no terminal`
+line below), and a "no" at the question exits 0 (`not applied (declined)`).
+
 ### Exit 1
 
 - `openrouter: error: could not read OpenRouter's prices: …; no price was

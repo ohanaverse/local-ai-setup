@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,8 +243,8 @@ func TestWorktreeFlagDeclinedAtTheWarningCreatesNothing(t *testing.T) {
 	answerOnStdin(t, "n\n")
 	notes := captureNotes(t)
 	res := runPinnedLaunch(t, root, []string{"-W", "typo"})
-	if res.err != nil {
-		t.Fatalf("err = %v; a no is a choice, not a failure", res.err)
+	if res.err == nil || exitcode.Of(res.err) != 3 {
+		t.Fatalf("err = %v; a no is a decline, exit 3", res.err)
 	}
 	s := notes.String()
 	if !strings.Contains(s, "continue? [Y/n]") || !strings.Contains(s, "restore-root") {

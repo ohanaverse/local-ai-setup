@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"os"
 	"path/filepath"
 	"slices"
@@ -278,8 +279,8 @@ func TestModelCommandsThroughTheCommandLine(t *testing.T) {
 	}
 
 	asked := stubConfirmRemove(t, false)
-	if _, err := runWT(t, "model", "rm", "ollama/gemma4:9b"); err == nil || !strings.Contains(err.Error(), "cancelled — nothing was removed") {
-		t.Errorf("declined rm: err = %v, want a cancellation", err)
+	if _, err := runWT(t, "model", "rm", "ollama/gemma4:9b"); err == nil || !strings.Contains(err.Error(), "cancelled — nothing was removed") || exitcode.Of(err) != 3 {
+		t.Errorf("declined rm: err = %v (exit %d), want a cancellation, exit 3", err, exitcode.Of(err))
 	}
 	if want := "Remove 1 model(s) from the registry (ollama/gemma4:9b)? Weights are not deleted."; *asked != want {
 		t.Errorf("asked %q, want %q", *asked, want)
@@ -316,9 +317,12 @@ func TestModelRmWithoutATerminalNeedsYes(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	err := runModelRm(&out, &errOut, nil, []string{"openrouter/a--b"}, false)
-	want := "Remove 1 model(s) from the registry (openrouter/a--b)? Weights are not deleted. — rerun with --yes to confirm"
-	if err == nil || err.Error() != want {
-		t.Fatalf("err = %v, want %q", err, want)
+	want := "approval missing: pass --yes (there is no terminal to ask); nothing was removed"
+	if err == nil || err.Error() != want || exitcode.Of(err) != 3 {
+		t.Fatalf("err = %v (exit %d), want %q and exit 3", err, exitcode.Of(err), want)
+	}
+	if line := reportLine(err); line != "wt: "+want+"\n" {
+		t.Errorf("reported %q, want one line", line)
 	}
 	if got := mustRead(t, registry); got != writeRegistry || *syncs != 0 || out.Len() != 0 {
 		t.Errorf("a refused removal must change nothing: syncs = %d, stdout = %q", *syncs, out.String())

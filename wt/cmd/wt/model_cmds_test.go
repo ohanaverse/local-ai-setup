@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -778,7 +779,7 @@ func TestStopAllInUseConfirms(t *testing.T) {
 	var asked string
 	confirmStop = func(q string) (bool, error) { asked = q; return false, nil }
 	err := runStopAll(io.Discard, modelCmdConfig(), false)
-	if err == nil || !strings.Contains(err.Error(), "nothing was stopped") {
+	if err == nil || !strings.Contains(err.Error(), "nothing was stopped") || exitcode.Of(err) != 3 {
 		t.Fatalf("declined: err = %v, want a cancellation", err)
 	}
 	if !strings.Contains(asked, "3 live wt session(s)") || !strings.Contains(asked, "ollama/a:1, omlx/c") {
@@ -926,7 +927,7 @@ func TestStopAllYesFlagSkipsTheQuestion(t *testing.T) {
 
 	*stopped, *halted = nil, nil
 	_, err := runStopCmd(modelCmdConfig(), "--all")
-	if err == nil || !strings.Contains(err.Error(), "nothing was stopped") {
+	if err == nil || !strings.Contains(err.Error(), "nothing was stopped") || exitcode.Of(err) != 3 {
 		t.Fatalf("--all, declined: err = %v, want a cancellation", err)
 	}
 	if len(*asked) != 1 || len(*stopped) != 0 || len(*halted) != 0 {

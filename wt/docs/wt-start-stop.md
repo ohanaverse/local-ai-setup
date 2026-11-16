@@ -307,7 +307,10 @@ controlling terminal, default No. N is the total across the models being
 stopped (an mtplx provider counts once) — also for an mtplx stopped through a
 model wt could list, where a session recorded on another mtplx model is not
 counted. `--yes` skips the question; with no terminal and no
-`--yes`, the command fails and says to rerun with `--yes`.
+`--yes`, the command stops, stops nothing and exits 3 with
+`approval missing: pass --yes (there is no terminal to ask); nothing was stopped`.
+A "no" at the question exits 3 too (`cancelled — nothing was stopped`, or
+`cancelled — <target> is still running`).
 
 When a provider is stopped as a whole — `wt stop omlx`, `wt stop mtplx` with
 nothing wt could list, and the same two inside `wt stop --all` — N is every
@@ -378,7 +381,7 @@ stop them first, keep them and start, or cancel? [s/k/N]
   from the terminal: a redirected stdin is a script even with a terminal
   attached, so `wt start <id> < answers.txt` asks neither this question nor
   the replace question (it keeps the other models with the warning above, and
-  a start that would replace a model exits 1 naming `--replace`). A piped
+  a start that would replace a model exits 3 naming `--replace`). A piped
   answer can never stop a model and a script never waits on a question
   nobody answers; a script proceeds with `--replace` and `--others=keep` or
   `--others=stop` (#424).
@@ -443,9 +446,10 @@ recently used when a load does not fit.
 - When it does not fit, wt names the models omlx is expected to unload, each
   with its live wt session count, and asks (default No); `--replace` skips
   the question. Declining changes nothing. With no TTY wt cannot ask: the
-  start exits 1 with the question followed by
-  `— rerun with --replace to confirm`, and changes nothing (the same holds
-  for a start that would replace the mtplx model). If wt cannot size the pool
+  start exits 3 with
+  `approval missing: pass --replace (there is no terminal to ask); nothing was started`,
+  and changes nothing (the same holds for a start that would replace the mtplx
+  model). A "no" exits 3 as well (`cancelled — <id> still running`). If wt cannot size the pool
   (omlx's status endpoint refused, or its memory limit is off) it names every
   other loaded model.
 - The full-screen `wt` picker's replace dialog, shown when Enter on a model
@@ -576,10 +580,18 @@ only wt resolves a `secret_ref`. To start a model yourself, use `wt start`.
 
 `0` on success, when there was nothing to start or stop (already running —
 `wt start` may still write that model's missing route — or nothing to stop
-on a provider) or a cancelled `wt stop` picker; `1` on any error, including a declined
-confirmation, a cancelled `wt start` picker (`model selection canceled`), a
-provider wt stopped but that still answers, and a `wt stop` that could not
-tell what a provider is running and had no way to stop it regardless.
+on a provider) or a cancelled `wt stop` picker; `1` on any error, including a
+cancelled `wt start` picker (`model selection canceled`), Ctrl+C during a start
+or stop, a provider wt stopped but that still answers, and a `wt stop` that
+could not tell what a provider is running and had no way to stop it regardless.
+
+`3` means approval missing, with nothing changed: a question that needed an
+answer got none (no terminal and no `--yes`, `--replace` or `--others=keep|stop`
+to answer it) or got a "no". The line names the flag
+(`approval missing: pass --yes (there is no terminal to ask); nothing was stopped`).
+The one question with a safe default is not a refusal: with no terminal and no
+`--others`, `wt start` keeps other providers' models loaded, warns once and
+goes on.
 
 An error of `wt start` is printed once, on stderr, as `wt: <message>`. A
 failed mtplx start ends with the server's last log lines

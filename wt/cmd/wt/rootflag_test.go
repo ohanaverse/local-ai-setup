@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -166,15 +167,15 @@ func TestRootFlagIsConsentForTheRootWarningButNotForHeld(t *testing.T) {
 			t.Errorf("notes = %q; --root consents to the root warning", s)
 		}
 	})
-	t.Run("no cancels quietly", func(t *testing.T) {
+	t.Run("no declines with exit 3", func(t *testing.T) {
 		root := sharedRootRepo(t)
 		liveOtherClaim(t, root, "codex")
 		stubStdinTTY(t, true)
 		answerOnStdin(t, "n\n")
 		notes := captureNotes(t)
 		res := runPinnedLaunch(t, root, []string{"--root"})
-		if res.err != nil {
-			t.Fatalf("err = %v; a no is a choice, not a failure", res.err)
+		if res.err == nil || exitcode.Of(res.err) != 3 {
+			t.Fatalf("err = %v; a no is a decline, exit 3", res.err)
 		}
 		if !strings.Contains(notes.String(), "continue? [Y/n]") {
 			t.Errorf("notes = %q; want the question", notes.String())
@@ -202,9 +203,8 @@ func TestCwdInASubdirectoryOfRootIsNotGated(t *testing.T) {
 }
 
 // TestQuitAtTheRootPromptEndsTheLaunchQuietly checks answering no at the
-// launch warnings' one question ends the launch with a nil error (wt exits 0),
-// runs no agent and leaves no claim file for this process: declining is a
-// choice, not a failure.
+// launch warnings' one question ends the launch with exit 3 (declined), runs
+// no agent and leaves no claim file for this process.
 func TestQuitAtTheRootPromptEndsTheLaunchQuietly(t *testing.T) {
 	root := sharedRootRepo(t)
 	stubStdinTTY(t, true)
@@ -221,8 +221,8 @@ func TestQuitAtTheRootPromptEndsTheLaunchQuietly(t *testing.T) {
 	t.Cleanup(func() { os.Stdin = oldStdin; r.Close() })
 
 	res := runCwdLaunch(t, root)
-	if res.err != nil {
-		t.Fatalf("err = %v; want nil", res.err)
+	if res.err == nil || exitcode.Of(res.err) != 3 {
+		t.Fatalf("err = %v; want exit 3", res.err)
 	}
 	if res.agentDir != "" || res.claimSeen || fileExists(ownClaim(root)) {
 		t.Errorf("launched or claimed: agentDir=%q claimSeen=%v", res.agentDir, res.claimSeen)

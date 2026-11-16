@@ -184,7 +184,7 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		}
 		t, terr := launchwarn.ForDir(cwd)
 		if gerr := confirmLaunch(t, terr, cmd.InOrStdin(), osStderr, stdinTTY()); gerr != nil {
-			return false, nil // declined: a quiet stop, like every other no
+			return false, gerr // declined: exit 3, like every other no
 		}
 	}
 

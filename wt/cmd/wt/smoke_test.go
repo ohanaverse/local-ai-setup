@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"os"
 	"path/filepath"
@@ -784,22 +785,21 @@ func smokeRootCmd(t *testing.T, cfg *config.Config, stdin io.Reader, args ...str
 // repository root warns and proceeds, terminal or not: the root warning is
 // printed, no terminal gets no question (a question would read a pipe), and a
 // terminal is asked the one default-yes question — enter goes on to the model
-// resolution, a "no" ends the run quietly (nil error, status 0) without
+// resolution, a "no" ends the run with exit 3 (declined, C9) without
 // reaching model resolution and without claiming or creating anything. Why:
 // the root gate and its smoke's-remedies refusal are gone — smoke runs where
 // it was told to run, and the warning is the only thing saying the root is
-// shared; the decline must stay a quiet choice, not a failure and not a
-// half-started run.
+// shared; the decline must stay a clean refusal, not a half-started run.
 func TestSmokeCmdCwdAtRootWarnsAndProceeds(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		tty     bool
 		in      io.Reader
-		wantErr string // non-empty: the run proceeds and fails there; empty: it ends at the question
+		wantErr string // the error text: "unknown model" when the run proceeds and fails there; the decline when it ends at the question
 	}{
 		{name: "no terminal", tty: false, in: failReader{t}, wantErr: "unknown model"},
 		{name: "terminal, enter", tty: true, in: strings.NewReader("\n"), wantErr: "unknown model"},
-		{name: "terminal, no", tty: true, in: strings.NewReader("n\n"), wantErr: ""},
+		{name: "terminal, no", tty: true, in: strings.NewReader("n\n"), wantErr: "cancelled — nothing was launched"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := smokeFixtureConfig(t)
@@ -810,9 +810,9 @@ func TestSmokeCmdCwdAtRootWarnsAndProceeds(t *testing.T) {
 
 			cmd, _, _ := smokeRootCmd(t, cfg, tc.in, "--cwd", "ollama/does-not-exist")
 			err := cmd.Execute()
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("err = %v; want a declined run to end quietly, reaching no model resolution", err)
+			if tc.name == "terminal, no" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) || exitcode.Of(err) != 3 {
+					t.Fatalf("err = %v (exit %d); want a declined run to end with exit 3, reaching no model resolution", err, exitcode.Of(err))
 				}
 				if fileExists(ownClaim(root)) {
 					t.Error("a root claim was written although the question was declined")

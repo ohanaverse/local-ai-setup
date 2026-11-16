@@ -524,9 +524,6 @@ func rootCmd() *cobra.Command {
 				t, terr := launchwarn.ForDir(root)
 				t.RootChosen = true
 				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
-					if errors.Is(err, errCancelled) {
-						return nil
-					}
 					return err
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, root, root)
@@ -558,9 +555,6 @@ func rootCmd() *cobra.Command {
 					t, terr = launchwarn.ForDir(plan.Path())
 				}
 				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
-					if errors.Is(err, errCancelled) {
-						return nil
-					}
 					return err
 				}
 				path, err := plan.Ensure()
@@ -602,9 +596,6 @@ func rootCmd() *cobra.Command {
 				// proceed — the directory choice is already the person's.
 				t, terr := launchwarn.ForDir(wd)
 				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
-					if errors.Is(err, errCancelled) {
-						return nil
-					}
 					return err
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, wd, root)
