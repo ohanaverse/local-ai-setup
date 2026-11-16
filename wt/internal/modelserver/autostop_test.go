@@ -334,7 +334,8 @@ func (f *fakeLife) setSnap(snap localmodels.Snapshot) {
 // number of scans: a model no client session registered is left alone. A
 // model whose client session registered before its start is not forgotten
 // while it is not yet running, even once that session is older than the
-// grace, and is stopped as usual after the session ends.
+// grace, and is stopped as usual after the session ends — and a queued start
+// keeps it from being forgotten even after that session has lapsed entirely.
 func TestAutoStoppedModelStartedByHandIsLeftAlone(t *testing.T) {
 	t.Run("hand start after auto-stop", func(t *testing.T) {
 		const grace = 10 * time.Minute
@@ -390,6 +391,45 @@ func TestAutoStoppedModelStartedByHandIsLeftAlone(t *testing.T) {
 		drain(t, jobs)
 		if stops := f.stopped(); len(stops) != 1 || stops[0].ModelID != "omlx/b" {
 			t.Errorf("stopped %+v, want omlx/b once its session ended and the grace passed", stops)
+		}
+	})
+	t.Run("queued start keeps the model after its session lapses", func(t *testing.T) {
+		// The client registers, asks for a start and stops heartbeating: its
+		// session lapses after the TTL while the job is still queued or running
+		// (one job at a time can wait behind others longer than the grace). The
+		// job must keep the model from being forgotten, or it starts unseen —
+		// Touch does not bring a forgotten model back — and is never stopped.
+		const grace = time.Minute
+		clk := &fakeClock{t: testNow}
+		f := &fakeLife{snap: serverSnap()} // omlx/b is not running yet
+		d := f.deps(serverCfg())
+		d.Now = clk.now
+		reg := sessionreg.New(time.Minute, clk.now)
+		_ = reg.Register("s", []string{"omlx/b"})
+		reg.End("s") // the client is gone; no live session
+		clk.advance(2 * grace)
+		jobs := newJobs(t, clk)
+		started := make(chan struct{})
+		gate := make(chan struct{})
+		release := sync.OnceFunc(func() { close(gate) })
+		t.Cleanup(release) // never leave the worker blocked, even on a failure
+		jobs.Submit("start", "omlx/b", func(context.Context, func(string)) modelapi.JobResult {
+			close(started)
+			<-gate
+			return modelapi.JobResult{OK: true}
+		})
+		<-started
+		a := &AutoStopper{Deps: d, Sessions: reg, Grace: grace, Jobs: jobs}
+		a.Tick(context.Background())
+		if _, seen := reg.IdleSince("omlx/b"); !seen {
+			t.Fatal("a model with a queued start was forgotten before it ran")
+		}
+		release()
+		drain(t, jobs) // the job finished; the next scan forgets it as usual
+		clk.advance(grace)
+		a.Tick(context.Background())
+		if _, seen := reg.IdleSince("omlx/b"); seen {
+			t.Fatal("after its job finished the idle model was still remembered")
 		}
 	})
 	t.Run("untrusted probe does not forget an absent model", func(t *testing.T) {

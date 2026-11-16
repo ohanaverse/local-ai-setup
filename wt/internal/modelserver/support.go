@@ -12,6 +12,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
 // candidates answers GET /control/v1/candidates?open_only=BOOL&provider=a,b&
@@ -20,7 +21,8 @@ import (
 func (s *Server) candidates(w http.ResponseWriter, r *http.Request) {
 	qv := r.URL.Query()
 	q := candidates.Query{Near: qv.Get("near")}
-	if v := qv.Get("open_only"); v != "" {
+	if qv.Has("open_only") {
+		v := qv.Get("open_only")
 		open, err := strconv.ParseBool(v)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, modelapi.CodeBadRequest, fmt.Sprintf("open_only %q is not a boolean", v))
@@ -47,16 +49,26 @@ func (s *Server) candidates(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := modelapi.CandidateList{StaleSources: []string{}, Candidates: []modelapi.Candidate{}}
-	if s.d.TiersFreshness != nil {
-		if f, ok := s.d.TiersFreshness(); ok {
+	// One read of the tiers file per request (the entries Rank ranks by come
+	// from the same read as the freshness; a second parse would re-read a file
+	// that may have changed and buy nothing — wt/CLAUDE.md's "read each input
+	// file once per command").
+	var ix tiers.Index
+	if s.d.TiersFile != nil {
+		var f tiers.Freshness
+		var ok bool
+		ix, f, ok = s.d.TiersFile()
+		if ok {
 			out.TiersGenerated = f.GeneratedAt.UTC().Format(time.RFC3339)
 			if len(f.StaleSources) > 0 {
 				out.StaleSources = f.StaleSources
 			}
 		}
+	} else if s.d.Rank != nil {
+		ix = s.d.Tiers()
 	}
 	if s.d.Rank != nil {
-		for _, c := range s.d.Rank(s.d.Config(), s.d.Tiers(), q) {
+		for _, c := range s.d.Rank(s.d.Config(), ix, q) {
 			out.Candidates = append(out.Candidates, wireCandidate(c))
 		}
 	}
@@ -101,13 +113,13 @@ func (s *Server) spend(w http.ResponseWriter, r *http.Request) {
 		bounds[i] = t
 	}
 	if s.d.Spend == nil {
-		writeError(w, http.StatusServiceUnavailable, modelapi.CodeSpendNotConfigured, "this server cannot read spend")
+		writeError(w, http.StatusServiceUnavailable, modelapi.CodeSpendNotConfigured, modelapi.MsgSpendNotConfigured)
 		return
 	}
 	res, err := s.d.Spend(r.Context(), bounds[0], bounds[1])
 	if err != nil {
 		if errors.Is(err, litellm.ErrNoDatabase) || errors.Is(err, spend.ErrNoConnectionString) {
-			writeError(w, http.StatusServiceUnavailable, modelapi.CodeSpendNotConfigured, "spend is not configured on the model server")
+			writeError(w, http.StatusServiceUnavailable, modelapi.CodeSpendNotConfigured, modelapi.MsgSpendNotConfigured)
 			return
 		}
 		writeError(w, http.StatusServiceUnavailable, modelapi.CodeSpendUnavailable, fmt.Sprintf("spend unavailable: %v", err))

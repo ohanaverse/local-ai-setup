@@ -234,12 +234,15 @@ restart of the server the registry is empty, so nothing is auto-stopped until
 a client session registers again.
 
 The registry also forgets: a registered model that a trusted probe shows not
-running, that no live client session uses and whose idle clock is at least
-`--idle-grace` old is dropped from it. A model auto-stopped (or stopped any
-other way) and later started by hand on the host, or by `llmbench provider
-isolate`, is then left alone like any model no client session registered. A
-client session registers before it asks for a start, so a model whose start
-is pending still has a live user and is never forgotten before it runs.
+running, that no live client session uses, that has no job queued or running
+and whose idle clock is at least `--idle-grace` old is dropped from it. A
+model auto-stopped (or stopped any other way) and later started by hand on
+the host, or by `llmbench provider isolate`, is then left alone like any
+model no client session registered. A client session registers before it
+asks for a start, and a job is kept however that session then fares: it
+lapses after its TTL while the job may still be waiting, and a model
+forgotten then would start unseen (a forgotten model never comes back) and
+never be auto-stopped.
 
 The stop is an ordinary stop job, so a client session that registers between the
 scan and the stop still blocks it. On an Exclusive provider (a server that holds one

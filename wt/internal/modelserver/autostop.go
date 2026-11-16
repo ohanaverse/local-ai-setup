@@ -69,16 +69,22 @@ func (a *AutoStopper) Tick(ctx context.Context) {
 }
 
 // forgetIdle forgets a seen model a fresh inventory shows not running, when
-// no live session uses it and its idle clock is at least Grace old. A model
-// whose family's probe is not trusted is kept: "not running" may only mean
-// the probe failed. A model with a start pending keeps its live client
-// session (the client registers before it starts), so it is never forgotten
-// before it runs.
+// no live session uses it, no job for it is queued or running and its idle
+// clock is at least Grace old. A model whose family's probe is not trusted
+// is kept: "not running" may only mean the probe failed. A model with a job
+// pending is kept too: the client registers before it asks for a start, but
+// that session lapses after its TTL while the job may still be waiting, and
+// a model forgotten then starts unseen (Touch does not bring a forgotten
+// model back) and is never auto-stopped — the same job check the stop path
+// above makes.
 func (a *AutoStopper) forgetIdle(cfg *config.Config, snap localmodels.Snapshot, id string, now time.Time) {
 	if fam := modelFamily(cfg, id); fam != "" && !lifecycle.ProbeTrusted(snap, fam) {
 		return
 	}
 	if len(a.Sessions.Users(id)) > 0 {
+		return
+	}
+	if a.Jobs.Pending(id) {
 		return
 	}
 	if since, ok := a.Sessions.IdleSince(id); !ok || now.Sub(since) < a.Grace {

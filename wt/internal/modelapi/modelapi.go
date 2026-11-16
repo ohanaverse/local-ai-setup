@@ -287,6 +287,10 @@ const (
 	// MsgPathNotServed is the gateway's 404 wording for a path off its
 	// allowlist.
 	MsgPathNotServed = "path is not served by the gateway"
+	// MsgSpendNotConfigured is the spend endpoint's fixed 503 wording when
+	// nothing names the LiteLLM database (or this server cannot read spend):
+	// fixed text, never a wrapped error, which can name host paths.
+	MsgSpendNotConfigured = "spend is not configured on the model server"
 
 	TypeAuthentication = "authentication_error"
 	TypeAPI            = "api_error"

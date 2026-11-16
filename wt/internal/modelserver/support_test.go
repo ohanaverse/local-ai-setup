@@ -20,7 +20,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
-// newSupportTS is a test server whose Rank, TiersFreshness and Spend seams
+// newSupportTS is a test server whose Rank, TiersFile and Spend seams
 // mut sets.
 func newSupportTS(t *testing.T, mut func(*Deps)) (*Server, *httptest.Server) {
 	t.Helper()
@@ -43,8 +43,8 @@ func TestCandidatesMapsRankAndFreshness(t *testing.T) {
 				{ID: "openrouter/c", Provider: "openrouter", Location: "cloud", OutputPerMillion: &price, Flags: []string{"unrated"}},
 			}
 		}
-		d.TiersFreshness = func() (tiers.Freshness, bool) {
-			return tiers.Freshness{GeneratedAt: gen, StaleSources: []string{"lmarena"}}, true
+		d.TiersFile = func() (tiers.Index, tiers.Freshness, bool) {
+			return nil, tiers.Freshness{GeneratedAt: gen, StaleSources: []string{"lmarena"}}, true
 		}
 	})
 	st, b := call(t, ts, "GET", "/control/v1/candidates", "")
@@ -79,7 +79,7 @@ func TestCandidatesMapsRankAndFreshness(t *testing.T) {
 func TestCandidatesWithoutTiersFileOmitsGenerated(t *testing.T) {
 	_, ts := newSupportTS(t, func(d *Deps) {
 		d.Rank = func(*config.Config, tiers.Index, candidates.Query) []candidates.Candidate { return nil }
-		d.TiersFreshness = func() (tiers.Freshness, bool) { return tiers.Freshness{}, false }
+		d.TiersFile = func() (tiers.Index, tiers.Freshness, bool) { return nil, tiers.Freshness{}, false }
 	})
 	_, b := call(t, ts, "GET", "/control/v1/candidates", "")
 	if string(b) != `{"stale_sources":[],"candidates":[]}`+"\n" {
@@ -99,6 +99,20 @@ func TestCandidatesPerProviderNeedsNear(t *testing.T) {
 	wantAPIError(t, st, b, http.StatusBadRequest, modelapi.CodeBadRequest)
 	if st, b = call(t, ts, "GET", "/control/v1/candidates?near=omlx/a&per_provider=2", ""); st != 200 {
 		t.Errorf("near with per_provider = %d %s", st, b)
+	}
+}
+
+// TestCandidatesOpenOnlyIsABoolean pins that open_only is validated when it
+// is present at all: an empty value (open_only=) is not the documented BOOL
+// and is a 400 like any other bad value, not silently treated as absent (a
+// client whose flag rendered empty would silently get every candidate).
+func TestCandidatesOpenOnlyIsABoolean(t *testing.T) {
+	_, ts := newSupportTS(t, func(d *Deps) {
+		d.Rank = func(*config.Config, tiers.Index, candidates.Query) []candidates.Candidate { return nil }
+	})
+	for _, v := range []string{"", "maybe"} {
+		st, b := call(t, ts, "GET", "/control/v1/candidates?open_only="+v, "")
+		wantAPIError(t, st, b, http.StatusBadRequest, modelapi.CodeBadRequest)
 	}
 }
 
@@ -211,5 +225,13 @@ func TestSpendNotConfiguredVersusUnavailable(t *testing.T) {
 		if c.code == modelapi.CodeSpendNotConfigured && e.Error.Message != "spend is not configured on the model server" {
 			t.Errorf("%s: message = %q, want the fixed text", c.name, e.Error.Message)
 		}
+	}
+	// A server with no spend seam answers the same fixed text under the same
+	// code — one wording for spend_not_configured, never wording of its own.
+	_, ts := newSupportTS(t, func(d *Deps) { d.Spend = nil })
+	st, b := call(t, ts, "GET", "/control/v1/spend?start=2026-11-01T00:00:00Z&end=2026-11-15T00:00:00Z", "")
+	e := wantAPIError(t, st, b, http.StatusServiceUnavailable, modelapi.CodeSpendNotConfigured)
+	if e.Error.Message != "spend is not configured on the model server" {
+		t.Errorf("no spend seam: message = %q, want the fixed text", e.Error.Message)
 	}
 }

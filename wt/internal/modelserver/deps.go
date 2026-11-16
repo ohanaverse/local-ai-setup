@@ -53,9 +53,11 @@ type Deps struct {
 	RoutedIDs func(ctx context.Context) (map[string]bool, error)
 	// Rank orders the registry's models for a slot (the candidates endpoint).
 	Rank func(cfg *config.Config, ix tiers.Index, q candidates.Query) []candidates.Candidate
-	// TiersFreshness reports when the tiers file was generated and which of
-	// its sources are stale; false when there is no readable file.
-	TiersFreshness func() (tiers.Freshness, bool)
+	// TiersFile reads the tiers file once, returning its entries and its
+	// freshness (generated time and stale sources); false when there is no
+	// readable file or no generated_at. The candidates endpoint ranks by the
+	// entries from this same read, so the file is read once per request.
+	TiersFile func() (tiers.Index, tiers.Freshness, bool)
 	// Spend reads the LiteLLM spend log for [start, end). The database
 	// address stays inside the real function and never leaves the host.
 	Spend func(ctx context.Context, start, end time.Time) (spend.Result, error)
@@ -115,11 +117,8 @@ func DefaultDeps(cfg *config.Config, reload func() (*config.Config, error), upst
 		Rank: func(cfg *config.Config, ix tiers.Index, q candidates.Query) []candidates.Candidate {
 			return candidates.Rank(cfg.Models, ix, q)
 		},
-		TiersFreshness: func() (tiers.Freshness, bool) {
-			_, f, ok := tiers.LoadWithFreshness()
-			return f, ok
-		},
-		Spend: realQuerySpend,
+		TiersFile: tiers.LoadWithFreshness,
+		Spend:     realQuerySpend,
 	}
 }
 
