@@ -266,7 +266,11 @@ func runStopRemote(ctx context.Context, out io.Writer, ms *modelSession, arg str
 			rest := len(ids) - i - 1
 			msg := fmt.Sprintf("%d of %d stops failed", failed, len(ids))
 			if rest > 0 {
-				msg += fmt.Sprintf("; the %d remaining were not stopped", rest)
+				if rest == 1 {
+					msg += "; 1 was not stopped"
+				} else {
+					msg += fmt.Sprintf("; %d were not stopped", rest)
+				}
 			}
 			return exitcode.New(2, errors.New(msg), false)
 		}

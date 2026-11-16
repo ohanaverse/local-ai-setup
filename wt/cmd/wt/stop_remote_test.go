@@ -245,7 +245,7 @@ func TestStopRemotePickerDetachStopsTheBatch(t *testing.T) {
 	stopSelectIn = func() io.Reader { return strings.NewReader("a\n") }
 	t.Cleanup(func() { stopSelectIn = old })
 	err := runStopRemote(ctx, &bytes.Buffer{}, ms, "", false)
-	if err == nil || exitcode.Of(err) != 2 || err.Error() != "1 of 2 stops failed; the 1 remaining were not stopped" {
+	if err == nil || exitcode.Of(err) != 2 || err.Error() != "1 of 2 stops failed; 1 was not stopped" {
 		t.Fatalf("err = %v (exit %d)", err, exitcode.Of(err))
 	}
 	if n := len(r.f.Stops); n != 1 {
@@ -267,17 +267,50 @@ func TestStopAnswererNamesTheRealTerminalFailure(t *testing.T) {
 
 // TestStopAllStaysOnTheHostPathWithAnEndpoint proves a bare `wt stop --all`
 // with a model server configured acts on this machine (R3): the server is
-// never asked. The app's registry has no provider, so the host path has
-// nothing to stop and touches no real service.
+// never asked. A terminal and a picker answer are stubbed so that a regression
+// of the guard would reach the server's catalog and stop; the app's registry
+// has no provider, so the host path has nothing to stop and touches no real
+// service, and its result is checked.
 func TestStopAllStaysOnTheHostPathWithAnEndpoint(t *testing.T) {
 	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
 	r.a.cfg = &config.Config{}
+	stubStdinTTY(t, true)
+	old := stopSelectIn
+	stopSelectIn = func() io.Reader { return strings.NewReader("1\n") }
+	t.Cleanup(func() { stopSelectIn = old })
 	cmd := stopCmd(r.a)
 	cmd.SetArgs([]string{"--all", "--yes"})
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	captureFile(t, &os.Stdout, func() { _ = cmd.Execute() })
+	var err error
+	captureFile(t, &os.Stdout, func() { err = cmd.Execute() })
+	if err != nil {
+		t.Errorf("host path --all over an empty registry: err = %v, want nil", err)
+	}
 	if n := len(r.f.reqs()); n != 0 {
 		t.Errorf("the model server was asked %d times:\n%s", n, strings.Join(r.f.reqs(), "\n"))
+	}
+	if len(r.f.Stops) != 0 {
+		t.Errorf("stops = %+v, want none", r.f.Stops)
+	}
+}
+
+// TestStopRemotePickerDetachPluralWording proves the detach summary says "N
+// were not stopped" when more than one model was left.
+func TestStopRemotePickerDetachPluralWording(t *testing.T) {
+	r, ms := startRig(t,
+		localRow("omlx/a", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)),
+		localRow("omlx/b", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)),
+		localRow("omlx/c", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.f.Hang, r.f.OnPoll = true, cancel
+	stubStdinTTY(t, true)
+	old := stopSelectIn
+	stopSelectIn = func() io.Reader { return strings.NewReader("a\n") }
+	t.Cleanup(func() { stopSelectIn = old })
+	err := runStopRemote(ctx, &bytes.Buffer{}, ms, "", false)
+	if err == nil || err.Error() != "1 of 3 stops failed; 2 were not stopped" {
+		t.Errorf("err = %v", err)
 	}
 }
