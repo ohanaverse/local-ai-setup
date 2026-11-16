@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"strings"
@@ -12,24 +13,37 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
+// tokenCreateCmd creates a token file, the way out of a missing or empty one.
+const tokenCreateCmd = "umask 077; head -c 32 /dev/urandom | base64 > PATH"
+
+// fsReason is why a file call failed without the operation and path the
+// error repeats ("no such file or directory"); the caller names the path.
+func fsReason(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err.Error()
+	}
+	return err.Error()
+}
+
 // LoadToken reads the shared bearer token from path. The file must not be
 // readable or writable by group or other (mode 0600 or stricter), and must
 // hold a non-empty token; surrounding whitespace is trimmed.
 func LoadToken(path string) (string, error) {
 	st, err := os.Stat(path)
 	if err != nil {
-		return "", fmt.Errorf("token file: %w", err)
+		return "", fmt.Errorf("token file %s: %s (create one with '%s' or pass --token-file PATH)", path, fsReason(err), tokenCreateCmd)
 	}
 	if st.Mode().Perm()&0o077 != 0 {
-		return "", fmt.Errorf("token file %s is accessible by group or other (mode %04o); run: chmod 600 %s", path, st.Mode().Perm(), path)
+		return "", fmt.Errorf("token file %s is accessible by group or other (mode %04o); run 'chmod 600 %s'", path, st.Mode().Perm(), path)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("token file: %w", err)
+		return "", fmt.Errorf("token file %s: %s (check its permissions or pass --token-file PATH)", path, fsReason(err))
 	}
 	tok := strings.TrimSpace(string(raw))
 	if tok == "" {
-		return "", errors.New("token file " + path + " is empty")
+		return "", fmt.Errorf("token file %s is empty (create a token with '%s')", path, tokenCreateCmd)
 	}
 	return tok, nil
 }

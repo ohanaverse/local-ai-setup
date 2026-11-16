@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelserver"
@@ -35,6 +36,8 @@ func rootCmd(mk depsFactory) *cobra.Command {
 }
 
 func main() {
+	// Lines the shared config loader prints name this binary, not wt.
+	config.BinaryName = "wt-model"
 	// SIGINT and SIGTERM end the serve context, which shuts the server down.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

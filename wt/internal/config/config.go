@@ -122,6 +122,11 @@ func (c *Config) SetLitellmForTest(s LitellmState) { c.litellm = s }
 // show a more specific "litellm required" label instead of a generic
 // "unavailable" one, which would also cover unrelated failures like an
 // unknown provider or a direct-mode provider missing auth.base_url.
+// BinaryName is the name the running binary prints before its own notes; the
+// one-time schema-migration line on Load's stderr starts with it. wt is the
+// default; wt-model sets it at startup so its lines name wt-model (N1/M3).
+var BinaryName = "wt"
+
 var ErrLitellmUnconfigured = errors.New("litellm routing required but not configured")
 
 // Route is everything a driver needs to dial one model for one launch,
@@ -916,7 +921,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("schema migration: %w", err)
 	}
 	if changed {
-		fmt.Fprintln(os.Stderr, "wt: migrated config to native-provider alignment (renamed google→agy, rewired opencode to ollama-only)")
+		fmt.Fprintln(os.Stderr, BinaryName+": migrated config to native-provider alignment (renamed google→agy, rewired opencode to ollama-only)")
 	}
 
 	// Join the registry LAST so wt never mutates registry data
@@ -1264,6 +1269,18 @@ func LoadFixHint(err error) string {
 		return hint
 	}
 	return "run `wt config` to repair"
+}
+
+// ConfigError words a config load or validation error for the user:
+// `config error: <err> (<hint>)`, the hint LoadFixHint's (none when it has
+// nothing to add). Every binary that refuses to run on such an error returns
+// this, so wt and wt-model word it the same way (M10); never write the hint
+// out at a call site.
+func ConfigError(err error) error {
+	if hint := LoadFixHint(err); hint != "" {
+		return fmt.Errorf("config error: %w (%s)", err, hint)
+	}
+	return fmt.Errorf("config error: %w", err)
 }
 
 // Valid reports whether l is one of the two locations the registry defines.

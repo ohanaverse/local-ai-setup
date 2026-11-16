@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -132,11 +133,10 @@ func (w routeWaiter) wait(ctx context.Context, id string) error {
 			return ctx.Err()
 		case <-deadline.C:
 			tick.Stop()
-			msg := fmt.Sprintf("%s is not listed by the gateway after %s", id, w.timeout)
 			if err != nil {
-				msg += " (last check: " + err.Error() + ")"
+				return fmt.Errorf("%s is not listed by the gateway after %s (last check: %w); check that the LiteLLM proxy answers, or run 'wt litellm restart'", id, w.timeout, err)
 			}
-			return fmt.Errorf("%s", msg)
+			return fmt.Errorf("%s is not listed by the gateway after %s; check the LiteLLM routes with 'wt litellm list'", id, w.timeout)
 		case <-tick.C:
 		}
 	}
@@ -151,11 +151,16 @@ func (w routeWaiter) listed(ctx context.Context, id string) (bool, error) {
 	req.Header.Set("Authorization", "Bearer "+w.key)
 	resp, err := w.client.Do(req)
 	if err != nil {
+		// url.Error repeats the request URL, an internal endpoint.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		return false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("GET /v1/models: %s", resp.Status)
+		return false, fmt.Errorf("the gateway answered %s", resp.Status)
 	}
 	var body struct {
 		Data []struct {
@@ -163,7 +168,7 @@ func (w routeWaiter) listed(ctx context.Context, id string) (bool, error) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return false, fmt.Errorf("GET /v1/models: %w", err)
+		return false, fmt.Errorf("the gateway model list could not be read: %w", err)
 	}
 	for _, m := range body.Data {
 		if m.ID == id {

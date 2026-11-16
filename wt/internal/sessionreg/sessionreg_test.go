@@ -32,8 +32,12 @@ func TestSessionCountsOncePerModel(t *testing.T) {
 	if got["a"] != 2 || got["b"] != 1 || got["c"] != 0 {
 		t.Fatalf("counts = %v, want a:2 b:1 c:0", got)
 	}
-	if err := r.Register("", nil); err == nil {
+	err := r.Register("", nil)
+	if err == nil {
 		t.Fatal("empty id must be an error")
+	}
+	if want := "the client session id is empty"; err.Error() != want {
+		t.Fatalf("empty id error = %q, want %q (no package label, N7 qualifier)", err, want)
 	}
 }
 

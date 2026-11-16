@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -256,5 +257,31 @@ func TestStartupRefusalReportsOnePrefix(t *testing.T) {
 	}
 	if want := "wt-model: " + err.Error() + "\n"; buf.String() != want || strings.Count(buf.String(), "wt-model:") != 1 {
 		t.Errorf("printed %q, want %q with one prefix", buf.String(), want)
+	}
+}
+
+// TestServeConfigFailureIsWordedLikeWt pins M10: a config that does not load
+// reads `config error: <err> (<hint>)`, the hint config.LoadFixHint's.
+func TestServeConfigFailureIsWordedLikeWt(t *testing.T) {
+	seedConfig(t, true)
+	cfgPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt", "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("this is = = not toml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := run(t, "serve", "--listen", "127.0.0.1:0", "--token-file", writeToken(t, 0o600))
+	if err == nil {
+		t.Fatal("a broken config started the server")
+	}
+	if !strings.HasPrefix(err.Error(), "config error: ") || !strings.HasSuffix(err.Error(), "("+config.LoadFixHint(errors.New("x"))+")") {
+		t.Fatalf("err = %q, want config error: <err> (<hint>)", err)
+	}
+}
+
+// TestServeRequiredFlagsAreNamedWithDashes pins that the missing-flag error
+// names the flags as typed, with their placeholders.
+func TestServeRequiredFlagsAreNamedWithDashes(t *testing.T) {
+	_, err := run(t, "serve")
+	if err == nil || !strings.Contains(err.Error(), "--listen HOST:PORT") || !strings.Contains(err.Error(), "--token-file PATH") {
+		t.Fatalf("err = %v, want one naming --listen HOST:PORT and --token-file PATH", err)
 	}
 }

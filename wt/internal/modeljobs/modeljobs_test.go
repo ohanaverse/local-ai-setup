@@ -2,6 +2,7 @@ package modeljobs
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -309,5 +310,60 @@ func TestCancelAfterCompletionKeepsSuccess(t *testing.T) {
 	st, _ := m.Get(id)
 	if st.State != modelapi.JobSucceeded || st.Result == nil || !st.Result.OK {
 		t.Fatalf("state = %q result = %+v, want succeeded OK", st.State, st.Result)
+	}
+}
+
+// TestCancelBeforeTheWorkRunsSaysNothingWasDone pins M7: a job cancelled while
+// still queued, or submitted after Shutdown, never ran, so its message says
+// what is still true; a running job cancelled without an error of its own
+// does not claim that.
+func TestCancelBeforeTheWorkRunsSaysNothingWasDone(t *testing.T) {
+	m := NewManager(fixedNow)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	m.Submit("start", "a", func(ctx context.Context, _ func(string)) modelapi.JobResult {
+		close(started)
+		<-release
+		return modelapi.JobResult{OK: true}
+	})
+	<-started
+	queued := m.Submit("stop", "b", func(context.Context, func(string)) modelapi.JobResult { return modelapi.JobResult{OK: true} })
+	if !m.Cancel(queued) {
+		t.Fatal("Cancel(queued) = false")
+	}
+	st, _ := m.Get(queued)
+	if st.Result == nil || st.Result.Error == nil || st.Result.Error.Message != "cancelled — nothing was stopped" {
+		t.Fatalf("queued stop result = %+v, want the nothing-was-stopped message", st.Result)
+	}
+	close(release)
+	if err := m.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	late := m.Submit("start", "c", func(context.Context, func(string)) modelapi.JobResult { return modelapi.JobResult{OK: true} })
+	st, _ = m.Get(late)
+	if st.Result == nil || st.Result.Error == nil || st.Result.Error.Message != "cancelled — nothing was started" {
+		t.Fatalf("post-shutdown start result = %+v, want the nothing-was-started message", st.Result)
+	}
+}
+
+// TestCancelAfterTheWorkStartedDoesNotClaimNothingChanged pins that the
+// distinction survives: a running job cancelled with no error of its own says
+// the work had started.
+func TestCancelAfterTheWorkStartedDoesNotClaimNothingChanged(t *testing.T) {
+	m := NewManager(fixedNow)
+	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
+	started := make(chan struct{})
+	id := m.Submit("stop", "m", func(ctx context.Context, _ func(string)) modelapi.JobResult {
+		close(started)
+		<-ctx.Done()
+		return modelapi.JobResult{}
+	})
+	<-started
+	m.Cancel(id)
+	waitFor(t, "cancelled", func() bool { return stateOf(m, id) == modelapi.JobCancelled })
+	st, _ := m.Get(id)
+	msg := st.Result.Error.Message
+	if !strings.Contains(msg, "while running") || strings.Contains(msg, "nothing was") {
+		t.Fatalf("message = %q, want it to say the work had started", msg)
 	}
 }

@@ -60,9 +60,24 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func cancelledResult() *modelapi.JobResult {
-	return &modelapi.JobResult{Error: &modelapi.Problem{Code: modelapi.CodeCancelled, Message: "cancelled"}}
+// cancelledResult is the result of a job cancelled before its work began
+// (queued, or submitted after Shutdown): nothing ran, so it says what is
+// still true (M7). A cancel that arrives while the work is running is
+// cancelledRunning instead, which does not claim that.
+func cancelledResult(kind string) *modelapi.JobResult {
+	msg := "cancelled — nothing was changed"
+	switch kind {
+	case "start":
+		msg = "cancelled — nothing was started"
+	case "stop":
+		msg = "cancelled — nothing was stopped"
+	}
+	return &modelapi.JobResult{Error: &modelapi.Problem{Code: modelapi.CodeCancelled, Message: msg}}
 }
+
+// cancelledRunning is the message of a job cancelled after its work began and
+// that returned no error of its own: part of the work may be done.
+const cancelledRunning = "cancelled while running — the work may be partly done; check the model's state"
 
 // Submit queues a job and returns its id at once. After Shutdown the job is
 // recorded as cancelled and never runs.
@@ -75,7 +90,7 @@ func (m *Manager) Submit(kind, model string, run RunFunc) string {
 	}}
 	m.jobs[j.status.ID] = j
 	if m.closed {
-		m.finishLocked(j, modelapi.JobCancelled, cancelledResult())
+		m.finishLocked(j, modelapi.JobCancelled, cancelledResult(j.status.Kind))
 		return j.status.ID
 	}
 	m.queue = append(m.queue, j)
@@ -120,7 +135,7 @@ func (m *Manager) Cancel(id string) bool {
 				break
 			}
 		}
-		m.finishLocked(j, modelapi.JobCancelled, cancelledResult())
+		m.finishLocked(j, modelapi.JobCancelled, cancelledResult(j.status.Kind))
 		return true
 	case modelapi.JobRunning:
 		j.cancelled = true
@@ -152,7 +167,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	m.closed = true
 	for _, q := range m.queue {
-		m.finishLocked(q, modelapi.JobCancelled, cancelledResult())
+		m.finishLocked(q, modelapi.JobCancelled, cancelledResult(q.status.Kind))
 	}
 	m.queue = nil
 	m.cond.Broadcast()
@@ -216,7 +231,7 @@ func (m *Manager) worker() {
 			m.finishLocked(j, modelapi.JobSucceeded, &res)
 		case j.cancelled:
 			if res.Error == nil {
-				res.Error = cancelledResult().Error
+				res.Error = &modelapi.Problem{Code: modelapi.CodeCancelled, Message: cancelledRunning}
 			}
 			m.finishLocked(j, modelapi.JobCancelled, &res)
 		default:

@@ -47,7 +47,7 @@
   },
   "problem_in_use": {
     "code": "in_use",
-    "message": "omlx/qwen3.8-35b is in use by 2 live session(s); confirm to stop it anyway",
+    "message": "omlx/qwen3.8-35b is in use by 2 live client session(s); confirm to stop it anyway",
     "sessions": ["sess-1", "sess-2"]
   },
   "error_unauthorized": {"error": {"message": "missing or wrong bearer token", "code": "unauthorized"}},

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
@@ -62,10 +63,10 @@ type serverOption func(*Server)
 // host's upstream key, so neither is ever open.
 func NewServer(o Options, d Deps, opts ...serverOption) (*Server, error) {
 	if o.Token == "" {
-		return nil, errors.New("wt-model: a token is required: pass --token-file PATH (create one with `umask 077; head -c 32 /dev/urandom | base64 > PATH`)")
+		return nil, errors.New("a token is required (create one with +tokenCreateCmd+ and pass --token-file PATH)")
 	}
 	if o.IdleGrace <= 0 {
-		return nil, fmt.Errorf("wt-model: the idle grace must be greater than zero, got %s", o.IdleGrace)
+		return nil, fmt.Errorf("the idle grace must be greater than zero, got %s", o.IdleGrace)
 	}
 	s := &Server{o: o, d: d, autoStopEvery: autoStopEvery}
 	s.sessions = sessionreg.New(sessionTTL, d.Now)
@@ -118,7 +119,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, modelapi.CodeBadRequest, "invalid request body: "+err.Error())
+		writeError(w, http.StatusBadRequest, modelapi.CodeBadRequest, "the request body is not valid JSON")
 		return false
 	}
 	var extra json.RawMessage
@@ -218,7 +219,7 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.sessions.Heartbeat(r.PathValue("id"), req.Models) {
-		writeError(w, http.StatusGone, modelapi.CodeUnknownSession, "session is unknown or has lapsed; register again")
+		writeError(w, http.StatusGone, modelapi.CodeUnknownSession, "the client session is unknown or has lapsed; register again")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -236,7 +237,7 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Serve(ctx context.Context, announce func(addr string)) error {
 	ln, err := net.Listen("tcp", s.o.Listen)
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot listen on %s: %s (pick another with --listen HOST:PORT)", s.o.Listen, listenReason(err))
 	}
 	srv := &http.Server{Handler: s.handler, ReadHeaderTimeout: 10 * time.Second}
 	if announce != nil {
@@ -269,6 +270,25 @@ func (s *Server) Serve(ctx context.Context, announce func(addr string)) error {
 		return serveErr
 	}
 	return nil
+}
+
+// listenReason is why net.Listen failed, without its "listen tcp ADDR:" lead
+// and "bind:" syscall label ("address already in use", "missing port in
+// address"): the caller names the address itself.
+func listenReason(err error) string {
+	var oe *net.OpError
+	if !errors.As(err, &oe) || oe.Err == nil {
+		return err.Error()
+	}
+	var se *os.SyscallError
+	if errors.As(oe.Err, &se) {
+		return se.Err.Error()
+	}
+	var ae *net.AddrError
+	if errors.As(oe.Err, &ae) {
+		return ae.Err
+	}
+	return oe.Err.Error()
 }
 
 // statusProbe records the status and Allow header a handler would write, and

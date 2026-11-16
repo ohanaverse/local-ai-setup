@@ -48,7 +48,7 @@ func (r *Registry) live(s *session, at time.Time) bool {
 // Empty and duplicate model ids are dropped.
 func (r *Registry) Register(id string, models []string) error {
 	if id == "" {
-		return errors.New("sessionreg: empty session id")
+		return errors.New("the client session id is empty")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

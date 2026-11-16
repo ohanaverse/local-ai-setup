@@ -131,5 +131,5 @@ func inUseMessage(en localmodels.Entry, n int) string {
 	if lifecycle.TenancyOf(en.ProviderID) == lifecycle.Exclusive {
 		what = fmt.Sprintf("%s (the %s server stops as a whole)", en.ModelID, localmodels.Family(en.ProviderID))
 	}
-	return fmt.Sprintf("%s is in use by %d live session(s); confirm to stop it anyway", what, n)
+	return fmt.Sprintf("%s is in use by %d live client session(s); confirm to stop it anyway", what, n)
 }

@@ -31,7 +31,7 @@ type depsFactory func(cfg *config.Config, reload func() (*config.Config, error),
 func loadServeConfig() (*config.Config, *url.URL, string, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", config.ConfigError(err)
 	}
 	base, key := cfg.LitellmBaseURL(), cfg.LitellmAPIKey()
 	if base == "" || key == "" {
@@ -71,6 +71,9 @@ Exit codes:
 		Example: `  wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/wt-model/token`,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if listen == "" || tokenFile == "" {
+				return errors.New("--listen and --token-file are required: wt-model serve --listen HOST:PORT --token-file PATH")
+			}
 			if idle <= 0 {
 				return fmt.Errorf("--idle-grace must be greater than zero, got %s", idle)
 			}
@@ -97,7 +100,5 @@ Exit codes:
 	cmd.Flags().StringVar(&listen, "listen", "", "address to listen on, host:port")
 	cmd.Flags().StringVar(&tokenFile, "token-file", "", "file holding the shared bearer token (mode 0600); required on every address")
 	cmd.Flags().DurationVar(&idle, "idle-grace", defaultIdleGrace, "how long an unused model survives before auto-stop (must be > 0)")
-	_ = cmd.MarkFlagRequired("listen")
-	_ = cmd.MarkFlagRequired("token-file")
 	return cmd
 }

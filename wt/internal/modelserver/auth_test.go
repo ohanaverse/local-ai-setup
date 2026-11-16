@@ -47,3 +47,14 @@ func TestLoadTokenRejectsEmptyAndMissing(t *testing.T) {
 		t.Error("missing file: want an error")
 	}
 }
+
+// TestLoadTokenMissingNamesPathReasonAndWayOut pins M6 for a token file that
+// cannot be read: the path, the plain reason, and the way out last.
+func TestLoadTokenMissingNamesPathReasonAndWayOut(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "none")
+	_, err := LoadToken(p)
+	want := "token file " + p + ": no such file or directory (create one with 'umask 077; head -c 32 /dev/urandom | base64 > PATH' or pass --token-file PATH)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}

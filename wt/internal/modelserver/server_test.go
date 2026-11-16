@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -624,5 +625,58 @@ func TestServerAnswersMatchErrorSamples(t *testing.T) {
 	got = wantAPIError(t, st, b, http.StatusNotFound, doc.UnknownModel.Error.Code)
 	if got.Error.Message == "" {
 		t.Error("unknown model answered an empty message")
+	}
+}
+
+// TestBadJSONBodyDoesNotEchoTheDecoder pins that a body that is not JSON gets
+// one short fixed message, never the decoder's raw error text (J-rules, M6).
+func TestBadJSONBodyDoesNotEchoTheDecoder(t *testing.T) {
+	_, ts := newTestServer(t, &fakeLife{snap: serverSnap()}, nil)
+	st, b := call(t, ts, "POST", "/control/v1/start", `{"model": oops`)
+	e := wantAPIError(t, st, b, http.StatusBadRequest, modelapi.CodeBadRequest)
+	if e.Error.Message != "the request body is not valid JSON" {
+		t.Errorf("message = %q, want the fixed wording", e.Error.Message)
+	}
+}
+
+// TestSessionMessagesSayClientSession pins N7 on the API's own text.
+func TestSessionMessagesSayClientSession(t *testing.T) {
+	_, ts := newTestServer(t, &fakeLife{snap: serverSnap()}, nil)
+	st, b := call(t, ts, "POST", "/control/v1/sessions/none/heartbeat", "")
+	e := wantAPIError(t, st, b, http.StatusGone, modelapi.CodeUnknownSession)
+	if !strings.Contains(e.Error.Message, "client session") {
+		t.Errorf("message = %q, want it to say client session", e.Error.Message)
+	}
+	st, b = call(t, ts, "POST", "/control/v1/sessions", `{"id":""}`)
+	e = wantAPIError(t, st, b, http.StatusBadRequest, modelapi.CodeBadRequest)
+	if e.Error.Message != "the client session id is empty" {
+		t.Errorf("message = %q, want it to stand alone, with no package label", e.Error.Message)
+	}
+}
+
+// TestServeListenFailureNamesAddressAndFlag pins that a listen failure keeps
+// the reason, names the address and ends on the way out (--listen).
+func TestServeListenFailureNamesAddressAndFlag(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	for _, tc := range []struct{ addr, reason string }{
+		{busy.Addr().String(), "address already in use"},
+		{"not-an-address", "missing port in address"},
+	} {
+		s, err := NewServer(Options{Listen: tc.addr, Token: testToken, IdleGrace: time.Hour}, (&fakeLife{}).deps(serverCfg()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = s.Serve(t.Context(), nil)
+		if err == nil {
+			t.Fatalf("%s: Serve returned nil", tc.addr)
+		}
+		want := "cannot listen on " + tc.addr + ": " + tc.reason + " (pick another with --listen HOST:PORT)"
+		if err.Error() != want {
+			t.Errorf("%s: err = %q, want %q", tc.addr, err, want)
+		}
 	}
 }
