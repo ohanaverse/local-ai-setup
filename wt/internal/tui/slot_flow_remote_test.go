@@ -2,12 +2,14 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
@@ -203,6 +205,72 @@ func readRemoteSlotParity(t *testing.T) []remoteSlotScenario {
 		t.Fatalf("%s: no scenarios", path)
 	}
 	return out
+}
+
+// TestSlotFlowRemotePinRefusedWhenTheCatalogHoldsTheProfilePrefix pins the
+// picker's -M profile/<name> pin as the CLI's: a profile the file holds for
+// the agent, with a catalog that holds the "profile/" prefix (so no profile
+// row exists), goes back to the agent screen with the CLI's refusal and its
+// way out, and is never sent to the server's resolve as a model id.
+func TestSlotFlowRemotePinRefusedWhenTheCatalogHoldsTheProfilePrefix(t *testing.T) {
+	cat := slotRemoteCatalog()
+	cat.Rows = append(cat.Rows, wireRow("profile/clash", "clash", nil))
+	f := &fakeModels{cat: cat}
+	m := remoteModel(t, f, 120, 30)
+	store := profiles.SlotStore{Profiles: []profiles.SlotProfile{{Name: "mix", Agent: "claude", Default: "sonnet", Slots: map[string]string{"sonnet": "openrouter/a"}}}}
+	m.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
+	m.selectedPath = t.TempDir()
+	m.pinnedModel = "profile/mix"
+	m, cmd := m.enterModelPhaseForAgent()
+	m = settle(t, m, cmd)
+	if m.phase != phaseAgent || m.pinnedModel != "" {
+		t.Fatalf("phase %v, pin %q, status %q: want the agent screen and the pin dropped", m.phase, m.pinnedModel, m.status)
+	}
+	for _, want := range []string{"the model server's catalog has a provider with id \"profile\"", "slot profiles are unavailable; rename that provider or model"} {
+		if !strings.Contains(m.status, want) {
+			t.Errorf("status = %q, want %q", m.status, want)
+		}
+	}
+	if len(f.resolved) != 0 {
+		t.Errorf("resolve called for %v, want none", f.resolved)
+	}
+}
+
+// TestSlotAbortOnTheAPIPathDropsTheProfileModels pins that a slot applier
+// that failed after the terminal was released (slotAbortMsg) takes the
+// profile's models out of the client session on the API path, as a failed
+// build does: the launch returns to the picker and nothing will use them. The
+// registry path's abort carries no ids and sends no command beyond the
+// refresh.
+func TestSlotAbortOnTheAPIPathDropsTheProfileModels(t *testing.T) {
+	m, f := slotRemoteTable(t, map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"})
+	m.hold = &clientHold{client: f}
+	m.hold.holdAll(context.Background(), []string{"openrouter/a", "openrouter/b"})
+	next, cmd := updateMsg(m, slotAbortMsg{err: errors.New("no slot-profile applier"), ids: []string{"openrouter/a", "openrouter/b"}})
+	if next.phase != phaseModel || !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("phase %v, status %q, want the picker and the failure", next.phase, next.status)
+	}
+	if cmd == nil {
+		t.Fatal("no command: the profile's models stay in the client session")
+	}
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		if b, ok := c().(tea.BatchMsg); ok {
+			for _, sub := range b {
+				run(sub)
+			}
+		}
+	}
+	run(cmd)
+	h := f.history()
+	for _, id := range []string{"openrouter/a", "openrouter/b"} {
+		if !slices.Contains(h, "remove "+id) {
+			t.Errorf("calls = %v, want %s dropped from the client session", h, id)
+		}
+	}
 }
 
 // TestSlotFlowRemotePinBeginsTheProfileLaunch is carry-forward (a) on the

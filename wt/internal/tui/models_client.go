@@ -83,7 +83,10 @@ type catalogLoadedMsg struct {
 	pricing *modelapi.Pricing
 }
 
-// catalogFailedMsg is a fetch that failed for a reason a retry may heal.
+// catalogFailedMsg is a fetch that failed, whatever the reason: an unreachable
+// server a retry may heal, but also a refused token, an API skew or a schema
+// the client does not know, which F cannot heal (the status line carries the
+// error, which says what to fix).
 type catalogFailedMsg struct {
 	gen int
 	err error
@@ -130,6 +133,14 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 			// or another agent's (the registry path's reason, #412).
 			if reason := catalog.SlotPinReason(nil, r.slots, r.agent.Name, r.pinned, r.tags, r.family); reason != "" {
 				msg.pinErr = reason
+				return msg
+			}
+			// The pin names a profile the file holds for this agent but the
+			// catalog holds the prefix, so no profile row exists: refuse as
+			// the CLI's pin does (slotPinRemote then launchSlotProfileRemote)
+			// instead of sending it to resolve as a model id.
+			if holder := catalog.SlotPrefixHolderWire(cat.Rows); holder != "" && hasUsableSlotProfile(r.slots, r.agent.Name, r.pinned) {
+				msg.pinErr = cleanup.Flatten(catalog.SlotPrefixHeldReason(holder))
 				return msg
 			}
 		}
@@ -207,6 +218,15 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 		}
 		return msg
 	}
+}
+
+// hasUsableSlotProfile reports whether checks hold a Usable profile of agent
+// named by pin ("profile/<name>").
+func hasUsableSlotProfile(checks []profiles.SlotCheck, agent, pin string) bool {
+	name, ok := strings.CutPrefix(pin, profiles.SlotIDPrefix)
+	return ok && slices.ContainsFunc(checks, func(c profiles.SlotCheck) bool {
+		return c.Usable && c.Profile.Agent == agent && c.Profile.Name == name
+	})
 }
 
 // wireProfileRows is the API table's slot-profile rows: one per usable profile

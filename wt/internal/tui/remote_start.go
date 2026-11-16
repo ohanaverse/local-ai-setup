@@ -528,9 +528,10 @@ type launchPrep struct {
 // remotePreparedMsg is a finished prep: the agent's command built against
 // the gateway, or why it could not be.
 type remotePreparedMsg struct {
-	id  int
-	cmd *exec.Cmd
-	err error
+	id      int
+	modelID string // the model the prep held, for a prep that arrives stale
+	cmd     *exec.Cmd
+	err     error
 }
 
 // launchRemote launches it on the gateway, the non-TUI launchFilteredRemote's
@@ -584,8 +585,14 @@ func prepRemoteLaunchCmd(ctx context.Context, in prepInput) tea.Cmd {
 			fmt.Fprintf(clientNotes, "wt: note: %s\n", note)
 		}
 		fail := func(err error) tea.Msg {
-			in.hold.drop(bg, in.model.ID)
-			return remotePreparedMsg{id: in.id, err: err}
+			if ctx.Err() == nil {
+				in.hold.drop(bg, in.model.ID)
+			}
+			// A cancelled prep (esc, ctrl+c) arrives stale: handlePrepared
+			// drops its model, unless a newer launch of the same model is
+			// under way (an esc and an immediate re-Enter), which a drop here
+			// would break.
+			return remotePreparedMsg{id: in.id, modelID: in.model.ID, err: err}
 		}
 		if ctx.Err() != nil {
 			return fail(ctx.Err())
@@ -614,17 +621,18 @@ func prepRemoteLaunchCmd(ctx context.Context, in prepInput) tea.Cmd {
 				fmt.Fprintln(clientNotes, n)
 			}
 		}
-		return remotePreparedMsg{id: in.id, cmd: cmd}
+		return remotePreparedMsg{id: in.id, modelID: in.model.ID, cmd: cmd}
 	}
 }
 
 // handlePrepared applies a finished prep: a failure returns to the picker
 // with the reason (and the start's note ahead of it), a built command goes to
 // the run command. A prep the user left (esc, ctrl+c) or one superseded is
-// dropped.
+// dropped, and a prep left with esc (it may have held the model, or even built
+// its command) takes its model out of the client session, see staleDropCmd.
 func (m model) handlePrepared(msg remotePreparedMsg) (model, tea.Cmd) {
 	if m.prep == nil || msg.id != m.prep.id || m.prep.quitting || m.phase != phaseLaunching {
-		return m, nil
+		return m, m.staleDropCmd(msg)
 	}
 	m.prep.cancel()
 	m.prep = nil
@@ -645,6 +653,22 @@ func (m model) handlePrepared(msg remotePreparedMsg) (model, tea.Cmd) {
 	// A launch that never reached the agent (the profile failed) ends the
 	// client session where the registry path releases its wt session.
 	return m.commitLaunch(runRecordAndWaitWith(msg.cmd, agent, m.launchModel, record, m.gateFor(), func() { h.end(os.Stderr) }))
+}
+
+// staleDropCmd takes a stale prep's model out of the client session: nothing
+// will use it. It does so only when the picker is back at the table with no
+// launch in flight; while a newer launch (the same model after an esc and an
+// immediate re-Enter, or any run) is under way, a drop could break it, so the
+// model stays held until the run's end, as before.
+func (m model) staleDropCmd(msg remotePreparedMsg) tea.Cmd {
+	if msg.modelID == "" || m.hold == nil || m.prep != nil || m.phase != phaseModel {
+		return nil
+	}
+	h, id := m.hold, msg.modelID
+	return func() tea.Msg {
+		h.drop(context.Background(), id)
+		return nil
+	}
 }
 
 // handleLaunchingKey is the launching screen's keyboard: esc goes back to the
@@ -671,7 +695,7 @@ func (m model) handleLaunchingKey(msg tea.KeyMsg) (model, tea.Cmd) {
 // launchingView is the launching screen: what is being prepared, and the
 // keys that act (T5, T6).
 func (m model) launchingView() string {
-	body := tuilayout.WrapText("Launching "+m.prep.modelID+" — registering the client session with the model server…", m.width)
+	body := tuilayout.WrapText("Launching "+m.prep.modelID+" — preparing the launch on the model server…", m.width)
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	return body + "\n\n" + dim.Render("esc back · ctrl+c quit")
 }

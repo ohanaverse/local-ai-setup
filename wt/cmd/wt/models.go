@@ -143,16 +143,17 @@ func remoteExit(err error) error {
 		return err
 	}
 	var (
-		declined *modelclient.DeclinedError
-		job      *modelclient.JobError
-		lost     *modelclient.LostServerError
-		jobLost  *modelclient.JobLostError
-		detached *modelclient.DetachedError
+		declined  *modelclient.DeclinedError
+		job       *modelclient.JobError
+		lost      *modelclient.LostServerError
+		jobLost   *modelclient.JobLostError
+		detached  *modelclient.DetachedError
+		interrupt *interruptedStartError
 	)
 	switch {
 	case errors.As(err, &declined):
 		return exitcode.New(3, err, false)
-	case errors.As(err, &job), errors.As(err, &lost), errors.As(err, &jobLost), errors.As(err, &detached):
+	case errors.As(err, &job), errors.As(err, &lost), errors.As(err, &jobLost), errors.As(err, &detached), errors.As(err, &interrupt):
 		return exitcode.New(2, err, false)
 	}
 	return exitcode.New(1, err, false)

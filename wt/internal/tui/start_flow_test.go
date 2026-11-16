@@ -2284,7 +2284,9 @@ func TestCancelThatLosesTheRaceDoesNotLaunch(t *testing.T) {
 // TestDetachedStartGoroutineNeverBlocks pins that a start the flow stopped
 // waiting for cannot leak its goroutine: after a detach nothing reads the
 // start's channel, so with the channel full the job's final result is
-// dropped instead of blocking forever.
+// dropped instead of blocking forever. The test cancels only once the channel
+// holds all 16 progress messages, so on a goroutine that blocks on a full
+// channel the cancel always finds it blocked and the test fails every time.
 func TestDetachedStartGoroutineNeverBlocks(t *testing.T) {
 	f := &fakeModels{}
 	f.startFn = func(ctx context.Context, _ int, _ modelapi.StartRequest, prog modelclient.Progress) (modelapi.JobStatus, error) {
@@ -2295,8 +2297,13 @@ func TestDetachedStartGoroutineNeverBlocks(t *testing.T) {
 		return detached("j1")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	_, finished := runRemoteStart(ctx, f, &clientHold{client: f}, modelapi.StartRequest{Model: "omlx/qwen3.8"}, 1)
+	ch, finished := runRemoteStart(ctx, f, &clientHold{client: f}, modelapi.StartRequest{Model: "omlx/qwen3.8"}, 1)
 	waitStarts(t, f, 1)
+	for deadline := time.Now().Add(5 * time.Second); len(ch) < 16; runtime.Gosched() {
+		if time.Now().After(deadline) {
+			t.Fatalf("the progress channel holds %d messages, want 16", len(ch))
+		}
+	}
 	cancel()
 	select {
 	case <-finished:

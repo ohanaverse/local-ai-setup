@@ -135,7 +135,9 @@ the sentinel rules, `--json` and the exit codes are the same. What differs:
   unless a client session uses it`; when it was already running,
   `wt: note: smoke used <id>, which was already running; the model server stops
   it after its idle grace unless a client session uses it`. `--json` and a
-  non-terminal stdin print no note.
+  non-terminal stdin print no note. Do not smoke a model a benchmark is about
+  to use, or re-isolate it afterwards: the idle stop can unload it between the
+  smoke and the benchmark's first request.
 
 ## Tool-use permission
 

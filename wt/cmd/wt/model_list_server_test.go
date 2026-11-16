@@ -114,12 +114,15 @@ func TestModelListServerMatchesTheFixture(t *testing.T) {
 
 // TestModelListServerFailureEnvelope proves a failure under --server --json
 // (an unreachable server) prints the error envelope on stdout with exit 1 and
-// a quiet error (J4), and nothing on stderr.
+// a quiet error (J4), and nothing on stderr, wt's own or cobra's.
 func TestModelListServerFailureEnvelope(t *testing.T) {
 	a, f := serverListRig(t)
 	f.Close()
 	errBuf := captureStderr(t)
-	out, _, err := runModelListCmd(t, a, "--server", "--json")
+	out, cobraErr, err := runModelListCmd(t, a, "--server", "--json")
+	if cobraErr != "" {
+		t.Errorf("cobra's stderr = %q, want none (the error is quiet)", cobraErr)
+	}
 	if exitcode.Of(err) != 1 || !exitcode.IsQuiet(err) {
 		t.Fatalf("err = %v (exit %d, quiet %v), want exit 1 quiet", err, exitcode.Of(err), exitcode.IsQuiet(err))
 	}

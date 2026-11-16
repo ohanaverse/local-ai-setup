@@ -1684,6 +1684,76 @@ func TestRemoteLaunchRunsTheAgentOnTheGateway(t *testing.T) {
 	}
 }
 
+// stubGatewayBuild replaces the agent builder with one that builds a no-op
+// command, for the tests that drive a launch prep by hand.
+func stubGatewayBuild(t *testing.T) {
+	t.Helper()
+	old := buildGatewayLaunch
+	buildGatewayLaunch = func(_ string, _ config.Model, path string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
+		cmd := exec.Command("true")
+		cmd.Dir = path
+		return cmd, agents.LaunchInfo{}, nil
+	}
+	t.Cleanup(func() { buildGatewayLaunch = old })
+}
+
+// TestLateEscDropsThePreparedModel pins that a prep finished before the esc
+// reached Update (its result arrives stale) still takes its model out of the
+// client session: nothing will launch it, so the server's idle scan must not
+// be kept from stopping it.
+func TestLateEscDropsThePreparedModel(t *testing.T) {
+	f := &fakeModels{cat: startRowCatalog()}
+	m := remoteTable(t, f)
+	stubGatewayBuild(t)
+	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
+	msg := cmd() // the prep ran to its end, holding the model
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.phase != phaseModel {
+		t.Fatalf("phase = %v, want the table after esc", m.phase)
+	}
+	m, drop := updateMsg(m, msg)
+	if m.committed || drop == nil {
+		t.Fatalf("committed %v, cmd nil %v: want nothing launched and a drop command", m.committed, drop == nil)
+	}
+	if got := drop(); got != nil {
+		t.Errorf("drop command returned %#v, want nothing", got)
+	}
+	if h := f.history(); !slices.Contains(h, "remove openrouter/glm-5.3") {
+		t.Errorf("calls = %v, want the model dropped from the client session", h)
+	}
+}
+
+// TestEscThenReEnterKeepsTheModelForTheNewLaunch pins the ordering guard on
+// the stale drop: the first prep's late result arrives while a second launch
+// of the same model is preparing, and must not take the model out from under
+// it (the new prep's hold was a no-op, the model being held already).
+func TestEscThenReEnterKeepsTheModelForTheNewLaunch(t *testing.T) {
+	f := &fakeModels{cat: startRowCatalog()}
+	m := remoteTable(t, f)
+	stubGatewayBuild(t)
+	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
+	stale := cmd()
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, cmd2 := enterRemote(t, m, "openrouter/glm-5.3")
+	if m.phase != phaseLaunching || cmd2 == nil {
+		t.Fatalf("phase %v, cmd nil %v: want the second launching screen", m.phase, cmd2 == nil)
+	}
+	m, drop := updateMsg(m, stale)
+	if drop != nil {
+		t.Errorf("the stale prep's result returned a command; it must not drop the model under the new launch")
+	}
+	if m.phase != phaseLaunching {
+		t.Fatalf("phase = %v, the stale result must not leave the launching screen", m.phase)
+	}
+	m, run := updateMsg(m, cmd2())
+	if !m.committed || run == nil {
+		t.Errorf("committed %v, cmd nil %v: want the new launch committed", m.committed, run == nil)
+	}
+	if h := f.history(); slices.Contains(h, "remove openrouter/glm-5.3") {
+		t.Errorf("calls = %v, the model was dropped from the new launch", h)
+	}
+}
+
 // TestCtrlCDuringLaunchPrepLeavesWithoutAnAgent pins that the launch's server
 // work (the client session's register, the gateway's model list) runs behind
 // the launching screen, not under a live picker: ctrl+c there quits wt, the

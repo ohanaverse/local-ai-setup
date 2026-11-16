@@ -46,8 +46,11 @@ type fakeModelServer struct {
 	Outcome func(n int, req modelapi.StartRequest) *modelapi.Problem
 	Step    string
 	Hang    bool
-	// OnPoll runs (unlocked) before each job poll is answered.
+	// OnPoll runs (unlocked) before each job poll is answered. OnJobs runs
+	// (unlocked) in the active-jobs read, with the request's context, before it
+	// is answered.
 	OnPoll func()
+	OnJobs func(ctx context.Context)
 	// Registers records the model set of every POST sessions; RegisterStatus
 	// and BeatStatus, when not 0, fail those calls with that status.
 	Registers      [][]string
@@ -200,6 +203,9 @@ func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.apiErr(w, 404, modelapi.CodeUnknownModel, fmt.Sprintf("unknown model %q on the server", id))
 	case "/control/v1/jobs":
+		if f.OnJobs != nil {
+			f.OnJobs(r.Context())
+		}
 		jobs := []modelapi.JobStatus{}
 		if f.ActiveStart != "" {
 			jobs = append(jobs, modelapi.JobStatus{ID: f.ActiveStart, Kind: "start", Model: r.URL.Query().Get("model"), State: modelapi.JobRunning})

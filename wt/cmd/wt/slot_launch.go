@@ -73,7 +73,17 @@ func slotUnknownKeyNote(key string) string {
 // and one line per thing a passing profile's driver warns about in its
 // config_content (slotContentNotes). A Usable profile that fails validation
 // gets no line: its blocked row carries the reason.
-func slotWarnings(a *app) []string {
+func slotWarnings(a *app) []string { return slotWarningLines(a, false) }
+
+// slotWarningsRemote are slotWarnings on a client session's path: the same
+// lines, without the registry's "profile/" holder (slotReservedNote reads the
+// registry, which a client session never does; the catalog's holder blocks the
+// profile launch itself with its own reason).
+func slotWarningsRemote(a *app) []string { return slotWarningLines(a, true) }
+
+// slotWarningLines is the one body of both, so the two cannot drift: remote
+// leaves out only the registry holder line.
+func slotWarningLines(a *app, remote bool) []string {
 	var out []string
 	if a.slotLoadErr != nil {
 		out = append(out, fmt.Sprintf("wt: %v — slot profiles are unavailable", a.slotLoadErr))
@@ -86,8 +96,10 @@ func slotWarnings(a *app) []string {
 			out = append(out, fmt.Sprintf("wt: %s: %v — skipped (see 'wt profile list')", c.Label(), c.Err))
 		}
 	}
-	if note := slotReservedNote(a); note != "" {
-		out = append(out, "wt: "+note)
+	if !remote {
+		if note := slotReservedNote(a); note != "" {
+			out = append(out, "wt: "+note)
+		}
 	}
 	for _, note := range slotContentNotes(a) {
 		out = append(out, "wt: "+note)
@@ -388,35 +400,11 @@ func slotPinRemote(checks []profiles.SlotCheck, agent, pin, tags, family string)
 	return profiles.SlotCheck{}, false, nil
 }
 
-// slotWarningsRemote are slotWarnings on a client session's path: the same
-// lines about slot-profiles.toml, without the registry's "profile/" holder
-// (slotReservedNote reads the registry, which a client session never does;
-// the catalog's holder blocks the profile launch itself with its own
-// reason).
-func slotWarningsRemote(a *app) []string {
-	var out []string
-	if a.slotLoadErr != nil {
-		out = append(out, fmt.Sprintf("wt: %v — slot profiles are unavailable", a.slotLoadErr))
-	}
-	for _, key := range a.slotUnknown {
-		out = append(out, "wt: "+slotUnknownKeyNote(key))
-	}
-	for _, c := range a.slotChecks {
-		if !c.Usable {
-			out = append(out, fmt.Sprintf("wt: %s: %v — skipped (see 'wt profile list')", c.Label(), c.Err))
-		}
-	}
-	for _, note := range slotContentNotes(a) {
-		out = append(out, "wt: "+note)
-	}
-	return out
-}
-
 // slotPrefixHeldReason is the block of a profile launch or show when the
 // model server's catalog holds the "profile/" prefix: no profile row exists
 // then, as on the registry path.
 func slotPrefixHeldReason(holder string) string {
-	return "the model server's catalog has " + holder + " — slot profiles are unavailable"
+	return catalog.SlotPrefixHeldReason(holder)
 }
 
 // launchSlotProfileRemote is the whole launch of one slot profile on a client

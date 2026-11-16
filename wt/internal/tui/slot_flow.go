@@ -95,7 +95,14 @@ type slotSettledMsg struct { // steps 5-7 done after a start
 	res slotResult
 }
 type slotTickMsg struct{ id int }
-type slotAbortMsg struct{ err error } // the applier failed after the terminal was released
+
+// slotAbortMsg: the applier failed after the terminal was released. ids are
+// the profile's slot models the API path's client session holds (nil on the
+// registry path), which nothing will use now and Update takes out of it.
+type slotAbortMsg struct {
+	err error
+	ids []string
+}
 
 func slotTick(id int) tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return slotTickMsg{id: id} })
@@ -418,7 +425,11 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func()
 			// The terminal is released here, so this reaches the user's
 			// stderr; the picker's status repeats it.
 			fmt.Fprintf(os.Stderr, "wt: %v\n", err)
-			return slotAbortMsg{err: err}
+			abort := slotAbortMsg{err: err}
+			if remote {
+				abort.ids = slotModelIDs(row)
+			}
+			return abort
 		}
 		if cleanup == nil {
 			cleanup = func() error { return nil }
@@ -579,7 +590,7 @@ func prepRemoteSlot(ctx context.Context, id int, client ModelClient, hold *clien
 		return remoteSlotPreparedMsg{id: id, err: err}
 	}
 	if holder := catalog.SlotPrefixHolderWire(cat.Rows); holder != "" {
-		return remoteSlotPreparedMsg{id: id, err: errors.New("the model server's catalog has " + holder + " — slot profiles are unavailable")}
+		return remoteSlotPreparedMsg{id: id, err: errors.New(catalog.SlotPrefixHeldReason(holder))}
 	}
 	row := catalog.ResolveSlotProfileWire(catalog.WireByID(cat.Rows), check)
 	if row.Action() == catalog.ActionBlock {

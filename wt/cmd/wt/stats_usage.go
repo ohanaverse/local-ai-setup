@@ -305,7 +305,12 @@ func collectUsageRemote(ctx context.Context, ms *modelSession, window time.Durat
 	families := map[string]string{}
 	if cat, err := ms.client.Catalog(ctx); err == nil {
 		for _, r := range cat.Rows {
-			families[r.ID] = r.Family
+			// Registered rows only, as registryFamilies' registry map: a
+			// discovered model is not a registry id (isSlotProfileID and the
+			// launched-model filter read membership as "registered").
+			if r.Registered {
+				families[r.ID] = r.Family
+			}
 		}
 	}
 	rep := usageReport{SpendStatus: spendOK, Narrowed: f.model != "" || f.family != ""}

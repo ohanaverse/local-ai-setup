@@ -366,6 +366,42 @@ func TestLaunchRemoteRegisterFailureIsANoteAndLaunches(t *testing.T) {
 	if n := strings.Count(errOut, "wt: note:"); n != 1 || !strings.Contains(errOut, "client session") {
 		t.Errorf("stderr has %d notes, want one naming the client session:\n%s", n, errOut)
 	}
+	if strings.Contains(errOut, "may stop") {
+		t.Errorf("a cloud model is never auto-stopped, the note must not say so:\n%s", errOut)
+	}
+}
+
+// TestLaunchRemoteRegisterFailureNoteNamesAutoStopForALocalModel proves the
+// register-failure note warns of the server's idle stop only for a local row,
+// the only kind the auto-stopper touches.
+func TestLaunchRemoteRegisterFailureNoteNamesAutoStopForALocalModel(t *testing.T) {
+	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
+	r.f.RegisterStatus = 500
+	if err := r.launch(t, context.Background(), "", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if got := r.stderr.String(); !strings.Contains(got, "the server may stop omlx/q once it is idle") {
+		t.Errorf("stderr lacks the auto-stop risk for a local model:\n%s", got)
+	}
+}
+
+// TestRegisterRefusedIsThePermanentKinds pins which register errors mean the
+// server will refuse the later DELETE too (so End's failure is not news): the
+// refused token, the API skew and the wrong server, but not a transient one.
+func TestRegisterRefusedIsThePermanentKinds(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{&modelclient.UnauthorizedError{Addr: "a"}, true},
+		{fmt.Errorf("wrapped: %w", &modelclient.SkewError{Addr: "a"}), true},
+		{&modelclient.NotModelServerError{Addr: "a"}, true},
+		{errors.New("register failed"), false},
+	} {
+		if got := registerRefused(tc.err); got != tc.want {
+			t.Errorf("registerRefused(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
 }
 
 // TestLaunchRemoteCtrlCDuringStartExits2EndsSessionAndLaunchesNothing is
@@ -388,6 +424,36 @@ func TestLaunchRemoteCtrlCDuringStartExits2EndsSessionAndLaunchesNothing(t *test
 	}
 	if r.f.count("DELETE /control/v1/sessions/") != 1 {
 		t.Errorf("no DELETE after the detach:\n%s", strings.Join(r.f.reqs(), "\n"))
+	}
+	if len(*r.built) != 0 {
+		t.Errorf("agents built = %d, want none", len(*r.built))
+	}
+}
+
+// TestLaunchRemoteCtrlCBeforeTheJobExistsExits2 pins the Ctrl-C that lands in
+// the start's first call (the active-jobs read), before any job has an id:
+// the same exit 2 and detached wording as a Ctrl-C mid-poll, not a bare
+// `context canceled` exit 1. The session still ends and nothing is built.
+func TestLaunchRemoteCtrlCBeforeTheJobExistsExits2(t *testing.T) {
+	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateStopped, modelapi.ActionStart, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.f.OnJobs = func(rc context.Context) {
+		cancel()
+		<-rc.Done() // answer only once the client has given up on the call
+	}
+	err := r.launch(t, ctx, "omlx/q", "", false)
+	if err == nil || !strings.Contains(err.Error(), "detached") || !strings.HasSuffix(err.Error(), "nothing was launched") {
+		t.Fatalf("err = %v, want the detached text and the still clause", err)
+	}
+	if strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("err = %v, must not be the bare cancel", err)
+	}
+	if exitcode.Of(err) != 2 {
+		t.Errorf("exit = %d, want 2", exitcode.Of(err))
+	}
+	if r.f.count("DELETE /control/v1/sessions/") != 1 {
+		t.Errorf("no DELETE after the interrupt:\n%s", strings.Join(r.f.reqs(), "\n"))
 	}
 	if len(*r.built) != 0 {
 		t.Errorf("agents built = %d, want none", len(*r.built))
@@ -480,9 +546,10 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 	oldTUI, oldGuard := tuiRun, maybeInstallGuard
 	t.Cleanup(func() { tuiRun, maybeInstallGuard = oldTUI, oldGuard })
 	var gotModels tui.ModelClient
+	var gotCfg *config.Config
 	var called bool
-	tuiRun = func(_, _ bool, _ string, _, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, _ *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
-		called, gotModels = true, models
+	tuiRun = func(_, _ bool, _ string, _, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, cfg *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
+		called, gotModels, gotCfg = true, models, cfg
 		return nil
 	}
 	cmd := &cobra.Command{}
@@ -493,6 +560,9 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 	}
 	if !called || gotModels == nil {
 		t.Fatalf("tuiRun called = %v, models nil = %v, want the model-server client", called, gotModels == nil)
+	}
+	if sess, serr := r.a.sessionCfg(); serr != nil || gotCfg == nil || gotCfg != sess || gotCfg == r.a.cfg {
+		t.Errorf("tuiRun cfg = %p, want the session config %p (not a.cfg %p; err %v)", gotCfg, sess, r.a.cfg, serr)
 	}
 	if len(r.f.Reqs) != 0 {
 		t.Errorf("the launch path asked the server %v before the picker opened", r.f.Reqs)

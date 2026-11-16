@@ -19,7 +19,9 @@ import (
 )
 
 // buildGatewayCmd is a test seam over agents.BuildLaunchCmdGateway: tests
-// wrap it to see when, and with what, the agent command is built.
+// wrap it to see when, and with what, the agent command is built. Like
+// remoteBeatInterval below it is a package-variable seam still to migrate onto
+// app (wt/CLAUDE.md): several launch paths and tests share both.
 var buildGatewayCmd = agents.BuildLaunchCmdGateway
 
 // remoteBeatInterval is the client session's heartbeat interval; 0 is
@@ -88,6 +90,9 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 			return remoteExit(modelclient.Still(perr, launchStill))
 		}
 		if isProfile {
+			// launchSlotProfileRemote reads the package-level others and
+			// allowReplace values (its own flags): this function's `others`
+			// and `allowReplace` parameters are ignored for a profile pin.
 			prow := catalog.Row{Model: config.Model{ID: c.Profile.ID()}, Profile: &catalog.ProfileRow{Check: c}}
 			return launchSlotProfileRemote(ctx, a, agent, worktreePath, yolo, prow, extraArgs)
 		}
@@ -119,14 +124,22 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	w := osStderr
 	note := func(s string) { fmt.Fprintf(w, "wt: note: %s\n", s) }
 	sess := ms.client.NewSession([]string{row.ID}, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
+	// registered goes false only for a register no retry can heal (a refused
+	// token, an API skew, another program at the address): then the DELETE is
+	// refused too and End says nothing. A transient failure leaves the
+	// heartbeat running to re-register, so a failed End is still news.
 	registered := true
 	if rerr := sess.Start(ctx); rerr != nil {
-		registered = false
-		note(fmt.Sprintf("the model server did not register this client session (%s) — the launch goes on, but the server may stop %s once it is idle", rerr, row.ID))
+		registered = !registerRefused(rerr)
+		msg := fmt.Sprintf("the model server did not register this client session (%s) — the launch goes on", rerr)
+		if row.Location == "local" {
+			// Only a local model is ever stopped for want of a client.
+			msg += fmt.Sprintf(", but the server may stop %s once it is idle", row.ID)
+		}
+		note(msg)
 	}
 	// end runs once, on a context no cancel reaches (modelclient's End), and
-	// never fails the launch. After a register the server refused, its DELETE
-	// is refused too: that is not news, so it says nothing then.
+	// never fails the launch.
 	end := func() {
 		if eerr := sess.End(context.WithoutCancel(ctx)); eerr != nil && registered {
 			note(fmt.Sprintf("could not end the client session on the model server (%s) — it forgets it within a minute", eerr))
@@ -163,6 +176,15 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 		fmt.Fprintf(osStderr, "wt: note: %v\n", rerr)
 	}
 	return runLaunch(cmd, agent, m, cfg, pp, extraArgs, runTail{Remote: true, End: end, PriceNote: remotePriceNoteFunc(ctx, ms)})
+}
+
+// registerRefused reports a register error no retry can heal: the same three
+// kinds modelclient's Session.Start stops its heartbeat for.
+func registerRefused(err error) bool {
+	var ua *modelclient.UnauthorizedError
+	var sk *modelclient.SkewError
+	var nm *modelclient.NotModelServerError
+	return errors.As(err, &ua) || errors.As(err, &sk) || errors.As(err, &nm)
 }
 
 // gatewayModels is the server's non-native models, which a GatewaySyncer
@@ -203,7 +225,23 @@ func startRemote(ctx context.Context, ms *modelSession, row modelapi.Row, others
 		},
 	}
 	_, err := ms.client.RunStart(sctx, modelapi.StartRequest{Model: row.ID, AllowReplace: allowReplace}, ans, startProgressRemote(osStderr, row.ID))
+	if errors.Is(err, context.Canceled) && sctx.Err() != nil {
+		// Ctrl-C before the job had an id (the active-jobs read or the
+		// submit): RunStart returns the bare cancel, not a *DetachedError.
+		// Same meaning, same exit 2: a submit already on the wire may have
+		// created a job.
+		return &interruptedStartError{Model: row.ID}
+	}
 	return err
+}
+
+// interruptedStartError is a Ctrl-C that landed before the start job's id was
+// known. Like *modelclient.DetachedError it is exit 2 (remoteExit), because a
+// submit already on the wire can have created a job.
+type interruptedStartError struct{ Model string }
+
+func (e *interruptedStartError) Error() string {
+	return fmt.Sprintf("detached — interrupted before the start of %s was confirmed; a job may be running on the model server (see 'wt model list --server')", e.Model)
 }
 
 // startStill adds what is still true to a failed start: nothing was launched.

@@ -318,7 +318,18 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.status = "launch failed: " + msg.err.Error()
 		m.committed = false
 		m.phase = phaseModel
-		return m.refreshTable()
+		next, refresh := m.refreshTable()
+		if h := m.hold; h != nil && len(msg.ids) > 0 {
+			// The API path: nothing will use the profile's models now, so
+			// they leave the client session (a command, never in Update).
+			ids := msg.ids
+			drop := func() tea.Msg {
+				dropAll(h, ids)
+				return nil
+			}
+			return next, tea.Batch(refresh, drop)
+		}
+		return next, refresh
 	case catalogLoadedMsg, catalogFailedMsg:
 		return m.handleCatalogMsg(msg)
 	case jobCancelMsg:

@@ -382,9 +382,11 @@ func wireCandidateJSON(c modelapi.Candidate) candidateJSON {
 // candidateReport is one `profile slots candidates` answer, from the
 // registry or from the model server: the ranked candidates and the tiers
 // file's freshness (generated is nil when there is no tiers file), aged
-// against now.
+// against now. genRaw is the model server's stamp when it is not an RFC 3339
+// time (generated is then nil): it is passed through as it came, with no age.
 type candidateReport struct {
 	generated *time.Time
+	genRaw    string
 	stale     []string
 	cands     []candidateJSON
 	now       time.Time
@@ -398,8 +400,11 @@ func (r candidateReport) write(w io.Writer, asJSON bool) error {
 			Stale       []string        `json:"stale_sources"`
 			Candidates  []candidateJSON `json:"candidates"`
 		}{Stale: []string{}, Candidates: []candidateJSON{}}
-		if r.generated != nil {
-			s := r.generated.UTC().Format(time.RFC3339)
+		if r.generated != nil || r.genRaw != "" {
+			s := r.genRaw
+			if r.generated != nil {
+				s = r.generated.UTC().Format(time.RFC3339)
+			}
 			out.GeneratedAt = &s
 			if len(r.stale) > 0 {
 				out.Stale = r.stale
@@ -410,6 +415,11 @@ func (r candidateReport) write(w io.Writer, asJSON bool) error {
 	}
 	if r.generated != nil {
 		fmt.Fprintf(w, "tiers.toml: %s old\n", ageDays(r.now.Sub(*r.generated)))
+		if len(r.stale) > 0 {
+			fmt.Fprintf(w, "stale sources: %s\n", strings.Join(r.stale, ", "))
+		}
+	} else if r.genRaw != "" {
+		fmt.Fprintf(w, "tiers.toml: generated %s (not a timestamp, so its age is not shown)\n", visibleID(r.genRaw))
 		if len(r.stale) > 0 {
 			fmt.Fprintf(w, "stale sources: %s\n", strings.Join(r.stale, ", "))
 		}
@@ -452,6 +462,8 @@ func remoteCandidates(ctx context.Context, a *app, q modelclient.CandidateQuery)
 	if cl.TiersGenerated != "" {
 		if t, perr := time.Parse(time.RFC3339, cl.TiersGenerated); perr == nil {
 			r.generated = &t
+		} else {
+			r.genRaw = cl.TiersGenerated // shown as it came, with no age
 		}
 	}
 	for _, c := range cl.Candidates {

@@ -46,7 +46,9 @@ func (a *cliAnswerer) Replace(ctx context.Context, p modelapi.Problem) (bool, er
 	}
 	occupants := strings.Join(p.Occupants, ", ")
 	what, question := p.Message, fmt.Sprintf("%s; replace it with %s?", p.Message, a.id)
-	if p.Code == modelapi.CodeOccupied {
+	// An occupied problem with no occupants named has nothing to list: it keeps
+	// the server's own message, as an unreadable provider's does.
+	if p.Code == modelapi.CodeOccupied && len(p.Occupants) > 0 {
 		what = fmt.Sprintf("starting %s would stop %s", a.id, occupants)
 		question = fmt.Sprintf("starting %s will stop %s; continue?", a.id, occupants)
 	}
@@ -59,7 +61,7 @@ func (a *cliAnswerer) Replace(ctx context.Context, p modelapi.Problem) (bool, er
 		return false, err
 	}
 	ok, err := askOnTTY(ctx, f, askYesNo)
-	if ok && err == nil && p.Code == modelapi.CodeOccupied {
+	if ok && err == nil && p.Code == modelapi.CodeOccupied && len(p.Occupants) > 0 {
 		fmt.Fprintf(a.out, "wt: replacing %s\n", occupants)
 	}
 	return ok, err

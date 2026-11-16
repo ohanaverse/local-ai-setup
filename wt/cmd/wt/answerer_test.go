@@ -42,6 +42,8 @@ func TestOccupiedWithoutTerminalExits3NamingReplace(t *testing.T) {
 	}{
 		{"occupied", modelapi.Problem{Code: modelapi.CodeOccupied, Message: "omlx is serving omlx/other", Occupants: []string{"omlx/other", "omlx/third"}},
 			"approval missing: starting omlx/q would stop omlx/other, omlx/third; pass --replace to go ahead (there is no terminal to ask); nothing was started"},
+		{"occupied, none named", modelapi.Problem{Code: modelapi.CodeOccupied, Message: "omlx is busy"},
+			"approval missing: omlx is busy; pass --replace to go ahead (there is no terminal to ask); nothing was started"},
 		{"unknown", modelapi.Problem{Code: modelapi.CodeOccupancyUnknown, Message: "cannot tell whether omlx at http://127.0.0.1:8000 is serving a model"},
 			"approval missing: cannot tell whether omlx at http://127.0.0.1:8000 is serving a model; pass --replace to go ahead (there is no terminal to ask); nothing was started"},
 	} {

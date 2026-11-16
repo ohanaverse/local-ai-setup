@@ -386,6 +386,36 @@ func TestTableRowsFromWire(t *testing.T) {
 	}
 }
 
+// TestInUseDigitComesThroughTheRealFetchCommand pins the in-use digit on the
+// path the user takes: the server's catalog row carries `sessions`, the fetch
+// command builds the table, and the row draws the count as its first cell.
+// TestTableRowsFromWire only checks wireTableRows and renderTable, which would
+// still pass if the fetch dropped the count.
+func TestInUseDigitComesThroughTheRealFetchCommand(t *testing.T) {
+	f := &fakeModels{cat: modelapi.Catalog{Schema: 1, Generated: "2026-11-16T12:00:00Z", Rows: []modelapi.Row{
+		wireRow("openrouter/busy", "busy", func(r *modelapi.Row) { r.Order = 1; r.Sessions = 3 }),
+		wireRow("openrouter/idle", "idle", func(r *modelapi.Row) { r.Order = 2 }),
+	}}}
+	m := remoteModel(t, f, 80, 24)
+	m, cmd := m.enterModelPhaseForAgent()
+	m = settle(t, m, cmd)
+	if m.phase != phaseModel {
+		t.Fatalf("phase = %v, want the table", m.phase)
+	}
+	titles := map[string]string{}
+	for _, it := range m.models.Items() {
+		if mi, ok := it.(*modelItem); ok {
+			titles[mi.model.ID] = ansi.Strip(mi.Title())
+		}
+	}
+	if busy := titles["openrouter/busy"]; !strings.HasPrefix(busy, "3 ") {
+		t.Errorf("busy row = %q, want the in-use digit 3 first", busy)
+	}
+	if idle := titles["openrouter/idle"]; strings.HasPrefix(idle, "3 ") {
+		t.Errorf("idle row = %q, want no in-use digit", idle)
+	}
+}
+
 // TestPinnedModelUsesResolve pins a -M pin through the server's resolve: the
 // model id is what is asked, the table opens on that row, and an unknown model
 // comes back to the agent picker with the server's own message.

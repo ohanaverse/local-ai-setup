@@ -190,6 +190,38 @@ func TestSlotsCandidatesJSONShapeUnchanged(t *testing.T) {
 	}
 }
 
+// TestSlotsCandidatesPassesAnUnparseableTiersStampThrough proves a
+// tiers_generated the client cannot read as a time is not silently dropped:
+// --json carries the server's string as it came, and the table says the stamp
+// is not a timestamp (instead of "not found", which would be false).
+func TestSlotsCandidatesPassesAnUnparseableTiersStampThrough(t *testing.T) {
+	f := newFakeModelServer(t)
+	f.Candidates = modelapi.CandidateList{TiersGenerated: "yesterday-ish", StaleSources: []string{"arena"}}
+	a := pointAtFake(t, f, "")
+	a.cfg = nil
+	out, err := runProfileCmd(t, a, "slots", "candidates", "--json")
+	if err != nil {
+		t.Fatalf("candidates --json: %v\n%s", err, out)
+	}
+	var doc struct {
+		Generated *string  `json:"tiers_generated_at"`
+		Stale     []string `json:"stale_sources"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Generated == nil || *doc.Generated != "yesterday-ish" || !slices.Equal(doc.Stale, []string{"arena"}) {
+		t.Errorf("tiers_generated_at = %v, stale %v, want the raw stamp and the stale sources", doc.Generated, doc.Stale)
+	}
+	table, err := runProfileCmd(t, a, "slots", "candidates")
+	if err != nil {
+		t.Fatalf("candidates: %v", err)
+	}
+	if strings.Contains(table, "not found") || !strings.Contains(table, "tiers.toml: generated yesterday-ish (not a timestamp") {
+		t.Errorf("table =\n%s", table)
+	}
+}
+
 // TestProfileShowPreviewUsesTheGatewayAndAMaskedToken is R4 for `wt profile
 // show -M profile/NAME` on a client session: the slots come from the model
 // server's catalog, and the preview of Claude Code's command names the

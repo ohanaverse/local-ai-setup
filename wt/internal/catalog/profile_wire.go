@@ -160,6 +160,14 @@ func SlotPrefixHolderWire(rows []modelapi.Row) string {
 	return ""
 }
 
+// SlotPrefixHeldReason is what a launch, a show or a pin says when the model
+// server's catalog holds the "profile/" prefix (holder is SlotPrefixHolderWire's
+// answer): no profile row exists, and the way out is on the server. One
+// wording for the command line and the picker.
+func SlotPrefixHeldReason(holder string) string {
+	return "the model server's catalog has " + holder + " — slot profiles are unavailable; rename that provider or model on the model server to free the \"profile/\" prefix, or launch a model with -M <id> instead of a slot profile"
+}
+
 // WireByID indexes catalog rows by id, the map ResolveSlotProfileWire reads.
 func WireByID(rows []modelapi.Row) map[string]modelapi.Row {
 	out := make(map[string]modelapi.Row, len(rows))

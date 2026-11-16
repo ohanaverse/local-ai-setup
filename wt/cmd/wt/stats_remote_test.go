@@ -70,6 +70,20 @@ func TestStatsSpendFromTheServer(t *testing.T) {
 			t.Errorf("requests = %v", f.reqs())
 		}
 	})
+	t.Run("a discovered row's family is not used", func(t *testing.T) {
+		// The registry path maps registered models only; a model the server
+		// merely found on disk falls back to its id's provider prefix.
+		a, f := statsRig(t)
+		disc := localRow("omlx/disc", "running", "launch", nil)
+		disc.Family, disc.Registered = "qwen", false
+		f.Rows = append(f.Rows, disc)
+		f.Spend = modelapi.SpendReport{Rows: []modelapi.SpendRow{{Model: "omlx/disc", Requests: 2, Spend: 0.5}}}
+		seedLaunchesHome(t, "omlx/disc")
+		out, _ := runStatsOK(t, a, "--family", "qwen")
+		if strings.Contains(out, "omlx/disc") {
+			t.Errorf("a discovered row was matched by its family:\n%s", out)
+		}
+	})
 	degraded := map[string]struct {
 		status string
 		setup  func(f *fakeModelServer)
@@ -149,7 +163,7 @@ func TestSpendEndUsesServerTime(t *testing.T) {
 	}
 }
 
-// remoteTailNotice runs the remote launch path's PriceNote for a server
+// remotePriceNote runs the remote launch path's PriceNote for a server
 // whose catalog says pricing and whose clock runs skew from the real one,
 // returning what it printed on stdout.
 func remotePriceNote(t *testing.T, pricing *modelapi.Pricing, skew time.Duration) string {

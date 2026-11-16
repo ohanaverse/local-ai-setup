@@ -93,8 +93,10 @@ func statsCmd(a *app) *cobra.Command {
 				// A report is never a gate: a config.toml that cannot be read
 				// is not an endpoint here (endpointConfigured's safest reading
 				// is for the commands that need the server), so the legacy
-				// spend path and its notes run.
+				// spend path and its notes run. One note says why the spend
+				// did not come from the server.
 				remote = false
+				fmt.Fprintf(cmd.ErrOrStderr(), "wt: note: config.toml could not be read (%s); so wt cannot tell whether a model server is configured; spend is read from LiteLLM's database, not from the model server\n", visibleID(cerr.Error()))
 			}
 			if remote {
 				if ms, openErr = a.openModels(cmd.Context(), "spend is not shown"); openErr == nil {

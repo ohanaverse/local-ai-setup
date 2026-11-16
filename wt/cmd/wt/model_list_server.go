@@ -91,7 +91,7 @@ func runModelListServer(ctx context.Context, out io.Writer, a *app, asJSON bool,
 	}
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
-		cells[i] = []string{visibleID(r.ID), r.State, dash(visibleID(r.Location)), dash(visibleID(r.Tier)), strconv.Itoa(r.Sessions)}
+		cells[i] = []string{visibleID(r.ID), dash(visibleID(r.State)), dash(visibleID(r.Location)), dash(visibleID(r.Tier)), strconv.Itoa(r.Sessions)}
 	}
 	fmt.Fprintln(out, renderPlainTable(modelListServerColumns, cells, width))
 	return nil

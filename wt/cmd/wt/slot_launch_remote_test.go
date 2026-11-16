@@ -205,6 +205,69 @@ func TestSlotLaunchRemoteRefusesAHiddenProfilePin(t *testing.T) {
 	}
 }
 
+// TestSlotLaunchRemoteRefusesAPinWhenTheCatalogHoldsTheProfilePrefix is the
+// pin's half of the check the picker's test makes: the same refusal text with
+// its way out, exit 1, nothing registered, started or built, and the pin never
+// sent to the server as a model id.
+func TestSlotLaunchRemoteRefusesAPinWhenTheCatalogHoldsTheProfilePrefix(t *testing.T) {
+	r, built := slotRig(t, map[string]string{"sonnet": "openrouter/a"})
+	r.f.Rows = append(r.f.Rows, wireRow("profile/clash", modelapi.ActionLaunch, 9))
+	err := r.launch(t, context.Background(), "profile/mix", "", false)
+	for _, want := range []string{"the model server's catalog has a model whose id begins with", "slot profiles are unavailable; rename that provider or model", launchStill} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want %q", err, want)
+		}
+	}
+	if exitcode.Of(err) != 1 {
+		t.Errorf("exit = %d, want 1", exitcode.Of(err))
+	}
+	if len(r.f.Registers) != 0 || len(r.f.Starts) != 0 || len(*built) != 0 || r.f.count("GET /control/v1/resolve") != 0 {
+		t.Errorf("registers %v starts %v built %d requests %v, want nothing", r.f.Registers, r.f.Starts, len(*built), r.f.reqs())
+	}
+}
+
+// TestSlotLaunchRemoteFailedStartEndsTheSessionAndExits2 pins a slot
+// profile's start job that failed: the client session ends (its DELETE goes
+// out), the error is startStill's (the server's message and "nothing was
+// launched"), exit 2, and no command is built.
+func TestSlotLaunchRemoteFailedStartEndsTheSessionAndExits2(t *testing.T) {
+	r, built := slotRig(t, map[string]string{"sonnet": "openrouter/a", "haiku": "omlx/idle"})
+	r.f.Outcome = func(int, modelapi.StartRequest) *modelapi.Problem {
+		return &modelapi.Problem{Code: modelapi.CodeFailed, Message: "omlx/idle did not load: out of memory"}
+	}
+	err := r.launch(t, context.Background(), "profile/mix", "", false)
+	if err == nil || !strings.Contains(err.Error(), "out of memory") || !strings.HasSuffix(err.Error(), "nothing was launched") {
+		t.Fatalf("err = %v, want the server's message and the still clause", err)
+	}
+	if exitcode.Of(err) != 2 {
+		t.Errorf("exit = %d, want 2", exitcode.Of(err))
+	}
+	if r.f.count("DELETE /control/v1/sessions/") != 1 {
+		t.Errorf("the client session was not ended:\n%s", strings.Join(r.f.reqs(), "\n"))
+	}
+	if len(*built) != 0 {
+		t.Errorf("commands built = %d, want none", len(*built))
+	}
+}
+
+// TestSlotLaunchRemoteRegisterFailureIsANoteAndLaunches is the slot launch's
+// counterpart of the single-model one: a register the server refuses is one
+// `wt: note:` line and the profile still launches.
+func TestSlotLaunchRemoteRegisterFailureIsANoteAndLaunches(t *testing.T) {
+	r, built := slotRig(t, map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"})
+	r.f.RegisterStatus = 500
+	if err := r.launch(t, context.Background(), "profile/mix", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if len(*built) != 1 {
+		t.Errorf("commands built = %d, want 1", len(*built))
+	}
+	errOut := r.stderr.String()
+	if n := strings.Count(errOut, "did not register this client session"); n != 1 {
+		t.Errorf("stderr has %d register notes, want one:\n%s", n, errOut)
+	}
+}
+
 // TestSlotFlowParity runs every scenario of the shared table
 // (internal/profiles/testdata/slot_launch_remote_parity.txt) through the
 // -M profile/<name> pin on the model server (launchSlotProfileRemote) and
