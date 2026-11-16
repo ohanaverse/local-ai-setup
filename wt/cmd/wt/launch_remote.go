@@ -40,7 +40,8 @@ const launchStill = "nothing was launched"
 // provider, and starts nothing local. In order:
 //
 //  1. resolve the model on the server (resolveModelRemote: a -M pin through
-//     resolve, else the catalog's one launchable row);
+//     resolve, else the catalog's one launchable row); a -M pin of a slot
+//     profile (slotPinRemote) goes to launchSlotProfileRemote instead;
 //  2. several launchable rows and no pin: on a terminal, errRemoteNeedsPicker
 //     (the caller opens the picker, whose cursor is the rotation's next
 //     row); without one the registry path's pickerNeedsTTYError;
@@ -76,6 +77,20 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	ag, err := cfg.AgentByName(agent)
 	if err != nil {
 		return remoteExit(modelclient.Still(err, launchStill))
+	}
+	// A -M pin of a slot profile is its own launch unit, as on the registry
+	// path: the server knows no profile id, so the pin never goes to its
+	// resolve. A profile hidden by -T/-F or held by another agent is refused
+	// with the registry path's reason.
+	if pinned != "" {
+		c, isProfile, perr := slotPinRemote(a.slotChecks, agent, pinned, tags, family)
+		if perr != nil {
+			return remoteExit(modelclient.Still(perr, launchStill))
+		}
+		if isProfile {
+			prow := catalog.Row{Model: config.Model{ID: c.Profile.ID()}, Profile: &catalog.ProfileRow{Check: c}}
+			return launchSlotProfileRemote(ctx, a, agent, worktreePath, yolo, prow, extraArgs)
+		}
 	}
 	ms, err := a.openModels(ctx, launchStill)
 	if err != nil {

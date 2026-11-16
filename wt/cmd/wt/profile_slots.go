@@ -4,7 +4,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -12,9 +14,12 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
-// maskKey is how wt shows the LiteLLM proxy key: "(unset)" when empty, "***"
+// maskKey is how wt shows a secret (the LiteLLM proxy key, a client
+// session's model-server token): "(unset)" when empty, "***"
 // for a key of four characters or fewer (its last four would be the whole
 // secret), "***" plus the last four otherwise.
 func maskKey(key string) string {
@@ -108,6 +113,14 @@ func showSlotProfile(w io.Writer, a *app, agent, id string) error {
 		return fmt.Errorf("slot profile %q is not defined for agent %q", id, agent)
 	}
 
+	return writeSlotProfileShow(w, agent, id, row, a.cfg.LitellmBaseURL(), maskKey(a.cfg.LitellmAPIKey()))
+}
+
+// writeSlotProfileShow prints `wt profile show -M profile/<name>` for row, on
+// either path: the verdict, a blocked row's reason (and an error), the slots,
+// the driver's config_content notes and the command the agent's slot build
+// returns for origin and key. key is always masked by the caller.
+func writeSlotProfileShow(w io.Writer, agent, id string, row catalog.Row, origin, key string) error {
 	verdict := "launch"
 	switch row.Action() {
 	case catalog.ActionStart:
@@ -145,7 +158,7 @@ func showSlotProfile(w io.Writer, a *app, agent, id string) error {
 		fmt.Fprintf(w, "warning: %s\n", note)
 	}
 
-	sc, err := agents.BuildSlotCommand(p.Launch(), false, a.cfg.LitellmBaseURL(), maskKey(a.cfg.LitellmAPIKey()))
+	sc, err := agents.BuildSlotCommand(p.Launch(), false, origin, key)
 	if err != nil {
 		return err
 	}
@@ -178,4 +191,45 @@ func showSlotProfile(w io.Writer, a *app, agent, id string) error {
 		fmt.Fprintf(w, "  %s\n", settings)
 	}
 	return nil
+}
+
+// showStill is what a `wt profile show` that could not ask the model server
+// says is still true.
+const showStill = "nothing was shown"
+
+// showSlotProfileRemote is showSlotProfile on a client session: the profile
+// is resolved against the model server's catalog (one Catalog read,
+// catalog.ResolveSlotProfileWire), exactly as a launch of it would be, and the
+// preview of the command passes the slot build the gateway origin and the
+// client token masked (maskKey). The [litellm] url and key are host state a
+// client session never reads (R4), so neither can appear in the output. A
+// server that does not answer fails the command (exit 1).
+func showSlotProfileRemote(ctx context.Context, w io.Writer, a *app, agent, id string) error {
+	if a.slotLoadErr != nil {
+		return a.slotLoadErr
+	}
+	name := strings.TrimPrefix(id, profiles.SlotIDPrefix)
+	var check *profiles.SlotCheck
+	for i, c := range a.slotChecks {
+		if c.Usable && c.Profile.Agent == agent && c.Profile.Name == name {
+			check = &a.slotChecks[i]
+			break
+		}
+	}
+	if check == nil {
+		return fmt.Errorf("slot profile %q is not defined for agent %q", id, agent)
+	}
+	ms, err := a.openModels(ctx, showStill)
+	if err != nil {
+		return remoteExit(err) // openModels' errors carry the still clause
+	}
+	cat, err := ms.client.Catalog(ctx)
+	if err != nil {
+		return remoteExit(modelclient.Still(err, showStill))
+	}
+	if holder := catalog.SlotPrefixHolderWire(cat.Rows); holder != "" {
+		return errors.New(slotPrefixHeldReason(holder))
+	}
+	row := catalog.ResolveSlotProfileWire(catalog.WireByID(cat.Rows), *check)
+	return writeSlotProfileShow(w, agent, id, row, strings.TrimRight(ms.ep.Origin(), "/"), maskKey(ms.ep.Token))
 }

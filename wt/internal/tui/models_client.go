@@ -17,6 +17,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
@@ -99,6 +100,9 @@ type catalogRequest struct {
 	family  string
 	pinned  string
 	appName string
+	// slots are the statically validated slot profiles; the agent's usable
+	// ones become profile rows resolved against the catalog.
+	slots []profiles.SlotCheck
 }
 
 // fetchCatalogCmd asks the server for the catalog (and, for a pin, the pinned
@@ -119,7 +123,17 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 		if len(eligible) == 0 {
 			return msg
 		}
-		if r.pinned != "" {
+		profileRows := wireProfileRows(cat.Rows, r.slots, r.agent.Name, r.tags, r.family)
+		pinnedProfile := r.pinned != "" && slices.ContainsFunc(profileRows, func(pr catalog.Row) bool { return pr.Model.ID == r.pinned })
+		if r.pinned != "" && !pinnedProfile && strings.HasPrefix(r.pinned, profiles.SlotIDPrefix) {
+			// A profile the file holds says why it has no row: hidden by -T/-F,
+			// or another agent's (the registry path's reason, #412).
+			if reason := catalog.SlotPinReason(nil, r.slots, r.agent.Name, r.pinned, r.tags, r.family); reason != "" {
+				msg.pinErr = reason
+				return msg
+			}
+		}
+		if r.pinned != "" && !pinnedProfile {
 			row, err := r.client.Resolve(ctx, r.pinned)
 			var unknown *modelclient.UnknownModelError
 			switch {
@@ -152,6 +166,9 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 			msg.wire[e.ID] = cleanWireRow(e)
 		}
 		rows := wireTableRows(eligible, at)
+		for _, pr := range profileRows {
+			rows = append(rows, tableRow{Row: pr, at: at, slotTiers: wireSlotTiers(pr, cat.Rows)})
+		}
 		if store := newUsageStore(); store != nil {
 			ids := make([]string, len(rows))
 			for i, tr := range rows {
@@ -165,7 +182,9 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 		sortRows(rows)
 		refs := make(map[string]int, len(rows))
 		for _, tr := range rows {
-			refs[tr.Model.ID] = tr.Wire.Sessions
+			if tr.Wire != nil {
+				refs[tr.Model.ID] = tr.Wire.Sessions
+			}
 		}
 		rot := rotation.New()
 		lastID, _ := rot.LastPicked()
@@ -188,6 +207,59 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 		}
 		return msg
 	}
+}
+
+// wireProfileRows is the API table's slot-profile rows: one per usable profile
+// of agent, in file order, resolved against the server's catalog
+// (catalog.ResolveSlotProfileWire). As on the registry path (catalog's
+// slotRows) there are none under a -T/-F filter or while the catalog holds
+// the "profile/" prefix, and a group of profiles sharing a name gets one row,
+// blocked by the duplicate error every member carries.
+func wireProfileRows(rows []modelapi.Row, checks []profiles.SlotCheck, agent, tags, family string) []catalog.Row {
+	if len(checks) == 0 || tags != "" || family != "" || catalog.SlotPrefixHolderWire(rows) != "" {
+		return nil
+	}
+	byID := catalog.WireByID(rows)
+	var out []catalog.Row
+	dup := map[string]bool{}
+	for _, c := range checks {
+		if !c.Usable || c.Profile.Agent != agent {
+			continue
+		}
+		if c.Duplicate {
+			if dup[c.Profile.Name] {
+				continue
+			}
+			dup[c.Profile.Name] = true
+		}
+		out = append(out, catalog.ResolveSlotProfileWire(byID, c))
+	}
+	return out
+}
+
+// wireSlotTiers is a profile row's slot line tiers from the server's rows:
+// each slot model's short tier, for the rated ones only (tableRow.rate's
+// rule).
+func wireSlotTiers(pr catalog.Row, rows []modelapi.Row) map[string]string {
+	byID := catalog.WireByID(rows)
+	var out map[string]string
+	for slot, m := range pr.Profile.Models {
+		w, ok := byID[m.ID]
+		if !ok {
+			continue
+		}
+		e := tiers.Entry{Tier: w.Tier, Code: w.TierCode, Confidence: w.Confidence, Sources: w.TierSources}
+		if w.Aligned != nil {
+			e.Aligned, e.HasAligned = *w.Aligned, true
+		}
+		if e.Rated() {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[slot] = cleanup.Flatten(e.Short())
+		}
+	}
+	return out
 }
 
 // cleanWireRow is r with every string it shows made one printable line (M11).
@@ -263,6 +335,7 @@ func (m model) fetchCatalog(ag config.Agent) (model, tea.Cmd) {
 	m.catalogCancel = cancel
 	return m, fetchCatalogCmd(catalogRequest{
 		ctx: ctx, client: m.client, gen: m.refreshGen, agent: ag, tags: m.activeTags, family: m.activeFamily, pinned: m.pinnedModel,
+		slots: m.slotChecks,
 	})
 }
 

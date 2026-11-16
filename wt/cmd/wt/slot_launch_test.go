@@ -478,7 +478,7 @@ func TestRunSlotAgentCmdPostExitFlow(t *testing.T) {
 
 	var err error
 	stdout := captureFile(t, &os.Stdout, func() {
-		err = runSlotAgentCmd(exec.Command("true"), "claude", row, cfg, func() error { cleaned = true; return nil })
+		err = runSlotAgentCmd(exec.Command("true"), "claude", row, cfg, func() error { cleaned = true; return nil }, legacyTail())
 	})
 
 	if err != nil {
@@ -513,7 +513,7 @@ func TestRunSlotAgentCmdReturnsARunError(t *testing.T) {
 
 	var err error
 	captureFile(t, &os.Stdout, func() {
-		err = runSlotAgentCmd(exec.Command(filepath.Join(t.TempDir(), "no-such-agent")), "claude", row, cfg, func() error { return nil })
+		err = runSlotAgentCmd(exec.Command(filepath.Join(t.TempDir(), "no-such-agent")), "claude", row, cfg, func() error { return nil }, legacyTail())
 	})
 	if err == nil {
 		t.Fatal("err = nil, want the run error")

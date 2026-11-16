@@ -102,6 +102,11 @@ type model struct {
 	// hold is the API path's client session, created on the first model
 	// chosen and ended by the post-exit flow (exitTail).
 	hold *clientHold
+	// rslot is a slot-profile launch on the API path from its prep to the
+	// agent's build (slot_flow.go's beginRemoteSlotLaunch): set while its
+	// local model's start runs, so the start's success builds the profile's
+	// command instead of launching the local model alone.
+	rslot *remoteSlot
 
 	// model picker (the agent+model screen IS the picker)
 	models list.Model // bubble/list of agent+tag models
@@ -320,6 +325,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m.handleJobCancel(msg)
 	case remotePreparedMsg:
 		return m.handlePrepared(msg)
+	case remoteSlotPreparedMsg:
+		return m.handleRemoteSlotPrepared(msg)
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.

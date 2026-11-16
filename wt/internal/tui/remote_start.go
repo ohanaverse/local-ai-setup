@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -67,29 +68,46 @@ type clientHold struct {
 // the note for a register that failed, "" otherwise: a failed register never
 // refuses the start or the launch (client sessions are advisory).
 func (h *clientHold) hold(ctx context.Context, id string) string {
+	return h.holdAll(ctx, []string{id})
+}
+
+// holdAll is hold for several models at once (a slot profile's distinct
+// models): one register, or one re-register, carrying every id not yet held.
+func (h *clientHold) holdAll(ctx context.Context, ids []string) string {
 	if h == nil {
 		return ""
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.ended || h.held[id] {
+	if h.ended {
+		return ""
+	}
+	var fresh []string
+	for _, id := range ids {
+		if !h.held[id] && !slices.Contains(fresh, id) {
+			fresh = append(fresh, id)
+		}
+	}
+	if len(fresh) == 0 {
 		return ""
 	}
 	var err error
 	if h.sess == nil {
-		h.sess = h.client.NewSession([]string{id}, modelclient.SessionOptions{Note: func(s string) {
+		h.sess = h.client.NewSession(fresh, modelclient.SessionOptions{Note: func(s string) {
 			fmt.Fprintf(clientNotes, "wt: note: %s\n", cleanup.Flatten(s))
 		}})
 		err = h.sess.Start(ctx)
 	} else {
-		err = h.sess.Add(ctx, id)
+		err = h.sess.Add(ctx, fresh...)
 	}
 	if h.held == nil {
 		h.held = map[string]bool{}
 	}
-	h.held[id] = true
+	for _, id := range fresh {
+		h.held[id] = true
+	}
 	if err != nil {
-		return fmt.Sprintf("the model server did not register this client session (%s) — the launch goes on, but the server may stop %s once it is idle", cleanup.Flatten(err.Error()), id)
+		return fmt.Sprintf("the model server did not register this client session (%s) — the launch goes on, but the server may stop %s once it is idle", cleanup.Flatten(err.Error()), strings.Join(fresh, ", "))
 	}
 	h.registered = true
 	return ""
@@ -198,6 +216,12 @@ func (m model) chooseRemote(it *modelItem, pinned bool) (model, tea.Cmd) {
 	}
 	if m.hold == nil {
 		m.hold = &clientHold{client: m.client}
+	}
+	// A slot profile is its own launch unit (slot_flow.go); any earlier
+	// profile launch this row supersedes is forgotten.
+	m.rslot = nil
+	if it.profile != nil {
+		return m.beginRemoteSlotLaunch(it)
 	}
 	row, ok := m.wire[it.model.ID]
 	if ok && catalog.NeedsStart(row) {
@@ -371,6 +395,11 @@ func (m model) finishRemoteStart(msg startDoneMsg) (model, tea.Cmd) {
 		if note != "" {
 			m.recordRouteNotes("wt: note: " + note + "\n")
 			m.startNote = note
+		}
+		if m.rslot != nil {
+			// The start was a slot profile's local model: the profile's
+			// command is what launches (slot_flow.go).
+			return m.launchRemoteSlot()
 		}
 		return m.launchRemote(st.item)
 	}

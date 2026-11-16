@@ -1,0 +1,43 @@
+# The model-server calls a slot-profile launch makes on a client session's
+# path, one scenario per block. Read by two tests, one per launch path, so
+# the two paths are held to the same list: TestSlotFlowParity in cmd/wt (the
+# -M profile/<name> pin, launchSlotProfileRemote) and TestSlotFlowParity in
+# internal/tui (the picker's Enter on a profile row, slot_flow.go). Change
+# both paths together.
+#
+# Both tests serve the same catalog rows:
+#   openrouter/a, openrouter/b  cloud, launch
+#   omlx/run                    local, running, routed
+#   omlx/unknown                local, running, routing unknown (R7)
+#   omlx/unrouted               local, running, known not to be routed
+#   omlx/idle                   local, stopped, start
+#
+# Fields:
+#   scenario  a name for the subtest
+#   slots     slot=model pairs (the default slot is sonnet)
+#   calls     the normalized calls, in order, from the launch's first call
+#             to the agent's build: catalog (one read), register=<ids> (the
+#             client session's register with every distinct slot model, in
+#             FilledOrder), start=<id> (the start job), build (the agent's
+#             command against the gateway). A ping, a job poll, a heartbeat
+#             and the client session's end are left out.
+
+scenario: cloud only
+slots: sonnet=openrouter/a haiku=openrouter/b
+calls: catalog register=openrouter/a,openrouter/b build
+
+scenario: local running and routed
+slots: sonnet=openrouter/a haiku=omlx/run
+calls: catalog register=openrouter/a,omlx/run build
+
+scenario: local running, routing unknown
+slots: sonnet=openrouter/a haiku=omlx/unknown
+calls: catalog register=openrouter/a,omlx/unknown build
+
+scenario: local running, known unrouted
+slots: sonnet=openrouter/a haiku=omlx/unrouted
+calls: catalog register=openrouter/a,omlx/unrouted start=omlx/unrouted build
+
+scenario: local stopped
+slots: sonnet=openrouter/a haiku=omlx/idle
+calls: catalog register=openrouter/a,omlx/idle start=omlx/idle build

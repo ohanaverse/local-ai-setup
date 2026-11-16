@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
@@ -49,6 +51,10 @@ var (
 	settleRoutesNow  = lifecycle.SettleRoutes
 	startSlotModel   = startForLaunchOwed
 	buildSlotCmd     = agents.BuildSlotLaunchCmd
+	// buildSlotGatewayCmd is the slot build on a client session's path
+	// (launchSlotProfileRemote): the gateway in place of the [litellm]
+	// table. Tests wrap it to see when the agent's command is built.
+	buildSlotGatewayCmd = agents.BuildSlotLaunchCmdGateway
 )
 
 // slotUnknownKeyNote is what wt says about a key of slot-profiles.toml the
@@ -252,7 +258,7 @@ func launchSlotProfile(agent, worktreePath string, cfg *config.Config, yolo bool
 	if rerr := refcount.NewStore().RecordAll(os.Getpid(), ids); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: refcount state not saved: %v\n", rerr)
 	}
-	return runSlotAgentCmd(cmd, agent, row, cfg, cleanup)
+	return runSlotAgentCmd(cmd, agent, row, cfg, cleanup, legacyTail())
 }
 
 // applySlotProfile is the fail-closed applier of a slot-profile launch. It
@@ -294,8 +300,11 @@ func applySlotProfile(cmd *exec.Cmd, agent string, row catalog.Row) (cleanup fun
 // propagating the agent's exit code.
 //
 // It never calls applyProfileForLaunch: automatic profiles are not applied to
-// a slot-profile launch. cleanup is the applier's and must not be nil.
-func runSlotAgentCmd(cmd *exec.Cmd, agent string, row catalog.Row, cfg *config.Config, cleanup func() error) error {
+// a slot-profile launch. cleanup is the applier's and must not be nil. tail
+// picks the release: on a client session's path (tail.Remote) it ends the
+// client session in place of the refcount release, and there is no stop
+// picker (the model server stops idle models after its grace).
+func runSlotAgentCmd(cmd *exec.Cmd, agent string, row catalog.Row, cfg *config.Config, cleanup func() error, tail runTail) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -327,8 +336,10 @@ func runSlotAgentCmd(cmd *exec.Cmd, agent string, row catalog.Row, cfg *config.C
 	claimRelease()
 	releaseRootClaim()
 
-	releaseSession()
-	runStopPicker(cfg)
+	tail.release()
+	if !tail.Remote {
+		runStopPicker(cfg)
+	}
 	// Leading "\n" for the same reason as runAgentCmd's: the agent's last
 	// byte may not be a newline.
 	fmt.Println("\n" + agents.Summary(agent, config.Model{ID: row.Model.ID}, duration))
@@ -343,4 +354,177 @@ func runSlotAgentCmd(cmd *exec.Cmd, agent string, row catalog.Row, cfg *config.C
 		return err
 	}
 	return nil
+}
+
+// slotPinRemote is the -M profile/<name> pin on a client session's path, the
+// remote counterpart of resolveModel's slotPin and catalog.SlotPinReason. It
+// reads the loaded slot-profiles.toml only, so it costs no server call:
+//
+//   - a Usable profile of that name for agent, with no -T or -F set: its
+//     check, ok true (the caller launches it through launchSlotProfileRemote,
+//     which resolves it against the catalog);
+//   - one hidden by -T/-F, or one only another agent has: the registry
+//     path's reason as an error, ok true;
+//   - no profile of that name (or pin is not a profile id): ok false, and the
+//     pin goes to the server's resolve as any model id does (a model whose
+//     id begins with "profile/" is the server's to know).
+func slotPinRemote(checks []profiles.SlotCheck, agent, pin, tags, family string) (profiles.SlotCheck, bool, error) {
+	name, ok := strings.CutPrefix(pin, profiles.SlotIDPrefix)
+	if !ok {
+		return profiles.SlotCheck{}, false, nil
+	}
+	if tags == "" && family == "" {
+		for _, c := range checks {
+			if c.Usable && c.Profile.Agent == agent && c.Profile.Name == name {
+				return c, true, nil
+			}
+		}
+	}
+	// A nil config: SlotPinReason's registry check (the prefix held) has no
+	// registry to read here; the catalog's holder is checked by the launch.
+	if reason := catalog.SlotPinReason(nil, checks, agent, pin, tags, family); reason != "" {
+		return profiles.SlotCheck{}, true, errors.New(reason)
+	}
+	return profiles.SlotCheck{}, false, nil
+}
+
+// slotWarningsRemote are slotWarnings on a client session's path: the same
+// lines about slot-profiles.toml, without the registry's "profile/" holder
+// (slotReservedNote reads the registry, which a client session never does;
+// the catalog's holder blocks the profile launch itself with its own
+// reason).
+func slotWarningsRemote(a *app) []string {
+	var out []string
+	if a.slotLoadErr != nil {
+		out = append(out, fmt.Sprintf("wt: %v — slot profiles are unavailable", a.slotLoadErr))
+	}
+	for _, key := range a.slotUnknown {
+		out = append(out, "wt: "+slotUnknownKeyNote(key))
+	}
+	for _, c := range a.slotChecks {
+		if !c.Usable {
+			out = append(out, fmt.Sprintf("wt: %s: %v — skipped (see 'wt profile list')", c.Label(), c.Err))
+		}
+	}
+	for _, note := range slotContentNotes(a) {
+		out = append(out, "wt: "+note)
+	}
+	return out
+}
+
+// slotPrefixHeldReason is the block of a profile launch or show when the
+// model server's catalog holds the "profile/" prefix: no profile row exists
+// then, as on the registry path.
+func slotPrefixHeldReason(holder string) string {
+	return "the model server's catalog has " + holder + " — slot profiles are unavailable"
+}
+
+// launchSlotProfileRemote is the whole launch of one slot profile on a client
+// session's path (an endpoint is configured): the -M profile/<name> pin.
+// row carries the profile's check; it is resolved here, against the model
+// server, in this order:
+//
+//  1. one Catalog read; the profile is resolved against its rows
+//     (catalog.ResolveSlotProfileWire), and a blocked row stops here;
+//  2. a passthrough flag that would replace the slot mapping is refused;
+//  3. the client session is registered with every distinct slot model
+//     (Distinct) before any start, so the server's idle scan counts them; a
+//     failed register is one `wt: note:` and the launch goes on;
+//  4. the one local slot model is started with a start job, only when
+//     catalog.NeedsStart says so (an unknown route never starts, R7); its
+//     questions are answered as on any -M pin (--replace, --others, the
+//     terminal); Ctrl-C detaches (exit 2, nothing was launched);
+//  5. the agent's slot build against the gateway (BuildSlotLaunchCmdGateway),
+//     the fail-closed applier, the launch recorded, the agent run with the
+//     heartbeat going, and the client session ended before any exit.
+//
+// There is no cloud-route write, proxy restart or proxy probe on this path:
+// the model server owns LiteLLM. A native slot model is refused at step 1
+// (Review Focus 4). The internal/tui twin is slot_flow.go's
+// beginRemoteSlotLaunch: change both paths together (TestSlotFlowParity).
+// Every error carries its exit code (remoteExit) and says nothing was
+// launched.
+func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath string, yolo bool, row catalog.Row, extraArgs []string) error {
+	if row.Profile == nil {
+		return remoteExit(modelclient.Still(fmt.Errorf("%s is not a slot profile", row.Model.ID), launchStill))
+	}
+	cfg, err := a.sessionCfg()
+	if err != nil {
+		return remoteExit(modelclient.Still(err, launchStill))
+	}
+	ms, err := a.openModels(ctx, launchStill)
+	if err != nil {
+		return remoteExit(err) // openModels' errors carry the still clause
+	}
+
+	// Step 1: one catalog read, the profile resolved against it.
+	cat, err := ms.client.Catalog(ctx)
+	if err != nil {
+		return remoteExit(modelclient.Still(err, launchStill))
+	}
+	if holder := catalog.SlotPrefixHolderWire(cat.Rows); holder != "" {
+		return remoteExit(modelclient.Still(errors.New(slotPrefixHeldReason(holder)), launchStill))
+	}
+	row = catalog.ResolveSlotProfileWire(catalog.WireByID(cat.Rows), row.Profile.Check)
+	p := row.Profile
+	if row.Action() == catalog.ActionBlock {
+		return remoteExit(modelclient.Still(errors.New(row.BlockReason()), launchStill))
+	}
+
+	// Step 2: a passthrough flag that would replace the slot mapping.
+	if err := agents.CheckSlotPassthrough(agent, extraArgs); err != nil {
+		return remoteExit(modelclient.Still(err, launchStill))
+	}
+
+	// Step 3: the client session holds every slot model from before the
+	// start to the agent's exit.
+	distinct := p.Distinct()
+	ids := make([]string, len(distinct))
+	for i, m := range distinct {
+		ids[i] = m.ID
+	}
+	w := osStderr
+	note := func(s string) { fmt.Fprintf(w, "wt: note: %s\n", s) }
+	sess := ms.client.NewSession(ids, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
+	registered := true
+	if rerr := sess.Start(ctx); rerr != nil {
+		registered = false
+		note(fmt.Sprintf("the model server did not register this client session (%s) — the launch goes on, but the server may stop %s once it is idle", rerr, strings.Join(ids, ", ")))
+	}
+	end := func() {
+		if eerr := sess.End(context.WithoutCancel(ctx)); eerr != nil && registered {
+			note(fmt.Sprintf("could not end the client session on the model server (%s) — it forgets it within a minute", eerr))
+		}
+	}
+
+	// Step 4: the one local slot model, started only when it needs it.
+	if p.Local != nil && row.Action() == catalog.ActionStart {
+		if serr := startRemote(ctx, ms, *p.Local.Wire, string(othersMode), allowReplace); serr != nil {
+			end()
+			return remoteExit(startStill(serr))
+		}
+	}
+
+	// Step 5: the command against the gateway, the applier, the record, the
+	// run. A failure before the agent runs ends the client session first.
+	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token}
+	cmd, err := buildSlotGatewayCmd(p.Launch(), worktreePath, yolo, gw, extraArgs)
+	if err != nil {
+		end()
+		return remoteExit(modelclient.Still(err, launchStill))
+	}
+	if wd, werr := shellDir(); werr == nil {
+		for _, n := range agents.RelativeArgNotes(agent, wd, cmd.Dir, extraArgs) {
+			fmt.Fprintln(osStderr, n)
+		}
+	}
+	cleanup, err := applySlotProfile(cmd, agent, row)
+	if err != nil {
+		end()
+		return remoteExit(modelclient.Still(err, launchStill))
+	}
+	if rerr := rotation.New().RecordProfile(agent, row.Model.ID); rerr != nil {
+		fmt.Fprintf(osStderr, "wt: note: %v\n", rerr)
+	}
+	return runSlotAgentCmd(cmd, agent, row, cfg, cleanup, runTail{Remote: true, End: end})
 }

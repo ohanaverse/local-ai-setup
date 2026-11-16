@@ -51,8 +51,10 @@ type fakeModels struct {
 	// registerErr is what the client session's first register returns.
 	registerErr error
 	// log is every start, cancel and client session call, in order:
-	// "register a,b", "add x", "remove x", "end", "start x", "cancel j".
-	log []string
+	// "register a,b", "add x", "remove x", "end", "start x", "cancel j";
+	// and "catalog" for each Catalog call while logCatalog is set.
+	log        []string
+	logCatalog bool
 }
 
 func (f *fakeModels) record(s string) {
@@ -120,6 +122,9 @@ func (f *fakeModels) Catalog(context.Context) (modelapi.Catalog, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.catCalls++
+	if f.logCatalog {
+		f.log = append(f.log, "catalog")
+	}
 	if len(f.catErrs) > 0 {
 		err := f.catErrs[0]
 		f.catErrs = f.catErrs[1:]

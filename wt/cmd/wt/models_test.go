@@ -86,6 +86,8 @@ type fakeModelServer struct {
 	Spend     modelapi.SpendReport
 	SpendCode string
 	ClockSkew time.Duration
+	// Candidates is what GET candidates answers.
+	Candidates modelapi.CandidateList
 
 	polls     map[string]int
 	jobs      map[string]*modelapi.Problem
@@ -159,6 +161,15 @@ func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
 			rep.Rows = []modelapi.SpendRow{}
 		}
 		_ = json.NewEncoder(w).Encode(rep)
+	case "/control/v1/candidates":
+		cl := f.Candidates
+		if cl.StaleSources == nil {
+			cl.StaleSources = []string{}
+		}
+		if cl.Candidates == nil {
+			cl.Candidates = []modelapi.Candidate{}
+		}
+		_ = json.NewEncoder(w).Encode(cl)
 	case "/control/v1/resolve":
 		id := r.URL.Query().Get("model")
 		for _, row := range f.Rows {

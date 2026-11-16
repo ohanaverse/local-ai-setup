@@ -119,7 +119,7 @@ func TestSlotProfileLaunchReturnsTheAgentsExitStatus(t *testing.T) {
 	m := slotFlowFixture(t, idleOmlxSnapshot(), cloudProfile())
 	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
 	row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
-	msg := runSlotAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "claude", row, nil)()
+	msg := runSlotAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "claude", row, nil, false)()
 	m, _ = updateMsg(m, msg)
 	if got := exitStatusOf(runResult(m, nil)); got != 3 {
 		t.Fatalf("result status = %d, want the agent's exit status 3", got)

@@ -74,6 +74,12 @@ func profileCmd(a *app) *cobra.Command {
 			// provider with id "profile", or a model whose id begins with
 			// "profile/") no slot-profile row exists and the id is a
 			// registry model's: the automatic branch below handles it.
+			// On a client session (an endpoint configured) the profile is
+			// resolved against the model server's catalog and the registry
+			// is not read; the catalog's own "profile/" holder blocks it.
+			if strings.HasPrefix(showModel, profiles.SlotIDPrefix) && a.endpointConfigured() {
+				return showSlotProfileRemote(cmd.Context(), cmd.OutOrStdout(), a, showAgent, showModel)
+			}
 			if strings.HasPrefix(showModel, profiles.SlotIDPrefix) && !catalog.SlotPrefixReserved(a.cfg) {
 				return showSlotProfile(cmd.OutOrStdout(), a, showAgent, showModel)
 			}

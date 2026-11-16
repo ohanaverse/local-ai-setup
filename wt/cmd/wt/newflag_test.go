@@ -388,7 +388,7 @@ func TestTailsRunStopPickerThenSummary(t *testing.T) {
 		}, "release,picker,notice", "wt: claude · ollama/qwen3.8 ·"},
 		{"slot profile", func() error {
 			row := catalog.Row{Model: config.Model{ID: "profile/p"}}
-			return runSlotAgentCmd(exec.Command(truePath), "claude", row, &config.Config{}, func() error { return nil })
+			return runSlotAgentCmd(exec.Command(truePath), "claude", row, &config.Config{}, func() error { return nil }, legacyTail())
 		}, "release,picker", "wt: claude · profile/p ·"},
 	}
 	for _, c := range cases {

@@ -112,11 +112,30 @@ func runLaunchPath(
 	// to decide (errRemoteNeedsPicker), as on the registry path: the launch
 	// falls through to runTUI below with the directory and agent it has.
 	remote := a.endpointConfigured()
+	// What is wrong with slot-profiles.toml is said once, before any picker
+	// opens or any launch starts, and only for a launch that could use a
+	// profile: no agent chosen yet, or an agent whose driver has slots. A
+	// client session says it without the registry's "profile/" holder
+	// (slotWarningsRemote), which it never reads.
+	var slotNotes []string
+	if _, ok := agents.SlotsFor(agent); agent == "" || ok {
+		if remote {
+			slotNotes = slotWarningsRemote(a)
+		} else {
+			slotNotes = slotWarnings(a)
+		}
+	}
+	printSlotNotes := func() {
+		for _, line := range slotNotes {
+			fmt.Fprintln(os.Stderr, line)
+		}
+	}
 	pickOnServer := false
 	if remote && launchPath != "" && agent != "" {
 		if root != "" {
 			maybeInstallGuard()
 		}
+		printSlotNotes()
 		err := func() error {
 			holdLaunch(agent, launchPath)
 			defer releaseRootClaim()
@@ -175,21 +194,13 @@ func runLaunchPath(
 		return cleanupRemoveFuncs(a, snap, in, 0, protErr)
 	}
 
-	// Slot profiles are pin targets for resolveModel during this run. What is
-	// wrong with slot-profiles.toml is said here, before any picker opens,
-	// and only for a launch that could use a profile: no agent chosen yet, or
-	// an agent whose driver has slots.
+	// Slot profiles are pin targets for resolveModel during this run. The
+	// slot notes (above) are printed here unless the client session's launch
+	// already printed them before falling through to the picker.
 	launchSlotChecks = a.slotChecks
-	var slotNotes []string
-	if _, ok := agents.SlotsFor(agent); agent == "" || ok {
-		slotNotes = slotWarnings(a)
+	if !pickOnServer {
+		printSlotNotes()
 	}
-	printSlotNotes := func() {
-		for _, line := range slotNotes {
-			fmt.Fprintln(os.Stderr, line)
-		}
-	}
-	printSlotNotes()
 	// The TUI's alternate screen covers what was just printed for as long as
 	// a picker is up, so a launch that went through the TUI says it again
 	// once the TUI has returned and the terminal is the user's.
