@@ -63,6 +63,13 @@ type app struct {
 	// slotLoadErr is profiles.LoadSlots' error: a parse or read failure.
 	// It never stops wt; a launch prints it once and shows no profile rows.
 	slotLoadErr error
+
+	// The session's config and model-server handle (models.go), both read on
+	// first use and cached. cfg above stays config.Load() until the flip.
+	sessCfg    *config.Config
+	sessCfgErr error
+	sessCfgSet bool
+	models     *modelSession
 }
 
 // profileState packages a's already-loaded profiles.toml state for

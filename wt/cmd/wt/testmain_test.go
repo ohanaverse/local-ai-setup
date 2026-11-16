@@ -56,6 +56,13 @@ func TestMain(m *testing.M) {
 	// test names a file of its own (tiers.IsolateForTest).
 	tiers.IsolateForTest()
 	probeInventory = localmodels.OnDiskSnapshotForTest
+	// The model-server client path fails closed: no WT_MODEL_* from the
+	// developer's shell reaches a test, and the client dials loopback only, so
+	// the httptest fake (fakeModelServer) is the one network a test reaches.
+	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN"} {
+		os.Unsetenv(k)
+	}
+	newModelClient = loopbackOnlyModelClient
 	// wt remove's live-process finder runs lsof over the whole machine: no
 	// test scans it. Tests that need processes stub a finder of their own.
 	// The real default is kept for TestRemoveDefaultProcFinderIsLsof.
