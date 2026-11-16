@@ -26,7 +26,7 @@ import (
 )
 
 // spendCall records the spend requests the fake model server answered for
-// the test's `wt stats` runs: how many, and the window of the last.
+// the test's last `wt stats` run: how many, and the window of the last one.
 type spendCall struct {
 	n          int
 	start, end time.Time
@@ -150,7 +150,7 @@ func pinnedSpend(cmd *cobra.Command, a *app, window time.Duration, asOf time.Tim
 // runStatsDirect runs `wt stats` on pinnedSpend against the test's fake model
 // server (stubSpend; a test that did not call it gets one whose spend is
 // unavailable), its catalog the host registry's models, and records the
-// spend requests it answered in the stubSpend record.
+// spend requests this run made (only this run's) in the stubSpend record.
 func runStatsDirect(t *testing.T, a *app, args ...string) (stdout, stderr string) {
 	t.Helper()
 	if statsFake.f == nil {
@@ -162,10 +162,13 @@ func runStatsDirect(t *testing.T, a *app, args ...string) (stdout, stderr string
 	f.mu.Lock()
 	f.Rows = statsHostRows(a)
 	f.mu.Unlock()
+	before := len(f.reqs())
 	stdout, stderr = runStatsOn(t, statsCmdWith(a, pinnedSpend), args...)
+	// Per run: only the requests this run made, so a second run on the same
+	// stub cannot inflate the count.
 	call := statsFake.call
-	call.n = 0
-	for _, r := range f.reqs() {
+	call.n, call.start, call.end = 0, time.Time{}, time.Time{}
+	for _, r := range f.reqs()[before:] {
 		if q, ok := strings.CutPrefix(r, "GET /control/v1/spend?"); ok {
 			v, _ := url.ParseQuery(q)
 			call.n++

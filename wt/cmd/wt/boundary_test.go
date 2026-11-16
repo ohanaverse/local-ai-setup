@@ -321,8 +321,9 @@ func protectedPaths(a *app) {
 }
 
 // TestBoundaryScanSeesOnlyCode guards the scanner itself: a banned name in a
-// comment or a string is not a violation, a local variable called provider is
-// not the provider package, and every kind of banned use is one: a call or a
+// comment or a string is not a violation, a local variable called provider in
+// a file that does not import the provider package is not that package, and
+// every kind of banned use is one: a call or a
 // selector through an import alias (one per banned package, a package-level
 // `var _ = lc.X` included), a provider type, a banned method used as a value
 // rather than called, a call of the host config wrapper (hostConfig,
@@ -378,5 +379,18 @@ func f(a *app, p struct{ Name string }) string {
 	}
 	if strings.Join(vs, "\n") != strings.Join(want, "\n") {
 		t.Errorf("violations =\n%s\nwant\n%s", strings.Join(vs, "\n"), strings.Join(want, "\n"))
+	}
+
+	// A file that does not import the provider package: a local variable
+	// called provider, and its field, are no violation.
+	local := `package x
+
+func g(provider struct{ Name string }) string {
+	_ = "provider.Lookup in a string"
+	return provider.Name
+}
+`
+	if vs, err := boundaryViolations(token.NewFileSet(), "y.go", local); err != nil || len(vs) != 0 {
+		t.Errorf("a local variable named provider: violations = %q (err %v), want none", vs, err)
 	}
 }
