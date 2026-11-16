@@ -1162,10 +1162,12 @@ func TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI(t *testing.T) {
 
 // TestBrokenSlotFileLeavesModelLaunchesAlone is Review Focus 1. With a TOML
 // typo in slot-profiles.toml, or one profile with a malformed name, a pinned
-// single-model launch and a rotated one behave exactly as before, wt prints
-// exactly one warning line for the problem, and `-M profile/<name>` exits
-// non-zero with the "not in the eligible list" message. A hand-written file
-// must never be able to break the launches that do not use it.
+// single-model launch on the model server behaves exactly as before (it runs
+// and records the rotation), wt prints exactly one warning line for the
+// problem, and `-M profile/<name>` (no usable slot profile by that name, so
+// a model id the server does not know) exits 1 naming the pin. A
+// hand-written file must never be able to break the launches that do not
+// use it.
 func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
 	cases := []struct {
 		name    string

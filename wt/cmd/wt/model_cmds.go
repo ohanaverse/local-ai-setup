@@ -98,8 +98,9 @@ func stopCmd(a *app) *cobra.Command {
 			"A model id (and no argument: a numbered picker over the server's running local\n" +
 			"models) is stopped through the model server ([model-server] in config.toml, or\n" +
 			"WT_MODEL_URL; with none configured wt refuses, exit 1); a provider name and\n" +
-			"--all act on this machine's registry. The server asks before stopping a model other client sessions use\n" +
-			"(--yes answers it; with no terminal and no --yes: exit 3, nothing stopped). Exit 0\n" +
+			"--all act on this machine's registry. The server asks before stopping a\n" +
+			"model other client sessions use (--yes answers it; with no terminal and no\n" +
+			"--yes: exit 3, nothing stopped). Exit 0\n" +
 			"stopped (also when the provider is still finishing the stop), 1 could not start\n" +
 			"(no terminal for the picker, an unreachable server), 2 the stop failed or was\n" +
 			"detached with Ctrl+C (the job keeps running: 'wt job ID'), 3 approval missing.",

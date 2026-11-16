@@ -456,13 +456,13 @@ func runCwdPlain(t *testing.T, dir string, args ...string) (err error, agentDir 
 	return err, agentDir, guarded
 }
 
-// TestCwdOutsideARepoLaunchesShellAndAnUnconfiguredAgentInPlace covers the
+// TestCwdOutsideARepoLaunchesShellInPlace covers the
 // --cwd launch that skips the model layer: a command agent (shell, through
 // launchCommand). Outside a repository it must run in the current directory,
 // install no guard and return no error. (A model-driven agent with no
 // config.toml entry no longer launches bare: on a client session every
 // driver has an agent (R13) and its model comes from the model server.)
-func TestCwdOutsideARepoLaunchesShellAndAnUnconfiguredAgentInPlace(t *testing.T) {
+func TestCwdOutsideARepoLaunchesShellInPlace(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		args []string

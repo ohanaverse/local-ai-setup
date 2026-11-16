@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,9 +167,18 @@ func TestEachModelNeedingPathRefuses(t *testing.T) {
 		{"model list --server", []string{"model", "list", "--server"}, false, "nothing was listed"},
 		{"profile slots add", []string{"profile", "slots", "add", "mine", "--slot", "sonnet=openrouter/x/y"}, false, slotEditStill},
 		{"profile slots candidates", []string{"profile", "slots", "candidates"}, false, candidatesStill},
+		{"profile slots set", []string{"profile", "slots", "set", "base", "--slot", "haiku=openrouter/x/y"}, false, slotEditStill},
+		{"profile show -M profile/NAME", []string{"profile", "show", "-A", "claude", "-M", "profile/base"}, false, showStill},
+		{"profile show -M MODEL", []string{"profile", "show", "-A", "claude", "-M", "openrouter/x/y"}, false, showStill},
+		{"stop with no argument", []string{"stop"}, false, "nothing was stopped"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, marker := noServerHome(t)
+			// A slot profile the slot commands and show can name.
+			slotFile := filepath.Join(home, ".config", "agent-wt", "slot-profiles.toml")
+			if err := os.WriteFile(slotFile, []byte(slotsBase), 0o644); err != nil {
+				t.Fatal(err)
+			}
 			stubStdinTTY(t, tc.tty)
 			out, code := runRoot(t, tc.args...)
 			if code != 1 {
@@ -180,17 +190,18 @@ func TestEachModelNeedingPathRefuses(t *testing.T) {
 			if fileExists(marker) {
 				t.Error("an agent process ran")
 			}
-			if _, err := os.Stat(filepath.Join(home, ".config", "agent-wt", "slot-profiles.toml")); err == nil {
-				t.Error("slot-profiles.toml was written")
+			if b, _ := os.ReadFile(slotFile); string(b) != slotsBase {
+				t.Errorf("slot-profiles.toml was written:\n%s", b)
 			}
 		})
 	}
 }
 
 // TestPathsThatNeedNoServerStillRun walks the paths that need no model server
-// with none configured: a command agent's launch, `wt worktrees`, `profile
-// slots rm|usage`, `stats` (its spend says not configured) and `config path`
-// all still run and exit 0. Refusing them would lock a machine with no server
+// with none configured: a command agent's launch, `wt worktrees`, `wt remove`,
+// `wt rescue` and `wt restore-root` (dry runs), `profile list|status|on|off`,
+// `profile slots rm|usage`, `stats` (its spend says not configured), `config
+// path`, `--init` and `--no-guard` all still run and exit 0. Refusing them would lock a machine with no server
 // out of wt's own files and of a plain shell launch.
 func TestPathsThatNeedNoServerStillRun(t *testing.T) {
 	for _, tc := range []struct {
@@ -230,6 +241,33 @@ func TestPathsThatNeedNoServerStillRun(t *testing.T) {
 			}
 		}},
 		{name: "config path", args: []string{"config", "path"}},
+		{name: "profile list", args: []string{"profile", "list"}},
+		{name: "profile status", args: []string{"profile", "status"}},
+		{name: "profile on", args: []string{"profile", "on"}},
+		{name: "profile off", args: []string{"profile", "off"}},
+		{name: "--init", setup: inTestRepo, args: []string{"--init"}},
+		{name: "--no-guard", setup: inTestRepo, args: []string{"--no-guard"}},
+		{name: "remove --dry-run", setup: func(t *testing.T, _ string) []string {
+			stubCleanupGH(t)
+			dir := cleanupRepo(t)
+			t.Chdir(dir)
+			cgit(t, dir, "branch", "topic")
+			return []string{"remove", "--dry-run", "--no-fetch", "-D", "--accept-loss", "topic"}
+		}},
+		{name: "rescue --dry-run", setup: func(t *testing.T, _ string) []string {
+			stubCleanupGH(t)
+			dir := cleanupRepo(t)
+			t.Chdir(dir)
+			p := filepath.Join(filepath.Dir(dir), "wt-topic")
+			cgit(t, dir, "worktree", "add", "-b", "topic", p)
+			cleanupCommit(t, p, "x.txt", "work")
+			return []string{"rescue", "--dry-run", "--no-fetch", p}
+		}},
+		{name: "restore-root --dry-run", setup: func(t *testing.T, _ string) []string {
+			stubCleanupGH(t)
+			t.Chdir(cleanupRepo(t))
+			return []string{"restore-root", "--dry-run", "--no-fetch"}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, _ := noServerHome(t)
@@ -250,5 +288,169 @@ func TestPathsThatNeedNoServerStillRun(t *testing.T) {
 				tc.check(t, out)
 			}
 		})
+	}
+}
+
+// gitState is what a launch could create in repo: its worktrees, its local
+// branches and whether the main guard's pre-commit hook exists.
+func gitState(t *testing.T, repo string) string {
+	t.Helper()
+	wts, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git worktree list: %v\n%s", err, wts)
+	}
+	brs, err := exec.Command("git", "-C", repo, "for-each-ref", "--format=%(refname)", "refs/heads").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git for-each-ref: %v\n%s", err, brs)
+	}
+	_, herr := os.Stat(filepath.Join(repo, ".git", "hooks", "pre-commit"))
+	return string(wts) + "\n" + string(brs) + fmt.Sprintf("\nhook: %v", herr == nil)
+}
+
+// inTestRepo is a TestPathsThatNeedNoServerStillRun setup: the command runs
+// in a fresh repository.
+func inTestRepo(t *testing.T, _ string) []string {
+	t.Helper()
+	t.Chdir(initTestRepo(t))
+	return nil
+}
+
+// TestModelLaunchRefusesBeforeAnyGitWork pins the refusal's place in a
+// repository: with no model server configured, a model-driven launch with
+// -W (a new name), --root, or from the worktree picker refuses with the one
+// not-configured line, exit 1, before RunE does anything — no worktree or
+// branch is created, the main guard is not installed. The plan says a
+// model-needing path refuses before anything starts; a launch that first
+// made `.worktrees/<name>` and its branch would leave behind work the user
+// has to clean up for a launch that could never run.
+func TestModelLaunchRefusesBeforeAnyGitWork(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		tty  bool
+	}{
+		{"-W a new name", []string{"-W", "feat-x", "-A", "claude"}, false},
+		{"--root", []string{"--root", "-A", "claude"}, false},
+		{"the worktree picker, agent pinned", []string{"-A", "claude"}, true},
+		{"the worktree picker, no agent", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, marker := noServerHome(t)
+			repo := initTestRepo(t)
+			t.Chdir(repo)
+			stubStdinTTY(t, tc.tty)
+			before := gitState(t, repo)
+			out, code := runRoot(t, tc.args...)
+			if want := "wt: " + notConfiguredText(launchStill); code != 1 || len(wtLines(out)) != 1 || wtLines(out)[0] != want {
+				t.Errorf("exit %d, output %q; want 1 and exactly %q", code, out, want)
+			}
+			if after := gitState(t, repo); after != before {
+				t.Errorf("the refused launch changed the repository:\nbefore %s\nafter  %s", before, after)
+			}
+			if fileExists(marker) {
+				t.Error("the agent process ran")
+			}
+		})
+	}
+}
+
+// TestLaunchRunsBesideABrokenRegistry pins R3's promise from the other side:
+// with a model server configured, a registry.toml that does not parse, or a
+// registry link that leads nowhere, is no launch's error. A model-driven
+// launch (claude's native row on the server) and a shell launch both run,
+// exit 0, and config.toml is not rewritten (config.Load, the registry's
+// loader, would have migrated it). A launch that read the host registry
+// would refuse every model on a session machine whose registry is broken —
+// or that has a stale one left behind.
+func TestLaunchRunsBesideABrokenRegistry(t *testing.T) {
+	for _, reg := range []struct {
+		name  string
+		write func(t *testing.T, path string)
+	}{
+		{"unparsable", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("models = [\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"dangling link", func(t *testing.T, path string) {
+			if err := os.Symlink(filepath.Join(filepath.Dir(path), "gone.toml"), path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		for _, launch := range []struct {
+			name string
+			args func(mark string) []string
+		}{
+			{"claude", func(string) []string { return []string{"--cwd", "-A", "claude", "-M", "claude/opus"} }},
+			{"shell", func(mark string) []string { return []string{"--cwd", "-A", "shell", "--", "touch", mark} }},
+		} {
+			t.Run(reg.name+"/"+launch.name, func(t *testing.T) {
+				home := t.TempDir()
+				withCleanConfigEnv(t, home)
+				cfgDir := filepath.Join(home, ".config", "agent-wt")
+				nativeOpusServer(t, cfgDir)
+				// A config.toml with an agent: config.Load would add agy and
+				// rewrite it, so an unchanged file proves it never ran.
+				cfgPath := filepath.Join(cfgDir, "config.toml")
+				body, err := os.ReadFile(cfgPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = append(body, []byte("\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\n")...)
+				if err := os.WriteFile(cfgPath, body, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				regPath := filepath.Join(home, ".config", "local-ai", "registry.toml")
+				if err := os.MkdirAll(filepath.Dir(regPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				reg.write(t, regPath)
+				mark := filepath.Join(t.TempDir(), "ran")
+				bin := t.TempDir()
+				if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\ntouch '"+mark+"'\nexit 0\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+				stubStdinTTY(t, false)
+				t.Chdir(t.TempDir())
+
+				var out string
+				var code int
+				captureFile(t, &os.Stdout, func() { out, code = runRoot(t, launch.args(mark)...) })
+				if code != 0 || !fileExists(mark) {
+					t.Errorf("exit %d, ran %v; want 0 and the launch run beside a broken registry\n%s", code, fileExists(mark), out)
+				}
+				if after, _ := os.ReadFile(cfgPath); string(after) != string(body) {
+					t.Errorf("config.toml was rewritten: the registry's loader ran\n%s", after)
+				}
+			})
+		}
+	}
+}
+
+// TestStatsFamilyNoNoteWithoutARegistry pins `wt stats --family` on a
+// session-only machine: no model server answers and there is no registry at
+// the default path, so the families come from each id's prefix and no note
+// says the configuration "did not load" (it would send the user to `wt model
+// init`, building host state the split keeps off a session machine). A
+// registry that exists and does not load still gets its note
+// (TestStatsFamilyNoteNamesTheRepairThatWorks).
+func TestStatsFamilyNoNoteWithoutARegistry(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	if err := os.MkdirAll(filepath.Join(home, ".config", "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "agent-wt", "config.toml"), []byte("default_tag = \"code\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := newApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, stderr := runStats(t, a, "--family", "qwen")
+	if strings.Contains(stderr, "did not load") || strings.Contains(stderr, "wt model init") {
+		t.Errorf("stderr = %q, want no registry note on a machine with no registry", stderr)
 	}
 }

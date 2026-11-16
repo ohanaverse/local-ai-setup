@@ -179,7 +179,8 @@ func TestLitellmLoadErrorNamesTheRepairThatWorks(t *testing.T) {
 }
 
 // TestStatsFamilyNoteNamesTheRepairThatWorks pins the repair in the note
-// `wt stats --family` prints when the configuration did not load. The note
+// `wt stats --family` prints when the configuration did not load (none for a
+// registry simply absent at the default path: a session-only machine). The note
 // has to agree with what every refusing command says for the same error: it
 // used to tell a user with no registry to run a command of the retired
 // modelman, right after quoting an error that says `wt model init` (#291).
@@ -205,6 +206,15 @@ func TestStatsFamilyNoteNamesTheRepairThatWorks(t *testing.T) {
 			}
 			if wantNC := c.name != "unparseable config.toml"; strings.Contains(first, "no model server is configured") != wantNC {
 				t.Errorf("case %q: spend line %q, want not-configured = %v", c.name, first, wantNC)
+			}
+			if c.name == "missing registry" {
+				// No registry at the default path is a session-only
+				// machine: there is nothing to repair, so no note
+				// (TestStatsFamilyNoNoteWithoutARegistry).
+				if note != "" {
+					t.Errorf("missing registry: note = %q, want none", note)
+				}
+				return
 			}
 			c.check(t, note, "wt: wt's configuration did not load (", "; %s",
 				"), so --family matched each id's provider prefix\n", registry)

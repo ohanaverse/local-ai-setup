@@ -61,8 +61,9 @@ type statsSpend func(cmd *cobra.Command, a *app, window time.Duration, asOf time
 // cannot be read (spendUnavailable, the reason saying which), the local clock
 // and the launch counts remain, the family of each id coming from this
 // machine's registry when it has one that loads (hostConfig; a host machine
-// keeps its --family, and its load error is the --family note), else from
-// the id's prefix.
+// keeps its --family, and its load error is the --family note — but no note
+// for a registry simply absent at the default path, noRegistry's rule),
+// else from the id's prefix.
 func serverSpend(cmd *cobra.Command, a *app, window time.Duration, asOf time.Time, f statsFilter) (time.Time, func() usageReport, func() error) {
 	ms, openErr := a.openModels(cmd.Context(), "spend is not shown")
 	if openErr == nil {
@@ -73,8 +74,14 @@ func serverSpend(cmd *cobra.Command, a *app, window time.Duration, asOf time.Tim
 		if openErr != nil {
 			var families map[string]string
 			hostCfg, loadErr := a.hostConfig()
-			if hostLoadErr = loadErr; loadErr == nil {
+			switch {
+			case loadErr == nil:
 				families = registryFamilies(hostCfg)
+			case noRegistry(a):
+				// No registry at the default path (a session-only
+				// machine): nothing to say; each id's prefix is its family.
+			default:
+				hostLoadErr = loadErr
 			}
 			return collectUsageNoServer(openErr, window, asOf, f, families)
 		}

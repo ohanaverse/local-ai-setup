@@ -1410,8 +1410,8 @@ func TestWorktreesStillProtectRegistryArtifacts(t *testing.T) {
 // TestProtectedPathsToleratesNoRegistry pins R10's one tolerance across the
 // flip: no registry file at the default path (a session-only machine) is
 // nothing to protect, an empty list and no error, read through hostConfig,
-// and `wt worktrees --plain` says so in the frozen neutral line (the
-// wt-repo-cleanup skill quotes it) with no protection-OFF line. Refusing
+// and `wt worktrees --plain` says so in the frozen neutral line
+// (wt/docs/wt-cleanup.md quotes it) with no protection-OFF line. Refusing
 // there would make cleanup useless on every machine that has no models.
 func TestProtectedPathsToleratesNoRegistry(t *testing.T) {
 	var reg string

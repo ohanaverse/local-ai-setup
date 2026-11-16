@@ -843,15 +843,15 @@ func TestInitAnnouncesTheGuardInstall(t *testing.T) {
 	}
 }
 
-// A malformed config.toml must still fail closed with the repair hint, for
-// every agent. Since the flip a launch reads no registry (its models come
-// from the model server, so a malformed registry.toml is no launch's error:
-// TestPathsThatNeedNoServerStillRun's shell launch runs beside one); the
-// launch gate in RunE is config.toml's load, and it runs once before any
+// TestMalformedConfigStillFailsClosed: a malformed config.toml must still
+// fail closed with the repair hint, for every agent. Since the flip a launch
+// reads no registry (its models come from the model server, so a malformed
+// registry.toml is no launch's error: TestLaunchRunsBesideABrokenRegistry);
+// the launch gate in RunE is config.toml's load, and it runs once before any
 // agent-type branching, so a genuine parse error blocks a command agent
 // (e.g. shell) exactly as it blocks claude. A future agent-type carve-out
 // could otherwise slip past this gate unnoticed.
-func TestMalformedRegistryStillFailsClosed(t *testing.T) {
+func TestMalformedConfigStillFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args []string

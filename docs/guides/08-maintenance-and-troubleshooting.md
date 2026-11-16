@@ -556,20 +556,22 @@ ls ~/.config/local-ai/benchmarks/latest.toml    # llmbench's latest-run pointers
   them and add each with `wt model add`
   ([02-providers-and-models](02-providers-and-models.md) Step 1) before you
   delete the two.
-- **`wt litellm status` prints `litellm: off` with `url: (unset)`, and you do
-  route through LiteLLM:** wt has no copy of the routing state. wt used to
-  read the `[litellm]` table of `modelman.toml` as a fallback, and copied it
-  into `~/.config/agent-wt/config.toml` the first time it ran, on or after
+- **`wt litellm status` prints `url: (unset)` and you do route through
+  LiteLLM:** wt has no copy of the proxy's url and key. wt used to read the
+  `[litellm]` table of `modelman.toml` as a fallback, and copied it into
+  `~/.config/agent-wt/config.toml` the first time it ran, on or after
   2026-09-21, with a `config.toml` that had no `[litellm]` table. A machine
   with no `config.toml`, or one where wt has not run since that date, never
-  got the copy, and wt no longer reads the old file. Until you restore the
-  state, agents dial their providers directly (nothing is logged by the
-  proxy), and a launch that needs the proxy (codex, always) stops with
-  `litellm routing is required for this model but no URL is configured`.
-  Take the URL and key from the `[litellm]` table of `modelman.toml` and run
-  `wt litellm set --url <url> --api-key <key>`, then `wt litellm on`. Both
-  write `config.toml` (mode 0600), creating it if it does not exist; run
-  `wt litellm status` again to see `litellm: on`. If wt then stops with
+  got the copy, and wt no longer reads the old file. Until you restore it,
+  the model server (`wt-model serve`, which reads that table on its machine)
+  cannot reach the proxy. Take the URL and key from the `[litellm]` table of
+  `modelman.toml` and run `wt litellm set --url <url> --api-key <key>` on the
+  machine that runs the model server. It writes `config.toml` (mode 0600),
+  creating it if it does not exist; run `wt litellm status` again to see the
+  url and `api_key: ***` with the key's last four characters. There is no
+  routing switch to turn on: every session routes through the model server
+  ([wt-session.md](../../wt/docs/wt-session.md)), and `wt litellm on` is a
+  retired stub that exits 1. If wt then stops with
   `config error: agent "agy": unknown provider "agy"`, run `wt model init`:
   the restore created `config.toml`, and that command adds the provider row
   it needs to `registry.toml`. The key is on the command

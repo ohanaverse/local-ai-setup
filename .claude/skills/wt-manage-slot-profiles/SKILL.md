@@ -117,7 +117,7 @@ wt smoke <model-id> --only claude --tools --hops 3
 
 `--tools` checks a real tool call and result round trip; `--hops N` (1-10) chains N dependent reads. Report PASS or FAIL per slot, with the failing row's detail. A failing model is the user's call: offer a swap (step 3) and do not change anything on your own.
 
-A local model is started by smoke. On a terminal, wt then asks whether to stop it; leave that prompt to wt. Run from a shell without a terminal (or with `--json`), wt skips that prompt and the model stays running. So for a local model, either ask the user to run the command in their own terminal (in Claude Code, `! wt smoke …`), or run it yourself and then tell them it is still running and offer `wt stop <model-id>`. Unload each local model before smoking the next one, so a memory failure belongs to the model under test.
+A local model is started by smoke on the model server, and smoke asks nothing when it ends: it ends its client session, and the server stops the model after its idle grace unless another client session uses it. So after smoking a local model, tell the user it stays loaded until then and offer `wt stop <model-id>` to unload it now. Unload each local model before smoking the next one, so a memory failure belongs to the model under test.
 
 ## Slot guidance
 

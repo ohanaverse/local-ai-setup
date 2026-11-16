@@ -90,10 +90,14 @@ A `config.toml` that does not parse is the launch's `config error: ... (run
 | Code | When |
 |---|---|
 | 0 | done; a job that succeeded (a still-finishing stop included) |
-| 1 | could not start, nothing asked and nothing changed: not configured, unreachable before anything started, wrong token, API or schema skew, unknown model, a pin that is blocked, unknown job id, a `--json` command's failure envelope |
+| 1 | could not start, nothing asked and nothing changed: not configured, unreachable before anything started, wrong token, API or schema skew, unknown model, a pin that is blocked, unknown job id |
 | 2 | a started thing did not finish: a failed, blocked, stopped or cancelled job, a lost server, a lost job, a detach (Ctrl-C during a start: the job keeps running), `wt job ID` of a failed or cancelled job |
 | 3 | approval missing: no terminal and no flag, or the prompt was declined; nothing changed |
 | agent status | a launch ends with the agent's own exit status; `wt smoke` exits 1 on a FAIL row |
+
+A `--json` command's failure envelope carries the same code as the plain
+command's failure: 1 for one that could not start, 2 for `wt job ID --json`
+of a failed or cancelled job (or a cancel sent whose outcome is unknown).
 
 ## What needs the model server
 

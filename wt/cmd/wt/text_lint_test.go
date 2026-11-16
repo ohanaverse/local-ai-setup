@@ -56,9 +56,11 @@ func unqualifiedSession(s string) (int, bool) {
 // parses internal/modelclient and the client files of cmd/wt and fails,
 // case-insensitively, on any string literal holding "session" not preceded by
 // "client " or "wt ". A literal that starts with "/" (a URL path such as
-// "/control/v1/sessions"), one holding "%" (a format the caller completes)
-// and a struct tag (a JSON key) are not user text and are skipped, as the
-// plan's ruling on this test says.
+// "/control/v1/sessions"), a struct tag (a JSON key) and an import path are
+// not user text and are skipped. Format literals (holding "%") are scanned
+// too, stricter than the plan's ruling allows. Only whole client files are
+// scanned: client text inside a file shared with the registry path (smoke.go,
+// slot_launch.go, stats.go, …) is not.
 func TestUserTextQualifiesSession(t *testing.T) {
 	fset := token.NewFileSet()
 	for _, path := range sessionWordFiles(t) {

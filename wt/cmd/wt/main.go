@@ -505,6 +505,20 @@ func rootCmd() *cobra.Command {
 				return fmt.Errorf("agent %q is not installed — install the %s binary", agent, agent)
 			}
 
+			// A launch that needs a model needs the model server: refuse
+			// before the launch question, a worktree or branch, the guard or
+			// any other git work, rather than after (the same refusal
+			// launchFilteredRemote and the picker give, decided without a
+			// network call). A model-driven agent always needs one; with no
+			// agent the picker does (without a terminal the picker's own
+			// refusal, below, comes first, as before). A command agent needs
+			// none.
+			if (agent != "" && !agents.IsCommand(agent)) || (agent == "" && stdinTTY()) {
+				if _, err := a.buildModels(launchStill); err != nil {
+					return printOnce(cmd, remoteExit(err)) // buildModels' errors carry the still clause
+				}
+			}
+
 			// --root: the primary checkout, found from anywhere. The flag is
 			// the consent for the root warning alone (RootChosen) — a root
 			// another live session holds still asks.
