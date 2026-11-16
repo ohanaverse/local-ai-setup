@@ -376,3 +376,28 @@ func TestFailedSlotStartDropsEverySlotModel(t *testing.T) {
 		}
 	}
 }
+
+// TestEscOnTheReplaceDialogDropsTheSlotProfilesModels pins that backing out
+// of the replace dialog on a slot-profile launch (API path) takes every slot
+// model out of the client session and forgets the launch: the local model's
+// failed job dropped only itself, and the other slots were held for this
+// launch alone, so they would pin the server's auto-stop until wt exited.
+func TestEscOnTheReplaceDialogDropsTheSlotProfilesModels(t *testing.T) {
+	m, f := slotRemoteTable(t, map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"})
+	m, cmd := enterRemote(t, m, "profile/mix")
+	prepared := cmd().(remoteSlotPreparedMsg)
+	m.rslot = &remoteSlot{item: m.rslot.item, row: prepared.row}
+	m.phase = phaseReplaceConfirm
+	m.replace = &replaceState{}
+	m, drop := updateMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.phase != phaseModel || m.rslot != nil || drop == nil {
+		t.Fatalf("phase %v, rslot %v, cmd nil %v: want the table, the launch forgotten and a drop command", m.phase, m.rslot, drop == nil)
+	}
+	drop()
+	h := f.history()
+	for _, id := range []string{"openrouter/a", "openrouter/b"} {
+		if !slices.Contains(h, "remove "+id) {
+			t.Errorf("calls = %v, want %s dropped from the client session", h, id)
+		}
+	}
+}

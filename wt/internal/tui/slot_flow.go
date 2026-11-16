@@ -377,6 +377,20 @@ func (m model) dropSlot() model {
 	return m
 }
 
+// dropRemoteSlot is dropSlot for the API path: a profile launch the user
+// backed out of on the replace dialog (a decline or esc) takes every slot
+// model its prep held out of the client session and forgets the launch. The
+// local model's own job already dropped it; the other slots were held for
+// this launch alone. No profile launch, no command.
+func (m model) dropRemoteSlot() (model, tea.Cmd) {
+	if m.rslot == nil || m.rslot.row.Profile == nil {
+		return m, nil
+	}
+	ids := slotModelIDs(m.rslot.row)
+	m.rslot = nil
+	return m, dropAllCmd(m.hold, ids)
+}
+
 // launchSlot is steps 8 to 10: build the command through the driver's slot
 // build and hand it to runSlotAndWaitCmd. It runs on the update goroutine and
 // waits for nothing.

@@ -547,12 +547,14 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				return m, nil
 			}
 			if m.phase == phaseOllamaWarn || m.phase == phaseReplaceConfirm {
+				var drop tea.Cmd
 				if m.phase == phaseReplaceConfirm {
 					m = m.dropSlot()
+					m, drop = m.dropRemoteSlot()
 				}
 				m.phase = phaseModel
 				m.status = ""
-				return m, nil
+				return m, drop
 			}
 			if m.phase == phaseNewWorktree {
 				m.phase = phaseList
@@ -685,8 +687,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 						// A profile launch that got this far ends here; a
 						// restart it still owes is settled (dropSlot).
 						m = m.dropSlot()
+						m, drop := m.dropRemoteSlot()
 						m.phase = phaseModel
-						return m, nil
+						return m, drop
 					case replaceProceedChoice:
 						return m.retryStart(m.replace.item, true, m.replace.others)
 					case othersKeepChoice:
