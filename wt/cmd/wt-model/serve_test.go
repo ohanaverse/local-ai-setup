@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelserver"
@@ -137,7 +138,7 @@ func TestServeRefusesUnconfiguredLiteLLM(t *testing.T) {
 	seedConfig(t, false)
 	_, err := run(t, "serve", "--listen", "127.0.0.1:0", "--token-file", writeToken(t, 0o600))
 	if err == nil || !strings.Contains(err.Error(), "wt litellm set") {
-		t.Fatalf("err = %v, want a message naming `wt litellm set`", err)
+		t.Fatalf("err = %v, want a message naming 'wt litellm set'", err)
 	}
 }
 
@@ -157,7 +158,7 @@ func TestServeAnswersPingOnEphemeralPort(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- cmd.ExecuteContext(ctx) }()
 
-	re := regexp.MustCompile(`listening on (\S+) \(gateway /v1, control /control/v1\)`)
+	re := regexp.MustCompile(`wt-model: listening on (\S+) \(gateway /v1, control /control/v1\)\n`)
 	var addr string
 	deadline := time.Now().Add(10 * time.Second)
 	for addr == "" {
@@ -215,4 +216,45 @@ func newLockedBuffer() (func() string, *lockedBuffer) {
 		defer b.mu.Unlock()
 		return b.buf.String()
 	}, b
+}
+
+// TestAnnounceLine pins the exact startup line a later client may parse.
+func TestAnnounceLine(t *testing.T) {
+	want := "wt-model: listening on 127.0.0.1:8787 (gateway /v1, control /control/v1)\n"
+	if got := announceLine("127.0.0.1:8787"); got != want {
+		t.Errorf("announceLine = %q, want %q", got, want)
+	}
+}
+
+// TestVersionFlag pins S6: --version prints "wt-model <version>" and succeeds.
+func TestVersionFlag(t *testing.T) {
+	out, err := run(t, "--version")
+	if err != nil || out != "wt-model "+version+"\n" {
+		t.Errorf("--version = %q, %v, want %q", out, err, "wt-model "+version+"\n")
+	}
+}
+
+// TestServeTakesNoArguments pins Args: a stray argument is refused.
+func TestServeTakesNoArguments(t *testing.T) {
+	if _, err := run(t, "serve", "extra"); err == nil {
+		t.Error("wt-model serve extra: no error, want a refusal")
+	}
+}
+
+// TestStartupRefusalReportsOnePrefix pins that a startup refusal (a token
+// file that does not exist) comes back as an error that exitcode.Report turns
+// into exit 1 and exactly one "wt-model:" prefix.
+func TestStartupRefusalReportsOnePrefix(t *testing.T) {
+	seedConfig(t, true)
+	_, err := run(t, "serve", "--listen", "127.0.0.1:0", "--token-file", filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatal("a missing token file started the server")
+	}
+	var buf bytes.Buffer
+	if got := exitcode.Report("wt-model", err, &buf); got != 1 {
+		t.Errorf("exit = %d, want 1", got)
+	}
+	if want := "wt-model: " + err.Error() + "\n"; buf.String() != want || strings.Count(buf.String(), "wt-model:") != 1 {
+		t.Errorf("printed %q, want %q with one prefix", buf.String(), want)
+	}
 }

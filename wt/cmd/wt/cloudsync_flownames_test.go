@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"slices"
 	"strings"
 	"testing"
@@ -50,8 +51,8 @@ func TestCloudSyncFlowsAreNamedForTheirProviders(t *testing.T) {
 	}
 	for _, old := range []string{"prices", "catalog", "prices,catalog"} {
 		first, _, _ := strings.Cut(old, ",")
-		if _, err := run("--only", old, "--dry-run"); err == nil || err.Error() != `--only: unknown flow "`+first+`" (valid: openrouter, ollama)` || exitCodeOf(err) != 1 {
-			t.Errorf("--only %s: err = %v (exit %d), want it refused as an unknown flow", old, err, exitCodeOf(err))
+		if _, err := run("--only", old, "--dry-run"); err == nil || err.Error() != `--only: unknown flow "`+first+`" (valid: openrouter, ollama)` || exitcode.Of(err) != 1 {
+			t.Errorf("--only %s: err = %v (exit %d), want it refused as an unknown flow", old, err, exitcode.Of(err))
 		}
 	}
 	help, err := run("--help")

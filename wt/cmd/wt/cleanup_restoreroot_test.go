@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,7 +24,7 @@ import (
 // cannot; a failure midway, a could-not-start (exit 1) and an unrecognised
 // error stay plain errors that end the session.
 func TestHandOffResultSeparatesWhatChangedNothing(t *testing.T) {
-	exit := func(code int, msg string) error { return &exitCodeError{code: code, err: errors.New(msg)} }
+	exit := func(code int, msg string) error { return exitcode.New(code, errors.New(msg), false) }
 	asNote := func(err error) *tui.HandOffNote {
 		var n *tui.HandOffNote
 		if errors.As(err, &n) {

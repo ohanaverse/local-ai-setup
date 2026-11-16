@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"os"
 	"os/exec"
@@ -71,7 +72,7 @@ func stubCleanupGH(t *testing.T) {
 }
 
 // runCleanup runs `wt cleanup args...` from dir and returns both streams and
-// the error (its exit status is exitCodeOf(err)).
+// the error (its exit status is exitcode.Of(err)).
 func runCleanup(t *testing.T, a *app, dir string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	t.Chdir(dir)
@@ -241,7 +242,7 @@ func TestCleanupCmdExit1WithoutDefaultBranch(t *testing.T) {
 		return dir
 	}
 	stdout, stderr, err := runCleanup(t, a, mk(), "--json", "--no-fetch")
-	if err == nil || exitCodeOf(err) != 1 {
+	if err == nil || exitcode.Of(err) != 1 {
 		t.Fatalf("err = %v, want exit 1", err)
 	}
 	if stderr != "" {
@@ -257,7 +258,7 @@ func TestCleanupCmdExit1WithoutDefaultBranch(t *testing.T) {
 	}
 
 	stdout, _, err = runCleanup(t, a, mk(), "--plain", "--no-fetch")
-	if err == nil || exitCodeOf(err) != 1 {
+	if err == nil || exitcode.Of(err) != 1 {
 		t.Fatalf("plain err = %v, want exit 1", err)
 	}
 	if stdout != "" {

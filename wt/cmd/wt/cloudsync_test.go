@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -179,7 +180,7 @@ func runCSFinal(t *testing.T, cfg *config.Config, o cloudSyncOpts) (stdout, stde
 	t.Helper()
 	var out, errOut bytes.Buffer
 	if err := runCloudSync(context.Background(), &out, &errOut, cfg, o); err != nil {
-		final, code = err.Error(), exitCodeOf(err)
+		final, code = err.Error(), exitcode.Of(err)
 	}
 	return out.String(), errOut.String(), final, code
 }
@@ -299,8 +300,8 @@ func TestCloudSyncCommandRefusals(t *testing.T) {
 		{[]string{"extra"}, `unknown command "extra" for "cloud-sync"`},
 	} {
 		err := run(ok, tc.args...)
-		if err == nil || err.Error() != tc.want || exitCodeOf(err) != 1 {
-			t.Errorf("wt cloud-sync %v: err = %v (exit %d), want %q and exit 1", tc.args, err, exitCodeOf(err), tc.want)
+		if err == nil || err.Error() != tc.want || exitcode.Of(err) != 1 {
+			t.Errorf("wt cloud-sync %v: err = %v (exit %d), want %q and exit 1", tc.args, err, exitcode.Of(err), tc.want)
 		}
 	}
 

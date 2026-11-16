@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"os"
 	"path/filepath"
@@ -585,7 +586,7 @@ func TestCloudSyncSkipsOllamaHoweverItIsAskedFor(t *testing.T) {
 			cmd.SetOut(&out)
 			cmd.SetErr(&errOut)
 			if err := cmd.Execute(); err != nil {
-				t.Errorf("err = %v (exit %d), want exit 0", err, exitCodeOf(err))
+				t.Errorf("err = %v (exit %d), want exit 0", err, exitcode.Of(err))
 			}
 			if errOut.String() != "" || !strings.HasSuffix(out.String(), skip) {
 				t.Errorf("stdout = %q\nstderr = %q\nwant stdout ending with the nothing-to-mirror line and no stderr", out.String(), errOut.String())
