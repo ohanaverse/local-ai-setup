@@ -130,7 +130,7 @@ func TestCwdAtRootWarnsAndProceeds(t *testing.T) {
 // TestRootFlagIsConsentForTheRootWarningButNotForHeld checks what --root
 // waives: the root warning alone. A free root launches with no question at
 // all; a root another live session holds still asks (the held warning names
-// the holder), and a no ends the launch quietly with nothing claimed. Why:
+// the holder), and a no ends the launch with exit 3 and nothing claimed. Why:
 // --root answers "yes, work in the root"; it says nothing about working
 // beside somebody else's session.
 func TestRootFlagIsConsentForTheRootWarningButNotForHeld(t *testing.T) {
