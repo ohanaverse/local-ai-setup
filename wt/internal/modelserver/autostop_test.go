@@ -392,4 +392,34 @@ func TestAutoStoppedModelStartedByHandIsLeftAlone(t *testing.T) {
 			t.Errorf("stopped %+v, want omlx/b once its session ended and the grace passed", stops)
 		}
 	})
+	t.Run("untrusted probe does not forget an absent model", func(t *testing.T) {
+		// An absent model under a partial probe may only look absent because
+		// the probe failed: it must stay remembered, so once the probe recovers
+		// and shows it running, the idle model is stopped.
+		const grace = time.Minute
+		clk := &fakeClock{t: testNow}
+		snap := serverSnap() // omlx/a is not listed as running
+		snap.Providers["omlx"] = localmodels.StatusPartial
+		f := &fakeLife{snap: snap}
+		d := f.deps(serverCfg())
+		d.Now = clk.now
+		reg := sessionreg.New(time.Minute, clk.now)
+		_ = reg.Register("s", []string{"omlx/a"})
+		reg.End("s")
+		clk.advance(2 * grace) // absent for longer than the grace
+		jobs := newJobs(t, clk)
+		a := &AutoStopper{Deps: d, Sessions: reg, Grace: grace, Jobs: jobs}
+		a.Tick(context.Background())
+		drain(t, jobs)
+		if _, seen := reg.IdleSince("omlx/a"); !seen {
+			t.Fatal("a model absent under an untrusted probe was forgotten")
+		}
+		ok := serverSnap("omlx/a") // the probe recovers; the model is running
+		f.setSnap(ok)
+		a.Tick(context.Background())
+		drain(t, jobs)
+		if stops := f.stopped(); len(stops) != 1 {
+			t.Errorf("stopped %+v after the probe recovered, want exactly one stop", stops)
+		}
+	})
 }

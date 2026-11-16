@@ -61,7 +61,6 @@ type Server struct {
 	routedMu  sync.Mutex
 	routedAt  time.Time
 	routedSet map[string]bool
-	routedOK  bool
 }
 
 // serverOption adjusts a Server in NewServer (test seams only).
@@ -151,7 +150,11 @@ func (s *Server) ping(w http.ResponseWriter, _ *http.Request) {
 // routed is the set of ids the gateway lists, or nil when LiteLLM cannot be
 // asked (fail soft: unknown, never "nothing is routed", which a restart of
 // the proxy would otherwise make every client act on). The answer, success or
-// failure, is reused for routedTTL so a burst of calls asks once.
+// failure, is reused for routedTTL so a burst of calls asks once. It holds
+// routedMu across the RoutedIDs call (up to routeRequestTimeout) on purpose,
+// so a burst asks LiteLLM once; the first caller's request context is the one
+// used, so a client that disconnects early caches an "unknown" for routedTTL
+// (it fails soft).
 func (s *Server) routed(ctx context.Context) map[string]bool {
 	if s.d.RoutedIDs == nil {
 		return nil

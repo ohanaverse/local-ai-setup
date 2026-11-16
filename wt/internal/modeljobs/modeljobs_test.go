@@ -453,3 +453,27 @@ func TestSubmitOnceJoinsOnlyAPendingJobOfTheSameKind(t *testing.T) {
 		t.Error("the joining RunFunc ran")
 	}
 }
+
+// TestSubmitOnceDoesNotJoinACancelledJob pins that a running job Cancel has
+// already hit is not joined: it is about to end cancelled, so a second client
+// that asked for the same start would be handed a job that ends cancelled. A
+// new job is queued instead.
+func TestSubmitOnceDoesNotJoinACancelledJob(t *testing.T) {
+	m := NewManager(fixedNow)
+	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
+	started, release := make(chan struct{}), make(chan struct{})
+	first, _ := m.SubmitOnce("start", "m", func(context.Context, func(string)) modelapi.JobResult {
+		close(started)
+		<-release
+		return modelapi.JobResult{OK: true}
+	})
+	<-started
+	if !m.Cancel(first) {
+		t.Fatal("Cancel of the running job returned false")
+	}
+	second, existed := m.SubmitOnce("start", "m", ok)
+	if existed || second == first {
+		t.Errorf("SubmitOnce after Cancel = (%s, %v), want a new job", second, existed)
+	}
+	close(release)
+}

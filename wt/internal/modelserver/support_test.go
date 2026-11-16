@@ -181,7 +181,9 @@ func TestSpendBoundsAreRequired(t *testing.T) {
 // TestSpendNotConfiguredVersusUnavailable pins the two 503 codes: nothing
 // names the database (either sentinel) is spend_not_configured, any other
 // failure is spend_unavailable with the error's text, and neither message ever
-// carries the connection string, which must not leave the host.
+// carries the connection string, which must not leave the host. The
+// not-configured message is fixed text, since the wrapped error can name the
+// host's local file paths.
 func TestSpendNotConfiguredVersusUnavailable(t *testing.T) {
 	const dsn = "postgresql://user:secret@db.internal:5432/litellm"
 	cases := []struct {
@@ -204,6 +206,10 @@ func TestSpendNotConfiguredVersusUnavailable(t *testing.T) {
 		}
 		if c.code == modelapi.CodeSpendUnavailable && e.Error.Message != "spend unavailable: "+c.err.Error() {
 			t.Errorf("%s: message = %q", c.name, e.Error.Message)
+		}
+		// The not-configured text is fixed: a wrapped error can name host paths.
+		if c.code == modelapi.CodeSpendNotConfigured && e.Error.Message != "spend is not configured on the model server" {
+			t.Errorf("%s: message = %q, want the fixed text", c.name, e.Error.Message)
 		}
 	}
 }

@@ -440,6 +440,42 @@ func TestCatalogRoutedFlag(t *testing.T) {
 	}
 }
 
+// TestCatalogHandlerEmitsRouted pins that the catalog HANDLER, not only
+// BuildCatalog, writes "routed":true for a routed row and "routed":false for
+// an unrouted one on the wire when RoutedIDs succeeds.
+func TestCatalogHandlerEmitsRouted(t *testing.T) {
+	f := &fakeLife{snap: serverSnap("omlx/a", "omlx/b")}
+	d := f.deps(serverCfg())
+	d.RoutedIDs = func(context.Context) (map[string]bool, error) {
+		return map[string]bool{"omlx/a": true}, nil
+	}
+	s, err := NewServer(Options{Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	st, b := call(t, ts, "GET", "/control/v1/catalog", "")
+	if st != 200 {
+		t.Fatalf("catalog = %d %s", st, b)
+	}
+	var raw struct {
+		Rows []map[string]json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, r := range raw.Rows {
+		var id string
+		_ = json.Unmarshal(r["id"], &id)
+		got[id] = string(r["routed"])
+	}
+	if got["omlx/a"] != "true" || got["omlx/b"] != "false" {
+		t.Errorf("routed on the wire a/b = %q/%q, want true/false", got["omlx/a"], got["omlx/b"])
+	}
+}
+
 // TestCatalogRoutedUnknownWhenLiteLLMFails pins that when LiteLLM cannot be
 // asked every Routed is nil and the JSON has no routed key. During a LiteLLM
 // restart the catalog must not say "nothing is routed", or every client would

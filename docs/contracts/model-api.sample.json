@@ -70,7 +70,7 @@
     "rows": [{"model": "omlx/qwen3.8-35b", "requests": 12, "prompt_tokens": 40210, "completion_tokens": 9876, "spend": 0}],
     "unattributed": 2
   },
-  "error_spend_not_configured": {"error": {"message": "spend is not configured: no LiteLLM database configured", "code": "spend_not_configured"}},
+  "error_spend_not_configured": {"error": {"message": "spend is not configured on the model server", "code": "spend_not_configured"}},
   "error_spend_unavailable": {"error": {"message": "spend unavailable: psql is not installed", "code": "spend_unavailable"}},
   "error_unauthorized": {"error": {"message": "missing or wrong bearer token", "code": "unauthorized"}},
   "error_unknown_model": {"error": {"message": "unknown model \"nope/none\"", "code": "unknown_model"}},

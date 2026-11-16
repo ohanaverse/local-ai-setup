@@ -107,7 +107,7 @@ func (s *Server) spend(w http.ResponseWriter, r *http.Request) {
 	res, err := s.d.Spend(r.Context(), bounds[0], bounds[1])
 	if err != nil {
 		if errors.Is(err, litellm.ErrNoDatabase) || errors.Is(err, spend.ErrNoConnectionString) {
-			writeError(w, http.StatusServiceUnavailable, modelapi.CodeSpendNotConfigured, fmt.Sprintf("spend is not configured: %v", err))
+			writeError(w, http.StatusServiceUnavailable, modelapi.CodeSpendNotConfigured, "spend is not configured on the model server")
 			return
 		}
 		writeError(w, http.StatusServiceUnavailable, modelapi.CodeSpendUnavailable, fmt.Sprintf("spend unavailable: %v", err))

@@ -98,7 +98,7 @@ func (m *Manager) SubmitOnce(kind, model string, run RunFunc) (id string, existe
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, j := range m.activeLocked() {
-		if j.status.Kind == kind && j.status.Model == model {
+		if j.status.Kind == kind && j.status.Model == model && !j.cancelled {
 			return j.status.ID, true
 		}
 	}
