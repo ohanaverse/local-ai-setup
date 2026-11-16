@@ -105,6 +105,27 @@ All control paths are under `/control/v1/` and answer JSON.
 | `DELETE /control/v1/sessions/{id}` | End a client session. 204, also for an unknown id. |
 | `/v1/*` | The gateway: every path is forwarded to LiteLLM, streaming, with the host's LiteLLM key. |
 
+### Catalog rows
+
+Every row carries `id`, `family`, `provider_id`, `model_name`, `location`,
+`tags`, `registered`, `discovered`, `state`, `action`, `protocols` and
+`sessions`. These fields need a note:
+
+| Field | Meaning |
+|---|---|
+| `gateway_id` | The id to send through the gateway. Empty for a native row (`native: true`), which never goes through the gateway. |
+| `order` | The model's registry index; discovered rows follow the registry's, by id. Rows are sorted by `id`, so a client that lists in registry order sorts on this. Always present. |
+| `routed` | Whether LiteLLM lists the model. Three states: `true`, `false`, and **absent** when the server could not ask LiteLLM (a proxy restart). Absent means unknown, never "not routed". The same goes for `resolve`. The server asks LiteLLM at most once per 2 seconds. |
+| `tier`, `tier_code`, `confidence` | Present for a rated model only. |
+| `aligned`, `tier_sources` | The aligned score and how many scores it was made from; present for any model the tiers file has them for, rated or not. |
+| `context` | The context window in tokens, present only when the tiers file records the model's own host window (not the largest row of its key). |
+| `price.time_priced` | True when the model has time-windowed prices, so the figures are those in force at `generated`. |
+
+The catalog's `pricing` object is present exactly when some model is priced
+from OpenRouter; its `updated` is the RFC 3339 time of the newest price stamp
+and is absent when prices were never refreshed. A resident listed in a job's
+`others` carries a `figure`: the memory it holds, as wt words it.
+
 A request body may carry fields this server does not know (ignored), may be
 empty (an empty object) and is limited to 1 MiB. A body that is not JSON, or
 that carries data after its first JSON value, is a 400 `bad_request`.

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
@@ -29,6 +30,8 @@ const (
 	maxBody = 1 << 20
 	// httpShutdownGrace bounds the HTTP server's graceful shutdown.
 	httpShutdownGrace = 10 * time.Second
+	// routedTTL is how long a catalog reuses LiteLLM's model list.
+	routedTTL = 2 * time.Second
 	// jobsShutdownGrace bounds the wait for the running job on shutdown.
 	jobsShutdownGrace = 30 * time.Second
 )
@@ -52,6 +55,13 @@ type Server struct {
 	handler  http.Handler
 	// autoStopEvery is the auto-stop scan period; tests shorten it.
 	autoStopEvery time.Duration
+	// routedTTL is how long the answer of Deps.RoutedIDs is reused; tests
+	// shorten or lengthen it.
+	routedTTL time.Duration
+	routedMu  sync.Mutex
+	routedAt  time.Time
+	routedSet map[string]bool
+	routedOK  bool
 }
 
 // serverOption adjusts a Server in NewServer (test seams only).
@@ -68,7 +78,7 @@ func NewServer(o Options, d Deps, opts ...serverOption) (*Server, error) {
 	if o.IdleGrace <= 0 {
 		return nil, fmt.Errorf("the idle grace must be greater than zero, got %s", o.IdleGrace)
 	}
-	s := &Server{o: o, d: d, autoStopEvery: autoStopEvery}
+	s := &Server{o: o, d: d, autoStopEvery: autoStopEvery, routedTTL: routedTTL}
 	s.sessions = sessionreg.New(sessionTTL, d.Now)
 	s.jobs = modeljobs.NewManager(d.Now)
 	s.stopper = &AutoStopper{Deps: d, Sessions: s.sessions, Grace: o.IdleGrace, Jobs: s.jobs}
@@ -134,17 +144,40 @@ func (s *Server) ping(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, modelapi.Ping{APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion, Server: "wt-model"})
 }
 
-func (s *Server) catalog(w http.ResponseWriter, _ *http.Request) {
+// routed is the set of ids the gateway lists, or nil when LiteLLM cannot be
+// asked (fail soft: unknown, never "nothing is routed", which a restart of
+// the proxy would otherwise make every client act on). The answer, success or
+// failure, is reused for routedTTL so a burst of calls asks once.
+func (s *Server) routed(ctx context.Context) map[string]bool {
+	if s.d.RoutedIDs == nil {
+		return nil
+	}
+	s.routedMu.Lock()
+	defer s.routedMu.Unlock()
+	if now := s.d.Now(); !s.routedAt.IsZero() && now.Sub(s.routedAt) < s.routedTTL {
+		return s.routedSet
+	}
+	ids, err := s.d.RoutedIDs(ctx)
+	if err != nil {
+		ids = nil
+	} else if ids == nil {
+		ids = map[string]bool{}
+	}
+	s.routedSet, s.routedAt = ids, s.d.Now()
+	return ids
+}
+
+func (s *Server) catalog(w http.ResponseWriter, r *http.Request) {
 	cfg := s.d.Config()
 	snap := s.d.Inventory(cfg)
-	writeJSON(w, http.StatusOK, BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.d.Now()))
+	writeJSON(w, http.StatusOK, BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now()))
 }
 
 func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("model")
 	cfg := s.d.Config()
 	snap := s.d.Inventory(cfg)
-	cat := BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.d.Now())
+	cat := BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now())
 	for _, row := range cat.Rows {
 		if row.ID == id {
 			writeJSON(w, http.StatusOK, row)

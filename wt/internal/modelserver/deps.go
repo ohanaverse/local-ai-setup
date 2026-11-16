@@ -45,6 +45,10 @@ type Deps struct {
 	SettleRoutes func(context.Context, io.Writer, *config.Config)
 	// Routed returns nil once gatewayID answers through the gateway.
 	Routed func(ctx context.Context, gatewayID string) error
+	// RoutedIDs returns the ids the gateway lists right now; a nil func or an
+	// error means LiteLLM could not be asked (the catalog then leaves
+	// Row.Routed unset).
+	RoutedIDs func(ctx context.Context) (map[string]bool, error)
 }
 
 // routePollEvery is how often the default Routed asks the gateway.
@@ -96,7 +100,8 @@ func DefaultDeps(cfg *config.Config, reload func() (*config.Config, error), upst
 			lifecycle.SettleRoutesTo(ctx, out, cfg)
 			lifecycle.WaitPendingRoutes()
 		},
-		Routed: w.wait,
+		Routed:    w.wait,
+		RoutedIDs: w.ids,
 	}
 }
 
@@ -144,9 +149,15 @@ func (w routeWaiter) wait(ctx context.Context, id string) error {
 
 // listed asks the gateway once whether it lists id.
 func (w routeWaiter) listed(ctx context.Context, id string) (bool, error) {
+	ids, err := w.ids(ctx)
+	return ids[id], err
+}
+
+// ids asks the gateway once for every id it lists.
+func (w routeWaiter) ids(ctx context.Context) (map[string]bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, w.upstream.JoinPath("v1", "models").String(), nil)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+w.key)
 	resp, err := w.client.Do(req)
@@ -156,11 +167,11 @@ func (w routeWaiter) listed(ctx context.Context, id string) (bool, error) {
 		if errors.As(err, &ue) {
 			err = ue.Err
 		}
-		return false, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("the gateway answered %s", resp.Status)
+		return nil, fmt.Errorf("the gateway answered %s", resp.Status)
 	}
 	var body struct {
 		Data []struct {
@@ -168,14 +179,13 @@ func (w routeWaiter) listed(ctx context.Context, id string) (bool, error) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return false, fmt.Errorf("the gateway model list could not be read: %w", err)
+		return nil, fmt.Errorf("the gateway model list could not be read: %w", err)
 	}
+	ids := make(map[string]bool, len(body.Data))
 	for _, m := range body.Data {
-		if m.ID == id {
-			return true, nil
-		}
+		ids[m.ID] = true
 	}
-	return false, nil
+	return ids, nil
 }
 
 // syncBuffer is an io.Writer safe to write from the engine's restart

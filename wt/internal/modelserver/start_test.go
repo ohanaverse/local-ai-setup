@@ -215,7 +215,7 @@ func TestStartOccupiedIsReportedNotLooped(t *testing.T) {
 	if !slices.Equal(p.Occupants, []string{"mtplx/y"}) {
 		t.Errorf("occupants = %q, want [mtplx/y]", p.Occupants)
 	}
-	if want := []modelapi.Resident{{ID: "omlx/b", Label: "omlx/b", Stoppable: true}}; !slices.Equal(p.Others, want) {
+	if want := []modelapi.Resident{{ID: "omlx/b", Label: "omlx/b", Stoppable: true, Figure: "memory use unknown"}}; !slices.Equal(p.Others, want) {
 		t.Errorf("others = %+v, want %+v", p.Others, want)
 	}
 	if !slices.Equal(p.OthersUnknown, []string{"sushi"}) {

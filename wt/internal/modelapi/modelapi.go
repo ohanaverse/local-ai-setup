@@ -29,6 +29,9 @@ type Price struct {
 	Input  *float64 `json:"input,omitempty"`
 	Cache  *float64 `json:"cache,omitempty"`
 	Output *float64 `json:"output,omitempty"`
+	// TimePriced is true when the model has time-windowed prices, so the
+	// figure above is the one in force at the catalog's Generated time.
+	TimePriced bool `json:"time_priced,omitempty"`
 }
 
 // Row states.
@@ -49,8 +52,18 @@ const (
 
 // Row is one model in the catalog.
 type Row struct {
-	ID          string   `json:"id"`
-	GatewayID   string   `json:"gateway_id"`
+	ID string `json:"id"`
+	// GatewayID is the id the gateway routes the model by; "" for a native
+	// row, which never goes through the gateway.
+	GatewayID string `json:"gateway_id"`
+	// Native marks a model whose provider authenticates natively.
+	Native bool `json:"native,omitempty"`
+	// Order is the model's place in the registry (discovered rows follow the
+	// registry's, by id); clients list rows in this order.
+	Order int `json:"order"`
+	// Routed is whether the gateway lists the model; nil when the server
+	// could not ask LiteLLM, so a client must not read it as false.
+	Routed      *bool    `json:"routed,omitempty"`
 	Family      string   `json:"family"`
 	ProviderID  string   `json:"provider_id"`
 	ModelName   string   `json:"model_name"`
@@ -65,10 +78,19 @@ type Row struct {
 	TierCode    string   `json:"tier_code,omitempty"`
 	Confidence  string   `json:"confidence,omitempty"`
 	Aligned     *float64 `json:"aligned,omitempty"`
+	// TierSources is how many scores the aligned score was made from.
+	TierSources int      `json:"tier_sources,omitempty"`
 	Context     int      `json:"context,omitempty"`
 	Protocols   []string `json:"protocols"`
 	Price       *Price   `json:"price,omitempty"`
 	Sessions    int      `json:"sessions"`
+}
+
+// Pricing describes the OpenRouter price refresh.
+type Pricing struct {
+	// Updated is the RFC 3339 time of the newest price stamp; absent when
+	// prices were never refreshed.
+	Updated string `json:"updated,omitempty"`
 }
 
 // Catalog is the model list document.
@@ -77,6 +99,8 @@ type Catalog struct {
 	Generated string            `json:"generated"`
 	Providers map[string]string `json:"providers"`
 	Rows      []Row             `json:"rows"`
+	// Pricing is present exactly when some model is priced from OpenRouter.
+	Pricing *Pricing `json:"pricing,omitempty"`
 }
 
 // OthersAnswer names the other resident models the caller agrees to stop.
@@ -158,6 +182,8 @@ type Resident struct {
 	ID        string `json:"id"`
 	Label     string `json:"label"`
 	Stoppable bool   `json:"stoppable"`
+	// Figure is the memory the resident holds, as wt words it.
+	Figure string `json:"figure,omitempty"`
 }
 
 // SessionRegister announces a session and the models it uses.
