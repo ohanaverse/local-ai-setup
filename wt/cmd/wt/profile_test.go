@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
@@ -35,18 +36,14 @@ func TestProfileListPrintsEveryProfile(t *testing.T) {
 }
 
 // TestProfileShowResolvesForAgentAndModel verifies `wt profile show -A
-// claude -M <id>` dry-runs Resolve() and reports what would apply,
-// without launching anything.
+// claude -M <id>` dry-runs Resolve() against the model server's row for the
+// id and reports what would apply, without launching anything.
 func TestProfileShowResolvesForAgentAndModel(t *testing.T) {
-	a := &app{
-		cfg: &config.Config{
-			Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
-			Models:    []config.Model{{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}},
-		},
-		profiles: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
-			{Agent: "claude", Match: "location", Location: "local", Env: map[string]string{"X": "1"}},
-		}},
-	}
+	// The model comes from the model server: its row says it is local.
+	a := ollamaXServerApp(t)
+	a.profiles = profiles.Store{Enabled: true, Profiles: []profiles.Profile{
+		{Agent: "claude", Match: "location", Location: "local", Env: map[string]string{"X": "1"}},
+	}}
 	var out bytes.Buffer
 	cmd := profileCmd(a)
 	cmd.SetOut(&out)
@@ -66,15 +63,11 @@ func TestProfileShowResolvesForAgentAndModel(t *testing.T) {
 // called unconditionally with an empty id, which can never match a
 // registry entry.
 func TestProfileShowWithoutModelDoesNotError(t *testing.T) {
-	a := &app{
-		cfg: &config.Config{
-			Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
-			Models:    []config.Model{{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}},
-		},
-		profiles: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
-			{Agent: "claude", Match: "location", Location: "local", Env: map[string]string{"X": "1"}},
-		}},
-	}
+	// The model comes from the model server: its row says it is local.
+	a := ollamaXServerApp(t)
+	a.profiles = profiles.Store{Enabled: true, Profiles: []profiles.Profile{
+		{Agent: "claude", Match: "location", Location: "local", Env: map[string]string{"X": "1"}},
+	}}
 	var out bytes.Buffer
 	cmd := profileCmd(a)
 	cmd.SetOut(&out)
@@ -143,7 +136,7 @@ func TestProfileListWarnsOnValidateError(t *testing.T) {
 // both loadErr and validateErr and disables everything on either).
 func TestProfileShowReportsValidateErrorInsteadOfResolving(t *testing.T) {
 	a := &app{
-		cfg: &config.Config{
+		hostSet: true, hostCfg: &config.Config{
 			Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
 			Models:    []config.Model{{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}},
 		},
@@ -238,7 +231,7 @@ func TestProfileOnOffRefusesOnLoadError(t *testing.T) {
 func TestProfileListShowStatusReportLoadError(t *testing.T) {
 	loadErr := errors.New("parse profiles.toml: simulated parse failure")
 	a := &app{
-		cfg:             &config.Config{},
+		hostSet: true, hostCfg: &config.Config{},
 		profilesLoadErr: loadErr,
 	}
 
@@ -488,48 +481,23 @@ func TestProfileToggleHandlesCRLFEnabledLine(t *testing.T) {
 	}
 }
 
-// TestProfileShowReservedPrefixIsARegistryModel verifies the one case where a
-// -M value starting with "profile/" is not a slot profile: the registry has a
-// provider with id "profile". No slot-profile row exists then, so the id is a
-// registry model's and `wt profile show` resolves automatic profiles for it,
-// as it does for any model id. Taking the slot branch would report an
-// existing model as "not defined".
-func TestProfileShowReservedPrefixIsARegistryModel(t *testing.T) {
-	a := &app{
-		cfg: &config.Config{
-			Providers: []config.Provider{{ID: "profile", Location: config.LocationCloud}},
-			Models:    []config.Model{{ID: "profile/x", ProviderID: "profile", ModelName: "x"}},
-		},
-		profiles: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
-			{Agent: "claude", Match: "model", Model: "profile/x", Env: map[string]string{"X": "1"}},
-		}},
-	}
-	var out bytes.Buffer
-	cmd := profileCmd(a)
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"show", "-A", "claude", "-M", "profile/x"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute error = %v", err)
-	}
-	if !strings.Contains(out.String(), "env: X=1") {
-		t.Errorf("output = %q, want the automatic profile resolved for the registry model", out.String())
-	}
+// ollamaXServerApp is an app whose config.toml names a fake model server
+// serving one local, running model, ollama/x.
+func ollamaXServerApp(t *testing.T) *app {
+	t.Helper()
+	return pointAtFake(t, newFakeModelServer(t, modelapi.Row{ID: "ollama/x", GatewayID: "ollama/x", ProviderID: "ollama", ModelName: "x",
+		Location: "local", Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 1}), "")
 }
 
 // TestProfileShowPrintsConfigDefaults verifies `wt profile show` prints the
 // resolved config_defaults table.
 func TestProfileShowPrintsConfigDefaults(t *testing.T) {
-	a := &app{
-		cfg: &config.Config{
-			Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
-			Models:    []config.Model{{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}},
-		},
-		profiles: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
-			{Agent: "claude", Match: "location", Location: "local", ConfigDefaults: map[string]any{
-				"permissions": map[string]any{"defaultMode": "default"},
-			}},
+	a := ollamaXServerApp(t)
+	a.profiles = profiles.Store{Enabled: true, Profiles: []profiles.Profile{
+		{Agent: "claude", Match: "location", Location: "local", ConfigDefaults: map[string]any{
+			"permissions": map[string]any{"defaultMode": "default"},
 		}},
-	}
+	}}
 	var out bytes.Buffer
 	cmd := profileCmd(a)
 	cmd.SetOut(&out)

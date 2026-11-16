@@ -16,6 +16,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -1034,36 +1035,36 @@ func TestSlotWarnings(t *testing.T) {
 		a    *app
 		want []string
 	}{
-		{"nothing wrong", &app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, blocked}}, nil},
+		{"nothing wrong", &app{hostSet: true, hostCfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, blocked}}, nil},
 		{"a modelOverrides target that is not a slot model, once",
-			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, overriding, routedOnly}},
+			&app{hostSet: true, hostCfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, overriding, routedOnly}},
 			[]string{`wt: profile/overriding (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/z", which is not one of the profile's slot models, so wt does not make sure it is routed`}},
 		{"a blocked profile's modelOverrides says nothing more",
-			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{blockedOverriding}}, nil},
-		{"no file", &app{cfg: slotFixtureConfig()}, nil},
+			&app{hostSet: true, hostCfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{blockedOverriding}}, nil},
+		{"no file", &app{hostSet: true, hostCfg: slotFixtureConfig()}, nil},
 		{"the file does not parse",
-			&app{cfg: slotFixtureConfig(), slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")},
+			&app{hostSet: true, hostCfg: slotFixtureConfig(), slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")},
 			[]string{"wt: parse slot-profiles.toml: toml: line 2: unexpected EOF — slot profiles are unavailable"}},
 		{"a profile with no usable name",
-			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, unusable}},
+			&app{hostSet: true, hostCfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, unusable}},
 			[]string{"wt: slot-profiles.toml[2]: name is missing — skipped (see 'wt profile list')"}},
 		{"a file whose only content is under an unknown key",
-			&app{cfg: slotFixtureConfig(), slotUnknown: []string{"profiles"}},
+			&app{hostSet: true, hostCfg: slotFixtureConfig(), slotUnknown: []string{"profiles"}},
 			[]string{`wt: slot-profiles.toml: unknown key "profiles" — ignored`}},
 		{"unknown keys beside a usable profile, one line each",
-			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable}, slotUnknown: []string{"top", "profile.envs"}},
+			&app{hostSet: true, hostCfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable}, slotUnknown: []string{"top", "profile.envs"}},
 			[]string{
 				`wt: slot-profiles.toml: unknown key "top" — ignored`,
 				`wt: slot-profiles.toml: unknown key "profile.envs" — ignored`,
 			}},
 		{"the reserved provider id",
-			&app{cfg: reserved, slotChecks: []profiles.SlotCheck{usable}},
+			&app{hostSet: true, hostCfg: reserved, slotChecks: []profiles.SlotCheck{usable}},
 			[]string{`wt: the registry has a provider with id "profile" — slot profiles are unavailable`}},
 		{"a registry model id with the reserved prefix",
-			&app{cfg: prefixed, slotChecks: []profiles.SlotCheck{usable}},
+			&app{hostSet: true, hostCfg: prefixed, slotChecks: []profiles.SlotCheck{usable}},
 			[]string{`wt: the registry has a model whose id begins with "profile/" (profile/mixed) — slot profiles are unavailable`}},
 		{"the reserved provider id with no usable profile",
-			&app{cfg: reserved, slotChecks: []profiles.SlotCheck{unusable}},
+			&app{hostSet: true, hostCfg: reserved, slotChecks: []profiles.SlotCheck{unusable}},
 			[]string{"wt: slot-profiles.toml[2]: name is missing — skipped (see 'wt profile list')"}},
 	}
 	for _, tc := range cases {
@@ -1088,19 +1089,17 @@ func TestRunLaunchPathWarnsAboutSlotProfilesOncePerRun(t *testing.T) {
 		t.Run("agent="+tc.agent, func(t *testing.T) {
 			restoreLaunchSlotChecks(t)
 			stubStdinTTY(t, false)
-			oldLaunch, oldSweep := launchFiltered, sweepRefcounts
-			launchFiltered = func(string, string, *config.Config, bool, string, string, string, bool, []string, []config.Model, *precomputedProfiles) error {
+			oldLaunch := launchCommand
+			launchCommand = func(string, string, *config.Config, bool, bool, []string, *precomputedProfiles) error {
 				return nil
 			}
-			sweepRefcounts = func() {}
-			t.Cleanup(func() { launchFiltered, sweepRefcounts = oldLaunch, oldSweep })
-			cfg := slotFixtureConfig()
-			cfg.Agents = append(cfg.Agents, config.Agent{Name: "shell"})
-			a := &app{cfg: cfg, slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")}
+			t.Cleanup(func() { launchCommand = oldLaunch })
+			// No model server: a model-driven agent's launch is refused,
+			// and no agent's is the picker's terminal refusal; the
+			// warnings are printed before either.
+			a := &app{slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")}
 
 			stderr := captureFile(t, &os.Stderr, func() {
-				// Without a pin an agent launch ends at "the picker needs a
-				// TTY"; the warnings are printed before that.
 				_ = runLaunchPath(launchCobraCmd(), a, tc.agent, "", "", "", nil, ".", "")
 			})
 
@@ -1129,19 +1128,22 @@ func TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			restoreLaunchSlotChecks(t)
 			stubStdinTTY(t, true)
-			oldTUI, oldSweep, oldLaunch := tuiRun, sweepRefcounts, launchFiltered
-			launchFiltered = func(string, string, *config.Config, bool, string, string, string, bool, []string, []config.Model, *precomputedProfiles) error {
+			oldTUI, oldBuild := tuiRun, buildGatewayCmd
+			buildGatewayCmd = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 				t.Error("the launch went past the picker")
-				return nil
+				return nil, agents.LaunchInfo{}, errors.New("no launch")
 			}
 			tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
 				fmt.Fprintln(os.Stderr, "<the TUI ran>")
 				return errors.New("the TUI's own error")
 			}
-			sweepRefcounts = func() {}
-			t.Cleanup(func() { tuiRun, sweepRefcounts, launchFiltered = oldTUI, oldSweep, oldLaunch })
-			a := &app{cfg: slotFixtureConfig(), slotUnknown: []string{"top"},
-				slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")}
+			t.Cleanup(func() { tuiRun, buildGatewayCmd = oldTUI, oldBuild })
+			// Two launchable models on the model server: with no -M the
+			// model picker decides.
+			f := newFakeModelServer(t, wireRow("openrouter/a", "launch", 1), wireRow("openrouter/b", "launch", 2))
+			a := pointAtFake(t, f, "")
+			a.slotUnknown = []string{"top"}
+			a.slotLoadErr = errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")
 
 			var err error
 			stderr := captureFile(t, &os.Stderr, func() {
@@ -1183,19 +1185,16 @@ func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
 			stateDir := filepath.Dir(path)
 			worktree := t.TempDir()
 			fakeAgentOnPath(t, "claude")
-			stubEnsureRoute(t)
-			stubSlotSeams(t)
-			oldSweep := sweepRefcounts
-			sweepRefcounts = func() {}
-			t.Cleanup(func() { sweepRefcounts = oldSweep })
+			// The slot fixture's models on a model server config.toml
+			// names, in the same config home as the slot file.
+			nameServerInConfigHome(t, slotsServer(t))
 
 			// The app as wt builds it: newApp reads the slot file from the
-			// test's config home. Only the registry is the fixture's.
+			// test's config home.
 			a, aerr := newApp()
 			if aerr != nil {
 				t.Fatalf("newApp() error = %v: a broken slot file must not stop wt", aerr)
 			}
-			a.cfg = slotFixtureConfig()
 
 			rotationState := func() string {
 				data, _ := os.ReadFile(filepath.Join(stateDir, "rotation.state"))
@@ -1230,25 +1229,14 @@ func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
 				t.Errorf("%d stderr lines mention slot profiles, want one; stderr = %q", slotLines, stderr)
 			}
 
-			// A rotated launch: rotation advances to the next launchable
-			// model, as it does with no slot file at all.
-			captureFile(t, &os.Stdout, func() {
-				err = launchFiltered("claude", worktree, a.cfg, false, "", "", "", false, nil, nil, nil)
-			})
-			if err != nil {
-				t.Fatalf("rotated launch error = %v", err)
-			}
-			if got := rotationState(); got != "openrouter/b" {
-				t.Errorf("rotation.state = %q after the rotated launch, want openrouter/b", got)
-			}
-
-			// The profile itself cannot be pinned.
+			// The profile itself cannot be pinned: it is not a slot
+			// profile, so the pin goes to the model server, which has no
+			// such model.
 			captureFile(t, &os.Stderr, func() {
 				err = runLaunchPath(launchCobraCmd(), a, "claude", tc.pin, "", "", nil, worktree, "")
 			})
-			want := fmt.Sprintf("model %q is not in the eligible list for agent %q", tc.pin, "claude")
-			if err == nil || err.Error() != want {
-				t.Errorf("profile pin error = %v, want %q", err, want)
+			if err == nil || exitcode.Of(err) != 1 || !strings.Contains(err.Error(), tc.pin) {
+				t.Errorf("profile pin error = %v, want a refusal naming %s, exit 1", err, tc.pin)
 			}
 		})
 	}
@@ -1260,17 +1248,15 @@ func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
 // returns its reason, which main turns into a non-zero exit.
 func TestRunLaunchPathLaunchesAPinnedSlotProfile(t *testing.T) {
 	restoreLaunchSlotChecks(t)
-	_, worktree := slotLaunchEnv(t)
-	oldSweep := sweepRefcounts
-	sweepRefcounts = func() {}
-	t.Cleanup(func() { sweepRefcounts = oldSweep })
-	seams := stubSlotSeams(t)
+	r := newRemoteRig(t, slotWireRows()...)
+	worktree := t.TempDir()
 	sentinel := filepath.Join(t.TempDir(), "agent-ran")
-	seams.cmd = exec.Command("touch", sentinel)
-	a := &app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{
+	t.Setenv("WT_FAKE_MARK", sentinel) // the rig's fake claude touches it
+	a := r.a
+	a.slotChecks = []profiles.SlotCheck{
 		slotFixtureCheck(0, "cloud", "opus", slotCloud()),
 		slotFixtureCheck(1, "broken", "opus", map[string]string{"opus": "openrouter/gone"}),
-	}}
+	}
 
 	var err error
 	captureFile(t, &os.Stdout, func() {
@@ -1284,7 +1270,7 @@ func TestRunLaunchPathLaunchesAPinnedSlotProfile(t *testing.T) {
 	}
 
 	err = runLaunchPath(launchCobraCmd(), a, "claude", "profile/broken", "", "", nil, worktree, "")
-	if err == nil || err.Error() != "slot opus: openrouter/gone is not in the registry" {
+	if err == nil || !strings.HasPrefix(err.Error(), "slot opus: openrouter/gone is not in the model server's catalog") {
 		t.Errorf("blocked pin error = %v, want the row's reason", err)
 	}
 }
@@ -1298,30 +1284,28 @@ func TestRunLaunchPathLaunchesAPinnedSlotProfile(t *testing.T) {
 // {"modelOverrides":{"claude-sonnet-4-6":5}}, which Claude Code cannot use.
 func TestRunLaunchPathRefusesANonStringOverrideTarget(t *testing.T) {
 	restoreLaunchSlotChecks(t)
-	_, worktree := slotLaunchEnv(t)
-	oldSweep := sweepRefcounts
-	sweepRefcounts = func() {}
-	t.Cleanup(func() { sweepRefcounts = oldSweep })
-	seams := stubSlotSeams(t)
+	r := newRemoteRig(t, slotWireRows()...)
+	worktree := t.TempDir()
 	sentinel := filepath.Join(t.TempDir(), "agent-ran")
-	seams.cmd = exec.Command("touch", sentinel)
+	t.Setenv("WT_FAKE_MARK", sentinel) // the rig's fake claude touches it
 	store, err := profiles.ParseSlots([]byte("[[profile]]\nname = \"numbered\"\nagent = \"claude\"\ndefault = \"opus\"\n" +
 		"[profile.slots]\nopus = \"openrouter/a\"\n[profile.config_content.modelOverrides]\nclaude-sonnet-4-6 = 5\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &app{cfg: slotFixtureConfig(), slotChecks: profiles.ValidateSlots(store, agents.SlotDrivers())}
+	a := r.a
+	a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
 
 	err = runLaunchPath(launchCobraCmd(), a, "claude", "profile/numbered", "", "", nil, worktree, "")
 	const want = `config_content.modelOverrides["claude-sonnet-4-6"] must be a model id string`
-	if err == nil || err.Error() != want {
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("runLaunchPath() error = %v, want %q", err, want)
 	}
 	if _, statErr := os.Stat(sentinel); statErr == nil {
 		t.Error("the agent ran for a profile with a non-string modelOverrides target")
 	}
-	if got := seams.log(); got != "" {
-		t.Errorf("the refused launch drove the engine: steps %q, want none", got)
+	if n := r.f.count("POST /control/v1/start") + r.f.count("POST /control/v1/sessions"); n != 0 {
+		t.Errorf("the refused launch asked the model server to start or register: %v", r.f.reqs())
 	}
 }
 

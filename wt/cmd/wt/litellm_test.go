@@ -234,7 +234,7 @@ func TestLitellmSyncRefusesOnConfigError(t *testing.T) {
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: x}\n"
 	p := litellmEnv(t, body)
 	for _, args := range [][]string{{"sync"}} {
-		err := execLitellm(&app{cfg: &config.Config{}, cfgErr: errors.New("bad toml"), loadErr: errors.New("bad toml")}, args...)
+		err := execLitellm(&app{hostSet: true, hostCfg: &config.Config{}, hostCfgErr: errors.New("bad toml"), hostLoadErr: errors.New("bad toml")}, args...)
 		if err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
 			t.Fatalf("%v: err = %v, want config error refusal", args, err)
 		}
@@ -340,10 +340,11 @@ func TestLitellmSyncNoWarningForUnprobedProvider(t *testing.T) {
 	}
 }
 
-// TestLitellmStatusAndToggle pins the routing-state commands: `on`/`off` flip
-// enabled (routing policy only — never touch the proxy), `set` updates
-// url/key independently, status never prints the key (only api_key_set), and
-// `on` warns when url/key are unset because agents would fail at launch.
+// TestLitellmStatusAndToggle pins the routing-state functions: the retired
+// toggle's function (no command reaches it since the flip; Task 19 deletes
+// it) still flips enabled and warns when url/key are unset, `set` updates
+// url/key independently, and status never prints the key (only
+// api_key_set) nor the retired enabled.
 func TestLitellmStatusAndToggle(t *testing.T) {
 	cfg, _ := litellmStateEnv(t)
 	var out, errOut bytes.Buffer
@@ -365,11 +366,10 @@ func TestLitellmStatusAndToggle(t *testing.T) {
 		t.Fatalf("status leaked the api key: %s", out.String())
 	}
 	var st struct {
-		Enabled   bool   `json:"enabled"`
 		URL       string `json:"url"`
 		APIKeySet bool   `json:"api_key_set"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &st); err != nil || !st.Enabled || st.URL != u || !st.APIKeySet {
+	if err := json.Unmarshal(out.Bytes(), &st); err != nil || strings.Contains(out.String(), "enabled") || st.URL != u || !st.APIKeySet {
 		t.Fatalf("status = %s (%v)", out.String(), err)
 	}
 	if err := runLitellmToggle(&out, &errOut, cfg, false); err != nil || cfg.IsLitellm() {
@@ -494,7 +494,7 @@ func TestLitellmRemovedExposeCommandsFailAndPointToSync(t *testing.T) {
 		{"unexpose", "openrouter/x"},
 		{"unexpose", "openrouter/x", "--json"},
 	} {
-		err := execLitellm(&app{cfg: litellmTestConfig()}, args...)
+		err := execLitellm(&app{hostSet: true, hostCfg: litellmTestConfig()}, args...)
 		if err == nil || !strings.Contains(err.Error(), "wt litellm sync") || !strings.Contains(err.Error(), "removed") {
 			t.Errorf("%v: err = %v, want a removal error pointing to `wt litellm sync`", args, err)
 		}
@@ -503,7 +503,7 @@ func TestLitellmRemovedExposeCommandsFailAndPointToSync(t *testing.T) {
 		t.Fatalf("removed commands modified config.yaml:\n%s", b)
 	}
 	var help bytes.Buffer
-	c := litellmCmd(&app{cfg: litellmTestConfig()})
+	c := litellmCmd(&app{hostSet: true, hostCfg: litellmTestConfig()})
 	c.SetOut(&help)
 	c.SetErr(&bytes.Buffer{})
 	c.SetArgs([]string{"--help"})
@@ -515,15 +515,15 @@ func TestLitellmRemovedExposeCommandsFailAndPointToSync(t *testing.T) {
 	}
 }
 
-// TestLitellmStateCommandsRefuseOnConfigError pins that status/on/off/set
+// TestLitellmStateCommandsRefuseOnConfigError pins that status/set/sync
 // refuse when the config failed to LOAD (a.loadErr; a default cfg would
 // overwrite the user's config.toml on Save) and write nothing, and that
 // `set` with no flags is a usage error that changes nothing. Guard existed in
 // the brief's registration; expected to pass immediately.
 func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
 	cfg, path := litellmStateEnv(t)
-	for _, args := range [][]string{{"status"}, {"on"}, {"off"}, {"set", "--url", "http://x"}, {"sync"}} {
-		if err := execLitellm(&app{cfg: cfg, cfgErr: errors.New("bad toml"), loadErr: errors.New("bad toml")}, args...); err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
+	for _, args := range [][]string{{"status"}, {"set", "--url", "http://x"}, {"sync"}} {
+		if err := execLitellm(&app{hostSet: true, hostCfg: cfg, hostCfgErr: errors.New("bad toml"), hostLoadErr: errors.New("bad toml")}, args...); err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
 			t.Fatalf("%v: err = %v, want config error refusal", args, err)
 		}
 	}
@@ -531,7 +531,7 @@ func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
 		t.Error("refused commands wrote config.toml")
 	}
 	// No-flag `set` on a healthy config is an error and leaves state alone.
-	if err := execLitellm(&app{cfg: cfg}, "set"); err == nil || !strings.Contains(err.Error(), "nothing to set") {
+	if err := execLitellm(&app{hostSet: true, hostCfg: cfg}, "set"); err == nil || !strings.Contains(err.Error(), "nothing to set") {
 		t.Fatalf("set with no flags: err = %v", err)
 	}
 	if _, err := os.Stat(path); err == nil {
@@ -559,7 +559,7 @@ func validationOnlyApp(t *testing.T) (*app, string) {
 }
 
 // TestLitellmRoutingCommandsWorkOnValidationOnlyError pins that
-// status/on/off/set depend only on wt's own [litellm] state, not on registry
+// status/set depend only on wt's own [litellm] state, not on registry
 // validity: a model referencing an unknown provider (cfgErr set, loadErr nil)
 // must not lock the user out of the only routing control surface, and the
 // change must persist. (sync is covered by
@@ -567,16 +567,16 @@ func validationOnlyApp(t *testing.T) (*app, string) {
 func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 	litellmEnv(t, "model_list: []\n")
 	a, path := validationOnlyApp(t)
-	if a.cfgErr == nil || a.loadErr != nil {
-		t.Fatalf("fixture: cfgErr=%v loadErr=%v, want validation-only error", a.cfgErr, a.loadErr)
+	if a.hostConfigErr() == nil || hostLoadErrOf(a) != nil {
+		t.Fatalf("fixture: cfgErr=%v loadErr=%v, want validation-only error", a.hostConfigErr(), hostLoadErrOf(a))
 	}
-	for _, args := range [][]string{{"set", "--url", "http://localhost:4000", "--api-key", "sk-abcdef"}, {"on"}, {"status"}, {"off"}, {"on"}} {
+	for _, args := range [][]string{{"set", "--url", "http://localhost:4000", "--api-key", "sk-abcdef"}, {"status"}} {
 		if err := execLitellm(a, args...); err != nil {
 			t.Fatalf("%v refused on validation-only error: %v", args, err)
 		}
 	}
-	if !a.cfg.IsLitellm() || a.cfg.LitellmAPIKey() != "sk-abcdef" {
-		t.Fatalf("state not applied: %+v", a.cfg.LitellmTable)
+	if hostCfgOf(a).LitellmAPIKey() != "sk-abcdef" {
+		t.Fatalf("state not applied: %+v", hostCfgOf(a).LitellmTable)
 	}
 	if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), "sk-abcdef") {
 		t.Fatalf("state not persisted (err %v):\n%s", err, b)
@@ -592,8 +592,8 @@ func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 func TestLitellmSyncWorksOnValidationOnlyError(t *testing.T) {
 	p := litellmEnv(t, "model_list: []\n")
 	a, _ := validationOnlyApp(t)
-	if a.cfgErr == nil || a.loadErr != nil {
-		t.Fatalf("fixture: cfgErr=%v loadErr=%v", a.cfgErr, a.loadErr)
+	if a.hostConfigErr() == nil || hostLoadErrOf(a) != nil {
+		t.Fatalf("fixture: cfgErr=%v loadErr=%v", a.hostConfigErr(), hostLoadErrOf(a))
 	}
 	// sync routes the fixture's cloud models too; an unset secret_ref is a
 	// per-id build error (exit 1), which is not what this test is about.
@@ -621,7 +621,7 @@ func TestLitellmSyncGatesOnLoadErrOnly(t *testing.T) {
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: x}\n"
 	p := litellmEnv(t, body)
 	for _, args := range [][]string{{"sync"}} {
-		if err := execLitellm(&app{cfg: &config.Config{}, loadErr: errors.New("bad toml")}, args...); err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
+		if err := execLitellm(&app{hostSet: true, hostCfg: &config.Config{}, hostLoadErr: errors.New("bad toml")}, args...); err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
 			t.Fatalf("%v: err = %v, want refusal", args, err)
 		}
 		if b, _ := os.ReadFile(p); string(b) != body {
@@ -2012,4 +2012,137 @@ func TestMissingProviderWarningsOrderAndTheLineAlreadySaid(t *testing.T) {
 	if want := want[:2]; !slices.Equal(got, want) {
 		t.Errorf("with omlx's gap already said: warnings = %q\nwant %q", got, want)
 	}
+}
+
+// litellmLegacyHome is a scratch config home whose config.toml holds the
+// retired [litellm] enabled key beside a url and key, and an empty registry.
+// It returns the config.toml path.
+func litellmLegacyHome(t *testing.T, enabled bool) string {
+	t.Helper()
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	writeEmptyRegistry(t, home)
+	p := filepath.Join(home, ".config", "agent-wt", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("default_tag = \"code\"\n\n[litellm]\nenabled = %v\nurl = \"http://localhost:4000\"\napi_key = \"sk-host1234\"\n", enabled)
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestLitellmOnOffAreRetired pins the retirement of `wt litellm on|off`
+// (Task 18, C5): each is a hidden stub, dated 2026-11-15, that exits 1 with
+// one line saying every session routes through the model server and naming
+// the [model-server] settings, and changes nothing in config.toml. Left
+// working, `on` would flip a key nothing reads and let a user believe they had
+// re-routed their agents; removed outright, cobra would print help and exit 0.
+func TestLitellmOnOffAreRetired(t *testing.T) {
+	for _, word := range []string{"on", "off"} {
+		t.Run(word, func(t *testing.T) {
+			p := litellmLegacyHome(t, false)
+			before, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, code := runRoot(t, "litellm", word)
+			want := "wt: litellm " + word + " is retired — every session routes through the model server; set url and token_file under [model-server] in config.toml; nothing was changed\n"
+			if code != 1 || !strings.HasSuffix(out, want) || len(wtLines(out)) != 1 {
+				t.Errorf("exit %d, output %q; want 1 and %q", code, out, want)
+			}
+			if after, _ := os.ReadFile(p); !bytes.Equal(after, before) {
+				t.Errorf("config.toml changed:\n%s", after)
+			}
+		})
+	}
+	c := litellmCmd(&app{})
+	for _, sub := range c.Commands() {
+		if sub.Name() != "on" && sub.Name() != "off" {
+			continue
+		}
+		if !sub.Hidden || sub.Annotations[removedCmdAnnotation] != "2026-11-15" {
+			t.Errorf("litellm %s: hidden=%v annotation=%q, want hidden and dated 2026-11-15", sub.Name(), sub.Hidden, sub.Annotations[removedCmdAnnotation])
+		}
+	}
+}
+
+// TestLitellmStatusHasNoEnabledKey pins `wt litellm status` after the flip:
+// its JSON is exactly {url, api_key_set} (the fixture's status member, which
+// lost enabled), the text names no on/off mode, and the key itself is never
+// printed. enabled no longer decides anything, so reporting it would tell a
+// script that routing could be switched off.
+func TestLitellmStatusHasNoEnabledKey(t *testing.T) {
+	litellmLegacyHome(t, true)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runLitellmStatus(&out, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("status --json = %q: %v", out.String(), err)
+	}
+	if want := map[string]any{"url": "http://localhost:4000", "api_key_set": true}; !reflect.DeepEqual(got, want) {
+		t.Errorf("status --json = %v, want %v", got, want)
+	}
+	raw, err := os.ReadFile("../../../docs/contracts/litellm-cli.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if gotKeys, wantKeys := jsonKeySet(t, out.Bytes()), jsonKeySet(t, fixture["status"]); !slices.Equal(gotKeys, wantKeys) {
+		t.Errorf("status keys = %v, fixture = %v", gotKeys, wantKeys)
+	}
+	out.Reset()
+	if err := runLitellmStatus(&out, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); strings.Contains(s, "litellm: on") || strings.Contains(s, "litellm: off") || strings.Contains(s, "sk-host1234") || !strings.Contains(s, "url: http://localhost:4000") {
+		t.Errorf("status text = %q, want the url, no mode and no key", s)
+	}
+}
+
+// TestLitellmEnabledNoteOncePerProcess pins the one note for the retired key:
+// a config.toml with [litellm] enabled = true prints `wt: note: config.toml:
+// [litellm] enabled is no longer used and is ignored` once per process, however
+// many commands the process builds, and a file without it prints nothing.
+// Printed on every command it would bury real output; never printed, a user
+// would not learn their toggle stopped doing anything.
+func TestLitellmEnabledNoteOncePerProcess(t *testing.T) {
+	const note = "wt: note: config.toml: [litellm] enabled is no longer used and is ignored\n"
+	resetIgnoredLitellmNote(t)
+	litellmLegacyHome(t, false)
+	errs := captureStderr(t)
+	if _, err := newApp(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(errs.String(), "[litellm] enabled") {
+		t.Errorf("enabled = false noted: %q", errs.String())
+	}
+	litellmLegacyHome(t, true)
+	for range 3 {
+		if _, err := newApp(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := strings.Count(errs.String(), note); n != 1 {
+		t.Errorf("note printed %d times, want once: %q", n, errs.String())
+	}
+}
+
+// resetIgnoredLitellmNote forgets, for this test, that the process already
+// printed the [litellm] enabled note.
+func resetIgnoredLitellmNote(t *testing.T) {
+	t.Helper()
+	old := ignoredLitellmNoted.Load()
+	ignoredLitellmNoted.Store(false)
+	t.Cleanup(func() { ignoredLitellmNoted.Store(old) })
 }

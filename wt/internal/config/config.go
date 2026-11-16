@@ -50,9 +50,16 @@ const OllamaBaseURL = provider.OllamaOrigin
 
 // ── LiteLLM routing state (wt-owned) ─────────────────────
 
-// LitellmState is the `[litellm]` table of wt's config.toml. It controls
-// whether agents dial providers directly or route through the LiteLLM proxy.
-// wt reads it from config.toml and nowhere else.
+// LitellmState is the `[litellm]` table of wt's config.toml: the LiteLLM
+// proxy's url and api key, host state that `wt-model serve` (its gateway) and
+// `wt litellm set|status|restart` read (R4); a session never reads it. wt
+// reads it from config.toml and nowhere else.
+//
+// Enabled is retired (2026-11-15): every session routes through the model
+// server, so nothing decides on it any more. It is still parsed and
+// round-trips every save (a file is never rewritten to drop it), and a true
+// value prints one note per process (IgnoredLitellmKeys). IsLitellm, its one
+// reader, serves only the direct path no command reaches since then.
 type LitellmState struct {
 	Enabled bool   `toml:"enabled"`
 	URL     string `toml:"url"`
@@ -93,9 +100,9 @@ func (c *Config) UpdateLitellm(mutate func(*LitellmState)) error {
 // LitellmConfigured reports whether both the proxy URL and API key are set.
 func (c *Config) LitellmConfigured() bool { return c.litellm.URL != "" && c.litellm.APIKey != "" }
 
-// IsLitellm reports whether non-native models route through the LiteLLM
-// proxy, per the wt-owned [litellm].enabled. wt
-// never starts, stops, or restarts the proxy — this is routing policy only.
+// IsLitellm reports the retired [litellm].enabled. Only the direct route
+// resolution (ResolveRoute) reads it, which no command reaches since every
+// session routes through the model server.
 func (c *Config) IsLitellm() bool { return c.litellm.Enabled }
 
 // LitellmBaseURL returns the proxy URL with any trailing
@@ -186,7 +193,7 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 		if c.LitellmBaseURL() == "" {
 			return Route{}, fmt.Errorf(
 				"litellm routing is required for this model but no URL is configured — "+
-					"run 'wt litellm set --url ... --api-key ...' or 'wt litellm on': %w",
+					"run 'wt litellm set --url ... --api-key ...': %w",
 				ErrLitellmUnconfigured)
 		}
 		if c.LitellmAPIKey() == "" {
@@ -209,7 +216,7 @@ func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error)
 	if provider.Auth.BaseURL == "" {
 		return Route{}, fmt.Errorf(
 			"direct routing: provider %q has no auth.base_url in registry.toml — "+
-				"set one, or enable the proxy with 'wt litellm on'", providerID)
+				"set one", providerID)
 	}
 	apiKey := ""
 	if provider.Auth.SecretRef != "" {
@@ -1486,7 +1493,7 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 // lockedApply) over Save whenever cfg may be a stale snapshot (loaded
 // earlier, possibly in a different process) — Save writes cfg wholesale and
 // so reverts any field a concurrent writer changed since cfg was loaded.
-// Every production writer (the `wt config` editor, `wt litellm on|off|set`,
+// Every production writer (the `wt config` editor, `wt litellm set`,
 // Load's own migrations) now goes through one of those locked-fresh-read
 // paths instead; Save remains as the simple whole-file primitive they build
 // on and for tests/tools that construct and persist a Config in one step
@@ -1548,7 +1555,7 @@ func readConfigFile() (cfg *Config, exists bool, err error) {
 // process) can therefore persist its own change without reverting anything
 // a concurrent writer changed in a field apply does not touch — see issue
 // #143 (config.toml writes were whole-file last-writer-wins between the
-// `wt config` editor and `wt litellm on|off|set`).
+// `wt config` editor and `wt litellm set`).
 func (c *Config) PatchSave(apply func(fresh *Config)) error {
 	return WithLock(func() error {
 		fresh, _, err := readConfigFile()

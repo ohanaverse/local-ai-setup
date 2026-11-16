@@ -192,7 +192,7 @@ func (s *Session) loop(ctx context.Context, done chan struct{}) {
 			// The loop stops: no retry heals a stale token. Say what that
 			// costs, too — a lapsed client session reaches auto-stop's idle
 			// clock, which only beats and a start job ever touch.
-			s.o.Note("model server heartbeat refused the token — the token may have been rotated; check token_file under [model-server] in config.toml (the client session is no longer renewed; restart wt to pick up the new token — a model only this session registered can be auto-stopped by the server once it sits idle past the grace)")
+			s.o.Note("model server heartbeat refused the token — the token may have been rotated; check token_file under [model-server] in config.toml (the client session is no longer renewed; restart wt to pick up the new token — a model only this client session registered can be auto-stopped by the server once it sits idle past the grace)")
 			return
 		default:
 			if !failing {

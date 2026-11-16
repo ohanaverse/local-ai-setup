@@ -18,7 +18,7 @@ import (
 
 // protectApp is an app whose registry loaded and holds models.
 func protectApp(models ...config.Model) *app {
-	return &app{cfg: &config.Config{Models: models}}
+	return &app{hostSet: true, hostCfg: &config.Config{Models: models}}
 }
 
 // localModel is a registry model whose fetch side is a local_path.
@@ -127,7 +127,7 @@ func TestProtectedPathsMalformedFailsClosed(t *testing.T) {
 // registered model artifact.
 func TestProtectedPathsRegistryFailedIsError(t *testing.T) {
 	a := protectApp()
-	a.loadErr = errors.New("registry.toml: parse error")
+	setHostLoadErr(a, errors.New("registry.toml: parse error"))
 	if _, err := protectedPaths(a); !errors.Is(err, errRegistryUnavailable) {
 		t.Errorf("loadErr set: err = %v, want errRegistryUnavailable", err)
 	}
@@ -180,7 +180,7 @@ func TestCleanupListHeaderWarnsWhenRegistryFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.loadErr = errors.New("registry.toml: line 3\nexpected '='")
+	setHostLoadErr(a, errors.New("registry.toml: line 3\nexpected '='"))
 	plain, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch")
 	if err != nil {
 		t.Fatalf("err = %v, want exit 0", err)
@@ -254,8 +254,8 @@ func registryApp(t *testing.T, setup func(home, defaultReg string)) *app {
 func TestProtectedPathsMissingRegistryIsNothingToProtect(t *testing.T) {
 	var reg string
 	a := registryApp(t, func(_, def string) { reg = def })
-	if !errors.Is(a.loadErr, config.ErrRegistryMissing) {
-		t.Fatalf("loadErr = %v, want ErrRegistryMissing", a.loadErr)
+	if !errors.Is(hostLoadErrOf(a), config.ErrRegistryMissing) {
+		t.Fatalf("loadErr = %v, want ErrRegistryMissing", hostLoadErrOf(a))
 	}
 	got, err := protectedPaths(a)
 	if err != nil || len(got) != 0 {
@@ -304,7 +304,7 @@ func TestProtectedPathsRegistryLoadFailuresFailClosed(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			a := registryApp(t, setup)
-			if a.loadErr == nil {
+			if hostLoadErrOf(a) == nil {
 				t.Fatal("registry loaded, want a load error")
 			}
 			if _, err := protectedPaths(a); !errors.Is(err, errRegistryUnavailable) {
@@ -353,7 +353,7 @@ func TestNoRegistryOnlyAtTheDefaultPath(t *testing.T) {
 			for k, v := range c.env(t.TempDir()) {
 				t.Setenv(k, v)
 			}
-			a := &app{cfg: &config.Config{}, loadErr: fmt.Errorf("%w at %s", config.ErrRegistryMissing, config.RegistryPath())}
+			a := &app{hostSet: true, hostCfg: &config.Config{}, hostLoadErr: fmt.Errorf("%w at %s", config.ErrRegistryMissing, config.RegistryPath())}
 			got, err := protectedPaths(a)
 			if c.wantEmpty {
 				if err != nil || len(got) != 0 {

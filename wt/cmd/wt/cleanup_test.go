@@ -475,7 +475,7 @@ func TestCleanupCmdMinAge(t *testing.T) {
 // under a worktree reaches the classifier: that worktree row is in_use with
 // the protected_artifact blocker. wt never deletes a user-produced model
 // artifact, so cleanup must never offer its worktree. The registry is read
-// through a.cfg and never written.
+// through the app's host config and never written.
 func TestCleanupCmdProtectedArtifactIsInUse(t *testing.T) {
 	a, tmp := newTestApp(t)
 	t.Setenv("WT_REGISTRY", filepath.Join(tmp, "local-ai", "registry.toml"))
@@ -488,7 +488,7 @@ func TestCleanupCmdProtectedArtifactIsInUse(t *testing.T) {
 	if err := os.MkdirAll(art, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	a.cfg.Models = []config.Model{{ID: "omlx/q4", ProviderID: "omlx", ModelName: "q4", Fetch: config.ModelArtifact{LocalPath: art}}}
+	hostCfgOf(a).Models = []config.Model{{ID: "omlx/q4", ProviderID: "omlx", ModelName: "q4", Fetch: config.ModelArtifact{LocalPath: art}}}
 
 	stdout, _, err := runCleanup(t, a, dir, "--json", "--no-fetch")
 	if err != nil {
@@ -1333,5 +1333,172 @@ func TestExecuteCleanupJSONAndPlainStaySynchronous(t *testing.T) {
 	}
 	if factsCalls != 0 || gatherCalls != 1 {
 		t.Errorf("--plain: GatherFacts=%d Gather=%d, want 0 and 1", factsCalls, gatherCalls)
+	}
+}
+
+// protectRegistry is a registry at the default path holding one omlx model
+// whose fetch.local_path is the TOML value lp (already quoted when a
+// string).
+func protectRegistry(lp string) string {
+	return "[[providers]]\nid = \"omlx\"\nname = \"oMLX\"\nlocation = \"local\"\n\n[providers.auth]\ntype = \"none\"\nbase_url = \"http://127.0.0.1:1\"\n\n" +
+		"[[models]]\nid = \"omlx/q4\"\nprovider_id = \"omlx\"\nmodel_name = \"q4\"\nfamily = \"q\"\ntags = []\n\n[models.fetch]\nlocal_path = " + lp + "\n"
+}
+
+// writeDefaultRegistry writes body as the registry at def.
+func writeDefaultRegistry(t *testing.T, def, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(def), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(def, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestWorktreesStillProtectRegistryArtifacts pins R10 across the flip: a
+// model artifact the registry file names (read by app.hostConfig, not set on
+// the app by hand) still locks the worktree that holds it in `wt worktrees`
+// (in_use, protected_artifact) and `wt remove` still refuses it with every
+// flag, leaving the artifact in place. wt never deletes a quantized model;
+// the session split must not cost that protection.
+func TestWorktreesStillProtectRegistryArtifacts(t *testing.T) {
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	p := mergedWorktree(t, dir, "topic")
+	art := filepath.Join(p, "models", "q4")
+	if err := os.MkdirAll(art, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := registryApp(t, func(_, def string) { writeDefaultRegistry(t, def, protectRegistry(strconv.Quote(art))) })
+	if a.hostSet {
+		t.Fatal("newApp read the registry: it is hostConfig's to read")
+	}
+
+	stdout, _, err := runCleanup(t, a, dir, "--json", "--no-fetch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env cleanup.Envelope
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	locked := false
+	for _, r := range env.Rows {
+		if r.Kind == "worktree" && r.Branch == "topic" && r.Status == "in_use" {
+			for _, b := range r.Blockers {
+				locked = locked || b.Code == cleanup.BlockProtectedArtifact
+			}
+		}
+	}
+	if !locked {
+		t.Fatalf("topic's worktree is not locked by %s:\n%s", cleanup.BlockProtectedArtifact, stdout)
+	}
+
+	oldNow, oldTTY := removeNow, removeTTY
+	removeNow = func() time.Time { return time.Now().Add(time.Hour) }
+	removeTTY = func(io.Reader, io.Writer) bool { return false }
+	t.Cleanup(func() { removeNow, removeTTY = oldNow, oldTTY })
+	stdout, _, err = runRemove(t, a, dir, "", "--no-fetch", "--yes", "--force", "--accept-loss", "-D", "--json", p)
+	if exitOf(err) != 2 || !exists(art) {
+		t.Fatalf("exit %d (%v), artifact there=%v; want 2 and kept\n%s", exitOf(err), err, exists(art), stdout)
+	}
+	if env := decodeOne(t, stdout); len(env.Items) != 1 || !strings.Contains(env.Items[0].Reason, cleanup.BlockProtectedArtifact) {
+		t.Errorf("items = %+v, want one refusal naming %s", env.Items, cleanup.BlockProtectedArtifact)
+	}
+}
+
+// TestProtectedPathsToleratesNoRegistry pins R10's one tolerance across the
+// flip: no registry file at the default path (a session-only machine) is
+// nothing to protect, an empty list and no error, read through hostConfig,
+// and `wt worktrees --plain` says so in the frozen neutral line (the
+// wt-repo-cleanup skill quotes it) with no protection-OFF line. Refusing
+// there would make cleanup useless on every machine that has no models.
+func TestProtectedPathsToleratesNoRegistry(t *testing.T) {
+	var reg string
+	a := registryApp(t, func(_, def string) { reg = def })
+	got, err := protectedPaths(a)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("protectedPaths = %q, %v; want none and no error", got, err)
+	}
+	if !a.hostSet {
+		t.Error("protectedPaths did not read the registry through hostConfig")
+	}
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	plain, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "\nregistry: none at " + reg + "; no model artifacts are registered\n"; !strings.Contains(plain, want) {
+		t.Errorf("no frozen neutral line %q:\n%s", want, plain)
+	}
+	if strings.Contains(plain, "protection is OFF") {
+		t.Errorf("a missing default registry reads as a failure:\n%s", plain)
+	}
+}
+
+// TestProtectedPathsStillFailClosed pins R10's fail-closed rules across the
+// flip, with the registry read from disk through hostConfig (which keeps the
+// load error protectedPaths and noRegistry read): a registry that does not
+// parse, one absent at a redirected path, and one whose local_path is
+// malformed or relative each make protectedPaths an error
+// (errRegistryUnavailable, or the per-model error naming omlx/q4), so `wt
+// remove` refuses before touching anything (exit 1) and `wt worktrees`'
+// header says, in the frozen text, that protection is OFF and removal is
+// refused. Any of these may hide a registered artifact, which wt never
+// deletes.
+func TestProtectedPathsStillFailClosed(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		setup     func(t *testing.T, home, def string)
+		unavail   bool   // errRegistryUnavailable, else the model's own error
+		modelText string // what the per-model error says
+	}{
+		{name: "unparsable", unavail: true, setup: func(t *testing.T, _, def string) { writeDefaultRegistry(t, def, "models = [\n") }},
+		{name: "absent at a redirected path", unavail: true, setup: func(t *testing.T, home, _ string) {
+			t.Setenv("WT_REGISTRY", filepath.Join(home, "elsewhere", "registry.toml"))
+		}},
+		{name: "malformed local_path", modelText: "fetch.local_path is not a string", setup: func(t *testing.T, _, def string) {
+			writeDefaultRegistry(t, def, protectRegistry("3"))
+		}},
+		{name: "relative local_path", modelText: "is relative", setup: func(t *testing.T, _, def string) {
+			writeDefaultRegistry(t, def, protectRegistry(`"models/q4"`))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a := registryApp(t, func(home, def string) { c.setup(t, home, def) })
+			_, perr := protectedPaths(a)
+			switch {
+			case perr == nil:
+				t.Fatal("protectedPaths = nil error, want a refusal")
+			case c.unavail && !errors.Is(perr, errRegistryUnavailable):
+				t.Errorf("err = %v, want errRegistryUnavailable", perr)
+			case !c.unavail && (!strings.Contains(perr.Error(), "omlx/q4") || !strings.Contains(perr.Error(), c.modelText)):
+				t.Errorf("err = %v, want the per-model error naming omlx/q4 (%q)", perr, c.modelText)
+			}
+			if !a.hostSet {
+				t.Error("protectedPaths did not read the registry through hostConfig")
+			}
+
+			stubCleanupGH(t)
+			dir := cleanupRepo(t)
+			plain, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch")
+			if err != nil {
+				t.Fatalf("the list must still show: %v", err)
+			}
+			if want := cleanupRegistryNote(perr); !strings.Contains(plain, "\n"+want+"\n") ||
+				!strings.HasSuffix(want, "; artifact protection is OFF and removal is refused") {
+				t.Errorf("no protection-OFF line %q:\n%s", want, plain)
+			}
+
+			p := mergedWorktree(t, dir, "topic")
+			stdout, _, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "--force", "--accept-loss", "-D", "--json", p)
+			if exitOf(err) != 1 || !exists(p) {
+				t.Fatalf("exit %d (%v), worktree there=%v; want 1 and kept\n%s", exitOf(err), err, exists(p), stdout)
+			}
+			if !strings.Contains(stdout, "removal refused") {
+				t.Errorf("the refusal does not say removal was refused:\n%s", stdout)
+			}
+		})
 	}
 }

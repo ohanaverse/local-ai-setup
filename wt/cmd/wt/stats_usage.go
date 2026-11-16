@@ -341,17 +341,28 @@ func collectUsageRemote(ctx context.Context, ms *modelSession, window time.Durat
 
 // collectUsageNoServer is collectUsageRemote's answer when the model server
 // could not be opened (unreachable, refused or not configured): no spend,
-// the reason, and the launch counts with every family the id's prefix.
-func collectUsageNoServer(openErr error, window time.Duration, asOf time.Time, f statsFilter) usageReport {
+// the reason (spendNotConfigured when no server is configured, else
+// spendUnavailable), and the launch counts. families names each id's family
+// (the host registry's, when this machine has one that loads); an id it does
+// not name takes its provider prefix.
+func collectUsageNoServer(openErr error, window time.Duration, asOf time.Time, f statsFilter, families map[string]string) usageReport {
 	rep := usageReport{Narrowed: f.model != "" || f.family != ""}
-	if f.agent != "" {
+	var nc *modelclient.NotConfiguredError
+	switch {
+	case f.agent != "":
 		rep.SpendStatus = spendSkipped
 		rep.SpendReason = spendSkippedReason
-	} else {
+	case errors.As(openErr, &nc):
+		rep.SpendStatus = spendNotConfigured
+		rep.SpendReason = "spend unavailable: " + openErr.Error()
+	default:
 		rep.SpendStatus = spendUnavailable
 		rep.SpendReason = "spend unavailable: " + openErr.Error()
 	}
-	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, nil, map[string]string{}, f)
+	if families == nil {
+		families = map[string]string{}
+	}
+	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, nil, families, f)
 	return rep
 }
 

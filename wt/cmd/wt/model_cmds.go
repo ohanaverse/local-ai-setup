@@ -95,10 +95,10 @@ func stopCmd(a *app) *cobra.Command {
 			"not as a failed stop, and ollama unloads it when its request ends.\n\n" +
 			"Stopping a model or a provider a live wt session uses asks for confirmation;\n" +
 			"--yes skips it.\n\n" +
-			"With a model server configured ([model-server] in config.toml, or WT_MODEL_URL),\n" +
-			"a model id (and no argument: a numbered picker over the server's running local\n" +
-			"models) is stopped through the server; a provider name and --all still act on\n" +
-			"this machine. The server asks before stopping a model other client sessions use\n" +
+			"A model id (and no argument: a numbered picker over the server's running local\n" +
+			"models) is stopped through the model server ([model-server] in config.toml, or\n" +
+			"WT_MODEL_URL; with none configured wt refuses, exit 1); a provider name and\n" +
+			"--all act on this machine's registry. The server asks before stopping a model other client sessions use\n" +
 			"(--yes answers it; with no terminal and no --yes: exit 3, nothing stopped). Exit 0\n" +
 			"stopped (also when the provider is still finishing the stop), 1 could not start\n" +
 			"(no terminal for the picker, an unreachable server), 2 the stop failed or was\n" +
@@ -114,11 +114,12 @@ func stopCmd(a *app) *cobra.Command {
 				arg = args[0]
 			}
 			yes, _ := cmd.Flags().GetBool("yes")
-			// With a model server configured, a model id (or no argument:
-			// the server's picker) is stopped through it. A provider name
-			// and --all stay on the host (R3): the server stops models, not
-			// providers, and the registry decides what a provider holds.
-			if all, _ := cmd.Flags().GetBool("all"); a.endpointConfigured() && !all && (arg == "" || strings.Contains(arg, "/")) {
+			// A model id (or no argument: the server's picker) is stopped
+			// through the model server; with none configured that refuses
+			// before anything is stopped. A provider name and --all stay on
+			// the host (R3): the server stops models, not providers, and the
+			// registry decides what a provider holds.
+			if all, _ := cmd.Flags().GetBool("all"); !all && (arg == "" || strings.Contains(arg, "/")) {
 				cmd.SilenceUsage = true
 				cmd.SilenceErrors = true
 				ms, err := a.openModels(cmd.Context(), "nothing was stopped")
@@ -127,9 +128,10 @@ func stopCmd(a *app) *cobra.Command {
 				}
 				return runStopRemote(cmd.Context(), cmd.OutOrStdout(), ms, arg, yes)
 			}
-			if a.cfgErr != nil {
+			cfg, _ := a.hostConfig()
+			if cerr := a.hostConfigErr(); cerr != nil {
 				cmd.SilenceUsage = true
-				return configError(a.cfgErr)
+				return configError(cerr)
 			}
 			if all, _ := cmd.Flags().GetBool("all"); all {
 				if arg != "" {
@@ -139,16 +141,16 @@ func stopCmd(a *app) *cobra.Command {
 				// mistake: a failed stop, a declined question or Ctrl+C would
 				// otherwise bury its progress lines under the whole usage text.
 				cmd.SilenceUsage = true
-				return runStopAll(cmd.OutOrStdout(), a.cfg, yes)
+				return runStopAll(cmd.OutOrStdout(), cfg, yes)
 			}
-			if err := stopArgError(a.cfg, arg); err != nil {
+			if err := stopArgError(cfg, arg); err != nil {
 				return err
 			}
 			// As for --all: past the argument check a failure is a stop
 			// that failed, a declined question or a provider wt could not
 			// read, never a usage mistake.
 			cmd.SilenceUsage = true
-			return runStop(cmd.OutOrStdout(), a.cfg, arg, yes)
+			return runStop(cmd.OutOrStdout(), cfg, arg, yes)
 		},
 	}
 	cmd.Flags().Bool("yes", false, "Skip the confirmation when a target is in use by a live wt session")
@@ -742,9 +744,10 @@ func startCmd(a *app) *cobra.Command {
 			"wt can stop and --others=keep keeps them, without asking; --replace never stops\n" +
 			"them. When stdin is not a terminal and --others is not given, wt keeps them\n" +
 			"and prints one warning.\n\n" +
-			"With a model server configured ([model-server] in config.toml, or WT_MODEL_URL)\n" +
-			"the start goes through it: the model id is a model the server lists, the picker\n" +
-			"shows the server's local models, and the questions above are the server's. wt\n" +
+			"The start goes through the model server ([model-server] in config.toml, or\n" +
+			"WT_MODEL_URL; with none configured wt refuses, exit 1, nothing started): the\n" +
+			"model id is a model the server lists, the picker shows the server's local\n" +
+			"models, and the questions above are the server's. wt\n" +
 			"registers a client session for the model for the start, ends it when the model is up,\n" +
 			"and says on stderr that the server stops the model after its idle grace unless a\n" +
 			"client session uses it. Exit 0 started (or already running), 1 could not start (no\n" +
@@ -764,20 +767,15 @@ func startCmd(a *app) *cobra.Command {
 				id = args[0]
 			}
 			replace, _ := cmd.Flags().GetBool("replace")
-			if a.endpointConfigured() {
-				// With a model server configured the start goes through it:
-				// no registry, no local provider.
-				ms, err := a.openModels(cmd.Context(), "nothing was started")
-				if err != nil {
-					return remoteExit(err)
-				}
-				ans := &cliAnswerer{id: id, replace: replace, others: string(othersMode), out: osStderr, tty: interactiveTTY}
-				return runStartRemote(cmd.Context(), cmd.OutOrStdout(), ms, a.theme, id, replace, ans)
+			// The start goes through the model server: no registry, no
+			// local provider. With none configured it refuses before
+			// anything starts.
+			ms, err := a.openModels(cmd.Context(), "nothing was started")
+			if err != nil {
+				return remoteExit(err)
 			}
-			if a.cfgErr != nil {
-				return configError(a.cfgErr)
-			}
-			return runStart(cmd.OutOrStdout(), a.cfg, a.theme, id, replace)
+			ans := &cliAnswerer{id: id, replace: replace, others: string(othersMode), out: osStderr, tty: interactiveTTY}
+			return runStartRemote(cmd.Context(), cmd.OutOrStdout(), ms, a.theme, id, replace, ans)
 		},
 	}
 }
@@ -812,11 +810,12 @@ func servedCmd(a *app) *cobra.Command {
 			// The load error only: this reads the registry's provider rows
 			// and writes nothing, so a validation gap elsewhere in the
 			// config must not make the probe unavailable.
-			if a.loadErr != nil {
-				return configError(a.loadErr)
+			cfg, loadErr := a.hostConfig()
+			if loadErr != nil {
+				return configError(loadErr)
 			}
 			client := &http.Client{Timeout: servedProbeTimeout}
-			return runServed(cmd.OutOrStdout(), a.cfg, client, args[0], asJSON)
+			return runServed(cmd.OutOrStdout(), cfg, client, args[0], asJSON)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
@@ -862,12 +861,13 @@ func warmCmd(a *app) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The load error only, as for `wt served`: this reads the
 			// registry's provider rows and writes nothing.
-			if a.loadErr != nil {
-				return configError(a.loadErr)
+			cfg, loadErr := a.hostConfig()
+			if loadErr != nil {
+				return configError(loadErr)
 			}
 			ctx, cancel := startSignalCtx()
 			defer cancel()
-			return runWarm(ctx, cmd.OutOrStdout(), a.cfg, args[0], args[1])
+			return runWarm(ctx, cmd.OutOrStdout(), cfg, args[0], args[1])
 		},
 	}
 }

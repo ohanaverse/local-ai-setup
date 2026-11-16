@@ -361,7 +361,7 @@ func readRemoteSlotParity(t *testing.T) []remoteSlotScenario {
 func TestSlotLaunchRemotePrintsSlotNotes(t *testing.T) {
 	r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
 	r.a.slotUnknown = []string{"stray"}
-	r.a.cfg.Providers = append(r.a.cfg.Providers, config.Provider{ID: profiles.SlotReservedProvider, Location: config.LocationCloud})
+	hostCfgOf(r.a).Providers = append(hostCfgOf(r.a).Providers, config.Provider{ID: profiles.SlotReservedProvider, Location: config.LocationCloud})
 	r.a.slotChecks = []profiles.SlotCheck{slotFixtureCheck(0, "ok", "sonnet", map[string]string{"sonnet": "openrouter/a"})}
 	cmd := &cobra.Command{}
 	cmd.Flags().String("model", "", "")

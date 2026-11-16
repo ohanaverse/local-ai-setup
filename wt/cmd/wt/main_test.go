@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -157,12 +157,12 @@ func TestRemovedSubcommandNameAfterDashIsPassedThrough(t *testing.T) {
 			var gotAgent string
 			var gotArgs []string
 			launched := false
-			prev := launchFiltered
-			launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+			prev := launchCommand
+			launchCommand = func(agent, worktreePath string, cfg *config.Config, yolo, pinnedSupplied bool, extraArgs []string, pp *precomputedProfiles) error {
 				launched, gotAgent, gotArgs = true, agent, extraArgs
 				return nil
 			}
-			t.Cleanup(func() { launchFiltered = prev })
+			t.Cleanup(func() { launchCommand = prev })
 
 			out, err := runWT(t, tc.args...)
 			if err != nil {
@@ -215,12 +215,12 @@ func TestShellPassthrough_StillWorks(t *testing.T) {
 	var gotAgent string
 	var gotArgs []string
 	launched := false
-	prev := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+	prev := launchCommand
+	launchCommand = func(agent, worktreePath string, cfg *config.Config, yolo, pinnedSupplied bool, extraArgs []string, pp *precomputedProfiles) error {
 		launched, gotAgent, gotArgs = true, agent, extraArgs
 		return nil
 	}
-	t.Cleanup(func() { launchFiltered = prev })
+	t.Cleanup(func() { launchCommand = prev })
 
 	out, err := runWT(t, "--agent", "shell", "npm", "test")
 	if err != nil {
@@ -248,12 +248,12 @@ func stubCwdLaunch(t *testing.T) (launched *bool, gotArgs *[]string) {
 	t.Chdir(dir)
 	withCleanConfigEnv(t, t.TempDir())
 	launched, gotArgs = new(bool), new([]string)
-	prev := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+	prev := launchCommand
+	launchCommand = func(agent, worktreePath string, cfg *config.Config, yolo, pinnedSupplied bool, extraArgs []string, pp *precomputedProfiles) error {
 		*launched, *gotArgs = true, extraArgs
 		return nil
 	}
-	t.Cleanup(func() { launchFiltered = prev })
+	t.Cleanup(func() { launchCommand = prev })
 	return launched, gotArgs
 }
 
@@ -401,6 +401,16 @@ func TestWithoutCwdADirectoryIsStillPassedThrough(t *testing.T) {
 
 // initTestRepo creates a minimal git repo with one commit on the default
 // branch so `git worktree add` (used by -W) succeeds. Returns the repo dir.
+// pickerServer points the config home at a fake model server serving two
+// models every model-driven agent may launch, so a launch with no -M is the
+// picker's to decide.
+func pickerServer(t *testing.T) *fakeModelServer {
+	t.Helper()
+	f := newFakeModelServer(t, wireRow("openrouter/a", "launch", 1), wireRow("openrouter/b", "launch", 2))
+	pointAtFake(t, f, "")
+	return f
+}
+
 func initTestRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -420,11 +430,8 @@ func initTestRepo(t *testing.T) string {
 func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
 	dir := initTestRepo(t)
 	t.Chdir(dir)
-	home := t.TempDir()
-	// pi must be CONFIGURED (a config.toml entry, zero eligible models) so
-	// this test still exercises "configured agent, unresolved model → TUI",
-	// not the new unconfigured-agent passthrough this task adds.
-	writeConfiguredAgent(t, home, "pi", "ollama")
+	// Two models on the model server and no -M: the model picker decides.
+	pickerServer(t)
 
 	var gotAgent, gotPinned string
 	oldTuiRun := tuiRun
@@ -467,13 +474,9 @@ func TestReplaceFlagReachesTUIRun(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			dir := initTestRepo(t)
 			t.Chdir(dir)
-			home := t.TempDir()
-			// pi must be CONFIGURED (a config.toml entry, zero eligible
-			// models) so this test still exercises "configured agent,
-			// unresolved model → TUI", not the new unconfigured-agent
-			// passthrough — an unconfigured pi would otherwise now launch
-			// directly instead of reaching tuiRun.
-			writeConfiguredAgent(t, home, "pi", "ollama")
+			// Two models on the model server and no -M: the model picker
+			// decides.
+			pickerServer(t)
 
 			// allowReplace is process-wide; restore it so this test cannot leak
 			// --replace into another test.
@@ -520,10 +523,9 @@ func TestOthersFlagReachesTUIRun(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			dir := initTestRepo(t)
 			t.Chdir(dir)
-			home := t.TempDir()
-			// A configured pi with no eligible model goes to the picker, as
-			// in TestReplaceFlagReachesTUIRun.
-			writeConfiguredAgent(t, home, "pi", "ollama")
+			// Two models on the model server and no -M go to the picker,
+			// as in TestReplaceFlagReachesTUIRun.
+			pickerServer(t)
 
 			var got string
 			called := false
@@ -577,8 +579,7 @@ func TestWorktreeWithAgentAndModelLaunches(t *testing.T) {
 func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
 	dir := initTestRepo(t)
 	t.Chdir(dir)
-	home := t.TempDir()
-	writeEmptyRegistry(t, home)
+	pickerServer(t)
 
 	var gotAgent, gotPinned string
 	oldTuiRun := tuiRun
@@ -617,13 +618,13 @@ func TestCommandAgentWithoutModelLaunchesDirectly(t *testing.T) {
 
 	var gotAgent string
 	var gotArgs []string
-	oldLaunchFiltered := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+	oldLaunchFiltered := launchCommand
+	launchCommand = func(agent, worktreePath string, cfg *config.Config, yolo, pinnedSupplied bool, extraArgs []string, pp *precomputedProfiles) error {
 		gotAgent = agent
 		gotArgs = extraArgs
 		return nil
 	}
-	defer func() { launchFiltered = oldLaunchFiltered }()
+	defer func() { launchCommand = oldLaunchFiltered }()
 
 	if _, err := runWT(t, "-A", "shell", "true"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -678,53 +679,25 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 	expectDirectLaunchInRepo(t)
 	dir := initTestRepo(t)
 	t.Chdir(dir)
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
+	withCleanConfigEnv(t, t.TempDir())
+	// One model on the model server, launchable: no picker is owed.
+	pointAtFake(t, newFakeModelServer(t, wireRow("openrouter/only", "launch", 1)), "")
 
-	// Running state comes from the live inventory, so the stub probe must
-	// report the model serving or the row is a start row, not a launch row.
-	stubProbeInventory(t, localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
-		Entries: []localmodels.Entry{
-			{ProviderID: "ollama", ModelID: "ollama/gemma4:9b", Artifact: "gemma4:9b", ModelName: "gemma4:9b", Registered: true, Running: true},
-		},
+	var built []string
+	oldBuild := buildGatewayCmd
+	buildGatewayCmd = func(agent string, m config.Model, _ string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
+		built = append(built, agent+" "+m.ID)
+		return exec.Command("true"), agents.LaunchInfo{}, nil
+	}
+	t.Cleanup(func() { buildGatewayCmd = oldBuild })
+
+	captureFile(t, &os.Stdout, func() {
+		if _, err := runWT(t, "--root", "-A", "claude"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 	})
-
-	// Write a minimal config with one ollama model so resolveModel returns
-	// a single eligible entry, triggering the auto-launch short-circuit.
-	cfgDir := filepath.Join(home, ".config", "agent-wt")
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"),
-		[]byte("default_tag = \"code\"\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"ollama\"]\ndefault_provider = \"ollama\"\n"),
-		0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	// Providers/models now live in registry.toml.
-	regDir := filepath.Join(home, ".config", "local-ai")
-	if err := os.MkdirAll(regDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"),
-		[]byte("[[providers]]\nid = \"ollama\"\nname = \"Ollama\"\nlocation = \"local\"\nauth = { type = \"none\", base_url = \"http://localhost:11434\" }\n[[providers]]\nid = \"agy\"\nname = \"Antigravity\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n[[models]]\nid = \"ollama/gemma4:9b\"\nprovider_id = \"ollama\"\nmodel_name = \"gemma4:9b\"\nlocation = \"local\"\ntags = [\"code\"]\n"),
-		0o644); err != nil {
-		t.Fatalf("write registry: %v", err)
-	}
-
-	called := false
-	oldLaunchFiltered := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
-		called = true
-		return nil
-	}
-	defer func() { launchFiltered = oldLaunchFiltered }()
-
-	if _, err := runWT(t, "--root", "-A", "claude"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !called {
-		t.Error("launchFiltered not called; -A claude should auto-launch when resolveModel returns a single eligible model")
+	if !slices.Equal(built, []string{"claude openrouter/only"}) {
+		t.Errorf("agents built = %q; -A claude should auto-launch the one launchable model", built)
 	}
 }
 
@@ -870,20 +843,14 @@ func TestInitAnnouncesTheGuardInstall(t *testing.T) {
 	}
 }
 
-// A malformed (not merely missing) registry.toml must still fail closed with
-// the repair hint, for every agent — only config.ErrRegistryMissing is
-// tolerated by the launch-path gate, never a real parse error. Regression
-// guard for decision #7 of the passthrough design (fail closed on malformed
-// config).
-//
-// The command-agent row: the malformed-registry fail-closed gate (main.go's
-// `!errors.Is(a.cfgErr, config.ErrRegistryMissing)` check) runs once before
-// any agent-type branching and does not distinguish command agents from
-// model-driven ones — unlike TestCommandAgentSkipsMissingRegistryGate's
-// tolerated ErrRegistryMissing case, a genuine parse error must still block
-// a command agent (e.g. shell) exactly as it blocks claude (the model-driven
-// row), since a future agent-type carve-out for the malformed case could
-// otherwise slip past this gate unnoticed.
+// A malformed config.toml must still fail closed with the repair hint, for
+// every agent. Since the flip a launch reads no registry (its models come
+// from the model server, so a malformed registry.toml is no launch's error:
+// TestPathsThatNeedNoServerStillRun's shell launch runs beside one); the
+// launch gate in RunE is config.toml's load, and it runs once before any
+// agent-type branching, so a genuine parse error blocks a command agent
+// (e.g. shell) exactly as it blocks claude. A future agent-type carve-out
+// could otherwise slip past this gate unnoticed.
 func TestMalformedRegistryStillFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -897,21 +864,21 @@ func TestMalformedRegistryStillFailsClosed(t *testing.T) {
 			withCleanConfigEnv(t, home)
 			dir := initTestRepo(t)
 			t.Chdir(dir)
-			regDir := filepath.Join(home, ".config", "local-ai")
-			if err := os.MkdirAll(regDir, 0o755); err != nil {
+			cfgDir := filepath.Join(home, ".config", "agent-wt")
+			if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(regDir, "registry.toml"), []byte("not valid toml [[["), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("not valid toml [[["), 0o644); err != nil {
 				t.Fatal(err)
 			}
 
 			_, err := runWT(t, tc.args...)
 			if err == nil {
-				t.Fatal("expected a config error for a malformed registry.toml")
+				t.Fatal("expected a config error for a malformed config.toml")
 			}
-			// registry.toml is not `wt config`'s file: the repair is a hand edit (#291).
-			if got := err.Error(); !strings.HasSuffix(got, "(fix that file by hand)") || strings.Contains(got, "wt config") {
-				t.Errorf("err = %v, want the hand-edit hint and no mention of `wt config`, which cannot edit the registry", err)
+			// config.toml is `wt config`'s file (#291).
+			if got := err.Error(); !strings.HasPrefix(got, "config error: ") || !strings.HasSuffix(got, "(run `wt config` to repair)") {
+				t.Errorf("err = %v, want the config error with the `wt config` hint", err)
 			}
 		})
 	}
@@ -957,12 +924,12 @@ func TestPinnedCommandAgentSkipsInstalledCheck(t *testing.T) {
 	defer func() { installed = oldInstalled }()
 
 	var called bool
-	oldLaunchFiltered := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+	oldLaunchFiltered := launchCommand
+	launchCommand = func(agent, worktreePath string, cfg *config.Config, yolo, pinnedSupplied bool, extraArgs []string, pp *precomputedProfiles) error {
 		called = true
 		return nil
 	}
-	defer func() { launchFiltered = oldLaunchFiltered }()
+	defer func() { launchCommand = oldLaunchFiltered }()
 
 	if _, err := runWT(t, "-A", "shell", "true"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -984,14 +951,14 @@ func TestCommandAgentDirectLaunchSkipsMissingRegistry(t *testing.T) {
 	var called bool
 	var gotAgent string
 	var gotPath string
-	oldLaunchFiltered := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+	oldLaunchFiltered := launchCommand
+	launchCommand = func(agent, worktreePath string, cfg *config.Config, yolo, pinnedSupplied bool, extraArgs []string, pp *precomputedProfiles) error {
 		called = true
 		gotAgent = agent
 		gotPath = worktreePath
 		return nil
 	}
-	defer func() { launchFiltered = oldLaunchFiltered }()
+	defer func() { launchCommand = oldLaunchFiltered }()
 	oldMaybeInstallGuard := maybeInstallGuard
 	maybeInstallGuard = func() {}
 	defer func() { maybeInstallGuard = oldMaybeInstallGuard }()
@@ -1024,16 +991,14 @@ func TestCommandAgentDirectLaunchSkipsMissingRegistry(t *testing.T) {
 // and model are already pinned, a pinned agent or command must still pick a
 // worktree. The guard is stubbed because the real guard.Install operates on
 // the test process's cwd and would install the hook into the repo under test.
+// A model server is configured (the picker's table comes from it), and no
+// branch sweeps the refcount file any more: a client session keeps none.
 func TestRunLaunchPath(t *testing.T) {
 	repo := t.TempDir()
 	if err := exec.Command("git", "-C", repo, "init", "-q").Run(); err != nil {
 		t.Fatal(err)
 	}
-
-	cfg := &config.Config{
-		Agents: []config.Agent{{Name: "shell", SupportedProviders: nil}},
-	}
-	a := &app{cfg: cfg}
+	a := pointAtFake(t, newFakeModelServer(t), "")
 
 	cases := []struct {
 		name       string
@@ -1042,7 +1007,7 @@ func TestRunLaunchPath(t *testing.T) {
 		launchPath string
 		root       string
 		wantPath   string
-		wantTUI    bool // true: expect tuiRun; false: expect launchFiltered
+		wantTUI    bool // true: expect tuiRun; false: expect launchCommand
 		wantGuard  bool // true: expect maybeInstallGuard called
 	}{
 		{"cwd", "shell", "", repo, repo, repo, false, true},
@@ -1053,13 +1018,11 @@ func TestRunLaunchPath(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			// Stub tuiRun, launchFiltered, maybeInstallGuard, and
+			// Stub tuiRun, launchCommand, maybeInstallGuard, and
 			// sweepRefcounts to capture the dispatched path, guard
-			// behavior, and refcount sweep — the sweep must fire on every
-			// branch (including "shell", which never builds a picker),
-			// since it is the single funnel every launch goes through.
+			// behavior, and that no branch sweeps the refcount file.
 			oldTUI := tuiRun
-			oldLaunch := launchFiltered
+			oldLaunch := launchCommand
 			oldGuard := maybeInstallGuard
 			oldSweep := sweepRefcounts
 			var gotPath string
@@ -1069,7 +1032,7 @@ func TestRunLaunchPath(t *testing.T) {
 				gotPath = c.launchPath
 				return nil
 			}
-			launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+			launchCommand = func(agent, worktreePath string, cfg *config.Config, yolo, pinnedSupplied bool, extraArgs []string, pp *precomputedProfiles) error {
 				gotLaunch = true
 				gotPath = worktreePath
 				return nil
@@ -1078,7 +1041,7 @@ func TestRunLaunchPath(t *testing.T) {
 			sweepRefcounts = func() { gotSweep = true }
 			defer func() {
 				tuiRun = oldTUI
-				launchFiltered = oldLaunch
+				launchCommand = oldLaunch
 				maybeInstallGuard = oldGuard
 				sweepRefcounts = oldSweep
 			}()
@@ -1098,13 +1061,13 @@ func TestRunLaunchPath(t *testing.T) {
 				t.Errorf("tuiRun called = %v, want %v", gotTUI, c.wantTUI)
 			}
 			if gotLaunch != !c.wantTUI {
-				t.Errorf("launchFiltered called = %v, want %v", gotLaunch, !c.wantTUI)
+				t.Errorf("launchCommand called = %v, want %v", gotLaunch, !c.wantTUI)
 			}
 			if gotGuard != c.wantGuard {
 				t.Errorf("maybeInstallGuard called = %v, want %v", gotGuard, c.wantGuard)
 			}
-			if !gotSweep {
-				t.Error("sweepRefcounts not called; the sweep must run on every runLaunchPath branch, including shell-wt")
+			if gotSweep {
+				t.Error("sweepRefcounts called: a client session keeps no refcount file")
 			}
 		})
 	}
@@ -1180,69 +1143,20 @@ func TestNoWtCommandIsHidden(t *testing.T) {
 	walk(root)
 }
 
-// A model-driven agent with no config.toml entry launches via the bare
-// passthrough path when registry.toml is missing entirely — the extreme
-// case of "no config.toml entry" (issue #147). Before this feature a
-// missing registry failed closed for every non-command agent (see the now-
-// deleted TestNonCommandAgentStillFailsWithoutRegistry); a genuinely
-// malformed config.toml/registry.toml still fails
-// (TestMalformedRegistryStillFailsClosed).
-func TestModelDrivenAgentPassesThroughWithoutRegistry(t *testing.T) {
-	expectDirectLaunchInRepo(t)
-	dir := initTestRepo(t)
-	t.Chdir(dir)
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
-	// No registry.toml written: config.Load fails closed with
-	// ErrRegistryMissing, a.cfg falls back to an empty Config with no
-	// agents, and claude reads as unconfigured.
-
-	var called bool
-	var gotAgent, gotPath string
-	oldLaunchPassthrough := launchPassthrough
-	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config, pp *precomputedProfiles) error {
-		called, gotAgent, gotPath = true, agent, worktreePath
-		return nil
-	}
-	defer func() { launchPassthrough = oldLaunchPassthrough }()
-
-	if _, err := runWT(t, "-A", "claude", "-W", "my-feature", "--new"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !called {
-		t.Fatal("expected launchPassthrough to be called")
-	}
-	if gotAgent != "claude" {
-		t.Errorf("agent = %q, want claude", gotAgent)
-	}
-	if !strings.Contains(gotPath, filepath.Join(".worktrees", "my-feature")) {
-		t.Errorf("worktreePath = %q, want it to contain .worktrees/my-feature", gotPath)
-	}
-}
-
-// A genuinely configured agent (a real config.toml entry) must NOT read as
-// unconfigured just because registry.toml also happens to be missing — only
-// the true "no config.toml entry" case should fall back to the bare
-// passthrough launch. Before config.Load stopped discarding a
-// successfully-parsed config.toml on ErrRegistryMissing, pi here would have
-// silently launched via launchPassthrough (bypassing model routing) instead
-// of reaching the model picker like any other configured-but-unresolved
-// launch (see TestWorktreeWithAgentWithoutModelShowsModelPicker).
+// A configured agent (a real config.toml entry) on a machine with no
+// registry.toml at all (a session machine) must reach the model picker like
+// any other launch whose model is not resolved, never the bare passthrough
+// launch (which bypasses model routing): the session reads config.toml's
+// agents and the model server's rows, not the registry (see
+// TestWorktreeWithAgentWithoutModelShowsModelPicker).
 func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 	dir := initTestRepo(t)
 	t.Chdir(dir)
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
-	cfgDir := filepath.Join(home, ".config", "agent-wt")
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// config.toml has a real pi entry, but no registry.toml is written at
-	// all — the ErrRegistryMissing case this test targets.
-	cfgToml := "default_tag = \"code\"\n[[agents]]\nname = \"pi\"\nsupported_providers = [\"ollama\"]\n"
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgToml), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	withCleanConfigEnv(t, t.TempDir())
+	// config.toml has a real pi entry, narrowed to the server's provider,
+	// and no registry.toml is written at all.
+	pointAtFake(t, newFakeModelServer(t, wireRow("openrouter/a", "launch", 1), wireRow("openrouter/b", "launch", 2)),
+		"\n[[agents]]\nname = \"pi\"\nsupported_providers = [\"openrouter\"]\n")
 
 	var passthroughCalled bool
 	oldLaunchPassthrough := launchPassthrough
@@ -1275,23 +1189,6 @@ func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 	}
 }
 
-// `-M` on an unconfigured agent must error, never silently pass through or
-// drop the pin — decision #5 of the passthrough design.
-func TestPinnedModelWithUnconfiguredAgentErrors(t *testing.T) {
-	dir := initTestRepo(t)
-	t.Chdir(dir)
-	home := t.TempDir()
-	writeEmptyRegistry(t, home) // registry exists but claude has no config.toml entry
-
-	_, err := runWT(t, "-A", "claude", "-W", "my-feature", "--new", "-M", "ollama/foo")
-	if err == nil {
-		t.Fatal("expected an error for -M against an unconfigured agent")
-	}
-	if !strings.Contains(err.Error(), "not configured") || !strings.Contains(err.Error(), "ollama/foo") {
-		t.Errorf("err = %v, want it to mention \"not configured\" and the pinned model", err)
-	}
-}
-
 // An unpinned launch (`-W` with no `-A`) must still route to the TUI's
 // agent/command picker, not be misread as an unconfigured-agent passthrough
 // for an empty agent name. Without the `agent != ""` guard on the new
@@ -1300,8 +1197,7 @@ func TestPinnedModelWithUnconfiguredAgentErrors(t *testing.T) {
 func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
 	dir := initTestRepo(t)
 	t.Chdir(dir)
-	home := t.TempDir()
-	writeEmptyRegistry(t, home)
+	pickerServer(t)
 
 	var tuiCalled bool
 	oldTuiRun := tuiRun
@@ -1361,12 +1257,13 @@ env = { WT_TEST_TUI_PROFILE_APPLIED = "1" }
 	}
 	t.Cleanup(func() { tuiRun = oldTuiRun })
 
-	a := &app{cfg: &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}}
-	var loadErr error
-	a.profiles, loadErr = profiles.Load()
+	store, loadErr := profiles.Load()
 	if loadErr != nil {
 		t.Fatalf("profiles.Load() error = %v", loadErr)
 	}
+	// The picker's table comes from the model server, so one is configured.
+	a := pointAtFake(t, newFakeModelServer(t), "")
+	a.profiles = store
 	a.profilesValidateErr = profiles.Validate(a.profiles, agentProfileMechanisms, agentRequiredMechanism)
 
 	if err := runLaunchPath(&cobra.Command{}, a, "", "", "", "", nil, "", ""); err != nil {
@@ -1377,7 +1274,10 @@ env = { WT_TEST_TUI_PROFILE_APPLIED = "1" }
 	}
 
 	cmd := exec.Command("true")
-	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+	// A catalog row as the picker hands it on (catalog.ToModel): it carries
+	// the server's location, which the session config, having no registry,
+	// could not resolve.
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x", Location: config.LocationLocal}
 	if _, err := captured(cmd, "claude", m); err != nil {
 		t.Fatalf("captured ProfileApplier() error = %v", err)
 	}
@@ -1404,13 +1304,13 @@ func TestCwdFlagLaunchesInTheCurrentDirectory(t *testing.T) {
 
 	var gotPath string
 	var guarded bool
-	oldLaunchFiltered, oldGuard := launchFiltered, maybeInstallGuard
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+	oldLaunchFiltered, oldGuard := launchCommand, maybeInstallGuard
+	launchCommand = func(agent, worktreePath string, cfg *config.Config, yolo, pinnedSupplied bool, extraArgs []string, pp *precomputedProfiles) error {
 		gotPath = worktreePath
 		return nil
 	}
 	maybeInstallGuard = func() { guarded = true }
-	t.Cleanup(func() { launchFiltered, maybeInstallGuard = oldLaunchFiltered, oldGuard })
+	t.Cleanup(func() { launchCommand, maybeInstallGuard = oldLaunchFiltered, oldGuard })
 
 	root := rootCmd()
 	root.SetOut(io.Discard)
@@ -1429,41 +1329,6 @@ func TestCwdFlagLaunchesInTheCurrentDirectory(t *testing.T) {
 	}
 }
 
-// TestBrokenRegistryLinkIsNotAPassthrough pins the launch gate for a registry
-// path that is a dangling symlink. A missing registry lets an unconfigured
-// agent launch with no model routing; a broken link must not, because the
-// user has a registry — it is just not reachable right now — and a silent
-// native launch would bill their own account instead of the routed model.
-func TestBrokenRegistryLinkIsNotAPassthrough(t *testing.T) {
-	dir := initTestRepo(t)
-	t.Chdir(dir)
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
-	link := filepath.Join(home, ".config", "local-ai", "registry.toml")
-	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(home, "unmounted", "registry.toml"), link); err != nil {
-		t.Fatal(err)
-	}
-
-	var called bool
-	oldLaunchPassthrough := launchPassthrough
-	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config, pp *precomputedProfiles) error {
-		called = true
-		return nil
-	}
-	defer func() { launchPassthrough = oldLaunchPassthrough }()
-
-	_, err := runWT(t, "-A", "claude", "-W", "my-feature", "--new")
-	if !errors.Is(err, config.ErrRegistryLink) {
-		t.Fatalf("err = %v, want config.ErrRegistryLink", err)
-	}
-	if called {
-		t.Error("launchPassthrough was called for a broken registry link")
-	}
-}
-
 // TestRunLaunchPathHandsTheTUIItsSlotProfiles pins the one line that turns
 // slot profiles on in the picker: runLaunchPath gives tui.Run the profiles
 // newApp loaded and the fail-closed applier. With the zero value the picker
@@ -1479,7 +1344,7 @@ func TestRunLaunchPathHandsTheTUIItsSlotProfiles(t *testing.T) {
 	}
 	t.Cleanup(func() { tuiRun = oldTuiRun })
 
-	a := &app{cfg: &config.Config{}}
+	a := pointAtFake(t, newFakeModelServer(t), "")
 	a.slotChecks = []profiles.SlotCheck{slotFixtureCheck(0, "cloud", "opus", map[string]string{"opus": "openrouter/a"})}
 
 	if err := runLaunchPath(&cobra.Command{}, a, "", "", "", "", nil, "", ""); err != nil {

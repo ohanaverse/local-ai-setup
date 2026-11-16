@@ -580,7 +580,7 @@ func TestCloudSyncSkipsOllamaHoweverItIsAskedFor(t *testing.T) {
 			asked := stubConfirm(t, true, nil, nil)
 			synced := stubRouteSync(t, "")
 
-			cmd := cloudSyncCmd(&app{cfg: cfg})
+			cmd := cloudSyncCmd(&app{hostSet: true, hostCfg: cfg})
 			var out, errOut bytes.Buffer
 			cmd.SetArgs(tc.args)
 			cmd.SetOut(&out)

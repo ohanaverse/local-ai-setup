@@ -10,15 +10,19 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
-// slotsFixture points XDG_CONFIG_HOME at a scratch dir and returns an app
-// over the slot fixture registry, with the app's slot state read from disk.
+// slotsFixture points XDG_CONFIG_HOME at a scratch dir whose config.toml
+// names a fake model server serving the slot fixture's models (the ids a
+// slot may name come from its catalog since the flip) and returns an app for
+// it; slot-profiles.toml holds initial.
 func slotsFixture(t *testing.T, initial string) *app {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	f := slotsServer(t)
+	a := pointAtFake(t, f, "")
 	if initial != "" {
 		if err := os.MkdirAll(filepath.Dir(profiles.SlotPath()), 0o755); err != nil {
 			t.Fatal(err)
@@ -27,7 +31,40 @@ func slotsFixture(t *testing.T, initial string) *app {
 			t.Fatal(err)
 		}
 	}
-	return &app{cfg: slotFixtureConfig()}
+	return a
+}
+
+// slotsServer is a fake model server whose catalog is the slot fixture's
+// models, in order.
+func slotsServer(t *testing.T) *fakeModelServer {
+	t.Helper()
+	var rows []modelapi.Row
+	for i, m := range slotFixtureConfig().Models {
+		rows = append(rows, wireRow(m.ID, modelapi.ActionLaunch, i+1))
+	}
+	return newFakeModelServer(t, rows...)
+}
+
+// candidatesFixture is slotsFixture whose model server answers the
+// candidates query with list.
+func candidatesFixture(t *testing.T, list modelapi.CandidateList) *app {
+	t.Helper()
+	f := slotsServer(t)
+	f.Candidates = list
+	return pointAtFake(t, f, "")
+}
+
+// candScore is a pointer to v, for a candidate's score.
+func candScore(v float64) *float64 { return &v }
+
+// candidatesFromServer is what the model server ranks from candTiers (the
+// ranking is the server's since the flip, internal/candidates): its
+// generation time and stale source, and the openrouter models, best first.
+func candidatesFromServer(generated string) modelapi.CandidateList {
+	return modelapi.CandidateList{TiersGenerated: generated, StaleSources: []string{"arena"}, Candidates: []modelapi.Candidate{
+		{ID: "openrouter/a", Provider: "openrouter", Location: "cloud", Tier: "deep", Confidence: "high", Score: candScore(60), Rated: true, Flags: []string{}},
+		{ID: "openrouter/b", Provider: "openrouter", Location: "cloud", Tier: "standard", Confidence: "high", Score: candScore(50), Rated: true, Flags: []string{}},
+	}}
 }
 
 func readSlotFile(t *testing.T) string {
@@ -264,8 +301,11 @@ func TestSlotsSetWithNothingToChangeRefusesBeforeTouchingFile(t *testing.T) {
 		t.Error("file changed")
 	}
 	entries, _ := os.ReadDir(filepath.Dir(profiles.SlotPath()))
-	if len(entries) != 1 {
-		t.Errorf("backup written: %v", entries)
+	for _, e := range entries {
+		// config.toml is the fixture's (it names the model server).
+		if e.Name() != "slot-profiles.toml" && e.Name() != "config.toml" {
+			t.Errorf("backup written: %v", entries)
+		}
 	}
 }
 
@@ -440,12 +480,7 @@ tool_call = true
 // open-weights-first: the skill refuses to trust a stale file it cannot see
 // the age of.
 func TestSlotsCandidatesJSONIncludesFreshness(t *testing.T) {
-	a := slotsFixture(t, "")
-	f := filepath.Join(t.TempDir(), "tiers.toml")
-	if err := os.WriteFile(f, []byte(candTiers), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("MODELTIERS_OUT", f)
+	a := candidatesFixture(t, candidatesFromServer("2026-10-12T15:58:00Z"))
 	out, err := runProfileCmd(t, a, "slots", "candidates", "--json", "--provider", "openrouter")
 	if err != nil {
 		t.Fatal(err)
@@ -473,8 +508,13 @@ func TestSlotsCandidatesJSONIncludesFreshness(t *testing.T) {
 // model is listed as unrated (score null, flagged) and the report says the
 // file was not found — a degraded ranking, never a failed command.
 func TestSlotsCandidatesNoTiersFile(t *testing.T) {
-	a := slotsFixture(t, "")
-	t.Setenv("MODELTIERS_OUT", filepath.Join(t.TempDir(), "missing.toml"))
+	// No tiers file on the server: no generation time, every candidate
+	// unrated.
+	var unrated []modelapi.Candidate
+	for _, m := range slotFixtureConfig().Models {
+		unrated = append(unrated, modelapi.Candidate{ID: m.ID, Provider: m.ProviderID, Location: "cloud", Flags: []string{"unrated"}})
+	}
+	a := candidatesFixture(t, modelapi.CandidateList{Candidates: unrated})
 	out, err := runProfileCmd(t, a, "slots", "candidates", "--json")
 	if err != nil {
 		t.Fatal(err)
@@ -497,33 +537,6 @@ func TestSlotsCandidatesNoTiersFile(t *testing.T) {
 	}
 }
 
-// TestSlotsCandidatesNearBothProviders checks --near across providers: one
-// nearest model per provider, providers sorted by name, nearest first —
-// the list the skill uses to build an ollama/openrouter twin pair.
-func TestSlotsCandidatesNearBothProviders(t *testing.T) {
-	a := slotsFixture(t, "")
-	f := filepath.Join(t.TempDir(), "tiers.toml")
-	if err := os.WriteFile(f, []byte(candTiers), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("MODELTIERS_OUT", f)
-	out, err := runProfileCmd(t, a, "slots", "candidates", "--json", "--near", "openrouter/a", "--per-provider", "1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var r candOut
-	if err := json.Unmarshal([]byte(out), &r); err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, c := range r.Candidates {
-		got = append(got, c.ID)
-	}
-	if !slices.Equal(got, []string{"omlx/q", "openrouter/b"}) {
-		t.Errorf("got %v", got)
-	}
-}
-
 // TestSlotsCandidatesAgeInWholeDays checks that the file's age prints in
 // whole days, never as a raw Go duration, so the freshness line reads the
 // same wherever the skill shows it.
@@ -537,13 +550,8 @@ func TestSlotsCandidatesAgeInWholeDays(t *testing.T) {
 		{2 * time.Hour, "tiers.toml: less than a day old\n"},
 	}
 	for _, c := range cases {
-		a := slotsFixture(t, "")
-		f := filepath.Join(t.TempDir(), "tiers.toml")
 		gen := time.Now().Add(-c.age).UTC().Format(time.RFC3339)
-		if err := os.WriteFile(f, []byte(strings.Replace(candTiers, "2026-10-12T15:58:00Z", gen, 1)), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("MODELTIERS_OUT", f)
+		a := candidatesFixture(t, candidatesFromServer(gen))
 		out, err := runProfileCmd(t, a, "slots", "candidates")
 		if err != nil || !strings.HasPrefix(out, c.want) {
 			t.Errorf("age %v: out = %q, %v", c.age, out, err)

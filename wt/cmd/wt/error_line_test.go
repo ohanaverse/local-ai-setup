@@ -124,7 +124,7 @@ func TestStopKeepsUsageOnAMistake(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := &cobra.Command{Use: "wt", SilenceErrors: true}
-			root.AddCommand(stopCmd(&app{cfg: &config.Config{DefaultTag: "code"}}))
+			root.AddCommand(stopCmd(&app{hostSet: true, hostCfg: &config.Config{DefaultTag: "code"}}))
 			silenceUsageOnError(root)
 			var buf bytes.Buffer
 			root.SetOut(&buf)

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"sync/atomic"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -25,11 +26,28 @@ func warnIgnoredLaunchKeys(w io.Writer, cfg *config.Config) {
 	}
 }
 
+// ignoredLitellmNoted is set once this process has printed the note for a
+// retired [litellm] key: the note is printed once per process, however many
+// command trees the process builds (tests build many).
+var ignoredLitellmNoted atomic.Bool
+
+// warnIgnoredLitellmKeys prints, once per process, one note naming each
+// [litellm] key wt tolerates but no longer reads (config.IgnoredLitellmKeys:
+// enabled, since every session routes through the model server). The url
+// and api_key it leaves alone: they are host state `wt-model serve` reads
+// (R4), and they round-trip every save.
+func warnIgnoredLitellmKeys(w io.Writer, cfg *config.Config) {
+	keys := cfg.IgnoredLitellmKeys()
+	if len(keys) == 0 || ignoredLitellmNoted.Swap(true) {
+		return
+	}
+	for _, key := range keys {
+		fmt.Fprintf(w, "wt: note: config.toml: %s is no longer used and is ignored\n", key)
+	}
+}
+
 // app holds shared dependencies loaded once at startup.
 type app struct {
-	cfg      *config.Config
-	cfgErr   error        // config load/validation error, if any; surfaced by commands that can repair it
-	loadErr  error        // config.Load error ONLY (parse/IO/registry missing); gates commands that just rewrite wt's own [litellm] state
 	theme    themes.Theme // active theme; populated by newApp()
 	profiles profiles.Store
 	// profilesLoadErr is set ONLY when profiles.Load() itself fails (a
@@ -39,7 +57,7 @@ type app struct {
 	// silently overwrite the malformed file with just "enabled = false",
 	// destroying every hand-authored profile and comment) and
 	// list/show/status must report the error instead of rendering an
-	// empty/default profiles view. Mirrors how cfg/cfgErr/loadErr already
+	// empty/default profiles view. Mirrors how hostLoadErr/hostCfgErr
 	// separate "config.Load failed" from "config validation failed".
 	profilesLoadErr error
 	// profilesValidateErr is set ONLY when profiles.Validate() fails, which
@@ -65,11 +83,62 @@ type app struct {
 	slotLoadErr error
 
 	// The session's config and model-server handle (models.go), both read on
-	// first use and cached. cfg above stays config.Load() until the flip.
+	// first use and cached.
 	sessCfg    *config.Config
 	sessCfgErr error
 	sessCfgSet bool
 	models     *modelSession
+
+	// The host's config (hostConfig): config.toml and registry.toml through
+	// config.Load, read on first use by a host command and cached. hostCfg is
+	// never nil once hostSet (an empty default when the load failed);
+	// hostLoadErr is config.Load's error alone (parse, I/O, a missing
+	// registry), which protectedPaths and noRegistry read; hostCfgErr is that
+	// error or else the validation error, for the commands that need a valid
+	// registry.
+	hostCfg     *config.Config
+	hostLoadErr error
+	hostCfgErr  error
+	hostSet     bool
+}
+
+// hostConfig is the host's config: config.Load (config.toml and the
+// registry), read once, on first use, and cached; the error is config.Load's
+// alone. Only the host commands read it (R3: `model init|add|edit|rm|list`,
+// `served`, `warm`, `stop <provider>|--all`, `cloud-sync`, `litellm`, `wt
+// config` and its Models tab, `stats`' registry note) and protectedPaths
+// (R10): a session path reads sessionCfg, never the registry. The returned
+// config is never nil: an empty default stands in when the load failed, as
+// newApp's did before the flip, so a command that tolerates a load error
+// (the config editor, `model rm`) still has a value to hand on. The cache is
+// unsynchronized: the main goroutine only.
+func (a *app) hostConfig() (*config.Config, error) {
+	a.loadHost()
+	return a.hostCfg, a.hostLoadErr
+}
+
+// hostConfigErr is hostConfig's load error, or else the loaded config's
+// validation error: what a host command that needs a valid registry (`wt
+// stop <provider>`, the config editor's banner) refuses on.
+func (a *app) hostConfigErr() error {
+	a.loadHost()
+	return a.hostCfgErr
+}
+
+// loadHost reads the host's config once.
+func (a *app) loadHost() {
+	if a.hostSet {
+		return
+	}
+	cfg, err := config.Load()
+	if cfg == nil {
+		cfg = &config.Config{DefaultTag: "code"}
+	}
+	verr := err
+	if verr == nil {
+		verr = cfg.Validate()
+	}
+	a.hostCfg, a.hostLoadErr, a.hostCfgErr, a.hostSet = cfg, err, verr, true
 }
 
 // profileState packages a's already-loaded profiles.toml state for
@@ -128,24 +197,24 @@ func loadSlotState() (checks []profiles.SlotCheck, unknown []string, err error) 
 	return checks, store.Unknown, nil
 }
 
-// newApp loads the config (best-effort), the active theme, and the
-// profiles store. Config and profiles validation errors are stored in the
-// returned app rather than returned as a fatal error, so `wt config`/
+// newApp reads the session's config (config.toml only, best-effort), the
+// active theme, and the profiles store. It reads no registry: a host command
+// reads it through hostConfig when it runs, so a session machine with no
+// registry starts wt like any other. Config and profiles errors are stored
+// in the returned app rather than returned as a fatal error, so `wt config`/
 // `wt profile` can still launch and let the user repair a broken file.
 // newApp does no live model discovery, so flag-only paths (--version,
 // --init, -W, --cwd) don't shell out to ollama or hit the OpenRouter API.
 func newApp() (*app, error) {
-	cfg, cfgErr := config.Load()
-	loadErr := cfgErr
-	if cfg == nil {
-		cfg = &config.Config{DefaultTag: "code"}
+	a := &app{}
+	// A legacy [launch] exit_prompt and the retired [litellm] enabled are
+	// tolerated and ignored (R305a, R4), never a load failure; noticed
+	// instead. A config.toml that does not load is said by the command that
+	// needs it.
+	if scfg, err := a.sessionCfg(); err == nil {
+		warnIgnoredLaunchKeys(osStderr, scfg)
+		warnIgnoredLitellmKeys(osStderr, scfg)
 	}
-	if cfgErr == nil {
-		cfgErr = cfg.Validate()
-	}
-	// A legacy [launch] exit_prompt is tolerated and ignored (R305a), never a
-	// load failure; notice it once per process instead.
-	warnIgnoredLaunchKeys(osStderr, cfg)
 	// Load the active theme. I/O and TOML parse errors are hard failures.
 	// An unknown or empty theme name falls back to Default so a typo in
 	// themes.toml never crashes the launcher — the user can still run
@@ -162,9 +231,8 @@ func newApp() (*app, error) {
 	// Slot profiles load independently of profiles.toml: an error in either
 	// file never hides the other.
 	slotChecks, slotUnknown, slotLoadErr := loadSlotState()
-	return &app{
-		cfg: cfg, cfgErr: cfgErr, loadErr: loadErr, theme: theme,
-		profiles: store, profilesLoadErr: profilesLoadErr, profilesValidateErr: profilesValidateErr,
-		slotChecks: slotChecks, slotUnknown: slotUnknown, slotLoadErr: slotLoadErr,
-	}, nil
+	a.theme = theme
+	a.profiles, a.profilesLoadErr, a.profilesValidateErr = store, profilesLoadErr, profilesValidateErr
+	a.slotChecks, a.slotUnknown, a.slotLoadErr = slotChecks, slotUnknown, slotLoadErr
+	return a, nil
 }

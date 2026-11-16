@@ -452,7 +452,10 @@ func cleanupRegistryNote(err error) string {
 // fails closed too; config.RegistryRedirected answers false there and must
 // not decide this.
 func noRegistry(a *app) bool {
-	if a == nil || !errors.Is(a.loadErr, config.ErrRegistryMissing) {
+	if a == nil {
+		return false
+	}
+	if _, loadErr := a.hostConfig(); !errors.Is(loadErr, config.ErrRegistryMissing) {
 		return false
 	}
 	home, err := os.UserHomeDir()
@@ -462,7 +465,9 @@ func noRegistry(a *app) bool {
 	return filepath.Clean(config.RegistryPath()) == filepath.Join(home, ".config", "local-ai", "registry.toml")
 }
 
-// protectedPaths are the registry's local_path artifacts (fetch and draft of
+// protectedPaths are the registry's local_path artifacts, read through
+// hostConfig (R10: the one registry read a session path may reach,
+// best-effort and fail-closed as below) (fetch and draft of
 // every model) as absolute, cleaned paths, sorted and each once: wt never
 // deletes them, so a worktree holding one, or inside one, is in use. "~" and
 // "~/..." are expanded (config.ExpandHome). No file at the default registry
@@ -482,14 +487,15 @@ func protectedPaths(a *app) ([]string, error) {
 	if noRegistry(a) {
 		return nil, nil
 	}
-	if a.loadErr != nil {
-		return nil, fmt.Errorf("%w: %w", errRegistryUnavailable, a.loadErr)
+	cfg, loadErr := a.hostConfig()
+	if loadErr != nil {
+		return nil, fmt.Errorf("%w: %w", errRegistryUnavailable, loadErr)
 	}
-	if a.cfg == nil {
+	if cfg == nil {
 		return nil, errRegistryUnavailable
 	}
 	var out []string
-	for _, m := range a.cfg.Models {
+	for _, m := range cfg.Models {
 		for _, side := range []struct {
 			key string
 			art config.ModelArtifact

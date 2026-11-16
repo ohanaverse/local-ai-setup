@@ -73,7 +73,7 @@ func TestSlotsAddFailsHardWhenUnreachable(t *testing.T) {
 func TestSlotsAddTakesModelIDsFromTheCatalog(t *testing.T) {
 	f := newFakeModelServer(t, wireRow("openrouter/served", modelapi.ActionLaunch, 1))
 	a := pointAtFake(t, f, "")
-	a.cfg = nil
+	a.hostCfg, a.hostSet = nil, true
 	out, err := runProfileCmd(t, a, "slots", "add", "mine", "--slot", "sonnet=openrouter/served")
 	if err != nil {
 		t.Fatalf("add: %v\n%s", err, out)
@@ -132,7 +132,7 @@ func jsonKeys(t *testing.T, raw json.RawMessage) []string {
 // TestSlotsCandidatesJSONShapeUnchanged proves `profile slots candidates
 // --json` over the model server prints the document the
 // wt-manage-slot-profiles skill reads, key for key: the same top-level keys
-// and candidate keys as the registry path (run here too), which are the
+// and candidate keys the registry path printed before the flip, which are the
 // golden lists below. The values come from the server's candidate list.
 func TestSlotsCandidatesJSONShapeUnchanged(t *testing.T) {
 	wantTop := []string{"candidates", "stale_sources", "tiers_generated_at"}
@@ -151,17 +151,6 @@ func TestSlotsCandidatesJSONShapeUnchanged(t *testing.T) {
 		return jsonKeys(t, []byte(out)), jsonKeys(t, cands[0]), doc
 	}
 
-	// Today's shape: the registry path, no endpoint.
-	legacy := slotsFixture(t, "")
-	out, err := runProfileCmd(t, legacy, "slots", "candidates", "--json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	top, cand, _ := shape(out)
-	if !slices.Equal(top, wantTop) || !slices.Equal(cand, wantCand) {
-		t.Fatalf("registry path keys = %v / %v, want the golden %v / %v", top, cand, wantTop, wantCand)
-	}
-
 	score, price := 61.5, 2.0
 	f := newFakeModelServer(t)
 	f.Candidates = modelapi.CandidateList{
@@ -170,8 +159,8 @@ func TestSlotsCandidatesJSONShapeUnchanged(t *testing.T) {
 			Score: &score, Rated: true, OutputPerMillion: &price, Flags: []string{}}},
 	}
 	a := pointAtFake(t, f, "")
-	a.cfg = nil
-	out, err = runProfileCmd(t, a, "slots", "candidates", "--json", "--provider", "openrouter", "--near", "openrouter/a")
+	a.hostCfg, a.hostSet = nil, true
+	out, err := runProfileCmd(t, a, "slots", "candidates", "--json", "--provider", "openrouter", "--near", "openrouter/a")
 	if err != nil {
 		t.Fatalf("candidates: %v\n%s", err, out)
 	}
@@ -198,7 +187,7 @@ func TestSlotsCandidatesPassesAnUnparseableTiersStampThrough(t *testing.T) {
 	f := newFakeModelServer(t)
 	f.Candidates = modelapi.CandidateList{TiersGenerated: "yesterday-ish", StaleSources: []string{"arena"}}
 	a := pointAtFake(t, f, "")
-	a.cfg = nil
+	a.hostCfg, a.hostSet = nil, true
 	out, err := runProfileCmd(t, a, "slots", "candidates", "--json")
 	if err != nil {
 		t.Fatalf("candidates --json: %v\n%s", err, out)
@@ -233,8 +222,8 @@ func TestProfileShowPreviewUsesTheGatewayAndAMaskedToken(t *testing.T) {
 	f.Token = "gateway-token-9876"
 	const litellmURL, litellmKey = "http://litellm-host.example:4000", "sk-host-secret-4242"
 	a := pointAtFake(t, f, "\n[litellm]\nurl = \""+litellmURL+"\"\napi_key = \""+litellmKey+"\"\n")
-	a.cfg = &config.Config{}
-	a.cfg.SetLitellmForTest(config.LitellmState{URL: litellmURL, APIKey: litellmKey})
+	a.hostCfg, a.hostSet = &config.Config{}, true
+	hostCfgOf(a).SetLitellmForTest(config.LitellmState{URL: litellmURL, APIKey: litellmKey})
 	a.slotChecks = []profiles.SlotCheck{slotFixtureCheck(0, "mix", "sonnet", map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"})}
 	out, err := runProfileCmd(t, a, "show", "-A", "claude", "-M", "profile/mix")
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/spf13/cobra"
@@ -582,25 +583,28 @@ func runLitellmProviders(out io.Writer, asJSON bool) error {
 	return nil
 }
 
+// runLitellmStatus is `wt litellm status`: the host's LiteLLM url and whether
+// a key is set (never the key). There is no on/off any more: every session
+// routes through the model server, which reaches LiteLLM with this url and
+// key (R4), so the retired [litellm] enabled is not reported.
 func runLitellmStatus(out io.Writer, cfg *config.Config, asJSON bool) error {
 	if asJSON {
 		return json.NewEncoder(out).Encode(map[string]any{
-			"enabled": cfg.IsLitellm(), "url": cfg.LitellmBaseURL(), "api_key_set": cfg.LitellmAPIKey() != "",
+			"url": cfg.LitellmBaseURL(), "api_key_set": cfg.LitellmAPIKey() != "",
 		})
-	}
-	mode := "off"
-	if cfg.IsLitellm() {
-		mode = "on"
 	}
 	key := maskKey(cfg.LitellmAPIKey())
 	url := cfg.LitellmBaseURL()
 	if url == "" {
 		url = "(unset)"
 	}
-	fmt.Fprintf(out, "litellm: %s\n  url: %s\n  api_key: %s\n", mode, url, key)
+	fmt.Fprintf(out, "litellm:\n  url: %s\n  api_key: %s\n", url, key)
 	return nil
 }
 
+// runLitellmToggle was `wt litellm on|off`. Since the flip (Task 18) no
+// command reaches it: the two are retired stubs (retiredLitellmToggleCmd).
+// Task 19 deletes it with the rest of the direct path.
 func runLitellmToggle(out, errOut io.Writer, cfg *config.Config, on bool) error {
 	if err := cfg.UpdateLitellm(func(s *config.LitellmState) { s.Enabled = on }); err != nil {
 		return err
@@ -637,16 +641,17 @@ func runLitellmSet(out io.Writer, cfg *config.Config, url, key *string) error {
 func litellmCmd(a *app) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "litellm",
-		Short: "Manage LiteLLM routes and routing state for registry models",
+		Short: "Manage LiteLLM routes for registry models, and the proxy url and key",
 	}
 	var syncJSON, listJSON, provJSON, syncDryRun bool
 	syncC := &cobra.Command{
 		Use: "sync", Short: "Make LiteLLM routes match the registry's cloud models and the running (or pulled ollama) local models", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if a.loadErr != nil {
-				return configError(a.loadErr)
+			cfg, loadErr := a.hostConfig()
+			if loadErr != nil {
+				return configError(loadErr)
 			}
-			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, syncJSON, syncDryRun)
+			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, syncJSON, syncDryRun)
 		},
 	}
 	syncC.Flags().BoolVar(&syncJSON, "json", false, "machine-readable output")
@@ -661,40 +666,31 @@ func litellmCmd(a *app) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error { return runLitellmProviders(cmd.OutOrStdout(), provJSON) },
 	}
 	provC.Flags().BoolVar(&provJSON, "json", false, "machine-readable output")
-	cfgGuard := func(run func(cmd *cobra.Command) error) func(*cobra.Command, []string) error {
+	cfgGuard := func(run func(cmd *cobra.Command, cfg *config.Config) error) func(*cobra.Command, []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
 			// Gate on the LOAD error only: these commands touch just wt's own
 			// [litellm] state, so a registry validation gap must not lock the
 			// user out. A genuine load failure leaves a default cfg that Save
 			// would write over config.toml.
-			if a.loadErr != nil {
-				return configError(a.loadErr)
+			cfg, loadErr := a.hostConfig()
+			if loadErr != nil {
+				return configError(loadErr)
 			}
-			return run(cmd)
+			return run(cmd, cfg)
 		}
 	}
 	var statusJSON bool
 	statusC := &cobra.Command{
-		Use: "status", Short: "Show the LiteLLM routing state (key is never printed)", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: cfgGuard(func(cmd *cobra.Command) error { return runLitellmStatus(cmd.OutOrStdout(), a.cfg, statusJSON) }),
+		Use: "status", Short: "Show the LiteLLM proxy url and whether its api key is set (the key is never printed)", Args: cobra.NoArgs, SilenceUsage: true,
+		RunE: cfgGuard(func(cmd *cobra.Command, cfg *config.Config) error {
+			return runLitellmStatus(cmd.OutOrStdout(), cfg, statusJSON)
+		}),
 	}
 	statusC.Flags().BoolVar(&statusJSON, "json", false, "machine-readable output")
-	onC := &cobra.Command{
-		Use: "on", Short: "Route agents through LiteLLM", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: cfgGuard(func(cmd *cobra.Command) error {
-			return runLitellmToggle(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, true)
-		}),
-	}
-	offC := &cobra.Command{
-		Use: "off", Short: "Stop routing agents through LiteLLM (proxy untouched)", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: cfgGuard(func(cmd *cobra.Command) error {
-			return runLitellmToggle(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, false)
-		}),
-	}
 	var setURL, setKey string
 	setC := &cobra.Command{
 		Use: "set", Short: "Set the LiteLLM proxy url and/or api key", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: cfgGuard(func(cmd *cobra.Command) error {
+		RunE: cfgGuard(func(cmd *cobra.Command, cfg *config.Config) error {
 			var u, k *string
 			if cmd.Flags().Changed("url") {
 				u = &setURL
@@ -705,7 +701,7 @@ func litellmCmd(a *app) *cobra.Command {
 			if u == nil && k == nil {
 				return errors.New("nothing to set: pass --url and/or --api-key")
 			}
-			return runLitellmSet(cmd.OutOrStdout(), a.cfg, u, k)
+			return runLitellmSet(cmd.OutOrStdout(), cfg, u, k)
 		}),
 	}
 	setC.Flags().StringVar(&setURL, "url", "", "LiteLLM proxy base URL")
@@ -724,18 +720,42 @@ func litellmCmd(a *app) *cobra.Command {
 		// config.toml that does not load leaves it empty, so the restart is
 		// made and not waited for.
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runLitellmRestart(cmd.OutOrStdout(), a.cfg)
+			cfg, _ := a.hostConfig()
+			return runLitellmRestart(cmd.OutOrStdout(), cfg)
 		},
 	}
 	c.AddCommand(
-		syncC, listC, provC, statusC, onC, offC, setC, restartC,
+		syncC, listC, provC, statusC, setC, restartC,
 		removedLitellmCmd("expose"), removedLitellmCmd("unexpose"),
+		retiredLitellmToggleCmd("on"), retiredLitellmToggleCmd("off"),
 	)
 	return c
 }
 
+// litellmToggleRetired is the date `wt litellm on|off` were retired (style
+// guide C5: a hidden stub carries its removal date).
+const litellmToggleRetired = "2026-11-15"
+
+// retiredLitellmToggleCmd is the hidden stub `wt litellm on|off` became when
+// every session started routing through the model server (Task 18): the
+// [litellm] enabled key they flipped is read by nothing, so running either
+// changes nothing and says where routing is configured now, exit 1. A stub
+// rather than a removal: cobra would print the parent's help for an unknown
+// name and exit 0, so `wt litellm on && ...` would "succeed". Flag parsing is
+// off so a stray flag reaches the same text.
+func retiredLitellmToggleCmd(name string) *cobra.Command {
+	return &cobra.Command{
+		Use: name, Hidden: true, DisableFlagParsing: true, SilenceUsage: true,
+		Annotations: map[string]string{removedCmdAnnotation: litellmToggleRetired},
+		RunE: func(*cobra.Command, []string) error {
+			return exitcode.New(1, fmt.Errorf("litellm %s is retired — every session routes through the model server; set url and token_file under [model-server] in config.toml; nothing was changed", name), false)
+		},
+	}
+}
+
 // removedCmdAnnotation marks a hidden stub that only reports a removed
-// command; its value names the issue that removed it.
+// command; its value names the issue that removed it, or the date it was
+// retired.
 const removedCmdAnnotation = "wt-removed"
 
 // removedLitellmCmd is a hidden stub for a subcommand #179 removed. Without

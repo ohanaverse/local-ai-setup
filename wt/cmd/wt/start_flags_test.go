@@ -17,7 +17,7 @@ func TestStartHasNoJSONOrPlanFlag(t *testing.T) {
 			cfg := loadingFixture(t)
 			started := stubLifecycleStart(t, nil)
 			driver := stubStartDriver(t, nil)
-			c := startCmd(&app{cfg: cfg})
+			c := startCmd(&app{hostSet: true, hostCfg: cfg})
 			var out, errOut bytes.Buffer
 			c.SetOut(&out)
 			c.SetErr(&errOut)

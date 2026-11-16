@@ -139,8 +139,13 @@ func slotContentNotesFor(c profiles.SlotCheck) []string {
 // whose id begins with "profile/") while at least one profile is Usable; ""
 // otherwise. No profile row is built then. A launch prints it after "wt: ",
 // and `wt profile list` after "warning: ".
+//
+// Only slotWarnings (the registry path's launch) reads it, and no command
+// reaches that since the flip (Task 18): it reads the host's config. Task 19
+// deletes both.
 func slotReservedNote(a *app) string {
-	holder := catalog.SlotPrefixHolder(a.cfg)
+	cfg, _ := a.hostConfig()
+	holder := catalog.SlotPrefixHolder(cfg)
 	if holder == "" {
 		return ""
 	}

@@ -127,7 +127,8 @@ func modelAddCmd(a *app) *cobra.Command {
 				return err
 			}
 		}
-		return runModelAdd(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, req)
+		cfg, _ := a.hostConfig()
+		return runModelAdd(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, req)
 	}
 	return c
 }
@@ -345,8 +346,8 @@ func modelRmCmd(a *app) *cobra.Command {
 		Args:         cobra.MinimumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := a.cfg
-			if a.loadErr != nil {
+			cfg, loadErr := a.hostConfig()
+			if loadErr != nil {
 				cfg = nil // the removal may be the repair; only the weights lines are lost
 			}
 			return runModelRm(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, args, yes)

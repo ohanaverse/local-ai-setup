@@ -10,7 +10,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
 // failedStartMessage is a failed start as the engine words it for mtplx: one
@@ -28,32 +28,42 @@ func stubFailedStart(t *testing.T) {
 	t.Cleanup(func() { startModel = old })
 }
 
-// TestStartCmdLeavesAFailedStartToMainsOnePrint pins #344 for `wt start`:
-// main prints every error once, after "wt:", and cobra printed it too, as
-// "Error: …", so a failed start came out twice with the server's multi-line
-// log tail each time. The command must hand the error back (main's line, and
-// exit 1) and print nothing of it itself. `--replace` and the picker are the
-// same command and the same return.
+// failingStartServer points the config home at a fake model server whose
+// one model, omlx/q, is local and stopped, and whose start jobs fail with a
+// multi-line message (a server's log tail), polled without sleeping.
+func failingStartServer(t *testing.T) *fakeModelServer {
+	t.Helper()
+	f := newFakeModelServer(t, localRow("omlx/q", modelapi.StateStopped, modelapi.ActionStart, nil))
+	f.Outcome = func(int, modelapi.StartRequest) *modelapi.Problem {
+		return &modelapi.Problem{Code: modelapi.CodeFailed, Message: "serve process exited during model load"}
+	}
+	pointAtFake(t, f, "")
+	old := newModelClient
+	newModelClient = fastModelClient
+	t.Cleanup(func() { newModelClient = old })
+	captureStderr(t) // the start's progress lines
+	return f
+}
+
+// TestStartCmdLeavesAFailedStartToMainsOnePrint pins #344 for `wt start`, now
+// on the model server: main prints every error once, after "wt:", and cobra
+// printed it too, as "Error: …", so a failed start came out twice. Through
+// the real command tree a failed start job is one "wt:" line, no cobra
+// "Error:" copy and no usage block, exit 2 (a started thing that did not
+// finish). `--replace` is the same command and the same return.
 func TestStartCmdLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 	for name, args := range map[string][]string{
-		"wt start <id>":           {"ollama/b:1"},
-		"wt start <id> --replace": {"ollama/b:1", "--replace"},
+		"wt start <id>":           {"start", "omlx/q"},
+		"wt start <id> --replace": {"start", "omlx/q", "--replace"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			cfg, _ := startFixture(t)
-			stubFailedStart(t)
-			c := startCmd(&app{cfg: cfg})
-			c.Flags().Bool("replace", false, "") // the root command's persistent flag
-			var out, errOut bytes.Buffer
-			c.SetOut(&out)
-			c.SetErr(&errOut)
-			c.SetArgs(args)
-			err := c.Execute()
-			if err == nil || err.Error() != failedStartMessage {
-				t.Fatalf("err = %v, want the failed start handed back for main to print", err)
+			failingStartServer(t)
+			out, code := runRoot(t, args...)
+			if code != 2 || len(wtLines(out)) != 1 || !strings.Contains(out, "serve process exited during model load") {
+				t.Errorf("exit %d, output %q; want 2 and one wt: line carrying the job's message", code, out)
 			}
-			if out.Len() != 0 || errOut.Len() != 0 {
-				t.Errorf("the command printed stdout %q, stderr %q; want nothing: main prints the error once", out.String(), errOut.String())
+			if strings.Contains(out, "Error:") || strings.Contains(out, "Usage:") {
+				t.Errorf("cobra printed its own copy or usage:\n%s", out)
 			}
 		})
 	}
@@ -73,7 +83,7 @@ func TestSmokeCmdLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 	runStopPicker = func(*config.Config) {}
 	stdinTTY = func() bool { return true }
 
-	out, errOut, err := runSmokeCmd(&app{cfg: cfg}, "ollama/not-eligible:x")
+	out, errOut, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/not-eligible:x")
 	if err == nil || err.Error() != failedStartMessage {
 		t.Fatalf("err = %v, want the failed start handed back for main to print", err)
 	}
@@ -86,45 +96,31 @@ func TestSmokeCmdLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 }
 
 // TestLaunchLeavesAFailedStartToMainsOnePrint is the same for a launch whose
-// -M pin has to be started. The root command keeps cobra's print for its
-// other errors, so it is silenced for this run only, and only by an error
-// that came out of the start: the driver's own (*startError) or anything
-// else the start returned — a refused replace, a cancel — which resolveModel
-// marks. The usage block the root command prints after an error is silenced
-// with it. It runs the real launch funnel (runLaunchPath) on the root command.
+// -M pin has to be started, through the real command tree on the model
+// server: a failed start job and an unknown pin are each one "wt:" line,
+// with no cobra "Error:" copy and no usage block (the root command silences
+// usage once its flags have parsed), exit 2 for the job that did not finish
+// and 1 for the pin that never started anything.
 func TestLaunchLeavesAFailedStartToMainsOnePrint(t *testing.T) {
-	stubProbeInventory(t, localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
-		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/q", Artifact: "q", Registered: true, ArtifactKnown: true}},
-	})
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
-		Models:    []config.Model{{ID: "omlx/q", ProviderID: "omlx", ModelName: "q", Tags: []string{"code"}}},
-		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
-	}
-	refused := errors.New("starting omlx/q will stop omlx/old; continue? — rerun with --replace to confirm")
 	for name, tc := range map[string]struct {
-		pin     string
-		start   error
-		silence bool
+		pin  string
+		code int
+		has  string
 	}{
-		"the driver's failure":      {"omlx/q", startFailure("omlx/q", errors.New("boom")), true},
-		"a refused replace":         {"omlx/q", refused, true},
-		"an error that is no start": {"omlx/nope", nil, false},
+		"the start job's failure":   {"omlx/q", 2, "serve process exited during model load"},
+		"an error that is no start": {"omlx/nope", 1, "omlx/nope"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			stubStartDriver(t, tc.start)
-			root := rootCmd()
-			err := runLaunchPath(root, &app{cfg: cfg}, "pi", tc.pin, "", "", nil, t.TempDir(), "")
-			if err == nil {
-				t.Fatal("runLaunchPath() = nil, want an error")
+			failingStartServer(t)
+			fakeAgentOnPath(t, "pi")
+			t.Chdir(t.TempDir())
+			stubStdinTTY(t, false)
+			out, code := runRoot(t, "--cwd", "-A", "pi", "-M", tc.pin)
+			if code != tc.code || len(wtLines(out)) != 1 || !strings.Contains(out, tc.has) {
+				t.Errorf("exit %d, output %q; want %d and one wt: line naming %q", code, out, tc.code, tc.has)
 			}
-			if tc.start != nil && (!errors.Is(err, tc.start) || err.Error() != tc.start.Error()) {
-				t.Errorf("err = %v, want the start's error, text unchanged", err)
-			}
-			// The root silences cobra's error line for every error (W2).
-			if !root.SilenceErrors || root.SilenceUsage != tc.silence {
-				t.Errorf("SilenceErrors = %v, SilenceUsage = %v, want true and %v", root.SilenceErrors, root.SilenceUsage, tc.silence)
+			if strings.Contains(out, "Error:") || strings.Contains(out, "Usage:") {
+				t.Errorf("cobra printed its own copy or usage:\n%s", out)
 			}
 		})
 	}

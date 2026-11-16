@@ -238,13 +238,14 @@ func cloudSyncCmd(a *app) *cobra.Command {
 				// given: this line is meant to be read back and re-run.
 				return fmt.Errorf("--html is for the ollama flow, which --only %s leaves out", strings.Join(selectedFlows(o), ", "))
 			}
-			// Only a config that could not be loaded stops this: a.cfg is
-			// then an empty default, and a sync planned against it would
-			// find nothing to keep. A validation gap does not.
-			if a.loadErr != nil {
-				return configError(a.loadErr)
+			// Only a config that could not be loaded stops this: the host
+			// config is then an empty default, and a sync planned against
+			// it would find nothing to keep. A validation gap does not.
+			cfg, loadErr := a.hostConfig()
+			if loadErr != nil {
+				return configError(loadErr)
 			}
-			return runCloudSync(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, o)
+			return runCloudSync(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, o)
 		},
 	}
 	cmd.Flags().StringVar(&only, "only", "", "Run only these flows: a comma list of "+strings.Join(cloudSyncFlows, ", ")+" (default: all)")

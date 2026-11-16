@@ -108,7 +108,7 @@ Read [docs/internals/config-and-registry.md](docs/internals/config-and-registry.
 
 ## LiteLLM routing state (wt-owned)
 
-The `[litellm]` table (`enabled`/`url`/`api_key`) decides whether non-native models route through the proxy (`Config.IsLitellm()`); set with `wt litellm status|on|off|set`, read nowhere else, routing policy only (never touches the proxy): [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#litellm-routing-state-wt-owned).
+Since the flip (Task 18) every session needs a model server (`[model-server]` url + token_file in `config.toml`, or `WT_MODEL_*`): a model-needing path with none refuses with `*modelclient.NotConfiguredError` before anything starts (exit 1); host commands read the registry through `app.hostConfig()` and session paths read `app.sessionCfg()` (there is no `app.cfg`). The `[litellm]` table's `url`/`api_key` are host state `wt-model serve` reads (`wt litellm set|status`); its `enabled` is retired (one note per process, kept on save) and `wt litellm on|off` are hidden stubs exiting 1. Reference: [docs/wt-session.md](docs/wt-session.md).
 
 ## Registry
 
@@ -122,7 +122,7 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) decides whether non-native mod
 - **`serve_args` is mtplx-only extra argv, one value judge** (#432): `provider.FamilySpec.ServeArgs` says which family takes it, `config.ServeArgsProblems` is the one judge (the loader's `Model.Malformed()`, the writer's `validateModelRow`, `wt model add|edit`, and `lifecycle.serveArgsFor` at a start, which stops with `*ServeArgsError` before spawning), and `provider.ProcessSpec.SpawnArgs`/`OwnedFlags` build the argv and derive the refused flags from the spec. A malformed value reads as absent and never fails the load. A change applies from the next start (wt cannot see a running server's flags). It is not in `docs/contracts/model-list.sample.json` (an omitempty key, like `target`/`draft`; `TestModelListJSONOutputMatchesTheFixture` exercises it) and llmbench ignores it.
 - **`llamacpp` is still a provider row** (`internal/provider/table.go`) — retired as a *backend* on 2026-09-07 (no LaunchAgent, no llmbench backend) but never removed from the table, so a registry model naming that provider still resolves. It has no `Seed`, so it is never created automatically; `docs/reference/provider-artifacts.md` has the retirement record.
 - **Read-side schemas are pinned by contract fixtures** in `../docs/contracts/`: a key added to or renamed in `modelListJSON`/`modelListRow` (`cmd/wt/model_list.go`) fails `cmd/wt/model_list_contract_test.go` until `model-list.sample.json` has it (modeltiers reads that document as its whole inventory).
-- A missing registry lets an *unconfigured* agent launch as a native passthrough (`agents.BuildPassthroughCmd`); a configured one fails on model resolution.
+- A launch reads no registry (its models come from the model server); the old bare passthrough for an agent with no `config.toml` entry is unreachable since the flip (R13: a session synthesizes every model-driven driver's agent).
 
 > **`unknown provider "X"` errors are usually a registry data gap, not a wt bug.** Fix with `wt model init` on that machine (a provider it has no default row for is named in its output: a hand edit of `registry.toml`), not a code change here.
 
@@ -208,7 +208,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md#profiles-inte
 
 `wt smoke [model-id]` runs a one-shot prompt through every agent eligible for one model, built like a real launch (`agents.BuildLaunchCmdInfo`), and reports PASS/FAIL/SKIP ([docs/wt-smoke.md](docs/wt-smoke.md)). Each row runs in its own temporary git repo unless `--cwd` (standing in a repository root that warns and proceeds, terminal or not); permission checks are off (yolo forced on except codex) and the directory is not a sandbox (#193). A model fallback is FAIL; the default prompt never contains its sentinel verbatim. `--tools` is the tool-call check (a nonce planted in the row's directory, read with a tool) and `--hops N` chains N dependent reads; both are exclusive with `--prompt` and `--cwd`, and their combination is validated before the model is resolved.
 
-**With a model server configured `runSmoke` branches to `runSmokeRemote`** (client session: `smoke.CandidatesWire`, one client session for the run, a start job only when `catalog.NeedsStart`, rows through `smoke.RunRowGateway`, no exit stop picker; a gateway 503 is rerun once, a gateway that stays down is SKIP, never FAIL; test seam `smoke.SetGatewayRunForTest`); the shared row loop is `(*app).runSmokeRows`. [docs/wt-smoke.md](docs/wt-smoke.md) "With a model server configured".
+**`runSmoke` always runs `runSmokeRemote`** (no model server configured: the refusal; `runSmokeDirect` is the dead registry path Task 19 deletes) (client session: `smoke.CandidatesWire`, one client session for the run, a start job only when `catalog.NeedsStart`, rows through `smoke.RunRowGateway`, no exit stop picker; a gateway 503 is rerun once, a gateway that stays down is SKIP, never FAIL; test seam `smoke.SetGatewayRunForTest`); the shared row loop is `(*app).runSmokeRows`. [docs/wt-smoke.md](docs/wt-smoke.md) "With a model server configured".
 
 Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row directories, yolo, process-group cleanup, env stripping, Ctrl+C, or timeouts (180s cloud, 900s local).
 
@@ -228,7 +228,7 @@ Read [docs/internals/cloud-sync.md](docs/internals/cloud-sync.md) before changin
 
 ## LiteLLM routes (`wt litellm`)
 
-`cmd/wt/litellm.go` + `internal/litellm`, the sole implementation of `config.yaml` route management. Subcommands `sync|list|providers|status|on|off|set|restart`; `sync` is the only CLI route write, `restart` is what `bin/update/litellm` runs. Operator doc: [docs/wt-agents/README.md](docs/wt-agents/README.md#litellm-routes-are-wt-owned); JSON shapes: [../docs/contracts/litellm-cli.sample.json](../docs/contracts/litellm-cli.sample.json).
+`cmd/wt/litellm.go` + `internal/litellm`, the sole implementation of `config.yaml` route management. Subcommands `sync|list|providers|status|set|restart` (`on|off` are retired hidden stubs, 2026-11-15); `sync` is the only CLI route write, `restart` is what `bin/update/litellm` runs. Operator doc: [docs/wt-agents/README.md](docs/wt-agents/README.md#litellm-routes-are-wt-owned); JSON shapes: [../docs/contracts/litellm-cli.sample.json](../docs/contracts/litellm-cli.sample.json).
 
 - **wt owns only its own rows** (`model_info.wt_managed: true`); a hand-written row keeps everything except an empty ollama `api_base` (#202).
 - **`sync` trusts only `ok` families** (an untrustworthy probe freezes the family with a warning) and **never takes "the first row with the id"** on a duplicated id.
@@ -322,7 +322,7 @@ wt -W my-feature -A claude           # named worktree + launch (a new name is cr
 wt model list [--json]               # every registry model and local model found, with live status
 wt cloud-sync --dry-run              # plan a price and ollama-catalog refresh; changes nothing
 wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]
-make test-agents                     # live agent × model matrix, both routing modes (flips `wt litellm off|on`)
+make test-agents                     # live agent × model matrix (predates the flip: it flipped the now-retired `wt litellm off|on`)
 ```
 
 The full command list (`wt served`, `wt warm`, `wt cleanup`, `wt remove`, `wt model add|edit|rm|init`, `wt profile list`, `wt stats`, `wt profile list|show`, `wt start|stop`, `wt litellm`, …): [docs/internals/testing.md](docs/internals/testing.md#verification-commands).

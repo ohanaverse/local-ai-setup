@@ -36,7 +36,10 @@ var configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error,
 // already happened; if wt dies before it, the next `wt start`, `wt stop` or
 // launch through LiteLLM repairs the routes.
 func runConfigEditor(out, errOut io.Writer, a *app, start configeditor.Tab) error {
-	res, err := configeditorRun(a.theme, a.cfg, a.cfgErr, configeditor.Options{
+	// The editor's Models tab is a host screen (R3, R17): it reads and
+	// writes the registry, so the editor opens on the host's config.
+	cfg, _ := a.hostConfig()
+	res, err := configeditorRun(a.theme, cfg, a.hostConfigErr(), configeditor.Options{
 		StartTab: start,
 		Models:   configeditor.ModelsDeps{Probe: probeInventory, SeedEnv: seedEnv, Capabilities: ollamaCaps},
 	})

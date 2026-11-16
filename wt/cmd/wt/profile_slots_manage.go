@@ -20,7 +20,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/slotedit"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/spf13/cobra"
 )
@@ -97,35 +96,22 @@ const slotEditStill = "nothing was changed"
 
 // slotEditOptions builds the Apply options for an add or a set: the model ids
 // a slot of target may name, and target, the profile that must be usable
-// afterwards. With a model server configured the ids are its catalog's rows
-// (one Catalog read), and a server that does not answer fails the command
+// afterwards. The ids are the model server's catalog rows (one Catalog read),
+// and a server that is not configured or does not answer fails the command
 // hard (exit 1, nothing was changed): a write that cannot be checked against
-// what the server serves is not made. Without one they are the registry's.
+// what the server serves is not made. The registry is never read.
 func slotEditOptions(ctx context.Context, a *app, target string) (slotedit.Options, error) {
-	if a.endpointConfigured() {
-		ms, err := a.openModels(ctx, slotEditStill)
-		if err != nil {
-			return slotedit.Options{}, remoteExit(err) // openModels' errors carry the still clause
-		}
-		cat, err := ms.client.Catalog(ctx)
-		if err != nil {
-			return slotedit.Options{}, remoteExit(modelclient.Still(err, slotEditStill))
-		}
-		ids := make([]string, 0, len(cat.Rows))
-		for _, r := range cat.Rows {
-			ids = append(ids, r.ID)
-		}
-		return slotedit.Options{Drivers: agents.SlotDrivers(), ModelIDs: ids, Target: target}, nil
+	ms, err := a.openModels(ctx, slotEditStill)
+	if err != nil {
+		return slotedit.Options{}, remoteExit(err) // openModels' errors carry the still clause
 	}
-	if a.cfg == nil {
-		if a.cfgErr != nil {
-			return slotedit.Options{}, fmt.Errorf("no config loaded: %w", a.cfgErr)
-		}
-		return slotedit.Options{}, fmt.Errorf("no config loaded")
+	cat, err := ms.client.Catalog(ctx)
+	if err != nil {
+		return slotedit.Options{}, remoteExit(modelclient.Still(err, slotEditStill))
 	}
-	ids := make([]string, 0, len(a.cfg.Models))
-	for _, m := range a.cfg.Models {
-		ids = append(ids, m.ID)
+	ids := make([]string, 0, len(cat.Rows))
+	for _, r := range cat.Rows {
+		ids = append(ids, r.ID)
 	}
 	return slotedit.Options{Drivers: agents.SlotDrivers(), ModelIDs: ids, Target: target}, nil
 }
@@ -510,27 +496,11 @@ func slotsCandidatesCmd(a *app) *cobra.Command {
 				}
 			}
 			// A client session asks the model server, which holds the
-			// registry and tiers.toml; it fails hard when the server does not
-			// answer.
-			if a.endpointConfigured() {
-				r, err := remoteCandidates(cmd.Context(), a, modelclient.CandidateQuery{OpenOnly: openOnly, Providers: providers, Near: near, PerProvider: perProvider})
-				if err != nil {
-					return err
-				}
-				return r.write(w, asJSON)
-			}
-			if a.cfg == nil {
-				return fmt.Errorf("no config loaded")
-			}
-			q := candidates.Query{OpenOnly: openOnly, Near: near, PerProvider: perProvider, Providers: providers}
-			ix, fresh, haveFresh := tiers.LoadWithFreshness()
-			r := candidateReport{now: time.Now()}
-			if haveFresh {
-				g := fresh.GeneratedAt
-				r.generated, r.stale = &g, fresh.StaleSources
-			}
-			for _, c := range candidates.Rank(a.cfg.Models, ix, q) {
-				r.cands = append(r.cands, toCandidateJSON(c))
+			// registry and tiers.toml; it fails hard when the server is not
+			// configured or does not answer.
+			r, err := remoteCandidates(cmd.Context(), a, modelclient.CandidateQuery{OpenOnly: openOnly, Providers: providers, Near: near, PerProvider: perProvider})
+			if err != nil {
+				return err
 			}
 			return r.write(w, asJSON)
 		},

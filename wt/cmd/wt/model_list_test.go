@@ -336,12 +336,12 @@ func TestModelListCommandGate(t *testing.T) {
 		err := c.Execute()
 		return out.String(), err
 	}
-	out, err := run(&app{cfg: modelListConfig(), cfgErr: errors.New(`model "corp/x": provider_id "corp" names no provider row`)})
+	out, err := run(&app{hostSet: true, hostCfg: modelListConfig(), hostCfgErr: errors.New(`model "corp/x": provider_id "corp" names no provider row`)})
 	if err != nil || !strings.Contains(out, "ollama/gemma4:9b") {
 		t.Errorf("a config that loads but does not validate: err = %v, out =\n%s\nwant the listing", err, out)
 	}
 	loadErr := errors.New("registry.toml: toml: line 3: expected a value")
-	out, err = run(&app{cfg: &config.Config{}, cfgErr: loadErr, loadErr: loadErr})
+	out, err = run(&app{hostSet: true, hostCfg: &config.Config{}, hostCfgErr: loadErr, hostLoadErr: loadErr})
 	if err == nil || !strings.Contains(err.Error(), "expected a value") || out != "" {
 		t.Errorf("a config that did not load: err = %v, out = %q; want the load error and no listing", err, out)
 	}
@@ -395,8 +395,8 @@ repo = ["org/T"]
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.loadErr != nil {
-		t.Fatalf("the registry did not load: %v", a.loadErr)
+	if hostLoadErrOf(a) != nil {
+		t.Fatalf("the registry did not load: %v", hostLoadErrOf(a))
 	}
 	c := modelListCmd(a)
 	var out bytes.Buffer
@@ -505,11 +505,11 @@ func runModelListOver(t *testing.T, registry string, asJSON bool) (stdout, stder
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.loadErr != nil {
-		t.Fatalf("the registry did not load: %v", a.loadErr)
+	if hostLoadErrOf(a) != nil {
+		t.Fatalf("the registry did not load: %v", hostLoadErrOf(a))
 	}
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, a.cfg, asJSON, 0); err != nil {
+	if err := runModelList(&out, &errOut, hostCfgOf(a), asJSON, 0); err != nil {
 		t.Fatalf("runModelList = %v, want nil: a malformed fetch is a note, not a failure", err)
 	}
 	return out.String(), errOut.String(), path

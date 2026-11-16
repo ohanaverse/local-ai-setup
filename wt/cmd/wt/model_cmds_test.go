@@ -701,7 +701,7 @@ func stubHalt(t *testing.T, fail ...string) *[]string {
 // stdout and stderr as one text, and the command's error.
 func runStopCmd(cfg *config.Config, args ...string) (string, error) {
 	var out bytes.Buffer
-	cmd := stopCmd(&app{cfg: cfg})
+	cmd := stopCmd(&app{hostSet: true, hostCfg: cfg})
 	cmd.SetArgs(args)
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)

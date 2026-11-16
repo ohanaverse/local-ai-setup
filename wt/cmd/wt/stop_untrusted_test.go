@@ -500,16 +500,13 @@ func TestStopFailurePrintsNoUsage(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "cannot tell what is running on ollama") || strings.Contains(got, "Usage:") {
 		t.Errorf("wt stop ollama: err = %v out = %q, want the cannot-tell error and no usage text", err, got)
 	}
-	stubPicker(t, false, "ollama")
-	if got, err = runStopCmd(stopCfg()); err == nil || strings.Contains(got, "Usage:") {
-		t.Errorf("wt stop: err = %v out = %q, want an error and no usage text", err, got)
-	}
 	if got, err = runStopCmd(stopCfg(), "nosuch"); err == nil || !strings.Contains(got, "Usage:") {
 		t.Errorf("wt stop nosuch: err = %v out = %q, want the usage text for an argument mistake", err, got)
 	}
-	stdinTTY = func() bool { return false }
-	if got, err = runStopCmd(stopCfg()); err == nil || !strings.Contains(got, "Usage:") {
-		t.Errorf("wt stop without a TTY: err = %v out = %q, want the usage text", err, got)
+	// With no argument the picker is the model server's (no server is
+	// configured here): its refusal is a failure, not a usage mistake.
+	if got, err = runStopCmd(stopCfg()); err == nil || !strings.Contains(err.Error(), "no model server is configured") || strings.Contains(got, "Usage:") {
+		t.Errorf("wt stop: err = %v out = %q, want the model server refusal and no usage text", err, got)
 	}
 }
 

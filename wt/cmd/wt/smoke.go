@@ -69,8 +69,9 @@ func smokeCmd(a *app) *cobra.Command {
 			"repository that is removed afterwards; pass --cwd to run in the current\n" +
 			"directory instead.\n\n" +
 			"With no model-id, shows the full model picker (requires a TTY). A local\n" +
-			"model that isn't running is started first; on exit, offers to stop\n" +
-			"running local models.",
+			"model that isn't running is started on the model server first; the\n" +
+			"server stops it after its idle grace. Needs a model server\n" +
+			"([model-server] in config.toml, or WT_MODEL_URL); with none, exit 1.",
 		Args: cobra.MaximumNArgs(1),
 		// main prints the one error line; cobra's own print made a failed
 		// start's message, log tail included, come out twice (#344).
@@ -80,24 +81,7 @@ func smokeCmd(a *app) *cobra.Command {
 		Annotations: map[string]string{usageOnMistakeAnnotation: "smoke"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			anyFail, err := runSmoke(cmd, a, args)
-			if err != nil {
-				// An interrupt is not a usage mistake: no flag summary after it.
-				// Neither is a start that failed or was refused, and with
-				// cobra's "Error:" line gone the summary would stand alone
-				// above main's one line. A "no" at the --cwd launch question
-				// is a decline (exit 3), not a usage mistake either.
-				_, coded := exitcode.Code(err) // a model-server failure is not a usage mistake either
-				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err) || errors.Is(err, errCancelled) || coded
-				return err
-			}
-			if anyFail {
-				// The deferred stop flow has already run and may have kicked
-				// off an async LiteLLM proxy restart; smokeExit bypasses
-				// main's own wait, so settle it here first.
-				lifecycle.WaitPendingRoutes()
-				smokeExit(1) // after runSmoke's deferred stop flow has already run
-			}
-			return nil
+			return smokeFinish(cmd, anyFail, err)
 		},
 	}
 	cmd.Flags().String("prompt", "", "Override the default sentinel prompt (weakens verification to exit-code-only)")
@@ -107,6 +91,30 @@ func smokeCmd(a *app) *cobra.Command {
 	cmd.Flags().String("only", "", "Comma-separated agents to restrict the run to")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of a table")
 	return cmd
+}
+
+// smokeFinish turns a smoke run's outcome into the command's: an error is
+// returned (usage shown only for a usage mistake), a FAIL row exits 1
+// through smokeExit, a clean run is nil.
+func smokeFinish(cmd *cobra.Command, anyFail bool, err error) error {
+	if err != nil {
+		// An interrupt is not a usage mistake: no flag summary after it.
+		// Neither is a start that failed or was refused, and with
+		// cobra's "Error:" line gone the summary would stand alone
+		// above main's one line. A "no" at the --cwd launch question
+		// is a decline (exit 3), not a usage mistake either.
+		_, coded := exitcode.Code(err) // a model-server failure is not a usage mistake either
+		cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err) || errors.Is(err, errCancelled) || coded
+		return err
+	}
+	if anyFail {
+		// The deferred stop flow has already run and may have kicked
+		// off an async LiteLLM proxy restart; smokeExit bypasses
+		// main's own wait, so settle it here first.
+		lifecycle.WaitPendingRoutes()
+		smokeExit(1) // after runSmoke's deferred stop flow has already run
+	}
+	return nil
 }
 
 // errSmokeInterrupted is what runSmoke returns for a run Ctrl+C cut short.
@@ -158,24 +166,30 @@ var smokeSignalCtx = func() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
-// runSmoke resolves the target, starts it if idle, runs every selected agent
-// and prints the report. It returns whether any row FAILed rather than exiting,
-// so the deferred stop flow runs before the caller sets the exit code.
+// runSmoke validates the flags, runs the launch warnings for --cwd, and runs
+// the smoke test as a client session of the model server (runSmokeRemote).
+// It reads config.toml only, never the registry, so a registry that does not
+// load is not its error; with no model server configured it refuses before
+// anything starts (Task 18). It returns whether any row FAILed rather than
+// exiting, so the caller sets the exit code.
 func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err error) {
-	// With a model server configured the run is a client session: it reads
-	// config.toml only, never the registry, so a registry that does not load
-	// is not its error (runSmokeRemote).
-	remote := a.endpointConfigured()
-	if !remote && a.cfgErr != nil {
-		return false, configError(a.cfgErr)
+	toolFlags, inPlace, cwd, err := smokePrelude(cmd)
+	if err != nil {
+		return false, err
 	}
+	return runSmokeRemote(cmd, a, args, toolFlags, inPlace, cwd)
+}
 
+// smokePrelude is what a smoke run checks before any model is resolved: the
+// tool flags, and with --cwd the launch warnings for the directory the rows
+// run in. It returns the tool flags, whether the rows run in place, and that
+// directory.
+func smokePrelude(cmd *cobra.Command) (toolFlags smokeToolFlags, inPlace bool, cwd string, err error) {
 	// Flag validation comes before the model is resolved: these are usage
 	// errors, knowable without a model, and a usage error must not cost the
 	// user an interactive model pick first.
-	toolFlags, err := validateSmokeToolFlags(cmd)
-	if err != nil {
-		return false, err
+	if toolFlags, err = validateSmokeToolFlags(cmd); err != nil {
+		return toolFlags, false, "", err
 	}
 
 	// The launch warnings run here, for the flag-validation reason above:
@@ -187,27 +201,30 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	// agents), so nothing is claimed here. Without --cwd every row runs in a
 	// fresh temporary git repository (#193): permission checks are off, and a
 	// model's stray tool call must not land in a real repo.
-	inPlace, _ := cmd.Flags().GetBool("cwd")
-	cwd := ""
+	inPlace, _ = cmd.Flags().GetBool("cwd")
 	if inPlace {
 		if cwd, err = os.Getwd(); err != nil {
-			return false, err
+			return toolFlags, inPlace, "", err
 		}
 		t, terr := launchwarn.ForDir(cwd)
 		if gerr := confirmLaunch(t, terr, cmd.InOrStdin(), osStderr, stdinTTY()); gerr != nil {
-			return false, gerr // declined: exit 3, like every other no
+			return toolFlags, inPlace, cwd, gerr // declined: exit 3, like every other no
 		}
 	}
+	return toolFlags, inPlace, cwd, nil
+}
 
-	if remote {
-		return runSmokeRemote(cmd, a, args, toolFlags, inPlace, cwd)
-	}
-
+// runSmokeDirect is the smoke run on the registry, from before the model
+// server was required: it resolves the target from cfg, starts it if idle
+// through the local lifecycle, runs every selected agent and prints the
+// report, then offers the stop picker. No command reaches it since the flip
+// (Task 18); Task 19 deletes it.
+func runSmokeDirect(cmd *cobra.Command, a *app, cfg *config.Config, args []string, toolFlags smokeToolFlags, inPlace bool, cwd string) (anyFail bool, err error) {
 	var modelID string
 	if len(args) > 0 {
 		modelID = args[0]
 	}
-	t, err := resolveSmokeModel(a.cfg, a.theme, modelID)
+	t, err := resolveSmokeModel(cfg, a.theme, modelID)
 	if err != nil {
 		return false, err
 	}
@@ -229,12 +246,12 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 			return false, err
 		}
 	}
-	timeout = smokeTimeout(a.cfg, m, timeout)
+	timeout = smokeTimeout(cfg, m, timeout)
 	jsonOut, _ := cmd.Flags().GetBool("json")
 
 	if t.Start() {
 		replace, _ := cmd.Flags().GetBool("replace")
-		if err := startModel(a.cfg, t.Row, replace); err != nil {
+		if err := startModel(cfg, t.Row, replace); err != nil {
 			// Marked, text unchanged, so the command can tell a start that
 			// failed or was refused from a usage mistake.
 			return false, asStartError(err)
@@ -253,7 +270,7 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		// with "Invalid model name". Writes that one route if it is missing
 		// and removes nothing. A cloud target takes this branch too, and
 		// gets its route back the same way if config.yaml lost it.
-		ensureRouteBeforeLaunch(a.cfg, m)
+		ensureRouteBeforeLaunch(cfg, m)
 	}
 	stderr := cmd.ErrOrStderr()
 	// Every row's directory, swept once more when the run ends: a row removes
@@ -274,7 +291,7 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	interrupted := false
 	defer func() {
 		if !interrupted {
-			smokeStopFlow(a.cfg, jsonOut)
+			smokeStopFlow(cfg, jsonOut)
 		}
 	}()
 
@@ -287,9 +304,9 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	defer stopSignals()
 
 	var rows []smoke.RowResult
-	rows, interrupted = a.runSmokeRows(ctx, stderr, a.cfg, m, agentsToRun, toolFlags, runID, inPlace, cwd, &rowDirs,
+	rows, interrupted = a.runSmokeRows(ctx, stderr, cfg, m, agentsToRun, toolFlags, runID, inPlace, cwd, &rowDirs,
 		func(ctx context.Context, agentName, prompt, sentinel string, rowDir smoke.RowDir, pa smoke.ProfileApplier) smoke.RowResult {
-			return smoke.RunRow(ctx, a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
+			return smoke.RunRow(ctx, cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
 		}, nil)
 	// Restore the default handler: a second Ctrl+C during the report, the
 	// sweep or the stop picker kills wt.

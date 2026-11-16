@@ -130,7 +130,7 @@ func TestStopRemotePickerMarksClientSessions(t *testing.T) {
 // goes to the server.
 func TestStopProviderStaysOnTheHostPath(t *testing.T) {
 	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
-	r.a.cfg = modelCmdConfig()
+	r.a.hostCfg, r.a.hostSet = modelCmdConfig(), true
 	for name, tc := range map[string]struct {
 		args []string
 		want string
@@ -273,7 +273,7 @@ func TestStopAnswererNamesTheRealTerminalFailure(t *testing.T) {
 // service, and its result is checked.
 func TestStopAllStaysOnTheHostPathWithAnEndpoint(t *testing.T) {
 	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
-	r.a.cfg = &config.Config{}
+	r.a.hostCfg, r.a.hostSet = &config.Config{}, true
 	stubStdinTTY(t, true)
 	old := stopSelectIn
 	stopSelectIn = func() io.Reader { return strings.NewReader("1\n") }

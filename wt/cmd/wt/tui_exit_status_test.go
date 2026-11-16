@@ -27,7 +27,8 @@ func runPickerLaunch(t *testing.T, tuiErr error) (string, error) {
 	t.Helper()
 	dir := initTestRepo(t)
 	t.Chdir(dir)
-	writeConfiguredAgent(t, t.TempDir(), "pi", "ollama")
+	// Two models on the model server and no -M: the picker decides.
+	pickerServer(t)
 	old := tuiRun
 	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
 		return tuiErr

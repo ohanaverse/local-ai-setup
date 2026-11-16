@@ -42,8 +42,8 @@ func agentDriverNames() []string {
 
 // sessionCfg is the config the client session reads: config.toml only, no
 // registry (config.LoadSession). It is read once per app. The cache is
-// unsynchronized: the main goroutine only. a.cfg is not
-// replaced: host commands keep config.Load() until the flip.
+// unsynchronized: the main goroutine only. Host commands read
+// hostConfig instead (R3).
 func (a *app) sessionCfg() (*config.Config, error) {
 	if !a.sessCfgSet {
 		a.sessCfg, a.sessCfgErr = config.LoadSession(agentDriverNames()...)
@@ -52,38 +52,11 @@ func (a *app) sessionCfg() (*config.Config, error) {
 	return a.sessCfg, a.sessCfgErr
 }
 
-// endpointInEnv reports whether WT_MODEL_URL, WT_MODEL_TOKEN_FILE or
-// WT_MODEL_TOKEN is set.
-func endpointInEnv() bool {
-	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN"} {
-		if os.Getenv(k) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// endpointConfigured reports whether anything names a model server: a
-// [model-server] url or token_file, or WT_MODEL_URL, WT_MODEL_TOKEN_FILE or
-// WT_MODEL_TOKEN.
-func (a *app) endpointConfigured() bool {
-	if endpointInEnv() {
-		return true
-	}
-	cfg, err := a.sessionCfg()
-	if err != nil {
-		// Safest reading: a config.toml that cannot be read is not "no
-		// endpoint". Say configured, so openModels surfaces the load error
-		// instead of a quiet fall back to the legacy path.
-		return true
-	}
-	ms := cfg.ModelServer()
-	// An inline token alone counts too: openModels reports it as a problem.
-	return ms.URL != "" || ms.TokenFile != "" || ms.Token != ""
-}
-
 // openModels resolves the endpoint from [model-server] and the environment,
-// builds the client and pings. Each failure carries still, the clause saying
+// builds the client and pings. Every path that needs a model calls it (or
+// buildModels) before it starts or launches anything: with nothing
+// configured it is the *NotConfiguredError refusal (exit 1 through
+// remoteExit), since the flip there is no other path. Each failure carries still, the clause saying
 // what did not happen; the typed cause stays reachable with errors.As. A
 // success is cached on the app. Callers must never wrap an openModels error
 // with Still again: it already ends with the clause. The cache is

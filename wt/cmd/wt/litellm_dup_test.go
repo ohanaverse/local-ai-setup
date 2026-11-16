@@ -62,8 +62,8 @@ func dupSyncApp(t *testing.T) (*app, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.loadErr != nil || a.cfgErr == nil || !strings.Contains(a.cfgErr.Error(), `duplicate model id "local/qwen"`) {
-		t.Fatalf("fixture: loadErr = %v, cfgErr = %v, want a validation-only duplicate-id error", a.loadErr, a.cfgErr)
+	if hostLoadErrOf(a) != nil || a.hostConfigErr() == nil || !strings.Contains(a.hostConfigErr().Error(), `duplicate model id "local/qwen"`) {
+		t.Fatalf("fixture: loadErr = %v, cfgErr = %v, want a validation-only duplicate-id error", hostLoadErrOf(a), a.hostConfigErr())
 	}
 	return a, registry
 }
@@ -112,7 +112,7 @@ func TestDesiredLocalModelsPairADuplicatedIDByProvider(t *testing.T) {
 			snap := dupSnapshot(tc.ollama, tc.omlx)
 			stubProbeInventory(t, snap)
 			var got []string
-			for _, m := range desiredLocalModels(a.cfg, snap) {
+			for _, m := range desiredLocalModels(hostCfgOf(a), snap) {
 				if m.ID != "local/qwen" {
 					t.Errorf("desired model %q, want only local/qwen", m.ID)
 				}
@@ -126,7 +126,7 @@ func TestDesiredLocalModelsPairADuplicatedIDByProvider(t *testing.T) {
 				t.Errorf("desired rows' providers = %v, want %v", got, tc.wantProviders)
 			}
 			var out, errOut bytes.Buffer
-			if err := runLitellmSync(&out, &errOut, a.cfg, false, false); err != nil {
+			if err := runLitellmSync(&out, &errOut, hostCfgOf(a), false, false); err != nil {
 				t.Fatal(err)
 			}
 			body := mustRead(t, yaml)

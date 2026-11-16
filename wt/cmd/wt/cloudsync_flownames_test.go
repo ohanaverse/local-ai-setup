@@ -25,7 +25,7 @@ func TestCloudSyncFlowsAreNamedForTheirProviders(t *testing.T) {
 	_, cfg := cloudSyncHome(t, noOllamaRegistry)
 	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 	run := func(args ...string) (string, error) {
-		cmd := cloudSyncCmd(&app{cfg: cfg})
+		cmd := cloudSyncCmd(&app{hostSet: true, hostCfg: cfg})
 		var out bytes.Buffer
 		cmd.SetArgs(args)
 		cmd.SetOut(&out)
@@ -102,7 +102,7 @@ func TestCloudFlowsMatchTheirProviders(t *testing.T) {
 	}
 
 	var help bytes.Buffer
-	cmd := cloudSyncCmd(&app{cfg: &config.Config{}})
+	cmd := cloudSyncCmd(&app{hostSet: true, hostCfg: &config.Config{}})
 	cmd.SetArgs([]string{"--help"})
 	cmd.SetOut(&help)
 	cmd.SetErr(&help)

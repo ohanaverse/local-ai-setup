@@ -58,10 +58,11 @@ func modelListCmd(a *app) *cobra.Command {
 			}
 			// The load error only: a registry with a gap in it (a model
 			// whose provider has no row) is exactly what this list is for.
-			if a.loadErr != nil {
-				return configError(a.loadErr)
+			cfg, loadErr := a.hostConfig()
+			if loadErr != nil {
+				return configError(loadErr)
 			}
-			return runModelList(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, asJSON, stdoutWidth())
+			return runModelList(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, asJSON, stdoutWidth())
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "machine-readable output, with size_bytes and path for every row")

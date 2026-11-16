@@ -605,7 +605,7 @@ func TestSmokeWithoutTTYKeepsOthersAndWarns(t *testing.T) {
 		return smoke.StubOutcome("ok", 0)
 	}))
 
-	if _, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/not-eligible:x", "--json"); err != nil {
+	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/not-eligible:x", "--json"); err != nil {
 		t.Fatalf("smoke: %v", err)
 	}
 	if n := strings.Count(stderr.String(), "wt: warning: starting "); n != 1 {

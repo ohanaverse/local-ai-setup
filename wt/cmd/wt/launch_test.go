@@ -1952,8 +1952,8 @@ type claimLaunch struct {
 }
 
 // runClaimLaunch runs one pinned `wt` launch (where is --cwd or -W <name>, as
-// runPinnedLaunch takes them) against a scratch config home holding one
-// claude model, with a claude on PATH that records where it started and copies
+// runPinnedLaunch takes them) against a scratch config home naming a fake
+// model server that serves one claude model, with a claude on PATH that records where it started and copies
 // this session's claim file — key=value lines, the cross-repo contract
 // docs/contracts/session-claims.md — while it runs. Nothing is stubbed between
 // the flag and the agent, so the claim is the one a real launch writes.
@@ -1962,26 +1962,7 @@ func runClaimLaunch(t *testing.T, dir string, where []string, extra ...string) c
 	t.Chdir(dir)
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
-	cfgDir := filepath.Join(home, ".config", "agent-wt")
-	regDir := filepath.Join(home, ".config", "local-ai")
-	for _, d := range []string{cfgDir, regDir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// config.toml is already native-provider aligned — it carries the agy
-	// agent migrateAgentRefs would insert — so the load migrates nothing and
-	// these tests print nothing.
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"),
-		[]byte("default_tag = \"code\"\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\ndefault_provider = \"claude\"\n[[agents]]\nname = \"agy\"\nsupported_providers = [\"agy\"]\ndefault_provider = \"agy\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"),
-		[]byte("[[providers]]\nid = \"claude\"\nname = \"Claude\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n"+
-			"[[providers]]\nid = \"agy\"\nname = \"Antigravity\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n"+
-			"[[models]]\nid = \"claude/opus\"\nprovider_id = \"claude\"\nmodel_name = \"opus\"\nlocation = \"cloud\"\ntags = [\"code\"]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	nativeOpusServer(t, filepath.Join(home, ".config", "agent-wt"))
 
 	// A claude that records where it started and copies the claim its
 	// repository holds for this wt process while it runs.

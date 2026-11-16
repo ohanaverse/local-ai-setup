@@ -77,10 +77,40 @@ func stubSmokeProbe(t *testing.T, snap localmodels.Snapshot) {
 	t.Cleanup(smoke.SetSmokeProbeForTest(snap))
 }
 
+// smokeDirectCmd is `wt smoke` as it ran before the flip: the command's
+// flags, prelude and exit handling around runSmokeDirect over a's host
+// config (the registry path). No command reaches that path since Task 18;
+// these tests keep its code covered until Task 19 deletes both.
+func smokeDirectCmd(a *app) *cobra.Command {
+	cmd := smokeCmd(a)
+	cmd.RunE = func(c *cobra.Command, args []string) error {
+		if cerr := a.hostConfigErr(); cerr != nil {
+			return smokeFinish(c, false, configError(cerr))
+		}
+		tf, inPlace, cwd, err := smokePrelude(c)
+		if err != nil {
+			return smokeFinish(c, false, err)
+		}
+		anyFail, err := runSmokeDirect(c, a, hostCfgOf(a), args, tf, inPlace, cwd)
+		return smokeFinish(c, anyFail, err)
+	}
+	return cmd
+}
+
 // runSmokeCmd runs `wt smoke` with args, as the command, on a. It returns
 // stdout and stderr apart, and the command's error.
 func runSmokeCmd(a *app, args ...string) (stdout, stderr string, err error) {
-	cmd := smokeCmd(a)
+	return runSmokeOn(smokeCmd(a), args...)
+}
+
+// runSmokeDirectCmd is runSmokeCmd on the registry path (smokeDirectCmd).
+func runSmokeDirectCmd(a *app, args ...string) (stdout, stderr string, err error) {
+	return runSmokeOn(smokeDirectCmd(a), args...)
+}
+
+// runSmokeOn runs cmd with args and returns stdout and stderr apart, and its
+// error.
+func runSmokeOn(cmd *cobra.Command, args ...string) (stdout, stderr string, err error) {
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
@@ -216,7 +246,7 @@ func TestSmokeCmdIdlePinStartsRunsThenStops(t *testing.T) {
 		return smoke.StubOutcome("boom", 1)
 	}))
 
-	if _, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/not-eligible:x"); err != nil {
+	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/not-eligible:x"); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(events, ","); got != "start,wait,row,stop,exit1" {
@@ -492,7 +522,7 @@ func TestLogSmokeResultPassIsSingleLine(t *testing.T) {
 // documented defaults — a cheap guard against a typo'd flag name/default
 // silently breaking --timeout or --json.
 func TestSmokeCmdFlags(t *testing.T) {
-	cmd := smokeCmd(&app{cfg: &config.Config{}})
+	cmd := smokeCmd(&app{hostSet: true, hostCfg: &config.Config{}})
 	if cmd.Use != "smoke [model-id]" {
 		t.Fatalf("Use = %q", cmd.Use)
 	}
@@ -536,7 +566,7 @@ func TestSmokeCmdFailedStartSkipsStopFlow(t *testing.T) {
 	runStopPicker = func(*config.Config) { pickerRan = true }
 	stdinTTY = func() bool { return true }
 
-	if _, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/not-eligible:x"); err == nil || !strings.Contains(err.Error(), "start failed") {
+	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/not-eligible:x"); err == nil || !strings.Contains(err.Error(), "start failed") {
 		t.Fatalf("err = %v, want the start failure", err)
 	}
 	if pickerRan {
@@ -588,7 +618,7 @@ func TestSmokeCmdExplicitZeroTimeoutRejected(t *testing.T) {
 		runStopPicker = func(*config.Config) {}
 		stdinTTY = func() bool { return true }
 
-		_, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/not-eligible:x", "--timeout", val)
+		_, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/not-eligible:x", "--timeout", val)
 		if err == nil || !strings.Contains(err.Error(), "timeout") {
 			t.Fatalf("--timeout %s: err = %v, want a timeout validation error", val, err)
 		}
@@ -640,7 +670,7 @@ func TestSmokeCmdAppliesLocalModelProfile(t *testing.T) {
 		return smoke.StubOutcome("ok", 0)
 	}))
 
-	if _, _, err := runSmokeCmd(&app{cfg: cfg, profiles: store}, "ollama/qwen3.8:27b-mlx"); err != nil {
+	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg, profiles: store}, "ollama/qwen3.8:27b-mlx"); err != nil {
 		t.Fatalf("smoke executed with error: %v", err)
 	}
 	if got := strings.Join(events, ","); got != "row" {
@@ -673,7 +703,7 @@ func TestSmokeCmdRunningPinEnsuresRouteBeforeRows(t *testing.T) {
 		return smoke.StubOutcome("boom", 1)
 	}))
 
-	if _, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/qwen3.8:27b-mlx"); err != nil {
+	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/qwen3.8:27b-mlx"); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(*events, ","); got != "ensure:ollama/qwen3.8:27b-mlx,wait,row,stop,exit1" {
@@ -704,7 +734,7 @@ func smokeRowDirs(t *testing.T, cwdFlag bool) (dir string, wasGitRepo, existsAft
 		return smoke.StubOutcome("ok", 0)
 	}))
 
-	cmd := smokeCmd(&app{cfg: cfg})
+	cmd := smokeDirectCmd(&app{hostSet: true, hostCfg: cfg})
 	// --cwd is a persistent flag of the root command; a bare smokeCmd has no
 	// parent to inherit it from.
 	cmd.Flags().Bool("cwd", false, "")
@@ -771,7 +801,7 @@ func TestSmokeCmdCwdFlagRunsInPlace(t *testing.T) {
 // from), captured output, and the caller's stdin choice.
 func smokeRootCmd(t *testing.T, cfg *config.Config, stdin io.Reader, args ...string) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
-	cmd := smokeCmd(&app{cfg: cfg})
+	cmd := smokeDirectCmd(&app{hostSet: true, hostCfg: cfg})
 	cmd.Flags().Bool("cwd", false, "")
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
@@ -858,7 +888,7 @@ func TestSmokeCmdRowDirFailureFailsTheRow(t *testing.T) {
 
 	// Set last: a temp root that does not exist makes os.MkdirTemp fail.
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
-	out, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/qwen3.8:27b-mlx", "--json")
+	out, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/qwen3.8:27b-mlx", "--json")
 	if err != nil {
 		t.Fatalf("smoke returned %v instead of reporting the row", err)
 	}
@@ -906,7 +936,7 @@ func TestSmokeCmdInterruptEndsTheRun(t *testing.T) {
 		return smoke.StubOutcome("ok", 0)
 	}))
 
-	out, errOut, err := runSmokeCmd(&app{cfg: cfg}, "ollama/qwen3.8:27b-mlx", "--prompt", "say ok")
+	out, errOut, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/qwen3.8:27b-mlx", "--prompt", "say ok")
 	if err == nil || !strings.Contains(err.Error(), "interrupted") {
 		t.Fatalf("err = %v, want an interrupted error", err)
 	}
@@ -958,7 +988,7 @@ func TestSmokeCmdRemovesTheAgentStateDir(t *testing.T) {
 		return smoke.StubOutcome("ok", 0)
 	}))
 
-	if _, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/qwen3.8:27b-mlx", "--prompt", "say ok"); err != nil {
+	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/qwen3.8:27b-mlx", "--prompt", "say ok"); err != nil {
 		t.Fatal(err)
 	}
 	if stateDir == "" {
@@ -1017,7 +1047,7 @@ func TestSmokeToolFlagConflicts(t *testing.T) {
 			stdinTTY = func() bool { return false }
 			smokeExit = func(int) {}
 
-			cmd := smokeCmd(&app{cfg: cfg})
+			cmd := smokeDirectCmd(&app{hostSet: true, hostCfg: cfg})
 			// A bare smokeCmd has no parent, so --cwd is registered here.
 			cmd.Flags().Bool("cwd", false, "")
 			cmd.SetOut(&bytes.Buffer{})
@@ -1074,7 +1104,7 @@ func TestSmokeToolsPlantsTheNonceInTheRowDirectory(t *testing.T) {
 		return smoke.StubOutcome("ok", 0)
 	}))
 
-	if _, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/qwen3.8:27b-mlx", "--tools"); err != nil {
+	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/qwen3.8:27b-mlx", "--tools"); err != nil {
 		t.Fatal(err)
 	}
 	if dir == "" {
