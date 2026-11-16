@@ -68,7 +68,7 @@ Exit codes:
   0  stopped cleanly on SIGINT or SIGTERM
   1  any failure (a bad flag, an unreadable token file, an unconfigured
      LiteLLM proxy, an address that cannot be bound)`,
-		Example: `  wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/wt-model/token`,
+		Example: `  wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/agent-wt/model-server.token`,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if listen == "" || tokenFile == "" {

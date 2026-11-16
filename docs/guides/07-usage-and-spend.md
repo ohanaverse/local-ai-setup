@@ -77,7 +77,7 @@ One source per table — the survey table's first, then the usage table's two:
 
 The model server finds the database with nothing exported. The connection string is the first of `WT_LITELLM_DATABASE_URL`; `MODELMAN_LITELLM_DATABASE_URL` (the older name, still read); `general_settings.database_url` in LiteLLM's `config.yaml`; and `DATABASE_URL`, when `config.yaml` names none. `DATABASE_URL`, and a `config.yaml` value written `os.environ/NAME`, are looked up in the server's environment and then in the proxy's LaunchAgent plist, as the proxy itself sees them. The address is read on the host and never sent to a client.
 
-With no model server configured the spend cells show `-` and one note says why (spend status `not_configured`); a server with no database named reads the same, and a database it could not query (or a server that is not answering) is spend status `spend unavailable`. Whatever the status, that one note reads `spend unavailable: <reason>`, and the exit code is 0 either way. Requests the proxy logged with no model are counted in a note on stderr. With no catalog row for a model the report still prints; its family is then its id's provider prefix.
+With no model server configured the spend cells show `-` and one note says why (spend status `not_configured`); a server with no database named reads the same, and a database it could not query (or a server that is not answering) is spend status `unavailable`. For either status that one note reads `spend unavailable: <reason>`, and the exit code is 0 either way. Requests the proxy logged with no model are counted in a note on stderr. With no catalog row for a model the report still prints; its family is then its id's provider prefix.
 
 ## What `modelman usage report` had that `wt stats` does not
 
