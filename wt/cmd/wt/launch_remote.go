@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -194,25 +192,16 @@ func gatewayModels(ctx context.Context, ms *modelSession) ([]config.Model, error
 	if err != nil {
 		return nil, err
 	}
-	var out []config.Model
-	for _, r := range cat.Rows {
-		if !r.Native {
-			out = append(out, catalog.ToModel(r))
-		}
-	}
-	return out, nil
+	return catalog.NonNativeModels(cat.Rows), nil
 }
 
 // startRemote runs the start job for row on the server, with progress on
 // stderr and the questions answered by --replace, --others and the terminal.
 // Ctrl-C detaches (the job keeps running); a second Ctrl-C kills wt.
 func startRemote(ctx context.Context, ms *modelSession, row modelapi.Row, others string, allowReplace bool) error {
-	sctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	// A second Ctrl-C kills wt (interruptCtx restores the default handler).
+	sctx, stop := interruptCtx(ctx)
 	defer stop()
-	go func() {
-		<-sctx.Done()
-		stop() // the default handler again: a second Ctrl-C kills wt
-	}()
 	ans := &cliAnswerer{
 		id: row.ID, replace: allowReplace, others: others, out: osStderr,
 		tty: func() (*os.File, error) {

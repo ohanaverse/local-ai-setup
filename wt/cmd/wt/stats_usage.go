@@ -205,6 +205,9 @@ const (
 	spendSkipped       = "skipped"        // --agent: the spend log has no agent
 )
 
+// spendSkippedReason is the reason a report narrowed by --agent shows no spend.
+const spendSkippedReason = "--agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown"
+
 // usageReport is everything the usage table and its notes are built from.
 type usageReport struct {
 	Rows         []usageRow
@@ -272,7 +275,7 @@ func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration,
 	var sp *spend.Result
 	if f.agent != "" {
 		rep.SpendStatus = spendSkipped
-		rep.SpendReason = "--agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown"
+		rep.SpendReason = spendSkippedReason
 	} else if res, err := querySpend(ctx, asOf.Add(-window), asOf); err != nil {
 		rep.SpendStatus = spendUnavailable
 		// spend.ErrNoConnectionString is the same answer from the other
@@ -317,7 +320,7 @@ func collectUsageRemote(ctx context.Context, ms *modelSession, window time.Durat
 	var sp *spend.Result
 	if f.agent != "" {
 		rep.SpendStatus = spendSkipped
-		rep.SpendReason = "--agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown"
+		rep.SpendReason = spendSkippedReason
 	} else if res, err := ms.client.Spend(ctx, asOf.Add(-window), asOf); err != nil {
 		rep.SpendStatus = spendUnavailable
 		if modelclient.IsCode(err, modelapi.CodeSpendNotConfigured) {
@@ -343,7 +346,7 @@ func collectUsageNoServer(openErr error, window time.Duration, asOf time.Time, f
 	rep := usageReport{Narrowed: f.model != "" || f.family != ""}
 	if f.agent != "" {
 		rep.SpendStatus = spendSkipped
-		rep.SpendReason = "--agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown"
+		rep.SpendReason = spendSkippedReason
 	} else {
 		rep.SpendStatus = spendUnavailable
 		rep.SpendReason = "spend unavailable: " + openErr.Error()

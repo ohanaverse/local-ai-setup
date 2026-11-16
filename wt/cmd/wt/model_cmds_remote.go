@@ -136,7 +136,7 @@ func runStartRemote(ctx context.Context, out io.Writer, ms *modelSession, theme 
 	sess := ms.client.NewSession([]string{id}, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
 	registered := true
 	if rerr := sess.Start(ctx); rerr != nil {
-		registered = false
+		registered = !registerRefused(rerr)
 		note(fmt.Sprintf("the model server did not register this client session (%s) — the model starts, but the server may stop %s once it is idle", rerr, id))
 	}
 	end := func() {

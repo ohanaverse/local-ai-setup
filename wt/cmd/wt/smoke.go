@@ -816,7 +816,7 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 	sess := ms.client.NewSession([]string{m.ID}, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
 	registered := true
 	if rerr := sess.Start(ctx); rerr != nil {
-		registered = false
+		registered = !registerRefused(rerr)
 		note(fmt.Sprintf("the model server did not register this client session (%s) — the run goes on, but the server may stop %s once it is idle", rerr, m.ID))
 	}
 	var endOnce sync.Once
@@ -852,12 +852,7 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 
 	runID := smoke.NewRunID()
 	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token}
-	var gwModels []config.Model
-	for _, r := range catRows {
-		if !r.Native {
-			gwModels = append(gwModels, catalog.ToModel(r))
-		}
-	}
+	gwModels := catalog.NonNativeModels(catRows)
 	sctx, stopSignals := smokeSignalCtx()
 	defer stopSignals()
 	// Two things end a run early. A gateway that stayed down for a row's whole

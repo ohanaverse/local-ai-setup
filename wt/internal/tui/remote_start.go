@@ -603,11 +603,7 @@ func prepRemoteLaunchCmd(ctx context.Context, in prepInput) tea.Cmd {
 			if err != nil {
 				return fail(err)
 			}
-			for _, row := range cat.Rows {
-				if !row.Native {
-					models = append(models, catalog.ToModel(row))
-				}
-			}
+			models = catalog.NonNativeModels(cat.Rows)
 		}
 		if ctx.Err() != nil {
 			return fail(ctx.Err())

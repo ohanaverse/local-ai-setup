@@ -476,7 +476,7 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 	sess := ms.client.NewSession(ids, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
 	registered := true
 	if rerr := sess.Start(ctx); rerr != nil {
-		registered = false
+		registered = !registerRefused(rerr)
 		note(fmt.Sprintf("the model server did not register this client session (%s) — the launch goes on, but the server may stop %s once it is idle", rerr, strings.Join(ids, ", ")))
 	}
 	end := func() {
