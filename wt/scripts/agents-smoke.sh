@@ -2,25 +2,24 @@
 # agents-smoke.sh -- live one-shot smoke test for every wt agent.
 #
 # wt reaches its models through one model server's gateway (wt-model serve),
-# so the matrix runs in the single mode "gateway". The script needs the
-# server's URL and token file in WT_MODEL_URL and WT_MODEL_TOKEN_FILE (the same
-# variables wt reads; they override [model-server] in config.toml) and fails
-# fast naming whichever is missing. It changes no wt config. Native rows and
-# shell never consult the gateway but run in the same pass.
+# and every model row runs through it. The script needs the server's URL and
+# token file in WT_MODEL_URL and WT_MODEL_TOKEN_FILE (the same variables wt
+# reads; they override [model-server] in config.toml) and fails fast naming
+# whichever is missing. It changes no wt config. Native rows and shell never
+# consult the gateway but run in the same pass.
 
 set -o nounset -o pipefail
 
 DEFAULT_TIMEOUT=180
 DEFAULT_OLLAMA_MODEL="ollama/glm-5.3-flash:cloud"
-DEFAULT_MODES="gateway"
 
 # agent|model|one-shot-args-template|comment|xfail
 # model "-" means launch without -M.
 # @PROMPT@ is replaced with the row's prompt (a single shell-quoted argument).
-# Optional 5th field marks a known-failing row: "xfail" (fails in every
-# routing mode) or "xfail:gateway" (mode-scoped; gateway is the only mode). A marked
-# row that fails prints XFAIL and leaves the exit code alone; a marked row
-# that unexpectedly passes prints XPASS — a loud stale-mark warning. The
+# Optional 5th field marks a known-failing row: "xfail". Any other value is
+# treated as no mark, so a typo can't silently invert a row's verdict. A
+# marked row that fails prints XFAIL and leaves the exit code alone; a marked
+# row that unexpectedly passes prints XPASS — a loud stale-mark warning. The
 # marks mirror the Known Limitations section of
 # docs/reference/glm-5.3-flash-openrouter.md.
 read -r -d '' MATRIX <<'EOF' || true
@@ -179,19 +178,6 @@ require_model_server() {
 
 # ── Matrix row execution ───────────────────────────────────────────────
 
-# xfail_applies reports whether a row's optional 5th matrix field marks it
-# as expected-to-fail under the current gateway mode: bare "xfail" covers
-# every mode; "xfail:<mode>" covers only that mode. Any other value is
-# treated as no mark, so a typo can't silently invert a row's verdict.
-xfail_applies() {
-  local mark="$1" mode="$2"
-  case "$mark" in
-    xfail) return 0 ;;
-    xfail:*) [[ "${mark#xfail:}" == "$mode" ]] ;;
-    *) return 1 ;;
-  esac
-}
-
 dry_run() {
   local runid
   runid="$(new_runid)"
@@ -235,9 +221,9 @@ run_row() {
   # fail the suite. XPASS: a marked row passing means the underlying agent
   # behavior changed — report loudly (never silent), but keep the exit code
   # green so the stale mark surfaces without blocking.
-  if [[ $verdict == "FAIL" ]] && xfail_applies "$xfail_mark" "$GATEWAY_MODE"; then
+  if [[ $verdict == "FAIL" && "$xfail_mark" == "xfail" ]]; then
     verdict="XFAIL"
-  elif [[ $verdict == "PASS" ]] && xfail_applies "$xfail_mark" "$GATEWAY_MODE"; then
+  elif [[ $verdict == "PASS" && "$xfail_mark" == "xfail" ]]; then
     verdict="XPASS"
   fi
 
@@ -259,15 +245,12 @@ run_row() {
   esac
 }
 
-# run_tests_for_mode runs the whole matrix under one gateway mode (gateway is
-# the only one today; the function keeps the xfail mark's mode scoping).
-run_tests_for_mode() {
-  local mode="$1"
-  GATEWAY_MODE="$mode"
+# run_tests runs the whole matrix in one pass through the gateway.
+run_tests() {
   local runid rc fail_count=0 skip_count=0 xfail_count=0 xpass_count=0 total=0
   runid="$(new_runid)"
   echo ""
-  echo "=== Agents Smoke Run (gateway=${mode}, timeout=${TIMEOUT}s, runid=${runid}) ==="
+  echo "=== Agents Smoke Run (timeout=${TIMEOUT}s, runid=${runid}) ==="
   while IFS='|' read -r agent model args_template comment xfail_mark; do
     [[ "$agent" =~ ^# ]] && continue
     [[ -z "$agent" ]] && continue
@@ -281,7 +264,7 @@ run_tests_for_mode() {
     if [[ $rc -eq 4 ]]; then ((xpass_count++)); fi
     ((total++)) || true
   done <<<"$MATRIX"
-  echo "=== PASS: $((total - fail_count - skip_count - xfail_count - xpass_count)) FAIL: $fail_count SKIP: $skip_count XFAIL: $xfail_count XPASS: $xpass_count (gateway=${mode}) ==="
+  echo "=== PASS: $((total - fail_count - skip_count - xfail_count - xpass_count)) FAIL: $fail_count SKIP: $skip_count XFAIL: $xfail_count XPASS: $xpass_count ==="
   [[ $fail_count -eq 0 ]]
 }
 
@@ -298,8 +281,6 @@ Environment (required for a live run; --list, --dry-run and --help need neither)
   --list          Print the test matrix and exit
   --dry-run       Print the wt command for each row and exit
   --only AGENTS   Comma-separated agents to run (default all)
-  --modes MODES   Comma-separated routing modes to run (default gateway,
-                  the only mode)
   --timeout SECS  Per-row timeout (default 180)
   -h, --help      Show this help
 USAGE
@@ -318,10 +299,6 @@ list_rows() {
 
 ONLY_AGENTS=""
 TIMEOUT="$DEFAULT_TIMEOUT"
-MODES="$DEFAULT_MODES"
-# Gateway mode of the pass currently executing, set by run_tests_for_mode
-# before run_row classifies a row's xfail mark against it.
-GATEWAY_MODE=""
 
 parse_args() {
   ACTION=""
@@ -342,15 +319,6 @@ parse_args() {
           exit 1
         fi
         ONLY_AGENTS="$2"
-        shift 2
-        ;;
-      --modes)
-        if [[ $# -lt 2 ]]; then
-          echo "Option $1 requires a value" >&2
-          usage >&2
-          exit 1
-        fi
-        MODES="$2"
         shift 2
         ;;
       --timeout)
@@ -405,42 +373,6 @@ validate_only_agents() {
   done
 }
 
-# validate_modes checks the raw --modes value before expansion: each token
-# must be gateway, the only mode.
-validate_modes() {
-  [[ -z "$MODES" ]] && {
-    echo "error: --modes requires at least one mode" >&2
-    exit 1
-  }
-  local IFS=',' token
-  for token in $MODES; do
-    [[ -z "$token" ]] && continue
-    case "$token" in
-      gateway) ;;
-      *)
-        echo "error: unknown mode '${token}' in --modes (known: gateway)" >&2
-        exit 1
-        ;;
-    esac
-  done
-}
-
-# expand_modes dedupes the --modes tokens, keeping their order.
-expand_modes() {
-  local IFS=','
-  local out="" token
-  for token in $MODES; do
-    [[ -z "$token" ]] && continue
-    case ",$out," in
-      *",$token,"*) ;; # already present
-      *)
-        [[ -z "$out" ]] && out="$token" || out+=",${token}"
-        ;;
-    esac
-  done
-  printf '%s\n' "$out"
-}
-
 should_run_agent() {
   local agent="$1"
   [[ -z "$ONLY_AGENTS" ]] && return 0
@@ -456,7 +388,6 @@ should_run_agent() {
 main() {
   parse_args "$@"
   validate_only_agents
-  validate_modes
 
   case "$ACTION" in
     list)
@@ -473,14 +404,7 @@ main() {
 
   require_model_server || exit 1
 
-  MODES=$(expand_modes)
-  local overall_rc=0 mode
-  local -a mode_list
-  IFS=',' read -r -a mode_list <<<"$MODES"
-  for mode in "${mode_list[@]}"; do
-    run_tests_for_mode "$mode" || overall_rc=1
-  done
-  exit $overall_rc
+  run_tests || exit 1
 }
 
 main "$@"

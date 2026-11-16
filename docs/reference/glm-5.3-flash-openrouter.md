@@ -263,9 +263,9 @@ cd ~/github/ohanaverse/local-ai-setup
 # [PASS] pi × openrouter/z-ai/glm-5.3-flash
 ```
 
-(The run behind this used `--modes current`; since 2026-11-15 the script runs
-its `gateway` mode only and needs `WT_MODEL_URL` and `WT_MODEL_TOKEN_FILE` for
-the `wt-model` server.)
+(The run behind this used `--modes current`; the flag is gone since
+2026-11-15 — the script runs one pass through the gateway and needs
+`WT_MODEL_URL` and `WT_MODEL_TOKEN_FILE` for the `wt-model` server.)
 
 **Why this fix works:**
 - Alphanumeric runids (e.g., `run-930c24da-9932`) don't match phone number patterns
@@ -369,7 +369,7 @@ grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
 
 ### Current Status
 
-**Run:** `./wt/scripts/agents-smoke.sh --modes current` (as run 2026-09-02; `--modes current` is gone since 2026-11-15 — the script runs its `gateway` mode only and needs `WT_MODEL_URL` + `WT_MODEL_TOKEN_FILE`)  
+**Run:** `./wt/scripts/agents-smoke.sh --modes current` (as run 2026-09-02; `--modes` is gone since 2026-11-15 — the script runs one pass through the gateway and needs `WT_MODEL_URL` + `WT_MODEL_TOKEN_FILE`)  
 **RunID Format:** `run-<hex>-<random>` (alphanumeric to avoid Pi phone redaction)
 
 | Agent | Ollama Variant | OpenRouter (direct) | OpenRouter (litellm) | Notes |

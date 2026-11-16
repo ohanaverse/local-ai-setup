@@ -276,7 +276,7 @@ a sample the modeltiers tests pin):
     gpt-oss  ollama/gpt-oss:20b-cloud   12   cloud  ok      -        ...
     -        ollama/gemma4:31b-mlx     -     local  new     -        -
 
-  LiteLLM: on   cost 0.6/0.06/2.2   tier standard · score 44 (3 sources) · high confidence
+  cost 0.6/0.06/2.2   tier standard · score 44 (3 sources) · high confidence
 ```
 
 - An `unrated` model that still has an aligned score shows the score alone,
