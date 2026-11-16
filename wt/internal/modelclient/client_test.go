@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,7 +80,7 @@ func TestPingRefusesDifferentMajorAndSaysWhichSide(t *testing.T) {
 		{modelapi.APIMajor + 1, "speaks API major 2, this wt speaks 1 — upgrade wt"},
 		{modelapi.APIMajor - 1, "speaks API major 0, this wt speaks 1 — upgrade wt-model"},
 	} {
-		c := pingServer(t, `{"api_major":`+string(rune('0'+tc.major))+`,"schema":1,"server":"wt-model"}`)
+		c := pingServer(t, `{"api_major":`+strconv.Itoa(tc.major)+`,"schema":1,"server":"wt-model"}`)
 		_, err := c.Ping(ctx())
 		var se *SkewError
 		if !errors.As(err, &se) {
@@ -459,6 +461,9 @@ func TestEndReturnsWithinBoundWhenServerIsDown(t *testing.T) {
 	if !errors.As(err, &ue) || time.Since(start) > 3500*time.Millisecond {
 		t.Errorf("hung: err = %v after %v", err, time.Since(start))
 	}
+	if !strings.Contains(err.Error(), "timed out after 3s") {
+		t.Errorf("hung: %q does not name the 3s bound that expired", err.Error())
+	}
 	if hits.Load() != 1 {
 		t.Errorf("the DELETE reached the server %d times, want 1", hits.Load())
 	}
@@ -635,5 +640,236 @@ func TestServerTextCannotForgeLines(t *testing.T) {
 		if !isOneLine(s) {
 			t.Errorf("field %d = %q is not one printable line", i, s)
 		}
+	}
+}
+
+// TestWaitGatewayReadyClampsHostileRetryAfter pins that a Retry-After the
+// server controls can neither overflow the sleep (a huge or negative number)
+// nor outlast the 3-minute cap (a day): each ends as *GatewayDownError with at
+// most 3 minutes slept.
+func TestWaitGatewayReadyClampsHostileRetryAfter(t *testing.T) {
+	for _, ra := range []string{"99999999999", "86400", "-5", "0", "abc", "9223372036854775807", ""} {
+		f := newFixture(t)
+		f.mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, _ *http.Request) {
+			if ra != "" {
+				w.Header().Set("Retry-After", ra)
+			}
+			apiErr(w, 503, modelapi.CodeProxyUnavailable, modelapi.MsgProxyUnavailable)
+		})
+		var total time.Duration
+		var n int
+		c := f.client(WithSleep(func(d time.Duration) {
+			n++
+			if d < time.Second || n > 1000 {
+				t.Fatalf("Retry-After %q: sleep %v (call %d) is outside [1s, cap]", ra, d, n)
+			}
+			total += d
+		}))
+		err := c.WaitGatewayReady(ctx())
+		var gd *GatewayDownError
+		if !errors.As(err, &gd) || total > 3*time.Minute {
+			t.Errorf("Retry-After %q: err = %v, slept %v", ra, err, total)
+		}
+	}
+}
+
+// TestWaitGatewayReadyStopsOnCancel pins that the default sleep honours ctx: a
+// cancel during a long Retry-After wait returns promptly with the ctx error.
+func TestWaitGatewayReadyStopsOnCancel(t *testing.T) {
+	f := newFixture(t)
+	f.mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		apiErr(w, 503, modelapi.CodeProxyUnavailable, modelapi.MsgProxyUnavailable)
+	})
+	cctx, cancel := context.WithCancel(ctx())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	start := time.Now()
+	err := f.client().WaitGatewayReady(cctx)
+	if !errors.Is(err, context.Canceled) || time.Since(start) > 3*time.Second {
+		t.Fatalf("err = %v after %v", err, time.Since(start))
+	}
+}
+
+// TestWaitGatewayReadyCountsPollTime pins that the 3-minute cap is on elapsed
+// time, polls included: with a slow gateway the fake sleeps stop short of 3m.
+func TestWaitGatewayReadyCountsPollTime(t *testing.T) {
+	f := newFixture(t)
+	f.mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(60 * time.Millisecond)
+		w.Header().Set("Retry-After", "1")
+		apiErr(w, 503, modelapi.CodeProxyUnavailable, modelapi.MsgProxyUnavailable)
+	})
+	var total time.Duration
+	c := f.client(WithSleep(func(d time.Duration) { total += d }), withGatewayCap(time.Second))
+	err := c.WaitGatewayReady(ctx())
+	var gd *GatewayDownError
+	if !errors.As(err, &gd) || total != time.Second {
+		t.Fatalf("err = %v, slept %v; want GatewayDownError after one 1s sleep", err, total)
+	}
+}
+
+// TestRedirectIsNeverFollowed pins that a 3xx cannot replay the bearer token
+// and body to another host or port: the second server never sees the request
+// and the caller gets *NotModelServerError.
+func TestRedirectIsNeverFollowed(t *testing.T) {
+	var hit atomic.Int32
+	var gotAuth atomic.Value
+	other := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		hit.Add(1)
+		gotAuth.Store(r.Header.Get("Authorization"))
+	}))
+	defer other.Close()
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer first.Close()
+	c := New(Endpoint{URL: first.URL, Token: tok})
+	var ne *NotModelServerError
+	if _, err := c.Ping(ctx()); !errors.As(err, &ne) {
+		t.Fatalf("ping err = %v, want *NotModelServerError", err)
+	}
+	if err := c.End(ctx(), "s"); err == nil {
+		t.Error("End followed a redirect as success")
+	}
+	if hit.Load() != 0 {
+		t.Errorf("the redirect target was reached %d times, Authorization %q", hit.Load(), gotAuth.Load())
+	}
+}
+
+// TestHeartbeat410IsGoneWhateverTheBody pins that HTTP 410 alone means the
+// session lapsed, even when the body is not an API error.
+func TestHeartbeat410IsGoneWhateverTheBody(t *testing.T) {
+	for _, body := range []string{"<html>gone</html>", `{"error":{"message":"m","code":"something_else"}}`, ""} {
+		f := newFixture(t)
+		f.mux.HandleFunc("POST /control/v1/sessions/s/heartbeat", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(410)
+			_, _ = w.Write([]byte(body))
+		})
+		if known, err := f.client().Heartbeat(ctx(), "s", nil); known || err != nil {
+			t.Errorf("body %q: known=%v err=%v", body, known, err)
+		}
+	}
+}
+
+// TestBadErrorBodiesStayOneLine pins that an error body that is not JSON, or
+// carries no or an unknown code, still becomes a one-line error.
+func TestBadErrorBodiesStayOneLine(t *testing.T) {
+	for _, body := range []string{"<html>\nboom\x1b[2J</html>", `{"error":{"message":"` + `a\nb","code":""}}`, `{"error":{"message":"a\nb","code":"x\ny"}}`, `[1]`} {
+		f := newFixture(t)
+		f.mux.HandleFunc("GET /control/v1/catalog", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte(body))
+		})
+		_, err := f.client().Catalog(ctx())
+		if err == nil || !isOneLine(err.Error()) {
+			t.Errorf("body %q: err = %q", body, err)
+		}
+		var re *modelapi.ResponseError
+		if errors.As(err, &re) && !isOneLine(re.Code) && re.Code != "" {
+			t.Errorf("body %q: code %q", body, re.Code)
+		}
+	}
+}
+
+// fillStrings sets every string in v (fields, slice elements, map keys and
+// values, through pointers) to hostile text, growing empty slices, maps and
+// nil pointers to one element so nothing escapes the walk.
+func fillStrings(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString(hostile)
+	case reflect.Ptr:
+		if v.IsNil() {
+			v.Set(reflect.New(v.Type().Elem()))
+		}
+		fillStrings(v.Elem())
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			fillStrings(v.Field(i))
+		}
+	case reflect.Slice:
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+		fillStrings(v.Index(0))
+	case reflect.Map:
+		v.Set(reflect.MakeMap(v.Type()))
+		k, e := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
+		fillStrings(k)
+		fillStrings(e)
+		v.SetMapIndex(k, e)
+	}
+}
+
+// walkStrings reports every string under v that is not one printable line.
+func walkStrings(t *testing.T, path string, v reflect.Value) {
+	t.Helper()
+	switch v.Kind() {
+	case reflect.String:
+		if !isOneLine(v.String()) {
+			t.Errorf("%s = %q is not one printable line", path, v.String())
+		}
+	case reflect.Ptr:
+		if !v.IsNil() {
+			walkStrings(t, path, v.Elem())
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			walkStrings(t, path+"."+v.Type().Field(i).Name, v.Field(i))
+		}
+	case reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			walkStrings(t, path+"[]", v.Index(i))
+		}
+	case reflect.Map:
+		for _, k := range v.MapKeys() {
+			walkStrings(t, path+"{key}", k)
+			walkStrings(t, path+"{val}", v.MapIndex(k))
+		}
+	}
+}
+
+// TestEveryDecodedStringIsCleaned fills every string of every response type
+// with hostile text on the server side and walks what each client method
+// returns, so a string field added later and not cleaned fails here. Ping is
+// covered through its refusal text (its Server must equal wt-model to pass).
+func TestEveryDecodedStringIsCleaned(t *testing.T) {
+	filled := func(v any) any {
+		fillStrings(reflect.ValueOf(v).Elem())
+		return v
+	}
+	cat, row, job := filled(&modelapi.Catalog{}).(*modelapi.Catalog), filled(&modelapi.Row{}).(*modelapi.Row), filled(&modelapi.JobStatus{}).(*modelapi.JobStatus)
+	cl, sp := filled(&modelapi.CandidateList{}).(*modelapi.CandidateList), filled(&modelapi.SpendReport{}).(*modelapi.SpendReport)
+	cat.Schema = modelapi.SchemaVersion
+	f := newFixture(t)
+	serve := func(path string, v any) {
+		f.mux.HandleFunc("GET "+path, func(w http.ResponseWriter, _ *http.Request) { writeJSONBody(w, 200, v) })
+	}
+	serve("/control/v1/catalog", cat)
+	serve("/control/v1/resolve", row)
+	serve("/control/v1/jobs/j", job)
+	serve("/control/v1/jobs", modelapi.JobList{Jobs: []modelapi.JobStatus{*job}})
+	serve("/control/v1/candidates", cl)
+	serve("/control/v1/spend", sp)
+	c := f.client()
+	gotCat, err1 := c.Catalog(ctx())
+	gotRow, err2 := c.Resolve(ctx(), "x")
+	gotJob, err3 := c.Job(ctx(), "j")
+	gotJobs, err4 := c.ActiveJobs(ctx(), "")
+	gotCl, err5 := c.Candidates(ctx(), CandidateQuery{})
+	gotSp, err6 := c.Spend(ctx(), time.Now(), time.Now())
+	for i, err := range []error{err1, err2, err3, err4, err5, err6} {
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+	walkStrings(t, "Catalog", reflect.ValueOf(gotCat))
+	walkStrings(t, "Row", reflect.ValueOf(gotRow))
+	walkStrings(t, "Job", reflect.ValueOf(gotJob))
+	walkStrings(t, "Jobs", reflect.ValueOf(gotJobs))
+	walkStrings(t, "Candidates", reflect.ValueOf(gotCl))
+	walkStrings(t, "Spend", reflect.ValueOf(gotSp))
+
+	other := pingServer(t, `{"api_major":1,"schema":1,"server":"`+`a\nb\u001b[2J"}`)
+	if _, err := other.Ping(ctx()); err == nil || !isOneLine(err.Error()) {
+		t.Errorf("ping refusal = %q", err)
 	}
 }

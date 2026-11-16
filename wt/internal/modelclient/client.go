@@ -34,7 +34,8 @@ type Client struct {
 	ep      Endpoint
 	hc      *http.Client
 	timeout time.Duration
-	sleep   func(time.Duration)
+	sleep   func(time.Duration) // nil: a ctx-aware timer
+	gwCap   time.Duration
 
 	mu     sync.Mutex
 	pinged bool
@@ -53,18 +54,22 @@ func WithHTTPClient(hc *http.Client) Option { return func(c *Client) { c.hc = hc
 func WithRequestTimeout(d time.Duration) Option { return func(c *Client) { c.timeout = d } }
 
 // WithSleep replaces the sleep WaitGatewayReady uses between polls.
+func withGatewayCap(d time.Duration) Option { return func(c *Client) { c.gwCap = d } }
+
 func WithSleep(f func(time.Duration)) Option { return func(c *Client) { c.sleep = f } }
 
 // New returns a client for ep.
 func New(ep Endpoint, opts ...Option) *Client {
-	c := &Client{ep: ep, timeout: defaultRequestTimeout, sleep: time.Sleep}
+	c := &Client{ep: ep, timeout: defaultRequestTimeout, gwCap: gatewayWaitCap}
 	for _, o := range opts {
 		o(c)
 	}
 	if c.hc == nil {
 		tr := http.DefaultTransport.(*http.Transport).Clone()
 		tr.DialContext = (&net.Dialer{Timeout: dialTimeout}).DialContext
-		c.hc = &http.Client{Transport: tr}
+		// A 3xx is never followed: it would replay the bearer token and the
+		// request body to whatever the Location names.
+		c.hc = &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
 	return c
 }
@@ -104,6 +109,10 @@ func (c *Client) send(ctx context.Context, method, rawurl string, body any) (*re
 		}
 		rd = bytes.NewReader(b)
 	}
+	bound := c.timeout // the bound that will expire first, for the error text
+	if dl, ok := ctx.Deadline(); ok && time.Until(dl) < bound {
+		bound = time.Until(dl)
+	}
 	rctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(rctx, method, rawurl, rd)
@@ -127,7 +136,7 @@ func (c *Client) send(ctx context.Context, method, rawurl string, body any) (*re
 		}
 		reason := ""
 		if rctx.Err() != nil {
-			reason = "timed out after " + c.timeout.String()
+			reason = "timed out after " + bound.Round(10*time.Millisecond).String()
 		} else {
 			var ue *url.Error
 			if errors.As(err, &ue) {
@@ -147,6 +156,9 @@ func (c *Client) send(ctx context.Context, method, rawurl string, body any) (*re
 
 // statusErr turns a non-2xx response into the typed error for it.
 func (c *Client) statusErr(r *response) error {
+	if r.status >= 300 && r.status < 400 {
+		return &NotModelServerError{Addr: c.addr(), Why: "it answered HTTP " + strconv.Itoa(r.status) + ", a redirect, which wt does not follow"}
+	}
 	if r.status == http.StatusUnauthorized {
 		return &UnauthorizedError{Addr: c.addr()}
 	}
@@ -184,7 +196,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, q url.Values
 		return nil, err
 	}
 	if r.status < 200 || r.status > 299 {
-		return nil, c.statusErr(r)
+		return r, c.statusErr(r)
 	}
 	return r, nil
 }
@@ -360,8 +372,11 @@ func (c *Client) Register(ctx context.Context, id string, models []string) error
 // Heartbeat renews a client session and adds models to its set. known is false
 // when the server no longer knows the session (410): register again.
 func (c *Client) Heartbeat(ctx context.Context, id string, models []string) (known bool, err error) {
-	err = c.checked(ctx, "POST", "/control/v1/sessions/"+url.PathEscape(id)+"/heartbeat", nil, modelapi.SessionBeat{Models: models}, nil)
-	if IsCode(err, modelapi.CodeUnknownSession) {
+	if _, err = c.Ping(ctx); err != nil {
+		return false, err
+	}
+	r, err := c.exchange(ctx, "POST", "/control/v1/sessions/"+url.PathEscape(id)+"/heartbeat", nil, modelapi.SessionBeat{Models: models})
+	if r != nil && r.status == http.StatusGone {
 		return false, nil
 	}
 	return err == nil, err
@@ -376,16 +391,20 @@ func (c *Client) End(ctx context.Context, id string) error {
 	return c.do(ectx, "DELETE", "/control/v1/sessions/"+url.PathEscape(id), nil, nil, nil)
 }
 
-// WaitGatewayReady polls the gateway's model list until it answers; a 503
-// (LiteLLM restarting) sleeps its Retry-After, 5 s by default, for up to 3
-// minutes in all, then *GatewayDownError.
+// WaitGatewayReady polls the gateway's model list until it answers. A 503
+// (LiteLLM restarting) waits its Retry-After (5 s when absent, unparseable or
+// not positive), clamped to [1 s, what is left of the cap]. The cap is 3
+// minutes of elapsed time, polls included (sleeps as injected by WithSleep,
+// polls as measured), then *GatewayDownError. A cancelled ctx ends the wait.
 func (c *Client) WaitGatewayReady(ctx context.Context) error {
 	if _, err := c.Ping(ctx); err != nil {
 		return err
 	}
-	var waited time.Duration
+	var slept, polled time.Duration
 	for {
+		t0 := time.Now()
 		r, err := c.send(ctx, "GET", c.ep.Origin()+"/v1/models", nil)
+		polled += time.Since(t0)
 		if err != nil {
 			return err
 		}
@@ -395,18 +414,41 @@ func (c *Client) WaitGatewayReady(ctx context.Context) error {
 		case r.status != http.StatusServiceUnavailable:
 			return c.statusErr(r)
 		}
-		if waited >= gatewayWaitCap {
+		if slept+polled >= c.gwCap {
 			return &GatewayDownError{Addr: c.addr()}
 		}
-		d := gatewayRetryDefault
-		if s, err := strconv.Atoi(strings.TrimSpace(r.header.Get("Retry-After"))); err == nil && s > 0 {
-			d = time.Duration(s) * time.Second
-		}
-		if err := ctx.Err(); err != nil {
+		d := retryAfter(r.header.Get("Retry-After"))
+		d = min(max(d, time.Second), max(c.gwCap-slept, time.Second))
+		if err := c.sleepFor(ctx, d); err != nil {
 			return err
 		}
+		slept += d
+	}
+}
+
+// retryAfter reads a delay-seconds Retry-After; anything else, or a value past
+// a day, is the default (bounded before the multiplication, so it cannot wrap).
+func retryAfter(v string) time.Duration {
+	s, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || s <= 0 || s > 24*3600 {
+		return gatewayRetryDefault
+	}
+	return time.Duration(s) * time.Second
+}
+
+// sleepFor waits d: through the injected sleep, or a timer that ctx cancels.
+func (c *Client) sleepFor(ctx context.Context, d time.Duration) error {
+	if c.sleep != nil {
 		c.sleep(d)
-		waited += d
+		return ctx.Err()
+	}
+	tm := time.NewTimer(d)
+	defer tm.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-tm.C:
+		return nil
 	}
 }
 
