@@ -24,6 +24,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
@@ -85,7 +86,8 @@ func smokeCmd(a *app) *cobra.Command {
 				// cobra's "Error:" line gone the summary would stand alone
 				// above main's one line. A "no" at the --cwd launch question
 				// is a decline (exit 3), not a usage mistake either.
-				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err) || errors.Is(err, errCancelled)
+				_, coded := exitcode.Code(err) // a model-server failure is not a usage mistake either
+				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err) || errors.Is(err, errCancelled) || coded
 				return err
 			}
 			if anyFail {
@@ -288,7 +290,7 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	rows, interrupted = a.runSmokeRows(ctx, stderr, a.cfg, m, agentsToRun, toolFlags, runID, inPlace, cwd, &rowDirs,
 		func(ctx context.Context, agentName, prompt, sentinel string, rowDir smoke.RowDir, pa smoke.ProfileApplier) smoke.RowResult {
 			return smoke.RunRow(ctx, a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
-		})
+		}, nil)
 	// Restore the default handler: a second Ctrl+C during the report, the
 	// sweep or the stop picker kills wt.
 	stopSignals()
@@ -302,6 +304,20 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		err = errSmokeInterrupted
 	}
 	return anyFail, err
+}
+
+// serverGone reports whether a readiness error means the model server is gone
+// or refuses this client (unreachable, lost, token refused, clock skew), as
+// opposed to a gateway that is merely down: no later row can run either.
+func serverGone(err error) bool {
+	var (
+		unreachable *modelclient.UnreachableError
+		lost        *modelclient.LostServerError
+		unauth      *modelclient.UnauthorizedError
+		skew        *modelclient.SkewError
+		notServer   *modelclient.NotModelServerError
+	)
+	return errors.As(err, &unreachable) || errors.As(err, &lost) || errors.As(err, &unauth) || errors.As(err, &skew) || errors.As(err, &notServer)
 }
 
 // Default per-agent smoke budgets. Local models cold-prefill the 10-40k-token
@@ -583,7 +599,7 @@ type smokeRowFunc func(ctx context.Context, agentName, prompt, sentinel string, 
 // profile for the agent x model pair (resolved against cfg), the row's
 // directory and its progress lines. Every directory it makes is added to
 // *rowDirs for the caller's end-of-run sweep.
-func (a *app) runSmokeRows(ctx context.Context, stderr io.Writer, cfg *config.Config, m config.Model, agentsToRun []string, tf smokeToolFlags, runID string, inPlace bool, cwd string, rowDirs *[]string, run smokeRowFunc) (rows []smoke.RowResult, interrupted bool) {
+func (a *app) runSmokeRows(ctx context.Context, stderr io.Writer, cfg *config.Config, m config.Model, agentsToRun []string, tf smokeToolFlags, runID string, inPlace bool, cwd string, rowDirs *[]string, run smokeRowFunc, halt func() bool) (rows []smoke.RowResult, interrupted bool) {
 	// Reuse newApp()'s already-loaded profiles.toml state instead of
 	// loading and re-validating the file a second time. If profiles.toml
 	// was missing or malformed, degrade gracefully: smoke still runs but
@@ -656,6 +672,9 @@ func (a *app) runSmokeRows(ctx context.Context, stderr io.Writer, cfg *config.Co
 			interrupted = true
 			break
 		}
+		if halt != nil && halt() {
+			break
+		}
 	}
 	return rows, interrupted
 }
@@ -712,7 +731,7 @@ func resolveSmokeModelRemote(ctx context.Context, ms *modelSession, cfg *config.
 			"model %q cannot be smoke-tested right now (no agent supports it, or its route is not set up — check `wt litellm status` on the model server host)", modelID)
 	}
 	if len(cands) == 0 {
-		return smokeTarget{}, nil, fmt.Errorf("no models are available for any agent — add a cloud model to the registry or pull a local one")
+		return smokeTarget{}, nil, fmt.Errorf("the model server has no models to test; add one on the server host with wt model add, or pull a local one there")
 	}
 	models := make([]config.Model, len(cands))
 	for i, c := range cands {
@@ -841,10 +860,33 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 	}
 	sctx, stopSignals := smokeSignalCtx()
 	defer stopSignals()
+	// Two things end a run early. A gateway that stayed down for a row's whole
+	// wait makes every later row SKIP at once (each would otherwise wait its
+	// own 3 minutes), and a model server that is gone or refuses this client
+	// stops the run: the rows that ran are reported, the cause is named once.
+	var gwDown bool
+	var fatal error
+	ready := func(ctx context.Context) error {
+		err := ms.client.WaitGatewayReady(ctx)
+		if serverGone(err) && fatal == nil {
+			fatal = err
+		}
+		return err
+	}
 	rows, interrupted := a.runSmokeRows(sctx, stderr, cfg, m, agentsToRun, tf, runID, inPlace, cwd, &rowDirs,
 		func(ctx context.Context, agentName, prompt, sentinel string, rowDir smoke.RowDir, pa smoke.ProfileApplier) smoke.RowResult {
-			return smoke.RunRowGateway(ctx, gw, gwModels, agentName, m, prompt, sentinel, timeout, rowDir, pa, ms.client.WaitGatewayReady)
-		})
+			if gwDown {
+				return smoke.RowResult{Agent: agentName, Model: m.ID, Status: smoke.StatusSkip, Err: errors.New(smoke.GatewayDownReason)}
+			}
+			r := smoke.RunRowGateway(ctx, gw, gwModels, agentName, m, prompt, sentinel, timeout, rowDir, pa, ready)
+			if r.Status == smoke.StatusSkip && r.Err != nil && r.Err.Error() == smoke.GatewayDownReason {
+				gwDown = true
+			}
+			return r
+		}, func() bool { return fatal != nil })
+	if fatal != nil && len(rows) > 0 && rows[len(rows)-1].Err != nil && errors.Is(rows[len(rows)-1].Err, fatal) {
+		rows = rows[:len(rows)-1] // the row that found the server gone says nothing about the model
+	}
 	// The rows are over: the model is no longer in use. Restore the default
 	// handler too: a second Ctrl+C during the report kills wt.
 	end()
@@ -855,8 +897,18 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 	} else {
 		anyFail, err = printSmokeHuman(cmd.OutOrStdout(), runID, m.ID, rows)
 	}
-	if started && !jsonOut && stdinTTY() {
-		fmt.Fprintf(stderr, "wt: note: smoke started %s; the model server stops it after its idle grace unless a client session uses it\n", cleanup.Flatten(m.ID))
+	if !jsonOut && stdinTTY() {
+		// The server's auto-stop reaches any local model a client session
+		// registered, so the note covers a model smoke only used, too.
+		switch {
+		case started:
+			fmt.Fprintf(stderr, "wt: note: smoke started %s; the model server stops it after its idle grace unless a client session uses it\n", cleanup.Flatten(m.ID))
+		case t.Row.Location == config.LocationLocal:
+			fmt.Fprintf(stderr, "wt: note: smoke used %s, which was already running; the model server stops it after its idle grace unless a client session uses it\n", cleanup.Flatten(m.ID))
+		}
+	}
+	if fatal != nil && err == nil {
+		err = remoteExit(modelclient.Still(fatal, "the remaining rows did not run"))
 	}
 	if interrupted && err == nil {
 		err = errSmokeInterrupted

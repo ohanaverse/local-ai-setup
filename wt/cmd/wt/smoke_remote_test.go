@@ -303,3 +303,81 @@ func sortStrings(s []string) {
 		}
 	}
 }
+
+// TestSmokeRemoteNoteForAnAlreadyRunningModel proves the auto-stop warning is
+// not only for a model smoke started: smoke registers a running local model
+// too, so the server stops it after its idle grace, and on a terminal one note
+// says that (a cloud model is never stopped, so it gets none).
+func TestSmokeRemoteNoteForAnAlreadyRunningModel(t *testing.T) {
+	const note = "wt: note: smoke used omlx/q, which was already running; the model server stops it after its idle grace unless a client session uses it\n"
+	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
+	stubGatewayRows(t, r, passRows)
+	stubStdinTTY(t, true)
+	run := smokeOnFake(t, r, "omlx/q", "--only", "claude", "--prompt", "hi")
+	if run.err != nil {
+		t.Fatalf("err = %v", run.err)
+	}
+	if got := run.stderr + r.stderr.String(); strings.Count(got, note) != 1 || strings.Contains(got, "smoke started") {
+		t.Errorf("stderr = %q, want the already-running note once", got)
+	}
+	// Not on a terminal: no note.
+	r2 := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
+	stubGatewayRows(t, r2, passRows)
+	run2 := smokeOnFake(t, r2, "omlx/q", "--only", "claude")
+	if strings.Contains(run2.stderr+r2.stderr.String(), "smoke used") {
+		t.Errorf("a non-terminal run printed the note: %q", run2.stderr)
+	}
+}
+
+// TestSmokeRemoteGatewayDownSkipsTheRestAtOnce pins that a gateway that stays
+// down stalls the run once, not once per row: the first row waits its full
+// readiness wait and is SKIP; the other rows are SKIP with the same reason and
+// never call the gateway again (the fake sees the same number of model-list
+// polls as for a single-row run).
+func TestSmokeRemoteGatewayDownSkipsTheRestAtOnce(t *testing.T) {
+	polls := func(only string) (int, smokeRemoteRun) {
+		r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+		r.f.GatewayStatus = 503
+		stubGatewayRows(t, r, passRows)
+		run := smokeOnFake(t, r, "openrouter/a", "--only", only)
+		return r.f.count("GET /v1/models"), run
+	}
+	one, _ := polls("claude")
+	three, run := polls("claude,codex,pi")
+	if one == 0 || three != one {
+		t.Errorf("gateway polls: one row = %d, three rows = %d, want equal (and not 0)", one, three)
+	}
+	if !strings.Contains(run.stdout, "SKIP: 3") || run.err != nil || len(run.exits) != 0 {
+		t.Errorf("stdout = %q err = %v exits = %v, want 3 SKIP, exit 0", run.stdout, run.err, run.exits)
+	}
+	if n := strings.Count(run.stderr, "SKIP ("); n != 3 {
+		t.Errorf("SKIP progress lines = %d, want 3\n%s", n, run.stderr)
+	}
+}
+
+// TestSmokeRemoteServerGoneStopsTheRun pins that a model server that vanishes
+// mid-run stops the remaining rows instead of failing each: the row that ran is
+// reported, the next row's readiness check finds the server unreachable, and
+// the run ends with exit 1 naming the cause once, with no FAIL row for it.
+func TestSmokeRemoteServerGoneStopsTheRun(t *testing.T) {
+	r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+	calls := 0
+	stubGatewayRows(t, r, func(agents.Gateway, string) smoke.ExecOutcome {
+		calls++
+		r.f.Close() // the server is gone before the next row
+		return smoke.StubOutcome("ok", 0)
+	})
+	run := smokeOnFake(t, r, "openrouter/a", "--only", "claude,codex,pi", "--prompt", "hi")
+	if run.err == nil || exitcode.Of(run.err) != 1 {
+		t.Fatalf("err = %v, want exit 1", run.err)
+	}
+	if calls != 1 {
+		t.Errorf("agent runs = %d, want 1 (the rest never ran)", calls)
+	}
+	if !strings.Contains(run.stdout, "[PASS ] claude") || strings.Contains(run.stdout, "FAIL: 1") || strings.Contains(run.stdout, "Usage:") {
+		t.Errorf("stdout = %q, want the row that ran and no FAIL", run.stdout)
+	}
+	if n := strings.Count(run.err.Error(), "unreachable") + strings.Count(run.err.Error(), "127.0.0.1"); n == 0 {
+		t.Errorf("err = %v does not name the cause", run.err)
+	}
+}

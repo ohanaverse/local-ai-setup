@@ -118,14 +118,24 @@ the sentinel rules, `--json` and the exit codes are the same. What differs:
   LiteLLM`, never a FAIL, and the exit code is unaffected. wt retries only what
   it drives: an agent that gives up on a 503 inside its own run owns its own
   retries, and one that does not retry fails its row. That is a recorded limit
-  (#598), not something smoke papers over.
+  (#598), not something smoke papers over. The 503 probe is a point-in-time
+  check made after the row failed: an agent that retries internally can outlast
+  a LiteLLM restart and then fail without a rerun. Once one row finds the
+  gateway down for the whole wait, the remaining rows are SKIP with the same
+  reason at once (no further 3-minute waits). A model server that is gone or
+  refuses the client (unreachable, lost, token refused, clock skew) stops the
+  remaining rows: the rows already run are reported and the run exits 1 naming
+  the cause once.
 - **There is no stop picker.** The exit flow ends the client session instead;
-  the model server stops a model smoke started once its idle grace passes
-  (`--idle-grace`, default 10 minutes) unless another client session uses it.
-  On a terminal, when smoke started a model, one note says so:
+  once smoke has registered a local model (smoke started it or it was already
+  running), the model server stops it after its idle grace (`--idle-grace`,
+  default 10 minutes) unless another client session uses it. A cloud model is
+  never stopped. On a terminal, one note says so: when smoke started the model,
   `wt: note: smoke started <id>; the model server stops it after its idle grace
-  unless a client session uses it`. `--json` and a non-terminal stdin print no
-  note. A model smoke did not start is never touched.
+  unless a client session uses it`; when it was already running,
+  `wt: note: smoke used <id>, which was already running; the model server stops
+  it after its idle grace unless a client session uses it`. `--json` and a
+  non-terminal stdin print no note.
 
 ## Tool-use permission
 

@@ -21,8 +21,9 @@ import (
 // CandidatesWire is Candidates over the model server's rows: the same rules
 // (a launch row, or a start row a non-running local model has; a blocked row
 // never; no command agent), applied to what the server decided. The agent's
-// own route is not re-judged here: the server's action already carries it
-// (R5), so an unmapped cloud row it blocks stays out. It starts nothing.
+// own route is not re-judged here: every client reaches the model through the
+// gateway, which makes the per-agent protocol route irrelevant (R5), and the
+// server already blocks an Unmapped row. It starts nothing.
 func CandidatesWire(rows []modelapi.Row, ags []config.Agent) []Candidate {
 	return walkWire(rows, ags, true)
 }
@@ -104,6 +105,10 @@ const GatewayDownReason = "gateway unavailable (503) — the model server may be
 // probeBound caps the one status probe after a failed row.
 const probeBound = 5 * time.Second
 
+// The probe is a bare request here, not a modelclient.Client method:
+// RunRowGateway's signature is fixed and its ready is a bare func. It refuses
+// redirects on purpose (a 3xx would replay the bearer token elsewhere).
+//
 // gatewayIs503 asks the gateway's model list once and reports whether it
 // answers 503. Any other answer, and any failure to ask, is false: only a
 // 503 says the proxy was restarting under the row.
