@@ -58,6 +58,20 @@
     "message": "omlx/qwen3.8-35b is in use by 2 live client session(s); confirm to stop it anyway",
     "sessions": ["sess-1", "sess-2"]
   },
+  "candidates": {
+    "tiers_generated": "2026-11-10T08:00:00Z",
+    "stale_sources": ["lmarena"],
+    "candidates": [
+      {"id": "omlx/qwen3.8-35b", "provider": "omlx", "location": "local", "tier": "strong", "confidence": "high", "score": 82.5, "rated": true, "open_weights": true, "context": 131072, "flags": []},
+      {"id": "openrouter/minimax-m2.5", "provider": "openrouter", "location": "cloud", "output_per_million": 1.2, "flags": ["unrated"]}
+    ]
+  },
+  "spend": {
+    "rows": [{"model": "omlx/qwen3.8-35b", "requests": 12, "prompt_tokens": 40210, "completion_tokens": 9876, "spend": 0}],
+    "unattributed": 2
+  },
+  "error_spend_not_configured": {"error": {"message": "spend is not configured: no LiteLLM database configured", "code": "spend_not_configured"}},
+  "error_spend_unavailable": {"error": {"message": "spend unavailable: psql is not installed", "code": "spend_unavailable"}},
   "error_unauthorized": {"error": {"message": "missing or wrong bearer token", "code": "unauthorized"}},
   "error_unknown_model": {"error": {"message": "unknown model \"nope/none\"", "code": "unknown_model"}},
   "error_not_found": {"error": {"message": "no such control endpoint", "code": "not_found"}},

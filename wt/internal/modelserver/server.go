@@ -97,6 +97,8 @@ func (s *Server) routes() http.Handler {
 	ctl.HandleFunc("GET /control/v1/ping", s.ping)
 	ctl.HandleFunc("GET /control/v1/catalog", s.catalog)
 	ctl.HandleFunc("GET /control/v1/resolve", s.resolve)
+	ctl.HandleFunc("GET /control/v1/candidates", s.candidates)
+	ctl.HandleFunc("GET /control/v1/spend", s.spend)
 	ctl.HandleFunc("POST /control/v1/start", s.start)
 	ctl.HandleFunc("POST /control/v1/stop", s.stop)
 	ctl.HandleFunc("GET /control/v1/jobs", s.jobsList)

@@ -13,12 +13,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/candidates"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeljobs"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
@@ -49,6 +51,14 @@ type Deps struct {
 	// error means LiteLLM could not be asked (the catalog then leaves
 	// Row.Routed unset).
 	RoutedIDs func(ctx context.Context) (map[string]bool, error)
+	// Rank orders the registry's models for a slot (the candidates endpoint).
+	Rank func(cfg *config.Config, ix tiers.Index, q candidates.Query) []candidates.Candidate
+	// TiersFreshness reports when the tiers file was generated and which of
+	// its sources are stale; false when there is no readable file.
+	TiersFreshness func() (tiers.Freshness, bool)
+	// Spend reads the LiteLLM spend log for [start, end). The database
+	// address stays inside the real function and never leaves the host.
+	Spend func(ctx context.Context, start, end time.Time) (spend.Result, error)
 }
 
 // routePollEvery is how often the default Routed asks the gateway.
@@ -102,7 +112,25 @@ func DefaultDeps(cfg *config.Config, reload func() (*config.Config, error), upst
 		},
 		Routed:    w.wait,
 		RoutedIDs: w.ids,
+		Rank: func(cfg *config.Config, ix tiers.Index, q candidates.Query) []candidates.Candidate {
+			return candidates.Rank(cfg.Models, ix, q)
+		},
+		TiersFreshness: func() (tiers.Freshness, bool) {
+			_, f, ok := tiers.LoadWithFreshness()
+			return f, ok
+		},
+		Spend: realQuerySpend,
 	}
+}
+
+// realQuerySpend reads the spend log through the DSN litellm.DatabaseURL
+// finds. The DSN is used here only; spend.Query's errors name no part of it.
+func realQuerySpend(ctx context.Context, start, end time.Time) (spend.Result, error) {
+	dsn, err := litellm.DatabaseURL()
+	if err != nil {
+		return spend.Result{}, err
+	}
+	return spend.Query(ctx, dsn, start, end)
 }
 
 // routeWaiter is the default Routed: it polls the gateway's model list. Its

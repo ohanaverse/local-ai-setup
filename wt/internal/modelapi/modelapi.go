@@ -168,6 +168,50 @@ type JobResult struct {
 	Error *Problem `json:"error,omitempty"`
 }
 
+// Candidate is one ranked registry model, the answer's row of
+// GET /control/v1/candidates. Score is absent for an unscored model.
+type Candidate struct {
+	ID                 string   `json:"id"`
+	Provider           string   `json:"provider"`
+	Location           string   `json:"location"`
+	Tier               string   `json:"tier,omitempty"`
+	Confidence         string   `json:"confidence,omitempty"`
+	Score              *float64 `json:"score,omitempty"`
+	Rated              bool     `json:"rated,omitempty"`
+	OpenWeights        bool     `json:"open_weights,omitempty"`
+	Context            int      `json:"context,omitempty"`
+	OutputPerMillion   *float64 `json:"output_per_million,omitempty"`
+	Subscription       *float64 `json:"subscription,omitempty"`
+	SubscriptionPeriod string   `json:"subscription_period,omitempty"`
+	// Flags is always present, [] when the model has none.
+	Flags []string `json:"flags"`
+}
+
+// CandidateList is the answer of GET /control/v1/candidates. TiersGenerated
+// is the RFC 3339 time of the tiers file, absent when there is none;
+// StaleSources and Candidates are always present.
+type CandidateList struct {
+	TiersGenerated string      `json:"tiers_generated,omitempty"`
+	StaleSources   []string    `json:"stale_sources"`
+	Candidates     []Candidate `json:"candidates"`
+}
+
+// SpendRow is one model's totals in the window.
+type SpendRow struct {
+	Model            string  `json:"model"`
+	Requests         int64   `json:"requests"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	Spend            float64 `json:"spend"`
+}
+
+// SpendReport is the answer of GET /control/v1/spend. Rows is always present;
+// Unattributed counts requests logged without a model.
+type SpendReport struct {
+	Rows         []SpendRow `json:"rows"`
+	Unattributed int64      `json:"unattributed"`
+}
+
 // Problem codes.
 const (
 	CodeOccupied         = "occupied"
@@ -223,6 +267,12 @@ const (
 	CodeUnknownJob       = "unknown_job"
 	CodeUnknownSession   = "unknown_session"
 	CodeProxyUnavailable = "proxy_unavailable"
+	// CodeSpendNotConfigured: nothing names the LiteLLM database, so no spend
+	// can be read; CodeSpendUnavailable: the database is named but could not
+	// be queried. Both answer 503, and neither message carries the connection
+	// string.
+	CodeSpendNotConfigured = "spend_not_configured"
+	CodeSpendUnavailable   = "spend_unavailable"
 )
 
 // Shared error wording and the OpenAI-style error types.
@@ -286,4 +336,5 @@ var ErrorCodes = []string{
 	CodeStopped, CodeFailed, CodeCancelled, CodeUnknownModel, CodeBlocked,
 	CodeBadRequest, CodeUnauthorized, CodeNotFound, CodeMethodNotAllowed,
 	CodeUnknownJob, CodeUnknownSession, CodeProxyUnavailable,
+	CodeSpendNotConfigured, CodeSpendUnavailable,
 }
