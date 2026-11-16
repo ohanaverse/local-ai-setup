@@ -146,10 +146,7 @@ var stdinTTY = isStdinTTY
 // Do not write the hint out at a call site: that is how `wt litellm` came to
 // send every registry problem to `wt config` (#291).
 func configError(err error) error {
-	if hint := config.LoadFixHint(err); hint != "" {
-		return fmt.Errorf("config error: %w (%s)", err, hint)
-	}
-	return fmt.Errorf("config error: %w", err)
+	return config.ConfigError(err)
 }
 
 // errPickerNeedsTTY is returned by the rootCmd RunE when an unpinned launch

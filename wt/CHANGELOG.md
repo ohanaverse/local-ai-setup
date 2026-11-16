@@ -52,6 +52,12 @@
 
 ### Added
 
+- `wt-model serve --listen ADDR --token-file PATH [--idle-grace DUR]`, a
+  second binary built beside `wt`: a control API (`/control/v1/`) that lists,
+  starts and stops local models for agent sessions on other machines, and a
+  streaming gateway (`/v1/`) to the LiteLLM proxy. A bearer token is required
+  on every address. Reference: `docs/wt-model-server.md`.
+
 - `wt restore-root [--to DIR-NAME] [--dry-run] [--yes] [--json] [--no-fetch]`
   moves the branch the repository's root has checked out, with its staged,
   unstaged and untracked work, into a new worktree under `.worktrees/` and puts

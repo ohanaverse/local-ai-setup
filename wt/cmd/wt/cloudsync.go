@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"net/http"
 	"slices"
@@ -291,10 +292,10 @@ func (o flowOutcome) exitError(flow string) error {
 	if why == "" {
 		why = cloudCodeMeaning[o.code]
 	}
-	return &exitCodeError{code: o.code, err: fmt.Errorf("cloud-sync: the %s flow changed nothing: %s", flow, why)}
+	return exitcode.New(o.code, fmt.Errorf("cloud-sync: the %s flow changed nothing: %s", flow, why), false)
 }
 
-// err is the command's result: nil, or an exitCodeError. An ollama-flow code wins
+// err is the command's result: nil, or an exitcode.Error. An ollama-flow code wins
 // over an openrouter one, and both over a failed step, as the codes are documented.
 func (r *cloudSyncOutcome) err() error {
 	switch {
@@ -303,7 +304,7 @@ func (r *cloudSyncOutcome) err() error {
 	case r.openrouter.code != 0:
 		return r.openrouter.exitError(flowOpenRouter)
 	case r.failed:
-		return &exitCodeError{code: 1, err: errors.New("cloud-sync: a step failed; see the error lines above")}
+		return exitcode.New(1, errors.New("cloud-sync: a step failed; see the error lines above"), false)
 	}
 	return nil
 }

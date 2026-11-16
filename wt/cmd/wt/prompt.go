@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"os"
 	"strings"
@@ -38,20 +39,20 @@ func confirmYN(r io.Reader) bool {
 
 // writeResult emits a rescue-style result: the JSON document from encode or
 // the text from text on out, the text on errOut when the result cannot be
-// written, and a non-zero code as an exitCodeError carrying notDone (quiet
+// written, and a non-zero code as an exitcode.Error carrying notDone (quiet
 // after JSON, whose document already says so). encode also reports partial: a
 // JSON document that carries an error beside its items is printed whole and
 // raises the exit status to 2 (remove's Ruling O).
 func writeResult(out, errOut io.Writer, asJSON bool, code int, notDone string, encode func() ([]byte, bool, error), text func(io.Writer) error) error {
 	lost := func(err error) error {
 		text(errOut)
-		return &exitCodeError{code: 2, err: fmt.Errorf("could not write the result to stdout (it is on stderr): %w", err)}
+		return exitcode.New(2, fmt.Errorf("could not write the result to stdout (it is on stderr): %w", err), false)
 	}
 	if asJSON {
 		b, partial, err := encode()
 		if err != nil {
 			text(errOut)
-			return &exitCodeError{code: 2, err: fmt.Errorf("could not write the JSON result: %w", err)}
+			return exitcode.New(2, fmt.Errorf("could not write the JSON result: %w", err), false)
 		}
 		if _, err := out.Write(b); err != nil {
 			return lost(err)
@@ -60,7 +61,7 @@ func writeResult(out, errOut io.Writer, asJSON bool, code int, notDone string, e
 			code = 2
 		}
 		if code != 0 {
-			return &exitCodeError{code: code, err: errors.New(notDone), quiet: true}
+			return exitcode.New(code, errors.New(notDone), true)
 		}
 		return nil
 	}
@@ -68,7 +69,7 @@ func writeResult(out, errOut io.Writer, asJSON bool, code int, notDone string, e
 		return lost(err)
 	}
 	if code != 0 {
-		return &exitCodeError{code: code, err: errors.New(notDone)}
+		return exitcode.New(code, errors.New(notDone), false)
 	}
 	return nil
 }

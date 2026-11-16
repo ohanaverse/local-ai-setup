@@ -7,6 +7,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"os"
 	"path/filepath"
@@ -355,13 +356,10 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 }
 
 // handOffExit is the exit status of a hand-off's error, 0 when it carries
-// none (exitCodeError is what the commands' run paths return).
+// none (exitcode.Error is what the commands' run paths return).
 func handOffExit(err error) int {
-	var ece *exitCodeError
-	if errors.As(err, &ece) {
-		return ece.code
-	}
-	return 0
+	code, _ := exitcode.Code(err)
+	return code
 }
 
 // rescueHandOffResult turns what `r`'s run path returned into what the list's
@@ -417,16 +415,16 @@ func cleanupFail(out io.Writer, asJSON bool, repo string, err error) error {
 // beside the write problem. Without asJSON main prints the error.
 func failWithEnvelope(out io.Writer, asJSON bool, code int, err error, encode func() ([]byte, error)) error {
 	if !asJSON {
-		return &exitCodeError{code: code, err: err}
+		return exitcode.New(code, err, false)
 	}
 	b, encErr := encode()
 	if encErr != nil {
-		return &exitCodeError{code: code, err: errors.Join(err, encErr)}
+		return exitcode.New(code, errors.Join(err, encErr), false)
 	}
 	if _, werr := out.Write(b); werr != nil {
-		return &exitCodeError{code: code, err: errors.Join(err, werr)}
+		return exitcode.New(code, errors.Join(err, werr), false)
 	}
-	return &exitCodeError{code: code, err: err, quiet: true}
+	return exitcode.New(code, err, true)
 }
 
 // errRegistryUnavailable is protectedPaths' error when the registry did not

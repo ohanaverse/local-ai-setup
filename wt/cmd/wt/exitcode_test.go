@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"os"
 	"os/exec"
 	"strings"
@@ -30,7 +31,7 @@ func TestReportExitNil(t *testing.T) {
 // command's exit status moved when cloud-sync got its own codes, and a
 // carried 0 can never turn a failure into a success.
 func TestExitCodeOf(t *testing.T) {
-	coded := &exitCodeError{code: 4, err: errors.New("refused")}
+	coded := exitcode.New(4, errors.New("refused"), false)
 	cases := []struct {
 		err  error
 		want int
@@ -38,16 +39,16 @@ func TestExitCodeOf(t *testing.T) {
 		{errors.New("plain"), 1},
 		{coded, 4},
 		{fmt.Errorf("wrapped: %w", coded), 4},
-		{&exitCodeError{code: 0, err: errors.New("zero")}, 1},
-		{&exitCodeError{code: 300, err: errors.New("too big")}, 1},
+		{exitcode.New(0, errors.New("zero"), false), 1},
+		{exitcode.New(300, errors.New("too big"), false), 1},
 	}
 	for _, tc := range cases {
-		if got := exitCodeOf(tc.err); got != tc.want {
-			t.Errorf("exitCodeOf(%v) = %d, want %d", tc.err, got, tc.want)
+		if got := exitcode.Of(tc.err); got != tc.want {
+			t.Errorf("exitcode.Of(%v) = %d, want %d", tc.err, got, tc.want)
 		}
 	}
 	if coded.Error() != "refused" || !errors.Is(fmt.Errorf("x: %w", coded), coded) {
-		t.Error("an exitCodeError must print and unwrap as the error it carries")
+		t.Error("an exitcode.Error must print and unwrap as the error it carries")
 	}
 }
 

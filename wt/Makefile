@@ -2,7 +2,7 @@
 
 help:                   # Show available targets
 	@echo "Available targets:"
-	@echo "  build     - Build the Go wt binary to bin/wt"
+	@echo "  build     - Build the Go wt and wt-model binaries to bin/"
 	@echo "  install   - Copy bin/* to ~/.local/bin/"
 	@echo "  uninstall - Remove installed scripts from ~/.local/bin/"
 	@echo "  lint      - Run shellcheck on bin/*-wt and scripts/agents-smoke.sh"
@@ -18,16 +18,18 @@ help:                   # Show available targets
 BINDIR := $(HOME)/.local/bin
 SRCDIR := bin
 
-build:                  # Build the Go wt binary
-	@echo "Building wt..."
+build:                  # Build the Go wt and wt-model binaries
+	@echo "Building wt and wt-model..."
 	go build -o bin/wt ./cmd/wt
+	go build -o bin/wt-model ./cmd/wt-model
 ifeq ($(shell uname -s),Darwin)
 	@# Re-seal the ad-hoc code signature so AMFI doesn't SIGKILL the binary
 	@# on launch (a stale/drifted linker signature is rejected with
 	@# "Taskgated Invalid Signature"; a fresh codesign regenerates the seal).
 	@codesign --force --sign - bin/wt
+	@codesign --force --sign - bin/wt-model
 endif
-	@echo "Built bin/wt"
+	@echo "Built bin/wt and bin/wt-model"
 
 install: build          # Build then install scripts to ~/.local/bin/
 	cp -r $(SRCDIR)/* $(BINDIR)/
@@ -40,11 +42,12 @@ ifeq ($(shell uname -s),Darwin)
 	@# codesign yet still rejected by AMFI, so always force re-seal. The cost is
 	@# one codesign syscall per install.
 	@codesign --force --sign - $(BINDIR)/wt
+	@codesign --force --sign - $(BINDIR)/wt-model
 endif
 	@echo "Installed wt scripts to $(BINDIR)"
 
 uninstall:              # Remove installed scripts from ~/.local/bin/
-	rm -f $(BINDIR)/*-wt $(BINDIR)/wt
+	rm -f $(BINDIR)/*-wt $(BINDIR)/wt $(BINDIR)/wt-model
 	@echo "Uninstalled wt scripts from $(BINDIR)"
 
 lint:                   # Run shellcheck
@@ -80,7 +83,7 @@ go-format-check:        # Fail if any Go file is not gofmt-clean
 # without it wt-ci's single-p job replays the multi-P run from cache and
 # guards nothing.
 single-p:               # Run the goroutine-sensitive packages on one P
-	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 ./cmd/wt ./internal/tui ./internal/lifecycle ./internal/configeditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/refcount ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup
+	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 ./cmd/wt ./internal/tui ./internal/lifecycle ./internal/configeditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/refcount ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./cmd/wt-model
 
 test-agents:            # Run live agent smoke tests
 	@command -v wt >/dev/null 2>&1 || { echo "wt not on PATH; ensure ~/.local/bin is in PATH or run: make install"; exit 1; }
@@ -111,5 +114,5 @@ test:                   # Run smoke tests
 	@echo "All tests complete."
 
 clean:                  # Remove build artifacts
-	rm -f bin/wt
+	rm -f bin/wt bin/wt-model
 	find . -type f -name "*.test" -delete 2>/dev/null || true

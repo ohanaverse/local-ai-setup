@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"os/exec"
 	"testing"
 
@@ -67,8 +68,8 @@ func TestPickerLaunchExitsWithTheAgentsStatus(t *testing.T) {
 			if got := reportExit(err, &stderr); got != c.want {
 				t.Errorf("exit status = %d, want %d", got, c.want)
 			}
-			if exitCodeOf(err) != c.want {
-				t.Errorf("exitCodeOf = %d, want %d", exitCodeOf(err), c.want)
+			if exitcode.Of(err) != c.want {
+				t.Errorf("exitCodeOf = %d, want %d", exitcode.Of(err), c.want)
 			}
 			if stderr.Len() != 0 {
 				t.Errorf("stderr = %q, want nothing: the agent said why it failed, and runAgentCmd adds no line either", stderr.String())
@@ -117,7 +118,7 @@ func TestPickerLaunchGateErrorPrintsOnceAndExitsOne(t *testing.T) {
 // line and its exitCodeOf status, so no command lost its message.
 func TestReportExitPrintsOtherErrors(t *testing.T) {
 	var stderr bytes.Buffer
-	if got := reportExit(&exitCodeError{code: 4, err: errors.New("no terminal")}, &stderr); got != 4 {
+	if got := reportExit(exitcode.New(4, errors.New("no terminal"), false), &stderr); got != 4 {
 		t.Errorf("exit status = %d, want 4", got)
 	}
 	if stderr.String() != "wt: no terminal\n" {

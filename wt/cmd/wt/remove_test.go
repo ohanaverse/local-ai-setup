@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"os"
 	"path/filepath"
@@ -47,7 +47,7 @@ func onTTY(t *testing.T) {
 }
 
 // runRemove runs `wt remove args...` from dir with stdin as the terminal's
-// input and returns both streams and the error (exitCodeOf(err) is the
+// input and returns both streams and the error (exitcode.Of(err) is the
 // status; nil is 0).
 func runRemove(t *testing.T, a *app, dir, stdin string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
@@ -67,7 +67,7 @@ func exitOf(err error) int {
 	if err == nil {
 		return 0
 	}
-	return exitCodeOf(err)
+	return exitcode.Of(err)
 }
 
 // mergedWorktree adds a linked worktree on a new branch, commits in it,
@@ -835,8 +835,7 @@ func TestRemoveCmdPartialReportExits2(t *testing.T) {
 	if exitOf(err) != 2 || env.Error == nil || len(env.Items) != 1 {
 		t.Errorf("exit %d env %+v, want 2 with the partial report", exitOf(err), env)
 	}
-	var coded *exitCodeError
-	if !errors.As(err, &coded) || !coded.quiet {
+	if !exitcode.IsQuiet(err) {
 		t.Errorf("err = %v, want a quiet exit code (the document already said it)", err)
 	}
 }
