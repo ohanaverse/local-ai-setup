@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
@@ -81,6 +83,15 @@ type model struct {
 	// catalogFailed is true while phaseCatalog shows a failed fetch (m.status
 	// then holds its `error: ` text and F retries).
 	catalogFailed bool
+	// catalogCancel cancels the catalog fetch in flight: esc, a superseding
+	// F and the program's end call it.
+	catalogCancel context.CancelFunc
+	// wire is the eligible catalog rows the API table was built from, by id:
+	// what a start or a launch reads (catalog.NeedsStart, ToModel).
+	wire map[string]modelapi.Row
+	// hold is the API path's client session, created on the first model
+	// chosen and ended by the post-exit flow (exitTail).
+	hold *clientHold
 
 	// model picker (the agent+model screen IS the picker)
 	models list.Model // bubble/list of agent+tag models
@@ -295,6 +306,15 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m.refreshTable()
 	case catalogLoadedMsg, catalogFailedMsg:
 		return m.handleCatalogMsg(msg)
+	case jobCancelMsg:
+		return m.handleJobCancel(msg)
+	case remoteLaunchFailedMsg:
+		// The launch on the gateway could not be built: nothing ran and the
+		// terminal was never released. Back to the picker, free to retry.
+		m.status = msg.err.Error()
+		m.committed = false
+		m.phase = phaseModel
+		return m, nil
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.
@@ -562,13 +582,10 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 					return m, nil
 				}
 				if m.client != nil {
-					// The API path's table is read-only until the start and
-					// launch flow moves onto the server: a blocked row says
-					// why, any other does nothing yet.
-					if highlighted.blocked != "" {
-						m.status = highlighted.blocked
-					}
-					return m, nil
+					// The API path: a blocked row says why, a row the server
+					// must start runs the start job, any other launches on
+					// the gateway (remote_start.go).
+					return m.chooseRemote(highlighted, highlighted.model.ID == m.pinnedModel)
 				}
 				if highlighted.profile != nil && highlighted.blocked == "" {
 					// A slot profile is its own launch unit: its routes, its
@@ -1439,10 +1456,15 @@ func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, ex
 	pendingSummary = ""
 	pendingRouteNotes = ""
 	settleOut = &startOutput{what: settleOutWhat}
+	clientNotes = &startOutput{what: "client session"}
 	drainLine.Store(nil)
 	pendingSurveyState = pendingSurvey{}
 	profileApplier = applyProfile
 	finalModel, err := p.Run()
+	// A start or a catalog fetch the user quit out of on the API path stops
+	// waiting first (the job keeps running on the server), so its goroutine
+	// is over before anything prints.
+	settleRemoteStart(finalModel)
 	// The alt-screen is now torn down (p.Run() has returned and bubbletea
 	// has called exitAltScreen), so stdout reaches the user's terminal
 	// rather than a discarded buffer.
@@ -1456,7 +1478,13 @@ func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, ex
 	// itself failed does no hand-off (RunCleanupList's rule) but still gets
 	// its log.
 	serr := finishRowSession(finalModel, err)
-	printPendingSummaryAndSurvey(cfg)
+	// The API path's tail ends the client session in place of the registry
+	// path's wt session release and stop picker (exitTail).
+	if fm, ok := finalModel.(model); ok && fm.client != nil {
+		printPendingSummaryAndSurveyTail(cfg, exitTailOf(fm))
+	} else {
+		printPendingSummaryAndSurvey(cfg)
+	}
 	if rerr := runResult(finalModel, err); rerr != nil {
 		return rerr
 	}
@@ -1566,6 +1594,8 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 	// A settling restart started from the picker can still be running, and
 	// main() waits for it: from here on its lines have a terminal to go to.
 	settleOut.release(w)
+	// So can the API path's client session heartbeat, until its end.
+	clientNotes.release(w)
 	// A start that was still running when wt quit (ctrl+c twice on the start
 	// screen) never reported, so what the engine had printed is still in its
 	// buffer: print it, and let whatever the engine and its proxy restart

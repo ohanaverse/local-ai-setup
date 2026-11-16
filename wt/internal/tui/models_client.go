@@ -33,9 +33,18 @@ type ModelClient interface {
 	Resolve(ctx context.Context, id string) (modelapi.Row, error)
 	RunStart(ctx context.Context, req modelapi.StartRequest, ans modelclient.Answerer, prog modelclient.Progress) (modelapi.JobStatus, error)
 	CancelJob(ctx context.Context, id string) error
-	NewSession(models []string, o modelclient.SessionOptions) *modelclient.Session
+	NewSession(models []string, o modelclient.SessionOptions) ClientSession
 	Gateway() agents.Gateway
 	Now() time.Time
+}
+
+// ClientSession is a client session as the picker holds it: what
+// *modelclient.Session does (register, change the set, end).
+type ClientSession interface {
+	Start(ctx context.Context) error
+	Add(ctx context.Context, ids ...string) error
+	Remove(ctx context.Context, id string) error
+	End(ctx context.Context) error
 }
 
 // clientAdapter is ModelClient over the real client and its endpoint.
@@ -49,6 +58,10 @@ func NewModelClient(c *modelclient.Client, ep modelclient.Endpoint) ModelClient 
 	return clientAdapter{Client: c, ep: ep}
 }
 
+func (a clientAdapter) NewSession(models []string, o modelclient.SessionOptions) ClientSession {
+	return a.Client.NewSession(models, o)
+}
+
 func (a clientAdapter) Gateway() agents.Gateway {
 	return agents.Gateway{Origin: a.ep.Origin(), Token: a.ep.Token}
 }
@@ -58,10 +71,11 @@ func (a clientAdapter) Gateway() agents.Gateway {
 // reason the picker goes back to the agent screen.
 type catalogLoadedMsg struct {
 	gen      int
-	eligible int        // rows the agent can use; 0 sends the picker back
-	pinErr   string     // a -M pin the server or the agent cannot use
-	tbl      modelTable // the sorted, rendered table
-	cursor   string     // the id the cursor lands on; "" is the first actionable row
+	wire     map[string]modelapi.Row // the eligible rows the table shows, by id
+	eligible int                     // rows the agent can use; 0 sends the picker back
+	pinErr   string                  // a -M pin the server or the agent cannot use
+	tbl      modelTable              // the sorted, rendered table
+	cursor   string                  // the id the cursor lands on; "" is the first actionable row
 }
 
 // catalogFailedMsg is a fetch that failed for a reason a retry may heal.
@@ -73,6 +87,7 @@ type catalogFailedMsg struct {
 // catalogRequest is everything the fetch command reads, copied out of the
 // model so the goroutine never touches it.
 type catalogRequest struct {
+	ctx     context.Context // cancelled on esc, a superseding F and the program's end
 	client  ModelClient
 	gen     int
 	agent   config.Agent
@@ -87,7 +102,10 @@ type catalogRequest struct {
 // goroutine (T12).
 func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx := r.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		cat, err := r.client.Catalog(ctx)
 		if err != nil {
 			return catalogFailedMsg{gen: r.gen, err: err}
@@ -124,6 +142,10 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 		at, perr := time.Parse(time.RFC3339, cat.Generated)
 		if perr != nil {
 			at = r.client.Now()
+		}
+		msg.wire = make(map[string]modelapi.Row, len(eligible))
+		for _, e := range eligible {
+			msg.wire[e.ID] = cleanWireRow(e)
 		}
 		rows := wireTableRows(eligible, at)
 		if store := newUsageStore(); store != nil {
@@ -227,8 +249,13 @@ func (m model) fetchCatalog(ag config.Agent) (model, tea.Cmd) {
 	m.phase = phaseCatalog
 	m.status = ""
 	m.catalogFailed = false
+	if m.catalogCancel != nil {
+		m.catalogCancel() // a fetch this one supersedes
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.catalogCancel = cancel
 	return m, fetchCatalogCmd(catalogRequest{
-		client: m.client, gen: m.refreshGen, agent: ag, tags: m.activeTags, family: m.activeFamily, pinned: m.pinnedModel,
+		ctx: ctx, client: m.client, gen: m.refreshGen, agent: ag, tags: m.activeTags, family: m.activeFamily, pinned: m.pinnedModel,
 	})
 }
 
@@ -253,10 +280,19 @@ func (m model) handleCatalogMsg(msg tea.Msg) (model, tea.Cmd) {
 			return m.routeBackToAgent(fmt.Sprintf("no models for agent %q in tag %q on the model server", m.agent, m.tag))
 		}
 		m.models = m.newModelList(msg.tbl, msg.cursor)
+		m.wire = msg.wire
 		m.status = ""
 		m.catalogFailed = false
 		m.phase = phaseModel
 		m.fitLists()
+		if m.pinnedModel != "" {
+			// The pin is the user's act, as on the registry path: a row the
+			// server must start starts (with --replace and --others, the
+			// pin's permissions), any other launches at once.
+			if it, ok := m.models.SelectedItem().(*modelItem); ok && it.model.ID == m.pinnedModel {
+				return m.chooseRemote(it, true)
+			}
+		}
 	}
 	return m, nil
 }
@@ -301,6 +337,9 @@ func (m model) handleCatalogKey(msg tea.KeyMsg) (model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.refreshGen++ // a fetch still in flight lands on nothing
+		if m.catalogCancel != nil {
+			m.catalogCancel()
+		}
 		m.phase = phaseAgent
 		m.status = ""
 		m.catalogFailed = false

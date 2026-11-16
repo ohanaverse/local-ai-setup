@@ -1,20 +1,27 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -1565,5 +1572,110 @@ func TestModelSelectorWrapsInAppAndStandalone(t *testing.T) {
 	updated, _ := nm.models.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if got := updated.Index(); got != 0 {
 		t.Errorf("model phase: down from the last row = %d, want wrap to 0", got)
+	}
+}
+
+// TestSessionRegisteredBeforeStartAndEndedOnExit pins the client session's
+// life on the model server: it is registered when a model is chosen, before
+// the start is posted (the server's idle scan must see it), never from
+// Update; a start that fails re-registers it without the model; a launch row
+// registers from its run command; a failed register is a status note, not a
+// refusal; and the post-exit flow ends it where the registry path releases
+// its wt session, with no refcount release.
+func TestSessionRegisteredBeforeStartAndEndedOnExit(t *testing.T) {
+	f := &fakeModels{cat: startRowCatalog()}
+	f.startFn = func(context.Context, int, modelapi.StartRequest, modelclient.Progress) (modelapi.JobStatus, error) {
+		return modelapi.JobStatus{}, &modelclient.JobError{Problem: modelapi.Problem{Code: modelapi.CodeFailed, Message: "omlx refused to load"}}
+	}
+	m := remoteTable(t, f)
+	m, _ = enterRemote(t, m, "omlx/qwen3.8")
+	m, _ = updateMsg(m, recvStart(t, m))
+	if want := []string{"register omlx/qwen3.8", "start omlx/qwen3.8", "remove omlx/qwen3.8"}; !reflect.DeepEqual(f.history(), want) {
+		t.Fatalf("calls = %v, want %v", f.history(), want)
+	}
+	if !strings.Contains(m.status, "omlx refused to load") {
+		t.Errorf("status = %q, want the start's failure", m.status)
+	}
+
+	old := buildGatewayLaunch
+	buildGatewayLaunch = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+		return nil, agents.LaunchInfo{}, errors.New("no agent here")
+	}
+	t.Cleanup(func() { buildGatewayLaunch = old })
+	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
+	if len(f.history()) != 3 || cmd == nil {
+		t.Fatalf("Enter on a launch row: calls %v, cmd nil %v: want no call from Update and a run command", f.history(), cmd == nil)
+	}
+	m, _ = updateMsg(m, cmd())
+	if !strings.Contains(m.status, "launch failed: no agent here") || m.committed {
+		t.Errorf("status %q, committed %v: want the failure and the picker free to retry", m.status, m.committed)
+	}
+	if want := []string{"add openrouter/glm-5.3", "remove openrouter/glm-5.3"}; !reflect.DeepEqual(f.history()[3:], want) {
+		t.Errorf("launch row calls = %v, want %v", f.history()[3:], want)
+	}
+
+	oldRelease := releaseSession
+	releaseSession = func() { t.Error("the model server's path released a refcount wt session") }
+	t.Cleanup(func() { releaseSession = oldRelease })
+	pendingSurveyState = pendingSurvey{agent: "claude", m: config.Model{ID: "openrouter/glm-5.3"}}
+	t.Cleanup(func() { pendingSurveyState = pendingSurvey{} })
+	oldSurvey := runSurvey
+	runSurvey = func(string, config.Model) string { return "" }
+	t.Cleanup(func() { runSurvey = oldSurvey })
+	oldStop, oldNotice := runStopPhase, emitPriceNotice
+	runStopPhase = func(*config.Config) { t.Error("the model server's path offered the stop picker") }
+	emitPriceNotice = func(*config.Config) { t.Error("the model server's path read the registry's price stamps") }
+	t.Cleanup(func() { runStopPhase, emitPriceNotice = oldStop, oldNotice })
+	printPendingSummaryAndSurveyTail(m.cfg, exitTailOf(m))
+	h := f.history()
+	if h[len(h)-1] != "end" || slices.Index(h, "end") != len(h)-1 {
+		t.Errorf("calls = %v, want the client session ended once, last", h)
+	}
+
+	// A register the server refuses is a note on the status line; the start
+	// still goes ahead.
+	g := &fakeModels{cat: startRowCatalog(), registerErr: errors.New("model server at http://x:1 is not reachable")}
+	g.startFn = f.startFn
+	n := remoteTable(t, g)
+	n, _ = enterRemote(t, n, "omlx/qwen3.8")
+	n, _ = updateMsg(n, recvStart(t, n))
+	if !strings.Contains(n.status, "did not register this client session") || !slices.Contains(g.history(), "start omlx/qwen3.8") {
+		t.Errorf("status %q, calls %v: want the register note and the start still posted", n.status, g.history())
+	}
+}
+
+// TestRemoteLaunchRunsTheAgentOnTheGateway pins the launch half of the API
+// path, the non-TUI remote launch's steps in the run command: the agent is
+// built against the server's gateway with the model's gateway id, the client
+// session holds the model before the agent runs, the rotation is recorded,
+// and nothing on the registry path (the refcount, the stop picker) is touched.
+func TestRemoteLaunchRunsTheAgentOnTheGateway(t *testing.T) {
+	f := &fakeModels{cat: startRowCatalog()}
+	m := remoteTable(t, f)
+	var built config.Model
+	old := buildGatewayLaunch
+	buildGatewayLaunch = func(agent string, mdl config.Model, path string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
+		built = mdl
+		cmd := exec.Command("true")
+		cmd.Dir = path
+		return cmd, agents.LaunchInfo{}, nil
+	}
+	t.Cleanup(func() { buildGatewayLaunch = old })
+	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
+	if !m.committed || cmd == nil {
+		t.Fatalf("committed %v, cmd nil %v: want the launch committed", m.committed, cmd == nil)
+	}
+	msg, ok := cmd().(launchDoneMsg)
+	if !ok || msg.err != nil {
+		t.Fatalf("run command = %#v, want the agent's clean exit", msg)
+	}
+	if built.ID != "openrouter/glm-5.3" || built.GatewayID != "openrouter/glm-5.3" {
+		t.Errorf("built %+v, want the chosen row's model with its gateway id", built)
+	}
+	if h := f.history(); !reflect.DeepEqual(h, []string{"register openrouter/glm-5.3"}) {
+		t.Errorf("calls = %v, want the client session registered by the run command", h)
+	}
+	if last, _ := rotation.New().Last(); last != "openrouter/glm-5.3" {
+		t.Errorf("rotation last = %q, want the launched model recorded", last)
 	}
 }

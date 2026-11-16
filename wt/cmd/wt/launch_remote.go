@@ -26,6 +26,11 @@ var buildGatewayCmd = agents.BuildLaunchCmdGateway
 // modelclient's default (20 s). Tests shorten it.
 var remoteBeatInterval time.Duration
 
+// errRemoteNeedsPicker is launchFilteredRemote's answer for a launch the
+// picker must decide (several launchable models, no -M, a terminal):
+// runLaunchPath opens the model server's picker for it.
+var errRemoteNeedsPicker = errors.New("several models match: pick one")
+
 // launchStill is what a remote launch that stopped short says is still true.
 const launchStill = "nothing was launched"
 
@@ -36,7 +41,8 @@ const launchStill = "nothing was launched"
 //
 //  1. resolve the model on the server (resolveModelRemote: a -M pin through
 //     resolve, else the catalog's one launchable row);
-//  2. several launchable rows and no pin: rotation over the server's
+//  2. several launchable rows and no pin: on a terminal, errRemoteNeedsPicker
+//     (the caller opens the picker); otherwise rotation over the server's
 //     registered rows in their order (rotation.NextFromOrder);
 //  3. register the client session with the model before any start, so the
 //     server's idle scan counts it; a failed register is one `wt: note:` and
@@ -77,6 +83,13 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	}
 
 	row, rot, err := resolveModelRemote(ctx, ms, *ag, tags, family, pinned)
+	if err != nil && pinned == "" && len(rot) > 0 && stdinTTY() {
+		// Several launchable models and a terminal: the user picks, as on
+		// the registry path (runLaunchPath opens the model server's picker,
+		// its cursor on the rotation's next row). Nothing is registered or
+		// started yet.
+		return errRemoteNeedsPicker
+	}
 	if err != nil && pinned == "" && len(rot) > 0 {
 		if next, ok := rotateRemote(ctx, ms, rot); ok {
 			row, err = next, nil

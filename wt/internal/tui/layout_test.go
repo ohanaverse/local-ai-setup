@@ -16,6 +16,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
@@ -680,6 +682,23 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 				t.Fatalf("phase = %v, want phaseStarting", next.phase)
 			}
 			return next
+		})},
+		{"starting, model server", modelPhase(func(t *testing.T, width, height int) model {
+			// The API path's start screen with every line it can show: a
+			// long step, the job id of a start it joined, a cancel the
+			// server refused.
+			f := &fakeModels{cat: startRowCatalog()}
+			f.startFn = func(ctx context.Context, _ int, _ modelapi.StartRequest, prog modelclient.Progress) (modelapi.JobStatus, error) {
+				prog(modelclient.JobView{ID: "0f6c1d9e-4b2a-4c8e-9d7f-123456789abc", State: modelapi.JobRunning, Attached: true,
+					Step: "loading the model into memory and waiting for the LiteLLM proxy restart to finish", Elapsed: 93 * time.Second})
+				<-ctx.Done()
+				return detached("j")
+			}
+			m := remoteTable(t, f)
+			m, _ = enterRemote(t, m, "omlx/qwen3.8")
+			m, _ = updateMsg(m, recvStart(t, m))
+			m, _ = updateMsg(m, jobCancelMsg{id: m.start.id, err: errors.New("model server at http://127.0.0.1:8099 is not reachable (connection refused)")})
+			return m
 		})},
 		{"cleanup list", func(t *testing.T, width, height int) string {
 			return newSizedCleanupList(t, longRowsFixture(), width, height).View()

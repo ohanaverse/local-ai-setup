@@ -16,6 +16,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -664,5 +666,50 @@ func TestOthersDialogCutKeepsTheQuestion(t *testing.T) {
 	sparest := frames[len(frames)-1]("")
 	if !strings.Contains(sparest, longQuestion) || !strings.Contains(sparest, enlargeNote) {
 		t.Errorf("sparest frame = %q, want the question line and %q", sparest, enlargeNote)
+	}
+}
+
+// TestOthersDialogShowsFigure pins the others question on the model server:
+// an others problem opens the same dialog, one line per resident from the
+// problem (its Label and the memory Figure the server worded) and a line per
+// family the server could not read; Cancel stays first, stop is offered for
+// the stoppable residents, and choosing it posts again with exactly those ids.
+func TestOthersDialogShowsFigure(t *testing.T) {
+	problem := &modelclient.JobError{Problem: modelapi.Problem{
+		Code: modelapi.CodeOthers, Message: "other providers' models are loaded",
+		Others: []modelapi.Resident{
+			{ID: "ollama/gemma4:12b", Label: "ollama/gemma4:12b", Stoppable: true, Figure: "9.6 GB loaded"},
+			{ID: "mlx_lm_server/pair", Label: "mlx_lm_server/pair", Figure: "memory use unknown"},
+		},
+		OthersUnknown: []string{"sushi"},
+	}}
+	f := &fakeModels{cat: startRowCatalog()}
+	f.startFn = func(_ context.Context, n int, _ modelapi.StartRequest, _ modelclient.Progress) (modelapi.JobStatus, error) {
+		if n == 1 {
+			return modelapi.JobStatus{}, problem
+		}
+		return modelapi.JobStatus{}, &modelclient.JobError{Problem: modelapi.Problem{Code: modelapi.CodeFailed, Message: "load failed"}}
+	}
+	m := remoteTable(t, f)
+	m, _ = enterRemote(t, m, "omlx/qwen3.8")
+	m, _ = updateMsg(m, recvStart(t, m))
+	if m.phase != phaseReplaceConfirm {
+		t.Fatalf("phase = %v, status %q: want the dialog", m.phase, m.status)
+	}
+	want := "Also loaded, by other providers:\n" +
+		"  ollama/gemma4:12b — 9.6 GB loaded\n" +
+		"  mlx_lm_server/pair — memory use unknown\n" +
+		"  cannot tell whether sushi is serving a model"
+	if m.replace.header != want {
+		t.Errorf("header = %q, want %q", m.replace.header, want)
+	}
+	if got := choiceTitles(m); !reflect.DeepEqual(got, []string{"Cancel", "Start and keep them", "Stop them, then start"}) || m.replace.choices.Index() != 0 {
+		t.Errorf("choices = %v at %d, want Cancel first and under the cursor", got, m.replace.choices.Index())
+	}
+	m = chooseTitled(t, m, "Stop them, then start")
+	m, _ = updateMsg(m, recvStart(t, m))
+	reqs := f.startReqs()
+	if len(reqs) != 2 || reqs[0].Others != nil || reqs[1].Others == nil || !reflect.DeepEqual(reqs[1].Others.Stop, []string{"ollama/gemma4:12b"}) {
+		t.Errorf("start requests = %+v, want the retry to stop exactly the stoppable resident", reqs)
 	}
 }

@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"errors"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +31,70 @@ type fakeModels struct {
 	resolveRow modelapi.Row
 	resolveErr error
 	resolved   []string
+
+	// startFn scripts RunStart: n is the 1-based call number. nil fails the
+	// start.
+	startFn func(ctx context.Context, n int, req modelapi.StartRequest, prog modelclient.Progress) (modelapi.JobStatus, error)
+	starts  []modelapi.StartRequest
+	// cancelled are the job ids CancelJob was asked for.
+	cancelled []string
+	// onCancel, when set, runs after CancelJob records its id.
+	onCancel func(string)
+	// registerErr is what the client session's first register returns.
+	registerErr error
+	// log is every start, cancel and client session call, in order:
+	// "register a,b", "add x", "remove x", "end", "start x", "cancel j".
+	log []string
+}
+
+func (f *fakeModels) record(s string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.log = append(f.log, s)
+}
+
+// calls in order, a copy.
+func (f *fakeModels) history() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.log)
+}
+
+func (f *fakeModels) startReqs() []modelapi.StartRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.starts)
+}
+
+func (f *fakeModels) cancels() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.cancelled)
+}
+
+// fakeSession is a ClientSession that writes its calls to its fake's log.
+type fakeSession struct {
+	f      *fakeModels
+	models []string
+}
+
+func (s *fakeSession) Start(context.Context) error {
+	s.f.record("register " + strings.Join(s.models, ","))
+	s.f.mu.Lock()
+	defer s.f.mu.Unlock()
+	return s.f.registerErr
+}
+func (s *fakeSession) Add(_ context.Context, ids ...string) error {
+	s.f.record("add " + strings.Join(ids, ","))
+	return nil
+}
+func (s *fakeSession) Remove(_ context.Context, id string) error {
+	s.f.record("remove " + id)
+	return nil
+}
+func (s *fakeSession) End(context.Context) error {
+	s.f.record("end")
+	return nil
 }
 
 func (f *fakeModels) Catalog(context.Context) (modelapi.Catalog, error) {
@@ -50,12 +116,30 @@ func (f *fakeModels) Resolve(_ context.Context, id string) (modelapi.Row, error)
 	return f.resolveRow, f.resolveErr
 }
 
-func (f *fakeModels) RunStart(context.Context, modelapi.StartRequest, modelclient.Answerer, modelclient.Progress) (modelapi.JobStatus, error) {
-	return modelapi.JobStatus{}, errors.New("RunStart is not part of this task")
+func (f *fakeModels) RunStart(ctx context.Context, req modelapi.StartRequest, _ modelclient.Answerer, prog modelclient.Progress) (modelapi.JobStatus, error) {
+	f.record("start " + req.Model)
+	f.mu.Lock()
+	f.starts = append(f.starts, req)
+	n, fn := len(f.starts), f.startFn
+	f.mu.Unlock()
+	if fn == nil {
+		return modelapi.JobStatus{}, errors.New("RunStart is not scripted in this test")
+	}
+	return fn(ctx, n, req, prog)
 }
-func (f *fakeModels) CancelJob(context.Context, string) error { return nil }
-func (f *fakeModels) NewSession([]string, modelclient.SessionOptions) *modelclient.Session {
+func (f *fakeModels) CancelJob(_ context.Context, id string) error {
+	f.record("cancel " + id)
+	f.mu.Lock()
+	f.cancelled = append(f.cancelled, id)
+	hook := f.onCancel
+	f.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
 	return nil
+}
+func (f *fakeModels) NewSession(models []string, _ modelclient.SessionOptions) ClientSession {
+	return &fakeSession{f: f, models: slices.Clone(models)}
 }
 func (f *fakeModels) Gateway() agents.Gateway { return agents.Gateway{} }
 func (f *fakeModels) Now() time.Time          { return time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC) }
@@ -396,5 +480,57 @@ func TestRemotePathSkipsLegacyPhases(t *testing.T) {
 	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.phase == phaseOllamaWarn || m.phase == phaseRouting || m.phase == phaseStarting {
 		t.Errorf("phase = %v, want none of the legacy phases", m.phase)
+	}
+}
+
+// TestPinnedModelStartsOrLaunchesOnTheServer pins a -M pin on the API path as
+// the registry path treats it: the pin is the user's act, so a pinned row the
+// server must start runs the start flow (with --replace, the pin's
+// permission), and a pinned row that can launch launches at once, never just
+// selected.
+func TestPinnedModelStartsOrLaunchesOnTheServer(t *testing.T) {
+	cat := startRowCatalog()
+	f := &fakeModels{cat: cat, resolveRow: cat.Rows[0]}
+	f.startFn = func(ctx context.Context, _ int, _ modelapi.StartRequest, _ modelclient.Progress) (modelapi.JobStatus, error) {
+		<-ctx.Done()
+		return detached("j1")
+	}
+	m := remoteModel(t, f, 80, 24)
+	m.selectedPath = t.TempDir()
+	m.pinnedModel, m.allowReplace = "omlx/qwen3.8", true
+	m, cmd := m.enterModelPhaseForAgent()
+	m, _ = updateMsg(m, cmd())
+	if m.phase != phaseStarting || m.start == nil {
+		t.Fatalf("phase = %v: want the pinned start row's start", m.phase)
+	}
+	t.Cleanup(m.start.cancel)
+	if reqs := waitStarts(t, f, 1); !reqs[0].AllowReplace || reqs[0].Model != "omlx/qwen3.8" {
+		t.Errorf("start request = %+v, want the pinned model with --replace's allow_replace", reqs[0])
+	}
+
+	g := &fakeModels{cat: cat, resolveRow: cat.Rows[1]}
+	n := remoteModel(t, g, 80, 24)
+	n.selectedPath = t.TempDir()
+	n.pinnedModel = "openrouter/glm-5.3"
+	n, cmd = n.enterModelPhaseForAgent()
+	n, cmd = updateMsg(n, cmd())
+	if !n.committed || cmd == nil || n.launchModel.ID != "openrouter/glm-5.3" {
+		t.Errorf("committed %v, cmd nil %v, launch %q: want the pinned launch row launched", n.committed, cmd == nil, n.launchModel.ID)
+	}
+}
+
+// waitStarts waits until the fake has seen n start requests (the start runs
+// in its own goroutine) and returns them.
+func waitStarts(t *testing.T, f *fakeModels, n int) []modelapi.StartRequest {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if reqs := f.startReqs(); len(reqs) >= n {
+			return reqs
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("start requests = %d, want %d", len(f.startReqs()), n)
+		}
+		runtime.Gosched()
 	}
 }

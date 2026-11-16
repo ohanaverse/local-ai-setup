@@ -77,7 +77,7 @@ var pendingRouteNotes string
 // What a settling restart has printed so far (settleOut) goes out with them:
 // both emit points are where the terminal is real.
 func flushRouteNotes(w io.Writer) {
-	notes := pendingRouteNotes + settleOut.take()
+	notes := pendingRouteNotes + settleOut.take() + clientNotes.take()
 	pendingRouteNotes = ""
 	if notes == "" {
 		return
@@ -214,6 +214,13 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() (boo
 // no trace. A nil gate is a direct test call: it asks nothing — the claim is
 // the run's own and is taken either way, once the gate (if any) is past.
 func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error)) tea.Cmd {
+	return runRecordAndWaitWith(cmd, agent, m, record, gate, func() { releaseSession() })
+}
+
+// runRecordAndWaitWith is runRecordAndWaitCmd with the release a launch that
+// never reached its agent makes: the registry path's wt session release
+// (releaseSession), or the API path's client session end (remoteRunCmd).
+func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error), release func()) tea.Cmd {
 	if record == nil {
 		record = func() string { return "" }
 	}
@@ -250,7 +257,7 @@ func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record fun
 				// pendingSurveyState is deliberately left at its zero
 				// value.
 				status := record()
-				releaseSession()
+				release()
 				pendingSummary = agents.Summary(agent, m, 0)
 				// Run() returns perr, so main prints it once, as it does
 				// for runAgentCmd's return.

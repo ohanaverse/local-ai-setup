@@ -126,7 +126,7 @@ One standard for how every wt tool talks, prompts, exits, prints machine output 
 
 | ID | Rule |
 |---|---|
-| T1 | **`ctrl+c` leaves every screen**, including screens that ignore other keys (routing, a draining start, results). Exceptions, each documented on its screen: a removal in flight (keys wait); the confirm screen (cancels back one level); a cancellable start (the first press cancels, the second quits). |
+| T1 | **`ctrl+c` leaves every screen**, including screens that ignore other keys (routing, a draining start, results). Exceptions, each documented on its screen: a removal in flight (keys wait); the confirm screen (cancels back one level); a start that is a job on the model server: `ctrl+c` detaches and the job continues; `c` cancels it once it has an id; before it has an id `ctrl+c` leaves. |
 | T2 | **`esc` steps back exactly one level**, to the screen that opened the current one; it clears a filter query first; it quits only from the top screen (the model picker is one today and quits wt on `esc`; see the migration table). A single-screen picker (the standalone model picker) may treat `esc`, `q` and `ctrl+c` alike as cancel; that is its documented exception. `q` quits a list screen but types a character while a text input is open. |
 | T3 | `enter` is the primary action on the highlighted row (launch, or open the confirm for the ticked rows in a selecting mode; in a typed confirm it submits the word). |
 | T4 | **A row key opens the detail screen unarmed; its second press there acts** (`x` remove, `d` remove plus unmerged branch, `o` origin ref only, `r` rescue, `R` restore root). `i` only reads. Ticks never choose rows for these keys; only `enter`'s batch uses ticks. |

@@ -512,3 +512,49 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 		t.Errorf("legacy: called = %v, models = %v, want a call with nil", called, gotModels)
 	}
 }
+
+// TestSeveralMatchesOpenThePickerOnTheServer pins the endpoint path's -A X
+// launch with no -M and several launchable models: on a terminal it opens the
+// model server's picker (whose cursor lands on the rotation's next row), as
+// the registry path opens its picker, instead of launching a model the user
+// never saw; without a terminal it still rotates, so a script keeps working.
+func TestSeveralMatchesOpenThePickerOnTheServer(t *testing.T) {
+	cloud := func(id string, order int) modelapi.Row {
+		return modelapi.Row{ID: id, GatewayID: id, ProviderID: "openrouter", ModelName: strings.TrimPrefix(id, "openrouter/"), Family: "f",
+			Location: "cloud", Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: order}
+	}
+	r := newRemoteRig(t, cloud("openrouter/a", 1), cloud("openrouter/b", 2))
+	stubStdinTTY(t, true)
+	oldTUI := tuiRun
+	t.Cleanup(func() { tuiRun = oldTUI })
+	var gotModels tui.ModelClient
+	var gotAgent string
+	called := false
+	tuiRun = func(_, _ bool, _ string, agent, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, _ *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
+		called, gotModels, gotAgent = true, models, agent
+		return nil
+	}
+	cmd := &cobra.Command{}
+	cmd.Flags().String("model", "", "")
+	cmd.Flags().Bool("yolo", false, "")
+	if err := runLaunchPath(cmd, r.a, "claude", "", "", "", nil, t.TempDir(), ""); err != nil {
+		t.Fatalf("runLaunchPath: %v", err)
+	}
+	if !called || gotModels == nil || gotAgent != "claude" {
+		t.Fatalf("tuiRun called %v, models nil %v, agent %q: want the server's picker for claude", called, gotModels == nil, gotAgent)
+	}
+	if len(*r.built) != 0 {
+		t.Errorf("an agent was built before the picker: %d", len(*r.built))
+	}
+
+	stubStdinTTY(t, false)
+	called = false
+	captureFile(t, &os.Stdout, func() {
+		if err := runLaunchPath(cmd, r.a, "claude", "", "", "", nil, t.TempDir(), ""); err != nil {
+			t.Fatalf("runLaunchPath without a terminal: %v", err)
+		}
+	})
+	if called || len(*r.built) != 1 {
+		t.Errorf("no terminal: tuiRun called %v, builds %d, want the rotation's launch", called, len(*r.built))
+	}
+}

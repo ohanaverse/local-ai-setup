@@ -107,14 +107,26 @@ func runLaunchPath(
 	// registry, no ollama or route check, no local probe. The picker (no
 	// directory or no agent yet) stays on the registry path until it moves to
 	// the server too.
+	//
+	// Several launchable models with no -M on a terminal are the picker's
+	// to decide (errRemoteNeedsPicker), as on the registry path: the launch
+	// falls through to runTUI below with the directory and agent it has.
 	remote := a.endpointConfigured()
+	pickOnServer := false
 	if remote && launchPath != "" && agent != "" {
 		if root != "" {
 			maybeInstallGuard()
 		}
-		holdLaunch(agent, launchPath)
-		defer releaseRootClaim()
-		return printOnce(cmd, launchFilteredRemote(context.Background(), a, agent, launchPath, yolo(cmd), tags, family, pinned, cmd.Flags().Changed("model"), args, string(othersMode), allowReplace, a.profileState()))
+		err := func() error {
+			holdLaunch(agent, launchPath)
+			defer releaseRootClaim()
+			return launchFilteredRemote(context.Background(), a, agent, launchPath, yolo(cmd), tags, family, pinned, cmd.Flags().Changed("model"), args, string(othersMode), allowReplace, a.profileState())
+		}()
+		if !errors.Is(err, errRemoteNeedsPicker) {
+			return printOnce(cmd, err)
+		}
+		pickOnServer = true
+		root = "" // the guard is installed
 	}
 
 	// Sweep dead-pid entries from the live-session refcount state before
@@ -136,8 +148,12 @@ func runLaunchPath(
 	// A slot-profile launch never reaches applyProfile. The TUI is handed
 	// the loaded slot profiles and applySlotProfile, the fail-closed applier
 	// the non-TUI path calls directly, as tui.SlotProfiles.
+	// profileCfg is the config the profile layer reads: the registry's, or
+	// on the model server's path the session config the picker is handed
+	// (runTUI sets it), as launchFilteredRemote's runLaunch reads it.
+	profileCfg := a.cfg
 	applyProfile := func(cmd *exec.Cmd, agentName string, m config.Model) (func() error, error) {
-		return applyProfileForLaunch(cmd, agentName, m, a.cfg, a.profileState())
+		return applyProfileForLaunch(cmd, agentName, m, profileCfg, a.profileState())
 	}
 
 	// removeFuncs gives every picker load's row actions the same removal
@@ -197,6 +213,7 @@ func runLaunchPath(
 				return printOnce(cmd, remoteExit(modelclient.Still(serr, launchStill)))
 			}
 			models, tuiCfg = tui.NewModelClient(ms.client, ms.ep), scfg
+			profileCfg = scfg
 		}
 		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, models, tuiCfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
 		printSlotNotes()
@@ -224,7 +241,7 @@ func runLaunchPath(
 	// directory is not known until the user picks inside the TUI, so never
 	// short-circuit to launchFiltered here — a pinned agent or command must
 	// still pick a worktree.
-	if launchPath == "" {
+	if launchPath == "" || pickOnServer {
 		return runTUI()
 	}
 
