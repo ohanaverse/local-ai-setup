@@ -76,6 +76,10 @@ type catalogLoadedMsg struct {
 	pinErr   string                  // a -M pin the server or the agent cannot use
 	tbl      modelTable              // the sorted, rendered table
 	cursor   string                  // the id the cursor lands on; "" is the first actionable row
+	// pricing is the catalog's pricing member (nil when no model is priced
+	// from OpenRouter): the post-launch notice reads it instead of fetching
+	// the catalog again.
+	pricing *modelapi.Pricing
 }
 
 // catalogFailedMsg is a fetch that failed for a reason a retry may heal.
@@ -111,7 +115,7 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 			return catalogFailedMsg{gen: r.gen, err: err}
 		}
 		eligible := catalog.EligibleWire(cat.Rows, r.agent, r.tags, r.family)
-		msg := catalogLoadedMsg{gen: r.gen, eligible: len(eligible)}
+		msg := catalogLoadedMsg{gen: r.gen, eligible: len(eligible), pricing: cat.Pricing}
 		if len(eligible) == 0 {
 			return msg
 		}
@@ -276,6 +280,7 @@ func (m model) handleCatalogMsg(msg tea.Msg) (model, tea.Cmd) {
 		if m.phase != phaseCatalog || msg.gen != m.refreshGen {
 			return m, nil
 		}
+		m.catPricing, m.catSeen = msg.pricing, true
 		switch {
 		case msg.pinErr != "":
 			return m.routeBackToAgent(msg.pinErr)

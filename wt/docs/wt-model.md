@@ -7,6 +7,7 @@ weights; it registers what a provider already has, or will have.
 ```bash
 wt model                   # the Models tab of `wt config` (needs a terminal)
 wt model list [--json]     # every registry model, and every local model found on this machine
+wt model list --server [--json]   # the model server's catalog, as a client session sees it
 wt model init [--json]     # create the registry if it is missing; add the default provider rows
 wt model add <provider> <name> --family F [--tags a,b] [--location local|cloud] [price flags] [--id ID]
 wt model edit <id> [--family F] [--tags a,b] [--location local|cloud] [--source manual|curated] [price flags]
@@ -92,6 +93,35 @@ The text listing names a model's `serve_args` under the table, one
 It runs on a registry that has a gap in it (a model whose provider has no
 row, a mistyped location): that is what the list is for. Only a registry that
 cannot be read at all stops it.
+
+### `wt model list --server [--json]`
+
+With `--server`, `wt model list` reads the model server's catalog
+(`[model-server]` in `config.toml`, or `WT_MODEL_URL`) instead of the
+registry: the models a client session can launch or start, in the server's
+order, with their state. Nothing is read from the registry and no provider is
+probed. Without `--server` the command is the host registry's listing above,
+with or without an endpoint configured.
+
+| Column | Values |
+|---|---|
+| `MODEL` | the model id |
+| `STATE` | `running`, `loading`, `stopped`, `blocked` or `unknown` (the full state words; the registry listing's `run`/`load` are its own) |
+| `LOC` | `local` or `cloud` |
+| `TIER` | the advisory tier, `-` when the model has none |
+| `CLIENT SESSIONS` | how many client sessions have registered the model |
+
+A blocked row's reason is not in the table; `--json` has it.
+
+**`--server --json` is not the registry's `model list --json`.** The registry's
+document (`registry`, `models`, `providers`; `docs/contracts/model-list.sample.json`)
+is what modeltiers reads and is unchanged. `--server --json` prints the
+session's catalog view, `{"version": 1, "schema": N, "generated": "…",
+"providers": {…}, "rows": […]}`, where each row is the server's own row (state,
+action, `block_reason`, tier, price, client session count);
+`docs/contracts/model-list.server.sample.json` is its fixture. When the
+command fails it prints `{"version": 1, "error": {"message": "…", "code":
+"…"}}` on stdout instead, writes nothing to stderr and exits 1.
 
 ## `wt model init [--json]`
 

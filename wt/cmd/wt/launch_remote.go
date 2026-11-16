@@ -147,7 +147,7 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 		// RecordFor names the file that failed.
 		fmt.Fprintf(osStderr, "wt: note: %v\n", rerr)
 	}
-	return runLaunch(cmd, agent, m, cfg, pp, extraArgs, runTail{Remote: true, End: end})
+	return runLaunch(cmd, agent, m, cfg, pp, extraArgs, runTail{Remote: true, End: end, PriceNote: remotePriceNoteFunc(ctx, ms)})
 }
 
 // gatewayModels is the server's non-native models, which a GatewaySyncer
@@ -199,4 +199,12 @@ func startStill(err error) error {
 		return err
 	}
 	return modelclient.Still(err, launchStill)
+}
+
+// remotePriceNoteFunc is the runTail.PriceNote of a launch on the model
+// server: the stale-pricing notice from the catalog's pricing member, aged on
+// the server's clock (agents.PrintRemotePriceNotice). One cheap, best-effort
+// catalog fetch after the agent exits; the registry's stamps are never read.
+func remotePriceNoteFunc(ctx context.Context, ms *modelSession) func() {
+	return func() { agents.PrintRemotePriceNotice(ctx, ms.client, nil, false) }
 }

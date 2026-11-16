@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -74,6 +75,18 @@ type fakeModelServer struct {
 	// process's fake reports to its parent through it).
 	Log string
 
+	// Generated, Providers and Pricing fill the catalog document's own
+	// members. Spend is the report GET spend answers; SpendCode, when set,
+	// answers it with a 503 carrying that code instead. ClockSkew is how far
+	// this server's clock runs from the real one: every response's Date
+	// header says so, which is how a client learns the server's time.
+	Generated string
+	Providers map[string]string
+	Pricing   *modelapi.Pricing
+	Spend     modelapi.SpendReport
+	SpendCode string
+	ClockSkew time.Duration
+
 	polls     map[string]int
 	jobs      map[string]*modelapi.Problem
 	kinds     map[string]string
@@ -124,6 +137,9 @@ func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	if f.ClockSkew != 0 {
+		w.Header().Set("Date", time.Now().Add(f.ClockSkew).UTC().Format(http.TimeFormat))
+	}
 	if r.Header.Get("Authorization") != "Bearer "+f.Token || f.Status == http.StatusUnauthorized {
 		f.apiErr(w, 401, modelapi.CodeUnauthorized, modelapi.MsgUnauthorized)
 		return
@@ -132,7 +148,17 @@ func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
 	case "/control/v1/ping":
 		_ = json.NewEncoder(w).Encode(modelapi.Ping{APIMajor: f.APIMajor, Schema: f.Schema, Server: "wt-model"})
 	case "/control/v1/catalog":
-		_ = json.NewEncoder(w).Encode(modelapi.Catalog{Schema: f.Schema, Rows: f.Rows})
+		_ = json.NewEncoder(w).Encode(modelapi.Catalog{Schema: f.Schema, Generated: f.Generated, Providers: f.Providers, Rows: f.Rows, Pricing: f.Pricing})
+	case "/control/v1/spend":
+		if f.SpendCode != "" {
+			f.apiErr(w, http.StatusServiceUnavailable, f.SpendCode, "the LiteLLM database is not reachable")
+			return
+		}
+		rep := f.Spend
+		if rep.Rows == nil {
+			rep.Rows = []modelapi.SpendRow{}
+		}
+		_ = json.NewEncoder(w).Encode(rep)
 	case "/control/v1/resolve":
 		id := r.URL.Query().Get("model")
 		for _, row := range f.Rows {

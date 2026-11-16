@@ -581,3 +581,44 @@ func TestPickerRotationCursorSkipsStartRows(t *testing.T) {
 		t.Errorf("cursor = %q, want openrouter/a (the start row is not in the rotation)", got)
 	}
 }
+
+// TestRemoteTailPrintsThePriceNoticeFromTheLoadedCatalog proves the picker's
+// post-launch tail prints the stale-pricing notice from the catalog the
+// picker already loaded, aged on the server's clock (the fake's Now is
+// 2026-11-16): a stamp from 2026-11-01 prints once after the summary with no
+// second catalog fetch, a fresh stamp and a catalog with no priced model print
+// nothing, and a launch that has no summary or no model prints nothing.
+func TestRemoteTailPrintsThePriceNoticeFromTheLoadedCatalog(t *testing.T) {
+	run := func(pricing *modelapi.Pricing, summary string, mdl config.Model) (string, int) {
+		f := &fakeModels{cat: startRowCatalog()}
+		f.cat.Pricing = pricing
+		m := remoteTable(t, f)
+		pendingSurveyState = pendingSurvey{agent: "claude", m: mdl}
+		pendingSummary = summary
+		t.Cleanup(func() { pendingSurveyState, pendingSummary = pendingSurvey{}, "" })
+		old := runSurvey
+		runSurvey = func(string, config.Model) string { return "" }
+		t.Cleanup(func() { runSurvey = old })
+		before := f.catCalls
+		out := captureStdout(t, func() { printPendingSummaryAndSurveyTail(m.cfg, exitTailOf(m)) })
+		return out, f.catCalls - before
+	}
+	glm := config.Model{ID: "openrouter/glm-5.3"}
+	out, fetched := run(&modelapi.Pricing{Updated: "2026-11-01T00:00:00Z"}, "summary line", glm)
+	if want := "\nsummary line\nwt: token pricing last refreshed 2026-11-01 — run 'wt cloud-sync'\n"; out != want || fetched != 0 {
+		t.Errorf("stale stamp: out %q (%d extra catalog fetches), want %q and none", out, fetched, want)
+	}
+	if out, _ := run(&modelapi.Pricing{Updated: "2026-11-15T00:00:00Z"}, "summary line", glm); strings.Contains(out, "cloud-sync") {
+		t.Errorf("fresh stamp printed %q", out)
+	}
+	if out, _ := run(nil, "summary line", glm); strings.Contains(out, "cloud-sync") {
+		t.Errorf("no priced model printed %q", out)
+	}
+	stale := &modelapi.Pricing{Updated: "2026-11-01T00:00:00Z"}
+	if out, _ := run(stale, "", glm); strings.Contains(out, "cloud-sync") {
+		t.Errorf("nothing launched printed %q", out)
+	}
+	if out, _ := run(stale, "summary line", config.Model{}); strings.Contains(out, "cloud-sync") {
+		t.Errorf("a command agent printed %q", out)
+	}
+}

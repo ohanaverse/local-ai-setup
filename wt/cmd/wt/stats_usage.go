@@ -15,6 +15,8 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
@@ -287,6 +289,61 @@ func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration,
 	// The same asOf the spend query ends at: launches are bucketed against
 	// the report's instant, never against a second read of the clock.
 	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, sp, registryFamilies(cfg), f)
+	return rep
+}
+
+// collectUsageRemote is collectUsage on the model server: the spend comes
+// from GET spend (Client.Spend) and the id-to-family map from the catalog's
+// rows, so no psql, config.yaml or registry is read. asOf is the server's now
+// (ms.client.Now(), R16): the window is (asOf-window, asOf] on the server's
+// clock, so a client clock that runs behind cannot cut off the newest
+// requests. Like collectUsage it never fails: spend_not_configured is
+// spendNotConfigured, any other failure is spendUnavailable with the reason
+// (M8), and the launch counts are reported regardless. A catalog that cannot
+// be read leaves every family to the id's provider prefix.
+func collectUsageRemote(ctx context.Context, ms *modelSession, window time.Duration, asOf time.Time, f statsFilter) usageReport {
+	families := map[string]string{}
+	if cat, err := ms.client.Catalog(ctx); err == nil {
+		for _, r := range cat.Rows {
+			families[r.ID] = r.Family
+		}
+	}
+	rep := usageReport{SpendStatus: spendOK, Narrowed: f.model != "" || f.family != ""}
+	var sp *spend.Result
+	if f.agent != "" {
+		rep.SpendStatus = spendSkipped
+		rep.SpendReason = "--agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown"
+	} else if res, err := ms.client.Spend(ctx, asOf.Add(-window), asOf); err != nil {
+		rep.SpendStatus = spendUnavailable
+		if modelclient.IsCode(err, modelapi.CodeSpendNotConfigured) {
+			rep.SpendStatus = spendNotConfigured
+		}
+		rep.SpendReason = "spend unavailable: " + err.Error()
+	} else {
+		r := spend.Result{Unattributed: res.Unattributed}
+		for _, s := range res.Rows {
+			r.Rows = append(r.Rows, spend.Row{Model: s.Model, Requests: s.Requests, PromptTokens: s.PromptTokens, CompletionTokens: s.CompletionTokens, Spend: s.Spend})
+		}
+		sp = &r
+		rep.Unattributed = r.Unattributed
+	}
+	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, sp, families, f)
+	return rep
+}
+
+// collectUsageNoServer is collectUsageRemote's answer when the model server
+// could not be opened (unreachable, refused or not configured): no spend,
+// the reason, and the launch counts with every family the id's prefix.
+func collectUsageNoServer(openErr error, window time.Duration, asOf time.Time, f statsFilter) usageReport {
+	rep := usageReport{Narrowed: f.model != "" || f.family != ""}
+	if f.agent != "" {
+		rep.SpendStatus = spendSkipped
+		rep.SpendReason = "--agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown"
+	} else {
+		rep.SpendStatus = spendUnavailable
+		rep.SpendReason = "spend unavailable: " + openErr.Error()
+	}
+	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, nil, map[string]string{}, f)
 	return rep
 }
 

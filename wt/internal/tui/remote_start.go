@@ -134,6 +134,9 @@ func (h *clientHold) end(w io.Writer) {
 type exitTail struct {
 	remote bool
 	end    func()
+	// priceNote prints the stale-pricing notice from the model server's
+	// catalog (the registry's stamps are not read on this path).
+	priceNote func()
 }
 
 // exitTailOf is the post-exit tail for the program's final model.
@@ -142,7 +145,11 @@ func exitTailOf(m model) exitTail {
 		return exitTail{}
 	}
 	h := m.hold
-	return exitTail{remote: true, end: func() { h.end(os.Stderr) }}
+	client, pricing, seen := m.client, m.catPricing, m.catSeen
+	return exitTail{
+		remote: true, end: func() { h.end(os.Stderr) },
+		priceNote: func() { agents.PrintRemotePriceNotice(context.Background(), client, pricing, seen) },
+	}
 }
 
 // release is the tail's first step: the registry path's refcount release, or
@@ -735,5 +742,10 @@ func printPendingSummaryAndSurveyTail(cfg *config.Config, tail exitTail) {
 	}
 	if stats != "" {
 		fmt.Println(stats)
+	}
+	// A command agent launches no model (m.ID is empty), and a slot profile is
+	// not one priced model: neither gets the reminder, as on the registry path.
+	if tail.priceNote != nil && summary != "" && launched.m.ID != "" && !launched.profile {
+		tail.priceNote()
 	}
 }

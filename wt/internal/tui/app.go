@@ -81,6 +81,11 @@ type model struct {
 	// client is the model server the picker reads its table from; nil is the
 	// legacy registry path (deleted in a later task).
 	client ModelClient
+	// catPricing is the pricing member of the latest catalog the picker
+	// loaded and catSeen says there was one: the stale-pricing notice after a
+	// launch reads them, and fetches once only when no catalog was loaded.
+	catPricing *modelapi.Pricing
+	catSeen    bool
 	// catalogFailed is true while phaseCatalog shows a failed fetch (m.status
 	// then holds its `error: ` text and F retries).
 	catalogFailed bool

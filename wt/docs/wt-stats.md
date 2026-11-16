@@ -40,6 +40,28 @@ wt stats [--window 1d|7d|30d] [--model <id>] [--agent <name>] [--family <family>
 `psql`, with the database down, and with a `registry.toml` it cannot read.
 Only an invalid flag is an error.
 
+## With a model server
+
+When an endpoint is configured (`[model-server]` in `config.toml`, or
+`WT_MODEL_URL`), the usage table's spend comes from the model server instead
+of from `psql`: wt asks it for the window's spend (`GET /control/v1/spend`),
+and the family of each row comes from the server's catalog (a model the
+catalog does not list takes its id's provider prefix). The report's instant
+(`as_of`) is the **server's** clock, read from its response, so a clock on this
+machine that runs behind or ahead cannot cut off the newest requests; the
+window is cut at the same two instants as everywhere else. (`wt stats` never
+stops on a bad setup: a `config.toml` that cannot be read, with no `WT_MODEL_*`
+variable set, counts as no endpoint and the `psql` path below runs.) The survey table and
+the launch counts still come from this machine's files.
+
+Spend is missing in the same ways, with the same statuses and notes, and the
+launch counts print regardless: a server with no LiteLLM database named is
+`not_configured`; a database it could not query, a server that is not
+reachable, or one that refuses the token is `unavailable`, and the note says
+`spend unavailable:` and the reason the server (or the failed connection)
+gave. "Where spend comes from" below describes the server's side only for a
+host that runs `wt stats` without an endpoint.
+
 ## Survey table
 
 One row per model's `(all)`-agents aggregate, plus one row per observed

@@ -820,6 +820,12 @@ refreshed — run 'wt cloud-sync'` when none has a stamp. Nothing else stores
 the date. The ollama flow's stamps on ollama cloud entries do not count,
 and with no OpenRouter-priced model the notice is silent.
 
+On a launch through the model server the notice reads the same stamp from the
+server's catalog (its `pricing` member, present exactly when some model is
+priced from OpenRouter) and measures its age on the server's clock, so a clock
+on this machine that is off cannot make a fresh stamp read stale. It costs at
+most one catalog fetch after the agent exits; if that fails, nothing prints.
+
 Running `wt cloud-sync` clears it as long as the openrouter flow matches at
 least one model. When it matches none, every model of the `openrouter`
 provider has a `warning:` that says why (a `model_name` OpenRouter does not

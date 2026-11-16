@@ -52,14 +52,23 @@ func (a *app) sessionCfg() (*config.Config, error) {
 	return a.sessCfg, a.sessCfgErr
 }
 
-// endpointConfigured reports whether anything names a model server: a
-// [model-server] url or token_file, or WT_MODEL_URL, WT_MODEL_TOKEN_FILE or
-// WT_MODEL_TOKEN.
-func (a *app) endpointConfigured() bool {
+// endpointInEnv reports whether WT_MODEL_URL, WT_MODEL_TOKEN_FILE or
+// WT_MODEL_TOKEN is set.
+func endpointInEnv() bool {
 	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN"} {
 		if os.Getenv(k) != "" {
 			return true
 		}
+	}
+	return false
+}
+
+// endpointConfigured reports whether anything names a model server: a
+// [model-server] url or token_file, or WT_MODEL_URL, WT_MODEL_TOKEN_FILE or
+// WT_MODEL_TOKEN.
+func (a *app) endpointConfigured() bool {
+	if endpointInEnv() {
+		return true
 	}
 	cfg, err := a.sessionCfg()
 	if err != nil {
