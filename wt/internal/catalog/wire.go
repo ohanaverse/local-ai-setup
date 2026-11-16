@@ -7,13 +7,10 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
-// wireAction maps the server's action to an Action. An unmapped cloud row is
-// blocked on the wire, but locally it launches and RefusedByRoute refuses it
-// when routed, exactly as a Build row does, so it reads as ActionLaunch.
+// wireAction maps the server's action to an Action. The wire is honoured as
+// written, an unmapped cloud row's block included: the session has no direct
+// launch path, so the server's block is authoritative.
 func (r Row) wireAction() Action {
-	if r.Unmapped {
-		return ActionLaunch
-	}
 	switch r.Wire.Action {
 	case modelapi.ActionStart:
 		return ActionStart
@@ -58,15 +55,15 @@ func FromWire(r modelapi.Row) Row {
 	case r.Discovered:
 		row.Status = StatusNew
 	}
-	row.Unmapped = r.Location == string(config.LocationCloud) && !r.Native &&
-		r.State == modelapi.StateBlocked && r.Action == modelapi.ActionBlock
 	return row
 }
 
 // EligibleWire is Config.EligibleModelsIn over wire rows: those the agent can
 // use, filtered by tags and family, in Order. A sushi row reaches the agents
 // in config.SushiAgents; an AllProviders agent takes every row but another
-// agent's native one. No protocol filter is applied (R5).
+// agent's native one (the ProviderID == a.Name test relies on the convention
+// that a native provider id equals its agent driver name: agy, claude,
+// copilot). No protocol filter is applied (R5).
 func EligibleWire(rows []modelapi.Row, a config.Agent, tags, family string) []modelapi.Row {
 	tagSet := config.ParseFilterList(tags)
 	familySet := config.ParseFilterList(family)

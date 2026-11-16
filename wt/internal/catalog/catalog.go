@@ -57,7 +57,8 @@ type Row struct {
 	Profile *ProfileRow
 	// Wire is the server catalog row this Row was made from (FromWire). When
 	// set, Ready, Action and BlockReason answer from it, not from the local
-	// lifecycle rules, since the server already decided them.
+	// lifecycle rules, since the server already decided them; Row.Action()
+	// follows the wire.
 	Wire *modelapi.Row
 }
 
@@ -319,9 +320,6 @@ func (r Row) BlockReason() string {
 		return r.Profile.Reason
 	}
 	if r.Wire != nil {
-		if r.Unmapped {
-			return ""
-		}
 		return r.Wire.BlockReason
 	}
 	if r.Action() != ActionBlock {

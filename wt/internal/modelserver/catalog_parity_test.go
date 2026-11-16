@@ -1,6 +1,7 @@
 package modelserver
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
@@ -35,8 +36,20 @@ func TestFromWireParityWithServerBuiltRows(t *testing.T) {
 	}}
 	orig := catalog.Build(catalog.Input{Config: cfg, Models: cfg.Models, Inventory: &snap})
 	c := BuildCatalog(cfg, snap, nil, testSessions(), nil, testNow)
+	if len(orig) != 7 || len(c.Rows) != 7 {
+		t.Fatalf("rows: built %d, wire %d, want 7 each", len(orig), len(c.Rows))
+	}
 	for _, o := range orig {
 		g := catalog.FromWire(rowByID(t, c, o.Model.ID))
+		if o.Model.ID == "acme/m" {
+			// The session never launches direct, so the server's block for a
+			// cloud model the gateway cannot route is authoritative: this row
+			// diverges from the original Build row, which launches.
+			if g.Action() != catalog.ActionBlock || !strings.Contains(g.BlockReason(), "no LiteLLM mapping") || g.BlockReason() != rowByID(t, c, o.Model.ID).BlockReason {
+				t.Errorf("acme/m: action %v reason %q, want block with the server's reason", g.Action(), g.BlockReason())
+			}
+			continue
+		}
 		if g.Action() != o.Action() || g.BlockReason() != o.BlockReason() || g.Ready() != o.Ready() || g.Running != o.Running || g.Loading != o.Loading {
 			t.Errorf("%s: wire action/reason/ready/running/loading = %v/%q/%v/%v/%v, original %v/%q/%v/%v/%v", o.Model.ID,
 				g.Action(), g.BlockReason(), g.Ready(), g.Running, g.Loading,

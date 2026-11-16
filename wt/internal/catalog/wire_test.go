@@ -119,6 +119,7 @@ func TestNeedsStartRules(t *testing.T) {
 		{"loading local", modelapi.Row{Location: "local", State: "loading", Action: "start"}, true},
 		{"running local routed", modelapi.Row{Location: "local", State: "running", Action: "launch", Routed: bp(true)}, false},
 		{"cloud", modelapi.Row{Location: "cloud", State: "stopped", Action: "launch"}, false},
+		{"running cloud unrouted", modelapi.Row{Location: "cloud", State: "running", Action: "launch", Routed: bp(false)}, false},
 	} {
 		if got := NeedsStart(c.r); got != c.want {
 			t.Errorf("%s: %v", c.name, got)
@@ -165,8 +166,12 @@ func TestFromWireRow(t *testing.T) {
 	if !r.Running || !r.Loading || r.Status != StatusNew || !r.Discovered || r.Wire == nil || r.Ready() || r.Action() != ActionStart {
 		t.Errorf("row = %+v", r)
 	}
-	if FromWire(modelapi.Row{State: "unknown"}).Status != StatusUnknown {
-		t.Error("unknown state")
+	u := FromWire(modelapi.Row{State: "unknown", Location: "local", Action: "start"})
+	if u.Status != StatusUnknown || u.Action() != ActionStart {
+		t.Errorf("unknown row = %v %v", u.Status, u.Action())
+	}
+	if run := FromWire(modelapi.Row{State: "running", Location: "local", Action: "launch"}); !run.Ready() || run.Action() != ActionLaunch {
+		t.Errorf("running row ready=%v action=%v", run.Ready(), run.Action())
 	}
 	b := FromWire(modelapi.Row{State: "blocked", Action: "block", BlockReason: "why", Location: "local"})
 	if b.Action() != ActionBlock || b.BlockReason() != "why" {

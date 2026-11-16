@@ -562,19 +562,27 @@ func TestNextFromOrderMatchesRegistryRotation(t *testing.T) {
 	if got, ok := r.NextFromOrder(ordered, ordered); !ok || got.ID != "a" {
 		t.Fatalf("no last = %q %v", got.ID, ok)
 	}
-	_ = r.RecordFor("", "b")
+	if err := r.RecordFor("", "b"); err != nil {
+		t.Fatal(err)
+	}
 	if got, _ := r.NextFromOrder(ordered, ordered); got.ID != "c" {
 		t.Errorf("after b = %q", got.ID)
 	}
-	_ = r.RecordFor("", "c")
+	if err := r.RecordFor("", "c"); err != nil {
+		t.Fatal(err)
+	}
 	if got, _ := r.NextFromOrder(ordered, ordered); got.ID != "a" {
 		t.Errorf("wrap = %q", got.ID)
 	}
-	_ = r.RecordFor("", "a")
+	if err := r.RecordFor("", "a"); err != nil {
+		t.Fatal(err)
+	}
 	if got, _ := r.NextFromOrder([]config.Model{{ID: "c"}}, ordered); got.ID != "c" {
 		t.Errorf("skip = %q", got.ID)
 	}
-	_ = r.RecordFor("", "gone")
+	if err := r.RecordFor("", "gone"); err != nil {
+		t.Fatal(err)
+	}
 	if got, _ := r.NextFromOrder(ordered, ordered); got.ID != "a" {
 		t.Errorf("absent last = %q", got.ID)
 	}
