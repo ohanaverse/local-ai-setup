@@ -98,7 +98,7 @@ func startRefusal(ctx context.Context, req modelapi.StartRequest, id string, err
 			p.Occupants = occ.IDs()
 		}
 		for _, r := range occ.Others {
-			p.Others = append(p.Others, modelapi.Resident{ID: r.Entry.ModelID, Label: r.Label(), Stoppable: r.Stoppable})
+			p.Others = append(p.Others, modelapi.Resident{ID: r.Entry.ModelID, Label: r.Label(), Stoppable: r.Stoppable, Figure: r.Figure()})
 		}
 		return modelapi.JobResult{Error: p}
 	case ctx.Err() != nil || errors.Is(err, context.Canceled):

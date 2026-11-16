@@ -1170,6 +1170,57 @@ func (c *Config) OpenRouterPriced(m Model) bool {
 	return m.ProviderID == OpenRouterProvider
 }
 
+// priceStampSkew is how far ahead of the clock a stamp may be and still
+// count. Two machines' clocks disagree by minutes; a stamp further ahead than
+// a day is a typo (2062 for 2026), and counting it would silence the notice
+// until that date came.
+const priceStampSkew = 24 * time.Hour
+
+// LastPriceRefresh is when OpenRouter prices were last refreshed, and whether
+// they ever were: the newest pricing_updated_at among c's OpenRouter-priced
+// models. Nothing stores the date. `wt cloud-sync` stamps every model it
+// matches, whether or not its price moved, so the newest stamp is the last
+// refresh. A model with no stamp, one that is not a time, or one more than a
+// day ahead of now is skipped.
+func (c *Config) LastPriceRefresh(now time.Time) (time.Time, bool) {
+	var newest time.Time
+	found := false
+	if c == nil {
+		return newest, false
+	}
+	for _, m := range c.Models {
+		if !c.OpenRouterPriced(m) {
+			continue
+		}
+		at, ok := m.PricingUpdated()
+		if !ok || at.Sub(now) > priceStampSkew {
+			continue
+		}
+		if !found || at.After(newest) {
+			newest, found = at, true
+		}
+	}
+	return newest, found
+}
+
+// OpenRouterPricedModel reports whether any model in c takes its price
+// from OpenRouter — what `wt cloud-sync`'s openrouter flow refreshes. It
+// delegates to OpenRouterPriced: a model whose provider_id is
+// "openrouter". Ollama cloud models (priced by ollama.com), native agent
+// models and any other cloud provider's models don't count. A nil Config has
+// no models.
+func (c *Config) OpenRouterPricedModel() bool {
+	if c == nil {
+		return false
+	}
+	for _, m := range c.Models {
+		if c.OpenRouterPriced(m) {
+			return true
+		}
+	}
+	return false
+}
+
 // AgentSupportsProvider reports whether the named agent lists providerID in
 // supported_providers. An unknown agent supports nothing.
 func (c *Config) AgentSupportsProvider(agentName, providerID string) bool {

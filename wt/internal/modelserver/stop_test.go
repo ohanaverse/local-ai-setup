@@ -126,3 +126,64 @@ func TestStopFailureAndUnknown(t *testing.T) {
 		}
 	}
 }
+
+// TestStopExcludesRequesterSession pins StopRequest.Session: the client
+// session asking for the stop is not one of the users it would take the
+// model from, so a session stopping its own model needs no confirm_in_use,
+// while another session's use is still refused and named; a requester beside
+// another user is left out of the problem's sessions.
+func TestStopExcludesRequesterSession(t *testing.T) {
+	f := &fakeLife{snap: serverSnap("omlx/a")}
+	d := f.deps(serverCfg())
+	reg := testSessions()
+	if err := reg.Register("s1", []string{"omlx/a"}); err != nil {
+		t.Fatal(err)
+	}
+	res := d.StopJob(modelapi.StopRequest{Model: "omlx/a", Session: "other"}, reg)(context.Background(), func(string) {})
+	if p := wantProblem(t, res, modelapi.CodeInUse); !slices.Equal(p.Sessions, []string{"s1"}) {
+		t.Errorf("sessions = %q, want [s1]", p.Sessions)
+	}
+	if got := f.callList(); len(got) != 0 {
+		t.Fatalf("calls = %q, want none on a refusal", got)
+	}
+	res = d.StopJob(modelapi.StopRequest{Model: "omlx/a", Session: "s1"}, reg)(context.Background(), func(string) {})
+	if !res.OK {
+		t.Fatalf("the only user stopping its own model = %+v, want OK", res)
+	}
+	if got := f.callList(); !slices.Equal(got, []string{"BeginStops omlx/a", "Stop omlx/a"}) {
+		t.Errorf("calls = %q, want the stop", got)
+	}
+	if err := reg.Register("s2", []string{"omlx/a"}); err != nil {
+		t.Fatal(err)
+	}
+	res = d.StopJob(modelapi.StopRequest{Model: "omlx/a", Session: "s1"}, reg)(context.Background(), func(string) {})
+	p := wantProblem(t, res, modelapi.CodeInUse)
+	if !slices.Equal(p.Sessions, []string{"s2"}) || !strings.Contains(p.Message, "1 live client session") {
+		t.Errorf("problem = %+v, want only s2, counted once", p)
+	}
+}
+
+// TestStillFinishingStepHasMarker pins the step a still-finishing stop ends
+// on: modelapi.StepStillFinishing, ": ", then the engine's text, so a client
+// can tell "accepted, not finished" from a finished stop by the step alone;
+// the job is OK, not an error.
+func TestStillFinishingStepHasMarker(t *testing.T) {
+	still := &lifecycle.StillFinishingError{Provider: "ollama", Model: "a", Waited: 30 * time.Second}
+	f := &fakeLife{snap: serverSnap("omlx/a"), stopErr: still}
+	var steps stepLog
+	res := f.deps(serverCfg()).StopJob(modelapi.StopRequest{Model: "omlx/a"}, testSessions())(context.Background(), steps.step)
+	if !res.OK || res.Error != nil {
+		t.Fatalf("result = %+v, want OK", res)
+	}
+	got := steps.list()
+	if len(got) == 0 {
+		t.Fatal("no steps")
+	}
+	last := got[len(got)-1]
+	if want := modelapi.StepStillFinishing + ": " + still.Error(); last != want {
+		t.Errorf("last step = %q, want %q", last, want)
+	}
+	if !strings.HasPrefix(last, "still finishing: ") {
+		t.Errorf("last step = %q, want it to begin %q", last, "still finishing: ")
+	}
+}

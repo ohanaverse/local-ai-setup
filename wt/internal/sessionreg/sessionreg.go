@@ -188,7 +188,8 @@ func (r *Registry) IdleSince(model string) (time.Time, bool) {
 	return t, ok
 }
 
-// Seen returns every model ever registered, sorted.
+// Seen returns every model registered and not since forgotten (Forget),
+// sorted.
 func (r *Registry) Seen() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -209,4 +210,19 @@ func (r *Registry) Touch(model string) {
 	if _, ok := r.lastUsed[model]; ok {
 		r.lastUsed[model] = r.now()
 	}
+}
+
+// Forget drops a model from Seen (and its idle clock), so auto-stop leaves it
+// alone until some session registers it again; Touch does not bring it back.
+// A model a live session lists is kept: it is that session's model.
+func (r *Registry) Forget(model string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at := r.now()
+	for _, s := range r.sessions {
+		if _, ok := s.models[model]; ok && r.live(s, at) {
+			return
+		}
+	}
+	delete(r.lastUsed, model)
 }

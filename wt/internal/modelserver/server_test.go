@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -17,11 +18,14 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
@@ -30,10 +34,16 @@ const testToken = "tok-123"
 // newTestServer builds a Server over a fake lifecycle engine behind httptest.
 func newTestServer(t *testing.T, f *fakeLife, upstream *url.URL) (*Server, *httptest.Server) {
 	t.Helper()
+	return newTestServerDeps(t, f.deps(serverCfg()), upstream)
+}
+
+// newTestServerDeps is newTestServer over Deps the test adjusted.
+func newTestServerDeps(t *testing.T, d Deps, upstream *url.URL) (*Server, *httptest.Server) {
+	t.Helper()
 	s, err := NewServer(Options{
 		Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour,
 		Upstream: upstream, UpstreamKey: "upstream-key",
-	}, f.deps(serverCfg()))
+	}, d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +349,8 @@ func TestNewServerRequiresToken(t *testing.T) {
 
 // TestGatewayIsMountedAndAuthenticated pins that /v1/ is the gateway: it
 // refuses a caller without the token, and with it forwards upstream under the
-// upstream key, never the client's token.
+// upstream key, never the client's token. The server passes the inference
+// allowlist: a model list is served, a LiteLLM file route is not.
 func TestGatewayIsMountedAndAuthenticated(t *testing.T) {
 	var gotAuth string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -358,6 +369,10 @@ func TestGatewayIsMountedAndAuthenticated(t *testing.T) {
 	}
 	if gotAuth != "Bearer upstream-key" {
 		t.Errorf("upstream saw %q, want the upstream key", gotAuth)
+	}
+	gotAuth = ""
+	if st, b := call(t, ts, "GET", "/v1/files", ""); st != http.StatusNotFound || gotAuth != "" {
+		t.Errorf("/v1/files = %d %s (upstream saw %q), want a 404 that never reaches the upstream", st, b, gotAuth)
 	}
 }
 
@@ -679,6 +694,218 @@ func TestServeListenFailureNamesAddressAndFlag(t *testing.T) {
 		want := "cannot listen on " + tc.addr + ": " + tc.reason + " (pick another with --listen HOST:PORT)"
 		if err.Error() != want {
 			t.Errorf("%s: err = %q, want %q", tc.addr, err, want)
+		}
+	}
+}
+
+// pollJob polls GET jobs/{id} until the job finishes, and returns it.
+func pollJob(t *testing.T, ts *httptest.Server, id string) modelapi.JobStatus {
+	t.Helper()
+	var js modelapi.JobStatus
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st, b := call(t, ts, "GET", "/control/v1/jobs/"+id, "")
+		if st != http.StatusOK {
+			t.Fatalf("job %s = %d %s", id, st, b)
+		}
+		if err := json.Unmarshal(b, &js); err != nil {
+			t.Fatal(err)
+		}
+		if js.State != modelapi.JobQueued && js.State != modelapi.JobRunning {
+			return js
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("job %s did not finish: %+v", id, js)
+	return js
+}
+
+// postStart posts a start and returns the job id; safe to call from any
+// goroutine (it reports instead of failing the test).
+func postStart(ts *httptest.Server, body string) (string, error) {
+	req, err := http.NewRequest("POST", ts.URL+"/control/v1/start", strings.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	var ref modelapi.JobRef
+	if resp.StatusCode != http.StatusAccepted || json.Unmarshal(b, &ref) != nil || ref.ID == "" {
+		return "", fmt.Errorf("start = %d %s", resp.StatusCode, b)
+	}
+	return ref.ID, nil
+}
+
+// heldStart makes d.Start wait until the returned release is called (safe to
+// call twice; the test's cleanup calls it too), signalling entered first, so
+// a test can act while a start job is running.
+func heldStart(t *testing.T, d *Deps) (entered <-chan struct{}, release func()) {
+	t.Helper()
+	in := make(chan struct{}, 1)
+	gate := make(chan struct{})
+	release = sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
+	start := d.Start
+	d.Start = func(ctx context.Context, cfg *config.Config, tg lifecycle.Target, o lifecycle.Options) error {
+		select {
+		case in <- struct{}{}:
+		default:
+		}
+		<-gate
+		return start(ctx, cfg, tg, o)
+	}
+	return in, release
+}
+
+func countCalls(calls []string, want string) int {
+	n := 0
+	for _, c := range calls {
+		if c == want {
+			n++
+		}
+	}
+	return n
+}
+
+// TestJobsListEndpoint pins GET /control/v1/jobs: the queued and running jobs
+// of ?model=ID (every model without it), as a JobList whose jobs array is
+// always present, [] when none is active.
+func TestJobsListEndpoint(t *testing.T) {
+	f := &fakeLife{snap: serverSnap()}
+	d := f.deps(serverCfg())
+	entered, release := heldStart(t, &d)
+	_, ts := newTestServerDeps(t, d, nil)
+	id, err := postStart(ts, `{"model":"omlx/a"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	list := func(path string) (modelapi.JobList, []byte) {
+		t.Helper()
+		st, b := call(t, ts, "GET", path, "")
+		var l modelapi.JobList
+		if err := json.Unmarshal(b, &l); err != nil || st != http.StatusOK {
+			t.Fatalf("%s = %d %s (%v)", path, st, b, err)
+		}
+		return l, b
+	}
+	l, _ := list("/control/v1/jobs?model=omlx%2Fa")
+	if len(l.Jobs) != 1 || l.Jobs[0].ID != id || l.Jobs[0].Kind != "start" || l.Jobs[0].Model != "omlx/a" || l.Jobs[0].State != modelapi.JobRunning {
+		t.Errorf("jobs of omlx/a = %+v, want the running start %s", l.Jobs, id)
+	}
+	if l, _ := list("/control/v1/jobs"); len(l.Jobs) != 1 || l.Jobs[0].ID != id {
+		t.Errorf("all jobs = %+v, want the one start", l.Jobs)
+	}
+	if _, raw := list("/control/v1/jobs?model=omlx%2Fb"); !bytes.Contains(raw, []byte(`"jobs":[]`)) {
+		t.Errorf("jobs of an idle model = %s, want \"jobs\":[]", raw)
+	}
+	release()
+	pollJob(t, ts, id)
+	if l, _ := list("/control/v1/jobs?model=omlx%2Fa"); len(l.Jobs) != 0 {
+		t.Errorf("jobs after the start finished = %+v, want none", l.Jobs)
+	}
+}
+
+// TestConcurrentStartSameModelReturnsOneJob pins that two client sessions
+// that start the same model at once share one job: otherwise the second
+// queues a duplicate start that runs behind the first one's route restart.
+// Eight concurrent POST start for one model get one job id and the engine's
+// Start runs once (run it under -race).
+func TestConcurrentStartSameModelReturnsOneJob(t *testing.T) {
+	f := &fakeLife{snap: serverSnap()}
+	d := f.deps(serverCfg())
+	_, release := heldStart(t, &d)
+	_, ts := newTestServerDeps(t, d, nil)
+	const n = 8
+	ids := make([]string, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() { ids[i], errs[i] = postStart(ts, `{"model":"omlx/a"}`) })
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	release()
+	slices.Sort(ids)
+	if distinct := slices.Compact(slices.Clone(ids)); len(distinct) != 1 {
+		t.Fatalf("job ids = %q, want one shared job", distinct)
+	}
+	if js := pollJob(t, ts, ids[0]); js.State != modelapi.JobSucceeded {
+		t.Fatalf("job = %+v, want succeeded", js)
+	}
+	if got := countCalls(f.callList(), "Start omlx/a"); got != 1 {
+		t.Errorf("Start ran %d times, want once (calls %q)", got, f.callList())
+	}
+}
+
+// TestSecondStartJoinsAndInheritsConsent pins what a joining start means: the
+// second client gets the first one's job, and that job keeps the first
+// request's answers. A posts start with allow_replace, B posts the same start
+// without it while A's job runs: B gets A's job id, the engine runs once with
+// AllowReplace, and the occupant A agreed to stop is stopped (the fake engine
+// refuses as occupied without AllowReplace, as the real one does).
+func TestSecondStartJoinsAndInheritsConsent(t *testing.T) {
+	f := &fakeLife{snap: serverSnap("mtplx/y")}
+	d := f.deps(serverCfg())
+	d.Start = func(_ context.Context, _ *config.Config, tg lifecycle.Target, o lifecycle.Options) error {
+		f.record("Start " + tg.ModelID)
+		if !o.AllowReplace {
+			return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{entry("mtplx", "y", true)}}
+		}
+		f.record("Stop mtplx/y")
+		return nil
+	}
+	entered, release := heldStart(t, &d)
+	_, ts := newTestServerDeps(t, d, nil)
+	a, err := postStart(ts, `{"model":"mtplx/x","allow_replace":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	b, err := postStart(ts, `{"model":"mtplx/x"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if b != a {
+		t.Fatalf("B's job = %s, want A's %s", b, a)
+	}
+	if js := pollJob(t, ts, a); js.State != modelapi.JobSucceeded {
+		t.Fatalf("job = %+v, want succeeded under A's allow_replace", js)
+	}
+	calls := f.callList()
+	if countCalls(calls, "Start mtplx/x") != 1 || !slices.Contains(calls, "Stop mtplx/y") {
+		t.Errorf("calls = %q, want one Start that stopped the occupant", calls)
+	}
+}
+
+// TestFinishedJobsAreKeptUpToTheCap pins the job retention a client sees:
+// the 101st job's finish drops the first, which then answers 404 unknown_job
+// to a poll and to a cancel, while the 2nd through the 101st stay readable.
+func TestFinishedJobsAreKeptUpToTheCap(t *testing.T) {
+	s, ts := newTestServer(t, &fakeLife{snap: serverSnap()}, nil)
+	okRun := func(context.Context, func(string)) modelapi.JobResult { return modelapi.JobResult{OK: true} }
+	var ids []string
+	for i := range 101 {
+		ids = append(ids, s.jobs.Submit("start", fmt.Sprintf("omlx/m%d", i), okRun))
+	}
+	pollJob(t, ts, ids[100])
+	st, b := call(t, ts, "GET", "/control/v1/jobs/"+ids[0], "")
+	wantAPIError(t, st, b, http.StatusNotFound, modelapi.CodeUnknownJob)
+	st, b = call(t, ts, "POST", "/control/v1/jobs/"+ids[0]+"/cancel", "")
+	wantAPIError(t, st, b, http.StatusNotFound, modelapi.CodeUnknownJob)
+	for _, i := range []int{1, 99, 100} {
+		if st, b := call(t, ts, "GET", "/control/v1/jobs/"+ids[i], ""); st != http.StatusOK {
+			t.Errorf("job %d = %d %s, want 200", i+1, st, b)
 		}
 	}
 }

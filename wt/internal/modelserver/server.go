@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
@@ -29,6 +30,8 @@ const (
 	maxBody = 1 << 20
 	// httpShutdownGrace bounds the HTTP server's graceful shutdown.
 	httpShutdownGrace = 10 * time.Second
+	// routedTTL is how long a catalog reuses LiteLLM's model list.
+	routedTTL = 2 * time.Second
 	// jobsShutdownGrace bounds the wait for the running job on shutdown.
 	jobsShutdownGrace = 30 * time.Second
 )
@@ -52,6 +55,12 @@ type Server struct {
 	handler  http.Handler
 	// autoStopEvery is the auto-stop scan period; tests shorten it.
 	autoStopEvery time.Duration
+	// routedTTL is how long the answer of Deps.RoutedIDs is reused; tests
+	// shorten or lengthen it.
+	routedTTL time.Duration
+	routedMu  sync.Mutex
+	routedAt  time.Time
+	routedSet map[string]bool
 }
 
 // serverOption adjusts a Server in NewServer (test seams only).
@@ -68,7 +77,7 @@ func NewServer(o Options, d Deps, opts ...serverOption) (*Server, error) {
 	if o.IdleGrace <= 0 {
 		return nil, fmt.Errorf("the idle grace must be greater than zero, got %s", o.IdleGrace)
 	}
-	s := &Server{o: o, d: d, autoStopEvery: autoStopEvery}
+	s := &Server{o: o, d: d, autoStopEvery: autoStopEvery, routedTTL: routedTTL}
 	s.sessions = sessionreg.New(sessionTTL, d.Now)
 	s.jobs = modeljobs.NewManager(d.Now)
 	s.stopper = &AutoStopper{Deps: d, Sessions: s.sessions, Grace: o.IdleGrace, Jobs: s.jobs}
@@ -87,8 +96,11 @@ func (s *Server) routes() http.Handler {
 	ctl.HandleFunc("GET /control/v1/ping", s.ping)
 	ctl.HandleFunc("GET /control/v1/catalog", s.catalog)
 	ctl.HandleFunc("GET /control/v1/resolve", s.resolve)
+	ctl.HandleFunc("GET /control/v1/candidates", s.candidates)
+	ctl.HandleFunc("GET /control/v1/spend", s.spend)
 	ctl.HandleFunc("POST /control/v1/start", s.start)
 	ctl.HandleFunc("POST /control/v1/stop", s.stop)
+	ctl.HandleFunc("GET /control/v1/jobs", s.jobsList)
 	ctl.HandleFunc("GET /control/v1/jobs/{id}", s.job)
 	ctl.HandleFunc("POST /control/v1/jobs/{id}/cancel", s.cancel)
 	ctl.HandleFunc("POST /control/v1/sessions", s.register)
@@ -100,6 +112,7 @@ func (s *Server) routes() http.Handler {
 	// The gateway authenticates itself; it is not wrapped again.
 	root.Handle("/v1/", modelgateway.New(modelgateway.Config{
 		Upstream: s.o.Upstream, UpstreamKey: s.o.UpstreamKey, Token: s.o.Token,
+		AllowPaths: modelgateway.InferencePaths,
 	}))
 	return root
 }
@@ -134,17 +147,44 @@ func (s *Server) ping(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, modelapi.Ping{APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion, Server: "wt-model"})
 }
 
-func (s *Server) catalog(w http.ResponseWriter, _ *http.Request) {
+// routed is the set of ids the gateway lists, or nil when LiteLLM cannot be
+// asked (fail soft: unknown, never "nothing is routed", which a restart of
+// the proxy would otherwise make every client act on). The answer, success or
+// failure, is reused for routedTTL so a burst of calls asks once. It holds
+// routedMu across the RoutedIDs call (up to routeRequestTimeout) on purpose,
+// so a burst asks LiteLLM once; the first caller's request context is the one
+// used, so a client that disconnects early caches an "unknown" for routedTTL
+// (it fails soft).
+func (s *Server) routed(ctx context.Context) map[string]bool {
+	if s.d.RoutedIDs == nil {
+		return nil
+	}
+	s.routedMu.Lock()
+	defer s.routedMu.Unlock()
+	if now := s.d.Now(); !s.routedAt.IsZero() && now.Sub(s.routedAt) < s.routedTTL {
+		return s.routedSet
+	}
+	ids, err := s.d.RoutedIDs(ctx)
+	if err != nil {
+		ids = nil
+	} else if ids == nil {
+		ids = map[string]bool{}
+	}
+	s.routedSet, s.routedAt = ids, s.d.Now()
+	return ids
+}
+
+func (s *Server) catalog(w http.ResponseWriter, r *http.Request) {
 	cfg := s.d.Config()
 	snap := s.d.Inventory(cfg)
-	writeJSON(w, http.StatusOK, BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.d.Now()))
+	writeJSON(w, http.StatusOK, BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now()))
 }
 
 func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("model")
 	cfg := s.d.Config()
 	snap := s.d.Inventory(cfg)
-	cat := BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.d.Now())
+	cat := BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now())
 	for _, row := range cat.Rows {
 		if row.ID == id {
 			writeJSON(w, http.StatusOK, row)
@@ -167,7 +207,11 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, modelapi.CodeBadRequest, "model is required")
 		return
 	}
-	id := s.jobs.Submit("start", req.Model, s.d.StartJob(req, s.sessions))
+	// A start of a model whose start is already queued or running joins that
+	// job, and so its answers (allow_replace, others): two client sessions
+	// starting one model at once must not queue a second start behind the
+	// first one's route restart.
+	id, _ := s.jobs.SubmitOnce("start", req.Model, s.d.StartJob(req, s.sessions))
 	writeJSON(w, http.StatusAccepted, modelapi.JobRef{ID: id})
 }
 
@@ -182,6 +226,16 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 	}
 	id := s.jobs.Submit("stop", req.Model, s.d.StopJob(req, s.sessions))
 	writeJSON(w, http.StatusAccepted, modelapi.JobRef{ID: id})
+}
+
+// jobsList lists the queued and running jobs of ?model=ID, or of every model
+// when it is absent.
+func (s *Server) jobsList(w http.ResponseWriter, r *http.Request) {
+	jobs := s.jobs.Active(r.URL.Query().Get("model"))
+	if jobs == nil {
+		jobs = []modelapi.JobStatus{}
+	}
+	writeJSON(w, http.StatusOK, modelapi.JobList{Jobs: jobs})
 }
 
 func (s *Server) job(w http.ResponseWriter, r *http.Request) {

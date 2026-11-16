@@ -21,7 +21,8 @@ One port carries two surfaces:
 - the gateway under `/v1/`, a streaming reverse proxy to the LiteLLM proxy
   that `wt litellm set --url URL --api-key KEY` configured. It swaps the
   client's token for the LiteLLM key, so that key and every provider key stay
-  on the host.
+  on the host, and it serves only the inference paths (see
+  [Endpoints](#endpoints)).
 
 ## Where it runs
 
@@ -96,14 +97,54 @@ All control paths are under `/control/v1/` and answer JSON.
 | `GET /control/v1/ping` | Liveness and version: `api_major`, `schema`, `server`. A client refuses a server whose `api_major` differs from its own. |
 | `GET /control/v1/catalog` | Every model: state, action, tier, price, protocols, and how many live client sessions use it. Slot-profile rows are not included. |
 | `GET /control/v1/resolve?model=ID` | One catalog row, or a 404 `unknown_model` naming why. |
-| `POST /control/v1/start` | Start a local model. Body `{"model", "allow_replace", "others"}`. Answers 202 with a job id. |
-| `POST /control/v1/stop` | Stop a model. Body `{"model", "confirm_in_use"}`. Answers 202 with a job id. A model that is not running is a succeeded no-op. |
+| `GET /control/v1/candidates` | The registry's models ranked for a slot, as `wt profile slots candidates --json` ranks them. Query: `open_only=BOOL`, `provider=a,b`, `near=ID`, `per_provider=N` (needs `near`, else 400 `bad_request`). Answers `{"tiers_generated", "stale_sources", "candidates"}`: `tiers_generated` is the RFC 3339 time of the tiers file and is absent when there is none; `stale_sources` and `candidates` are always present. A candidate carries `id`, `provider`, `location`, `flags` (always a list) and, where they apply, `tier`, `confidence`, `score` (absent when unscored), `rated`, `open_weights`, `context`, `output_per_million`, `subscription`, `subscription_period`. |
+| `GET /control/v1/spend?start=T&end=T` | Per-model request, token and spend totals from LiteLLM's spend log, for the window between two RFC 3339 times (both required, else 400 `bad_request`; a `+` in an RFC 3339 offset must be URL-encoded as `%2B`, since a bare `+` decodes to a space and the request is a 400): `{"rows", "unattributed"}`, `rows` always present, `unattributed` the requests logged without a model. The database address is read on the host and never sent; see the 503 codes below. |
+| `POST /control/v1/start` | Start a local model. Body `{"model", "allow_replace", "others"}`. Answers 202 with a job id. While a start of the same model is queued or running, the answer is that job's id instead of a new job (see [Jobs and client sessions](#jobs-and-client-sessions)). |
+| `POST /control/v1/stop` | Stop a model. Body `{"model", "confirm_in_use", "session"}`. Answers 202 with a job id. A model that is not running is a succeeded no-op. `session` is the requester's own client session id: it does not count as a user of the model, so a session stopping a model only it uses needs no `confirm_in_use`. |
+| `GET /control/v1/jobs?model=ID` | The queued and running jobs of one model, or of every model without `model`, oldest first: `{"jobs": [...]}`. `jobs` is always present, `[]` when none is active. |
 | `GET /control/v1/jobs/{id}` | A job's state, step text and, once finished, its result. |
 | `POST /control/v1/jobs/{id}/cancel` | Cancel a job. 204. |
 | `POST /control/v1/sessions` | Register a client session and the models it uses: `{"id", "models"}`. Registering again replaces the model set. 204. |
 | `POST /control/v1/sessions/{id}/heartbeat` | Renew a client session and add models to its set: `{"models"}`. 204, or 410 `unknown_session` when it has lapsed. |
 | `DELETE /control/v1/sessions/{id}` | End a client session. 204, also for an unknown id. |
-| `/v1/*` | The gateway: every path is forwarded to LiteLLM, streaming, with the host's LiteLLM key. |
+| `/v1/*` | The gateway: an inference path is forwarded to LiteLLM, streaming, with the host's LiteLLM key; any other path is a 404 (below). |
+
+The gateway serves these paths only, matched on the path (the query is
+passed through untouched, so `/v1/messages?beta=true` is served):
+
+| Path | Serves |
+|---|---|
+| `/v1/messages`, `/v1/messages/count_tokens` | Anthropic messages |
+| `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` | OpenAI inference |
+| `/v1/responses` and every path below `/v1/responses/` | OpenAI responses |
+| `/v1/models` and every path below `/v1/models/` | the model list, one model |
+
+LiteLLM's other `/v1` routes (files, batches, `/v1/model/info`) are not
+served. A path that is not already clean (`..` or `.` segments, a doubled or
+trailing slash) or that is percent-encoded where it need not be (`%2e%2e`, an
+escaped `/`) is not served either, whatever it would decode to. The token is
+checked first: a wrong one is a 401 on any path.
+
+### Catalog rows
+
+Every row carries `id`, `family`, `provider_id`, `model_name`, `location`,
+`tags`, `registered`, `discovered`, `state`, `action`, `protocols` and
+`sessions`. These fields need a note:
+
+| Field | Meaning |
+|---|---|
+| `gateway_id` | The id to send through the gateway. Empty for a native row (`native: true`), which never goes through the gateway. |
+| `order` | The model's registry index; discovered rows follow the registry's, by id. Rows are sorted by `id`, so a client that lists in registry order sorts on this. Always present. |
+| `routed` | Whether LiteLLM lists the model. Three states: `true`, `false`, and **absent** when the server could not ask LiteLLM (a proxy restart). Absent means unknown, never "not routed". The same goes for `resolve`. The server asks LiteLLM at most once per 2 seconds. |
+| `tier`, `tier_code`, `confidence` | Present for a rated model only. |
+| `aligned`, `tier_sources` | The aligned score and how many scores it was made from; present for any model the tiers file has them for, rated or not. |
+| `context` | The context window in tokens, present only when the tiers file records the model's own host window (not the largest row of its key). |
+| `price.time_priced` | True when the model has time-windowed prices, so the figures are those in force at `generated`. |
+
+The catalog's `pricing` object is present exactly when some model is priced
+from OpenRouter; its `updated` is the RFC 3339 time of the newest price stamp
+and is absent when prices were never refreshed. A resident listed in a job's
+`others` carries a `figure`: the memory it holds, as wt words it.
 
 A request body may carry fields this server does not know (ignored), may be
 empty (an empty object) and is limited to 1 MiB. A body that is not JSON, or
@@ -122,9 +163,11 @@ path or method the control API does not route also answers this object, with
 | 401 | `unauthorized` | The token is missing or wrong |
 | 404 | `not_found` | No such control endpoint |
 | 404 | `unknown_model` | `resolve` of an id nothing knows |
-| 404 | `unknown_job` | A job id the server does not hold (jobs are in memory and gone after a restart) |
+| 404 | `unknown_job` | A job id, polled or cancelled, the server does not hold: unknown, finished and dropped from the list, or the server restarted |
 | 405 | `method_not_allowed` | The path exists for other methods |
 | 410 | `unknown_session` | A heartbeat for a client session that is unknown or lapsed: register again |
+| 503 | `spend_not_configured` | `spend`: nothing names the LiteLLM database (see `wt litellm` for where wt looks); the message is the fixed text `spend is not configured on the model server`, never the wrapped error, which can name host paths |
+| 503 | `spend_unavailable` | `spend`: the database is named but could not be queried; the message is `spend unavailable: <reason>` and never carries the connection string |
 
 A job that cannot do what was asked finishes `failed` with one of these
 codes in `result.error`:
@@ -142,12 +185,15 @@ codes in `result.error`:
 | `cancelled` | The job was cancelled. |
 
 A stop the provider accepted but has not finished (ollama) is a succeeded job
-whose step text reads `still finishing`; it is not an error.
+whose step text begins `still finishing: ` followed by the engine's text (the
+constant `modelapi.StepStillFinishing`); it is not an error.
 
 **Gateway.** An error the gateway itself writes is OpenAI-style, because
 agents parse it: `{"error": {"message": "...", "type": "...", "code":
-"..."}}`. There are two: 401 `unauthorized` (type `authentication_error`,
-the same message as the control API) and 503 `proxy_unavailable` (type
+"..."}}`. There are three: 401 `unauthorized` (type `authentication_error`,
+the same message as the control API), 404 `not_found` (type
+`invalid_request_error`, message `path is not served by the gateway`) for a
+path the gateway does not serve, and 503 `proxy_unavailable` (type
 `api_error`, message `model proxy is restarting`, with `Retry-After: 5`) when
 LiteLLM cannot be reached. Whatever LiteLLM answers passes through untouched.
 
@@ -158,6 +204,16 @@ A start or stop is a job: the request answers 202 at once and the client polls
 if its client disconnects, and after a server restart all jobs are gone and
 state is re-derived from live probes. The server never asks a question: a
 prompt becomes a typed error the client answers by posting again.
+
+- **One start per model.** A start of a model whose start is already queued
+  or running joins that job: the answer is its id, and it runs once. The
+  joining request's own `allow_replace` and `others` are ignored; the job keeps
+  the answers of the request that created it, so a replace another client
+  agreed to goes ahead for both. A start that has already been cancelled is
+  not joined: the new request queues a job of its own. A stop is never joined.
+- **Retention.** A finished job stays readable until 100 later jobs have
+  finished; after that, or after a server restart, its id answers 404
+  `unknown_job`, for a poll and a cancel alike.
 
 A client session is a client-chosen id plus the models it uses.
 
@@ -176,6 +232,17 @@ trusted. A successful start restarts the model's idle clock. A cloud model, and 
 hand on the host that no client session ever registered, is never auto-stopped. After a
 restart of the server the registry is empty, so nothing is auto-stopped until
 a client session registers again.
+
+The registry also forgets: a registered model that a trusted probe shows not
+running, that no live client session uses, that has no job queued or running
+and whose idle clock is at least `--idle-grace` old is dropped from it. A
+model auto-stopped (or stopped any other way) and later started by hand on
+the host, or by `llmbench provider isolate`, is then left alone like any
+model no client session registered. A client session registers before it
+asks for a start, and a job is kept however that session then fares: it
+lapses after its TTL while the job may still be waiting, and a model
+forgotten then would start unseen (a forgotten model never comes back) and
+never be auto-stopped.
 
 The stop is an ordinary stop job, so a client session that registers between the
 scan and the stop still blocks it. On an Exclusive provider (a server that holds one
@@ -201,10 +268,9 @@ shutdown kills it.
 
 ## Known limits
 
-- **`/v1/*` forwards agent traffic that the gateway cannot scope per
-  client.** One shared token opens every `/v1/*` path LiteLLM serves, the
-  non-inference routes included, and every model it routes. The gateway does
-  not tell clients apart or limit what a client may call.
+- **The gateway cannot scope agent traffic per client.** One shared token
+  opens every inference path and every model LiteLLM routes. The gateway does
+  not tell clients apart or limit which models a client may call.
 - **A host-local `wt` is invisible to auto-stop.** `wt` on the host still
   counts its own sessions by process id, which the server cannot see, so a
   model such a `wt` session uses can be auto-stopped once any client session

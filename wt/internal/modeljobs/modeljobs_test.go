@@ -2,7 +2,9 @@ package modeljobs
 
 import (
 	"context"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -366,4 +368,112 @@ func TestCancelAfterTheWorkStartedDoesNotClaimNothingChanged(t *testing.T) {
 	if !strings.Contains(msg, "while running") || strings.Contains(msg, "nothing was") {
 		t.Fatalf("message = %q, want it to say the work had started", msg)
 	}
+}
+
+func jobIDs(js []modelapi.JobStatus) []string {
+	out := make([]string, len(js))
+	for i, j := range js {
+		out[i] = j.ID
+	}
+	return out
+}
+
+// TestActiveJobsFiltersByModel pins Active, what GET jobs?model= answers: the
+// queued and running jobs, oldest first (the running one before the queue),
+// all models for "" and one model's otherwise; a finished job is not active.
+func TestActiveJobsFiltersByModel(t *testing.T) {
+	m := NewManager(fixedNow)
+	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
+	c := m.Submit("stop", "c", ok)
+	waitFor(t, "c finished", func() bool { return stateOf(m, c) == modelapi.JobSucceeded })
+	started, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	b := m.Submit("start", "b", func(context.Context, func(string)) modelapi.JobResult {
+		close(started)
+		<-release
+		return modelapi.JobResult{OK: true}
+	})
+	<-started
+	a := m.Submit("start", "a", ok)
+	if got := jobIDs(m.Active("")); !slices.Equal(got, []string{b, a}) {
+		t.Fatalf("Active(\"\") = %q, want [b a] = %q", got, []string{b, a})
+	}
+	if got := m.Active("a"); len(got) != 1 || got[0].ID != a || got[0].State != modelapi.JobQueued || got[0].Model != "a" {
+		t.Errorf("Active(a) = %+v, want only a, queued", got)
+	}
+	if got := m.Active("b"); len(got) != 1 || got[0].ID != b || got[0].State != modelapi.JobRunning {
+		t.Errorf("Active(b) = %+v, want only b, running", got)
+	}
+	if got := m.Active("c"); len(got) != 0 {
+		t.Errorf("Active(c) = %+v, want none: c finished", got)
+	}
+}
+
+// TestSubmitOnceJoinsOnlyAPendingJobOfTheSameKind pins SubmitOnce's rule: a
+// queued or running job of the same kind for the same model is returned
+// (existed) and the new RunFunc never runs; another kind, another model or a
+// finished job of the same kind gets a new job.
+func TestSubmitOnceJoinsOnlyAPendingJobOfTheSameKind(t *testing.T) {
+	m := NewManager(fixedNow)
+	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
+	started, release := make(chan struct{}), make(chan struct{})
+	first, existed := m.SubmitOnce("start", "m", func(context.Context, func(string)) modelapi.JobResult {
+		close(started)
+		<-release
+		return modelapi.JobResult{OK: true}
+	})
+	if existed {
+		t.Fatal("the first SubmitOnce reported an existing job")
+	}
+	<-started
+	var joinedRan atomic.Bool
+	running, existed := m.SubmitOnce("start", "m", func(context.Context, func(string)) modelapi.JobResult {
+		joinedRan.Store(true)
+		return modelapi.JobResult{OK: true}
+	})
+	if !existed || running != first {
+		t.Errorf("SubmitOnce while running = (%s, %v), want (%s, true)", running, existed, first)
+	}
+	queued, existed := m.SubmitOnce("start", "n", ok)
+	if existed {
+		t.Error("a start of another model joined the running one")
+	}
+	if again, existed := m.SubmitOnce("start", "n", ok); !existed || again != queued {
+		t.Errorf("SubmitOnce of a queued job = (%s, %v), want (%s, true)", again, existed, queued)
+	}
+	if stop, existed := m.SubmitOnce("stop", "m", ok); existed || stop == first {
+		t.Errorf("a stop joined the start: (%s, %v)", stop, existed)
+	}
+	close(release)
+	waitFor(t, "first finished", func() bool { return stateOf(m, first) == modelapi.JobSucceeded })
+	if next, existed := m.SubmitOnce("start", "m", ok); existed || next == first {
+		t.Errorf("SubmitOnce after the job finished = (%s, %v), want a new job", next, existed)
+	}
+	if joinedRan.Load() {
+		t.Error("the joining RunFunc ran")
+	}
+}
+
+// TestSubmitOnceDoesNotJoinACancelledJob pins that a running job Cancel has
+// already hit is not joined: it is about to end cancelled, so a second client
+// that asked for the same start would be handed a job that ends cancelled. A
+// new job is queued instead.
+func TestSubmitOnceDoesNotJoinACancelledJob(t *testing.T) {
+	m := NewManager(fixedNow)
+	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
+	started, release := make(chan struct{}), make(chan struct{})
+	first, _ := m.SubmitOnce("start", "m", func(context.Context, func(string)) modelapi.JobResult {
+		close(started)
+		<-release
+		return modelapi.JobResult{OK: true}
+	})
+	<-started
+	if !m.Cancel(first) {
+		t.Fatal("Cancel of the running job returned false")
+	}
+	second, existed := m.SubmitOnce("start", "m", ok)
+	if existed || second == first {
+		t.Errorf("SubmitOnce after Cancel = (%s, %v), want a new job", second, existed)
+	}
+	close(release)
 }

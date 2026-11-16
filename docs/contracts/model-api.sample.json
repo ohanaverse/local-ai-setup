@@ -5,13 +5,15 @@
     "generated": "2026-11-15T10:00:00Z",
     "providers": {"omlx": "ok", "openrouter": "ok", "mtplx": "ok"},
     "rows": [
-      {"id": "omlx/qwen3.8-35b", "gateway_id": "omlx/qwen3.8-35b", "family": "qwen3.8", "provider_id": "omlx", "model_name": "qwen3.8-35b", "location": "local", "tags": ["moe", "coding"], "registered": true, "discovered": false, "state": "running", "action": "launch", "tier": "strong", "tier_code": "S2", "confidence": "high", "aligned": 0.82, "context": 131072, "protocols": ["openai", "anthropic"], "sessions": 2},
-      {"id": "openrouter/minimax-m2.5", "gateway_id": "openrouter/minimax-m2.5", "family": "minimax", "provider_id": "openrouter", "model_name": "minimax-m2.5", "location": "cloud", "tags": [], "registered": true, "discovered": false, "state": "stopped", "action": "launch", "context": 200000, "protocols": ["openai"], "price": {"input": 0.3, "cache": 0.03, "output": 1.2}, "sessions": 0},
-      {"id": "mtplx/org/big-model", "gateway_id": "mtplx/org/big-model", "family": "big", "provider_id": "mtplx", "model_name": "org/big-model", "location": "local", "tags": ["large"], "registered": true, "discovered": false, "state": "blocked", "action": "block", "block_reason": "pack does not fit iogpu.wired_limit_mb", "protocols": ["openai"], "sessions": 0},
-      {"id": "omlx/gemma4-9b", "gateway_id": "omlx/gemma4-9b", "family": "gemma4", "provider_id": "omlx", "model_name": "gemma4-9b", "location": "local", "tags": [], "registered": true, "discovered": false, "state": "stopped", "action": "start", "protocols": ["openai"], "sessions": 0},
-      {"id": "omlx/qwen3.8-14b", "gateway_id": "omlx/qwen3.8-14b", "family": "qwen3.8", "provider_id": "omlx", "model_name": "qwen3.8-14b", "location": "local", "tags": [], "registered": true, "discovered": false, "state": "loading", "action": "start", "protocols": ["openai"], "sessions": 1},
-      {"id": "omlx/unknown-pack", "gateway_id": "omlx/unknown-pack", "family": "unknown", "provider_id": "omlx", "model_name": "unknown-pack", "location": "local", "tags": [], "registered": true, "discovered": false, "state": "unknown", "action": "start", "protocols": ["openai"], "sessions": 0}
-    ]
+      {"id": "omlx/qwen3.8-35b", "gateway_id": "omlx/qwen3.8-35b", "order": 0, "family": "qwen3.8", "provider_id": "omlx", "model_name": "qwen3.8-35b", "location": "local", "tags": ["moe", "coding"], "registered": true, "discovered": false, "state": "running", "action": "launch", "routed": true, "tier": "strong", "tier_code": "S2", "confidence": "high", "aligned": 0.82, "tier_sources": 4, "context": 131072, "protocols": ["openai", "anthropic"], "sessions": 2},
+      {"id": "openrouter/minimax-m2.5", "gateway_id": "openrouter/minimax-m2.5", "order": 1, "family": "minimax", "provider_id": "openrouter", "model_name": "minimax-m2.5", "location": "cloud", "tags": [], "registered": true, "discovered": false, "state": "stopped", "action": "launch", "context": 200000, "protocols": ["openai"], "price": {"input": 0.3, "cache": 0.03, "output": 1.2, "time_priced": true}, "routed": false, "sessions": 0},
+      {"id": "mtplx/org/big-model", "gateway_id": "mtplx/org/big-model", "order": 2, "family": "big", "provider_id": "mtplx", "model_name": "org/big-model", "location": "local", "tags": ["large"], "registered": true, "discovered": false, "state": "blocked", "action": "block", "block_reason": "pack does not fit iogpu.wired_limit_mb", "protocols": ["openai"], "sessions": 0},
+      {"id": "omlx/gemma4-9b", "gateway_id": "omlx/gemma4-9b", "order": 3, "family": "gemma4", "provider_id": "omlx", "model_name": "gemma4-9b", "location": "local", "tags": [], "registered": true, "discovered": false, "state": "stopped", "action": "start", "protocols": ["openai"], "sessions": 0},
+      {"id": "omlx/qwen3.8-14b", "gateway_id": "omlx/qwen3.8-14b", "order": 4, "family": "qwen3.8", "provider_id": "omlx", "model_name": "qwen3.8-14b", "location": "local", "tags": [], "registered": true, "discovered": false, "state": "loading", "action": "start", "protocols": ["openai"], "sessions": 1},
+      {"id": "omlx/unknown-pack", "gateway_id": "omlx/unknown-pack", "order": 5, "family": "unknown", "provider_id": "omlx", "model_name": "unknown-pack", "location": "local", "tags": [], "registered": true, "discovered": false, "state": "unknown", "action": "start", "protocols": ["openai"], "sessions": 0},
+      {"id": "anthropic/claude-sonnet", "gateway_id": "", "native": true, "order": 6, "family": "claude", "provider_id": "anthropic", "model_name": "claude-sonnet", "location": "cloud", "tags": [], "registered": true, "discovered": false, "state": "stopped", "action": "launch", "protocols": ["anthropic"], "sessions": 0}
+    ],
+    "pricing": {"updated": "2026-11-12T08:30:00Z"}
   },
   "job": {
     "id": "job-0001",
@@ -27,7 +29,7 @@
         "code": "occupied",
         "message": "mtplx is serving another model",
         "occupants": ["mtplx/org/other-model"],
-        "others": [{"id": "ollama/llama4", "label": "llama4 (ollama)", "stoppable": true}]
+        "others": [{"id": "ollama/llama4", "label": "llama4 (ollama)", "stoppable": true, "figure": "4.2 GB loaded"}]
       }
     }
   },
@@ -36,13 +38,19 @@
     "allow_replace": true,
     "others": {"stop": ["ollama/llama4"]}
   },
-  "stop_request": {"model": "omlx/qwen3.8-35b", "confirm_in_use": true},
+  "jobs": {
+    "jobs": [
+      {"id": "job-0002", "kind": "start", "model": "omlx/qwen3.8-14b", "state": "running", "step": "warming up", "created": "2026-11-15T10:01:00Z", "updated": "2026-11-15T10:01:04Z"},
+      {"id": "job-0003", "kind": "stop", "model": "mtplx/org/big-model", "state": "queued", "step": "", "created": "2026-11-15T10:01:02Z", "updated": "2026-11-15T10:01:02Z"}
+    ]
+  },
+  "stop_request": {"model": "omlx/qwen3.8-35b", "confirm_in_use": true, "session": "sess-1"},
   "session_register": {"id": "sess-1", "models": ["omlx/qwen3.8-35b", "openrouter/minimax-m2.5"]},
   "session_beat": {"models": ["omlx/qwen3.8-35b"]},
   "problem": {
     "code": "others",
     "message": "other models are resident",
-    "others": [{"id": "ollama/llama4", "label": "llama4 (ollama)", "stoppable": true}],
+    "others": [{"id": "ollama/llama4", "label": "llama4 (ollama)", "stoppable": true, "figure": "4.2 GB loaded"}],
     "others_unknown": ["sushi"]
   },
   "problem_in_use": {
@@ -50,6 +58,20 @@
     "message": "omlx/qwen3.8-35b is in use by 2 live client session(s); confirm to stop it anyway",
     "sessions": ["sess-1", "sess-2"]
   },
+  "candidates": {
+    "tiers_generated": "2026-11-10T08:00:00Z",
+    "stale_sources": ["lmarena"],
+    "candidates": [
+      {"id": "omlx/qwen3.8-35b", "provider": "omlx", "location": "local", "tier": "strong", "confidence": "high", "score": 82.5, "rated": true, "open_weights": true, "context": 131072, "flags": []},
+      {"id": "openrouter/minimax-m2.5", "provider": "openrouter", "location": "cloud", "output_per_million": 1.2, "flags": ["unrated"]}
+    ]
+  },
+  "spend": {
+    "rows": [{"model": "omlx/qwen3.8-35b", "requests": 12, "prompt_tokens": 40210, "completion_tokens": 9876, "spend": 0}],
+    "unattributed": 2
+  },
+  "error_spend_not_configured": {"error": {"message": "spend is not configured on the model server", "code": "spend_not_configured"}},
+  "error_spend_unavailable": {"error": {"message": "spend unavailable: psql is not installed", "code": "spend_unavailable"}},
   "error_unauthorized": {"error": {"message": "missing or wrong bearer token", "code": "unauthorized"}},
   "error_unknown_model": {"error": {"message": "unknown model \"nope/none\"", "code": "unknown_model"}},
   "error_not_found": {"error": {"message": "no such control endpoint", "code": "not_found"}},

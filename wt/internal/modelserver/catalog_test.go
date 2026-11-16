@@ -1,10 +1,13 @@
 package modelserver
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,7 +68,7 @@ func TestCatalogStatesAndActions(t *testing.T) {
 		},
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
 	}
-	c := BuildCatalog(cfg, snap, nil, testSessions(), testNow)
+	c := BuildCatalog(cfg, snap, nil, testSessions(), nil, testNow)
 	for _, w := range []struct{ id, state, action string }{
 		{"omlx/run", modelapi.StateRunning, modelapi.ActionLaunch},
 		{"omlx/idle", modelapi.StateStopped, modelapi.ActionStart},
@@ -106,7 +109,7 @@ func TestCatalogSkipsProfileRows(t *testing.T) {
 		{Model: config.Model{ID: "slot/profile", ProviderID: "openrouter"}, Location: config.LocationCloud, Profile: &catalog.ProfileRow{}},
 		{Model: config.Model{ID: "openrouter/c", ProviderID: "openrouter", ModelName: "c"}, Location: config.LocationCloud},
 	}
-	got := buildRows(rows, cfg, nil, testSessions(), testNow)
+	got := buildRows(rows, cfg, nil, testSessions(), nil, testNow)
 	if len(got) != 1 || got[0].ID != "openrouter/c" {
 		t.Errorf("rows = %+v, want only openrouter/c", got)
 	}
@@ -118,7 +121,7 @@ func TestCatalogIncludesDiscoveredLocalModels(t *testing.T) {
 	snap := localmodels.Snapshot{Entries: []localmodels.Entry{
 		{ProviderID: "omlx", Artifact: "found", ModelID: "omlx/found", ModelName: "found", Running: true},
 	}}
-	c := BuildCatalog(testCfg(), snap, nil, testSessions(), testNow)
+	c := BuildCatalog(testCfg(), snap, nil, testSessions(), nil, testNow)
 	r := rowByID(t, c, "omlx/found")
 	if !r.Discovered || r.Registered || r.State != modelapi.StateRunning {
 		t.Errorf("row = %+v, want discovered, unregistered, running", r)
@@ -137,6 +140,7 @@ tier = "standard"
 code = "S"
 confidence = "high"
 aligned_score = 61.0
+aligned_sources = ["a", "b"]
 context = 200000
 context_basis = "host"
 
@@ -158,7 +162,7 @@ context_basis = "largest_row"
 		config.Model{ID: "openrouter/big", Family: "f", ProviderID: "openrouter", ModelName: "big"},
 		config.Model{ID: "openrouter/none", Family: "f", ProviderID: "openrouter", ModelName: "none"},
 	)
-	c := BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), testNow)
+	c := BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), nil, testNow)
 	h, b, n := rowByID(t, c, "openrouter/host"), rowByID(t, c, "openrouter/big"), rowByID(t, c, "openrouter/none")
 	if h.Context != 200000 || h.Tier != "standard" || h.TierCode != "S" || h.Confidence != "high" || h.Aligned == nil || *h.Aligned != 61 {
 		t.Errorf("host row = %+v", h)
@@ -181,7 +185,7 @@ func TestCatalogSessionsCount(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, reg, testNow)
+	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, reg, nil, testNow)
 	if got := rowByID(t, c, "openrouter/c").Sessions; got != 2 {
 		t.Errorf("Sessions = %d, want 2", got)
 	}
@@ -193,7 +197,7 @@ func TestCatalogPriceAndProtocols(t *testing.T) {
 	in, out := 0.3, 1.2
 	cfg := testCfg(config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c",
 		Cost: config.ModelCost{InputPricePerMillion: &in, OutputPricePerMillion: &out}})
-	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), testNow), "openrouter/c")
+	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow), "openrouter/c")
 	if r.Price == nil || r.Price.Input == nil || *r.Price.Input != 0.3 || r.Price.Output == nil || *r.Price.Output != 1.2 || r.Price.Cache != nil {
 		t.Errorf("price = %+v", r.Price)
 	}
@@ -245,6 +249,7 @@ tier = "standard"
 code = "S"
 confidence = "high"
 aligned_score = 61.0
+aligned_sources = ["a", "b"]
 context = 200000
 context_basis = "host"
 `))
@@ -256,9 +261,12 @@ context_basis = "host"
 		config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c",
 			Cost: config.ModelCost{InputPricePerMillion: &in}},
 		config.Model{ID: "acme/m", Family: "f", ProviderID: "acme", ModelName: "m"},
+		config.Model{ID: "nat/m", Family: "f", ProviderID: "nat", ModelName: "m", Native: true},
 	)
-	cfg.Providers = append(cfg.Providers, config.Provider{ID: "acme", Location: config.LocationCloud})
-	b, err := json.Marshal(BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), testNow))
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "acme", Location: config.LocationCloud},
+		config.Provider{ID: "nat", Location: config.LocationCloud})
+	cfg.Models[0].Cost.TimePrices = []config.TimePrice{{Label: "night", Timezone: "UTC"}}
+	b, err := json.Marshal(BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), map[string]bool{"acme/m": true}, testNow))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +299,7 @@ context_basis = "host"
 
 // TestFixtureRowsAgreeWithServerRules pins that the fixture's rows obey the
 // rules the server applies, so a client built from the fixture does not learn
-// a contract the server breaks: gateway_id equals id, a row is registered xor
+// a contract the server breaks: gateway_id equals id (empty for a native row), a row is registered xor
 // discovered, a blocked row is exactly a block action with a reason, a running
 // row launches, and the ping is what the server answers.
 func TestFixtureRowsAgreeWithServerRules(t *testing.T) {
@@ -309,7 +317,12 @@ func TestFixtureRowsAgreeWithServerRules(t *testing.T) {
 	for _, row := range fixtureRows(t) {
 		id := str(row, "id")
 		states[str(row, "state")] = true
-		if str(row, "gateway_id") != id {
+		if want := id; boolean(row, "native") {
+			want = ""
+			if str(row, "gateway_id") != want {
+				t.Errorf("%s: a native row has gateway_id %q, want empty", id, str(row, "gateway_id"))
+			}
+		} else if str(row, "gateway_id") != want {
 			t.Errorf("%s: gateway_id %q differs from id", id, str(row, "gateway_id"))
 		}
 		if boolean(row, "registered") == boolean(row, "discovered") {
@@ -364,12 +377,289 @@ func TestFixtureRowsAgreeWithServerRules(t *testing.T) {
 func TestCatalogUnmappedCloudRowIsBlocked(t *testing.T) {
 	cfg := testCfg(config.Model{ID: "acme/m", Family: "f", ProviderID: "acme", ModelName: "m"})
 	cfg.Providers = append(cfg.Providers, config.Provider{ID: "acme", Location: config.LocationCloud})
-	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), testNow)
+	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow)
 	r := rowByID(t, c, "acme/m")
 	if r.State != modelapi.StateBlocked || r.Action != modelapi.ActionBlock {
 		t.Fatalf("state/action = %s/%s, want blocked/block", r.State, r.Action)
 	}
 	if !strings.Contains(r.BlockReason, "no LiteLLM mapping") || strings.Contains(r.BlockReason, "wt litellm off") {
 		t.Errorf("block_reason = %q, want it to say the provider has no LiteLLM mapping", r.BlockReason)
+	}
+}
+
+// TestCatalogNativeRowHasNoGatewayID pins that a native model reaches the
+// wire flagged native with an empty gateway_id, since it never goes through
+// the gateway, while its id stays set.
+func TestCatalogNativeRowHasNoGatewayID(t *testing.T) {
+	cfg := testCfg(config.Model{ID: "nat/m", Family: "f", ProviderID: "nat", ModelName: "m", Native: true})
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "nat", Location: config.LocationCloud})
+	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow), "nat/m")
+	if !r.Native || r.GatewayID != "" || r.ID != "nat/m" {
+		t.Errorf("row = %+v, want native, empty gateway id, id nat/m", r)
+	}
+}
+
+// TestCatalogOrderFollowsRegistry pins that a row's order is its registry
+// index though rows sort by id, and a discovered row takes the next index, so
+// a client can list models the way the registry does.
+func TestCatalogOrderFollowsRegistry(t *testing.T) {
+	cfg := testCfg(
+		config.Model{ID: "openrouter/z", Family: "f", ProviderID: "openrouter", ModelName: "z"},
+		config.Model{ID: "openrouter/a", Family: "f", ProviderID: "openrouter", ModelName: "a"},
+	)
+	snap := localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", Artifact: "found", ModelID: "omlx/found", ModelName: "found", Running: true},
+	}}
+	c := BuildCatalog(cfg, snap, nil, testSessions(), nil, testNow)
+	for id, want := range map[string]int{"openrouter/z": 0, "openrouter/a": 1, "omlx/found": 2} {
+		if got := rowByID(t, c, id).Order; got != want {
+			t.Errorf("%s: order = %d, want %d", id, got, want)
+		}
+	}
+	if c.Rows[0].ID != "omlx/found" {
+		t.Errorf("rows are not sorted by id: first is %q", c.Rows[0].ID)
+	}
+}
+
+// TestCatalogRoutedFlag pins that a routed map sets every row's flag: true
+// for an id in it, false for one not, and false everywhere for an empty
+// non-nil map.
+func TestCatalogRoutedFlag(t *testing.T) {
+	cfg := testCfg(
+		config.Model{ID: "openrouter/a", Family: "f", ProviderID: "openrouter", ModelName: "a"},
+		config.Model{ID: "openrouter/b", Family: "f", ProviderID: "openrouter", ModelName: "b"},
+	)
+	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), map[string]bool{"openrouter/a": true}, testNow)
+	if a, b := rowByID(t, c, "openrouter/a").Routed, rowByID(t, c, "openrouter/b").Routed; a == nil || !*a || b == nil || *b {
+		t.Errorf("routed a/b = %v/%v, want true/false", a, b)
+	}
+	for _, r := range BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), map[string]bool{}, testNow).Rows {
+		if r.Routed == nil || *r.Routed {
+			t.Errorf("%s: routed = %v, want false for an empty map", r.ID, r.Routed)
+		}
+	}
+}
+
+// TestCatalogHandlerEmitsRouted pins that the catalog HANDLER, not only
+// BuildCatalog, writes "routed":true for a routed row and "routed":false for
+// an unrouted one on the wire when RoutedIDs succeeds.
+func TestCatalogHandlerEmitsRouted(t *testing.T) {
+	f := &fakeLife{snap: serverSnap("omlx/a", "omlx/b")}
+	d := f.deps(serverCfg())
+	d.RoutedIDs = func(context.Context) (map[string]bool, error) {
+		return map[string]bool{"omlx/a": true}, nil
+	}
+	s, err := NewServer(Options{Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	st, b := call(t, ts, "GET", "/control/v1/catalog", "")
+	if st != 200 {
+		t.Fatalf("catalog = %d %s", st, b)
+	}
+	var raw struct {
+		Rows []map[string]json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, r := range raw.Rows {
+		var id string
+		_ = json.Unmarshal(r["id"], &id)
+		got[id] = string(r["routed"])
+	}
+	if got["omlx/a"] != "true" || got["omlx/b"] != "false" {
+		t.Errorf("routed on the wire a/b = %q/%q, want true/false", got["omlx/a"], got["omlx/b"])
+	}
+}
+
+// TestCatalogRoutedUnknownWhenLiteLLMFails pins that when LiteLLM cannot be
+// asked every Routed is nil and the JSON has no routed key. During a LiteLLM
+// restart the catalog must not say "nothing is routed", or every client would
+// start every running model.
+func TestCatalogRoutedUnknownWhenLiteLLMFails(t *testing.T) {
+	f := &fakeLife{snap: serverSnap("omlx/a")}
+	d := f.deps(serverCfg())
+	d.RoutedIDs = func(context.Context) (map[string]bool, error) { return nil, errors.New("proxy down") }
+	s, err := NewServer(Options{Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	st, b := call(t, ts, "GET", "/control/v1/catalog", "")
+	if st != 200 {
+		t.Fatalf("catalog = %d %s", st, b)
+	}
+	var c modelapi.Catalog
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range c.Rows {
+		if r.Routed != nil {
+			t.Errorf("%s: routed = %v, want nil", r.ID, *r.Routed)
+		}
+	}
+	if strings.Contains(string(b), `"routed"`) {
+		t.Errorf("the JSON carries a routed key: %s", b)
+	}
+}
+
+// TestResolveCarriesRouted pins R7: resolve answers a running unrouted local
+// row with routed:false and omits the key when RoutedIDs errors, so a -M pin
+// can tell "add the route" from "could not ask".
+func TestResolveCarriesRouted(t *testing.T) {
+	var fail atomic.Bool
+	f := &fakeLife{snap: serverSnap("omlx/a")}
+	d := f.deps(serverCfg())
+	d.RoutedIDs = func(context.Context) (map[string]bool, error) {
+		if fail.Load() {
+			return nil, errors.New("proxy down")
+		}
+		return map[string]bool{}, nil
+	}
+	s, err := NewServer(Options{Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.routedTTL = 0
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	_, b := call(t, ts, "GET", "/control/v1/resolve?model=omlx%2Fa", "")
+	if !strings.Contains(string(b), `"routed":false`) {
+		t.Errorf("resolve = %s, want routed:false", b)
+	}
+	fail.Store(true)
+	_, b = call(t, ts, "GET", "/control/v1/resolve?model=omlx%2Fa", "")
+	if strings.Contains(string(b), `"routed"`) {
+		t.Errorf("resolve = %s, want no routed key", b)
+	}
+}
+
+// TestRoutedIDsAreCachedBriefly pins that a burst of catalog calls asks
+// LiteLLM once per routedTTL, and that a failure is cached too, so a down
+// proxy is not hammered by every client poll.
+func TestRoutedIDsAreCachedBriefly(t *testing.T) {
+	var calls int
+	var failNext bool
+	clock := testNow
+	f := &fakeLife{snap: serverSnap()}
+	d := f.deps(serverCfg())
+	d.Now = func() time.Time { return clock }
+	d.RoutedIDs = func(context.Context) (map[string]bool, error) {
+		calls++
+		if failNext {
+			return nil, errors.New("down")
+		}
+		return map[string]bool{}, nil
+	}
+	s, err := NewServer(Options{Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.routedTTL = 2 * time.Second
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	get := func() { call(t, ts, "GET", "/control/v1/catalog", "") }
+	get()
+	clock = clock.Add(time.Second)
+	get()
+	if calls != 1 {
+		t.Fatalf("calls inside the ttl = %d, want 1", calls)
+	}
+	clock = clock.Add(2 * time.Second)
+	failNext = true
+	get()
+	clock = clock.Add(time.Second)
+	get()
+	if calls != 2 {
+		t.Errorf("calls = %d, want 2 (the failure is cached too)", calls)
+	}
+}
+
+// TestCatalogUnratedScoreIsKept pins that an unrated entry's aligned score and
+// source count still reach the wire (they say how it compares) while the tier
+// fields stay rated-only.
+func TestCatalogUnratedScoreIsKept(t *testing.T) {
+	ix, err := tiers.Parse([]byte(`
+[[models]]
+provider_id = "openrouter"
+model_name = "c"
+tier = "unrated"
+code = "-"
+confidence = "none"
+aligned_score = 44.0
+aligned_sources = ["a", "b", "c"]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testCfg(config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c"})
+	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), nil, testNow), "openrouter/c")
+	if r.Aligned == nil || *r.Aligned != 44 || r.TierSources != 3 {
+		t.Errorf("aligned/sources = %v/%d, want 44/3", r.Aligned, r.TierSources)
+	}
+	if r.Tier != "" || r.TierCode != "" || r.Confidence != "" {
+		t.Errorf("tier fields = %q/%q/%q, want empty for an unrated entry", r.Tier, r.TierCode, r.Confidence)
+	}
+}
+
+// TestCatalogHostContextForUnratedRow pins that an unrated cloud entry's
+// context window reaches the wire only when it is the host's own, never the
+// largest row of its key.
+func TestCatalogHostContextForUnratedRow(t *testing.T) {
+	for basis, want := range map[string]int{"host": 200000, "largest_row": 0} {
+		ix, err := tiers.Parse([]byte(`
+[[models]]
+provider_id = "openrouter"
+model_name = "c"
+tier = "unrated"
+code = "-"
+confidence = "none"
+context = 200000
+context_basis = "` + basis + `"
+`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := testCfg(config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c"})
+		if got := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), nil, testNow), "openrouter/c").Context; got != want {
+			t.Errorf("basis %s: context = %d, want %d", basis, got, want)
+		}
+	}
+}
+
+// TestCatalogTimePricedFlag pins that a model with time-windowed prices says
+// so on its price, so a client shows the figure as the one in force now.
+func TestCatalogTimePricedFlag(t *testing.T) {
+	in := 1.0
+	cfg := testCfg(config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c",
+		Cost: config.ModelCost{InputPricePerMillion: &in, TimePrices: []config.TimePrice{{Label: "night", Timezone: "UTC"}}}})
+	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow), "openrouter/c")
+	if r.Price == nil || !r.Price.TimePriced {
+		t.Errorf("price = %+v, want time_priced", r.Price)
+	}
+}
+
+// TestCatalogPricingStamp pins the catalog's pricing object: present exactly
+// when a model is OpenRouter-priced, carrying the newest stamp, and without
+// an updated time when the prices were never refreshed.
+func TestCatalogPricingStamp(t *testing.T) {
+	stamp := testNow.Add(-72 * time.Hour)
+	stamped := config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c", PricingUpdatedAt: stamp}
+	c := BuildCatalog(testCfg(stamped), localmodels.Snapshot{}, nil, testSessions(), nil, testNow)
+	if c.Pricing == nil || c.Pricing.Updated != stamp.Format(time.RFC3339) {
+		t.Errorf("pricing = %+v, want updated %s", c.Pricing, stamp.Format(time.RFC3339))
+	}
+	other := config.Model{ID: "omlx/x", Family: "f", ProviderID: "omlx", ModelName: "x"}
+	if c := BuildCatalog(testCfg(other), localmodels.Snapshot{}, nil, testSessions(), nil, testNow); c.Pricing != nil {
+		t.Errorf("pricing = %+v, want nil with no OpenRouter model", c.Pricing)
+	}
+	unstamped := config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c"}
+	if c := BuildCatalog(testCfg(unstamped), localmodels.Snapshot{}, nil, testSessions(), nil, testNow); c.Pricing == nil || c.Pricing.Updated != "" {
+		t.Errorf("pricing = %+v, want an empty object", c.Pricing)
 	}
 }

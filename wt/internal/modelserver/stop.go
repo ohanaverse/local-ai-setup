@@ -15,11 +15,13 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionreg"
 )
 
-// StopJob is the job that stops req.Model. A model some live session uses is
-// refused (in_use, naming the sessions) unless req.ConfirmInUse; on an
-// Exclusive provider every session on any model of the family counts, since
-// the provider stops as a whole. A local model that is not running is an OK
-// no-op.
+// StopJob is the job that stops req.Model. A model some live session other
+// than the requester (req.Session) uses is refused (in_use, naming those
+// sessions) unless req.ConfirmInUse; on an Exclusive provider every session on
+// any model of the family counts, since the provider stops as a whole. A
+// local model that is not running is an OK no-op. A stop the provider
+// accepted but has not finished is OK with a step that begins
+// modelapi.StepStillFinishing (style guide S5).
 func (d Deps) StopJob(req modelapi.StopRequest, sessions *sessionreg.Registry) modeljobs.RunFunc {
 	return guarded(func(ctx context.Context, step func(string)) modelapi.JobResult {
 		cfg := d.Config()
@@ -35,7 +37,10 @@ func (d Deps) StopJob(req modelapi.StopRequest, sessions *sessionreg.Registry) m
 		if fam := localmodels.Family(en.ProviderID); !lifecycle.ProbeTrusted(snap, fam) {
 			return problem(modelapi.CodeFailed, fmt.Sprintf("cannot tell what %s is serving; not stopping %s", fam, id))
 		}
-		if users := stopBlockers(cfg, sessions, en); len(users) > 0 && !req.ConfirmInUse {
+		// The requester is no user to protect (no session id is empty, so an
+		// absent Session excludes nobody).
+		users := slices.DeleteFunc(stopBlockers(cfg, sessions, en), func(u string) bool { return u == req.Session })
+		if len(users) > 0 && !req.ConfirmInUse {
 			return modelapi.JobResult{Error: &modelapi.Problem{
 				Code:     modelapi.CodeInUse,
 				Message:  inUseMessage(en, len(users)),
@@ -55,7 +60,7 @@ func (d Deps) StopJob(req modelapi.StopRequest, sessions *sessionreg.Registry) m
 		case err == nil:
 			return modelapi.JobResult{OK: true}
 		case errors.As(err, &still):
-			step(err.Error())
+			step(modelapi.StepStillFinishing + ": " + err.Error())
 			return modelapi.JobResult{OK: true}
 		case ctx.Err() != nil || errors.Is(err, context.Canceled):
 			return problem(modelapi.CodeCancelled, fmt.Sprintf("cancelled while stopping %s", id))

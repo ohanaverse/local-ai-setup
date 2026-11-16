@@ -319,3 +319,147 @@ func TestAutoStopSkipsUntrustedProbe(t *testing.T) {
 		t.Errorf("stopped %+v after the probe recovered, want one stop", stops)
 	}
 }
+
+// setSnap replaces the inventory the fake engine reports.
+func (f *fakeLife) setSnap(snap localmodels.Snapshot) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snap = snap
+}
+
+// TestAutoStoppedModelStartedByHandIsLeftAlone pins that the registry does
+// not remember a model forever. A model auto-stopped (or stopped anyhow) and
+// idle past the grace is forgotten, so when it runs again with no client
+// session (started by hand on the host, or by llmbench) it survives any
+// number of scans: a model no client session registered is left alone. A
+// model whose client session registered before its start is not forgotten
+// while it is not yet running, even once that session is older than the
+// grace, and is stopped as usual after the session ends — and a queued start
+// keeps it from being forgotten even after that session has lapsed entirely.
+func TestAutoStoppedModelStartedByHandIsLeftAlone(t *testing.T) {
+	t.Run("hand start after auto-stop", func(t *testing.T) {
+		const grace = 10 * time.Minute
+		clk := &fakeClock{t: testNow}
+		f := &fakeLife{snap: serverSnap("omlx/a")}
+		d := f.deps(serverCfg())
+		d.Now = clk.now
+		reg := sessionreg.New(time.Minute, clk.now)
+		_ = reg.Register("s", []string{"omlx/a"})
+		reg.End("s")
+		clk.advance(grace)
+		jobs := newJobs(t, clk)
+		a := &AutoStopper{Deps: d, Sessions: reg, Grace: grace, Jobs: jobs}
+		a.Tick(context.Background())
+		drain(t, jobs)
+		if stops := f.stopped(); len(stops) != 1 {
+			t.Fatalf("stopped %+v, want the idle model stopped once", stops)
+		}
+		f.setSnap(serverSnap()) // the stop took effect
+		clk.advance(autoStopEvery)
+		a.Tick(context.Background())
+		drain(t, jobs)
+		f.setSnap(serverSnap("omlx/a")) // started again by hand
+		for range 5 {
+			clk.advance(grace)
+			a.Tick(context.Background())
+			drain(t, jobs)
+		}
+		if stops := f.stopped(); len(stops) != 1 {
+			t.Errorf("stopped %d times, want the hand-started model left alone", len(stops))
+		}
+	})
+	t.Run("pending start keeps its client session", func(t *testing.T) {
+		const grace = 30 * time.Second // under the 1-minute TTL: a live session can be older than the grace
+		clk := &fakeClock{t: testNow}
+		f := &fakeLife{snap: serverSnap()} // omlx/b is not running yet
+		d := f.deps(serverCfg())
+		d.Now = clk.now
+		reg := sessionreg.New(time.Minute, clk.now)
+		_ = reg.Register("s", []string{"omlx/b"})
+		clk.advance(45 * time.Second)
+		jobs := newJobs(t, clk)
+		a := &AutoStopper{Deps: d, Sessions: reg, Grace: grace, Jobs: jobs}
+		a.Tick(context.Background())
+		drain(t, jobs)
+		if _, seen := reg.IdleSince("omlx/b"); !seen {
+			t.Fatal("a model with a live client session was forgotten before it ran")
+		}
+		f.setSnap(serverSnap("omlx/b")) // the start lands
+		reg.End("s")
+		clk.advance(grace)
+		a.Tick(context.Background())
+		drain(t, jobs)
+		if stops := f.stopped(); len(stops) != 1 || stops[0].ModelID != "omlx/b" {
+			t.Errorf("stopped %+v, want omlx/b once its session ended and the grace passed", stops)
+		}
+	})
+	t.Run("queued start keeps the model after its session lapses", func(t *testing.T) {
+		// The client registers, asks for a start and stops heartbeating: its
+		// session lapses after the TTL while the job is still queued or running
+		// (one job at a time can wait behind others longer than the grace). The
+		// job must keep the model from being forgotten, or it starts unseen —
+		// Touch does not bring a forgotten model back — and is never stopped.
+		const grace = time.Minute
+		clk := &fakeClock{t: testNow}
+		f := &fakeLife{snap: serverSnap()} // omlx/b is not running yet
+		d := f.deps(serverCfg())
+		d.Now = clk.now
+		reg := sessionreg.New(time.Minute, clk.now)
+		_ = reg.Register("s", []string{"omlx/b"})
+		reg.End("s") // the client is gone; no live session
+		clk.advance(2 * grace)
+		jobs := newJobs(t, clk)
+		started := make(chan struct{})
+		gate := make(chan struct{})
+		release := sync.OnceFunc(func() { close(gate) })
+		t.Cleanup(release) // never leave the worker blocked, even on a failure
+		jobs.Submit("start", "omlx/b", func(context.Context, func(string)) modelapi.JobResult {
+			close(started)
+			<-gate
+			return modelapi.JobResult{OK: true}
+		})
+		<-started
+		a := &AutoStopper{Deps: d, Sessions: reg, Grace: grace, Jobs: jobs}
+		a.Tick(context.Background())
+		if _, seen := reg.IdleSince("omlx/b"); !seen {
+			t.Fatal("a model with a queued start was forgotten before it ran")
+		}
+		release()
+		drain(t, jobs) // the job finished; the next scan forgets it as usual
+		clk.advance(grace)
+		a.Tick(context.Background())
+		if _, seen := reg.IdleSince("omlx/b"); seen {
+			t.Fatal("after its job finished the idle model was still remembered")
+		}
+	})
+	t.Run("untrusted probe does not forget an absent model", func(t *testing.T) {
+		// An absent model under a partial probe may only look absent because
+		// the probe failed: it must stay remembered, so once the probe recovers
+		// and shows it running, the idle model is stopped.
+		const grace = time.Minute
+		clk := &fakeClock{t: testNow}
+		snap := serverSnap() // omlx/a is not listed as running
+		snap.Providers["omlx"] = localmodels.StatusPartial
+		f := &fakeLife{snap: snap}
+		d := f.deps(serverCfg())
+		d.Now = clk.now
+		reg := sessionreg.New(time.Minute, clk.now)
+		_ = reg.Register("s", []string{"omlx/a"})
+		reg.End("s")
+		clk.advance(2 * grace) // absent for longer than the grace
+		jobs := newJobs(t, clk)
+		a := &AutoStopper{Deps: d, Sessions: reg, Grace: grace, Jobs: jobs}
+		a.Tick(context.Background())
+		drain(t, jobs)
+		if _, seen := reg.IdleSince("omlx/a"); !seen {
+			t.Fatal("a model absent under an untrusted probe was forgotten")
+		}
+		ok := serverSnap("omlx/a") // the probe recovers; the model is running
+		f.setSnap(ok)
+		a.Tick(context.Background())
+		drain(t, jobs)
+		if stops := f.stopped(); len(stops) != 1 {
+			t.Errorf("stopped %+v after the probe recovered, want exactly one stop", stops)
+		}
+	})
+}
