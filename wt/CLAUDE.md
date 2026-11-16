@@ -91,7 +91,7 @@ make -C .. test-all   # CI-equivalent: root lint + llmbench + modeltiers + wt
 
 ## Go module
 
-Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt-session`, `cmd/wt-model` plus `internal/{config,provider,tomlw,tiers,candidates,slotedit,cloudsync,rotation,usage,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,gittest,scratchdir,launchwarn,themes,tui,tuilayout,configeditor,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke,cleanup,dirtsnap,removal,rescue,rootmove,modelapi,modelclient,sessionreg,modeljobs,modelgateway,modelserver}`.
+Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt-session`, `cmd/wt-model` plus `internal/{config,provider,tomlw,tiers,candidates,slotedit,cloudsync,rotation,usage,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,gittest,scratchdir,launchwarn,themes,tui,tuilayout,configeditor,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke,cleanup,dirtsnap,removal,rescue,rootmove,modelapi,modelclient,tokenfile,sessionreg,modeljobs,modelgateway,modelserver}`.
 
 **Never use the stock `toml.Encoder` on the registry** (`internal/tomlw` reproduces tomli-w's layout). `internal/spend` never takes the connection string as a `psql` argument (#282).
 

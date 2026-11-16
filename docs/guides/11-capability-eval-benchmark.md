@@ -38,7 +38,7 @@ The `[judge]` table's `route` picks how the judge model is reached:
 
 | `route` | Credential | `temperature` | `model` naming |
 |---|---|---|---|
-| `litellm` | LiteLLM apiKey in `~/.pi/agent/models.json` | sent | LiteLLM model name |
+| `litellm` | the model server's gateway origin + client token in `~/.pi/agent/models.json` (written by a wt pi launch since 2026-11; the LiteLLM key is not there — see [09-agent-benchmarks](09-agent-benchmarks.md)) | sent | gateway model id |
 | `openrouter` | `OPENROUTER_API_KEY` | sent | OpenRouter id, e.g. `anthropic/claude-opus-5` |
 | `claude-cli` | the logged-in `claude` CLI (subscription), no key | **ignored** | `claude --model` value: an alias (`opus`, `sonnet`, `haiku`) or a full name such as `claude-opus-5-5`; a leading `anthropic/` is stripped |
 

@@ -10,10 +10,10 @@
 - **`wt` built and on PATH** (`/Users/keith/.local/bin/wt`):
 
   ```bash
-  cd /Users/keith/github/ohanaverse/local-ai-setup/wt && go build -o /Users/keith/.local/bin/wt ./cmd/wt-session
+  make -C /Users/keith/github/ohanaverse/local-ai-setup/wt install
   ```
 
-  **Check the binary:** if `wt --help` lacks a flag or command this guide names (`--root`, `--new`, `wt cleanup`, `wt rescue`), the `wt` on PATH is older than the guide. The rebuild command above is the fix: it builds over the PATH copy at `~/.local/bin/wt`; a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4).
+  **Check the binary:** if `wt --help` lacks a flag or command this guide names (`--root`, `--new`, `wt cleanup`, `wt rescue`), the `wt` on PATH is older than the guide. The rebuild command above is the fix: `make -C wt install` builds `wt-session`, `wt` (the same binary under two names) and `wt-model`, re-seals each and installs them and the shims over the PATH copies in `~/.local/bin/` (a bare `go build` would refresh only one of them); a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4).
 - **Shims on PATH** (`claude-wt` … `shell-wt` in `/Users/keith/.local/bin/`). Missing? `make install` from `/Users/keith/github/ohanaverse/local-ai-setup/wt` — verified real (copies `bin/*-wt` to `/Users/keith/.local/bin/` and re-signs on macOS to dodge AMFI `SIGKILL`/exit 137). All 7 shims present here:
 
   ```
@@ -233,7 +233,7 @@ command -v little-coder   # must resolve — see below
 
 **The wrapper binary must be on PATH — a missing wrapper is the one *fatal* profile error.** Every other profile problem degrades to an unprofiled launch with a stderr warning; this one aborts the launch.
 
-No `~/.config/little-coder/models.json` override is needed for wt launches: wt's pi driver syncs `~/.pi/agent/models.json` (a wt-owned `litellm` provider block in LiteLLM mode) and passes `--model litellm/<registry-id>`; little-coder forwards unrecognized args to pi and does not inject its own default model when one is supplied.
+No `~/.config/little-coder/models.json` override is needed for wt launches: wt's pi driver syncs `~/.pi/agent/models.json` (a wt-owned `litellm` provider block pointing at the model server's gateway — its origin and the client token, never the LiteLLM key) and passes `--model litellm/<gateway id>` (the gateway id is the registry id unless the row names a `gateway_id`); little-coder forwards unrecognized args to pi and does not inject its own default model when one is supplied.
 
 **Setup step 2 — write the profile.** The verified pi snippet from `wt/docs/wt-agents/profiles.md`:
 

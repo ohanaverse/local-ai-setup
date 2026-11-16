@@ -733,17 +733,18 @@ reads them. For every model, the picker's COST column uses the price **in force 
   column where a table of single prices has one. The line under the table
   names the price there (next bullet).
 - **The line under the table names the highlighted model's price** beside
-  the LiteLLM mode: `LiteLLM: on   cost~ 0.66/0.022/1.98` (input, cached
-  input and output per million tokens; `cost~` when the price depends on
-  the time; illustrative). The COST column is not always drawn: a narrow
+  its client sessions on the model server (when any):
+  `2 client session(s)   cost~ 0.66/0.022/1.98` (input, cached input and
+  output per million tokens; `cost~` when the price depends on the time;
+  illustrative). There is no LiteLLM mode to name: the model server routes.
+  The COST column is not always drawn: a narrow
   table gives up whole columns, and one with a model id longer than about
   15 characters in it, which is most tables, has no COST column at 80
   columns. This line is there when the column is not. The price on it is whole or absent, never cut
-  short: on a terminal too narrow for the mode and the price together (at
-  40 columns, a price with many digits under `LiteLLM: on` and all but the
-  shortest under `LiteLLM: off (direct)`) the price takes the line and the
-  mode gives way, and a price too long even for that leaves the line as
-  the mode alone. The pickers of `wt start` and `wt smoke` have no such
+  short: on a terminal too narrow for the client-session count and the
+  price together (at 40 columns, a price with many digits) the price takes
+  the line and the count gives way, and a price too long even on its own is
+  left off the line. The pickers of `wt start` and `wt smoke` have no such
   line; they have the COST column only.
 - The price is read once, when the table is built: on opening the picker,
   and when it is rebuilt after a start attempt. A picker left open across a

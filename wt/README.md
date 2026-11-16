@@ -23,11 +23,11 @@ The `wt` binary is a Go TUI tool that picks a worktree or branch, rotates models
 ### Go binary + shims
 
 ```bash
-make install      # Build bin/wt, copy it + the shims to ~/.local/bin/ (re-signs on macOS)
+make install      # Build bin/wt-session + bin/wt (the same binary) and bin/wt-model, copy them + the shims to ~/.local/bin/ (re-signs on macOS)
 make uninstall    # Remove from ~/.local/bin/
 ```
 
-Requires Go 1.26.7 (see `go.mod`). `make install` builds the binary itself
+Requires Go 1.26.7 (see `go.mod`). `make install` builds the binaries itself
 (`make build`) — on macOS it also re-seals the ad-hoc code signature, which a
 manual `go build` into `$GOPATH/bin` skips (AMFI then SIGKILLs the binary on
 launch, exit 137).

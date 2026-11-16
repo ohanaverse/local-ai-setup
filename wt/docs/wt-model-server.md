@@ -271,10 +271,6 @@ shutdown kills it.
 - **The gateway cannot scope agent traffic per client.** One shared token
   opens every inference path and every model LiteLLM routes. The gateway does
   not tell clients apart or limit which models a client may call.
-- **A host-local `wt` is invisible to auto-stop.** `wt` on the host still
-  counts its own sessions by process id, which the server cannot see, so a
-  model such a `wt` session uses can be auto-stopped once any client session
-  has registered it.
 - Config is read per request, job and scan, so `wt model` and `wt cloud-sync`
   edits show without a restart.
 
