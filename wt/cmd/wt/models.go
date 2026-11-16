@@ -41,7 +41,8 @@ func agentDriverNames() []string {
 }
 
 // sessionCfg is the config the client session reads: config.toml only, no
-// registry (config.LoadSession). It is read once per app. a.cfg is not
+// registry (config.LoadSession). It is read once per app. The cache is
+// unsynchronized: the main goroutine only. a.cfg is not
 // replaced: host commands keep config.Load() until the flip.
 func (a *app) sessionCfg() (*config.Config, error) {
 	if !a.sessCfgSet {
@@ -62,16 +63,23 @@ func (a *app) endpointConfigured() bool {
 	}
 	cfg, err := a.sessionCfg()
 	if err != nil {
-		return false
+		// Safest reading: a config.toml that cannot be read is not "no
+		// endpoint". Say configured, so openModels surfaces the load error
+		// instead of a quiet fall back to the legacy path.
+		return true
 	}
 	ms := cfg.ModelServer()
-	return ms.URL != "" || ms.TokenFile != ""
+	// An inline token alone counts too: openModels reports it as a problem.
+	return ms.URL != "" || ms.TokenFile != "" || ms.Token != ""
 }
 
 // openModels resolves the endpoint from [model-server] and the environment,
 // builds the client and pings. Each failure carries still, the clause saying
 // what did not happen; the typed cause stays reachable with errors.As. A
-// success is cached on the app.
+// success is cached on the app. Callers must never wrap an openModels error
+// with Still again: it already ends with the clause. The cache is
+// unsynchronized, main goroutine only: a heartbeat goroutine uses ms.client,
+// never openModels.
 func (a *app) openModels(ctx context.Context, still string) (*modelSession, error) {
 	if a.models != nil {
 		return a.models, nil

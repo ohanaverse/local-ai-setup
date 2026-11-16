@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
 
 func remoteAgent() config.Agent { return config.Agent{Name: "claude", AllProviders: true} }
@@ -95,5 +98,73 @@ func TestResolveModelRemoteBlockedPinShowsServerReason(t *testing.T) {
 	row, _, err = resolveModelRemote(context.Background(), ms, remoteAgent(), "", "", "openrouter/a")
 	if err != nil || row.ID != "openrouter/a" {
 		t.Errorf("launch pin: row=%+v err=%v", row, err)
+	}
+}
+
+// TestResolveModelRemotePinMustBeEligible proves a pin is checked against the
+// agent, -T and -F like today's resolveModel: another agent's native row, a
+// pin outside -T and a pin outside -F are refused with the same wording, and a
+// refused start row is never returned; an eligible pin still resolves.
+func TestResolveModelRemotePinMustBeEligible(t *testing.T) {
+	native := wireRow("copilot/gpt", modelapi.ActionLaunch, 1)
+	native.ProviderID, native.Native = "copilot", true
+	startNative := wireRow("copilot/start", modelapi.ActionStart, 2)
+	startNative.ProviderID, startNative.Native = "copilot", true
+	untagged := wireRow("openrouter/u", modelapi.ActionStart, 3)
+	untagged.Tags = []string{"chat"}
+	ok := wireRow("openrouter/a", modelapi.ActionLaunch, 4)
+	f := newFakeModelServer(t, native, startNative, untagged, ok)
+	ms := openFake(t, f)
+	ctx := context.Background()
+	for _, tc := range []struct{ name, pin, tags, family string }{
+		{"other agent native", "copilot/gpt", "", ""},
+		{"other agent native start row", "copilot/start", "", ""},
+		{"outside -T", "openrouter/u", "code", ""},
+		{"outside -F", "openrouter/a", "", "zzz"},
+	} {
+		row, _, err := resolveModelRemote(ctx, ms, remoteAgent(), tc.tags, tc.family, tc.pin)
+		want := fmt.Sprintf("model %q is not in the eligible list for agent %q", tc.pin, "claude")
+		if err == nil || err.Error() != want || row.ID != "" {
+			t.Errorf("%s: row=%q err=%v, want %q and no row", tc.name, row.ID, err, want)
+		}
+	}
+	row, _, err := resolveModelRemote(ctx, ms, remoteAgent(), "code", "f", "openrouter/a")
+	if err != nil || row.ID != "openrouter/a" {
+		t.Errorf("eligible pin: row=%q err=%v", row.ID, err)
+	}
+}
+
+// TestResolveModelRemoteEmptyMessages proves the no-pin errors say which of
+// the two things is wrong: nothing eligible (a -T typo) or eligible rows none
+// of which can be launched as they are.
+func TestResolveModelRemoteEmptyMessages(t *testing.T) {
+	start := wireRow("omlx/start", modelapi.ActionStart, 1)
+	f := newFakeModelServer(t, start)
+	ms := openFake(t, f)
+	ctx := context.Background()
+	_, _, err := resolveModelRemote(ctx, ms, remoteAgent(), "typo", "", "")
+	if want := `no models match agent "claude" with tags "typo" and family ""`; err == nil || err.Error() != want {
+		t.Errorf("nothing eligible: err = %v, want %q", err, want)
+	}
+	_, _, err = resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "wt -M <id>") {
+		t.Errorf("none launchable: err = %v, want the start-one text", err)
+	}
+}
+
+// TestResolveModelRemoteSchemaSkewSurfacesAtCatalog proves a catalog schema
+// newer than this wt reads is the unpinned resolve's error (openModels pings
+// and never reads the schema), typed, and without a caller's still clause.
+func TestResolveModelRemoteSchemaSkewSurfacesAtCatalog(t *testing.T) {
+	f := newFakeModelServer(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+	ms := openFake(t, f)
+	f.Schema = modelapi.SchemaVersion + 1
+	_, _, err := resolveModelRemote(context.Background(), ms, remoteAgent(), "", "", "")
+	var se *modelclient.SchemaError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v, want *SchemaError", err)
+	}
+	if strings.Contains(err.Error(), "nothing was") {
+		t.Errorf("err carries a still clause: %v", err)
 	}
 }

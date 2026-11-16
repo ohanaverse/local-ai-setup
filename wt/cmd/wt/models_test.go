@@ -19,6 +19,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tokenfile"
 )
 
 // fakeModelServer is the only network a cmd/wt test may reach: a wt-model on
@@ -221,8 +222,8 @@ tags = ["code"]
 `
 
 // TestOpenModelsWrapsEveryFailureWithStill proves every way openModels can
-// fail (nothing configured, unreachable, a wrong token, API skew, a newer
-// catalog schema, a token in config.toml) says what did not happen, ending the
+// fail (nothing configured, unreachable, a wrong token, API skew, a token in
+// config.toml) says what did not happen, ending the
 // text with the caller's clause, and keeps the typed cause for errors.As.
 func TestOpenModelsWrapsEveryFailureWithStill(t *testing.T) {
 	const still = "nothing was started"
@@ -274,21 +275,6 @@ func TestOpenModelsWrapsEveryFailureWithStill(t *testing.T) {
 		var se *modelclient.SkewError
 		if !errors.As(err, &se) {
 			t.Errorf("err = %T, want *SkewError", err)
-		}
-	})
-	t.Run("schema", func(t *testing.T) {
-		f := newFakeModelServer(t)
-		f.Schema = modelapi.SchemaVersion + 1
-		a := pointAtFake(t, f, "")
-		ms, err := a.openModels(context.Background(), still)
-		if err == nil {
-			_, err = ms.client.Catalog(context.Background())
-			err = modelclient.Still(err, still)
-		}
-		ends(t, err)
-		var se *modelclient.SchemaError
-		if !errors.As(err, &se) {
-			t.Errorf("err = %T, want *SchemaError", err)
 		}
 	})
 	t.Run("inline token", func(t *testing.T) {
@@ -343,6 +329,13 @@ func TestRemoteExitTable(t *testing.T) {
 		{"skew", &modelclient.SkewError{Addr: "a"}, 1},
 		{"unknown model", &modelclient.UnknownModelError{Message: "m"}, 1},
 		{"plain", errors.New("x"), 1},
+		{"schema", &modelclient.SchemaError{Addr: "a", Server: 2, Client: 1}, 1},
+		{"not a model server", &modelclient.NotModelServerError{Addr: "a", Why: "w"}, 1},
+		{"gateway down", &modelclient.GatewayDownError{Addr: "a"}, 1},
+		{"token file", &tokenfile.Error{Path: "/p", Kind: tokenfile.KindLoose, Detail: "0644"}, 1},
+		{"session token error", modelclient.SessionTokenError(&tokenfile.Error{Path: "/p", Kind: tokenfile.KindLoose, Detail: "0644"}), 1},
+		{"still-wrapped not configured", modelclient.Still(&modelclient.NotConfiguredError{MissingURL: true, MissingToken: true}, "x"), 1},
+		{"canceled", context.Canceled, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := remoteExit(tc.err)
@@ -392,7 +385,7 @@ func loopbackOnlyModelClient(ep modelclient.Endpoint) *modelclient.Client {
 		}
 		return d.DialContext(ctx, network, addr)
 	}}
-	return modelclient.New(ep, modelclient.WithHTTPClient(&http.Client{Transport: tr}))
+	return modelclient.New(ep, modelclient.WithHTTPClient(&http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}))
 }
 
 // TestModelClientSeamRefusesNonLoopback pins TestMain's guard: the client a
@@ -402,5 +395,37 @@ func TestModelClientSeamRefusesNonLoopback(t *testing.T) {
 	_, err := c.Ping(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "loopback only") {
 		t.Errorf("err = %v, want the loopback refusal", err)
+	}
+}
+
+// TestEndpointConfiguredInlineTokenOnlyAndLoadFailure proves a [model-server]
+// holding only an inline token counts as configured (so openModels can report
+// the problem), that a config.toml that fails to load counts as configured
+// (the error surfaces from openModels instead of a quiet legacy path), and
+// that openModels then reports each.
+func TestEndpointConfiguredInlineTokenOnlyAndLoadFailure(t *testing.T) {
+	write := func(t *testing.T, body string) {
+		home := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", home)
+		_ = os.MkdirAll(filepath.Join(home, "agent-wt"), 0o755)
+		if err := os.WriteFile(filepath.Join(home, "agent-wt", "config.toml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, "[model-server]\ntoken = \"secret\"\n")
+	a := &app{}
+	if !a.endpointConfigured() {
+		t.Error("inline token only: endpointConfigured = false")
+	}
+	if _, err := a.openModels(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "token_file") {
+		t.Errorf("openModels err = %v, want the inline-token problem", err)
+	}
+	write(t, "this is [not toml\n")
+	b := &app{}
+	if !b.endpointConfigured() {
+		t.Error("unloadable config: endpointConfigured = false")
+	}
+	if _, err := b.openModels(context.Background(), "x"); err == nil {
+		t.Error("unloadable config: openModels err = nil")
 	}
 }
