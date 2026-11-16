@@ -4,6 +4,14 @@
 
 ### Changed
 
+- A "no" at any question now exits 3 with one line, `wt: approval missing:
+  declined; nothing was <started|stopped|removed|launched|created|changed>`,
+  like a missing approval: the replace, others, stop and `model rm` questions,
+  the `wt: continue? [Y/n]` launch question (the picker's included, which
+  ended with exit 0 and no message) and the `y/N` questions of `wt remove`,
+  `wt rescue` and `wt restore-root` (their `not confirmed` line now reads the
+  same). `wt cloud-sync` keeps its own codes.
+
 - The worktree list's `PR#` column names the PR and its state (`#555 merged`,
   `#3 open`) and shows `?` while a PR lookup could not answer; the row's
   badges after the verdict no longer repeat PR info, and the `/` filter keeps

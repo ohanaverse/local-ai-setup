@@ -18,8 +18,9 @@ Each of the three writing commands makes one locked write of the registry and
 then syncs the LiteLLM routes once. The exit code is 0 when the write
 succeeded, even if the sync could only warn; it is 1 for a value that cannot
 be used, an unknown or duplicate id, an id that more than one registry row
-carries (`edit` and `rm`), a registry that cannot be read, or a removal that
-was declined.
+carries (`edit` and `rm`), or a registry that cannot be read; it is 3 for a
+`rm` that needed approval and got none (no `--yes` and no terminal, or the
+question was declined) and removed nothing.
 
 ## `wt model list [--json]`
 
@@ -290,7 +291,9 @@ each with an id of its own, are edited as usual.
 Removes the rows from the registry, and nothing else: it prints where each
 removed model's weights are, because wt deletes none. A local model that is
 still on disk shows up again in `wt model list` as `STATUS new`. It asks on
-the terminal first (`--yes` skips; with no terminal and no `--yes` it refuses).
+the terminal first (`--yes` skips; with no terminal and no `--yes` it refuses,
+removing nothing, with `approval missing: pass --yes (there is no terminal to
+ask); nothing was removed` and exit 3).
 When one id is not in the registry, none is removed.
 
 An id that more than one registry row carries is refused in the same way,

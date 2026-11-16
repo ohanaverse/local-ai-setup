@@ -440,8 +440,8 @@ func TestDeclinedGateKeepsTheStopTail(t *testing.T) {
 	keepPendingPostExit(t)
 	profileApplier = nil
 	msg := runAndWaitCmd(exec.Command("true"), "claude", config.Model{ID: "prov/m"}, func() (bool, error) { return false, nil })()
-	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
-		t.Fatalf("msg = %#v; a decline is a choice: quiet, exit 0", msg)
+	if done, ok := msg.(launchDoneMsg); !ok || done.err != errLaunchDeclined {
+		t.Fatalf("msg = %#v; a decline ends the run with errLaunchDeclined (exit 3)", msg)
 	}
 	if pendingSurveyState.agent != "claude" || pendingSurveyState.m.ID != "prov/m" {
 		t.Errorf("pendingSurveyState = %+v; the decline left no stop-tail state", pendingSurveyState)
@@ -456,8 +456,8 @@ func TestDeclinedSlotGateKeepsTheStopTail(t *testing.T) {
 	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
 	row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
 	msg := runSlotAndWaitCmd(exec.Command("true"), "claude", row, func() (bool, error) { return false, nil })()
-	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
-		t.Fatalf("msg = %#v; a decline is a choice: quiet, exit 0", msg)
+	if done, ok := msg.(launchDoneMsg); !ok || done.err != errLaunchDeclined {
+		t.Fatalf("msg = %#v; a decline ends the run with errLaunchDeclined (exit 3)", msg)
 	}
 	if !pendingSurveyState.profile || pendingSurveyState.agent != "claude" {
 		t.Errorf("pendingSurveyState = %+v; the slot decline left no stop-tail state", pendingSurveyState)

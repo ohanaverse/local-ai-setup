@@ -188,7 +188,7 @@ func TestFinishRowSessionLogIsOutBeforeTheHandOff(t *testing.T) {
 		removal.WtRemoved, removal.BrDeleted, "outcome of the removal")
 	for _, which := range []string{"rescue", "restore-root"} {
 		seen := ""
-		declined := errMock("not confirmed; nothing was changed")
+		declined := errMock("approval missing: declined; nothing was changed")
 		hand := func() error {
 			seen = stdoutSoFar(t)
 			return &HandOffNote{Text: "declined", Err: declined}

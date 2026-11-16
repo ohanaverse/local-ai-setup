@@ -347,7 +347,7 @@ func TestRestoreRootCmdApproval(t *testing.T) {
 
 			_, _, err := runRestoreRoot(t, a, dir, answer, "--no-fetch")
 
-			if exitOf(err) != 3 || !strings.Contains(err.Error(), "not confirmed; nothing was changed") {
+			if exitOf(err) != 3 || !strings.Contains(err.Error(), "approval missing: declined; nothing was changed") {
 				t.Fatalf("err = %v (exit %d)", err, exitOf(err))
 			}
 			if repoWorld(t, dir) != world || rootState(t, dir) != before {

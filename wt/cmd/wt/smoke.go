@@ -69,14 +69,18 @@ func smokeCmd(a *app) *cobra.Command {
 		// main prints the one error line; cobra's own print made a failed
 		// start's message, log tail included, come out twice (#344).
 		SilenceErrors: true,
+		// A usage mistake shows usage (RunE below sets it per error), so the
+		// walk in rootCmd leaves this command's SilenceUsage alone.
+		Annotations: map[string]string{usageOnMistakeAnnotation: "smoke"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			anyFail, err := runSmoke(cmd, a, args)
 			if err != nil {
 				// An interrupt is not a usage mistake: no flag summary after it.
 				// Neither is a start that failed or was refused, and with
 				// cobra's "Error:" line gone the summary would stand alone
-				// above main's one line.
-				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err)
+				// above main's one line. A "no" at the --cwd launch question
+				// is a decline (exit 3), not a usage mistake either.
+				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err) || errors.Is(err, errCancelled)
 				return err
 			}
 			if anyFail {
@@ -181,7 +185,7 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		}
 		t, terr := launchwarn.ForDir(cwd)
 		if gerr := confirmLaunch(t, terr, cmd.InOrStdin(), osStderr, stdinTTY()); gerr != nil {
-			return false, nil // declined: a quiet stop, like every other no
+			return false, gerr // declined: exit 3, like every other no
 		}
 	}
 

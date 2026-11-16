@@ -57,7 +57,7 @@ var (
 func promptStop(question string) (bool, error) {
 	f, err := openTTY()
 	if err != nil {
-		return false, fmt.Errorf("%s — rerun with --yes to confirm", question)
+		return false, errNoTerminal
 	}
 	defer f.Close()
 	if _, err := fmt.Fprintf(f, "%s [y/N] ", question); err != nil {
@@ -97,8 +97,12 @@ func stopCmd(a *app) *cobra.Command {
 			"--yes skips it.",
 		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop\n  wt stop --all --yes",
 		Args:    cobra.MaximumNArgs(1),
+		// A usage mistake (a bad argument) shows usage; every other failure
+		// does not (RunE below), so the walk in rootCmd leaves this one alone.
+		Annotations: map[string]string{usageOnMistakeAnnotation: "stop"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.cfgErr != nil {
+				cmd.SilenceUsage = true
 				return configError(a.cfgErr)
 			}
 			arg := ""
@@ -336,10 +340,10 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s)%s%s; stop them all?", inUse, strings.Join(users, ", "), unreadClause(unread, false), loading))
 		if err != nil {
-			return err
+			return noTerminalRefusal(err, "--yes", "nothing was stopped")
 		}
 		if !ok {
-			return errors.New("cancelled — nothing was stopped")
+			return declined("nothing was stopped")
 		}
 	}
 	var failures []error
@@ -630,10 +634,10 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("%s in use by %d live wt session(s) (%s)%s; stop anyway?", what, inUse, strings.Join(users, ", "), blind))
 		if err != nil {
-			return err
+			return noTerminalRefusal(err, "--yes", "nothing was stopped")
 		}
 		if !ok {
-			return fmt.Errorf("cancelled — %s is still running", arg)
+			return declined(arg + " is still running")
 		}
 	}
 	if halt {

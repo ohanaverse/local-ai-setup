@@ -2365,7 +2365,7 @@ func TestRunCleanupListLogIsOutBeforeAHandOffDies(t *testing.T) {
 func TestRunCleanupListReentersAfterANoteHandOff(t *testing.T) {
 	row := cleanup.Row{Name: "spike"}
 	for _, which := range []string{"rescue", "restore-root"} {
-		declined := errMock("not confirmed; nothing was changed")
+		declined := errMock("approval missing: declined; nothing was changed")
 		note := &HandOffNote{Text: which + ": not confirmed - nothing changed", Err: declined}
 		runs, fetches := 0, 0
 		var statuses []string

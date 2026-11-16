@@ -165,7 +165,7 @@ var osStderr io.Writer = os.Stderr
 func promptReplace(question string) (bool, error) {
 	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
-		return false, fmt.Errorf("%s — rerun with --replace to confirm", question)
+		return false, errNoTerminal
 	}
 	defer f.Close()
 	if _, err := fmt.Fprintf(f, "%s [y/N] ", question); err != nil {
@@ -348,7 +348,7 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 	ask := func(question string) (bool, error) {
 		v, err := race(func() (any, error) { return askReplace(question) })
 		ok, _ := v.(bool)
-		return ok, err
+		return ok, noTerminalRefusal(err, "--replace", "nothing was started")
 	}
 	askOthers := func(question string, canStop bool) (othersChoice, error) {
 		v, err := race(func() (any, error) { return chooseOthers(question, canStop) })
@@ -401,7 +401,7 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 					return restartOwed, false, perr
 				}
 				if !ok {
-					return restartOwed, false, fmt.Errorf("cancelled — %s may still be serving a model", unk.ProviderID)
+					return restartOwed, false, declined(unk.ProviderID + " may still be serving a model")
 				}
 			}
 			replacingMu.Lock()
@@ -425,7 +425,7 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 					return restartOwed, false, perr
 				}
 				if !ok {
-					return restartOwed, false, fmt.Errorf("cancelled — %s still running", names)
+					return restartOwed, false, declined(names + " still running")
 				}
 			}
 		}
@@ -514,7 +514,7 @@ func isStartError(err error) bool {
 // guessing.
 func askReplace(question string) (bool, error) {
 	if !stdinTTY() {
-		return false, fmt.Errorf("%s — rerun with --replace to confirm", question)
+		return false, errNoTerminal
 	}
 	return confirmReplace(question)
 }

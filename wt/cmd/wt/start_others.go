@@ -67,7 +67,7 @@ var chooseOthers = promptOthers
 func promptOthers(question string, canStop bool) (othersChoice, error) {
 	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
-		return othersCancel, fmt.Errorf("cannot ask about other providers' models: %w — rerun with --others=keep or --others=stop", err)
+		return othersCancel, approvalMissing("--others=keep|stop", "nothing was started")
 	}
 	defer f.Close()
 	if _, err := fmt.Fprintf(f, "%s ", question); err != nil {
@@ -154,7 +154,7 @@ func othersCancelled(occ *lifecycle.OccupiedError) error {
 		ids[i] = r.Entry.ModelID
 	}
 	if len(ids) == 0 {
-		return fmt.Errorf("cancelled — nothing was stopped")
+		return declined("nothing was stopped")
 	}
-	return fmt.Errorf("cancelled — %s still loaded", strings.Join(ids, ", "))
+	return declined(strings.Join(ids, ", ") + " still loaded")
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -242,7 +243,7 @@ func TestStopHaltAsksWhenTheFamilyHasLiveSessions(t *testing.T) {
 			halted := stubHalt(t)
 			asked := stubStopConfirm(t, false)
 			err := runStop(io.Discard, stopCfg(), tc.arg, false)
-			if err == nil || !strings.Contains(err.Error(), "cancelled") {
+			if err == nil || !strings.Contains(err.Error(), "approval missing: declined") {
 				t.Fatalf("declined: err = %v, want a cancellation", err)
 			}
 			if !slices.Equal(*asked, []string{tc.want}) {
@@ -280,8 +281,8 @@ func TestStopHaltRefusesWithoutATerminal(t *testing.T) {
 		stopped := stubStopState(t, families("mtplx", fs))
 		halted := stubHalt(t)
 		err := run()
-		if err == nil || !strings.Contains(err.Error(), "rerun with --yes") || !strings.Contains(err.Error(), "1 live wt session(s)") {
-			t.Fatalf("err = %v, want the question and --yes named", err)
+		if err == nil || err.Error() != "approval missing: pass --yes (there is no terminal to ask); nothing was stopped" || exitcode.Of(err) != 3 {
+			t.Fatalf("err = %v (exit %d), want --yes named, exit 3", err, exitcode.Of(err))
 		}
 		if len(*halted) != 0 || len(*stopped) != 0 {
 			t.Fatalf("halted = %v stopped = %v, want nothing touched", *halted, *stopped)

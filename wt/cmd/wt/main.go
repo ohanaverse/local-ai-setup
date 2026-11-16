@@ -10,6 +10,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
@@ -246,10 +247,9 @@ func runLaunchPath(
 // printOnce leaves the error of a launch whose -M pin could not be started
 // to main, which prints every error after "wt:". cobra prints it as well, as
 // "Error: …", and a failed start's message carries the server's log tail, so
-// it came out twice in full (#344). Only that error is taken from cobra here:
-// the root command's other errors are printed as they were. `wt start` and
-// `wt smoke` silence cobra for the whole command instead (SilenceErrors), as
-// `wt cloud-sync` does.
+// it came out twice in full (#344). The root command now silences that line
+// for the whole tree (SilenceErrors); marking it here too keeps a command not
+// built through rootCmd quiet.
 //
 // cobra's usage block goes with it: the root command prints one after every
 // error, and a start that failed or was refused is not a usage mistake. Left
@@ -290,8 +290,7 @@ func refuseCwdValue(agent, word string) error {
 func rootCmd() *cobra.Command {
 	a, err := newApp()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "wt: error:", err)
-		os.Exit(1)
+		return failedRoot(err)
 	}
 
 	var showVersion bool
@@ -319,7 +318,15 @@ func rootCmd() *cobra.Command {
 		// "unknown command \"npm\" for \"wt\"" even though Find() would never
 		// have routed them to a subcommand anyway.
 		Args: cobra.ArbitraryArgs,
+		// cobra's own "Error:" line is silenced for the whole tree: main
+		// prints every error once, as "wt: <message>" (reportExit). Usage is
+		// silenced per command (silenceUsageOnError), not here: a root-level
+		// SilenceUsage would silence every subcommand's usage too.
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Flags and arguments have parsed: nothing below is a usage
+			// mistake that cobra's usage block would help with.
+			cmd.SilenceUsage = true
 			// Read the raw --agent flag early so --init can seed agent-specific
 			// pointer files when a wrapper like claude-wt forwards --agent claude.
 			agentFlag := mustGetString(cmd, "agent")
@@ -378,19 +385,12 @@ func rootCmd() *cobra.Command {
 					places++
 				}
 			}
-			// Each refusal below is final, not a usage mistake: silence
-			// cobra's usage block so main's one "wt:" line is the message.
-			refuse := func(err error) error {
-				cmd.SilenceErrors = true
-				cmd.SilenceUsage = true
-				return err
-			}
 			if places > 1 {
-				return refuse(fmt.Errorf("--root, --cwd and -W are mutually exclusive: each says where to launch"))
+				return fmt.Errorf("--root, --cwd and -W are mutually exclusive: each says where to launch")
 			}
 			newFlag, _ := cmd.Flags().GetBool("new")
 			if newFlag && mustGetString(cmd, "worktree") == "" {
-				return refuse(fmt.Errorf("--new is only valid with -W <name>"))
+				return fmt.Errorf("--new is only valid with -W <name>")
 			}
 
 			if check, _ := cmd.Flags().GetBool("check-guard"); check {
@@ -398,13 +398,10 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				switch status {
-				case guard.Installed:
-					fmt.Println("wt: main guard is installed in this repo.")
-				default:
-					fmt.Fprintln(os.Stderr, "wt: main guard is NOT installed in this repo.")
-					os.Exit(1)
+				if status != guard.Installed {
+					return exitcode.New(1, errors.New("main guard is NOT installed in this repo."), false)
 				}
+				fmt.Println("wt: main guard is installed in this repo.")
 				return nil
 			}
 
@@ -518,19 +515,16 @@ func rootCmd() *cobra.Command {
 			// another live session holds still asks.
 			if rootFlag {
 				if _, err := worktree.RepoRoot(); err != nil {
-					return refuse(fmt.Errorf("not in a git repo: %w", err))
+					return fmt.Errorf("not in a git repo: %w", err)
 				}
 				root, err := worktree.PrimaryOf(".")
 				if err != nil {
-					return refuse(fmt.Errorf("no primary checkout: %w", err))
+					return fmt.Errorf("no primary checkout: %w", err)
 				}
 				t, terr := launchwarn.ForDir(root)
 				t.RootChosen = true
 				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
-					if errors.Is(err, errCancelled) {
-						return nil
-					}
-					return refuse(err)
+					return err
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, root, root)
 			}
@@ -549,7 +543,7 @@ func rootCmd() *cobra.Command {
 				}
 				plan, err := worktree.Resolve(root, name)
 				if err != nil {
-					return refuse(err)
+					return err
 				}
 				// The target is read before the plan runs, so a creation is
 				// described while it is still only planned.
@@ -561,14 +555,11 @@ func rootCmd() *cobra.Command {
 					t, terr = launchwarn.ForDir(plan.Path())
 				}
 				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
-					if errors.Is(err, errCancelled) {
-						return nil
-					}
-					return refuse(err)
+					return err
 				}
 				path, err := plan.Ensure()
 				if err != nil {
-					return refuse(err)
+					return err
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, path, root)
 			}
@@ -605,10 +596,7 @@ func rootCmd() *cobra.Command {
 				// proceed — the directory choice is already the person's.
 				t, terr := launchwarn.ForDir(wd)
 				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
-					if errors.Is(err, errCancelled) {
-						return nil
-					}
-					return refuse(err)
+					return err
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, wd, root)
 			}
@@ -669,5 +657,41 @@ func rootCmd() *cobra.Command {
 	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
 	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), servedCmd(a), warmCmd(a), litellmCmd(a), profileCmd(a), modelCmd(a), cloudSyncCmd(a), worktreesCmd(a), removeCmd(a), rescueCmd(a), restoreRootCmd(a))
+	silenceUsageOnError(cmd)
 	return cmd
+}
+
+// usageOnMistakeAnnotation marks a command that prints cobra's usage block
+// itself when its arguments or flags are a usage mistake (`wt stop`, `wt
+// smoke`, set in their RunE), so silenceUsageOnError leaves it alone.
+const usageOnMistakeAnnotation = "wt-usage-on-mistake"
+
+// silenceUsageOnError sets SilenceUsage on every runnable subcommand that
+// does not carry usageOnMistakeAnnotation: an error such a command returns
+// is a failure to report, not a usage mistake, and main prints it as the one
+// "wt:" line (style guide M3). It is a walk, not a literal on each command,
+// so a new subcommand cannot forget it (TestEveryRunnableCommandSilencesUsage).
+// The root is left out: SilenceUsage on it would silence every subcommand.
+func silenceUsageOnError(root *cobra.Command) {
+	for _, c := range root.Commands() {
+		if c.Runnable() && c.Annotations[usageOnMistakeAnnotation] == "" {
+			c.SilenceUsage = true
+		}
+		silenceUsageOnError(c)
+	}
+}
+
+// failedRoot is the root command rootCmd returns when newApp cannot start
+// (a theme file that cannot be read): it runs nothing and returns that
+// error, so main reports it through the same single path as every other
+// failure, as "wt: <message>" with exit 1.
+func failedRoot(err error) *cobra.Command {
+	return &cobra.Command{
+		Use:                "wt",
+		Args:               cobra.ArbitraryArgs,
+		DisableFlagParsing: true,
+		SilenceErrors:      true,
+		SilenceUsage:       true,
+		RunE:               func(*cobra.Command, []string) error { return err },
+	}
 }
