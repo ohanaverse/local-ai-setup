@@ -36,6 +36,7 @@ type Client struct {
 	timeout time.Duration
 	sleep   func(time.Duration) // nil: a ctx-aware timer
 	gwCap   time.Duration
+	drive   driveOptions
 
 	mu     sync.Mutex
 	pinged bool
@@ -56,7 +57,8 @@ func WithRequestTimeout(d time.Duration) Option { return func(c *Client) { c.tim
 // withGatewayCap shortens the gateway wait cap for a test.
 func withGatewayCap(d time.Duration) Option { return func(c *Client) { c.gwCap = d } }
 
-// WithSleep replaces the sleep WaitGatewayReady uses between polls.
+// WithSleep replaces the sleep WaitGatewayReady and the job driver use
+// between polls.
 func WithSleep(f func(time.Duration)) Option { return func(c *Client) { c.sleep = f } }
 
 // New returns a client for ep.
