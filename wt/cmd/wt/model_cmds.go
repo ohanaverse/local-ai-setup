@@ -97,8 +97,12 @@ func stopCmd(a *app) *cobra.Command {
 			"--yes skips it.",
 		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop\n  wt stop --all --yes",
 		Args:    cobra.MaximumNArgs(1),
+		// A usage mistake (a bad argument) shows usage; every other failure
+		// does not (RunE below), so the walk in rootCmd leaves this one alone.
+		Annotations: map[string]string{usageOnMistakeAnnotation: "stop"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.cfgErr != nil {
+				cmd.SilenceUsage = true
 				return configError(a.cfgErr)
 			}
 			arg := ""

@@ -69,6 +69,9 @@ func smokeCmd(a *app) *cobra.Command {
 		// main prints the one error line; cobra's own print made a failed
 		// start's message, log tail included, come out twice (#344).
 		SilenceErrors: true,
+		// A usage mistake shows usage (RunE below sets it per error), so the
+		// walk in rootCmd leaves this command's SilenceUsage alone.
+		Annotations: map[string]string{usageOnMistakeAnnotation: "smoke"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			anyFail, err := runSmoke(cmd, a, args)
 			if err != nil {

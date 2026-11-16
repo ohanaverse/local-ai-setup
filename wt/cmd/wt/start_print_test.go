@@ -122,8 +122,9 @@ func TestLaunchLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 			if tc.start != nil && (!errors.Is(err, tc.start) || err.Error() != tc.start.Error()) {
 				t.Errorf("err = %v, want the start's error, text unchanged", err)
 			}
-			if root.SilenceErrors != tc.silence || root.SilenceUsage != tc.silence {
-				t.Errorf("SilenceErrors = %v, SilenceUsage = %v, want both %v", root.SilenceErrors, root.SilenceUsage, tc.silence)
+			// The root silences cobra's error line for every error (W2).
+			if !root.SilenceErrors || root.SilenceUsage != tc.silence {
+				t.Errorf("SilenceErrors = %v, SilenceUsage = %v, want true and %v", root.SilenceErrors, root.SilenceUsage, tc.silence)
 			}
 		})
 	}
