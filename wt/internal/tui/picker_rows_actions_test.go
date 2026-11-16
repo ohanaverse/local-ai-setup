@@ -49,7 +49,7 @@ func (r *actionRecorder) funcs() RemoveFuncs {
 // as one of Run's arguments), loaded from rep as the picker first paints.
 func pickerActionsReady(t *testing.T, rep cleanup.Report, build RemoveFuncsBuilder) model {
 	t.Helper()
-	m := newRunModel(false, false, "", "", "", "", "", nil, themes.Default, "", &config.Config{}, build)
+	m := newRunModel(false, false, "", "", "", "", "", nil, themes.Default, "", nil, &config.Config{}, build)
 	m.width, m.height = 100, 40
 	m, _ = updateMsg(m, rowsLoadedMsg{report: rep, repoRoot: rep.Repo})
 	if !m.ready {

@@ -16,6 +16,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -181,7 +182,23 @@ func runLaunchPath(
 		// (internal/tui's launchGate) — except for a preset path, which
 		// RunE's confirmLaunch above has already asked about, so a root
 		// launch is asked at most once.
-		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
+		// With a model server configured the picker reads its table from it
+		// (and the session config, which has no registry); otherwise nil is
+		// the legacy registry path.
+		var models tui.ModelClient
+		tuiCfg := a.cfg
+		if remote {
+			ms, merr := a.buildModels(launchStill)
+			if merr != nil {
+				return printOnce(cmd, remoteExit(merr))
+			}
+			scfg, serr := a.sessionCfg()
+			if serr != nil {
+				return printOnce(cmd, remoteExit(modelclient.Still(serr, launchStill)))
+			}
+			models, tuiCfg = tui.NewModelClient(ms.client, ms.ep), scfg
+		}
+		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, models, tuiCfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
 		printSlotNotes()
 		// tui.Run returns the agent's run error after its post-exit flow;
 		// a non-zero exit becomes wt's own status, as on the non-TUI path,

@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/spf13/cobra"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -465,5 +467,48 @@ func TestUnreachableServerFailsFastWithAddress(t *testing.T) {
 	}
 	if len(*r.built) != 0 {
 		t.Errorf("agents built = %d, want none", len(*r.built))
+	}
+}
+
+// TestPickerGetsTheModelServerOnlyWhenOneIsConfigured proves the one tui.Run
+// caller hands the picker its model-server client exactly when an endpoint is
+// configured (and the session config with it), and nil otherwise, so the
+// legacy registry path is unchanged. The picker's fetch itself runs inside the
+// TUI; nothing here reaches the fake server.
+func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
+	r := newRemoteRig(t)
+	oldTUI, oldGuard := tuiRun, maybeInstallGuard
+	t.Cleanup(func() { tuiRun, maybeInstallGuard = oldTUI, oldGuard })
+	var gotModels tui.ModelClient
+	var called bool
+	tuiRun = func(_, _ bool, _ string, _, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, _ *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
+		called, gotModels = true, models
+		return nil
+	}
+	cmd := &cobra.Command{}
+	cmd.Flags().String("model", "", "")
+	cmd.Flags().Bool("yolo", false, "")
+	if err := runLaunchPath(cmd, r.a, "", "", "", "", nil, "", ""); err != nil {
+		t.Fatalf("runLaunchPath: %v", err)
+	}
+	if !called || gotModels == nil {
+		t.Fatalf("tuiRun called = %v, models nil = %v, want the model-server client", called, gotModels == nil)
+	}
+	if len(r.f.Reqs) != 0 {
+		t.Errorf("the launch path asked the server %v before the picker opened", r.f.Reqs)
+	}
+
+	// No endpoint: nil.
+	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN"} {
+		t.Setenv(k, "")
+	}
+	a := &app{cfg: &config.Config{}}
+	a.sessCfgSet, a.sessCfg = true, &config.Config{}
+	called, gotModels = false, nil
+	if err := runLaunchPath(cmd, a, "", "", "", "", nil, "", ""); err != nil {
+		t.Fatalf("legacy runLaunchPath: %v", err)
+	}
+	if !called || gotModels != nil {
+		t.Errorf("legacy: called = %v, models = %v, want a call with nil", called, gotModels)
 	}
 }

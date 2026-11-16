@@ -84,6 +84,22 @@ func (a *app) openModels(ctx context.Context, still string) (*modelSession, erro
 	if a.models != nil {
 		return a.models, nil
 	}
+	ms, err := a.buildModels(still)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ms.client.Ping(ctx); err != nil {
+		return nil, modelclient.Still(err, still)
+	}
+	a.models = ms
+	return a.models, nil
+}
+
+// buildModels resolves the endpoint and builds the client without asking the
+// server anything. The picker uses it directly: its first request pings, so an
+// unreachable server shows as a failed fetch the user can retry with F instead
+// of ending wt before the screen opens.
+func (a *app) buildModels(still string) (*modelSession, error) {
 	cfg, err := a.sessionCfg()
 	if err != nil {
 		return nil, modelclient.Still(err, still)
@@ -102,12 +118,7 @@ func (a *app) openModels(ctx context.Context, still string) (*modelSession, erro
 	if err != nil {
 		return nil, modelclient.Still(err, still)
 	}
-	c := newModelClient(ep)
-	if _, err := c.Ping(ctx); err != nil {
-		return nil, modelclient.Still(err, still)
-	}
-	a.models = &modelSession{client: c, ep: ep}
-	return a.models, nil
+	return &modelSession{client: newModelClient(ep), ep: ep}, nil
 }
 
 // remoteExit is the one mapping from a model-server error to an exit status:

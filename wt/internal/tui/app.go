@@ -39,6 +39,7 @@ const (
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
 	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
 	phaseSlot                        // a slot-profile launch is writing its routes, restarting or probing the proxy
+	phaseCatalog                     // the model server's catalog is loading, or its fetch failed (F retries)
 )
 
 // model holds the entire UI state.
@@ -73,6 +74,13 @@ type model struct {
 	tag   string         // active rotation tag group
 	cfg   *config.Config // loaded config for the model catalog
 	theme themes.Theme   // active color theme; passed from cmd/wt
+
+	// client is the model server the picker reads its table from; nil is the
+	// legacy registry path (deleted in a later task).
+	client ModelClient
+	// catalogFailed is true while phaseCatalog shows a failed fetch (m.status
+	// then holds its `error: ` text and F retries).
+	catalogFailed bool
 
 	// model picker (the agent+model screen IS the picker)
 	models list.Model // bubble/list of agent+tag models
@@ -285,6 +293,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.committed = false
 		m.phase = phaseModel
 		return m.refreshTable()
+	case catalogLoadedMsg, catalogFailedMsg:
+		return m.handleCatalogMsg(msg)
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.
@@ -426,6 +436,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 			}
 			return m.updateRows(msg)
 		}
+		// The catalog's loading and failed screens own the keyboard (only the
+		// keys they list act).
+		if m.phase == phaseCatalog {
+			return m.handleCatalogKey(msg)
+		}
 		// A status that has the screen to itself (statusAlone) is taken down
 		// by the next key, which does nothing else: the table was not on
 		// screen, so no key can have been meant for it. ctrl+c still quits.
@@ -544,6 +559,15 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				// The highlighted list item is what gets launched.
 				highlighted, ok := m.models.SelectedItem().(*modelItem)
 				if !ok {
+					return m, nil
+				}
+				if m.client != nil {
+					// The API path's table is read-only until the start and
+					// launch flow moves onto the server: a blocked row says
+					// why, any other does nothing yet.
+					if highlighted.blocked != "" {
+						m.status = highlighted.blocked
+					}
 					return m, nil
 				}
 				if highlighted.profile != nil && highlighted.blocked == "" {
@@ -736,6 +760,9 @@ func (m model) View() string {
 		}
 		return drawnFrame(&m.replace.choices, m.height, m.replaceFrames()...)(m.replace.choices.View())
 	}
+	if m.phase == phaseCatalog {
+		return m.catalogView()
+	}
 	if m.phase == phaseModel {
 		if m.width <= 0 || m.height <= 0 {
 			return "model picker (waiting for window size)"
@@ -876,6 +903,9 @@ func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmod
 // the registry is walked once per entry. A config error or an empty eligible
 // list sets the status and leaves the phase where it is.
 func (m model) enterModelPhaseForAgent() (model, tea.Cmd) {
+	if m.client != nil {
+		return m.beginCatalogLoad()
+	}
 	firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
 	fullCatalog, err := m.cfg.ModelsForAgent(m.agent)
 	if err != nil {
@@ -1336,8 +1366,9 @@ const loadingStatus = "loading worktrees..."
 // newRunModel builds the TUI's initial model from Run's arguments. It is split
 // out of Run so tests can pin the argument-to-field plumbing (e.g. --replace)
 // without starting a real tea.Program.
-func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, removeFuncs RemoveFuncsBuilder) model {
+func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, removeFuncs RemoveFuncsBuilder) model {
 	return model{
+		client:       models,
 		status:       loadingStatus,
 		cfg:          cfg,
 		theme:        theme,
@@ -1382,7 +1413,8 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // at the agent/command picker (or model phase when agent is pinned). When
 // prePath is inside a git repo, repoRoot is seeded so the new-worktree prompt
 // has a valid directory even if it becomes reachable from the pre-path entry
-// point. cfg is the already-loaded config from cmd/wt's newApp (validated
+// point. models, when non-nil, is the model server the picker reads its
+// table from; nil is the legacy registry path. cfg is the already-loaded config from cmd/wt's newApp (validated
 // before Run is called); it is not re-loaded here.
 // applyProfile, when non-nil, applies a local-model launch profile before
 // the agent's cmd.Run() and is called from runAndWaitCmd for every launch
@@ -1398,8 +1430,8 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // When the launched agent's run failed, Run returns that error (an
 // *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
 // cmd/wt exits with the agent's status (#412).
-func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
-	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, cfg, removeFuncs), slots)
+func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
+	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, models, cfg, removeFuncs), slots)
 	p := tea.NewProgram(initial, tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.
