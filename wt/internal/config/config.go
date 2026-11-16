@@ -594,6 +594,12 @@ type Model struct {
 	// load; read it through PricingUpdated.
 	PricingUpdatedAt any  `toml:"pricing_updated_at,omitempty"`
 	Native           bool `toml:"-"` // derived: provider auth.type == "native"; not persisted
+	// HostContext is a cloud model's context window as the wt-model server
+	// reports it; 0 otherwise. Session-side only, never persisted.
+	HostContext int `toml:"-"`
+	// GatewayID is the id an agent must send to the gateway; empty means ID.
+	// Session-side only, never persisted.
+	GatewayID string `toml:"-"`
 }
 
 // pricingStampLayouts are the spellings of pricing_updated_at wt reads: the

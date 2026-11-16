@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
@@ -54,6 +55,10 @@ type Row struct {
 	// else, so code that reads another Model field, resolves a route or
 	// starts the model must test Profile first.
 	Profile *ProfileRow
+	// Wire is the server catalog row this Row was made from (FromWire). When
+	// set, Ready, Action and BlockReason answer from it, not from the local
+	// lifecycle rules, since the server already decided them.
+	Wire *modelapi.Row
 }
 
 // Input gathers everything Build needs. Models is the caller's eligible list
@@ -277,7 +282,12 @@ func Find(rows []Row, id string) (Row, bool) {
 // Ready reports whether the row's model can take a request now: running, and
 // not still loading. A cloud row is never Running, so it is never Ready; its
 // launch does not depend on this.
-func (r Row) Ready() bool { return r.Running && !r.Loading }
+func (r Row) Ready() bool {
+	if r.Wire != nil {
+		return r.Wire.State == modelapi.StateRunning
+	}
+	return r.Running && !r.Loading
+}
 
 // Action reports what selecting r does. A local row that is not Ready is
 // startable when its provider has a lifecycle backend (lifecycle.Startable,
@@ -289,6 +299,9 @@ func (r Row) Ready() bool { return r.Running && !r.Loading }
 func (r Row) Action() Action {
 	if r.Profile != nil {
 		return r.Profile.Verdict
+	}
+	if r.Wire != nil {
+		return r.wireAction()
 	}
 	if r.Location != config.LocationLocal || r.Ready() {
 		return ActionLaunch
@@ -304,6 +317,12 @@ func (r Row) Action() Action {
 func (r Row) BlockReason() string {
 	if r.Profile != nil {
 		return r.Profile.Reason
+	}
+	if r.Wire != nil {
+		if r.Unmapped {
+			return ""
+		}
+		return r.Wire.BlockReason
 	}
 	if r.Action() != ActionBlock {
 		return ""
