@@ -38,7 +38,13 @@
     "allow_replace": true,
     "others": {"stop": ["ollama/llama4"]}
   },
-  "stop_request": {"model": "omlx/qwen3.8-35b", "confirm_in_use": true},
+  "jobs": {
+    "jobs": [
+      {"id": "job-0002", "kind": "start", "model": "omlx/qwen3.8-14b", "state": "running", "step": "warming up", "created": "2026-11-15T10:01:00Z", "updated": "2026-11-15T10:01:04Z"},
+      {"id": "job-0003", "kind": "stop", "model": "mtplx/org/big-model", "state": "queued", "step": "", "created": "2026-11-15T10:01:02Z", "updated": "2026-11-15T10:01:02Z"}
+    ]
+  },
+  "stop_request": {"model": "omlx/qwen3.8-35b", "confirm_in_use": true, "session": "sess-1"},
   "session_register": {"id": "sess-1", "models": ["omlx/qwen3.8-35b", "openrouter/minimax-m2.5"]},
   "session_beat": {"models": ["omlx/qwen3.8-35b"]},
   "problem": {

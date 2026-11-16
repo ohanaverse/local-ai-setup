@@ -188,3 +188,36 @@ func TestTouchRefreshesOnlySeenModels(t *testing.T) {
 		t.Fatal("Touch made an unseen model seen")
 	}
 }
+
+// TestRegistryForgetKeepsLiveUsers checks that Forget drops a model no live
+// session uses from Seen, so a model later started by hand is out of
+// auto-stop's reach again (Touch does not bring it back), while a model a
+// live session lists is kept: forgetting it would hide that session's model
+// from auto-stop until the next heartbeat. A lapsed session keeps nothing.
+func TestRegistryForgetKeepsLiveUsers(t *testing.T) {
+	r, c := newReg(time.Minute)
+	_ = r.Register("s1", []string{"a"})
+	_ = r.Register("s2", []string{"b"})
+	r.End("s2")
+	r.Forget("a")
+	if _, seen := r.IdleSince("a"); !seen {
+		t.Fatal("Forget dropped a model a live session uses")
+	}
+	if got := r.Users("a"); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("Users(a) = %v, want [s1]", got)
+	}
+	r.Forget("b")
+	if got := r.Seen(); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("Seen after Forget(b) = %v, want [a]", got)
+	}
+	r.Touch("b")
+	if _, seen := r.IdleSince("b"); seen {
+		t.Fatal("Touch brought a forgotten model back")
+	}
+	r.Forget("never-seen")         // a no-op
+	c.t = c.t.Add(2 * time.Minute) // s1 lapses
+	r.Forget("a")
+	if got := r.Seen(); len(got) != 0 {
+		t.Fatalf("Seen after the session lapsed and Forget(a) = %v, want none", got)
+	}
+}

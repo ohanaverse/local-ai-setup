@@ -99,6 +99,7 @@ func (s *Server) routes() http.Handler {
 	ctl.HandleFunc("GET /control/v1/resolve", s.resolve)
 	ctl.HandleFunc("POST /control/v1/start", s.start)
 	ctl.HandleFunc("POST /control/v1/stop", s.stop)
+	ctl.HandleFunc("GET /control/v1/jobs", s.jobsList)
 	ctl.HandleFunc("GET /control/v1/jobs/{id}", s.job)
 	ctl.HandleFunc("POST /control/v1/jobs/{id}/cancel", s.cancel)
 	ctl.HandleFunc("POST /control/v1/sessions", s.register)
@@ -110,6 +111,7 @@ func (s *Server) routes() http.Handler {
 	// The gateway authenticates itself; it is not wrapped again.
 	root.Handle("/v1/", modelgateway.New(modelgateway.Config{
 		Upstream: s.o.Upstream, UpstreamKey: s.o.UpstreamKey, Token: s.o.Token,
+		AllowPaths: modelgateway.InferencePaths,
 	}))
 	return root
 }
@@ -200,7 +202,11 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, modelapi.CodeBadRequest, "model is required")
 		return
 	}
-	id := s.jobs.Submit("start", req.Model, s.d.StartJob(req, s.sessions))
+	// A start of a model whose start is already queued or running joins that
+	// job, and so its answers (allow_replace, others): two client sessions
+	// starting one model at once must not queue a second start behind the
+	// first one's route restart.
+	id, _ := s.jobs.SubmitOnce("start", req.Model, s.d.StartJob(req, s.sessions))
 	writeJSON(w, http.StatusAccepted, modelapi.JobRef{ID: id})
 }
 
@@ -215,6 +221,16 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 	}
 	id := s.jobs.Submit("stop", req.Model, s.d.StopJob(req, s.sessions))
 	writeJSON(w, http.StatusAccepted, modelapi.JobRef{ID: id})
+}
+
+// jobsList lists the queued and running jobs of ?model=ID, or of every model
+// when it is absent.
+func (s *Server) jobsList(w http.ResponseWriter, r *http.Request) {
+	jobs := s.jobs.Active(r.URL.Query().Get("model"))
+	if jobs == nil {
+		jobs = []modelapi.JobStatus{}
+	}
+	writeJSON(w, http.StatusOK, modelapi.JobList{Jobs: jobs})
 }
 
 func (s *Server) job(w http.ResponseWriter, r *http.Request) {

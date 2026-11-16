@@ -119,6 +119,10 @@ type StartRequest struct {
 type StopRequest struct {
 	Model        string `json:"model"`
 	ConfirmInUse bool   `json:"confirm_in_use"`
+	// Session is the requester's client session id: it is left out of the
+	// in-use check and of Problem.Sessions, so a session stopping a model only
+	// it uses needs no ConfirmInUse.
+	Session string `json:"session,omitempty"`
 }
 
 // JobRef names a job the server accepted.
@@ -135,6 +139,11 @@ const (
 	JobCancelled = "cancelled"
 )
 
+// StepStillFinishing begins the step of a stop the provider accepted but has
+// not finished (style guide S5): the job succeeds and its step reads this,
+// then ": " and the engine's text. It is not an error code.
+const StepStillFinishing = "still finishing"
+
 // JobStatus is a job's current state.
 type JobStatus struct {
 	ID      string     `json:"id"`
@@ -145,6 +154,12 @@ type JobStatus struct {
 	Created string     `json:"created"`
 	Updated string     `json:"updated"`
 	Result  *JobResult `json:"result,omitempty"`
+}
+
+// JobList is the answer of GET /control/v1/jobs: the queued and running jobs,
+// oldest first. Jobs is always present, [] when none is active.
+type JobList struct {
+	Jobs []JobStatus `json:"jobs"`
 }
 
 // JobResult is a finished job's outcome.
@@ -219,9 +234,13 @@ const (
 	MsgMethodNotAllowed = "method not allowed for this control endpoint"
 	// MsgProxyUnavailable is the gateway's 503 wording.
 	MsgProxyUnavailable = "model proxy is restarting"
+	// MsgPathNotServed is the gateway's 404 wording for a path off its
+	// allowlist.
+	MsgPathNotServed = "path is not served by the gateway"
 
 	TypeAuthentication = "authentication_error"
 	TypeAPI            = "api_error"
+	TypeInvalidRequest = "invalid_request_error"
 )
 
 // ErrorObject is the object inside every non-2xx control response.

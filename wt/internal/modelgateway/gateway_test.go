@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,7 +28,7 @@ func newGateway(t *testing.T, up *httptest.Server) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gw := httptest.NewServer(New(Config{Upstream: u, UpstreamKey: testKey, Token: testToken}))
+	gw := httptest.NewServer(New(Config{Upstream: u, UpstreamKey: testKey, Token: testToken, AllowPaths: InferencePaths}))
 	t.Cleanup(gw.Close)
 	return gw
 }
@@ -187,7 +189,7 @@ func TestGatewayRestartingIs503(t *testing.T) {
 func TestGatewayIgnoresClientDisconnectCleanly(t *testing.T) {
 	cancelled := make(chan struct{})
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/ok" {
+		if r.URL.Path == "/v1/models" {
 			return
 		}
 		io.WriteString(w, "data: one\n\n")
@@ -215,7 +217,7 @@ func TestGatewayIgnoresClientDisconnectCleanly(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("upstream request context was not cancelled")
 	}
-	if got := do(t, "POST", gw.URL+"/v1/ok", map[string]string{"x-api-key": testToken}).StatusCode; got != 200 {
+	if got := do(t, "GET", gw.URL+"/v1/models", map[string]string{"x-api-key": testToken}).StatusCode; got != 200 {
 		t.Errorf("gateway after disconnect: status %d", got)
 	}
 }
@@ -242,5 +244,166 @@ func TestGateway401IsOpenAIStyle(t *testing.T) {
 	want := modelapi.GatewayErrorObject{Message: modelapi.MsgUnauthorized, Type: modelapi.TypeAuthentication, Code: modelapi.CodeUnauthorized}
 	if e.Error != want {
 		t.Errorf("body %+v, want %+v", e, want)
+	}
+}
+
+// recorder is a fake upstream that records the request URI of every call.
+type recorder struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (rec *recorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	rec.seen = append(rec.seen, r.URL.RequestURI())
+}
+
+func (rec *recorder) list() []string {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	return slices.Clone(rec.seen)
+}
+
+// wantNotServed checks a gateway 404 for a path off the allowlist: the
+// OpenAI-style body agents parse, with the shared wording.
+func wantNotServed(t *testing.T, resp *http.Response, what string) {
+	t.Helper()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("%s: status %d, want 404", what, resp.StatusCode)
+		return
+	}
+	var e modelapi.GatewayError
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+	want := modelapi.GatewayErrorObject{Message: modelapi.MsgPathNotServed, Type: modelapi.TypeInvalidRequest, Code: modelapi.CodeNotFound}
+	if e.Error != want {
+		t.Errorf("%s: body %+v, want %+v", what, e.Error, want)
+	}
+}
+
+// TestGatewayServesOnlyInferencePaths pins the allowlist: every
+// InferencePaths entry, and a path under the /v1/responses/ and /v1/models/
+// prefixes, reaches the upstream; LiteLLM's file, batch and model-info routes
+// (and the batch API under /v1/messages/, which is no prefix) are a 404 that
+// never reaches it, the token is still checked first.
+func TestGatewayServesOnlyInferencePaths(t *testing.T) {
+	rec := &recorder{}
+	up := httptest.NewServer(rec)
+	defer up.Close()
+	gw := newGateway(t, up)
+	hdr := map[string]string{"x-api-key": testToken}
+	var allowed []string
+	for _, p := range InferencePaths {
+		if !strings.HasSuffix(p, "/") { // a prefix entry is covered below
+			allowed = append(allowed, p)
+		}
+	}
+	allowed = append(allowed, "/v1/responses/abc", "/v1/models/x", "/v1/models/omlx/qwen3.8-35b")
+	for _, p := range allowed {
+		if got := do(t, "POST", gw.URL+p, hdr).StatusCode; got != 200 {
+			t.Errorf("%s: status %d, want 200", p, got)
+		}
+	}
+	if got := rec.list(); !slices.Equal(got, allowed) {
+		t.Errorf("upstream saw %q, want %q", got, allowed)
+	}
+	for _, p := range []string{"/v1/files", "/v1/batches", "/v1/model/info", "/v1/messages/batches", "/v1/modelsx"} {
+		wantNotServed(t, do(t, "POST", gw.URL+p, hdr), p)
+	}
+	if got := do(t, "POST", gw.URL+"/v1/files", map[string]string{"x-api-key": "nope"}).StatusCode; got != 401 {
+		t.Errorf("wrong token on /v1/files: status %d, want 401 before the path check", got)
+	}
+	if got := rec.list(); len(got) != len(allowed) {
+		t.Errorf("upstream saw %q, want no call beyond the allowed paths", got)
+	}
+}
+
+// TestGatewayAllowlistMatchesPathNotQuery pins that the allowlist reads the
+// path only: Claude Code's /v1/messages?beta=true and
+// /v1/messages/count_tokens?beta=true reach the upstream with the query
+// intact, and a query naming an allowed path does not open another one.
+func TestGatewayAllowlistMatchesPathNotQuery(t *testing.T) {
+	rec := &recorder{}
+	up := httptest.NewServer(rec)
+	defer up.Close()
+	gw := newGateway(t, up)
+	hdr := map[string]string{"x-api-key": testToken}
+	want := []string{"/v1/messages?beta=true", "/v1/messages/count_tokens?beta=true"}
+	for _, p := range want {
+		if got := do(t, "POST", gw.URL+p, hdr).StatusCode; got != 200 {
+			t.Errorf("%s: status %d, want 200", p, got)
+		}
+	}
+	wantNotServed(t, do(t, "POST", gw.URL+"/v1/files?p=/v1/messages", hdr), "/v1/files?p=/v1/messages")
+	if got := rec.list(); !slices.Equal(got, want) {
+		t.Errorf("upstream saw %q, want %q", got, want)
+	}
+}
+
+// TestGatewayAllowlistRejectsTraversal pins that no spelling of a path
+// reaches a route off the allowlist: dot segments, a doubled slash and
+// percent-encoded dots are never answered 2xx and never reach the upstream,
+// both through the whole handler (whose mux redirects an unclean path) and
+// through the allowlist alone (which refuses an unclean or non-canonically
+// encoded path itself, so it does not lean on the mux).
+func TestGatewayAllowlistRejectsTraversal(t *testing.T) {
+	rec := &recorder{}
+	up := httptest.NewServer(rec)
+	defer up.Close()
+	gw := newGateway(t, up)
+	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	paths := []string{"/v1/models/../files", "//v1/files", "/v1/messages/../files", "/v1/%2e%2e/files", "/v1/models/%2e%2e/files", "/v1/models/a%2Fb"}
+	for _, p := range paths {
+		for _, client := range []*http.Client{noFollow, http.DefaultClient} {
+			req, err := http.NewRequest("POST", gw.URL+p, strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("x-api-key", testToken)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode < 300 && resp.StatusCode >= 200 {
+				t.Errorf("%s: status %d, want no 2xx", p, resp.StatusCode)
+			}
+		}
+		var calls atomic.Int32
+		h := allowlisted(InferencePaths, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("POST", p, nil))
+		if w.Code != http.StatusNotFound || calls.Load() != 0 {
+			t.Errorf("%s through the allowlist alone: status %d, %d calls; want 404 and none", p, w.Code, calls.Load())
+		}
+	}
+	if got := rec.list(); len(got) != 0 {
+		t.Errorf("upstream saw %q, want nothing", got)
+	}
+}
+
+// TestGatewayEmptyAllowPathsDeniesAll pins that the gateway fails closed: a
+// Config with no AllowPaths (nil or empty) serves no path at all, so a
+// caller that forgets to pass InferencePaths shuts the gateway rather than
+// opening LiteLLM's file, batch and model-info routes.
+func TestGatewayEmptyAllowPathsDeniesAll(t *testing.T) {
+	rec := &recorder{}
+	up := httptest.NewServer(rec)
+	defer up.Close()
+	u, err := url.Parse(up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, allow := range [][]string{nil, {}} {
+		gw := httptest.NewServer(New(Config{Upstream: u, UpstreamKey: testKey, Token: testToken, AllowPaths: allow}))
+		for _, p := range []string{"/v1/messages", "/v1/models", "/v1/files"} {
+			wantNotServed(t, do(t, "POST", gw.URL+p, map[string]string{"x-api-key": testToken}), p)
+		}
+		gw.Close()
+	}
+	if got := rec.list(); len(got) != 0 {
+		t.Errorf("upstream saw %q, want nothing", got)
 	}
 }

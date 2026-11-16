@@ -84,6 +84,53 @@ const cancelledRunning = "cancelled while running — the work may be partly don
 func (m *Manager) Submit(kind, model string, run RunFunc) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.submitLocked(kind, model, run)
+}
+
+// SubmitOnce is Submit unless a job of the same kind for the same model is
+// queued or running: then it returns that job's id with existed true and run
+// is dropped. The check and the submit are one critical section, so two
+// callers racing for one model get one job. A caller that joins gets the
+// first request's job as it was asked: whatever the first request agreed to
+// (a start's allow_replace or others answer) governs it, and the joining
+// request's own answers are ignored.
+func (m *Manager) SubmitOnce(kind, model string, run RunFunc) (id string, existed bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, j := range m.activeLocked() {
+		if j.status.Kind == kind && j.status.Model == model {
+			return j.status.ID, true
+		}
+	}
+	return m.submitLocked(kind, model, run), false
+}
+
+// Active returns copies of the queued and running jobs for model, or for
+// every model when model is "", oldest first.
+func (m *Manager) Active(model string) []modelapi.JobStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []modelapi.JobStatus
+	for _, j := range m.activeLocked() {
+		if model == "" || j.status.Model == model {
+			out = append(out, j.status) // an active job has no Result to deep-copy
+		}
+	}
+	return out
+}
+
+// activeLocked is the running job, then the queue: oldest first, since the
+// worker takes jobs in submission order. m.mu must be held.
+func (m *Manager) activeLocked() []*job {
+	out := make([]*job, 0, len(m.queue)+1)
+	if m.running != nil {
+		out = append(out, m.running)
+	}
+	return append(out, m.queue...)
+}
+
+// submitLocked is Submit's body. m.mu must be held.
+func (m *Manager) submitLocked(kind, model string, run RunFunc) string {
 	now := m.stamp()
 	j := &job{run: run, status: modelapi.JobStatus{
 		ID: newID(), Kind: kind, Model: model, State: modelapi.JobQueued, Created: now, Updated: now,

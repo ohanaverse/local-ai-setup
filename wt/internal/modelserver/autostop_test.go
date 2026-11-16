@@ -319,3 +319,77 @@ func TestAutoStopSkipsUntrustedProbe(t *testing.T) {
 		t.Errorf("stopped %+v after the probe recovered, want one stop", stops)
 	}
 }
+
+// setSnap replaces the inventory the fake engine reports.
+func (f *fakeLife) setSnap(snap localmodels.Snapshot) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snap = snap
+}
+
+// TestAutoStoppedModelStartedByHandIsLeftAlone pins that the registry does
+// not remember a model forever. A model auto-stopped (or stopped anyhow) and
+// idle past the grace is forgotten, so when it runs again with no client
+// session (started by hand on the host, or by llmbench) it survives any
+// number of scans: a model no client session registered is left alone. A
+// model whose client session registered before its start is not forgotten
+// while it is not yet running, even once that session is older than the
+// grace, and is stopped as usual after the session ends.
+func TestAutoStoppedModelStartedByHandIsLeftAlone(t *testing.T) {
+	t.Run("hand start after auto-stop", func(t *testing.T) {
+		const grace = 10 * time.Minute
+		clk := &fakeClock{t: testNow}
+		f := &fakeLife{snap: serverSnap("omlx/a")}
+		d := f.deps(serverCfg())
+		d.Now = clk.now
+		reg := sessionreg.New(time.Minute, clk.now)
+		_ = reg.Register("s", []string{"omlx/a"})
+		reg.End("s")
+		clk.advance(grace)
+		jobs := newJobs(t, clk)
+		a := &AutoStopper{Deps: d, Sessions: reg, Grace: grace, Jobs: jobs}
+		a.Tick(context.Background())
+		drain(t, jobs)
+		if stops := f.stopped(); len(stops) != 1 {
+			t.Fatalf("stopped %+v, want the idle model stopped once", stops)
+		}
+		f.setSnap(serverSnap()) // the stop took effect
+		clk.advance(autoStopEvery)
+		a.Tick(context.Background())
+		drain(t, jobs)
+		f.setSnap(serverSnap("omlx/a")) // started again by hand
+		for range 5 {
+			clk.advance(grace)
+			a.Tick(context.Background())
+			drain(t, jobs)
+		}
+		if stops := f.stopped(); len(stops) != 1 {
+			t.Errorf("stopped %d times, want the hand-started model left alone", len(stops))
+		}
+	})
+	t.Run("pending start keeps its client session", func(t *testing.T) {
+		const grace = 30 * time.Second // under the 1-minute TTL: a live session can be older than the grace
+		clk := &fakeClock{t: testNow}
+		f := &fakeLife{snap: serverSnap()} // omlx/b is not running yet
+		d := f.deps(serverCfg())
+		d.Now = clk.now
+		reg := sessionreg.New(time.Minute, clk.now)
+		_ = reg.Register("s", []string{"omlx/b"})
+		clk.advance(45 * time.Second)
+		jobs := newJobs(t, clk)
+		a := &AutoStopper{Deps: d, Sessions: reg, Grace: grace, Jobs: jobs}
+		a.Tick(context.Background())
+		drain(t, jobs)
+		if _, seen := reg.IdleSince("omlx/b"); !seen {
+			t.Fatal("a model with a live client session was forgotten before it ran")
+		}
+		f.setSnap(serverSnap("omlx/b")) // the start lands
+		reg.End("s")
+		clk.advance(grace)
+		a.Tick(context.Background())
+		drain(t, jobs)
+		if stops := f.stopped(); len(stops) != 1 || stops[0].ModelID != "omlx/b" {
+			t.Errorf("stopped %+v, want omlx/b once its session ended and the grace passed", stops)
+		}
+	})
+}

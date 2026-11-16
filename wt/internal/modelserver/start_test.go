@@ -405,3 +405,38 @@ func TestJobRecoversFromPanic(t *testing.T) {
 	res = d.StopJob(modelapi.StopRequest{Model: "omlx/a"}, testSessions())(context.Background(), func(string) {})
 	wantProblem(t, res, modelapi.CodeFailed)
 }
+
+// TestStartOfRunningUnroutedModelAddsTheRoute pins the server half of R7: a
+// client posts a start for a model that is running but not routed (the
+// catalog's routed:false), and the job is not refused as already running. It
+// asks the engine once (whose start of a running model is the no-op that
+// writes its route, so nothing loads a second time), waits for the route to
+// settle and succeeds only once the gateway lists the id.
+func TestStartOfRunningUnroutedModelAddsTheRoute(t *testing.T) {
+	f := &fakeLife{snap: serverSnap("omlx/a")}
+	d := f.deps(serverCfg())
+	routeAdded := false
+	d.Settle = func(_ context.Context, _ io.Writer, _ *config.Config, tg lifecycle.Target) error {
+		f.record("Settle " + tg.ModelID)
+		routeAdded = true
+		return nil
+	}
+	d.Routed = func(_ context.Context, id string) error {
+		f.record("Routed " + id)
+		if !routeAdded {
+			return errors.New("not listed")
+		}
+		return nil
+	}
+	res := d.StartJob(modelapi.StartRequest{Model: "omlx/a"}, nil)(context.Background(), func(string) {})
+	if !res.OK || res.Error != nil {
+		t.Fatalf("result = %+v, want OK", res)
+	}
+	want := []string{"Start omlx/a", "Settle omlx/a", "Routed omlx/a"}
+	if got := f.callList(); !slices.Equal(got, want) {
+		t.Errorf("calls = %q, want %q: one engine call, the route settled, then the gateway answered", got, want)
+	}
+	if got := f.stopped(); len(got) != 0 {
+		t.Errorf("stopped %+v, want nothing", got)
+	}
+}

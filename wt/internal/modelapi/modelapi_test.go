@@ -32,6 +32,7 @@ func TestFixtureMatchesTypes(t *testing.T) {
 		"ping":             &Ping{},
 		"catalog":          &Catalog{},
 		"job":              &JobStatus{},
+		"jobs":             &JobList{},
 		"start_request":    &StartRequest{},
 		"stop_request":     &StopRequest{},
 		"session_register": &SessionRegister{},
