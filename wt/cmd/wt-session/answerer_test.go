@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +83,25 @@ func TestDeclinedReplaceExits3(t *testing.T) {
 	}
 	if len(r.f.Starts) != 1 || len(*r.built) != 0 {
 		t.Errorf("starts=%d built=%d, want no re-post and nothing built", len(r.f.Starts), len(*r.built))
+	}
+}
+
+// TestAskOnTTYCtrlCSaysCancelledNotDeclined proves a prompt Ctrl-C ended (M7)
+// reads "cancelled — nothing was started" with a decline's outcome (exit 3,
+// nothing changed): "declined" stays the answered no's word (the test above),
+// and a cancellation never borrows it.
+func TestAskOnTTYCtrlCSaysCancelledNotDeclined(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Ctrl-C while the prompt waits: the terminal read cannot be interrupted
+	blocked := make(chan struct{})
+	t.Cleanup(func() { close(blocked) }) // the abandoned read ends with the test
+	_, err := askOnTTY(ctx, strings.NewReader("y\n"), "nothing was started", func(io.Reader) (bool, error) {
+		<-blocked
+		return false, nil
+	})
+	const want = "cancelled — nothing was started"
+	if err == nil || err.Error() != want || exitcode.Of(err) != 3 {
+		t.Fatalf("err = %v (exit %d), want %q, exit 3", err, exitcode.Of(err), want)
 	}
 }
 

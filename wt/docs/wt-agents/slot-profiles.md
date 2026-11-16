@@ -266,12 +266,13 @@ some columns omitted.
 | 1D / 7D / 30D | Launches of this profile |
 | In-use prefix | Blank |
 
-- **The line under the table** lists the highlighted profile's slots in
-  place of the `LiteLLM: on|off` line: the default first, marked `*`, then
-  the rest in the agent's order, each with the model's provider-side name
-  and, when `tiers.toml` rates that model, its tier code and score
+- **The line under the table** lists the highlighted profile's slots: the
+  default first, marked `*`, then the rest in the agent's order, each with
+  the model's provider-side name and, when `tiers.toml` rates that model,
+  its tier code and score
   (`opus* glm-5.3:cloud S44 · haiku qwen3.8:27b-mlx S34`, an illustrative
-  line). An `opusplan` profile's line starts with `opusplan`, then
+  line). There is no LiteLLM mode to name: the model server routes.
+  An `opusplan` profile's line starts with `opusplan`, then
   `sonnet*`. It shows whole entries only, giving up the tiers before an entry;
   what does not fit becomes `+N more`.
   `wt profile show` gives the full list. On a blocked row the line is the

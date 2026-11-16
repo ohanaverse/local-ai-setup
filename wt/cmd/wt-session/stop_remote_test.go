@@ -231,6 +231,36 @@ func TestStopRemotePickerMixedFailureExits2(t *testing.T) {
 	}
 }
 
+// TestStopRemotePickerPartlyDoneExits2 proves a batch that stopped a model and
+// declined the next is partly done (C9: 2 refused, failed or partly done): it
+// exits 2, never 3, which says approval missing *and nothing changed* while a
+// model did stop.
+func TestStopRemotePickerPartlyDoneExits2(t *testing.T) {
+	r, ms := twoRunning(t)
+	r.f.StopOutcome = func(n int, req modelapi.StopRequest) *modelapi.Problem {
+		if req.Model == "omlx/b" {
+			return inUseProblem(n, req)
+		}
+		return nil
+	}
+	answerNoTTY(t)
+	stubStdinTTY(t, true)
+	old := stopSelectIn
+	stopSelectIn = func() io.Reader { return strings.NewReader("a\n") }
+	t.Cleanup(func() { stopSelectIn = old })
+	var out bytes.Buffer
+	err := runStopRemote(context.Background(), &out, ms, "", false)
+	if err == nil || exitcode.Of(err) != 2 || err.Error() != "1 of 2 stops failed" {
+		t.Fatalf("err = %v (exit %d), want exit 2, 1 of 2 stops failed", err, exitcode.Of(err))
+	}
+	if !strings.Contains(out.String(), "omlx/a stopped") {
+		t.Errorf("stdout does not show the model that stopped:\n%s", out.String())
+	}
+	if n := strings.Count(r.stderr.String(), "wt: omlx/b: declined"); n != 1 {
+		t.Errorf("omlx/b reason printed %d times:\n%s", n, r.stderr.String())
+	}
+}
+
 // TestStopRemotePickerDetachStopsTheBatch proves a Ctrl-C detach in the middle
 // of a batch ends it: exit 2, the later model never posted, and the summary
 // says the rest were not stopped instead of counting them failed.

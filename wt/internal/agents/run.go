@@ -24,7 +24,7 @@ func RunAndCleanup(cmd *exec.Cmd, cleanup func() error) (time.Duration, error) {
 	start := time.Now()
 	err := cmd.Run()
 	if cerr := cleanup(); cerr != nil {
-		fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
+		fmt.Fprintf(os.Stderr, "wt: warning: profile cleanup failed: %v\n", cerr)
 	}
 	return time.Since(start), err
 }

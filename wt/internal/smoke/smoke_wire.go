@@ -188,7 +188,7 @@ func runGatewayOnce(ctx context.Context, gw agents.Gateway, models []config.Mode
 	out := gatewayRun(ctx, gw, models, agentName, m, prompt, rowDir, timeout, profileApplier, &cleanup)
 	defer func() {
 		if cerr := cleanup(); cerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
+			fmt.Fprintf(os.Stderr, "wt: warning: profile cleanup failed: %v\n", cerr)
 		}
 	}()
 	return classifyRow(agentName, m, prompt, sentinel, timeout, start, out), out

@@ -61,8 +61,9 @@ launch counts print regardless: a server with no LiteLLM database named is
 `not_configured`; a database it could not query, a server that is not
 reachable, or one that refuses the token is `unavailable`, and the note says
 `spend unavailable:` and the reason the server (or the failed connection)
-gave. "Where spend comes from" below describes the server's side only for a
-host that runs `wt stats` without an endpoint.
+gave. "Where spend comes from" below describes the server's side — the
+lookup and the query run on the model server's host. With no endpoint there
+is no server side to describe: spend is `not_configured` and no query runs.
 
 ## Survey table
 

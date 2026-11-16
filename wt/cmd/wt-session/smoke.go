@@ -563,7 +563,7 @@ func resolveSmokeModelRemote(ctx context.Context, ms *modelSession, cfg *config.
 		return smokeTarget{}, nil, perr
 	}
 	if !ok {
-		return smokeTarget{}, nil, fmt.Errorf("model selection canceled")
+		return smokeTarget{}, nil, fmt.Errorf("model selection cancelled")
 	}
 	if t, ok := target(m.ID); ok {
 		return t, cat.Rows, nil

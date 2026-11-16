@@ -623,8 +623,9 @@ not read.
 - Success prints `<id> stopped` on stdout. Ctrl+C detaches as for a start.
 - Picking several models stops them in turn. Each failure prints its reason once
   on stderr (`wt: <id>: …`) and the last line counts them (`2 of 3 stops failed`):
-  exit 3 when every one was declined, otherwise 2. A detach ends the batch and
-  the line says how many were not stopped.
+  exit 3 only when nothing was stopped and every stop was declined (nothing
+  changed), otherwise 2 — a batch that stopped some and declined the rest is
+  2. A detach ends the batch and the line says how many were not stopped.
 
 **`wt job ID`** shows or cancels a job by id: [wt-job.md](wt-job.md).
 
@@ -675,7 +676,7 @@ only wt resolves a `secret_ref`. To start a model yourself, use `wt start`.
 `0` on success, when there was nothing to start or stop (already running —
 `wt start` may still write that model's missing route — or nothing to stop
 on a provider) or a cancelled `wt stop` picker; `1` on any error, including a
-cancelled `wt start` picker (`model selection canceled`), Ctrl+C during a start
+cancelled `wt start` picker (`model selection cancelled`), Ctrl+C during a start
 or stop, a provider wt stopped but that still answers, and a `wt stop` that
 could not tell what a provider is running and had no way to stop it regardless.
 

@@ -466,8 +466,8 @@ func TestSmokeRemoteWithoutAModelID(t *testing.T) {
 		stubStdinTTY(t, true)
 		stubPickModel(t, func([]config.Model) (config.Model, bool, error) { return config.Model{}, false, nil })
 		run := smokeOnFake(t, r)
-		if run.err == nil || !strings.Contains(run.err.Error(), "model selection canceled") {
-			t.Fatalf("err = %v, want model selection canceled", run.err)
+		if run.err == nil || !strings.Contains(run.err.Error(), "model selection cancelled") {
+			t.Fatalf("err = %v, want model selection cancelled", run.err)
 		}
 	})
 }
