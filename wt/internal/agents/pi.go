@@ -35,6 +35,21 @@ func (piDriver) SyncModels(cfg *config.Config, target config.Model, r Route) err
 	return syncModels(cfg, path, target, r)
 }
 
+// SyncGateway writes pi's models.json for a gateway launch: only the "litellm"
+// provider block (gateway origin + token, one entry per non-native catalog
+// model keyed by its gateway id), no provider origin or key. It removes every
+// _wtOwned block for another provider, the leftovers of the direct rewrite,
+// and leaves a user's own block (no _wtOwned) alone. The file holds the
+// token, so it is written 0600, temp file then rename, and tightened even when
+// nothing else changed.
+func (piDriver) SyncGateway(gw Gateway, models []config.Model, target config.Model) error {
+	path, err := piModelsPath()
+	if err != nil {
+		return err
+	}
+	return syncGateway(gw, path, models, target)
+}
+
 // Build passes --model only when the target model is present in pi's
 // models.json and marked _launch: true. Direct mode launches
 // "<provider-id>/<ModelName>" from a pi provider named after the registry

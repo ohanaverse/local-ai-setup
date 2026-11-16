@@ -250,7 +250,7 @@ func claudeSlotSettings(in profiles.SlotBuildInput) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("slot %s has no model", slot)
 		}
-		for _, v := range claudeSlotVars(slot, m.ID, m) {
+		for _, v := range claudeSlotVars(slot, gatewayID(m), m) {
 			env[v.Key] = v.Value
 		}
 	}

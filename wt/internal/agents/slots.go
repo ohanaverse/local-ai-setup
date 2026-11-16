@@ -171,6 +171,14 @@ func BuildSlotLaunchCmd(sl profiles.SlotLaunch, worktreePath string, yolo bool, 
 				"run 'wt litellm set --url ... --api-key ...': %w",
 			config.ErrLitellmUnconfigured)
 	}
+	return slotLaunchCmd(sl, worktreePath, yolo, origin, key, extraArgs)
+}
+
+// slotLaunchCmd is the part of a slot launch shared by every proxy source
+// (BuildSlotLaunchCmd's [litellm] table, BuildSlotLaunchCmdGateway's gateway):
+// the driver's slot build, binary lookup, filtered environment, directory and
+// passthrough args.
+func slotLaunchCmd(sl profiles.SlotLaunch, worktreePath string, yolo bool, origin, key string, extraArgs []string) (*exec.Cmd, error) {
 	sc, err := BuildSlotCommand(sl, yolo, origin, key)
 	if err != nil {
 		return nil, err
