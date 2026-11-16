@@ -47,26 +47,15 @@ The `opencode-wt` launcher does not manage credentials — it relies on the user
 
 ## Model selection
 
-OpenCode requires the `provider/model` form in its config (e.g., `anthropic/claude-sonnet-4-5`). `opencode-wt` selects non-native models by generating inline JSON via the `OPENCODE_CONFIG_CONTENT` environment variable. The JSON declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) and points `model` and `small_model` at it. On a direct route (shown for the default ollama provider row):
-```json
-{"model":"agent-wt/<model>","small_model":"agent-wt/<model>","provider":{"agent-wt":{"npm":"@ai-sdk/openai-compatible","name":"Agent WT Gateway","options":{"baseURL":"http://localhost:11434/v1","apiKey":""},"models":{"<model>":{"name":"<model>"}}}}}
-```
-
-OpenCode is the one agent whose CLI uniquely requires the `provider/model` form, so the launcher prefixes its own provider id, `agent-wt/`, to the model name. On a direct route that name is the **bare** provider-specific name (`config.Model.ModelName`), not `config.Model.ID`: the registry id already carries the registry provider id (`ollama/<model>`), which the provider's endpoint would not recognize. OpenCode splits a model ref on the first slash, so `agent-wt/<model>` selects the wt provider and the rest reaches the endpoint verbatim.
-
-The base URL is the origin of the model's registry provider address (`auth.base_url` in `registry.toml` with a trailing `/v1` dropped; `http://localhost:11434` for the default ollama row) with a `/v1` suffix, and `apiKey` is that provider's resolved `secret_ref` (empty when it has none). `OPENCODE_CONFIG_CONTENT` is OpenCode's highest-precedence layer and overrides any conflicting key in `~/.config/opencode/opencode.json` (e.g. `model`, `provider.agent-wt.options.baseURL`).
-
-OpenCode's builtin providers resolve model ids against its own catalog (models.dev), so a registry model absent from that catalog — every local/cloud model wt launches — is rejected with `ProviderModelNotFoundError`. A custom provider with an explicit `models` map registers the bare name so OpenCode accepts it. The LiteLLM route (below) uses the same `agent-wt` provider; only the base URL, key and model id differ.
-
-### LiteLLM routing
-
-When LiteLLM routing is enabled (`wt litellm status`), the same `agent-wt` provider is pointed at the proxy's `/v1`, with the full registry id declared in the provider's `models` map and `small_model` pinned to the same proxy model:
+OpenCode requires the `provider/model` form in its config (e.g., `anthropic/claude-sonnet-4-5`). `opencode-wt` selects non-native models by generating inline JSON via the `OPENCODE_CONFIG_CONTENT` environment variable. The JSON declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) pointed at the model server's gateway (`wt-model serve`; see [wt-session.md](../wt-session.md)) — there are no direct routes — with the model's gateway id declared in the provider's `models` map and `model` and `small_model` pinned to it:
 
 ```json
-{"model":"agent-wt/ollama/<model-id>","small_model":"agent-wt/ollama/<model-id>","provider":{"agent-wt":{"npm":"@ai-sdk/openai-compatible","name":"Agent WT Gateway","options":{"baseURL":"http://localhost:4000/v1","apiKey":"<litellm.api_key>"},"models":{"ollama/<model-id>":{"name":"<bare-name>"}}}}}
+{"model":"agent-wt/ollama/<model-id>","small_model":"agent-wt/ollama/<model-id>","provider":{"agent-wt":{"npm":"@ai-sdk/openai-compatible","name":"Agent WT Gateway","options":{"baseURL":"<gateway origin>/v1","apiKey":"<gateway token>"},"models":{"ollama/<model-id>":{"name":"<bare-name>"}}}}}
 ```
 
-The builtin `openai` provider is not usable for LiteLLM-routed models: opencode validates model ids against its own catalog ("Model not found"), and the models.dev openai path speaks the responses API, whose bridged stream opencode cannot map ("text part … not found"). opencode splits a model ref on the first slash, so `agent-wt/<id>` selects the wt provider while the registry id stays verbatim inside it. Explicit `models` + `small_model` are required: catalog-unknown ids are rejected, and opencode's default background model (`gpt-5-nano`) otherwise hits the proxy with a name it does not expose. Full rationale: [litellm-troubleshooting.md](litellm-troubleshooting.md).
+OpenCode is the one agent whose CLI uniquely requires the `provider/model` form, so the launcher prefixes its own provider id, `agent-wt/`, to the gateway id (the full registry id unless the server names another). OpenCode splits a model ref on the first slash, so `agent-wt/<id>` selects the wt provider while the id stays verbatim inside it. `OPENCODE_CONFIG_CONTENT` is OpenCode's highest-precedence layer and overrides any conflicting key in `~/.config/opencode/opencode.json` (e.g. `model`, `provider.agent-wt.options.baseURL`). The token is the model server's client token, which the gateway swaps for the LiteLLM key.
+
+The builtin providers are not usable for these models: opencode validates model ids against its own catalog (models.dev), so a model absent from it — every local/cloud model wt launches — is rejected with `ProviderModelNotFoundError` ("Model not found"), and the models.dev openai path speaks the responses API, whose bridged stream opencode cannot map ("text part … not found"). Explicit `models` + `small_model` are required: catalog-unknown ids are rejected, and opencode's default background model (`gpt-5-nano`) otherwise hits the gateway with a name it does not expose. Full rationale: [litellm-troubleshooting.md](litellm-troubleshooting.md).
 
 ## Permissions (`--yolo`)
 
@@ -94,4 +83,4 @@ OpenCode reads `AGENTS.md` natively and also has its own `/init` command for pro
 
 ## Verified on this machine
 
-Verified on this machine, 2026-09-02 — opencode v1.17.7 at `~/.opencode/bin/opencode`. Statements above are sourced from the [OpenCode docs](https://opencode.ai/docs) and the [Ollama integration guide](https://docs.ollama.com/integrations/opencode). The direct-mode `models` map (catalog bypass) was verified end-to-end with `scripts/agents-smoke.sh --only opencode` in both direct and litellm modes.
+Verified on this machine, 2026-09-02 — opencode v1.17.7 at `~/.opencode/bin/opencode`. Statements above are sourced from the [OpenCode docs](https://opencode.ai/docs) and the [Ollama integration guide](https://docs.ollama.com/integrations/opencode). The `models` map (catalog bypass) was verified end-to-end with `scripts/agents-smoke.sh --only opencode`, straight against ollama and through LiteLLM, before the model server.

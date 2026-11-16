@@ -39,10 +39,11 @@ func maskKey(key string) string {
 // (profiles.ValidateSlots): no provider is probed, so a profile that is "ok"
 // here may still be blocked in the picker; `wt profile show` says. After the
 // profiles comes one "warning:" line per key of the file the schema does not
-// name, also when the file gave no profile, and one when the registry holds
-// the "profile/" prefix (slotReservedNote), since every profile listed as
-// "ok" is then without a row, then one per driver warning about a passing
-// profile's config_content (slotContentNotes), which leaves it "ok".
+// name, also when the file gave no profile, then one per driver warning
+// about a passing profile's config_content (slotContentNotes), which leaves
+// it "ok". It reads no registry and asks no model server (a session path
+// that needs none): a model server whose catalog holds the "profile/" prefix
+// blocks the profile's launch and `wt profile show` with its own reason.
 //
 // It reads nothing of profiles.toml. It returns a.slotLoadErr after printing
 // it.
@@ -69,51 +70,10 @@ func writeSlotProfileList(w io.Writer, a *app) error {
 	for _, key := range a.slotUnknown {
 		fmt.Fprintf(w, "  warning: %s\n", slotUnknownKeyNote(key))
 	}
-	if note := slotReservedNote(a); note != "" {
-		fmt.Fprintf(w, "  warning: %s\n", note)
-	}
 	for _, note := range slotContentNotes(a) {
 		fmt.Fprintf(w, "  warning: %s\n", note)
 	}
 	return nil
-}
-
-// showSlotProfile is `wt profile show -A <agent> -M profile/<name>`. It builds
-// the agent's catalog rows from one inventory probe, exactly as the picker
-// does, and looks the profile's row up with catalog.Find, so the verdict it
-// prints is the picker's. For a launch or a start row it prints each declared
-// slot with its registry id and provider-side name, then one "warning:" line
-// per thing the driver says about this profile's config_content
-// (slotContentNotesFor, the lines `wt profile list` prints), then the command
-// the agent's slot build returns: the env it sets, the inherited variables it
-// removes, the arguments, and the --settings payload.
-//
-// The slot build is given the masked key, never the real one, so the proxy
-// key cannot appear in the output. A blocked profile prints its reason and
-// returns an error. Nothing is started, no route is written and the proxy is
-// not restarted. It reads nothing of profiles.toml.
-func showSlotProfile(w io.Writer, a *app, agent, id string) error {
-	if a.slotLoadErr != nil {
-		return a.slotLoadErr
-	}
-	if a.cfg == nil {
-		return fmt.Errorf("no config loaded")
-	}
-	eligible, err := a.cfg.EligibleModels(agent, "", "")
-	if err != nil {
-		return err
-	}
-	snap := probeInventory(a.cfg)
-	rows := catalog.Build(catalog.Input{
-		Config: a.cfg, Agent: agent, Models: eligible, Inventory: &snap,
-		SlotProfiles: a.slotChecks,
-	})
-	row, ok := catalog.Find(rows, id)
-	if !ok || !row.IsProfile() {
-		return fmt.Errorf("slot profile %q is not defined for agent %q", id, agent)
-	}
-
-	return writeSlotProfileShow(w, agent, id, row, a.cfg.LitellmBaseURL(), maskKey(a.cfg.LitellmAPIKey()))
 }
 
 // writeSlotProfileShow prints `wt profile show -M profile/<name>` for row, on

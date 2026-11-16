@@ -556,7 +556,7 @@ func TestInventoryOllamaPsFailureIsPartial(t *testing.T) {
 // row's own model_dir is honoured and discovered dirs appear — and the
 // discovered entry carries the omlx-6bit provider id (the only provider row
 // the registry defines) under its family-prefixed id, since
-// config.ResolveRoute and litellm.prepareModel both reject a provider id the
+// litellm.prepareModel rejects a provider id the
 // registry does not define. A discovered route named after the bare family
 // would be unroutable on this registry.
 func TestInventoryOmlx6bitOnlyStillScansDir(t *testing.T) {

@@ -1,15 +1,16 @@
 // Tests for the usage half of the `wt stats` command: both tables, the
 // degraded modes, the notes and the filters. No test here reaches a
-// database: TestMain replaces querySpend, and stubSpend is the only way a
-// test gets spend rows.
+// database or a real model server: the table tests run the production spend
+// source (spendFromServer → collectUsageRemote) against a fake model server
+// (stubSpend), with the report's instant pinned (pinnedSpend).
 package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,28 +19,73 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
+	"github.com/spf13/cobra"
 )
 
-// spendCall records what a stubbed querySpend was asked.
+// spendCall records the spend requests the fake model server answered for
+// the test's last `wt stats` run: how many, and the window of the last one.
 type spendCall struct {
 	n          int
 	start, end time.Time
 }
 
-// stubSpend makes querySpend answer res, err for the rest of the test.
+// statsFake is the fake model server the running test's `wt stats` reads,
+// and the record of its spend requests (stubSpend sets both; the stats tests
+// run one at a time).
+var statsFake struct {
+	f    *fakeModelServer
+	call *spendCall
+}
+
+// stubSpend points the test's config home at a fake model server whose GET
+// spend answers res, or, for err, a 503: spend_not_configured for an error
+// that says no database is named (litellm.ErrNoDatabase,
+// spend.ErrNoConnectionString), spend_unavailable for any other, the
+// message being err's text. `wt stats` then runs its production collector
+// (collectUsageRemote) against it; the catalog the collector reads its
+// families from is the host registry's models, filled in by runStatsDirect.
+// The returned record is filled in after each runStatsDirect.
 func stubSpend(t *testing.T, res spend.Result, err error) *spendCall {
 	t.Helper()
-	call := &spendCall{}
-	old := querySpend
-	querySpend = func(_ context.Context, start, end time.Time) (spend.Result, error) {
-		call.n++
-		call.start, call.end = start, end
-		return res, err
+	f := newFakeModelServer(t)
+	rep := modelapi.SpendReport{Unattributed: res.Unattributed}
+	for _, r := range res.Rows {
+		rep.Rows = append(rep.Rows, modelapi.SpendRow{Model: r.Model, Requests: r.Requests, PromptTokens: r.PromptTokens, CompletionTokens: r.CompletionTokens, Spend: r.Spend})
 	}
-	t.Cleanup(func() { querySpend = old })
+	f.Spend = rep
+	if err != nil {
+		f.SpendCode, f.SpendMsg = modelapi.CodeSpendUnavailable, err.Error()
+		if errors.Is(err, litellm.ErrNoDatabase) || errors.Is(err, spend.ErrNoConnectionString) {
+			f.SpendCode = modelapi.CodeSpendNotConfigured
+		}
+	}
+	nameServerInConfigHome(t, f)
+	old := newModelClient
+	newModelClient = fastModelClient
+	call := &spendCall{}
+	statsFake.f, statsFake.call = f, call
+	t.Cleanup(func() {
+		newModelClient = old
+		statsFake.f, statsFake.call = nil, nil
+	})
 	return call
+}
+
+// statsHostRows is the catalog a model server on this machine would serve
+// for the host registry's models: registered rows, with their families.
+func statsHostRows(a *app) []modelapi.Row {
+	cfg, _ := a.hostConfig()
+	var rows []modelapi.Row
+	for i, m := range cfg.Models {
+		rows = append(rows, modelapi.Row{
+			ID: m.ID, GatewayID: m.ID, ProviderID: m.ProviderID, ModelName: m.ModelName, Family: m.Family,
+			Location: string(m.Location), Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: i + 1,
+		})
+	}
+	return rows
 }
 
 // launch is one usage.jsonl line: a model launched by an agent, age before
@@ -90,7 +136,53 @@ func seedLaunchesAt(t *testing.T, tmp string, launches ...launchAt) {
 // runStats runs `wt stats` with args and returns stdout and stderr apart.
 func runStats(t *testing.T, a *app, args ...string) (stdout, stderr string) {
 	t.Helper()
-	cmd := statsCmd(a)
+	return runStatsOn(t, statsCmd(a), args...)
+}
+
+// pinnedSpend is `wt stats`' production spend source (spendFromServer, so
+// collectUsageRemote, or collectUsageNoServer with no server) with the
+// report's instant kept at statsNow, which the tests pin, instead of read
+// from the model server's clock.
+func pinnedSpend(cmd *cobra.Command, a *app, window time.Duration, asOf time.Time, f statsFilter) (time.Time, func() usageReport, func() error) {
+	return spendFromServer(cmd, a, window, asOf, f, false)
+}
+
+// runStatsDirect runs `wt stats` on pinnedSpend against the test's fake model
+// server (stubSpend; a test that did not call it gets one whose spend is
+// unavailable), its catalog the host registry's models, and records the
+// spend requests this run made (only this run's) in the stubSpend record.
+func runStatsDirect(t *testing.T, a *app, args ...string) (stdout, stderr string) {
+	t.Helper()
+	if statsFake.f == nil {
+		stubSpend(t, spend.Result{}, errors.New("spend not stubbed in this test"))
+	}
+	f := statsFake.f
+	// The app read config.toml before stubSpend named the server in it.
+	a.sessCfgSet, a.models = false, nil
+	f.mu.Lock()
+	f.Rows = statsHostRows(a)
+	f.mu.Unlock()
+	before := len(f.reqs())
+	stdout, stderr = runStatsOn(t, statsCmdWith(a, pinnedSpend), args...)
+	// Per run: only the requests this run made, so a second run on the same
+	// stub cannot inflate the count.
+	call := statsFake.call
+	call.n, call.start, call.end = 0, time.Time{}, time.Time{}
+	for _, r := range f.reqs()[before:] {
+		if q, ok := strings.CutPrefix(r, "GET /control/v1/spend?"); ok {
+			v, _ := url.ParseQuery(q)
+			call.n++
+			call.start, _ = time.Parse(time.RFC3339Nano, v.Get("start"))
+			call.end, _ = time.Parse(time.RFC3339Nano, v.Get("end"))
+		}
+	}
+	return stdout, stderr
+}
+
+// runStatsOn runs one built `wt stats` command with args and returns its
+// two streams; an error fails the test.
+func runStatsOn(t *testing.T, cmd *cobra.Command, args ...string) (stdout, stderr string) {
+	t.Helper()
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
@@ -129,7 +221,7 @@ func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 		{Model: "openrouter/qwen/qwen3.8-27b", Requests: 5, PromptTokens: 517, CompletionTokens: 3135, Spend: 0.0085},
 	}}, nil)
 
-	stdout, stderr := runStats(t, a, "--window", "7d")
+	stdout, stderr := runStatsDirect(t, a, "--window", "7d")
 
 	wantUsage := "\n\n" +
 		"MODEL                        LAUNCHES  REQUESTS     PROMPT  COMPLETION    SPEND\n" +
@@ -148,7 +240,7 @@ func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 		t.Errorf("stderr = %q, want nothing when spend is available", stderr)
 	}
 	if call.n != 1 || !call.end.Equal(asOf) || !call.start.Equal(asOf.Add(-7*24*time.Hour)) {
-		t.Errorf("querySpend called %d times for %s..%s, want once for the 7 days ending %s", call.n, call.start, call.end, asOf)
+		t.Errorf("GET spend asked %d times for %s..%s, want once for the 7 days ending %s", call.n, call.start, call.end, asOf)
 	}
 }
 
@@ -157,8 +249,8 @@ func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 // halves cut the window at the same places: (as_of - window, as_of] (#298).
 // statsNow is pinned far from the real clock, usage.jsonl holds launches at
 // absolute times around both ends of the 1d window, and the spend stub
-// answers from requests at those same times, kept by spend.InWindow for the
-// start and end it is asked for — the rule spend's own tests hold the SQL to
+// (the fake model server's GET spend) answers from requests at those same
+// times, kept by spend.InWindow for the start and end it is asked for — the rule spend's own tests hold the SQL to
 // (TestQuerySQLWindowIsInWindow), so the stub cannot be more generous than
 // the database. Every model then has a launch exactly when it has a
 // request: one exactly on the old edge (in neither half), one a microsecond
@@ -212,19 +304,18 @@ func TestStatsLaunchesAndSpendShareOneInstant(t *testing.T) {
 			// The spend side: one request per event, kept when it is inside
 			// the window the report asks for, by the rule spend.Query's SQL
 			// follows: after start, up to and including end.
-			old := querySpend
-			querySpend = func(_ context.Context, start, end time.Time) (spend.Result, error) {
-				var res spend.Result
+			stubSpend(t, spend.Result{}, nil)
+			statsFake.f.SpendFn = func(start, end time.Time) modelapi.SpendReport {
+				var res modelapi.SpendReport
 				for _, e := range events {
 					if spend.InWindow(e.at, start, end) {
-						res.Rows = append(res.Rows, spend.Row{Model: e.model, Requests: 1})
+						res.Rows = append(res.Rows, modelapi.SpendRow{Model: e.model, Requests: 1})
 					}
 				}
-				return res, nil
+				return res
 			}
-			t.Cleanup(func() { querySpend = old })
 
-			stdout, _ := runStats(t, a, "--json", "--window", "1d")
+			stdout, _ := runStatsDirect(t, a, "--json", "--window", "1d")
 			var doc statsJSON
 			if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 				t.Fatalf("stdout is not the document: %v\n%s", err, stdout)
@@ -287,7 +378,7 @@ func TestStatsCmdFoldsTheSlashSpelling(t *testing.T) {
 		{[]string{"--model", "mtplx/Org--Qwen-Balance"}, "\nmtplx/Org--Qwen-Balance         2         9     123          15  $0.5000\n"},
 		{[]string{"--model", "mtplx/Org/Qwen-Balance"}, "no usage data\n"},
 	} {
-		stdout, stderr := runStats(t, a, tc.args...)
+		stdout, stderr := runStatsDirect(t, a, tc.args...)
 		if !strings.HasSuffix(stdout, tc.want) {
 			t.Errorf("wt stats %v: stdout =\n%s\nwant it to end with\n%s", tc.args, stdout, tc.want)
 		}
@@ -324,7 +415,7 @@ func TestStatsCmdDegradesWhenSpendIsUnavailable(t *testing.T) {
 			seedLaunches(t, tmp, launch{"ollama/gemma4:9b", "claude", time.Hour})
 			stubSpend(t, spend.Result{}, c.err)
 
-			stdout, stderr := runStats(t, a)
+			stdout, stderr := runStatsDirect(t, a)
 
 			want := "no survey data\n\n" +
 				"MODEL             LAUNCHES  REQUESTS  PROMPT  COMPLETION  SPEND\n" +
@@ -336,46 +427,6 @@ func TestStatsCmdDegradesWhenSpendIsUnavailable(t *testing.T) {
 				t.Errorf("stderr = %q\nwant     %q (exactly one note)", stderr, c.note)
 			}
 		})
-	}
-}
-
-// TestCollectUsageClassifiesMissingSpend verifies the report's spend status
-// for each outcome: ok, not_configured (nothing names a database, or the
-// spend package refused a blank connection string), unavailable (anything
-// else that failed) and skipped (--agent). The status is how a caller tells
-// the cases apart, and what --json consumers branch on (spend_status); "not
-// configured" must not be lumped with "the database is down".
-func TestCollectUsageClassifiesMissingSpend(t *testing.T) {
-	a, _ := newTestApp(t)
-	asOf := time.Now().UTC()
-	for _, tc := range []struct {
-		name, agent string
-		err         error
-		want        string
-	}{
-		{"ok", "", nil, spendOK},
-		{"no database", "", fmt.Errorf("%w: reason", litellm.ErrNoDatabase), spendNotConfigured},
-		{"a blank connection string", "", spend.ErrNoConnectionString, spendNotConfigured},
-		{"bad config.yaml", "", fmt.Errorf("%w: reason", litellm.ErrInvalid), spendUnavailable},
-		{"no psql", "", spend.ErrNoPsql, spendUnavailable},
-		{"database down", "", fmt.Errorf("%w at 127.0.0.1:5432: Connection refused", spend.ErrUnreachable), spendUnavailable},
-		{"agent", "claude", nil, spendSkipped},
-	} {
-		stubSpend(t, spend.Result{Unattributed: 2}, tc.err)
-		rep := collectUsage(context.Background(), a.cfg, survey.Window30d, asOf, statsFilter{agent: tc.agent})
-		if rep.SpendStatus != tc.want {
-			t.Errorf("%s: SpendStatus = %q, want %q", tc.name, rep.SpendStatus, tc.want)
-		}
-		if (rep.SpendReason == "") != (tc.want == spendOK) {
-			t.Errorf("%s: SpendReason = %q, want a reason exactly when spend is missing", tc.name, rep.SpendReason)
-		}
-		wantUn := int64(0) // no spend data, no count
-		if tc.want == spendOK {
-			wantUn = 2
-		}
-		if rep.Unattributed != wantUn {
-			t.Errorf("%s: Unattributed = %d, want %d", tc.name, rep.Unattributed, wantUn)
-		}
 	}
 }
 
@@ -391,7 +442,7 @@ func TestStatsCmdNotesRequestsWithNoModel(t *testing.T) {
 	} {
 		a, _ := newTestApp(t)
 		stubSpend(t, spend.Result{Rows: []spend.Row{{Model: "m", Requests: 2}}, Unattributed: n}, nil)
-		stdout, stderr := runStats(t, a)
+		stdout, stderr := runStatsDirect(t, a)
 		if stderr != want {
 			t.Errorf("stderr = %q, want %q", stderr, want)
 		}
@@ -406,7 +457,7 @@ func TestStatsCmdNotesRequestsWithNoModel(t *testing.T) {
 	a, _ := newTestApp(t)
 	stubSpend(t, spend.Result{Rows: []spend.Row{{Model: "ollama/m", Requests: 2}}, Unattributed: 7}, nil)
 	for _, args := range [][]string{{"--model", "ollama/m"}, {"--family", "ollama"}} {
-		stdout, stderr := runStats(t, a, args...)
+		stdout, stderr := runStatsDirect(t, a, args...)
 		if stderr != "" {
 			t.Errorf("wt stats %v: stderr = %q, want no note about a window-wide count beside a filtered table", args, stderr)
 		}
@@ -430,7 +481,7 @@ func TestStatsCmdAgentFilterSkipsSpend(t *testing.T) {
 	)
 	call := stubSpend(t, spend.Result{Rows: []spend.Row{{Model: "ollama/gemma4:9b", Requests: 9}}}, nil)
 
-	stdout, stderr := runStats(t, a, "--agent", "codex")
+	stdout, stderr := runStatsDirect(t, a, "--agent", "codex")
 
 	want := "no survey data\n\n" +
 		"MODEL             LAUNCHES  REQUESTS  PROMPT  COMPLETION  SPEND\n" +
@@ -439,7 +490,7 @@ func TestStatsCmdAgentFilterSkipsSpend(t *testing.T) {
 		t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
 	}
 	if call.n != 0 {
-		t.Errorf("querySpend called %d times, want 0 with --agent", call.n)
+		t.Errorf("GET spend asked %d times, want 0 with --agent", call.n)
 	}
 	if stderr != "wt: --agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown\n" {
 		t.Errorf("stderr = %q, want the one --agent note", stderr)
@@ -460,7 +511,7 @@ func TestStatsCmdFamilyFiltersOnlyTheUsageTable(t *testing.T) {
 	stubSpend(t, spend.Result{}, nil)
 
 	split := func(args ...string) (surveyPart, usagePart string) {
-		stdout, _ := runStats(t, a, args...)
+		stdout, _ := runStatsDirect(t, a, args...)
 		surveyPart, usagePart, ok := strings.Cut(stdout, "\n\n")
 		if !ok {
 			t.Fatalf("wt stats %v: no blank line between the tables:\n%s", args, stdout)
@@ -490,12 +541,15 @@ func TestStatsCmdFamilyFiltersOnlyTheUsageTable(t *testing.T) {
 // TestStatsCmdWorksWithoutARegistry verifies the report needs no registry,
 // in the three ways a machine really has none: registry.toml missing,
 // unparseable, or a dangling symlink. newApp then carries an empty model
-// list and a load error, and `wt stats` still prints launches and spend
-// with each family taken from the id's provider prefix — so --family ollama
-// still selects, and one note says prefixes are what it matched (without
-// it, `--family gemma4` would print "no usage data" and no hint why).
-// Exiting 1 on any of these would be the regression: a report about the
-// past must not depend on today's catalog.
+// list and a load error, and `wt stats` still prints launches with each
+// family taken from the id's provider prefix — so --family ollama still
+// selects. With a model server the families are its catalog's and the
+// registry is never read, so nothing is said about it. With no model server
+// (collectUsageNoServer) one note says spend is not shown and, under
+// --family, one more says prefixes are what it matched (without it,
+// `--family gemma4` would print "no usage data" and no hint why). Exiting 1
+// on any of these would be the regression: a report about the past must not
+// depend on today's catalog.
 func TestStatsCmdWorksWithoutARegistry(t *testing.T) {
 	breakRegistry := map[string]func(path string) error{
 		"missing": os.Remove,
@@ -520,25 +574,23 @@ func TestStatsCmdWorksWithoutARegistry(t *testing.T) {
 			if err != nil {
 				t.Fatalf("newApp(): %v; want no fatal error", err)
 			}
-			if a.loadErr == nil || a.cfg == nil || len(a.cfg.Models) != 0 {
-				t.Fatalf("newApp() = cfg %+v, loadErr %v; want an empty config and a load error", a.cfg, a.loadErr)
+			if hostLoadErrOf(a) == nil || hostCfgOf(a) == nil || len(hostCfgOf(a).Models) != 0 {
+				t.Fatalf("newApp() = cfg %+v, loadErr %v; want an empty config and a load error", hostCfgOf(a), hostLoadErrOf(a))
 			}
 			seedLaunches(t, tmp, launch{"ollama/gone:cloud", "claude", time.Hour}, launch{"openrouter/x", "claude", time.Hour})
-			stubSpend(t, spend.Result{Rows: []spend.Row{{Model: "ollama/gone:cloud", Requests: 3}}}, nil)
 
-			stdout, stderr := runStats(t, a, "--family", "ollama")
+			// No model server: launches only, the spend note and the
+			// registry note.
+			stdout, stderr := runStatsOn(t, statsCmdWith(a, pinnedSpend), "--family", "ollama")
 			want := "no survey data\n\n" +
-				"MODEL              LAUNCHES  REQUESTS  PROMPT  COMPLETION    SPEND\n" +
-				"ollama/gone:cloud         1         3       0           0  $0.0000\n"
+				"MODEL              LAUNCHES  REQUESTS  PROMPT  COMPLETION  SPEND\n" +
+				"ollama/gone:cloud         1         -       -           -      -\n"
 			if stdout != want {
-				t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
+				t.Errorf("no server: stdout =\n%s\nwant\n%s", stdout, want)
 			}
-			if stderr != "wt: "+registryNote(a.loadErr)+"\n" {
-				t.Errorf("stderr = %q, want the one note that --family matched prefixes", stderr)
-			}
-			// The note says what failed, in config.Load's words, on one line.
-			if !strings.Contains(stderr, "registry") || strings.Count(stderr, "\n") != 1 {
-				t.Errorf("stderr = %q, want one line that names the registry as what did not load", stderr)
+			lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
+			if len(lines) != 2 || !strings.HasPrefix(lines[0], "wt: spend unavailable: no model server is configured") || lines[1] != "wt: "+registryNote(hostLoadErrOf(a)) {
+				t.Errorf("no server: stderr = %q, want the spend note then the one note that --family matched prefixes", stderr)
 			}
 			// The repair is the one configError names for the same error: a
 			// registry problem is never `wt config`'s to fix (the exact
@@ -552,8 +604,18 @@ func TestStatsCmdWorksWithoutARegistry(t *testing.T) {
 				t.Errorf("stderr = %q, want the %q repair and no `wt config`", stderr, wantHint[name])
 			}
 
+			// A model server: its spend, prefixes for the families it does
+			// not name, and no word about this machine's registry.
+			stubSpend(t, spend.Result{Rows: []spend.Row{{Model: "ollama/gone:cloud", Requests: 3}}}, nil)
+			stdout, stderr = runStatsDirect(t, a, "--family", "ollama")
+			want = "no survey data\n\n" +
+				"MODEL              LAUNCHES  REQUESTS  PROMPT  COMPLETION    SPEND\n" +
+				"ollama/gone:cloud         1         3       0           0  $0.0000\n"
+			if stdout != want || stderr != "" {
+				t.Errorf("server: stdout =\n%s\nstderr = %q\nwant\n%s\nand no note", stdout, stderr, want)
+			}
 			// Without --family nothing depends on the registry: both rows, no note.
-			stdout, stderr = runStats(t, a)
+			stdout, stderr = runStatsDirect(t, a)
 			if !strings.Contains(stdout, "ollama/gone:cloud") || !strings.Contains(stdout, "openrouter/x") || stderr != "" {
 				t.Errorf("without --family: stdout =\n%s\nstderr = %q\nwant both rows and no note", stdout, stderr)
 			}
@@ -607,7 +669,7 @@ func TestStatsCmdUsesTheTerminalWidth(t *testing.T) {
 	stdoutWidth = func() int { return 80 }
 	t.Cleanup(func() { stdoutWidth = old })
 
-	stdout, _ := runStats(t, a)
+	stdout, _ := runStatsDirect(t, a)
 	_, usagePart, _ := strings.Cut(stdout, "\n\n")
 	if !strings.HasPrefix(usagePart, "MODEL") || !strings.Contains(usagePart, "\n"+long+"\n") {
 		t.Fatalf("usage table =\n%s\nwant the long id on a line of its own at 80 columns", usagePart)
@@ -616,34 +678,6 @@ func TestStatsCmdUsesTheTerminalWidth(t *testing.T) {
 		if w := lipgloss.Width(line); w > 80 {
 			t.Errorf("usage table line is %d columns wide at an 80-column terminal: %q", w, line)
 		}
-	}
-}
-
-// TestStatsNeverReachesADatabaseByDefault pins both guards between a
-// cmd/wt test and the developer's LiteLLM database. First, TestMain's
-// querySpend stub: an unstubbed `wt stats` reports "not stubbed" instead of
-// querying. Second, the real seam itself under this package's throwaway
-// config home: the registry is redirected and nothing names config.yaml, so
-// litellm.DatabaseURL refuses before it reads config.yaml or the proxy's
-// LaunchAgent plist, and before psql is looked for. PATH is emptied and the
-// plist path pointed at nothing for that half so that, if the guard ever
-// regresses, the worst this test can do is fail — it still cannot read the
-// real plist or run psql.
-func TestStatsNeverReachesADatabaseByDefault(t *testing.T) {
-	a, _ := newTestApp(t)
-	_, stderr := runStats(t, a)
-	if stderr != "wt: spend unavailable: querySpend not stubbed in this test\n" {
-		t.Errorf("stderr = %q, want TestMain's stub to have answered", stderr)
-	}
-
-	t.Setenv("PATH", t.TempDir())
-	t.Setenv("WT_LITELLM_PLIST", filepath.Join(t.TempDir(), "no-such.plist"))
-	for _, k := range []string{"WT_LITELLM_DATABASE_URL", "MODELMAN_LITELLM_DATABASE_URL", "WT_LITELLM_CONFIG", "MODELMAN_LITELLM_CONFIG", "DATABASE_URL"} {
-		t.Setenv(k, "")
-	}
-	_, err := realQuerySpend(context.Background(), time.Now().Add(-time.Hour), time.Now())
-	if !errors.Is(err, litellm.ErrNoDatabase) {
-		t.Fatalf("realQuerySpend err = %v, want litellm.ErrNoDatabase (redirected registry, config.yaml unnamed)", err)
 	}
 }
 

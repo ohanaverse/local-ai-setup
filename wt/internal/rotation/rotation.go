@@ -108,34 +108,17 @@ func (r *Rotation) RecordProfile(agent, profileID string) error {
 	return nil
 }
 
-// NextFromEligible returns the first model after the last launched one, in
-// the registry's order, that is in eligible. Callers already hold the
-// eligible slice (launchFilteredImpl from resolveModel; the TUI from its
-// table rows), so cfg.EligibleModels is not computed again here.
+// NextFromOrder returns the first model after the last launched one, in
+// ordered's order and wrapping, that is in eligible; index 0 when the last
+// launched model is not in ordered. A session builds ordered from the model
+// server's catalog (catalog.RegisteredOrdered: registered rows only, in the
+// registry's order), so a discovered model is never rotated into.
 //
-// Rotation never launches on its own authority: the non-TUI rotation
-// fallback picks only from the launchable list resolveModel returns —
-// cloud rows, or local rows the live probe reports as running — so an
-// auto-launched rotation pick can never target a server that is not up.
-// The TUI calls this only to position the picker cursor, on a slice that
-// also includes start rows; Enter there drives the visible start flow, so
-// nothing starts unasked. Starting a local model is the user's decision
-// (-M pin, or Enter on a start row), never rotation's. So an auto-launch
-// caller must pass a slice resolved from live rows, not cfg.EligibleModels,
-// which applies exposure and tag/family filters only, with no running check.
-func (r *Rotation) NextFromEligible(eligible []config.Model, cfg *config.Config) (config.Model, bool) {
-	if cfg == nil {
-		return config.Model{}, false
-	}
-	return r.NextFromOrder(eligible, cfg.Models)
-}
-
-// NextFromOrder is NextFromEligible's algorithm over ordered in place of
-// cfg.Models: the first model after the last launched one, in ordered's
-// order and wrapping, that is in eligible; index 0 when the last launched
-// model is not in ordered. A session building ordered from the server's
-// catalog passes registered rows only, so a discovered model is never
-// rotated into.
+// Rotation never launches on its own authority: the picker calls this only
+// to position its cursor, and the non-TUI launch only to pick among the
+// launch rows the server reports (cloud rows, or local rows that are up), so
+// nothing starts unasked. Starting a local model is the user's decision (-M
+// pin, or Enter on a start row), never rotation's.
 func (r *Rotation) NextFromOrder(eligible, ordered []config.Model) (config.Model, bool) {
 	if len(eligible) == 0 || len(ordered) == 0 {
 		return config.Model{}, false

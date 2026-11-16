@@ -152,22 +152,18 @@ The `internal/rotation` package implements tag-based model rotation. Any tag can
 wt rotate code    # print the model after the last launch within the "code" tag group
 ```
 
-### Ollama availability check
+## Copilot-specific: provider variables
 
-Before launching with an Ollama model, `wt` verifies the model is locally available via `ollama list`, asked of the ollama address in `registry.toml` (not the shell's `OLLAMA_HOST`). In the TUI, if the model is missing, you can proceed anyway or cancel; use `up`/`down` to pick a different model. When the launch runs without the TUI (`-W`/`--worktree` or `--cwd`, with `-A` and a model that resolves without the picker), a missing model causes an error with a pull suggestion.
-
-## Copilot-specific: Ollama passthrough
-
-`copilot-wt` does not pass `--model` for Ollama models. Instead it sets environment variables for the OpenAI-compatible API:
+`copilot-wt` does not pass `--model`. Instead it sets environment variables for the OpenAI-compatible API, pointed at the model server's gateway (every session reaches its models through it; there are no direct routes):
 
 ```bash
-COPILOT_PROVIDER_BASE_URL=http://localhost:11434/v1
-COPILOT_PROVIDER_API_KEY=
+COPILOT_PROVIDER_BASE_URL=<gateway origin>/v1
+COPILOT_PROVIDER_API_KEY=<gateway token>
 COPILOT_PROVIDER_WIRE_API=completions
-COPILOT_MODEL=<model-name>
+COPILOT_MODEL=<gateway id, e.g. ollama/qwen3.8:27b-mlx>
 ```
 
-The base URL is the resolved route's origin plus `/v1`. On a direct route that origin is the ollama provider row's `auth.base_url` in `registry.toml` (a row with no `base_url` is an error, not a default); when the launch goes through LiteLLM it is the `[litellm]` url, and `COPILOT_MODEL` is the registry id. `WIRE_API=completions` (chat-completions) is deliberate — copilot's `responses` wire drops leading characters through the OpenAI-compatible bridge; see [docs/wt-agents/copilot-wt.md](docs/wt-agents/copilot-wt.md).
+`WIRE_API=completions` (chat-completions) is deliberate — copilot's `responses` wire drops leading characters through the OpenAI-compatible bridge; see [docs/wt-agents/copilot-wt.md](docs/wt-agents/copilot-wt.md). Whether a model is available is the model server's catalog: a model it lists as running is launched, a stopped local one is started there first.
 
 ## Two sessions in one checkout
 
@@ -228,7 +224,7 @@ go vet ./...       # Vet
 | `cmd/wt/app.go` | Shared dependency struct: loads and validates config, the active theme and `profiles.toml` once (no model discovery) |
 | `cmd/wt/commands.go` | Subcommand constructors: `rotate` (debug helper) |
 | `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `borderStyle`, `renderTable`, guard helpers (`checkGuardStatus`, `removeGuard`), `isStdinTTY`, `configError`, `pickerNeedsTTYError` |
-| `cmd/wt/launch.go` | Non-TUI launch helpers: `buildFilteredCmd`, `launchFiltered`, `launchPassthroughImpl`, `runAgentCmd` |
+| `cmd/wt/launch.go` | Non-TUI launch helpers: `runAgentCmd`, `applyProfileForLaunch`; the launch on the model server is `launch_remote.go` |
 | `internal/config/` | Config loading, model registry types (joined from `registry.toml`), validation, secrets, legacy migration |
 | `internal/rotation/` | Tag-based model rotation with snapshot-based model set and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
@@ -236,7 +232,6 @@ go vet ./...       # Vet
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
 | `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch |
-| `internal/ollamacheck/` | Ollama model availability check before launch |
 | `docs/superpowers/specs/` | Design specs |
 | `docs/superpowers/plans/` | Implementation plans |
 

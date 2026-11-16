@@ -1,29 +1,24 @@
 package tui
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -37,7 +32,7 @@ import (
 // hand-rolling list.New so filter/wrap/cursor assertions run against it.
 func compactModelList(t *testing.T, models []config.Model) list.Model {
 	t.Helper()
-	tbl := buildTable(tableInput{models: models, usage: newUsageStore()}, newRefcountStore(), "")
+	tbl := buildTable(tableInput{models: models, usage: newUsageStore()}, "")
 	return tableList(tbl, 78, 22)
 }
 
@@ -74,91 +69,10 @@ func stubUsageStore(t *testing.T) usage.Store {
 	return store
 }
 
-// stubRefcountStore swaps the newRefcountStore seam to a Store rooted at a
-// fresh temp directory, so tests that build the model picker through a path
-// that calls newRefcountStore() directly (rather than passing their own
-// Store into buildTable) never read the developer's real
-// ~/.config/agent-wt/refcount.jsonl — whose live "in use" counts would
-// otherwise make the ref column (and any assertion on it) depend on host
-// state. Mirrors stubUsageStore's isolation of usage.jsonl.
-func stubRefcountStore(t *testing.T) refcount.Store {
-	t.Helper()
-	store := refcount.NewStoreAt(t.TempDir())
-	old := newRefcountStore
-	newRefcountStore = func() refcount.Store { return store }
-	t.Cleanup(func() { newRefcountStore = old })
-	return store
-}
-
-// stubSessionCounts swaps the sessionCounts seam for one that answers counts
-// (a missing id is 0) and records the ids it was asked about; the seam is
-// restored on cleanup.
-func stubSessionCounts(t *testing.T, counts map[string]int) *[]string {
-	t.Helper()
-	var asked []string
-	old := sessionCounts
-	sessionCounts = func(ids []string) map[string]int {
-		asked = append(asked, ids...)
-		return counts
-	}
-	t.Cleanup(func() { sessionCounts = old })
-	return &asked
-}
-
-// replaceCountCases are the occupants a start would stop and the sessions
-// using them, with the header the replace dialog must show: one occupant per
-// line, "(in use by N wt session(s))" after each one someone uses, in the
-// non-TUI prompt's words, and nothing after one nobody uses.
-var replaceCountCases = []struct {
-	name      string
-	occupants []string
-	counts    map[string]int
-	want      string
-}{
-	{"one occupant, two sessions", []string{"omlx/old"}, map[string]int{"omlx/old": 2},
-		"Starting omlx/qwen3.8 will stop:\n  omlx/old (in use by 2 wt session(s))"},
-	{"two occupants, one in use", []string{"omlx/busy", "omlx/idle"}, map[string]int{"omlx/busy": 1},
-		"Starting omlx/qwen3.8 will stop:\n  omlx/busy (in use by 1 wt session(s))\n  omlx/idle"},
-	{"no sessions", []string{"omlx/old"}, map[string]int{},
-		"Starting omlx/qwen3.8 will stop:\n  omlx/old"},
-}
-
-// occupiedBy is the engine's refusal naming ids as the occupants.
-func occupiedBy(ids []string) *lifecycle.OccupiedError {
-	occ := &lifecycle.OccupiedError{}
-	for _, id := range ids {
-		occ.Occupants = append(occ.Occupants, localmodels.Entry{ModelID: id})
-	}
-	return occ
-}
-
-// assertReplaceCountTitle checks the dialog is up with want as its header,
-// that the counts were asked for the occupants, and that every line of the
-// header, each occupant's count with it, is on screen in full.
-func assertReplaceCountTitle(t *testing.T, got model, asked *[]string, occupants []string, want string) {
-	t.Helper()
-	if got.phase != phaseReplaceConfirm || got.replace == nil {
-		t.Fatalf("phase = %v, want the replace dialog", got.phase)
-	}
-	if header := got.replace.header; header != want {
-		t.Errorf("dialog header = %q, want %q", header, want)
-	}
-	if strings.Join(*asked, ",") != strings.Join(occupants, ",") {
-		t.Errorf("sessionCounts asked for %v, want the occupants %v", *asked, occupants)
-	}
-	view := got.View()
-	for _, line := range strings.Split(want, "\n") {
-		if !strings.Contains(view, strings.TrimSpace(line)) {
-			t.Errorf("screen lacks %q; screen:\n%s", strings.TrimSpace(line), view)
-		}
-	}
-}
-
-// TestMain stubs the live-provider inventory so no test in this package ever
-// probes the developer's real ollama/omlx/mtplx servers or reads their model
-// directories, and stubs startModel so no test can start a real model
-// process. Tests that need local rows call stubInventory; tests that exercise
-// the start flow call stubStartModel.
+// TestMain isolates what this package's tests reach: the config home, git,
+// the tiers file and the worktree picker's PR lookups. The model picker reads
+// the model server's catalog through a fake (fakeModels), so nothing here
+// probes a provider or starts a model.
 func TestMain(m *testing.M) {
 	// No test may read or write the developer's real config directory —
 	// config.IsolateConfigHomeForTest carries the full rationale. A test that
@@ -172,56 +86,6 @@ func TestMain(m *testing.M) {
 	// MODELTIERS_OUT in their shell names): every TIER cell is "-" unless a
 	// test names a file of its own (tiers.IsolateForTest).
 	tiers.IsolateForTest()
-	runInventory = localmodels.OnDiskSnapshotForTest
-	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
-		return errors.New("startModel not stubbed in this test")
-	}
-	// What follows a start the engine reported done (#343, #349) waits for
-	// the proxy, probes the provider's server and may remove a route. Tests
-	// that assert on it swap it themselves (stubSettleStart).
-	settleStart = func(context.Context, io.Writer, *config.Config, lifecycle.Target) error { return nil }
-	// The launch-time route check (#192): unstubbed, a test that launches a
-	// running local model through LiteLLM would rewrite the developer's real
-	// config.yaml and restart their proxy. Both forms are stubbed — the
-	// non-blocking first attempt reports "done, nothing changed", which is the
-	// launch-in-this-same-Update path.
-	tryEnsureModelRoute = func(io.Writer, *config.Config, config.Model) (bool, bool) { return false, true }
-	ensureModelRoute = func(io.Writer, *config.Config, config.Model) bool { return false }
-	// The start flow asks whether a proxy restart is in flight before it
-	// waits for one; no test may read the engine's real answer.
-	routesPending = func() bool { return false }
-	// The slot-profile launch: unstubbed, Enter on a profile row would
-	// rewrite the developer's real config.yaml, restart their proxy and look
-	// the agent binary up. Each seam fails closed; tests that reach the flow
-	// call stubSlotSeams.
-	ensureSlotRoutes = func(context.Context, io.Writer, *config.Config, []config.Model, bool) (bool, error) {
-		return false, errors.New("ensureSlotRoutes not stubbed in this test")
-	}
-	restartProxyNow = func(context.Context, io.Writer, *config.Config) error {
-		return errors.New("restartProxyNow not stubbed in this test")
-	}
-	probeProxyNow = func(context.Context, *config.Config) error {
-		return errors.New("probeProxyNow not stubbed in this test")
-	}
-	settleRoutesNow = func(context.Context, io.Writer, *config.Config) {}
-	buildSlotCmd = func(profiles.SlotLaunch, string, bool, *config.Config, []string) (*exec.Cmd, error) {
-		return nil, errors.New("buildSlotCmd not stubbed in this test")
-	}
-	// Post-exit seams: no test may rewrite the real refcount file or offer to
-	// stop the developer's running models.
-	releaseSession = func() {}
-	runStopPhase = func(*config.Config) {}
-	// The replace dialog's session counts (#412): unstubbed, a test that
-	// reaches the dialog would sweep and read the refcount file. Nobody is
-	// in a session unless a test says so (stubSessionCounts).
-	sessionCounts = func([]string) map[string]int { return map[string]int{} }
-	// The model picker's pre-launch ollama check (#317): unstubbed, Enter on
-	// a direct-route ollama model would run whatever `ollama` is on the
-	// developer's PATH, and the test's result would depend on what that
-	// daemon has pulled. Tests that reach the check call stubOllamaList.
-	ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
-		return nil, true, errors.New("ollamacheck list not stubbed in this test (ollama list at " + origin + ")")
-	})
 	// The worktree picker's PR lookups (loadRowPRsCmd, cleanup.FillPRs):
 	// unstubbed, a test that runs a picker load's commands would run the
 	// developer's gh against GitHub. A test that wants PRs passes its own
@@ -235,28 +99,6 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	rmConfigHome()
 	os.Exit(code)
-}
-
-// stubOllamaList makes the picker's pre-launch ollama check see an installed
-// ollama whose daemon lists names, for the duration of a test, and returns
-// where the origin of each `ollama list` it would have run is recorded.
-func stubOllamaList(t *testing.T, names ...string) *[]string {
-	t.Helper()
-	var origins []string
-	t.Cleanup(ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
-		origins = append(origins, origin)
-		return names, true, nil
-	}))
-	return &origins
-}
-
-// stubInventory makes both enterModelPhase and newPickModel see snap (via the
-// runInventory seam) for the duration of a test.
-func stubInventory(t *testing.T, snap localmodels.Snapshot) {
-	t.Helper()
-	old := runInventory
-	runInventory = func(*config.Config) localmodels.Snapshot { return snap }
-	t.Cleanup(func() { runInventory = old })
 }
 
 // drainCmds executes cmd and feeds each resulting message back through Update,
@@ -304,117 +146,6 @@ func selectedModelID(m model) string {
 	return it.model.ID
 }
 
-// routeStub is what stubEnsureRoute hands a test: the knobs that script the
-// launch-time route check and the record of what the flow did with it.
-type routeStub struct {
-	// changed is what the stubbed check reports: true (the default) means "the
-	// route was missing and was written", so the proxy restarts.
-	changed bool
-	// busy makes the non-blocking first attempt (tryEnsureModelRoute) report
-	// that it got nowhere — a config.yaml lock another wt holds. The flow then
-	// owes a retry through the blocking form, which is what a test sees as a
-	// second "ensure:<id>" event before the wait.
-	busy bool
-	// ensureOutput is written by the stubbed check into the writer the flow
-	// handed it, the way lifecycle prints the "updated" line during the
-	// synchronous write; waitOutput is written into that same writer by the
-	// stubbed waitPendingRoutes, the way the check's async restart prints its
-	// warnings until the wait returns.
-	ensureOutput, waitOutput string
-	// events is each check as "ensure:<model id>" and each wait for the proxy
-	// as "wait", in order.
-	events []string
-	// waitEntered and waitRelease, when set, make the stubbed wait block the
-	// way a real proxy restart does: it closes waitEntered once it is inside
-	// and returns only when waitRelease is closed. Tests that run the routing
-	// command on its own goroutine use them to hold the restart open.
-	waitEntered, waitRelease chan struct{}
-
-	// outs is the writer each check was handed, in call order: one entry per
-	// "ensure:" event. The flow must hand the retry the first attempt's
-	// writer, or half of the check's output ends up somewhere nobody reads.
-	outs []io.Writer
-}
-
-// stubProxyWait replaces the wait a start makes for the proxy restart on both
-// ways out of the engine: waitPendingRoutes, which is the wait after a start
-// that failed (and the launch-time route check's), and settleStart, which is
-// the wait after one that succeeded. The stand-in for the second is
-// lifecycle.SettleStart's first step in front of a server that is still
-// there: it waits and returns nil. Both are restored on cleanup.
-func stubProxyWait(t *testing.T, wait func()) {
-	t.Helper()
-	oldWait, oldSettle := waitPendingRoutes, settleStart
-	waitPendingRoutes = wait
-	settleStart = func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
-		wait()
-		return nil
-	}
-	t.Cleanup(func() { waitPendingRoutes, settleStart = oldWait, oldSettle })
-}
-
-// stubEnsureRoute swaps the three launch-time route check seams
-// (tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes) for recording
-// fakes scripted by the returned routeStub. The wait fake also stands in for
-// the wait of a start that succeeded (stubProxyWait), so a start's wait is a
-// "wait" event whichever way the engine returned. Nothing real is touched: no
-// config.yaml and no proxy. All three seams are restored on cleanup. The two
-// check fakes take no lock: a test either runs the routing command itself, on
-// the test goroutine, or (with waitEntered/waitRelease) reads the stub only
-// after every goroutine that settles the check has finished — settle is
-// once-only, so they still run on one goroutine at a time. The wait fake does
-// take one: a start waits for the proxy on its own goroutine (runStart), so
-// two waits can be recorded at once.
-//
-// Both forms of the check record the same "ensure:<id>" event: they are one
-// check, once blocking and once not, and a test asserting on the flow reads
-// better when it says "the check ran" either way. A retry therefore shows up as
-// the event twice (s.busy), which is the only way the blocking form is reached
-// from the launch flow at all.
-func stubEnsureRoute(t *testing.T) *routeStub {
-	t.Helper()
-	s := &routeStub{changed: true}
-	oldTry, oldEnsure := tryEnsureModelRoute, ensureModelRoute
-	// write prints to the writer the latest check was handed; a wait that no
-	// check preceded (finishStart's) has none and prints nothing.
-	write := func(text string) {
-		if len(s.outs) > 0 && s.outs[len(s.outs)-1] != nil && text != "" {
-			_, _ = io.WriteString(s.outs[len(s.outs)-1], text)
-		}
-	}
-	tryEnsureModelRoute = func(out io.Writer, _ *config.Config, m config.Model) (bool, bool) {
-		s.events = append(s.events, "ensure:"+m.ID)
-		s.outs = append(s.outs, out)
-		if s.busy {
-			// The lock was held: nothing written, nothing known, nothing said.
-			return false, false
-		}
-		write(s.ensureOutput)
-		return s.changed, true
-	}
-	ensureModelRoute = func(out io.Writer, _ *config.Config, m config.Model) bool {
-		s.events = append(s.events, "ensure:"+m.ID)
-		s.outs = append(s.outs, out)
-		write(s.ensureOutput)
-		return s.changed
-	}
-	var waitMu sync.Mutex
-	stubProxyWait(t, func() {
-		waitMu.Lock()
-		defer waitMu.Unlock()
-		s.events = append(s.events, "wait")
-		if s.waitEntered != nil {
-			close(s.waitEntered)
-			<-s.waitRelease
-		}
-		write(s.waitOutput)
-	})
-	t.Cleanup(func() {
-		tryEnsureModelRoute, ensureModelRoute = oldTry, oldEnsure
-	})
-	return s
-}
-
 // stubRouteNotes clears pendingRouteNotes for one test and restores it after,
 // so a test asserting on the captured route output neither sees another test's
 // lines nor leaves its own behind.
@@ -423,25 +154,6 @@ func stubRouteNotes(t *testing.T) {
 	old := pendingRouteNotes
 	pendingRouteNotes = ""
 	t.Cleanup(func() { pendingRouteNotes = old })
-}
-
-// routeDoneFrom runs the routing command out of the batch checkLaunchRoute
-// returned and returns its routeDoneMsg. The batch also holds the one-second
-// elapsed-time tick, which is left unrun: only the first command is the check.
-func routeDoneFrom(t *testing.T, cmd tea.Cmd) routeDoneMsg {
-	t.Helper()
-	if cmd == nil {
-		t.Fatal("no command: the routing phase must return the wait as a command")
-	}
-	batch, ok := cmd().(tea.BatchMsg)
-	if !ok || len(batch) != 2 {
-		t.Fatalf("command = %T (%d), want a batch of the routing command and its tick", batch, len(batch))
-	}
-	done, ok := batch[0]().(routeDoneMsg)
-	if !ok {
-		t.Fatalf("first batched command returned %T, want routeDoneMsg", done)
-	}
-	return done
 }
 
 // rootRepo makes a repository with one commit on main and returns its root
@@ -508,28 +220,27 @@ func myClaim(root string) string {
 // claimExists reports whether this process's claim is on root right now.
 func claimExists(root string) bool { _, err := os.Stat(myClaim(root)); return err == nil }
 
-// stubShellLaunch swaps the shell launch for one that records the directory
+// stubShellLaunch swaps the launch build for one that records the directory
 // it was built for and runs nothing, so a test sees whether, and where, the
 // command launch happened.
 func stubShellLaunch(t *testing.T) *[]string {
 	t.Helper()
 	var dirs []string
-	old := buildPassthrough
-	buildPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string) (*exec.Cmd, error) {
+	old := buildGatewayLaunch
+	buildGatewayLaunch = func(_ string, _ config.Model, worktreePath string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		dirs = append(dirs, worktreePath)
-		return exec.Command("true"), nil
+		return exec.Command("true"), agents.LaunchInfo{}, nil
 	}
-	t.Cleanup(func() { buildPassthrough = old })
-	t.Cleanup(stubInstalled("opencode"))
+	t.Cleanup(func() { buildGatewayLaunch = old })
 	return &dirs
 }
 
-// pickRow is the picker after Enter on a row at path, with an installed but
-// unconfigured agent pinned so a launch is one buildPassthrough call.
+// pickRow is the picker after Enter on a row at path, with the shell command
+// pinned so a launch is one launch build (stubShellLaunch).
 func pickRow(t *testing.T, path string) (model, tea.Cmd, *[]string) {
 	t.Helper()
 	launched := stubShellLaunch(t)
-	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode"}
+	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "shell"}
 	m, cmd := updateMsg(m, selectedEntryMsg{entry: worktree.Entry{Type: worktree.TypeCurrent, Branch: "main", Path: path}})
 	return m, cmd, launched
 }
@@ -564,7 +275,7 @@ func answerOnStdio(t *testing.T, answer string) func() string {
 
 // TestConfigHomeIsNotTheDevelopersOwn pins TestMain's throwaway config home:
 // everything wt keeps under its config directory — rotation.state, usage.jsonl,
-// refcount.jsonl, profile backups and locks — resolves into a temp directory
+// profile backups and locks — resolves into a temp directory
 // for this package's tests, never ~/.config. Without it a test that launches a
 // stub agent rewrites the developer's real rotation state on every run.
 func TestConfigHomeIsNotTheDevelopersOwn(t *testing.T) {
@@ -577,4 +288,197 @@ func TestConfigHomeIsNotTheDevelopersOwn(t *testing.T) {
 			t.Errorf("%s = %s, want a path under this package's throwaway config home", pair[0], pair[1])
 		}
 	}
+}
+
+// modelTestConfig is the session config most picker tests read: a native
+// claude/opus cloud model and a local omlx/qwen3.8 model, both tagged "code",
+// that agent "claude" can use. flowEnter turns its models into the model
+// server's catalog.
+func modelTestConfig() *config.Config {
+	return &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+			{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+		},
+		Models: []config.Model{
+			{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}},
+			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{
+			{Name: "claude", SupportedProviders: []string{"claude", "omlx"}},
+		},
+	}
+}
+
+// flowRunning is the set of local model ids flowEnter's catalog reports as
+// running (launch rows); every other local model is a stopped start row. A
+// test sets it with stubRunning.
+var flowRunning map[string]bool
+
+// stubRunning makes flowEnter's catalog report ids as running local models
+// for the duration of a test.
+func stubRunning(t *testing.T, ids ...string) {
+	t.Helper()
+	old := flowRunning
+	flowRunning = map[string]bool{}
+	for _, id := range ids {
+		flowRunning[id] = true
+	}
+	t.Cleanup(func() { flowRunning = old })
+}
+
+// catalogFor is the model server's catalog for cfg's models, as the server
+// would build it: each row's location from cfg, a cloud row (or a local one in
+// flowRunning) running and launchable, any other local row stopped and
+// startable, in cfg's order, each rated from the tiers file the test names
+// (writeTiers), as the server rates its rows.
+func catalogFor(t *testing.T, cfg *config.Config) modelapi.Catalog {
+	t.Helper()
+	ratings := tiers.Load()
+	cat := modelapi.Catalog{Schema: 1, Generated: "2026-11-16T12:00:00Z"}
+	for i, m := range cfg.Models {
+		loc, err := cfg.ResolveLocation(m)
+		if err != nil {
+			t.Fatalf("catalogFor %s: %v", m.ID, err)
+		}
+		r := modelapi.Row{
+			ID: m.ID, GatewayID: m.ID, ProviderID: m.ProviderID, ModelName: m.ModelName, Family: m.Family,
+			Location: string(loc), Tags: m.Tags, Registered: true, Native: m.Native, Order: i + 1,
+			State: modelapi.StateRunning, Action: modelapi.ActionLaunch,
+		}
+		if p := m.Cost; p.InputPricePerMillion != nil || p.OutputPricePerMillion != nil || p.CachePricePerMillion != nil {
+			r.Price = &modelapi.Price{Input: p.InputPricePerMillion, Cache: p.CachePricePerMillion, Output: p.OutputPricePerMillion}
+		}
+		if loc == config.LocationLocal && !flowRunning[m.ID] {
+			r.State, r.Action = modelapi.StateStopped, modelapi.ActionStart
+		}
+		if e := ratings.Rating(m.ProviderID, m.ModelName); e.Rated() || e.HasAligned {
+			r.Tier, r.TierCode, r.Confidence, r.TierSources = e.Tier, e.Code, e.Confidence, e.Sources
+			if e.HasAligned {
+				a := e.Aligned
+				r.Aligned = &a
+			}
+		}
+		cat.Rows = append(cat.Rows, r)
+	}
+	return cat
+}
+
+// flowEnter opens the model picker for agent on m the way the user does: the
+// model server's catalog (catalogFor m.cfg, through a fakeModels) is loaded
+// and the table built from it, m.slotChecks' profile rows included. It
+// isolates the state directory and the usage store, and hands m.cfg's agents
+// to the picker as the session config.
+func flowEnter(t *testing.T, m model, agent string) model {
+	t.Helper()
+	tempStateDir(t)
+	stubUsageStore(t)
+	return flowEnterKeepState(t, m, agent)
+}
+
+// flowEnterKeepState is flowEnter for a test that isolated (and seeded) the
+// state directory and the usage store itself.
+func flowEnterKeepState(t *testing.T, m model, agent string) model {
+	t.Helper()
+	m.client = &fakeModels{cat: catalogFor(t, m.cfg)}
+	m.agent = agent
+	if m.theme.Name == "" {
+		m.theme = themes.Default
+	}
+	next, cmd := m.enterModelPhaseForAgent()
+	return settle(t, next, cmd)
+}
+
+// pickModels is modelTestConfig's models as the standalone picker receives
+// them from the model server (catalog.ToModel): each carries its location.
+func pickModels() []config.Model {
+	cfg := modelTestConfig()
+	out := make([]config.Model, len(cfg.Models))
+	for i, m := range cfg.Models {
+		loc, _ := cfg.ResolveLocation(m)
+		m.Location = loc
+		out[i] = m
+	}
+	return out
+}
+
+// slotTable is the picker's table for "claude" over cfg with checks as its
+// slot profiles, loaded from the model server's catalog (catalogFor), with
+// two launches of profile/cloud in the usage store.
+func slotTable(t *testing.T, cfg *config.Config, checks []profiles.SlotCheck) modelTable {
+	t.Helper()
+	tempStateDir(t)
+	store := stubUsageStore(t)
+	for i := 0; i < 2; i++ {
+		if err := store.RecordFor("claude", "profile/cloud"); err != nil {
+			t.Fatalf("seed usage: %v", err)
+		}
+	}
+	m := flowEnterKeepState(t, model{cfg: cfg, agent: "claude", slotChecks: checks, width: 200, height: 40}, "claude")
+	tbl := modelTable{header: m.models.Title}
+	for _, it := range m.models.Items() {
+		tbl.items = append(tbl.items, it.(*modelItem))
+	}
+	return tbl
+}
+
+// tableItem is the table's item for id.
+func tableItem(t *testing.T, tbl modelTable, id string) *modelItem {
+	t.Helper()
+	for _, it := range tbl.items {
+		if it.model.ID == id {
+			return it
+		}
+	}
+	t.Fatalf("the table has no row %q", id)
+	return nil
+}
+
+// remotePickerFor is the model picker for agent over a model server whose
+// catalog holds rows, loaded the way the user loads it (flowEnter's path), at
+// 80x24 with a fresh worktree chosen. agent may be any registered driver
+// name, a test's own included: the session config names it with every
+// provider.
+func remotePickerFor(t *testing.T, agent string, rows ...modelapi.Row) model {
+	t.Helper()
+	tempStateDir(t)
+	stubUsageStore(t)
+	cfg := &config.Config{DefaultTag: "code", Agents: []config.Agent{{Name: agent, AllProviders: true}}}
+	f := &fakeModels{cat: modelapi.Catalog{Schema: 1, Generated: "2026-11-16T12:00:00Z", Rows: rows},
+		gw: agents.Gateway{Origin: "http://127.0.0.1:1", Token: "gateway-token"}}
+	m := model{cfg: cfg, client: f,
+		theme: themes.Default, agent: agent, phase: phaseAgent, width: 80, height: 24, selectedPath: t.TempDir()}
+	next, cmd := m.enterModelPhaseForAgent()
+	next = settle(t, next, cmd)
+	if next.phase != phaseModel {
+		t.Fatalf("phase = %v, status %q: want the table", next.phase, next.status)
+	}
+	return next
+}
+
+// withServer attaches to m a model server whose catalog is catalogFor(m.cfg),
+// as a session with a configured server has; nil cfg is an empty catalog.
+func withServer(t *testing.T, m model) model {
+	t.Helper()
+	cat := modelapi.Catalog{Schema: 1, Generated: "2026-11-16T12:00:00Z"}
+	if m.cfg != nil {
+		cat = catalogFor(t, m.cfg)
+	}
+	m.client = &fakeModels{cat: cat}
+	if m.theme.Name == "" {
+		m.theme = themes.Default
+	}
+	return m
+}
+
+// settleCatalog runs the catalog fetch cmd started (phaseCatalog) and feeds
+// its answer back, the way the runtime does; any other state is returned
+// as it is.
+func settleCatalog(t *testing.T, m model, cmd tea.Cmd) (model, tea.Cmd) {
+	t.Helper()
+	if m.phase != phaseCatalog || cmd == nil {
+		return m, cmd
+	}
+	return updateMsg(m, cmd())
 }

@@ -150,25 +150,9 @@ func stoppable(others []modelapi.Resident) []string {
 	return ids
 }
 
-// promptOthers asks the others question on the controlling terminal, never
-// on stdin and stdout, for the reason promptReplace gives: a piped answer
-// must never be able to stop a model. question ends in its own [s/k/N] or
-// [k/N]; canStop says whether s is an answer.
-func promptOthers(question string, canStop bool) (othersChoice, error) {
-	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return othersCancel, approvalMissing("--others=keep|stop", "nothing was started")
-	}
-	defer f.Close()
-	if _, err := fmt.Fprintf(f, "%s ", question); err != nil {
-		return othersCancel, err
-	}
-	return askChoice(f, canStop)
-}
-
 // askChoice reads one line from r: s/stop stops (only when canStop), k/keep
-// keeps, and anything else, an empty line and EOF included, cancels. The
-// parse half of promptOthers, split out so tests can drive it.
+// keeps, and anything else, an empty line and EOF included, cancels. Split
+// out of the others question so tests can drive it.
 func askChoice(r io.Reader, canStop bool) (othersChoice, error) {
 	line, err := bufio.NewReader(r).ReadString('\n')
 	if err != nil && line == "" {
@@ -187,7 +171,7 @@ func askChoice(r io.Reader, canStop bool) (othersChoice, error) {
 
 // othersQuestion is the others prompt for a start of id: one line per
 // resident with its memory figure and, when counts names wt sessions using
-// it, how many (the registry path's refcount; nil on the model server's); one
+// it, how many (nil on the model server's path); one
 // line per provider wt cannot read (unknown, already worded: "omlx at URL" on
 // the registry path, the family on the server's); then the choice, without s
 // when nothing listed can be stopped.

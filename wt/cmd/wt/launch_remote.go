@@ -22,6 +22,23 @@ import (
 // app (wt/CLAUDE.md): several launch paths and tests share both.
 var buildGatewayCmd = agents.BuildLaunchCmdGateway
 
+// launchCommand is a command agent's launch (shell): no model layer, so no
+// model server and no registry. It is a package-variable seam
+// like buildGatewayCmd: the dispatch tests swap it to see which command a
+// launch reached and with what arguments, without running it.
+var launchCommand = launchCommandImpl
+
+func launchCommandImpl(agent, worktreePath string, cfg *config.Config, yolo, pinnedSupplied bool, extraArgs []string, pp *precomputedProfiles) error {
+	if pinnedSupplied {
+		fmt.Fprintf(os.Stderr, "wt: -M ignored for command %q\n", agent)
+	}
+	cmd, _, err := agents.BuildLaunchCmdGateway(agent, config.Model{}, worktreePath, yolo, agents.Gateway{}, nil, extraArgs)
+	if err != nil {
+		return err
+	}
+	return runLaunch(cmd, agent, config.Model{}, cfg, pp, extraArgs, runTail{})
+}
+
 // remoteBeatInterval is the client session's heartbeat interval; 0 is
 // modelclient's default (20 s). Tests shorten it.
 var remoteBeatInterval time.Duration
@@ -34,8 +51,9 @@ var errRemoteNeedsPicker = errors.New("several models match: pick one")
 // launchStill is what a remote launch that stopped short says is still true.
 const launchStill = "nothing was launched"
 
-// launchFilteredRemote is launchFiltered on the model server, the non-TUI
-// launch when an endpoint is configured (a.endpointConfigured). It reads
+// launchFilteredRemote is the non-TUI launch on the model server: every non-TUI
+// launch (Task 18; with no endpoint configured a model-driven agent refuses
+// at openModels, before anything starts). It reads
 // config.toml only (a.sessionCfg), never the registry, config.yaml or a local
 // provider, and starts nothing local. In order:
 //
@@ -65,14 +83,7 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	}
 	if agents.IsCommand(agent) {
 		// A command has no model layer: it needs no model server.
-		if pinnedSupplied {
-			fmt.Fprintf(os.Stderr, "wt: -M ignored for command %q\n", agent)
-		}
-		cmd, err := agents.BuildLaunchCmd(agent, config.Model{}, worktreePath, yolo, cfg, extraArgs)
-		if err != nil {
-			return err
-		}
-		return runLaunch(cmd, agent, config.Model{}, cfg, pp, extraArgs, runTail{Remote: true})
+		return launchCommand(agent, worktreePath, cfg, yolo, pinnedSupplied, extraArgs, pp)
 	}
 	ag, err := cfg.AgentByName(agent)
 	if err != nil {
@@ -173,7 +184,7 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 		// RecordFor names the file that failed.
 		fmt.Fprintf(osStderr, "wt: note: %v\n", rerr)
 	}
-	return runLaunch(cmd, agent, m, cfg, pp, extraArgs, runTail{Remote: true, End: end, PriceNote: remotePriceNoteFunc(ctx, ms)})
+	return runLaunch(cmd, agent, m, cfg, pp, extraArgs, runTail{End: end, PriceNote: remotePriceNoteFunc(ctx, ms)})
 }
 
 // registerRefused reports a register error no retry can heal: the same three

@@ -543,7 +543,7 @@ func TestApplyAndReportRestartsAsynchronously(t *testing.T) {
 // TestWaitPendingRoutesBlocksUntilTheRestartFinishes pins the guarantee the
 // launch paths depend on: WaitPendingRoutes does not return while an async
 // proxy restart is still running. wt start/stop only need it at process exit,
-// but an agent launch (cmd/wt's startForLaunch, the TUI start flow, wt smoke's
+// but an agent launch (the TUI start flow, wt smoke's
 // one-shot prompt) hands the model to a client that dials it THROUGH LiteLLM
 // the instant the start returns — if this call could return early, that client
 // would race a mid-restart proxy (connection refused) or one still serving the

@@ -6,7 +6,6 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
 // drainFilterMatches recursively executes cmd (and any nested tea.BatchMsg)
@@ -217,45 +216,5 @@ func TestWrapAroundNoOpWhenZeroOrOneVisibleItem(t *testing.T) {
 		if gotIdx := m2.models.Index(); gotIdx < 0 {
 			t.Errorf("empty visible items: index after %c = %d, want >= 0", key, gotIdx)
 		}
-	}
-}
-
-// TestEnterModelPhaseCursorOnFirstModel verifies that entering the model
-// phase (no rotation history) lands the cursor on the first launchable row —
-// index 0, ollama/gemma4:14b in the id-sorted table — not the registry-first
-// model. Pins the cold-start position so rotation cannot displace it.
-func TestEnterModelPhaseCursorOnFirstModel(t *testing.T) {
-	stubUsageStore(t)
-	tempStateDir(t)
-
-	cfg := testConfig()
-	m := model{
-		cfg:          cfg,
-		agent:        "claude",
-		tag:          "code",
-		activeTags:   "code",
-		activeFamily: "",
-		theme:        themes.Default,
-		width:        80,
-		height:       24,
-	}
-	fullCatalog, err := cfg.ModelsForAgent("claude")
-	if err != nil {
-		t.Fatalf("ModelsForAgent: %v", err)
-	}
-	models, err := cfg.EligibleModelsIn("claude", fullCatalog, "code", "")
-	if err != nil {
-		t.Fatalf("EligibleModelsIn: %v", err)
-	}
-	got, _ := m.enterModelPhase("claude", models, "code")
-	if got.phase != phaseModel {
-		t.Fatalf("phase = %v, want phaseModel", got.phase)
-	}
-	it, ok := got.models.Items()[got.models.Index()].(*modelItem)
-	if !ok {
-		t.Fatalf("cursor at %d is %T; want a *modelItem", got.models.Index(), got.models.Items()[got.models.Index()])
-	}
-	if got.models.Index() != 0 || it.model.ID != "ollama/gemma4:14b" {
-		t.Errorf("cursor at %d on %q, want index 0 on ollama/gemma4:14b", got.models.Index(), it.model.ID)
 	}
 }

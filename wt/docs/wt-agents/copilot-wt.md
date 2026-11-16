@@ -25,37 +25,24 @@ Native auth: `gh auth login` plus a Copilot subscription. Provider override: set
 Copilot picks a model from `--model <name>` or via the `COPILOT_MODEL` environment variable. `copilot-wt` does not pass `--model` directly; it handles two cases:
 
 - **`copilot/native`** — clears any inherited `COPILOT_*` env vars, so Copilot uses its native subscription.
-- **Ollama-routed models** — sets `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_WIRE_API`, and `COPILOT_MODEL` env vars pointing at the local Ollama OpenAI-compatible gateway (see [Cloud models via Ollama](#cloud-models-via-ollama)).
+- **Every other model** — sets `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_WIRE_API`, and `COPILOT_MODEL` env vars pointing at the model server's gateway (see [Through the model server's gateway](#through-the-model-servers-gateway)).
 
-### Cloud models via Ollama
+### Through the model server's gateway
 
-When a non-native model (e.g., `minimax-m2.7:cloud`) is selected, `copilot-wt` sets:
+Every non-native model goes through the model server's gateway (`wt-model serve`; see [wt-session.md](../wt-session.md)); there are no direct routes. The launcher sets:
 
 ```bash
-COPILOT_PROVIDER_BASE_URL="http://localhost:11434/v1"
-COPILOT_PROVIDER_API_KEY=""
+COPILOT_PROVIDER_BASE_URL="<gateway origin>/v1"  # trailing slash normalized
+COPILOT_PROVIDER_API_KEY="<gateway token>"
 COPILOT_PROVIDER_WIRE_API="completions"
-COPILOT_MODEL="<bare provider-specific name>"  # NOT <provider>/<model>
+COPILOT_MODEL="<gateway id>"  # e.g. ollama/qwen3.8:27b-mlx
 ```
 
-`<bare provider-specific name>` is `config.Model.ModelName` (e.g. `minimax-m3:cloud`). The registry key `config.Model.ID` would carry the `ollama/` prefix and reach the Ollama-side upstream unresolved. The base URL is the origin of the model's registry provider address (`auth.base_url` in `registry.toml` with a trailing `/v1` dropped; `http://localhost:11434` for the default ollama row) with a `/v1` suffix, matching the OpenAI-compatible endpoint that Copilot CLI's BYOK provider expects. `COPILOT_PROVIDER_API_KEY` is that provider's resolved `secret_ref` (empty when it has none).
+The `COPILOT_MODEL` value is the model's gateway id — its full registry id unless the server names another — not the bare provider-specific name. The token is the model server's client token, which the gateway swaps for the LiteLLM key. Native models (`copilot/native`) continue to use the native subscription and never see the gateway.
 
 `WIRE_API=completions` (chat-completions) is deliberate: Copilot CLI's `responses` wire drops leading characters through the OpenAI-compatible bridge, making one-shot prompts unreliable (observed via LiteLLM's responses bridge with `glm-5.3-flash:cloud`). This diverges from `ollama launch copilot`, which still prescribes `responses`. Re-test when LiteLLM's responses bridge is fixed ([BerriAI/litellm#37452](https://github.com/BerriAI/litellm/issues/37452)) or copilot CLI's responses client changes.
 
-### LiteLLM routing
-
-When LiteLLM routing is enabled (`wt litellm status`), `copilot-wt` routes non-native models through the LiteLLM proxy (URL from the `[litellm]` table in wt's config.toml, typically `http://localhost:4000`) instead of dialing the provider directly. The launcher sets:
-
-```bash
-COPILOT_PROVIDER_BASE_URL="http://localhost:4000/v1"  # trailing slash normalized
-COPILOT_PROVIDER_API_KEY="<litellm.api_key>"
-COPILOT_PROVIDER_WIRE_API="completions"
-COPILOT_MODEL="<registry-model-id>"  # e.g. ollama/qwen3.8:27b-mlx
-```
-
-The `COPILOT_MODEL` value is the full registry model id, not the bare provider-specific name. The `COPILOT_PROVIDER_API_KEY` comes from `[litellm].api_key` in wt's `~/.config/agent-wt/config.toml`. Native models (`copilot/native`) continue to use the native subscription and ignore LiteLLM routing.
-
-Verified in both routing modes 2026-09-01 with `ollama/glm-5.3-flash:cloud` (one-shot prompt answered end-to-end in direct and litellm modes; the earlier 2026-08-31 litellm-mode matrix run had verified the `responses` wire with the proxy-side `drop_params` workaround below, before the truncation was attributed to the responses wire itself — the responses-era PASS and the truncation both went through the same bridge, which is why the wire was switched). This requires the proxy to tolerate params copilot sends that `ollama_chat` does not support (e.g. `parallel_tool_calls`) — set `litellm_settings: drop_params: true` in `~/.config/litellm/config.yaml` and restart the proxy; otherwise litellm answers `400 UnsupportedParamsError`. See [litellm-troubleshooting.md](litellm-troubleshooting.md).
+Verified 2026-09-01 with `ollama/glm-5.3-flash:cloud` (one-shot prompt answered end-to-end straight against ollama and through LiteLLM, before the model server; the earlier 2026-08-31 LiteLLM matrix run had verified the `responses` wire with the proxy-side `drop_params` workaround below, before the truncation was attributed to the responses wire itself — the responses-era PASS and the truncation both went through the same bridge, which is why the wire was switched). This requires the proxy to tolerate params copilot sends that `ollama_chat` does not support (e.g. `parallel_tool_calls`) — wt's route writes enforce `litellm_settings: drop_params: true` in `~/.config/litellm/config.yaml`; otherwise litellm answers `400 UnsupportedParamsError`. See [litellm-troubleshooting.md](litellm-troubleshooting.md).
 
 ## Agent init
 

@@ -24,7 +24,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 )
 
 // remoteAgentScript is the fake claude a remote launch runs: it sleeps
@@ -119,8 +118,8 @@ func fastModelClient(ep modelclient.Endpoint) *modelclient.Client {
 }
 
 // failOnRegistry makes every registry and local-provider seam fail the test
-// if it is reached: the registry file is garbage, the local inventory probe,
-// the ollama check, the route check and the refcount sweep all report.
+// if it is reached: the registry file is garbage and the local inventory
+// probe reports.
 func failOnRegistry(t *testing.T) {
 	t.Helper()
 	reg := filepath.Join(t.TempDir(), "registry.toml")
@@ -128,21 +127,12 @@ func failOnRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WT_REGISTRY", reg)
-	oldProbe, oldRoute, oldSweep := probeInventory, ensureModelRoute, sweepRefcounts
+	oldProbe := probeInventory
 	probeInventory = func(*config.Config) localmodels.Snapshot {
 		t.Error("the remote path probed a local provider")
 		return localmodels.Snapshot{}
 	}
-	ensureModelRoute = func(*config.Config, config.Model) bool {
-		t.Error("the remote path ran the launch-time route check")
-		return false
-	}
-	sweepRefcounts = func() { t.Error("the remote path swept the refcount file") }
-	t.Cleanup(ollamacheck.StubListForTest(func(string) ([]string, bool, error) {
-		t.Error("the remote path ran the ollama check")
-		return nil, true, nil
-	}))
-	t.Cleanup(func() { probeInventory, ensureModelRoute, sweepRefcounts = oldProbe, oldRoute, oldSweep })
+	t.Cleanup(func() { probeInventory = oldProbe })
 }
 
 // TestLaunchRemoteRegistersBeforeStart pins the body order of a remote launch
@@ -257,7 +247,7 @@ func TestLaunchRemoteNativeRowLaunchesBare(t *testing.T) {
 func TestLaunchRemoteNeedsNoRegistry(t *testing.T) {
 	r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
 	failOnRegistry(t)
-	r.a.cfg = nil
+	r.a.hostCfg, r.a.hostSet = nil, true
 	if err := r.launch(t, context.Background(), "", "", false); err != nil {
 		t.Fatalf("launch: %v", err)
 	}
@@ -292,23 +282,17 @@ func TestLaunchRemoteEndsTheSessionBeforeExit(t *testing.T) {
 	}
 }
 
-// TestLaunchRemoteNeverOffersTheStopPickerOrRefcount proves a launch through
-// runLaunchPath with an endpoint configured reaches none of the registry
-// path's tail or set-up: the stop picker, the refcount release and sweep, the
-// registry's price notice, the ollama check and the route check all panic if
-// reached, and the agent still launches.
-func TestLaunchRemoteNeverOffersTheStopPickerOrRefcount(t *testing.T) {
+// TestLaunchRemoteReachesNoHostSeam proves a launch through runLaunchPath
+// with an endpoint configured reaches none of the host's set-up: the local
+// inventory probe panics if reached (the stop picker, the refcount, the
+// registry's price notice, the ollama check and the route check of the old
+// registry path are gone, and the boundary test keeps them out), and the
+// agent still launches.
+func TestLaunchRemoteReachesNoHostSeam(t *testing.T) {
 	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
-	oldPicker, oldRelease, oldSweep, oldNotice, oldRoute, oldTUI := runStopPicker, releaseSession, sweepRefcounts, emitPriceNotice, ensureModelRoute, tuiRun
-	t.Cleanup(func() {
-		runStopPicker, releaseSession, sweepRefcounts, emitPriceNotice, ensureModelRoute, tuiRun = oldPicker, oldRelease, oldSweep, oldNotice, oldRoute, oldTUI
-	})
-	runStopPicker = func(*config.Config) { panic("runStopPicker reached on the remote path") }
-	releaseSession = func() { panic("releaseSession reached on the remote path") }
-	sweepRefcounts = func() { panic("sweepRefcounts reached on the remote path") }
-	emitPriceNotice = func(*config.Config) { panic("emitPriceNotice reached on the remote path") }
-	ensureModelRoute = func(*config.Config, config.Model) bool { panic("ensureModelRoute reached on the remote path") }
-	t.Cleanup(ollamacheck.StubListForTest(func(string) ([]string, bool, error) { panic("ollamacheck reached on the remote path") }))
+	oldProbe, oldTUI := probeInventory, tuiRun
+	t.Cleanup(func() { probeInventory, tuiRun = oldProbe, oldTUI })
+	probeInventory = func(*config.Config) localmodels.Snapshot { panic("probeInventory reached on the remote path") }
 	tuiRun = nil // a nil func panics if called
 
 	cmd := &cobra.Command{}
@@ -537,10 +521,12 @@ func TestUnreachableServerFailsFastWithAddress(t *testing.T) {
 }
 
 // TestPickerGetsTheModelServerOnlyWhenOneIsConfigured proves the one tui.Run
-// caller hands the picker its model-server client exactly when an endpoint is
-// configured (and the session config with it), and nil otherwise, so the
-// legacy registry path is unchanged. The picker's fetch itself runs inside the
-// TUI; nothing here reaches the fake server.
+// caller hands the picker its model-server client when an endpoint is
+// configured (and the session config with it, never the host's), and, since
+// the flip, that with none configured a picker that may need a model refuses
+// before the TUI opens (exit 1, nothing was launched) while a pinned command
+// agent's worktree picker still opens, with no client. The picker's fetch
+// itself runs inside the TUI; nothing here reaches the fake server.
 func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 	r := newRemoteRig(t)
 	oldTUI, oldGuard := tuiRun, maybeInstallGuard
@@ -561,25 +547,35 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 	if !called || gotModels == nil {
 		t.Fatalf("tuiRun called = %v, models nil = %v, want the model-server client", called, gotModels == nil)
 	}
-	if sess, serr := r.a.sessionCfg(); serr != nil || gotCfg == nil || gotCfg != sess || gotCfg == r.a.cfg {
-		t.Errorf("tuiRun cfg = %p, want the session config %p (not a.cfg %p; err %v)", gotCfg, sess, r.a.cfg, serr)
+	if sess, serr := r.a.sessionCfg(); serr != nil || gotCfg == nil || gotCfg != sess || (r.a.hostSet && gotCfg == r.a.hostCfg) {
+		t.Errorf("tuiRun cfg = %p, want the session config %p (not the host's; err %v)", gotCfg, sess, serr)
 	}
 	if len(r.f.Reqs) != 0 {
 		t.Errorf("the launch path asked the server %v before the picker opened", r.f.Reqs)
 	}
 
-	// No endpoint: nil.
+	// No endpoint: the picker refuses before it opens.
 	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN"} {
 		t.Setenv(k, "")
 	}
-	a := &app{cfg: &config.Config{}}
+	a := &app{}
 	a.sessCfgSet, a.sessCfg = true, &config.Config{}
 	called, gotModels = false, nil
-	if err := runLaunchPath(cmd, a, "", "", "", "", nil, "", ""); err != nil {
-		t.Fatalf("legacy runLaunchPath: %v", err)
+	err := runLaunchPath(cmd, a, "", "", "", "", nil, "", "")
+	if want := notConfiguredText(launchStill); err == nil || err.Error() != want || exitcode.Of(err) != 1 {
+		t.Errorf("no endpoint: err = %v (exit %d), want %q, exit 1", err, exitcode.Of(err), want)
+	}
+	if called {
+		t.Error("no endpoint: the TUI opened")
+	}
+
+	// No endpoint, a pinned command: its worktree picker needs no model.
+	called, gotModels = false, nil
+	if err := runLaunchPath(cmd, a, "shell", "", "", "", nil, "", ""); err != nil {
+		t.Fatalf("shell runLaunchPath: %v", err)
 	}
 	if !called || gotModels != nil {
-		t.Errorf("legacy: called = %v, models = %v, want a call with nil", called, gotModels)
+		t.Errorf("shell: called = %v, models = %v, want a call with nil", called, gotModels)
 	}
 }
 

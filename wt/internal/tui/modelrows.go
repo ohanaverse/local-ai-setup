@@ -6,8 +6,6 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -94,27 +92,19 @@ func (r tableRow) timePriced() bool {
 	return r.timed
 }
 
-// tableInput gathers everything buildRows needs. models is the agent's
-// eligible list (every catalog model the agent supports, already
-// filtered by agent/-T/-F); inventory is nil when no local probe ran.
+// tableInput gathers everything buildRows needs. models is the list the
+// standalone picker shows (the model server's rows as config.Models, each
+// carrying its Location). cfg is nil there; a test may pass one so rows
+// resolve their location from its providers.
 type tableInput struct {
 	cfg            *config.Config
 	agent          string
 	models         []config.Model
-	inventory      *localmodels.Snapshot
 	hideDiscovered bool
-	// skipRoute suppresses the launch-route blocking/decoration in
-	// buildTable: `wt start` starts a model, it does not launch an agent on
-	// it, so a route verdict must not gate its rows.
-	skipRoute bool
-	usage     usage.Store
+	usage          usage.Store
 	// now is the instant the rows are priced at. The zero time means the
 	// picker's clock (pickerNow), which is what both pickers leave it at.
 	now time.Time
-	// slots opts in to slot-profile rows (catalog.Input.SlotProfiles): the
-	// statically validated profiles. nil, which is what the picker of
-	// `wt start` and `wt smoke` leaves it at, means no profile rows.
-	slots []profiles.SlotCheck
 }
 
 // buildRows builds the shared catalog rows and decorates them with the
@@ -126,9 +116,7 @@ func buildRows(in tableInput) []tableRow {
 		Config:         in.cfg,
 		Agent:          in.agent,
 		Models:         in.models,
-		Inventory:      in.inventory,
 		HideDiscovered: in.hideDiscovered,
-		SlotProfiles:   in.slots,
 	})
 	// One reading of the clock for the whole table: the rows are priced at
 	// one instant, so two rows never show the prices of two sides of a window

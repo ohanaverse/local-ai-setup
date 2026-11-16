@@ -17,7 +17,7 @@ import (
 )
 
 // expectDirectLaunch is for a test that runs the root command and expects it
-// to reach a launch the test has stubbed (launchFiltered, launchPassthrough)
+// to reach a launch the test has stubbed (launchFilteredRemote, launchCommand)
 // without the TUI. It replaces the two seams such a test would otherwise
 // leave real with stubs that fail it:
 //

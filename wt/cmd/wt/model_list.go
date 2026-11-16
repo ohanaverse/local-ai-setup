@@ -15,6 +15,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// probeInventory is a test seam for the host commands (model list, served,
+// litellm sync, the config editor's Models tab, model rm): production probes
+// the live local-model inventory. cmd/wt's TestMain stubs it to
+// localmodels.OnDiskSnapshotForTest so no test dials the developer's real
+// ollama/omlx/mtplx servers, and tests that need a verdict stub it with their
+// own snapshot. No session path reads it (the boundary test).
+var probeInventory = localmodels.Inventory
+
 // modelListColumns are the text listing's columns. SIZE and PATH are the two
 // a narrow terminal gives up (fitModelList).
 var modelListColumns = []plainColumn{
@@ -58,10 +66,11 @@ func modelListCmd(a *app) *cobra.Command {
 			}
 			// The load error only: a registry with a gap in it (a model
 			// whose provider has no row) is exactly what this list is for.
-			if a.loadErr != nil {
-				return configError(a.loadErr)
+			cfg, loadErr := a.hostConfig()
+			if loadErr != nil {
+				return configError(loadErr)
 			}
-			return runModelList(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, asJSON, stdoutWidth())
+			return runModelList(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, asJSON, stdoutWidth())
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "machine-readable output, with size_bytes and path for every row")

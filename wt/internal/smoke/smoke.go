@@ -1,7 +1,7 @@
 // Package smoke implements wt smoke's testable core: given a model, find
 // every currently eligible agent and run a one-shot prompt through each,
-// classifying the result. Process execution goes through the buildAndRun
-// seam so tests can verify classification logic (PASS/FAIL/SKIP, sentinel
+// classifying the result. Process execution goes through the gatewayRun
+// seam (SetGatewayRunForTest) so tests can verify classification logic (PASS/FAIL/SKIP, sentinel
 // matching, timeouts) without executing real agent binaries.
 package smoke
 
@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -22,7 +21,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
@@ -47,40 +45,6 @@ type RowResult struct {
 	Err      error
 }
 
-// smokeProbe is a test seam over the live inventory, so no test in this
-// package probes a real provider.
-var smokeProbe = localmodels.Inventory
-
-// SetSmokeProbeForTest makes Eligibility read snap instead of the live
-// inventory and returns the func restoring the real seam. internal/smoke's
-// own tests assign smokeProbe directly; this hook exists for another
-// package's tests — cmd/wt's smoke tests exercise this package's Eligibility
-// through resolveSmokeModel and cannot assign an unexported var from there —
-// mirroring internal/config's Set...ForTest setters, the codebase's
-// convention for cross-package test state. Tests only.
-func SetSmokeProbeForTest(snap localmodels.Snapshot) (restore func()) {
-	old := smokeProbe
-	smokeProbe = func(*config.Config) localmodels.Snapshot { return snap }
-	return func() { smokeProbe = old }
-}
-
-// SetBuildAndRunForTest replaces the agent-run seam with fn, which reports a
-// row's combined output and exit code (a non-zero code makes the row FAIL), and
-// returns the func restoring the real seam. It exists for cmd/wt's tests, which
-// cannot assign this package's unexported buildAndRun. Tests only.
-func SetBuildAndRunForTest(fn func(cfg *config.Config, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) ExecOutcome) (restore func()) {
-	old := buildAndRun
-	buildAndRun = func(_ context.Context, cfg *config.Config, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
-		cwd, err := rowDir()
-		if err != nil {
-			*cleanup = func() error { return nil }
-			return execOutcome{StartErr: err}
-		}
-		return fn(cfg, agentName, m, prompt, cwd, timeout, profileApplier, cleanup)
-	}
-	return func() { buildAndRun = old }
-}
-
 // Candidate is one model a smoke run could target: its catalog row (Action is
 // launch, or start for a non-running local model wt can start) and the agents
 // that could run it once it is up.
@@ -89,87 +53,7 @@ type Candidate struct {
 	Agents []string
 }
 
-// Candidates is Eligibility's superset: it also keeps start rows (a non-running
-// local model wt can start) whose route resolves, so `wt smoke` can offer them
-// and start the pick. Blocked rows stay out. It never starts anything itself.
-func Candidates(cfg *config.Config) []Candidate { return walk(cfg, true) }
-
-func walk(cfg *config.Config, includeStart bool) []Candidate {
-	snap := smokeProbe(cfg)
-	byID := map[string]*Candidate{}
-	for _, a := range cfg.Agents {
-		if agents.IsCommand(a.Name) {
-			continue
-		}
-		eligible, err := cfg.EligibleModels(a.Name, "", "")
-		if err != nil {
-			continue
-		}
-		rows := catalog.Build(catalog.Input{
-			Config: cfg, Agent: a.Name, Models: eligible,
-			Inventory: &snap, HideDiscovered: false,
-		})
-		for _, r := range rows {
-			act := r.Action()
-			if act == catalog.ActionBlock || (act == catalog.ActionStart && !includeStart) {
-				continue
-			}
-			// The picker's route rules: an Unmapped row routed through
-			// LiteLLM is refused (smoke must not advertise what a real launch
-			// refuses); a start row whose route errors is refused like
-			// pickerBlockedReason does. A launch row with a route error stays
-			// eligible (the picker reports it on Enter). A discovered row is
-			// never refused (#179 Phase B: wt routes it).
-			if r.Unmapped || act == catalog.ActionStart {
-				route, rerr := cfg.ResolveRoute(r.Model, agents.ProtocolsFor(a.Name))
-				if r.RefusedByRoute(route, rerr) {
-					continue
-				}
-				if act == catalog.ActionStart && rerr != nil {
-					continue
-				}
-			}
-			c := byID[r.Model.ID]
-			if c == nil {
-				c = &Candidate{Row: r}
-				byID[r.Model.ID] = c
-			}
-			c.Agents = append(c.Agents, a.Name)
-		}
-	}
-	out := make([]Candidate, 0, len(byID))
-	for _, c := range byID {
-		sort.Strings(c.Agents)
-		out = append(out, *c)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Row.Model.ID < out[j].Row.Model.ID })
-	return out
-}
-
-// Eligibility takes ONE live inventory snapshot and walks the same catalog
-// rows the picker and the non-TUI launch path read, returning both the
-// deduped, id-sorted union of models eligible for at least one non-command
-// agent and, per model id, the sorted list of non-command agents eligible to
-// launch it. A model is eligible when selecting it would launch: a cloud row,
-// or a local row the probe reports as running — discovered running rows
-// included, which a -M pin can launch — minus Unmapped cloud rows routed
-// through LiteLLM, which the picker makes unselectable and the CLI refuses.
-// Because
-// the rows are the same ones a real launch consults, wt smoke cannot
-// advertise a model a real `wt -A <agent> -M <id>` launch would refuse. It
-// never starts or stops anything itself; `Candidates` plus the caller's start
-// step is how `wt smoke` handles idle local models. Both answers come from
-// the one snapshot, so a caller that needs both pays one inventory round.
-func Eligibility(cfg *config.Config) (models []config.Model, agentsForModel map[string][]string) {
-	agentsForModel = map[string][]string{}
-	for _, c := range walk(cfg, false) {
-		models = append(models, c.Row.Model)
-		agentsForModel[c.Row.Model.ID] = c.Agents
-	}
-	return models, agentsForModel
-}
-
-// execOutcome is what the buildAndRun seam reports for one row.
+// execOutcome is what the gatewayRun seam reports for one row.
 type execOutcome struct {
 	Command  string
 	Output   string
@@ -182,7 +66,7 @@ type execOutcome struct {
 	// ModelFallback is the driver's warning when it could not select the
 	// model under test and the agent would run on its own default model
 	// (agents.LaunchInfo.ModelFallback). Non-empty means the row is FAIL
-	// whatever the exit code or output say; realBuildAndRun does not run
+	// whatever the exit code or output say; realGatewayRun does not run
 	// the agent at all in that case.
 	ModelFallback string
 }
@@ -199,11 +83,6 @@ type RowDir func() (string, error)
 // FixedDir is the RowDir for a directory that already exists.
 func FixedDir(dir string) RowDir { return func() (string, error) { return dir, nil } }
 
-// buildAndRun builds and runs one agent's one-shot launch command. It is a
-// package-level var so tests can stub it with canned outcomes, following
-// the seam pattern documented in wt/CLAUDE.md's Go Tests section.
-var buildAndRun = realBuildAndRun
-
 // ProfileApplier applies a resolved profile to an already-built exec.Cmd.
 // oneShotArgs is the one-shot invocation this row is about to run (e.g.
 // codex's ["exec", prompt]) — the applier, not the caller, is responsible
@@ -219,8 +98,8 @@ var buildAndRun = realBuildAndRun
 // ProfileApplier is a no-op.
 type ProfileApplier func(cmd *exec.Cmd, oneShotArgs []string) (cleanup func() error, err error)
 
-// notInstalledMessage mirrors agents.BuildLaunchCmdInfo's exact error text
-// ("agent %s not installed") so RunRow can classify a missing binary as SKIP rather
+// notInstalledMessage mirrors the launch build's exact error text
+// ("agent %s not installed") so a row can classify a missing binary as SKIP rather
 // than FAIL. Matches the same substring convention agents-smoke.sh uses.
 func notInstalledMessage(agent string) string {
 	return fmt.Sprintf("agent %s not installed", agent)
@@ -263,34 +142,27 @@ func (b *boundedWriter) String() string {
 	return string(b.tail)
 }
 
-// StubOutcome constructs an execOutcome for tests that stub buildAndRun
+// StubOutcome constructs an execOutcome for tests that stub gatewayRun
 // and need to return a canned result (e.g. exit code 0 with some output).
 func StubOutcome(output string, exitCode int) execOutcome {
 	return execOutcome{Output: output, ExitCode: exitCode}
 }
 
-func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
-	return runAgent(ctx, agentName, m, prompt, rowDir, timeout, profileApplier, cleanup, func(yolo bool) (*exec.Cmd, agents.LaunchInfo, error) {
-		// Built with no directory: it is set once the agent is known to run.
-		return agents.BuildLaunchCmdInfo(agentName, m, "", yolo, cfg, nil)
-	})
-}
-
 // runAgent builds one agent's one-shot command with build and runs it: the
-// body shared by the registry path (realBuildAndRun) and the gateway path
-// (realGatewayRun), which differ only in how the launch command is built.
+// body of the gateway run (realGatewayRun), which hands it the launch
+// command's builder.
 func runAgent(ctx context.Context, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error, build func(yolo bool) (*exec.Cmd, agents.LaunchInfo, error)) execOutcome {
-	// Always initialize cleanup to a no-op so RunRow's defer cleanup() is
-	// safe even when we return early (BuildLaunchCmd failure, no OneShotRunner).
+	// Always initialize cleanup to a no-op so the row's defer cleanup() is
+	// safe even when we return early (a build failure, no OneShotRunner).
 	*cleanup = func() error { return nil }
 	// yolo=true for every agent except codex: a one-shot smoke prompt must
 	// never stall on an interactive tool-permission prompt it has no TTY
-	// to answer — see TestRealBuildAndRunPassesYolo for the failure this
+	// to answer — see TestRealGatewayRunPassesYolo for the failure this
 	// prevents. codex's "exec" subcommand already never prompts (its own
 	// startup banner reports "approval: never"), so it never had this
 	// failure mode; its yolo flag additionally strips its own sandbox
 	// (--dangerously-bypass-approvals-and-sandbox), which smoke has no
-	// reason to need — see TestRealBuildAndRunSkipsYoloForCodex. Every
+	// reason to need — see TestRealGatewayRunSkipsYoloForCodex. Every
 	// agent driver runs the smoke prompt with permission checks bypassed
 	// in cwd (see docs/wt-smoke.md's "Tool-use permission" note): a
 	// --prompt override therefore runs unsupervised too, not just the
@@ -302,11 +174,11 @@ func runAgent(ctx context.Context, agentName string, m config.Model, prompt stri
 		return execOutcome{StartErr: err}
 	}
 	// The driver could not select m and the agent would answer on its own
-	// default model. Don't run it: the outcome is already FAIL (see RunRow),
+	// default model. Don't run it: the outcome is already FAIL (classifyRow),
 	// and a run would spend a real request on a model this row is not about.
 	// execOutcome.ModelFallback doubles as the flag (non-empty = fallback),
 	// so a driver that set ModelFallback without a Warn still needs a
-	// reason here — an empty one would read as "no fallback" and RunRow
+	// reason here — an empty one would read as "no fallback" and the row
 	// would classify an agent that never ran by its zero exit code.
 	if info.ModelFallback {
 		reason := info.Warn
@@ -333,7 +205,7 @@ func runAgent(ctx context.Context, agentName string, m config.Model, prompt stri
 	cmd.Stderr = buf
 
 	// Apply the profile before Start so env/args modifications take effect.
-	// The cleanup is deferred by the caller (RunRow) so it runs regardless
+	// The cleanup is deferred by the caller (RunRowGateway) so it runs regardless
 	// of whether the agent exits successfully or times out. oneShotArgs is
 	// threaded through the applier rather than appended here first: it must
 	// land AFTER any profile-injected CLI flags for an agent like codex
@@ -443,35 +315,8 @@ func sentinelIn(output, prompt, sentinel string) bool {
 	return strings.Contains(strings.ToLower(output), strings.ToLower(sentinel))
 }
 
-// RunRow runs agentName's one-shot prompt against model m and classifies
-// the result. sentinel is the exact string the prompt asked the model to
-// produce (DefaultPrompt, or ToolPrompt's nonce); pass "" when prompt was
-// overridden by the caller (a custom prompt was never asked to produce a
-// sentinel), which degrades verification to "exited 0 within timeout".
-//
-// profileApplier, when non-nil, is called after the launch command is built
-// but before execution to apply a local-model profile overlay (env, args,
-// config_file, wrapper). It returns a cleanup func that the caller MUST
-// invoke after the command exits (success or failure) to restore any config
-// file a profile's config_content mechanism rewrote. A nil profileApplier
-// is a no-op.
-//
-// Cancelling ctx kills the agent's whole process group and fails the row as
-// interrupted.
-func RunRow(ctx context.Context, cfg *config.Config, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, rowDir RowDir, profileApplier ProfileApplier) RowResult {
-	start := time.Now()
-	var cleanup func() error
-	out := buildAndRun(ctx, cfg, agentName, m, prompt, rowDir, timeout, profileApplier, &cleanup)
-	defer func() {
-		if cerr := cleanup(); cerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
-		}
-	}()
-	return classifyRow(agentName, m, prompt, sentinel, timeout, start, out)
-}
-
 // classifyRow turns one finished run into its row: PASS, FAIL or SKIP by the
-// rules RunRow documents. It is shared by the registry and gateway paths.
+// rules RunRowGateway documents.
 func classifyRow(agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, start time.Time, out execOutcome) RowResult {
 	res := RowResult{
 		Agent:    agentName,
@@ -548,7 +393,7 @@ func NewRunID() string {
 	return "run-" + randomHex(4)
 }
 
-// DefaultPrompt returns the smoke prompt and the sentinel RunRow should look
+// DefaultPrompt returns the smoke prompt and the sentinel a row should look
 // for in the agent's output.
 //
 // The prompt must never contain the sentinel verbatim (#193). Some agents
@@ -556,7 +401,7 @@ func NewRunID() string {
 // holding it — so a sentinel the prompt contains is found in the output
 // whatever the model replied, and even when no model replied at all. The
 // prompt therefore carries the text in lower case and asks for it in upper
-// case, and RunRow's case-sensitive search can only be satisfied by a reply.
+// case, and the row's case-sensitive search can only be satisfied by a reply.
 // One instruction on one token keeps it within reach of a small local model
 // and needs no per-agent parsing of where a reply starts.
 func DefaultPrompt(agentName, runID string) (prompt, sentinel string) {
@@ -570,7 +415,7 @@ func DefaultPrompt(agentName, runID string) (prompt, sentinel string) {
 const nonceFile = "smoke-nonce.txt"
 
 // ToolPrompt returns a prompt that only real tool calls can satisfy, the
-// sentinel RunRow should look for, and the files to plant (see WithFiles).
+// sentinel a row should look for, and the files to plant (see WithFiles).
 // The sentinel is random and lives only in the last file, never in the
 // prompt, so neither an echoed prompt nor a guess can produce it: the agent
 // must call its file-reading tool and carry the result into its reply.

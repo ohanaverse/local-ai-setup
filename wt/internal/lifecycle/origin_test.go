@@ -123,13 +123,12 @@ func TestOccupantOfAnMtplxWithoutAPortIsSeen(t *testing.T) {
 // TestStartProbeAndRouteAgreeOnAProvidersAddress is the contract #348 broke,
 // for every local family and for base_urls with and without a port: the
 // origin a start waits on, the origin wt probes (the inventory, the occupant
-// check, the check after a start), the api_base of the model's LiteLLM route
-// and the origin of a direct route are one address. Each is read from where
-// production reads it: the start's from the backend (mtplx's own resolution;
-// for omlx and ollama the first address their start asks, against a network
-// where nothing listens), the others from localmodels.FamilyOrigin,
-// litellm.BuildEntry and config.ResolveRoute. wt has no start for
-// mlx_lm_server, so it has the other three.
+// check, the check after a start) and the api_base of the model's LiteLLM
+// route are one address. Each is read from where production reads it: the
+// start's from the backend (mtplx's own resolution; for omlx and ollama the
+// first address their start asks, against a network where nothing listens),
+// the others from localmodels.FamilyOrigin and litellm.BuildEntry. wt has no
+// start for mlx_lm_server, so it has the other two.
 //
 // What the address is: the url as written (BaseOrigin), except an mtplx url
 // on this machine with no port, which is the port wt serves mtplx on. An
@@ -197,13 +196,6 @@ func TestStartProbeAndRouteAgreeOnAProvidersAddress(t *testing.T) {
 				t.Errorf("route api_base = %q, an origin of %q; want %q", row.Params.APIBase, got, c.want)
 			}
 
-			route, err := cfg.ResolveRoute(m, []config.Protocol{config.ProtocolOpenAIChat})
-			if err != nil {
-				t.Fatalf("ResolveRoute: %v", err)
-			}
-			if route.Litellm || route.BaseOrigin != c.want {
-				t.Errorf("direct route = %+v, want origin %q", route, c.want)
-			}
 		})
 	}
 }

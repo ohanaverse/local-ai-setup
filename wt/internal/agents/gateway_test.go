@@ -245,8 +245,7 @@ func TestSlotGatewayCmdCarriesGateway(t *testing.T) {
 // several, withdraws it; the user's own variable wins; a slot profile anchors
 // on the default slot and is lowered by the smallest other slot.
 func TestClaudeWindowFromHostContext(t *testing.T) {
-	// A conflicting tiers entry for the same model: HostContext must win.
-	stubTiers(t, windowIndex(t, map[string]int{"c/a": 8000}))
+	t.Setenv(claudeContextVar, "")
 	cloud := config.Model{ID: "c/a", ProviderID: "c", ModelName: "a", HostContext: 200000}
 	small := config.Model{ID: "c/b", ProviderID: "c", ModelName: "b", HostContext: 64000}
 	local := config.Model{ID: "l/x", ProviderID: "l", ModelName: "x"}

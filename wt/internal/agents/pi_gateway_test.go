@@ -3,6 +3,7 @@ package agents
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -89,5 +90,40 @@ func TestPiGatewayKeepsAUsersOwnBlock(t *testing.T) {
 	p := readPiFile(t, path).Providers["mine"]
 	if p.APIKey != "user-key" || p.BaseURL != "http://mine.invalid/v1" || len(p.Models) != 1 {
 		t.Errorf("user block changed: %+v", p)
+	}
+}
+
+// TestSyncLitellmBlockKeepsWhatIsThere pins syncLitellmBlock's guarantees:
+// entries already in the litellm block are never removed or reordered (a
+// user's `_launch: false` and a model the catalog no longer lists stay where
+// they are), new ids are appended in order, and a user's `api` is kept (only
+// an empty one is defaulted). Without it a sync could silently re-enable an
+// entry the user switched off or drop one they still launch by hand.
+func TestSyncLitellmBlockKeepsWhatIsThere(t *testing.T) {
+	f := piModelsFile{Providers: map[string]piProvider{
+		piLitellmProviderID: {API: "openai-responses", BaseURL: "http://old/v1", APIKey: "old", Models: []piModel{
+			{ID: "user/own", Launch: false},
+			{ID: "ollama/a", Launch: true},
+		}},
+	}}
+	if !syncLitellmBlock(f, "http://gw", "tok", []string{"ollama/b", "ollama/a", "ollama/c"}) {
+		t.Fatal("sync reported no change for a new origin and two new ids")
+	}
+	p := f.Providers[piLitellmProviderID]
+	var ids []string
+	for _, m := range p.Models {
+		ids = append(ids, m.ID)
+	}
+	if want := []string{"user/own", "ollama/a", "ollama/b", "ollama/c"}; !slices.Equal(ids, want) {
+		t.Errorf("ids = %v, want %v (existing kept in place, new appended)", ids, want)
+	}
+	if p.Models[0].Launch {
+		t.Error("the user's _launch: false entry was switched on")
+	}
+	if p.API != "openai-responses" || p.BaseURL != "http://gw/v1" || p.APIKey != "tok" {
+		t.Errorf("block = api %q base %q key %q, want the user's api kept and the gateway's origin and token", p.API, p.BaseURL, p.APIKey)
+	}
+	if syncLitellmBlock(f, "http://gw", "tok", []string{"ollama/a"}) {
+		t.Error("a second sync with nothing new reported a change")
 	}
 }

@@ -151,7 +151,7 @@ func (c loadErrorCase) check(t *testing.T, got, prefix, hintFmt, suffix, registr
 }
 
 // TestLitellmLoadErrorNamesTheRepairThatWorks runs `wt litellm sync` and
-// `wt litellm status` (the cfgGuard path `on`, `off` and `set` share) in a
+// `wt litellm status` (the cfgGuard path `set` shares) in a
 // home broken each way wt's configuration can fail to load, and pins the
 // repair the refusal names. Both used to end every such refusal with "run
 // `wt config` to repair": for a missing registry that contradicted the
@@ -160,7 +160,7 @@ func (c loadErrorCase) check(t *testing.T, got, prefix, hintFmt, suffix, registr
 // (#291). Only a config.toml problem is `wt config`'s to repair.
 func TestLitellmLoadErrorNamesTheRepairThatWorks(t *testing.T) {
 	for _, c := range loadErrorCases() {
-		for _, args := range [][]string{{"litellm", "sync"}, {"litellm", "status"}, {"litellm", "on"}} {
+		for _, args := range [][]string{{"litellm", "sync"}, {"litellm", "status"}, {"litellm", "set", "--url", "http://x"}} {
 			t.Run(c.name+"/"+strings.Join(args, " "), func(t *testing.T) {
 				registry, _ := brokenHome(t, c)
 				root := rootCmd()
@@ -179,7 +179,8 @@ func TestLitellmLoadErrorNamesTheRepairThatWorks(t *testing.T) {
 }
 
 // TestStatsFamilyNoteNamesTheRepairThatWorks pins the repair in the note
-// `wt stats --family` prints when the configuration did not load. The note
+// `wt stats --family` prints when the configuration did not load (none for a
+// registry simply absent at the default path: a session-only machine). The note
 // has to agree with what every refusing command says for the same error: it
 // used to tell a user with no registry to run a command of the retired
 // modelman, right after quoting an error that says `wt model init` (#291).
@@ -191,23 +192,29 @@ func TestStatsFamilyNoteNamesTheRepairThatWorks(t *testing.T) {
 			if err != nil {
 				t.Fatalf("newApp(): %v", err)
 			}
-			if a.loadErr == nil {
+			if hostLoadErrOf(a) == nil {
 				t.Fatal("newApp() loaded a broken home without a load error")
 			}
 			_, stderr := runStats(t, a, "--family", "gemma4")
-			// An unparseable config.toml also says, first, why the spend did not
-			// come from the model server.
-			rest, noted := strings.CutPrefix(stderr, "wt: note: config.toml could not be read (")
-			if noted != (c.name == "unparseable config.toml") {
-				t.Fatalf("case %q: config note present = %v, want it exactly for an unparseable config.toml\n%s", c.name, noted, stderr)
+			// The spend line comes first: no model server is configured, or
+			// (an unparseable config.toml) the file that would name one did
+			// not load. Then the registry's note, which the host registry
+			// (hostConfig) gives the families when there is no server.
+			first, note, ok := strings.Cut(stderr, "\n")
+			if !ok || !strings.HasPrefix(first, "wt: spend unavailable: ") || !strings.HasSuffix(first, "; spend is not shown") {
+				t.Fatalf("stderr = %q, want the spend line first", stderr)
 			}
-			if noted {
-				_, stderr, _ = strings.Cut(rest, "\n")
+			if wantNC := c.name != "unparseable config.toml"; strings.Contains(first, "no model server is configured") != wantNC {
+				t.Errorf("case %q: spend line %q, want not-configured = %v", c.name, first, wantNC)
 			}
-			const spendNote = "wt: spend unavailable: querySpend not stubbed in this test\n"
-			note, ok := strings.CutPrefix(stderr, spendNote)
-			if !ok {
-				t.Fatalf("stderr = %q, want TestMain's spend note first", stderr)
+			if c.name == "missing registry" {
+				// No registry at the default path is a session-only
+				// machine: there is nothing to repair, so no note
+				// (TestStatsFamilyNoNoteWithoutARegistry).
+				if note != "" {
+					t.Errorf("missing registry: note = %q, want none", note)
+				}
+				return
 			}
 			c.check(t, note, "wt: wt's configuration did not load (", "; %s",
 				"), so --family matched each id's provider prefix\n", registry)
@@ -292,7 +299,9 @@ func TestModelInitNamesTheRepairForARegistryItCannotWrite(t *testing.T) {
 }
 
 // TestRegistryRowErrorNamesTheRegistry runs the commands that refuse on a
-// validation error against a registry whose rows are wrong, and pins that the
+// validation error against a registry whose rows are wrong (since the flip
+// those are the host's `wt stop <provider>` and `wt stop --all`: start, a
+// model's stop, smoke and a launch read no registry), and pins that the
 // refusal sends the user to registry.toml. The rows parse, so this is not a
 // load error, and it used to fall through to "run `wt config` to repair" —
 // for a model with no model_name right after the same line had said to edit
@@ -315,7 +324,7 @@ func TestRegistryRowErrorNamesTheRegistry(t *testing.T) {
 			`model "omlx/m": no location on model or provider "omlx"`,
 		},
 	} {
-		for _, args := range [][]string{{"start", "omlx/m"}, {"stop", "omlx/m"}, {"smoke", "omlx/m"}, {"-A", "claude", "-M", "omlx/m"}} {
+		for _, args := range [][]string{{"stop", "omlx"}, {"stop", "--all"}} {
 			t.Run(name+"/"+strings.Join(args, " "), func(t *testing.T) {
 				home := t.TempDir()
 				withCleanConfigEnv(t, home)

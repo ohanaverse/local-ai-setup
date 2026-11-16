@@ -5,8 +5,6 @@ import (
 	"os"
 	"testing"
 	"time"
-
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // TestPriceNoticeThresholds pins when the notice speaks. Refreshing is manual
@@ -47,70 +45,6 @@ func TestPriceNoticeShowsTheLocalDate(t *testing.T) {
 	now := time.Date(2026, 10, 20, 9, 0, 0, 0, pacific)
 	if got, want := PriceNotice(last, true, now), "wt: token pricing last refreshed 2026-10-03 — run 'wt cloud-sync'"; got != want {
 		t.Errorf("PriceNotice = %q, want %q", got, want)
-	}
-}
-
-// TestPrintPriceNoticeSpeaksOnlyAboutOpenRouterPrices pins what a launch
-// actually prints. A registry with no OpenRouter-priced model gets no line
-// at all, however old its other stamps are: `wt cloud-sync` would have
-// nothing to refresh there, and a reminder the user cannot act on is noise
-// after every session. "OpenRouter-priced" is a model whose provider_id is
-// "openrouter": an openrouter provider row with no model under it is not
-// reminded about, and neither is another cloud provider's model.
-func TestPrintPriceNoticeSpeaksOnlyAboutOpenRouterPrices(t *testing.T) {
-	fresh := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-	ollamaCloud := config.Model{ID: "ollama/glm:cloud", ProviderID: "ollama", Location: config.LocationCloud, PricingUpdatedAt: "2020-01-01T00:00:00+00:00"}
-	native := config.Model{ID: "claude/native", ProviderID: "claude", Native: true}
-	const never = "wt: token pricing has never been refreshed — run 'wt cloud-sync'\n"
-	cases := []struct {
-		name      string
-		providers []config.Provider
-		models    []config.Model
-		want      string
-	}{
-		{
-			"no OpenRouter-priced model, although an openrouter provider row exists",
-			[]config.Provider{
-				{ID: "ollama", Location: config.LocationLocal},
-				{ID: "openrouter", Location: config.LocationCloud},
-				{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
-			},
-			[]config.Model{ollamaCloud, native},
-			"",
-		},
-		{
-			"an openrouter model that was never stamped",
-			[]config.Provider{{ID: "openrouter", Location: config.LocationCloud}},
-			[]config.Model{{ID: "openrouter/x", ProviderID: "openrouter"}},
-			never,
-		},
-		{
-			"another cloud provider's model, never stamped",
-			[]config.Provider{{ID: "gateway", Location: config.LocationCloud}},
-			[]config.Model{{ID: "gateway/x", ProviderID: "gateway"}},
-			"",
-		},
-		{
-			"an openrouter model with no openrouter provider row",
-			nil,
-			[]config.Model{{ID: "openrouter/x", ProviderID: "openrouter"}},
-			never,
-		},
-		{
-			"an openrouter model refreshed an hour ago",
-			[]config.Provider{{ID: "openrouter", Location: config.LocationCloud}},
-			[]config.Model{{ID: "openrouter/x", ProviderID: "openrouter", PricingUpdatedAt: fresh}},
-			"",
-		},
-	}
-	for _, tc := range cases {
-		cfg := &config.Config{Providers: tc.providers, Models: tc.models}
-		if got := captureStdout(t, func() { PrintPriceNotice(cfg) }); got != tc.want {
-			t.Errorf("%s: PrintPriceNotice printed %q, want %q", tc.name, got, tc.want)
-		}
-	}
-	if got := captureStdout(t, func() { PrintPriceNotice(nil) }); got != "" {
-		t.Errorf("PrintPriceNotice(nil) printed %q, want nothing", got)
 	}
 }
 

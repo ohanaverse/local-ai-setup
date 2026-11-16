@@ -52,7 +52,7 @@ func TestLoadNeverReadsModelmanToml(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load = %v, want modelman.toml ignored", err)
 			}
-			if cfg.IsLitellm() || cfg.LitellmBaseURL() != "" || cfg.LitellmAPIKey() != "" || cfg.LitellmTable != nil {
+			if cfg.litellm.Enabled || cfg.LitellmBaseURL() != "" || cfg.LitellmAPIKey() != "" || cfg.LitellmTable != nil {
 				t.Fatalf("routing state = %+v (table %+v), want none: modelman.toml was read", cfg.litellm, cfg.LitellmTable)
 			}
 			got, err := os.ReadFile(filepath.Join(home, "agent-wt", "config.toml"))
@@ -75,7 +75,7 @@ func TestUpdateLitellmPersists(t *testing.T) {
 	if err := cfg.UpdateLitellm(func(s *LitellmState) { s.Enabled, s.URL, s.APIKey = true, "http://x:4000/", "sk-new" }); err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.IsLitellm() || cfg.LitellmBaseURL() != "http://x:4000" {
+	if !cfg.litellm.Enabled || cfg.LitellmBaseURL() != "http://x:4000" {
 		t.Fatalf("in-memory not updated: %+v", cfg.litellm)
 	}
 	p := filepath.Join(home, "agent-wt", "config.toml")
@@ -107,7 +107,7 @@ func TestLitellmOwnEmptyTableIsATableNotAbsence(t *testing.T) {
 		if cfg.LitellmTable == nil {
 			t.Fatalf("[litellm] in %q must decode to a non-nil pointer", body)
 		}
-		if cfg.IsLitellm() || cfg.LitellmAPIKey() != "" || cfg.LitellmBaseURL() != "" {
+		if cfg.litellm.Enabled || cfg.LitellmAPIKey() != "" || cfg.LitellmBaseURL() != "" {
 			t.Fatalf("empty [litellm] turned routing on: %+v", cfg.litellm)
 		}
 	}
@@ -229,7 +229,7 @@ func TestUpdateLitellmRollsBackOnSaveFailure(t *testing.T) {
 	if err := cfg.UpdateLitellm(func(s *LitellmState) { s.Enabled = true }); err == nil {
 		t.Skip("directory permissions did not block the write (running as root?)")
 	}
-	if cfg.IsLitellm() || cfg.LitellmTable != nil {
-		t.Fatalf("state changed despite the failed save: enabled=%v table=%v", cfg.IsLitellm(), cfg.LitellmTable)
+	if cfg.litellm.Enabled || cfg.LitellmTable != nil {
+		t.Fatalf("state changed despite the failed save: enabled=%v table=%v", cfg.litellm.Enabled, cfg.LitellmTable)
 	}
 }

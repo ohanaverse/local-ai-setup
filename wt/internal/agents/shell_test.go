@@ -73,7 +73,7 @@ func TestShellDriverBuildMetacharactersLiteral(t *testing.T) {
 }
 
 // TestShellDriverImplementsArgSetter asserts that shellDriver implements the
-// ArgSetter interface. BuildLaunchCmd uses this to decide whether to pass
+// ArgSetter interface. BuildLaunchCmdGateway uses this to decide whether to pass
 // args to the driver directly or append them to the command.
 func TestShellDriverImplementsArgSetter(t *testing.T) {
 	d := ByName("shell")

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
@@ -218,14 +217,9 @@ func TestCheckSlotPassthrough(t *testing.T) {
 	}
 }
 
-// slotTestCfg is a config whose [litellm] table has a url and a key and whose
-// toggle is OFF: the slot path must use the proxy anyway. It is built in
-// memory, so no test here reads the config home.
-func slotTestCfg() *config.Config {
-	cfg := &config.Config{}
-	cfg.SetLitellmForTest(config.LitellmState{Enabled: false, URL: "http://localhost:4000/", APIKey: slotTestKey})
-	return cfg
-}
+// slotTestGW is a model-server gateway with an origin (a trailing slash the
+// build trims) and a token.
+func slotTestGW() Gateway { return Gateway{Origin: "http://localhost:4000/", Token: slotTestKey} }
 
 // fakeSlotClaude puts an executable named claude first on PATH and returns
 // its path.
@@ -300,8 +294,8 @@ func TestBuildSlotCommand(t *testing.T) {
 
 // TestBuildSlotLaunchCmd pins the treatment a slot-profile command gets, the
 // same a single-model launch gets: the binary found on PATH, the stray model
-// variables removed from the inherited environment, the proxy variables set
-// from [litellm] although its toggle is off, the worktree as directory and
+// variables removed from the inherited environment, the gateway variables set
+// from the model-server gateway, the worktree as directory and
 // PWD, and the user's arguments appended unchanged. If it regresses a profile
 // session opens the caller's directory, follows a shell export to a model the
 // profile never chose, or drops the user's flags. It also pins that building
@@ -317,7 +311,7 @@ func TestBuildSlotLaunchCmd(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "http://stale.invalid")
 	t.Setenv("WT_SLOT_TEST_KEEP", "1")
 
-	cmd, err := BuildSlotLaunchCmd(slotTestLaunch(), work, true, slotTestCfg(), []string{"--continue", "--verbose"})
+	cmd, err := BuildSlotLaunchCmdGateway(slotTestLaunch(), work, true, slotTestGW(), []string{"--continue", "--verbose"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,10 +350,10 @@ func TestBuildSlotLaunchCmd(t *testing.T) {
 	// An inherited value of a variable wt sets is still in the list; the
 	// child sees the last one. The url's trailing slash is trimmed.
 	if got := envValues(cmd.Env, "ANTHROPIC_AUTH_TOKEN"); len(got) == 0 || got[len(got)-1] != slotTestKey {
-		t.Errorf("ANTHROPIC_AUTH_TOKEN values = %v, want the last to be the [litellm] key", got)
+		t.Errorf("ANTHROPIC_AUTH_TOKEN values = %v, want the last to be the gateway token", got)
 	}
 	if got := envValues(cmd.Env, "ANTHROPIC_BASE_URL"); len(got) == 0 || got[len(got)-1] != "http://localhost:4000" {
-		t.Errorf("ANTHROPIC_BASE_URL values = %v, want the last to be the proxy origin", got)
+		t.Errorf("ANTHROPIC_BASE_URL values = %v, want the last to be the gateway origin", got)
 	}
 	if got := envValues(cmd.Env, "ANTHROPIC_API_KEY"); len(got) == 0 || got[len(got)-1] != "" {
 		t.Errorf("ANTHROPIC_API_KEY values = %v, want the last to be empty", got)
@@ -370,7 +364,7 @@ func TestBuildSlotLaunchCmd(t *testing.T) {
 		t.Errorf("payload haiku model = %v, want the profile's", got)
 	}
 	if got := env["ANTHROPIC_BASE_URL"]; got != "http://localhost:4000" {
-		t.Errorf("payload ANTHROPIC_BASE_URL = %v, want the proxy origin", got)
+		t.Errorf("payload ANTHROPIC_BASE_URL = %v, want the gateway origin", got)
 	}
 
 	left, err := os.ReadDir(work)
@@ -400,7 +394,7 @@ func TestBuildSlotLaunchCmdRefusesPassthrough(t *testing.T) {
 		{"model, = form", []string{"--model=opus"}, "--model"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, err := BuildSlotLaunchCmd(slotTestLaunch(), t.TempDir(), false, slotTestCfg(), tc.args)
+			cmd, err := BuildSlotLaunchCmdGateway(slotTestLaunch(), t.TempDir(), false, slotTestGW(), tc.args)
 			want := "a slot profile sets " + tc.flag + " itself: remove it from the arguments after --"
 			if err == nil || err.Error() != want {
 				t.Fatalf("err = %v, want %q", err, want)
@@ -412,35 +406,22 @@ func TestBuildSlotLaunchCmdRefusesPassthrough(t *testing.T) {
 	}
 }
 
-// TestBuildSlotLaunchCmdErrors pins every other reason no command is built:
-// [litellm] without a url or a key (whatever its toggle says), an agent
-// without slot support, and a missing binary. If one regresses, a profile
-// launch starts an agent that cannot reach the proxy, or fails with an
-// unreadable exec error.
+// TestBuildSlotLaunchCmdErrors pins the other reasons no command is built
+// from a configured gateway: an agent without slot support and a missing
+// binary (an empty gateway is TestSlotGatewayCmdCarriesGateway's). If one
+// regresses, a profile launch starts an agent that cannot take the profile,
+// or fails with an unreadable exec error.
 func TestBuildSlotLaunchCmdErrors(t *testing.T) {
-	withLitellm := func(s config.LitellmState) *config.Config {
-		cfg := &config.Config{}
-		cfg.SetLitellmForTest(s)
-		return cfg
-	}
 	codex := slotTestLaunch()
 	codex.Agent = "codex"
 	for _, tc := range []struct {
-		name         string
-		sl           profiles.SlotLaunch
-		cfg          *config.Config
-		installed    bool
-		want         string
-		unconfigured bool
+		name      string
+		sl        profiles.SlotLaunch
+		installed bool
+		want      string
 	}{
-		{"no url, toggle on", slotTestLaunch(), withLitellm(config.LitellmState{Enabled: true, APIKey: slotTestKey}), true,
-			"a slot profile always uses the LiteLLM proxy, but no URL is configured — run 'wt litellm set --url ... --api-key ...': litellm routing required but not configured", true},
-		{"no key, toggle on", slotTestLaunch(), withLitellm(config.LitellmState{Enabled: true, URL: "http://localhost:4000"}), true,
-			"a slot profile always uses the LiteLLM proxy, but no API key is configured — run 'wt litellm set --url ... --api-key ...': litellm routing required but not configured", true},
-		{"nil config", slotTestLaunch(), nil, true,
-			"a slot profile always uses the LiteLLM proxy, but no URL is configured — run 'wt litellm set --url ... --api-key ...': litellm routing required but not configured", true},
-		{"agent without slot support", codex, slotTestCfg(), true, `agent "codex" does not support slot profiles`, false},
-		{"claude not installed", slotTestLaunch(), slotTestCfg(), false, "agent claude not installed", false},
+		{"agent without slot support", codex, true, `agent "codex" does not support slot profiles`},
+		{"claude not installed", slotTestLaunch(), false, "agent claude not installed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.installed {
@@ -448,12 +429,9 @@ func TestBuildSlotLaunchCmdErrors(t *testing.T) {
 			} else {
 				t.Setenv("PATH", t.TempDir())
 			}
-			cmd, err := BuildSlotLaunchCmd(tc.sl, t.TempDir(), false, tc.cfg, nil)
+			cmd, err := BuildSlotLaunchCmdGateway(tc.sl, t.TempDir(), false, slotTestGW(), nil)
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("err = %v, want %q", err, tc.want)
-			}
-			if got := errors.Is(err, config.ErrLitellmUnconfigured); got != tc.unconfigured {
-				t.Errorf("errors.Is(err, config.ErrLitellmUnconfigured) = %v, want %v", got, tc.unconfigured)
 			}
 			if cmd != nil {
 				t.Errorf("a failed build returned a command: %v", cmd.Args)

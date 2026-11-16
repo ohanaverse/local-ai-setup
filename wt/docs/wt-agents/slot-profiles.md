@@ -30,9 +30,9 @@ launch of Claude Code, are outside that support.
 
 ## Quick start
 
-1. Configure the proxy once, if you have not: `wt litellm set --url … --api-key …`.
-   A slot profile always uses the LiteLLM proxy, whatever `wt litellm status`
-   says about the on/off toggle.
+1. Configure the model server once, if you have not (`[model-server]` in
+   `config.toml`; [wt-session.md](../wt-session.md)). A slot profile always
+   goes through its gateway, which forwards to the LiteLLM proxy.
 2. Add a profile: `wt profile slots add <name> --slot sonnet=<model-id> …`
    ([Managing the file](#managing-the-file)), or write
    `~/.config/agent-wt/slot-profiles.toml` by hand (next section). Take the
@@ -151,9 +151,8 @@ may fill several slots.
 ## When a profile is blocked
 
 wt checks a profile twice. The file alone is checked when it is loaded
-(static). The file against the registry, the live inventory and the
-`[litellm]` table is checked every time rows are built, and again at launch
-(resolved). A profile that fails either check still has a row. The row is
+(static). The file against the model server's catalog is checked every time
+rows are built, and again at launch (resolved). A profile that fails either check still has a row. The row is
 blocked, and its reason is the first failing rule.
 
 Static reasons:
@@ -175,20 +174,14 @@ Static reasons:
 | `config_content cannot be encoded as the --settings JSON` | A number in `config_content` is nan or inf, which the `--settings` payload cannot hold (the reason names what the value is). Also Claude's rule |
 | `wrapper args_template [...] has no "{{args}}" placeholder` | The agent's own arguments would be dropped |
 
-Resolved reasons:
+Resolved reasons (against the model server's catalog):
 
 | Reason | Cause |
 |---|---|
-| `slot haiku: <id> is not in the registry` | The id is not a registry model. This is what a profile shows after `wt cloud-sync` or `wt model rm` removed a model it names |
-| `slot opus: <id> is a native model, which has no LiteLLM route` | A slot cannot use the native Anthropic subscription |
-| `slot opus: <id> names provider "x", which is not in the registry` | The model's `provider_id` has no provider row |
-| `slot opus: model "<id>" has location "…"; expected "local" or "cloud"` | The model's location does not resolve |
-| `slot opus: <id> cannot be routed: provider "x" has no LiteLLM mapping` | wt has no route policy for the provider |
-| `slot opus: <id> cannot be routed: wt has no LiteLLM route for this model` | The launch's route write would refuse the model, for a reason no row above names: for example a cloud model under a provider whose auth is `native`. The row asks the same function the route write does, so the two cannot disagree |
+| `slot haiku: <id> is not in the model server's catalog` | The id is not a model the server lists. This is what a profile shows after `wt cloud-sync` or `wt model rm` removed a model it names |
+| `slot opus: <id> is a native model, which has no gateway route` | A slot cannot use the native Anthropic subscription (the gateway's origin and token never reach a native model) |
+| `slot opus: ` and the server's own block reason | The server blocks that model (no LiteLLM mapping, not on disk, no engine to start it, …) |
 | `slots name two local models (<id> and <id>); a slot profile may name one` | More than one distinct local model |
-| `a slot profile always uses the LiteLLM proxy, but no URL is configured — run 'wt litellm set --url ... --api-key ...'` | `[litellm]` has no url (or, with `no API key`, no key) |
-| `slot haiku: <id> is not on disk or running`, or the pull hint `wt model list` gives | The local model has no row |
-| `slot haiku: …` and the local model's own block reason | The local model cannot be started by wt |
 
 Three problems produce no usable row, and a fourth loses part of the file:
 
@@ -204,13 +197,10 @@ Three problems produce no usable row, and a fourth loses part of the file:
   `args = "x"` in one profile, the valid profiles beside it lose their rows
   as well. Fix the line the warning names.
 - **The `profile/` prefix is taken.** `profile/` is a reserved id prefix. It
-  is taken when the registry has a provider with id `profile`, or a model
-  whose id begins with `profile/` under any provider. wt then shows no
-  profile rows and prints
-  `wt: the registry has a provider with id "profile" — slot profiles are unavailable`,
-  or
-  `wt: the registry has a model whose id begins with "profile/" (<id>) — slot profiles are unavailable`.
-  `wt profile list` prints the same sentence as a `warning:` line.
+  is taken when the model server's catalog has a provider with id `profile`,
+  or a model whose id begins with `profile/` under any provider. A profile
+  launch, pin or `wt profile show` is then blocked with a reason that names
+  the holder.
 - **A key wt does not know.** The file still loads, without what the key
   holds, and wt prints one line per key:
   `wt: slot-profiles.toml: unknown key "profiles" — ignored`. The key is a
@@ -318,67 +308,37 @@ claude-wt -W feat --new -M profile/mixed
 - A profile of another agent gets
   `model "profile/<name>" is a slot profile for agent "<its agent>", not "<agent>"`,
   with or without `-T`/`-F`.
-- An unknown name, a profile `wt profile list` reports as skipped, any
-  pin while `slot-profiles.toml` does not load, or any pin while the
-  registry holds the reserved `profile/` prefix gets
-  `model "profile/<name>" is not in the eligible list for agent "<agent>"`.
+- An unknown name, a profile `wt profile list` reports as skipped, or any
+  pin while `slot-profiles.toml` does not load goes to the model server as
+  any model id does, which answers with its own unknown-model text. A pin
+  while the catalog holds the reserved `profile/` prefix is blocked with a
+  reason that names the holder.
 
 Without `-M`, a launch that skips the picker never chooses a profile.
 `wt start`, `wt smoke` and rotation ignore slot profiles.
 
 ## What a launch does
 
-In order. A failure at any step stops the launch before Claude Code starts,
-and nothing is recorded.
+Every slot profile is resolved against the model server's catalog and
+launched through its gateway (see [On a client session](#on-a-client-session-model-server)).
+In order — a failure at any step stops the launch before Claude Code starts,
+and nothing is recorded:
 
-1. Check the profile again against fresh state.
+1. One catalog read; the profile is resolved against it.
 2. Refuse passthrough arguments that would replace the slot mapping.
-3. Write the LiteLLM route of each cloud slot model that has none.
-4. Start the local model if it is not running. The start writes the model's
-   route and restarts the proxy.
-5. Write the local model's route if it has none: for a model that was already
-   running, and as a check after a start, whose own route write is not allowed
-   to fail the start.
-6. Restart the proxy once, if a route was written and no start restarted it.
-7. Wait for any proxy restart still in flight, then check that the proxy
-   answers. The check refuses the launch if the most recent restart wt
-   attempted in this process failed.
-8. Build the command (next section).
-9. Apply the profile's `args` and `wrapper`, for an agent that allows them.
-10. Run the agent.
+3. Register the client session with every distinct slot model.
+4. Start the local slot model with a start job on the model server, only
+   when it is stopped or known not to be routed.
+5. Build the command against the gateway (next section).
+6. Apply the profile's `args` and `wrapper`, for an agent that allows them.
+7. Run the agent, with the client session's heartbeat; end the client
+   session when it exits.
 
-**The proxy check.** Both launch paths call `lifecycle.WaitPendingRoutes`
-immediately before `lifecycle.ProbeProxy`, so the probe never runs while a
-restart is still in flight. `internal/lifecycle` remembers the outcome of the
-most recent proxy restart attempt in the wt process. When that restart failed
-(its command failed, or the proxy did not answer afterwards), the probe
-refuses the launch with `the last LiteLLM proxy restart failed, so routes
-written since may not be live: <cause>`. The proxy that was not restarted is
-usually still up and answers its liveness check, while it rejects every route
-written since it booted, so the plain probe cannot see this. The refusal
-stands until a later restart succeeds or a new wt process starts.
-
-**A profile launch restarts the proxy at most once**, and not at all when
-every slot's route already exists. A local model started in step 4 stays
-running if a later step fails.
-
-**Quitting mid-launch.** Ctrl+C in the picker while a profile launch is
-under way quits wt, starts no agent and records nothing. A route the launch
-had already written is published before wt exits: wt restarts the proxy once
-and waits for it, so no route is left in `config.yaml` that the proxy never
-loaded. That holds while the routes are being written, on the replace
-dialog, and while the profile's local model is starting. Quitting with a
-second Ctrl+C while a cancelled start is still stopping does not wait for
-that start; wt restarts the proxy itself, and the proxy can restart a second
-time if the start also gets that far.
-
-**After a restart that failed.** The refusal in step 7 lasts for the wt
-process that saw the failure. A new wt process finds every route in place,
-writes nothing, restarts nothing, and the old proxy answers the check; the
-slot whose route was written but never loaded then answers
-`Invalid model name`. Restart the proxy by hand before trying again:
-`launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`, or your
-`WT_LITELLM_RESTART_CMD`.
+wt writes no route and restarts no proxy for a profile: the model server
+owns LiteLLM. A local model started in step 4 stays running if a later step
+fails; the server stops it after its idle grace when no client session uses
+it. Ctrl+C in the picker while a profile launch is under way quits wt,
+starts no agent and records nothing.
 
 **Passthrough arguments.** wt refuses `--settings` and `--model` after
 `--`, in either form (`--model opus` or `--model=opus`). Either would
@@ -496,17 +456,16 @@ What the 2026-10-13 run with Claude Code 2.1.296 showed of the session:
 | `usage.jsonl` | One event under `profile/<name>`. It feeds the row's 1D / 7D / 30D columns and `wt stats` |
 | `rotation.state` | Nothing. It stays the id of the last single-model launch |
 | `last-picked.state` | `profile/<name>`. This file holds the picker's `> ` marker; a single-model launch writes it too |
-| `refcount.jsonl` | One line per distinct slot model, for the session's process |
 | LiteLLM spend | Nothing new. The proxy logs each request under the slot model's registry id |
 
 `wt stats` shows a profile as a row of its own, with its launches and `-`
 in the spend columns. Its spend is on the slot models' rows. wt does not
 attribute spend back to a profile.
 
-After the session: wt prints the summary line naming the profile, releases
-the refcount lines, and offers the stop picker as after any non-native
-launch. The stop picker is not limited to the profile's models. There is no
-survey and no price notice for a profile session.
+After the session: wt ends the client session and prints the summary line
+naming the profile. There is no stop picker (the model server stops an idle
+model after its grace), and no survey and no price notice for a profile
+session.
 
 ## Managing the file
 
@@ -628,10 +587,11 @@ otherwise` under the first line and marks `sonnet*`.
 
 ## On a client session (model server)
 
-When `config.toml` names a model server (`[model-server]` `url` and
-`token_file`, or `WT_MODEL_URL` and `WT_MODEL_TOKEN_FILE`/`WT_MODEL_TOKEN`),
-slot profiles are read against the server's catalog instead of the registry,
-and the launch goes through the server's gateway
+Every session is a client of the model server (`[model-server]` `url` and
+`token_file` in `config.toml`, or `WT_MODEL_URL` and
+`WT_MODEL_TOKEN_FILE`/`WT_MODEL_TOKEN`; with none configured a profile
+launch refuses, exit 1): slot profiles are read against the server's catalog,
+never the registry, and the launch goes through the server's gateway
 ([wt-model-server.md](../wt-model-server.md)). `slot-profiles.toml` stays in
 the client's own config home.
 
@@ -653,13 +613,12 @@ for the one local slot model, only when it is stopped or known not to be
 routed (a running model whose routing the server could not ask about is
 never started); the command built against the gateway; the agent run with
 the client session's heartbeat; and the client session ended when the agent
-exits. There is no route write, proxy restart, refcount line or stop picker
-on this path: the server stops a model nobody uses after its idle grace
+exits. There is no route write, proxy restart or stop picker: the server stops a model nobody uses after its idle grace
 (`wt-model serve --idle-grace`). A failed register is one `wt: note:` line
 and the launch goes on. Ctrl-C during the start detaches from the job, which
 keeps running on the server (exit 2, `nothing was launched`).
 
-The resolved rules differ from the registry path's in three places:
+The resolved rules that are the catalog's own:
 
 - a slot id the catalog does not list blocks with
   `slot <slot>: <id> is not in the model server's catalog`;
@@ -682,18 +641,14 @@ without the profile.
 |---|---|
 | The file does not parse, or a value has the wrong TOML type | No profile rows; one warning line with the TOML error |
 | The file has a key wt does not know | The file loads without it; one warning line per key |
-| The registry has a provider `profile`, or a model id that begins with `profile/` | No profile rows; one warning line |
+| The model server's catalog holds the `profile/` prefix | The profile launch is blocked with the holder named |
 | A profile has no usable name or agent | No row for it; one warning line; listed by `wt profile list` |
 | Two profiles share a name | One blocked row, `duplicate profile name` |
 | A profile fails a check | A blocked row with the reason |
-| LiteLLM has no url or key | A blocked row with the `wt litellm set` hint |
+| No model server is configured | The launch refuses before anything starts (exit 1) |
 | `--settings` or `--model` after `--` | `a slot profile sets --model itself: remove it from the arguments after --` |
-| A route cannot be written, or `config.yaml` is missing | `slot <s>: LiteLLM route for <id> not written: <cause>` |
 | The local model's start is refused or fails | The start's own error |
-| Ctrl+C with `-M profile/<name>`, too late to stop the local model's start | `started <id>; launch cancelled`. The model stays running; Claude Code does not start |
-| The proxy restart fails or times out | The restart's error. Routes already written stay for the next attempt |
-| The most recent proxy restart failed | `the last LiteLLM proxy restart failed, so routes written since may not be live: <cause>`. The launch is refused until a later restart succeeds or a new wt process starts |
-| The proxy does not answer | `the LiteLLM proxy does not answer at <url>: <cause>` |
+| Ctrl+C with `-M profile/<name>` during the local model's start | Detaches from the start job, which keeps running on the server (exit 2, `nothing was launched`) |
 | `args` or `wrapper` cannot be applied | The apply error |
 
 In the picker the reason is the status line and you stay on the picker. With

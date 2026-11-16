@@ -342,8 +342,8 @@ func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
 	}
 }
 
-// TestTailsRunStopPickerThenSummary pins the non-TUI run tail: the stop picker
-// runs, then the summary line — and no removal-offer wording and no gh gather
+// TestTailsEndTheSessionThenSummary pins the non-TUI run tail: the client
+// session ends, then the summary line — and no removal-offer wording and no gh gather
 // run in it (cleanup is user-driven: `wt worktrees` / `wt remove`). This is a
 // plain pin of the tail's shape, not a red→green guard (R303a — no RED
 // theater). It pins no-offer-wording and no-gh-gather under the one offer gate
@@ -357,7 +357,7 @@ func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
 // "Remove it and its branch" / "was created for this session" and runs a
 // `gh pr list` gather makes this test fail — the wording and gh assertions
 // fire.
-func TestTailsRunStopPickerThenSummary(t *testing.T) {
+func TestTailsEndTheSessionThenSummary(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	// Stage the old offer's terminal gate (stdin is made to report a TTY just
 	// below) — the only one left to stage: the "keep" gate died with the
@@ -377,42 +377,45 @@ func TestTailsRunStopPickerThenSummary(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
+	var order []string
+	tail := runTail{
+		End: func() {
+			order = append(order, "end")
+			fmt.Fprint(os.Stdout, "END-MARKER\n")
+		},
+		PriceNote: func() { order = append(order, "notice") },
+	}
 	cases := []struct {
 		name string
 		run  func() error
-		want string // the stubbed seams' order (release,picker[,notice]); the offer observers are the wording + gh assertions, not this
+		want string // the tail's order (end[,notice]); the offer observers are the wording + gh assertions, not this
 		sum  string // the summary line's stable prefix
 	}{
 		{"single model", func() error {
-			return runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil, legacyTail())
-		}, "release,picker,notice", "wt: claude · ollama/qwen3.8 ·"},
+			return runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil, tail)
+		}, "end,notice", "wt: claude · ollama/qwen3.8 ·"},
 		{"slot profile", func() error {
 			row := catalog.Row{Model: config.Model{ID: "profile/p"}}
-			return runSlotAgentCmd(exec.Command(truePath), "claude", row, &config.Config{}, func() error { return nil }, legacyTail())
-		}, "release,picker", "wt: claude · profile/p ·"},
+			return runSlotAgentCmd(exec.Command(truePath), "claude", row, func() error { return nil }, runTail{End: tail.End})
+		}, "end", "wt: claude · profile/p ·"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			var order []string
-			pr, pp, pn := releaseSession, runStopPicker, emitPriceNotice
-			t.Cleanup(func() { releaseSession, runStopPicker, emitPriceNotice = pr, pp, pn })
-			releaseSession = func() { order = append(order, "release") }
-			runStopPicker = func(*config.Config) { order = append(order, "picker"); fmt.Fprint(os.Stdout, "PICKER-MARKER\n") }
-			emitPriceNotice = func(*config.Config) { order = append(order, "notice") }
+			order = nil
 
 			var runErr error
 			s := captureFile(t, &os.Stdout, func() { runErr = c.run() })
 			if runErr != nil {
 				t.Fatalf("run: %v", runErr)
 			}
-			// Pin the stubbed seams' order (release, stop picker, then the
-			// notice); only the wording and gh assertions observe an offer step.
+			// Pin the tail's order (end, then the notice); only the wording
+			// and gh assertions observe an offer step.
 			if got := strings.Join(order, ","); got != c.want {
 				t.Errorf("stubbed seam order = %s, want %s (seams only — an offer shows in the wording / gh assertions)", got, c.want)
 			}
-			p, sum := strings.Index(s, "PICKER-MARKER"), strings.Index(s, c.sum)
+			p, sum := strings.Index(s, "END-MARKER"), strings.Index(s, c.sum)
 			if p < 0 || sum < 0 || p > sum {
-				t.Errorf("stdout = %q, want the stop picker before the summary line", s)
+				t.Errorf("stdout = %q, want the session ended before the summary line", s)
 			}
 			if strings.Contains(s, "Remove it and its branch") || strings.Contains(s, "was created for this session") {
 				t.Errorf("stdout = %q, want no removal offer", s)

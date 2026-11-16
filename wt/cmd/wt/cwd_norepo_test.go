@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -25,16 +26,17 @@ type cwdLaunch struct {
 	claimSeen  bool     // the agent found this wt's root session claim while it ran
 	guarded    bool     // maybeInstallGuard was called
 	guardRoot  string   // the checkout root git reported when it was called, links resolved ("" if none)
-	released   int      // times releaseSession was called
+	ended      int      // times the client session was ended on the model server (DELETE sessions/ID)
 	stateDir   string   // the scratch config home's agent-wt directory
 	stateFiles []string // the files a launch wrote there, sorted
 }
 
 // runCwdLaunch runs the root command with --cwd from dir against a scratch
-// config home that holds one native claude model, with a claude on PATH that
-// only records the directory it was started in. Nothing is stubbed between
-// the flag and the agent process, so the directory is the one the agent
-// really got, and the state files are the ones a real launch writes.
+// config home naming a fake model server that serves one native claude model,
+// with a claude on PATH that only records the directory it was started in.
+// Nothing is stubbed between the flag and the agent process, so the directory
+// is the one the agent really got, and the state files are the ones a real
+// launch writes.
 func runCwdLaunch(t *testing.T, dir string, extra ...string) cwdLaunch {
 	t.Helper()
 	return runPinnedLaunch(t, dir, []string{"--cwd"}, extra...)
@@ -48,22 +50,10 @@ func runPinnedLaunch(t *testing.T, dir string, where []string, extra ...string) 
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
 	cfgDir := filepath.Join(home, ".config", "agent-wt")
-	regDir := filepath.Join(home, ".config", "local-ai")
-	for _, d := range []string{cfgDir, regDir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"),
-		[]byte("default_tag = \"code\"\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\ndefault_provider = \"claude\"\n"), 0o644); err != nil {
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"),
-		[]byte("[[providers]]\nid = \"claude\"\nname = \"Claude\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n"+
-			"[[providers]]\nid = \"agy\"\nname = \"Antigravity\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n"+
-			"[[models]]\nid = \"claude/opus\"\nprovider_id = \"claude\"\nmodel_name = \"opus\"\nlocation = \"cloud\"\ntags = [\"code\"]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	f := nativeOpusServer(t, cfgDir)
 
 	// A claude that writes where it was started, and whether this wt's claim
 	// is in its repository's wt-sessions while it runs, and exits.
@@ -93,9 +83,7 @@ func runPinnedLaunch(t *testing.T, dir string, where []string, extra ...string) 
 			res.guardRoot, _ = filepath.EvalSymlinks(strings.TrimSpace(string(out)))
 		}
 	}
-	oldRelease := releaseSession
-	releaseSession = func() { res.released++ }
-	t.Cleanup(func() { tuiRun, maybeInstallGuard, releaseSession = oldTUI, oldGuard, oldRelease })
+	t.Cleanup(func() { tuiRun, maybeInstallGuard = oldTUI, oldGuard })
 
 	before, err := os.ReadDir(cfgDir)
 	if err != nil {
@@ -104,6 +92,7 @@ func runPinnedLaunch(t *testing.T, dir string, where []string, extra ...string) 
 	args := append(append(append([]string{}, where...), "-A", "claude", "-M", "claude/opus"), extra...)
 	captureFile(t, &os.Stdout, func() { res.output, res.err = runWT(t, args...) })
 
+	res.ended = f.count("DELETE /control/v1/sessions/")
 	if b, rerr := os.ReadFile(pwdFile); rerr == nil {
 		res.agentDir = strings.TrimSpace(string(b))
 	}
@@ -121,6 +110,27 @@ func runPinnedLaunch(t *testing.T, dir string, where []string, extra ...string) 
 	return res
 }
 
+// nativeOpusServer starts a fake model server serving claude's native opus
+// (claude/opus) and writes cfgDir/config.toml naming it, its token in a 0600
+// file. The session reads no registry, so none is written.
+func nativeOpusServer(t *testing.T, cfgDir string) *fakeModelServer {
+	t.Helper()
+	f := newFakeModelServer(t, modelapi.Row{ID: "claude/opus", GatewayID: "claude/opus", ProviderID: "claude", ModelName: "opus", Native: true,
+		Location: "cloud", Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 1})
+	tok := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tok, []byte(f.Token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"),
+		fmt.Appendf(nil, "default_tag = \"code\"\n\n[model-server]\nurl = %q\ntoken_file = %q\n", f.URL, tok), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
 // physical resolves dir's symbolic links (macOS's temp directory sits behind
 // one), so a path can be compared with what `pwd -P` printed.
 func physical(t *testing.T, dir string) string {
@@ -133,12 +143,9 @@ func physical(t *testing.T, dir string) string {
 }
 
 // wantCwdBookkeeping asserts the state one single-model --cwd launch records:
-// the rotation pointer, the picker's marker, one usage event for the pair and
-// one live-session line, all in the scratch config home, and that the launch
-// released its session exactly once. The live-session line is still there
-// after the agent exited only because releaseSession is stubbed here (and in
-// TestMain), so that count pins the record made at launch; the release is
-// pinned by the res.released count.
+// the rotation pointer, the picker's marker and one usage event for the pair,
+// all in the scratch config home, and that the launch ended its client
+// session on the server exactly once.
 func wantCwdBookkeeping(t *testing.T, res cwdLaunch) {
 	t.Helper()
 	for _, name := range []string{"rotation.state", "last-picked.state"} {
@@ -154,22 +161,20 @@ func wantCwdBookkeeping(t *testing.T, res cwdLaunch) {
 	if got := usage.NewStoreAt(res.stateDir).CountsForAgent("claude", []string{"claude/opus"})["claude/opus"]; got.ThirtyDay != 1 {
 		t.Errorf("usage events for claude × claude/opus = %d, want 1", got.ThirtyDay)
 	}
-	if got := refcount.NewStoreAt(res.stateDir).Counts([]string{"claude/opus"})["claude/opus"]; got != 1 {
-		t.Errorf("record at launch: live-session count for claude/opus = %d, want 1 (releaseSession is stubbed, so this does not show the release)", got)
-	}
-	if res.released != 1 {
-		t.Errorf("releaseSession called %d times after the agent exited, want 1", res.released)
+	if res.ended != 1 {
+		t.Errorf("client session ended %d times; want 1", res.ended)
 	}
 }
 
 // cwdStateFiles is every entry a single-model launch adds under wt's config
-// directory: the four state files, their locks, the lock of the config.toml
-// migration every first load runs, and the profile self-heal's backup
-// directory. The inside-a-repository and outside-a-repository tests compare
-// against the same list, so the two launches cannot drift apart.
+// directory: the three state files, the usage lock and the profile
+// self-heal's backup directory. A client session of the model server writes
+// no refcount file and runs no config.toml migration (config.LoadSession
+// migrates in memory), so neither those nor their locks appear. The
+// inside-a-repository and outside-a-repository tests compare against the
+// same list, so the two launches cannot drift apart.
 var cwdStateFiles = []string{
-	"config.toml.lock", "last-picked.state", "profile-backups",
-	"refcount.jsonl", "refcount.jsonl.lock", "rotation.state",
+	"last-picked.state", "profile-backups", "rotation.state",
 	"usage.jsonl", "usage.jsonl.lock",
 }
 
@@ -257,11 +262,11 @@ func TestCwdOutsideARepoReachesThePickers(t *testing.T) {
 		{"agent without a model", []string{"--cwd", "-A", "pi"}, "pi"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			// The model server serves two models pi may launch, so nothing
+			// resolves without the picker.
+			pointAtFake(t, newFakeModelServer(t, wireRow("openrouter/a", "launch", 1), wireRow("openrouter/b", "launch", 2)), "")
 			dir := t.TempDir()
 			t.Chdir(dir)
-			// pi is configured with no eligible model, so nothing resolves
-			// without the picker.
-			writeConfiguredAgent(t, t.TempDir(), "pi", "ollama")
 			stubStdinTTY(t, true)
 
 			var called bool
@@ -305,12 +310,12 @@ func TestWorktreeFlagOutsideARepoStillRefuses(t *testing.T) {
 			expectDirectLaunch(t)
 			t.Chdir(t.TempDir())
 			writeEmptyRegistry(t, t.TempDir())
-			oldLaunch := launchFiltered
-			launchFiltered = func(string, string, *config.Config, bool, string, string, string, bool, []string, []config.Model, *precomputedProfiles) error {
+			oldLaunch := launchCommand
+			launchCommand = func(string, string, *config.Config, bool, bool, []string, *precomputedProfiles) error {
 				t.Error("launchFiltered was called: -W launched outside a git repository")
 				return nil
 			}
-			t.Cleanup(func() { launchFiltered = oldLaunch })
+			t.Cleanup(func() { launchCommand = oldLaunch })
 
 			_, err := runWT(t, args...)
 			if err == nil {
@@ -335,12 +340,12 @@ func TestOutsideARepoWithoutCwdIsUnchanged(t *testing.T) {
 
 	var gotPath string
 	var called bool
-	oldLaunch := launchFiltered
-	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+	oldLaunch := launchCommand
+	launchCommand = func(agent, worktreePath string, cfg *config.Config, yolo, pinnedSupplied bool, extraArgs []string, pp *precomputedProfiles) error {
 		called, gotPath = true, worktreePath
 		return nil
 	}
-	t.Cleanup(func() { launchFiltered = oldLaunch })
+	t.Cleanup(func() { launchCommand = oldLaunch })
 
 	if _, err := runWT(t, "-A", "shell", "true"); err != nil {
 		t.Fatalf("wt -A shell outside a repository: %v", err)
@@ -443,18 +448,18 @@ func runCwdPlain(t *testing.T, dir string, args ...string) (err error, agentDir 
 	return err, agentDir, guarded
 }
 
-// TestCwdOutsideARepoLaunchesShellAndAnUnconfiguredAgentInPlace covers the
-// two --cwd launches that skip the model layer: a command agent (shell, through
-// launchFiltered) and a model-driven agent with no config.toml entry
-// (launchPassthrough). Outside a repository both must run in the current
-// directory, install no guard and return no error.
-func TestCwdOutsideARepoLaunchesShellAndAnUnconfiguredAgentInPlace(t *testing.T) {
+// TestCwdOutsideARepoLaunchesShellInPlace covers the
+// --cwd launch that skips the model layer: a command agent (shell, through
+// launchCommand). Outside a repository it must run in the current directory,
+// install no guard and return no error. (A model-driven agent with no
+// config.toml entry no longer launches bare: on a client session every
+// driver has an agent (R13) and its model comes from the model server.)
+func TestCwdOutsideARepoLaunchesShellInPlace(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		args []string
 	}{
 		{"shell", []string{"--cwd", "-A", "shell", "--", "sh", "-c", `pwd -P > "$PWD_FILE"`}},
-		{"unconfigured agent", []string{"--cwd", "-A", "claude"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()

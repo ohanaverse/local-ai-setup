@@ -1,16 +1,11 @@
 package tui
 
 import (
-	"errors"
 	"fmt"
 	"strconv"
-	"sync"
-	"unicode/utf8"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
@@ -127,70 +122,20 @@ func runningText(r catalog.Row) string {
 	return "-"
 }
 
-// buildTable is the one entry point the pickers use: build rows, sort them,
-// look up in-use counts, render.
-func buildTable(in tableInput, refs refcount.Store, lastID string) modelTable {
+// buildTable builds rows, sorts them and renders them, for the standalone
+// picker (PickStartModel), which has no in-use counts.
+func buildTable(in tableInput, lastID string) modelTable {
 	rows := buildRows(in)
 	sortRows(rows)
-	var refCounts map[string]int
-	if refs != nil {
-		ids := make([]string, len(rows))
-		for i, r := range rows {
-			ids[i] = r.Model.ID
-		}
-		refCounts = refs.Counts(ids)
-	}
-	cfg := in.cfg
-	if in.skipRoute {
-		// No route resolution: renderTable only uses cfg to decorate/block rows
-		// by launch route.
-		cfg = nil
-	}
-	return renderTable(rows, cfg, in.agent, refCounts, lastID)
-}
-
-// resolvedRoute pairs one row's ResolveRoute result, computed ahead of
-// renderTable's per-row rendering loop.
-type resolvedRoute struct {
-	route config.Route
-	err   error
+	return renderTable(rows, in.agent, nil, lastID)
 }
 
 // renderTable formats already-sorted rows. Columns are separated by two
 // spaces and padded to the widest cell (headings included) so the header and
 // every row line up; measured in runes so multi-byte names don't shift them.
-func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[string]int, lastID string) modelTable {
-	// Resolve every row's route up front, in parallel, instead of one at a
-	// time in the rendering loop below: cfg.ResolveRoute may dial an exec:
-	// secret_ref subprocess (up to execSecretTimeout) per distinct provider,
-	// and resolving rows sequentially would let one slow/hung provider's
-	// helper add its full cost on top of every other row's otherwise-fast
-	// resolution. config.ResolveSecret memoizes per ref with its own
-	// per-ref locking (internal/config), so concurrent rows for the SAME
-	// provider still only pay for one subprocess run; this only
-	// parallelizes across DISTINCT providers. All goroutines are joined
-	// (wg.Wait) before this function returns, so nothing is left running in
-	// the background afterward.
-	var routes []resolvedRoute
-	if cfg != nil {
-		routes = make([]resolvedRoute, len(rows))
-		var wg sync.WaitGroup
-		for i, r := range rows {
-			if r.Profile != nil {
-				// A slot-profile row has no route of its own: its Model is
-				// the row id only, and its verdict is resolved validation's.
-				continue
-			}
-			wg.Add(1)
-			go func(i int, m config.Model) {
-				defer wg.Done()
-				route, err := cfg.ResolveRoute(m, agents.ProtocolsFor(agent))
-				routes[i] = resolvedRoute{route: route, err: err}
-			}(i, r.Model)
-		}
-		wg.Wait()
-	}
-
+// refs is each row's count of the model server's client sessions (the
+// in-use column).
+func renderTable(rows []tableRow, agent string, refs map[string]int, lastID string) modelTable {
 	cost := make([]string, len(rows))
 	fam := make([]string, len(rows))
 	c1, c7, c30 := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
@@ -278,38 +223,6 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			// (slotLine), so the item carries the profile and its slots'
 			// tiers, and no price or tier note.
 			it.profile, it.cost, it.tier, it.slotTiers = r.Profile, "", nil, r.slotTiers
-		}
-		if cfg != nil && r.Profile == nil {
-			route, err := routes[i].route, routes[i].err
-			switch {
-			case r.RefusedByRoute(route, err):
-				// An Unmapped cloud model is not in LiteLLM's model_list:
-				// routing it through the proxy cannot work, so it is
-				// unselectable. The rule itself lives in
-				// catalog.Row.RefusedByRoute, shared with the non-TUI pin and
-				// `wt smoke`.
-				it.exception = "(not in LiteLLM)"
-				it.blocked = r.RouteRefusal(route, err)
-				it.start = false
-			case err != nil:
-				it.exception = "(unavailable)"
-				if errors.Is(err, config.ErrLitellmUnconfigured) {
-					it.exception = "(litellm required)"
-				}
-				// A start row whose launch cannot resolve must not start: the
-				// server would spawn (possibly replacing a running model) for a
-				// launch that then fails at ResolveRoute. Launch rows stay as
-				// they were and report the error on Enter.
-				if it.start {
-					it.start = false
-					it.blocked = it.model.ID + " cannot be launched: " + err.Error()
-				}
-			case route.Forced:
-				it.exception = "(via proxy)"
-			}
-		}
-		if it.exception != "" {
-			cols.Tail = max(cols.Tail, 1+utf8.RuneCountInString(it.exception))
 		}
 		items = append(items, it)
 	}

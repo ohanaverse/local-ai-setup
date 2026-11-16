@@ -91,9 +91,9 @@ func RoutesPending() bool { return routesInFlight.Load() > 0 }
 //     off: an agent launched after a local-model start talks to that model
 //     THROUGH LiteLLM, so proceeding while the restart is still in flight can
 //     meet a refused connection or the pre-restart route table (the model just
-//     started not yet listed). The launch paths — cmd/wt's startForLaunch and
-//     ensureRouteBeforeLaunch, the TUI start flow and the picker's routing
-//     phase (checkLaunchRoute) before the launch, wt smoke before its one-shot
+//     started not yet listed). The launch paths (all in-process ones were
+//     deleted with Task 19: a session's start is the model server's) and
+//     wt smoke before its one-shot
 //     prompt — therefore wait here rather than only at process exit.
 func WaitPendingRoutes() {
 	routeWG.Wait()

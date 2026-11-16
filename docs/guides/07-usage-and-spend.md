@@ -51,7 +51,7 @@ One row per model seen on either side, launch history or LiteLLM spend. Both col
 - **Launches with `0` requests**: the launch bypassed the proxy. A native or direct launch (ollama `:11434` or its cloud endpoints, oMLX `:8000`) never reaches LiteLLM and logs nothing to Postgres. When most of your launches are native, most rows look like this; it is not a bug.
 - **Requests with `0` launches**: something used the proxy that wt did not launch in the window — `curl`, a script, another client. A session launched just before the window starts shows the same row.
 
-After `wt litellm on`, non-native launches route through LiteLLM, so rows with both numbers become the norm.
+Every non-native launch goes through the model server's gateway and so through LiteLLM, so rows with both numbers are the norm.
 
 ### 3. Filters
 

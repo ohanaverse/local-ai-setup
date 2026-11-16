@@ -1,19 +1,15 @@
 # LiteLLM Gateway Troubleshooting (wt drivers)
 
 Learnings from the 2026-08-31 matrix test that launched every wt agent with
-`ollama/glm-5.3-flash:cloud` through the LiteLLM proxy (LiteLLM routing on —
-at the time via wt's since-retired `[gateway]` block, today via
-`wt litellm on`; proxy at `http://localhost:4000`, model list in
-`~/.config/litellm/config.yaml`). Each real launch went through `wt` and had
-to answer a one-shot prompt on stdout.
-
-> **Expected notice, not an error.** When the agent's protocol isn't served
-> by the model's provider, wt forces LiteLLM routing and prints
-> `wt: <agent> requires LiteLLM for <model> (no direct protocol overlap with
-> provider "<p>") — routing through the proxy` to stderr. That line is
-> **expected behavior**, not an error: codex triggers it with every local
-> provider (none serves the `openai-responses` wire it requires), and claude
-> triggers it with openrouter (`openai-chat` only).
+`ollama/glm-5.3-flash:cloud` through the LiteLLM proxy (at the time via
+wt's since-retired `[gateway]` block; proxy at `http://localhost:4000`, model
+list in `~/.config/litellm/config.yaml`). Each real launch went through `wt`
+and had to answer a one-shot prompt on stdout. Today every session reaches
+LiteLLM through the model server's gateway (`wt-model serve`,
+[wt-session.md](../wt-session.md)), which forwards the same requests with
+the `[litellm]` key, so the per-driver lessons below still hold; there is no
+routing switch and no direct route any more, and the old forced-LiteLLM
+stderr notice is gone with them.
 
 ## Matrix result (2026-08-31)
 
@@ -86,34 +82,33 @@ its openai-completions streamer — verified in pi 0.84.4). Consequences:
 
 **Fix (shipped):** litellm entries live under a dedicated provider whose id
 cannot appear as the first path segment of a registry model id — `litellm` —
-keyed by full registry id, launched as `--model litellm/<registry-id>`. The
-`ollama` provider stays local (`http://localhost:11434/v1`) so its bare-name
-entries work directly.
+keyed by full registry id (the gateway id), launched as
+`--model litellm/<registry-id>`. Since the model server, the `litellm` block
+is the only one wt writes, and it points at the gateway.
 
 ### pi — empty `apiKey` invalidates pi's whole models.json
 
 pi's models.json schema requires `apiKey` ≥ 1 char **per provider block**; a
 violating provider makes pi reject the **entire catalog** ("No models
-available", every model gone). wt's provider-revert must therefore write
-pi's documented keyless placeholder `"ollama"`, never `""`.
+available", every model gone). wt's `litellm` block always carries the
+gateway token, never `""`.
 
-### pi — legacy litellm artifacts are migrated, not kept
+### pi — wt's older provider blocks are removed, a user's are kept
 
-Older wt syncs wrote LiteLLM values into the `ollama` provider block plus
-`ollama/…`-prefixed entries under it. On the next litellm-mode sync wt now:
-restores `ollama` to the local endpoint (bare entries 400 through the proxy),
-prunes the wt-generated prefixed entries (unlaunchable by the grammar above;
-bare and user-made entries are never touched), and creates the `litellm`
-provider. Idempotent; safe to re-run.
+Older wt syncs wrote direct-route blocks per registry provider, marking
+the non-ollama ones `_wtOwned`. The gateway sync (`SyncGateway`) removes
+every marked block except `litellm`. An unmarked block is left as it is: a
+user's own, and the local `ollama` block older wt wrote without the marker
+(no wt launch uses it; delete it by hand if you like). Idempotent; safe to
+re-run.
 
 ### codex — custom providers read the API key from an env var
 
 codex custom model providers have no inline `api_key`; the key comes from the
 env var named by `-c model_providers.<id>.env_key="<ENV>"` and must be in the
 child environment. Without it LiteLLM replies `401 Authentication Error, No
-api key passed in`. wt sets `AGENT_WT_GATEWAY_API_KEY` and the matching
-`env_key` override in litellm mode (direct local ollama needs no key, so the
-direct mode still uses the four base overrides only).
+api key passed in`. wt sets `AGENT_WT_GATEWAY_API_KEY` (the gateway token)
+and the matching `env_key` override on every non-native launch.
 
 ### codex — litellm ≤ 1.98.0 responses → ollama_chat bridge crash (workaround: additional_drop_params)
 

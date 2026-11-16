@@ -4,7 +4,6 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -13,12 +12,7 @@ import (
 // callers (e.g. wt smoke) that need a one-off model pick without the full
 // worktree->agent->model->launch state machine. Unlike that flow, the
 // list here is never scoped to a single agent, and undiscovered models are
-// hidden (wt smoke only shows the models it passes in). A per-row exception marker can still
-// appear: passing a non-nil cfg still runs buildTable's route-resolution
-// branch, so "(litellm required)"/"(unavailable)" can show; only
-// "(via proxy)" is suppressed, since ProtocolsFor("") returns nil and
-// ResolveRoute's forced-through-proxy path never triggers for an empty
-// protocol requirement.
+// hidden (wt smoke only shows the models it passes in).
 type pickModel struct {
 	list     list.Model
 	selected config.Model
@@ -56,22 +50,17 @@ func (m *pickModel) fit() {
 	fitTo(&m.list, m.width, m.height, m.frame())
 }
 
-// newPickModel builds the picker's list from models via the same buildTable
-// the agent flow uses. cfg may be nil (no inventory probe and no per-row route
-// resolution). The agent argument is "" since this list isn't scoped to one
+// newPickModel builds the picker's list from models (the model server's
+// rows as config.Models, catalog.ToModel) via the same buildTable the agent
+// flow uses. The agent argument is "" since this list isn't scoped to one
 // agent; discovered (unregistered) local models are hidden.
 // The caller's models may include start-able and blocked rows; blocked rows
 // are shown (with their reason) but Enter on them does not select.
-func newPickModel(cfg *config.Config, models []config.Model, theme themes.Theme, skipRoute bool) pickModel {
-	var snap *localmodels.Snapshot
-	if cfg != nil {
-		s := runInventory(cfg)
-		snap = &s
-	}
+func newPickModel(models []config.Model, theme themes.Theme) pickModel {
 	tbl := buildTable(tableInput{
-		cfg: cfg, agent: "", models: models, inventory: snap, hideDiscovered: true, skipRoute: skipRoute,
+		agent: "", models: models, hideDiscovered: true,
 		usage: newUsageStore(),
-	}, newRefcountStore(), "")
+	}, "")
 	items := tbl.items
 	delegate := ThemedListDelegate(theme)
 	delegate.ShowDescription = false
@@ -161,15 +150,13 @@ func (m pickModel) View() string {
 // pass their own unfiltered union list. models may include start and blocked
 // rows (wt start); blocked rows are shown but not selectable.
 //
-// It is for callers that do not launch an agent from the
-// pick: `wt start` (starting is not launching) and `wt smoke` (its candidates
-// were already route-checked per agent), so the launch-route rules (a
-// cloud model not in LiteLLM, a route that fails to resolve) do not block
-// or decorate rows.
+// It is for callers that do not launch an agent from the pick: `wt start`
+// (starting is not launching) and `wt smoke` (its candidates were already
+// judged per agent by the model server).
 // Rows that cannot start at all (no start backend) stay blocked; a model that
 // is not on disk has no row to block.
-func PickStartModel(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
-	return runPick(newPickModel(cfg, models, theme, true))
+func PickStartModel(models []config.Model, theme themes.Theme) (config.Model, bool, error) {
+	return runPick(newPickModel(models, theme))
 }
 
 func runPick(m pickModel) (config.Model, bool, error) {

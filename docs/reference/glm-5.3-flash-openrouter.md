@@ -57,7 +57,9 @@ the proxy's `model_list`: wt derives it from `registry.toml` plus live probes,
 so a cloud model is routed whenever it is configured, with no toggle to flip
 (#179). `wt litellm list` is the answer to "is it routed?"; there is no
 hand-write command any more (`wt litellm expose`/`unexpose` went with the flag),
-and `wt litellm on|off` is the separate LiteLLM *routing* on/off toggle. See guide 04 for the workflow. No TOML to copy here:
+and there is no routing toggle either: every session routes through the model
+server, `wt litellm on|off` are retired hidden stubs (2026-11-15), and
+`[litellm] enabled` is ignored. See guide 04 for the workflow. No TOML to copy here:
 wt stores no per-model state (`wt model list` shows what is on disk and running).
 
 **3. `~/.config/litellm/config.yaml`** — LiteLLM proxy configuration

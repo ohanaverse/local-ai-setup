@@ -504,7 +504,7 @@ func TestModelRmCommandRunsWhenTheConfigDidNotLoad(t *testing.T) {
 		return localmodels.Snapshot{}
 	}
 	t.Cleanup(func() { probeInventory = old })
-	c := modelRmCmd(&app{cfg: &config.Config{DefaultTag: "code"}, loadErr: errors.New("config.toml: not valid TOML")})
+	c := modelRmCmd(&app{hostSet: true, hostCfg: &config.Config{DefaultTag: "code"}, hostLoadErr: errors.New("config.toml: not valid TOML")})
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)

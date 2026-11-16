@@ -44,7 +44,7 @@ func TestStatsJSONDocument(t *testing.T) {
 		{Model: "openrouter/qwen/qwen3.8-27b", Requests: 5, PromptTokens: 517, CompletionTokens: 3135, Spend: 0.0085},
 	}}, nil)
 
-	stdout, stderr := runStats(t, a, "--json", "--window", "7d")
+	stdout, stderr := runStatsDirect(t, a, "--json", "--window", "7d")
 
 	want := `{"window":"7d","as_of":"2026-10-07T12:00:00Z",` +
 		`"survey":[` +
@@ -89,7 +89,7 @@ func TestStatsJSONIsOneDocumentInEveryMode(t *testing.T) {
 			seedLaunches(t, tmp, launch{"ollama/gemma4:9b", "claude", time.Hour})
 			stubSpend(t, spend.Result{}, c.err)
 
-			stdout, stderr := runStats(t, a, append([]string{"--json"}, c.args...)...)
+			stdout, stderr := runStatsDirect(t, a, append([]string{"--json"}, c.args...)...)
 
 			if strings.Count(stdout, "\n") != 1 || !strings.HasSuffix(stdout, "}\n") {
 				t.Fatalf("stdout = %q, want exactly one line holding one object", stdout)
@@ -122,7 +122,7 @@ func TestStatsJSONIsOneDocumentInEveryMode(t *testing.T) {
 		a, _ := newTestApp(t)
 		stubSpend(t, spend.Result{}, nil)
 		pinStatsNow(t, time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC))
-		stdout, stderr := runStats(t, a, "--json")
+		stdout, stderr := runStatsDirect(t, a, "--json")
 		want := `{"window":"30d","as_of":"2026-10-07T12:00:00Z","survey":[],` +
 			`"usage":{"spend_status":"ok","spend_reason":"","unattributed_requests":0,"rows":[]}}` + "\n"
 		if stdout != want || stderr != "" {
@@ -147,7 +147,7 @@ func TestStatsJSONNullsWhereTheTableShowsADash(t *testing.T) {
 	})
 	stubSpend(t, spend.Result{}, nil)
 
-	stdout, _ := runStats(t, a, "--json", "--agent", "claude")
+	stdout, _ := runStatsDirect(t, a, "--json", "--agent", "claude")
 	var doc statsJSON
 	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 		t.Fatalf("stdout is not the document: %v\n%s", err, stdout)
@@ -183,7 +183,7 @@ func TestStatsJSONListsFoldedSpellings(t *testing.T) {
 		{Model: "openrouter/x/y", Requests: 1},
 	}}, nil)
 
-	stdout, _ := runStats(t, a, "--json")
+	stdout, _ := runStatsDirect(t, a, "--json")
 
 	wantRows := `"rows":[` +
 		`{"model":"mtplx/Org--Name","family":"mtplx","launches":1,"requests":9,"prompt_tokens":123,"completion_tokens":15,"spend":0.5,"also_logged_as":["mtplx/Org/Name"]},` +
@@ -321,8 +321,8 @@ func TestStatsJSONAgreesWithTheTable(t *testing.T) {
 			[]string{"openrouter/b"}},
 		{[]string{"--agent", "pi"}, nil, nil},
 	} {
-		text, _ := runStats(t, a, c.args...)
-		stdout, _ := runStats(t, a, append([]string{"--json"}, c.args...)...)
+		text, _ := runStatsDirect(t, a, c.args...)
+		stdout, _ := runStatsDirect(t, a, append([]string{"--json"}, c.args...)...)
 		var doc statsJSON
 		if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 			t.Fatal(err)
@@ -436,7 +436,7 @@ func TestStatsJSONKeepsAnAgentNamedAll(t *testing.T) {
 	})
 	stubSpend(t, spend.Result{}, nil)
 
-	stdout, _ := runStats(t, a, "--json")
+	stdout, _ := runStatsDirect(t, a, "--json")
 	var doc statsJSON
 	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 		t.Fatalf("stdout is not the document: %v\n%s", err, stdout)

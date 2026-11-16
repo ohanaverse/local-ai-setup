@@ -396,7 +396,7 @@ func FamilyProviderIDs(family string) []string { return provider.FamilyProviderI
 // after: the first provider row of the family the registry actually defines
 // ("omlx-6bit" on a registry with no plain "omlx" row), falling back to the
 // family name itself. A discovered entry's provider id must resolve in the
-// registry — config.ResolveRoute and litellm.prepareModel both reject an
+// registry — litellm.prepareModel rejects an
 // unknown provider — and the family name is only a provider id by convention.
 func familyProviderID(cfg *config.Config, family string) string {
 	for _, id := range familyProviderIDs(family) {

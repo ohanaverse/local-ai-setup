@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
@@ -143,39 +142,7 @@ func BuildSlotCommand(sl profiles.SlotLaunch, yolo bool, proxyOrigin, proxyKey s
 	})
 }
 
-// BuildSlotLaunchCmd builds the exec.Cmd of a slot-profile launch, giving the
-// driver's slot build the treatment BuildLaunchCmdInfo gives a single-model
-// launch: binary lookup, the inherited environment filtered, the worktree
-// directory and PWD, and the user's passthrough args appended unchanged.
-//
-// It reads the [litellm] url and key directly and never consults
-// cfg.IsLitellm(): a slot profile uses the proxy whatever the toggle says. It
-// resolves no route, runs no Syncer and applies no automatic profile.
-func BuildSlotLaunchCmd(sl profiles.SlotLaunch, worktreePath string, yolo bool, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
-	if err := CheckSlotPassthrough(sl.Agent, extraArgs); err != nil {
-		return nil, err
-	}
-	if cfg == nil {
-		cfg = &config.Config{}
-	}
-	origin, key := cfg.LitellmBaseURL(), cfg.LitellmAPIKey()
-	if origin == "" {
-		return nil, fmt.Errorf(
-			"a slot profile always uses the LiteLLM proxy, but no URL is configured — "+
-				"run 'wt litellm set --url ... --api-key ...': %w",
-			config.ErrLitellmUnconfigured)
-	}
-	if key == "" {
-		return nil, fmt.Errorf(
-			"a slot profile always uses the LiteLLM proxy, but no API key is configured — "+
-				"run 'wt litellm set --url ... --api-key ...': %w",
-			config.ErrLitellmUnconfigured)
-	}
-	return slotLaunchCmd(sl, worktreePath, yolo, origin, key, extraArgs)
-}
-
-// slotLaunchCmd is the part of a slot launch shared by every proxy source
-// (BuildSlotLaunchCmd's [litellm] table, BuildSlotLaunchCmdGateway's gateway):
+// slotLaunchCmd is BuildSlotLaunchCmdGateway's body after the gateway check:
 // the driver's slot build, binary lookup, filtered environment, directory and
 // passthrough args.
 func slotLaunchCmd(sl profiles.SlotLaunch, worktreePath string, yolo bool, origin, key string, extraArgs []string) (*exec.Cmd, error) {

@@ -14,7 +14,7 @@ import (
 // gitenv.IsolateForTest carries the full rationale. A claude launch reads
 // tiers.toml for the model's context window (claudeWindowEnv), so the path is
 // pointed at a file that does not exist (tiers.IsolateForTest); a test that
-// wants a window swaps loadTiers.
+// wants a window sets the model's HostContext (windowModels).
 func TestMain(m *testing.M) {
 	gitenv.IsolateForTest()
 	tiers.IsolateForTest()

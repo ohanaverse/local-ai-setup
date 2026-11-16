@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
@@ -81,7 +80,7 @@ func TestModelItemLineFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tbl := buildTable(tableInput{models: tt.models, usage: store}, refcount.NewStoreAt(t.TempDir()), "")
+			tbl := buildTable(tableInput{models: tt.models, usage: store}, "")
 			if got, want := strings.Join(strings.Fields(tbl.header), " "), "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"; got != want {
 				t.Errorf("header = %q, want %q", got, want)
 			}

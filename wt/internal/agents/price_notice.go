@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
@@ -13,22 +12,6 @@ import (
 // notice fires. Refreshing is manual (`wt cloud-sync`), so the notice is the
 // only reminder; a week keeps it from nagging on every launch.
 const priceStaleAfter = 7 * 24 * time.Hour
-
-// PrintPriceNotice prints the stale-pricing notice when the registry's
-// OpenRouter prices are more than a week old or were never refreshed. It is
-// the shared production emission helper used by both the TUI and non-TUI
-// launch paths. Silent when cfg has no OpenRouter-priced model (#151):
-// `wt cloud-sync` would have nothing to refresh.
-func PrintPriceNotice(cfg *config.Config) {
-	if !cfg.OpenRouterPricedModel() {
-		return
-	}
-	now := time.Now()
-	last, present := cfg.LastPriceRefresh(now)
-	if notice := PriceNotice(last, present, now); notice != "" {
-		fmt.Println(notice)
-	}
-}
 
 // PriceNotice renders the post-run stale-pricing notice (issue #69), or ""
 // when pricing is fresh: refreshed within the last seven days. wt only
@@ -70,7 +53,7 @@ type PricingSource interface {
 const remoteNoticeBound = 3 * time.Second
 
 // PrintRemotePriceNotice prints the stale-pricing notice for a launch on the
-// model server, the counterpart of PrintPriceNotice. cached is the catalog's
+// model server. cached is the catalog's
 // pricing from a fetch the caller already made (have says there was one);
 // without one it makes one cheap, bounded fetch. It is best-effort: a failed
 // fetch prints nothing, and nothing here changes an exit code. The age is

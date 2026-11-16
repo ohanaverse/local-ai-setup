@@ -1,7 +1,8 @@
 // wt start / wt stop — direct control of local models without launching an
-// agent. Start reuses the non-TUI start driver (startModel); stop reuses the
-// survey package's stop loop and picker. wt served reports what a provider's
-// server is serving, the probe the other two act on.
+// agent. `wt start` and `wt stop <model>` (and bare `wt stop`) go through the
+// model server (model_cmds_remote.go); `wt stop <provider>|--all` stay on the
+// host (R3) and reuse the survey package's stop loop. wt served reports what
+// a provider's server is serving, the probe the host stop acts on.
 package main
 
 import (
@@ -11,18 +12,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/spf13/cobra"
 )
 
@@ -34,13 +32,6 @@ var (
 	// many live wt sessions use it.
 	stopState   = survey.ReadStopState
 	stopEntries = survey.StopEntries
-	// stopPickerAll runs the in-use-inclusive picker and reports whether it had
-	// anything to offer, which families it could not read and what the
-	// pidfiles behind refused ports said, so `wt stop` needs no inventory
-	// probe of its own.
-	stopPickerAll = func(cfg *config.Config) (bool, []string, map[string]lifecycle.Loading) {
-		return survey.PickerWith(os.Stdin, os.Stdout, cfg, survey.Options{IncludeInUse: true})
-	}
 	confirmStop = promptStop
 	// stopProvider stops a provider's server as a whole (`wt stop omlx`).
 	stopProvider = lifecycle.Stop
@@ -72,10 +63,10 @@ func stopCmd(a *app) *cobra.Command {
 		Short: "Stop a running local model, every model of a provider, or all of them",
 		Long: "Stop a running local model (<provider>/<name>) or every running model of a\n" +
 			"provider (ollama, omlx, omlx-6bit, mtplx, rec, sushi). With no argument, shows\n" +
-			"the stop picker (requires a TTY), which also lists models other wt sessions\n" +
-			"are using, marked with their session count. The picker lists running\n" +
-			"models, so it has no row for an mtplx that is still loading: wt says so\n" +
-			"and names \"wt stop mtplx\" and --all, which stop it.\n\n" +
+			"a numbered picker (requires a TTY) over the model server's running local\n" +
+			"models, marked with the client sessions using each. It lists running\n" +
+			"models, so it has no row for an mtplx that is still loading: \"wt stop mtplx\"\n" +
+			"and --all stop it.\n\n" +
 			"On omlx, stopping a model unloads that model and leaves the service and its other\n" +
 			"models up; \"wt stop omlx\" stops the service.\n\n" +
 			"--all stops every running local model on every provider at once, then the\n" +
@@ -93,13 +84,13 @@ func stopCmd(a *app) *cobra.Command {
 			"ends. wt sends every ollama stop first and waits up to 3 minutes for all of\n" +
 			"them together; a model still loaded then is reported as still finishing,\n" +
 			"not as a failed stop, and ollama unloads it when its request ends.\n\n" +
-			"Stopping a model or a provider a live wt session uses asks for confirmation;\n" +
-			"--yes skips it.\n\n" +
-			"With a model server configured ([model-server] in config.toml, or WT_MODEL_URL),\n" +
-			"a model id (and no argument: a numbered picker over the server's running local\n" +
-			"models) is stopped through the server; a provider name and --all still act on\n" +
-			"this machine. The server asks before stopping a model other client sessions use\n" +
-			"(--yes answers it; with no terminal and no --yes: exit 3, nothing stopped). Exit 0\n" +
+
+			"A model id (and no argument: a numbered picker over the server's running local\n" +
+			"models) is stopped through the model server ([model-server] in config.toml, or\n" +
+			"WT_MODEL_URL; with none configured wt refuses, exit 1); a provider name and\n" +
+			"--all act on this machine's registry. The server asks before stopping a\n" +
+			"model other client sessions use (--yes answers it; with no terminal and no\n" +
+			"--yes: exit 3, nothing stopped). Exit 0\n" +
 			"stopped (also when the provider is still finishing the stop), 1 could not start\n" +
 			"(no terminal for the picker, an unreachable server), 2 the stop failed or was\n" +
 			"detached with Ctrl+C (the job keeps running: 'wt job ID'), 3 approval missing.",
@@ -114,11 +105,12 @@ func stopCmd(a *app) *cobra.Command {
 				arg = args[0]
 			}
 			yes, _ := cmd.Flags().GetBool("yes")
-			// With a model server configured, a model id (or no argument:
-			// the server's picker) is stopped through it. A provider name
-			// and --all stay on the host (R3): the server stops models, not
-			// providers, and the registry decides what a provider holds.
-			if all, _ := cmd.Flags().GetBool("all"); a.endpointConfigured() && !all && (arg == "" || strings.Contains(arg, "/")) {
+			// A model id (or no argument: the server's picker) is stopped
+			// through the model server; with none configured that refuses
+			// before anything is stopped. A provider name and --all stay on
+			// the host (R3): the server stops models, not providers, and the
+			// registry decides what a provider holds.
+			if all, _ := cmd.Flags().GetBool("all"); !all && (arg == "" || strings.Contains(arg, "/")) {
 				cmd.SilenceUsage = true
 				cmd.SilenceErrors = true
 				ms, err := a.openModels(cmd.Context(), "nothing was stopped")
@@ -127,9 +119,10 @@ func stopCmd(a *app) *cobra.Command {
 				}
 				return runStopRemote(cmd.Context(), cmd.OutOrStdout(), ms, arg, yes)
 			}
-			if a.cfgErr != nil {
+			cfg, _ := a.hostConfig()
+			if cerr := a.hostConfigErr(); cerr != nil {
 				cmd.SilenceUsage = true
-				return configError(a.cfgErr)
+				return configError(cerr)
 			}
 			if all, _ := cmd.Flags().GetBool("all"); all {
 				if arg != "" {
@@ -139,19 +132,19 @@ func stopCmd(a *app) *cobra.Command {
 				// mistake: a failed stop, a declined question or Ctrl+C would
 				// otherwise bury its progress lines under the whole usage text.
 				cmd.SilenceUsage = true
-				return runStopAll(cmd.OutOrStdout(), a.cfg, yes)
+				return runStopAll(cmd.OutOrStdout(), cfg, yes)
 			}
-			if err := stopArgError(a.cfg, arg); err != nil {
+			if err := stopArgError(cfg, arg); err != nil {
 				return err
 			}
 			// As for --all: past the argument check a failure is a stop
 			// that failed, a declined question or a provider wt could not
 			// read, never a usage mistake.
 			cmd.SilenceUsage = true
-			return runStop(cmd.OutOrStdout(), a.cfg, arg, yes)
+			return runStop(cmd.OutOrStdout(), cfg, arg, yes)
 		},
 	}
-	cmd.Flags().Bool("yes", false, "Skip the confirmation when a target is in use by a live wt session")
+	cmd.Flags().Bool("yes", false, "Answer the model server's question when a model id stopped there is in use by other client sessions (a provider or --all stop on this machine asks nothing)")
 	cmd.Flags().Bool("all", false, "Stop every running local model, then the omlx service and an mtplx wt cannot read or that is still loading")
 	return cmd
 }
@@ -218,7 +211,7 @@ func unreadShared(cfg *config.Config, st survey.StopState) []string {
 // haltImpact is what halting a family's server costs the live wt sessions:
 // how many use a model of the family, which models, and whether wt is asking
 // blind (the probe was not trusted). A server whose port refused serves
-// nobody, so halting it costs nothing whatever the refcount file still lists
+// nobody, so halting it costs nothing whatever sessions are counted
 // — unless it is still loading (FamilyState.Loading): the sessions on its
 // family are then waiting for that load, and wt is not asking blind, since it
 // knows what is there.
@@ -243,11 +236,10 @@ func errLoadingUnknown(provider string, err error, hint string) error {
 
 // pidfileFindings is what the pidfiles behind refused ports name
 // (survey.StopState.Loading), one entry per family in provider order: an
-// error for a process table wt could not read (ending in hint), a note for a
-// live process that is not the server (left alone) and — only for a caller
-// that does not stop it, pickerNote — one for a verified server still loading,
-// naming the commands that do.
-func pidfileFindings(cfg *config.Config, loading map[string]lifecycle.Loading, hint string, pickerNote bool) (notes []string, errs []error) {
+// error for a process table wt could not read (ending in hint) and a note for
+// a live process that is not the server (left alone). A verified server still
+// loading gets nothing here: `wt stop --all`, the one caller, stops it.
+func pidfileFindings(cfg *config.Config, loading map[string]lifecycle.Loading, hint string) (notes []string, errs []error) {
 	seen := map[string]bool{}
 	for _, id := range stoppableProviders(cfg) {
 		fam := localmodels.Family(id)
@@ -260,8 +252,6 @@ func pidfileFindings(cfg *config.Config, loading map[string]lifecycle.Loading, h
 			errs = append(errs, errLoadingUnknown(id, l.Err, hint))
 		case l.Stray != "":
 			notes = append(notes, l.Stray)
-		case l.PID > 0 && pickerNote:
-			notes = append(notes, fmt.Sprintf("%s is still loading (pid %d) — %q or \"wt stop --all\" stops it", id, l.PID, "wt stop "+id))
 		}
 	}
 	return notes, errs
@@ -271,27 +261,6 @@ func pidfileFindings(cfg *config.Config, loading map[string]lifecycle.Loading, h
 // providers are running and has no way to stop them regardless.
 func errCannotTell(families []string, hint string) error {
 	return fmt.Errorf("cannot tell what is running on %s: the probe gave no usable answer%s", strings.Join(families, ", "), hint)
-}
-
-// unreadHint is what bare `wt stop` adds after naming the families it could
-// not read: the commands that stop such a server regardless, named only for
-// the families wt halts as a whole. A Shared family (ollama) has no such
-// command — `wt stop ollama` and `wt stop --all` stop nothing on an ollama wt
-// cannot read — so a list of only those gets "" and the caller's own ending.
-func unreadHint(cfg *config.Config, unknown []string) string {
-	var cmds, fams []string
-	for _, id := range stoppableProviders(cfg) {
-		fam := localmodels.Family(id)
-		if lifecycle.TenancyOf(id) == lifecycle.Shared || !slices.Contains(unknown, fam) || slices.Contains(fams, fam) {
-			continue
-		}
-		fams = append(fams, fam)
-		cmds = append(cmds, fmt.Sprintf("%q", "wt stop "+id))
-	}
-	if len(fams) == 0 {
-		return ""
-	}
-	return fmt.Sprintf(" — %s or \"wt stop --all\" stops %s", strings.Join(cmds, ", "), strings.Join(fams, " and "))
 }
 
 // unreadClause is the part of the in-use question that says wt is asking
@@ -358,6 +327,7 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 			loading += fmt.Sprintf(", and %s is still loading (pid %d)", id, fs.Loading.PID)
 		}
 	}
+	// Unreachable in production since refcount was deleted (defaultStopDeps counts nothing); Phase 3/4 follow-up.
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s)%s%s; stop them all?", inUse, strings.Join(users, ", "), unreadClause(unread, false), loading))
 		if err != nil {
@@ -373,7 +343,7 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	}
 	// What a pidfile behind a refused port names that wt will not signal:
 	// said once everything else is, so it is the last thing on the screen.
-	notes, unknown := pidfileFindings(cfg, st.Loading(), " — nothing was stopped there", false)
+	notes, unknown := pidfileFindings(cfg, st.Loading(), " — nothing was stopped there")
 	failures = append(failures, unknown...)
 	defer func() {
 		for _, n := range notes {
@@ -501,135 +471,50 @@ func stoppableProviders(cfg *config.Config) []string {
 	return ids
 }
 
-// stopArgError is the usage mistake in `wt stop`'s argument, nil when there is
-// none: a bare provider wt cannot stop, or no argument without a terminal for
-// the picker. It probes nothing; a model id still needs the live inventory to
-// find its running entry.
+// stopArgError is the usage mistake in `wt stop <provider>`'s argument, nil
+// when there is none: a bare provider wt cannot stop. It probes nothing.
 func stopArgError(cfg *config.Config, arg string) error {
-	if arg != "" && !strings.Contains(arg, "/") {
-		if valid := stoppableProviders(cfg); !slices.Contains(valid, arg) {
-			return fmt.Errorf("unknown provider %q (valid: %s)", arg, strings.Join(valid, ", "))
-		}
-	}
-	if arg == "" && !stdinTTY() {
-		return fmt.Errorf("wt stop needs a TTY to list models; pass a model or provider (wt stop <provider>/<name> | wt stop <provider>)")
+	if valid := stoppableProviders(cfg); !slices.Contains(valid, arg) {
+		return fmt.Errorf("unknown provider %q (valid: %s)", arg, strings.Join(valid, ", "))
 	}
 	return nil
 }
 
-// runStop implements `wt stop`. Argument errors return before any side effect.
+// runStop implements `wt stop <provider>` on the host (R3): a model id and a
+// bare `wt stop` go to the model server (runStopRemote). Argument errors
+// return before any side effect.
 func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 	if err := stopArgError(cfg, arg); err != nil {
 		return err
 	}
-	if arg == "" {
-		// The picker takes the one inventory snapshot itself and reports whether
-		// it had anything to offer, so nothing is probed twice.
-		offered, unknown, loading := stopPickerAll(cfg)
-		hint := unreadHint(cfg, unknown)
-		// What the picker cannot list: a server still loading has no port
-		// and no model row (#308). It is named here, never stopped — the
-		// picker stops only what the user picked.
-		loadHint := " — nothing was stopped"
-		if offered {
-			loadHint = ""
-		}
-		notes, errs := pidfileFindings(cfg, loading, loadHint, true)
-		stillLoading := false
-		for _, l := range loading {
-			stillLoading = stillLoading || l.PID > 0
-		}
-		switch {
-		case offered && len(unknown) > 0:
-			// The list was not everything that may be running.
-			fmt.Fprintf(out, "wt: could not tell what is running on %s%s\n", strings.Join(unknown, ", "), hint)
-		case offered:
-		case len(unknown) > 0:
-			// Nothing to list is not "nothing running" when a probe gave
-			// no usable answer.
-			if hint == "" {
-				hint = " — nothing was stopped"
-			}
-			errs = append([]error{errCannotTell(unknown, hint)}, errs...)
-		case len(errs) == 0 && !stillLoading:
-			fmt.Fprintln(out, "wt: no running local models")
-		}
-		for _, n := range notes {
-			fmt.Fprintf(out, "wt: %s\n", n)
-		}
-		return errors.Join(errs...)
-	}
 	st := stopState(cfg)
 	cands := st.Candidates
-	// halt: the provider's server is stopped as a whole, not model by model.
-	halt := false
-
 	var targets []survey.Candidate
-	if strings.Contains(arg, "/") {
-		for _, c := range cands {
-			if c.Entry.ModelID == arg {
-				targets = append(targets, c)
-			}
+	pool := lifecycle.TenancyOf(arg) == lifecycle.Pool
+	for _, c := range cands {
+		// A pool's server is stopped as a whole, so every model of the
+		// family is affected, whichever of its rows it is listed under.
+		if c.Entry.ProviderID == arg || (pool && localmodels.Family(c.Entry.ProviderID) == localmodels.Family(arg)) {
+			targets = append(targets, c)
 		}
-		if len(targets) == 0 {
-			if i := config.IndexModelByID(cfg.Models, arg); i >= 0 {
-				// wt does not know which model a server that is still
-				// loading holds, so a model id stops nothing there; the
-				// provider does.
-				prov := cfg.Models[i].ProviderID
-				fs := st.Families[localmodels.Family(prov)]
-				switch l := fs.Loading; {
-				case l.PID > 0:
-					return fmt.Errorf("model %q is not running — %s is still loading (pid %d); \"wt stop %s\" stops it", arg, prov, l.PID, prov)
-				case l.Err != nil:
-					// Not known to be "not running": the pidfile names a
-					// live pid wt could not inspect.
-					return errLoadingUnknown(prov, l.Err, " — nothing was stopped")
-				case l.Stray != "":
-					// A live process the pidfile names that is not this
-					// provider's server. wt stops nothing here, but the line
-					// says what it found and left alone, as `wt stop
-					// <provider>` does: "not running" alone would hide a
-					// process the user may have to end by hand.
-					return fmt.Errorf("model %q is not running — %s", arg, l.Stray)
-				}
-				if fs.Untrusted && !fs.Down {
-					// A probe that gave no usable answer is not "not
-					// running" either: the model may well be loaded, and
-					// this id stops nothing where the provider could. Say
-					// what `wt stop <provider>` says.
-					return errCannotTell([]string{prov}, " — nothing was stopped")
-				}
-				return fmt.Errorf("model %q is not running", arg)
-			}
-			return fmt.Errorf("unknown model %q", arg)
+	}
+	// halt: the provider's server is stopped as a whole, not model by model.
+	halt := haltsWhole(st, arg, len(targets))
+	if len(targets) == 0 && !halt {
+		fs := st.Families[localmodels.Family(arg)]
+		if fs.Untrusted && !fs.Down {
+			// Only a Shared provider gets here: its models are stopped
+			// one by one, so there is nothing to stop blind.
+			return errCannotTell([]string{arg}, " — nothing was stopped")
 		}
-	} else {
-		pool := lifecycle.TenancyOf(arg) == lifecycle.Pool
-		for _, c := range cands {
-			// A pool's server is stopped as a whole, so every model of the
-			// family is affected, whichever of its rows it is listed under.
-			if c.Entry.ProviderID == arg || (pool && localmodels.Family(c.Entry.ProviderID) == localmodels.Family(arg)) {
-				targets = append(targets, c)
-			}
+		if fs.Loading.Err != nil {
+			return errLoadingUnknown(arg, fs.Loading.Err, " — nothing was stopped")
 		}
-		halt = haltsWhole(st, arg, len(targets))
-		if len(targets) == 0 && !halt {
-			fs := st.Families[localmodels.Family(arg)]
-			if fs.Untrusted && !fs.Down {
-				// Only a Shared provider gets here: its models are stopped
-				// one by one, so there is nothing to stop blind.
-				return errCannotTell([]string{arg}, " — nothing was stopped")
-			}
-			if fs.Loading.Err != nil {
-				return errLoadingUnknown(arg, fs.Loading.Err, " — nothing was stopped")
-			}
-			fmt.Fprintf(out, "wt: nothing running on %s\n", arg)
-			if fs.Loading.Stray != "" {
-				fmt.Fprintf(out, "wt: %s\n", fs.Loading.Stray)
-			}
-			return nil
+		fmt.Fprintf(out, "wt: nothing running on %s\n", arg)
+		if fs.Loading.Stray != "" {
+			fmt.Fprintf(out, "wt: %s\n", fs.Loading.Stray)
 		}
+		return nil
 	}
 
 	targets = withFamilyCollateral(out, cands, targets)
@@ -652,6 +537,7 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			what = fmt.Sprintf("%s is still loading (pid %d) and is", arg, loadingPID)
 		}
 	}
+	// Unreachable in production since refcount was deleted (defaultStopDeps counts nothing); Phase 3/4 follow-up.
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("%s in use by %d live wt session(s) (%s)%s; stop anyway?", what, inUse, strings.Join(users, ", "), blind))
 		if err != nil {
@@ -742,9 +628,10 @@ func startCmd(a *app) *cobra.Command {
 			"wt can stop and --others=keep keeps them, without asking; --replace never stops\n" +
 			"them. When stdin is not a terminal and --others is not given, wt keeps them\n" +
 			"and prints one warning.\n\n" +
-			"With a model server configured ([model-server] in config.toml, or WT_MODEL_URL)\n" +
-			"the start goes through it: the model id is a model the server lists, the picker\n" +
-			"shows the server's local models, and the questions above are the server's. wt\n" +
+			"The start goes through the model server ([model-server] in config.toml, or\n" +
+			"WT_MODEL_URL; with none configured wt refuses, exit 1, nothing started): the\n" +
+			"model id is a model the server lists, the picker shows the server's local\n" +
+			"models, and the questions above are the server's. wt\n" +
 			"registers a client session for the model for the start, ends it when the model is up,\n" +
 			"and says on stderr that the server stops the model after its idle grace unless a\n" +
 			"client session uses it. Exit 0 started (or already running), 1 could not start (no\n" +
@@ -764,20 +651,15 @@ func startCmd(a *app) *cobra.Command {
 				id = args[0]
 			}
 			replace, _ := cmd.Flags().GetBool("replace")
-			if a.endpointConfigured() {
-				// With a model server configured the start goes through it:
-				// no registry, no local provider.
-				ms, err := a.openModels(cmd.Context(), "nothing was started")
-				if err != nil {
-					return remoteExit(err)
-				}
-				ans := &cliAnswerer{id: id, replace: replace, others: string(othersMode), out: osStderr, tty: interactiveTTY}
-				return runStartRemote(cmd.Context(), cmd.OutOrStdout(), ms, a.theme, id, replace, ans)
+			// The start goes through the model server: no registry, no
+			// local provider. With none configured it refuses before
+			// anything starts.
+			ms, err := a.openModels(cmd.Context(), "nothing was started")
+			if err != nil {
+				return remoteExit(err)
 			}
-			if a.cfgErr != nil {
-				return configError(a.cfgErr)
-			}
-			return runStart(cmd.OutOrStdout(), a.cfg, a.theme, id, replace)
+			ans := &cliAnswerer{id: id, replace: replace, others: string(othersMode), out: osStderr, tty: interactiveTTY}
+			return runStartRemote(cmd.Context(), cmd.OutOrStdout(), ms, a.theme, id, replace, ans)
 		},
 	}
 }
@@ -812,11 +694,12 @@ func servedCmd(a *app) *cobra.Command {
 			// The load error only: this reads the registry's provider rows
 			// and writes nothing, so a validation gap elsewhere in the
 			// config must not make the probe unavailable.
-			if a.loadErr != nil {
-				return configError(a.loadErr)
+			cfg, loadErr := a.hostConfig()
+			if loadErr != nil {
+				return configError(loadErr)
 			}
 			client := &http.Client{Timeout: servedProbeTimeout}
-			return runServed(cmd.OutOrStdout(), a.cfg, client, args[0], asJSON)
+			return runServed(cmd.OutOrStdout(), cfg, client, args[0], asJSON)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
@@ -862,12 +745,13 @@ func warmCmd(a *app) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The load error only, as for `wt served`: this reads the
 			// registry's provider rows and writes nothing.
-			if a.loadErr != nil {
-				return configError(a.loadErr)
+			cfg, loadErr := a.hostConfig()
+			if loadErr != nil {
+				return configError(loadErr)
 			}
 			ctx, cancel := startSignalCtx()
 			defer cancel()
-			return runWarm(ctx, cmd.OutOrStdout(), a.cfg, args[0], args[1])
+			return runWarm(ctx, cmd.OutOrStdout(), cfg, args[0], args[1])
 		},
 	}
 }
@@ -881,73 +765,4 @@ func runWarm(ctx context.Context, out io.Writer, cfg *config.Config, provider, m
 	}
 	fmt.Fprintf(out, "%s is loaded on %s\n", model, provider)
 	return nil
-}
-
-// localRowsSnap builds catalog rows for every local model the live inventory
-// lists (registry models on disk or running, plus detected ones) from one
-// snapshot — screen 1's row set. It also returns that snapshot, for callers
-// that must explain an id with no row (catalog.MissingReason).
-func localRowsSnap(cfg *config.Config) ([]catalog.Row, localmodels.Snapshot) {
-	snap := probeInventory(cfg)
-	var models []config.Model
-	for _, m := range cfg.Models {
-		if loc, err := cfg.ResolveLocation(m); err == nil && loc == config.LocationLocal {
-			models = append(models, m)
-		}
-	}
-	return catalog.Build(catalog.Input{Config: cfg, Models: models, Inventory: &snap}), snap
-}
-
-// runStart implements `wt start`. Argument errors return before any side effect.
-func runStart(out io.Writer, cfg *config.Config, theme themes.Theme, id string, replace bool) error {
-	rows, snap := localRowsSnap(cfg)
-	if id == "" {
-		if !stdinTTY() {
-			return fmt.Errorf("wt start needs a TTY to list models; pass a model id directly (wt start <provider>/<name>)")
-		}
-		if len(rows) == 0 {
-			return fmt.Errorf("no local model is on disk or running")
-		}
-		models := make([]config.Model, len(rows))
-		for i, r := range rows {
-			models[i] = r.Model
-		}
-		m, ok, err := pickStartModelTUI(cfg, models, theme)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("model selection canceled")
-		}
-		id = m.ID
-	}
-	row, ok := catalog.Find(rows, id)
-	if !ok {
-		if reason := catalog.MissingReason(cfg, &snap, id); reason != "" {
-			return errors.New(reason)
-		}
-		if config.IndexModelByID(cfg.Models, id) >= 0 {
-			return fmt.Errorf("%q is not a local model — wt start only starts local models", id)
-		}
-		return fmt.Errorf("unknown model %q", id)
-	}
-	switch row.Action() {
-	case catalog.ActionStart:
-		if err := startModel(cfg, row, replace); err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "wt: %s is running\n", id)
-		return nil
-	case catalog.ActionLaunch:
-		// Already running, but not necessarily started by wt: write its route
-		// if it is missing, removing nothing. Unconditional, whatever the
-		// routing toggle says — the start hook writes its route the same way,
-		// and `wt start` has no agent whose route could say whether the proxy
-		// is on its path.
-		ensureRouteBeforeLaunch(cfg, row.Model)
-		fmt.Fprintf(out, "wt: %s is already running\n", id)
-		return nil
-	default: // catalog.ActionBlock: BlockReason is non-empty by definition
-		return errors.New(row.BlockReason())
-	}
 }

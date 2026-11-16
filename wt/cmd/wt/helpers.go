@@ -142,7 +142,8 @@ var stdinTTY = isStdinTTY
 // nothing for a missing registry, whose error already names the command that
 // creates one (`wt model init`) — a hint would name a second repair.
 //
-// Every command that refuses to run on a.cfgErr or a.loadErr returns this.
+// Every command that refuses to run on a config load or validation error
+// (hostConfig's, or sessionCfg's for a launch) returns this.
 // Do not write the hint out at a call site: that is how `wt litellm` came to
 // send every registry problem to `wt config` (#291).
 func configError(err error) error {

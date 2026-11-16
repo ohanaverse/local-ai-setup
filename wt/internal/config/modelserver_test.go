@@ -207,3 +207,62 @@ func TestIgnoredLitellmKeys(t *testing.T) {
 		t.Errorf("disabled = %q", k)
 	}
 }
+
+// TestLegacyLitellmKeysSurviveASave pins R4 across the flip: the [litellm]
+// table is host state (`wt-model serve` reads its url and api_key, `wt
+// litellm set` writes them) that the session leaves alone, so every save path
+// a session or host command takes (an unrelated PatchSave of a LoadSession
+// config, a whole-file Save, an UpdateLitellm that sets only the url) keeps
+// url, api_key and the retired enabled key exactly as written. A save that
+// dropped them would cut the model server off from LiteLLM, and one that
+// dropped enabled would rewrite a file wt only promised to ignore.
+func TestLegacyLitellmKeysSurviveASave(t *testing.T) {
+	const body = `default_tag = "code"
+
+[litellm]
+enabled = true
+url = "http://127.0.0.1:4000"
+api_key = "sk-host"
+
+[model-server]
+url = "http://127.0.0.1:9"
+token_file = "/t"
+`
+	want := LitellmState{Enabled: true, URL: "http://127.0.0.1:4000", APIKey: "sk-host"}
+	check := func(t *testing.T, step string) {
+		t.Helper()
+		again, _, err := readConfigFile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again.LitellmTable == nil || *again.LitellmTable != want {
+			t.Errorf("%s: [litellm] = %+v, want %+v", step, again.LitellmTable, want)
+		}
+	}
+	sessionHome(t, body)
+	cfg, err := LoadSession("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.PatchSave(func(fresh *Config) { fresh.DefaultTag = "design" }); err != nil {
+		t.Fatal(err)
+	}
+	check(t, "PatchSave")
+	cfg, err = LoadSession("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	check(t, "Save")
+	cfg, err = LoadSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.UpdateLitellm(func(s *LitellmState) { s.URL = "http://127.0.0.1:4001" }); err != nil {
+		t.Fatal(err)
+	}
+	want.URL = "http://127.0.0.1:4001"
+	check(t, "UpdateLitellm")
+}

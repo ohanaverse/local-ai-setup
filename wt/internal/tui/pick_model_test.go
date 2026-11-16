@@ -9,7 +9,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -21,12 +20,11 @@ import (
 // that gets smoke-tested.
 func TestPickModelEnterSelectsHighlightedModel(t *testing.T) {
 	stubUsageStore(t)
-	stubRefcountStore(t)
 	models := []config.Model{
 		{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4"},
 		{ID: "ollama/qwen3.8:27b", ModelName: "qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
 	}
-	m := newPickModel(nil, models, themes.Default, false)
+	m := newPickModel(models, themes.Default)
 
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	gm := got.(pickModel)
@@ -51,12 +49,11 @@ func TestPickModelEnterSelectsHighlightedModel(t *testing.T) {
 // test is what makes the behavior deliberate rather than incidental.
 func TestPickStartModelDefaultsToNativeRow(t *testing.T) {
 	stubUsageStore(t)
-	stubRefcountStore(t)
 	models := []config.Model{
 		{ID: "openrouter/cheap", ModelName: "cheap", ProviderID: "openrouter", Family: "cheap", Cost: config.ModelCost{InputPricePerMillion: f64(0.1), OutputPricePerMillion: f64(0.1)}},
 		{ID: "claude/native", ModelName: "native", ProviderID: "claude", Family: "claude", Native: true},
 	}
-	m := newPickModel(nil, models, themes.Default, true)
+	m := newPickModel(models, themes.Default)
 
 	if got := m.list.Index(); got != 0 {
 		t.Fatalf("initial cursor = %d, want 0 (no explicit default is set)", got)
@@ -97,9 +94,8 @@ func TestPickModelCancelKeys(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stubUsageStore(t)
-			stubRefcountStore(t)
 			models := []config.Model{{ID: "ollama/gemma4:9b", Family: "gemma4"}}
-			m := newPickModel(nil, models, themes.Default, false)
+			m := newPickModel(models, themes.Default)
 
 			got, cmd := m.Update(tc.key)
 			gm := got.(pickModel)
@@ -121,12 +117,11 @@ func TestPickModelCancelKeys(t *testing.T) {
 // must not reappear in this standalone picker.
 func TestPickModelQTypesIntoFilterInsteadOfQuitting(t *testing.T) {
 	stubUsageStore(t)
-	stubRefcountStore(t)
 	models := []config.Model{
 		{ID: "ollama/qwen3.8:27b", ModelName: "qwen3.8:27b", ProviderID: "ollama", Family: "qwen3.8"},
 		{ID: "ollama/other", ModelName: "other", ProviderID: "ollama"},
 	}
-	m := newPickModel(nil, models, themes.Default, false)
+	m := newPickModel(models, themes.Default)
 	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if m.list.FilterState() != list.Filtering {
 		t.Fatalf("filter state = %v, want Filtering", m.list.FilterState())
@@ -143,34 +138,6 @@ func TestPickModelQTypesIntoFilterInsteadOfQuitting(t *testing.T) {
 	}
 }
 
-// TestNewPickModelUsesTableHeaderAndRunningState verifies wt smoke's picker
-// shows the same column header as the agent flow and reads RUNNING from the live
-// inventory (a running local model shows "run"), with no per-agent counts since
-// the list is not scoped to one agent. Without it the two pickers would drift
-// and smoke would show stale or missing running state.
-func TestNewPickModelUsesTableHeaderAndRunningState(t *testing.T) {
-	stubUsageStore(t)
-	stubRefcountStore(t)
-	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
-		{ProviderID: "omlx", ModelID: "omlx/a", Artifact: "a", Registered: true, Running: true},
-	}})
-	cfg := &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}}}
-	models := []config.Model{{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"}}
-
-	pm := newPickModel(cfg, models, themes.Default, false)
-
-	if !strings.Contains(pm.list.Title, "RUNNING") {
-		t.Errorf("title = %q, want the table header (with RUNNING)", pm.list.Title)
-	}
-	items := pm.list.Items()
-	if len(items) != 1 {
-		t.Fatalf("got %d items, want 1", len(items))
-	}
-	if line := items[0].(*modelItem).line; !strings.Contains(line, "run") {
-		t.Errorf("line = %q, want it to show the running state (run)", line)
-	}
-}
-
 // TestPickModelViewHeaderAlignsWithRows renders the standalone picker's real
 // list view and checks the header's FAMILY and MODEL columns start at the same
 // rune offset as the first row's cells. Both the title style and the list's
@@ -178,36 +145,10 @@ func TestNewPickModelUsesTableHeaderAndRunningState(t *testing.T) {
 // the header shifts relative to the rows in wt smoke's picker.
 func TestPickModelViewHeaderAlignsWithRows(t *testing.T) {
 	stubUsageStore(t)
-	stubRefcountStore(t)
 	models := []config.Model{{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4"}}
-	pm := newPickModel(nil, models, themes.Default, false)
+	pm := newPickModel(models, themes.Default)
 
 	assertHeaderAlignsWithRow(t, pm.View(), "ollama/gemma4:9b", "gemma4")
-}
-
-// TestNewPickModelHidesDiscoveredRows verifies wt smoke's picker only shows the
-// models it was given: an unregistered (discovered) local model present in the
-// live inventory must not appear as a row. Without hideDiscovered, smoke would
-// offer models it has not verified as eligible for any agent.
-func TestNewPickModelHidesDiscoveredRows(t *testing.T) {
-	stubUsageStore(t)
-	stubRefcountStore(t)
-	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
-		{ProviderID: "omlx", ModelID: "omlx/a", Artifact: "a", Registered: true, Running: true},
-		{ProviderID: "omlx", ModelID: "omlx/stray", Artifact: "stray", Registered: false, Running: true},
-	}})
-	cfg := &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}}}
-	models := []config.Model{{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"}}
-
-	pm := newPickModel(cfg, models, themes.Default, false)
-
-	var ids []string
-	for _, it := range pm.list.Items() {
-		ids = append(ids, it.(*modelItem).model.ID)
-	}
-	if len(ids) != 1 || ids[0] != "omlx/a" {
-		t.Errorf("items = %v, want only the passed model omlx/a (discovered omlx/stray must be hidden)", ids)
-	}
 }
 
 // TestPickModelEnterOnBlockedRowDoesNotSelect verifies pressing Enter on a
@@ -233,63 +174,14 @@ func TestPickModelEnterOnBlockedRowDoesNotSelect(t *testing.T) {
 	}
 }
 
-// TestPickStartModelIgnoresLaunchRoutes verifies the start-only picker does
-// not apply launch-route rules: with LiteLLM on, a discovered row (not in the
-// proxy's model_list) and a start row whose route cannot resolve stay
-// selectable start rows, a model that is not on disk has no row, and the
-// route-gated table (route blocking) is unchanged. Without this, `wt start`'s
-// picker would refuse models that `wt start <id>` starts fine.
-func TestPickStartModelIgnoresLaunchRoutes(t *testing.T) {
-	stubUsageStore(t)
-	stubRefcountStore(t)
-	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
-		{ProviderID: "omlx", ModelName: "disc", ModelID: "omlx/disc", Artifact: "disc", Registered: false},
-		{ProviderID: "omlx", ModelName: "idle", ModelID: "omlx/idle", Artifact: "idle", ArtifactKnown: true, Registered: true},
-		{ProviderID: "omlx", ModelName: "gone", ModelID: "omlx/gone", ArtifactKnown: true, Registered: true},
-	}})
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
-	}
-	cfg.SetLitellmForTest(config.LitellmState{Enabled: true}) // unconfigured: routes error
-	models := []config.Model{
-		{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal, Source: config.SourceDiscovered},
-		{ID: "omlx/idle", ProviderID: "omlx", ModelName: "idle", Location: config.LocationLocal},
-		{ID: "omlx/gone", ProviderID: "omlx", ModelName: "gone", Location: config.LocationLocal},
-	}
-	byID := func(pm pickModel) map[string]*modelItem {
-		out := map[string]*modelItem{}
-		for _, it := range pm.list.Items() {
-			mi := it.(*modelItem)
-			out[mi.model.ID] = mi
-		}
-		return out
-	}
-
-	start := byID(newPickModel(cfg, models, themes.Default, true))
-	for _, id := range []string{"omlx/disc", "omlx/idle"} {
-		if it := start[id]; it == nil || !it.start || it.blocked != "" {
-			t.Errorf("start-only %s: %+v, want a selectable start row", id, it)
-		}
-	}
-	if it, ok := start["omlx/gone"]; ok {
-		t.Errorf("start-only omlx/gone: %+v, want no row (not on disk)", it)
-	}
-
-	plain := byID(newPickModel(cfg, models, themes.Default, false))
-	if it := plain["omlx/idle"]; it == nil || it.blocked == "" {
-		t.Errorf("route-gated omlx/idle: %+v, want blocked by the unresolvable route", it)
-	}
-}
-
 // rowsPickModel is the standalone picker with the given number of rows, before
 // the terminal has reported a size.
 func rowsPickModel(t *testing.T, rows int) pickModel {
 	t.Helper()
 	stubUsageStore(t)
-	stubRefcountStore(t)
-	stubInventory(t, runningOmlxSnapshot())
+	stubRunning(t, "omlx/qwen3.8")
 	cfg := rowsConfig(rows)
-	pm := newPickModel(cfg, cfg.Models, themes.Default, false)
+	pm := newPickModel(cfg.Models, themes.Default)
 	if got := len(pm.list.Items()); got != rows {
 		t.Fatalf("standalone picker has %d rows, want %d", got, rows)
 	}

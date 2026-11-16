@@ -18,16 +18,13 @@ func rotateCmd(a *app) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			tag := args[0]
-			var models []config.Model
-			if a.endpointConfigured() {
-				// The model server's registered rows, in its Order.
-				var err error
-				if models, err = rotateModelsRemote(cmd.Context(), a, tag); err != nil {
-					cmd.SilenceUsage = true
-					return remoteExit(err)
-				}
-			} else {
-				models = a.cfg.ModelsWithTag(tag)
+			// The model server's registered rows, in its Order. With no
+			// model server configured it refuses: a session never reads the
+			// registry (Task 18).
+			models, err := rotateModelsRemote(cmd.Context(), a, tag)
+			if err != nil {
+				cmd.SilenceUsage = true
+				return remoteExit(err)
 			}
 			if len(models) == 0 {
 				return fmt.Errorf("no models tagged %q", tag)

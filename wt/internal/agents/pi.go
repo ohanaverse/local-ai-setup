@@ -17,24 +17,6 @@ type piDriver struct{}
 // Pi has no documented permission-bypass flag.
 func (piDriver) YoloFlag() string { return "" }
 
-func (piDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAIChat} }
-
-// SyncModels adds any non-native models from cfg that are missing from pi's
-// models.json, so rotation-selected models are always available to pi.
-// target is the model this launch is about to use (see Syncer's doc
-// comment): it is synced too even when cfg does not hold it (a discovered
-// local model has no registry entry), and syncDirectProviders uses it to
-// decide which provider's secret_ref failure, if any, should actually fail
-// this launch. r is target's resolved route — the same one Build gets — so
-// the entry is written where Build will look for it (see syncModels).
-func (piDriver) SyncModels(cfg *config.Config, target config.Model, r Route) error {
-	path, err := piModelsPath()
-	if err != nil {
-		return err
-	}
-	return syncModels(cfg, path, target, r)
-}
-
 // SyncGateway writes pi's models.json for a gateway launch: only the "litellm"
 // provider block (gateway origin + token, one entry per non-native catalog
 // model keyed by its gateway id), no provider origin or key. It removes every
@@ -51,18 +33,15 @@ func (piDriver) SyncGateway(gw Gateway, models []config.Model, target config.Mod
 }
 
 // Build passes --model only when the target model is present in pi's
-// models.json and marked _launch: true. Direct mode launches
-// "<provider-id>/<ModelName>" from a pi provider named after the registry
-// provider (ollama, openrouter, etc.); litellm mode launches
-// "litellm/<registry-id>" from the wt-created litellm provider — pi splits
-// --model on the first slash, so a registry id under the "ollama" provider
-// could never be addressed and its bare form would be sent upstream (400 at
-// the gateway). When the entry is missing, Build falls back to pi's default
-// model, surfaces a warning and sets ModelFallback (which wt smoke turns into
-// a FAIL). SyncModels writes the launch target's entry first, so this is left
-// for a direct route with no models.json yet (the sync creates the file only
-// for a LiteLLM route), a user-disabled entry (_launch: false), a provider
-// with no usable base_url/secret, or an unreadable models.json.
+// models.json and marked _launch: true. A gateway launch runs
+// "litellm/<gateway-id>" from the wt-created litellm provider (the only one
+// pi's file points at the gateway with) — pi splits --model on the first
+// slash, so a registry id under a provider named like its first segment
+// could never be addressed. When the entry is missing, Build falls back to
+// pi's default model, surfaces a warning and sets ModelFallback (which wt
+// smoke turns into a FAIL). SyncGateway writes the launch target's entry
+// first, so this is left for a user-disabled entry (_launch: false) or an
+// unreadable models.json.
 func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	lc := LaunchCmd{Bin: "pi"}
 	if m.Native {
@@ -74,10 +53,7 @@ func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 		lc.ModelFallback = true
 		return lc
 	}
-	providerID := r.ProviderID
-	if r.Litellm {
-		providerID = piLitellmProviderID
-	}
+	providerID := piLitellmProviderID
 	modelArg := providerID + "/" + r.ModelRef
 	if isLaunchable(providerID, r.ModelRef, path) {
 		lc.Args = append(lc.Args, "--model", modelArg)

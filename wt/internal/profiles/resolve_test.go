@@ -120,7 +120,7 @@ func TestResolveArgsIsWholeFieldReplace(t *testing.T) {
 
 // TestResolveProviderTierUsesModelProviderIDFallback verifies provider-tier
 // matching falls back to the segment before "/" in Model.ID when
-// Model.ProviderID is empty, mirroring config.ResolveRoute's own fallback
+// Model.ProviderID is empty (the fallback the deleted config.ResolveRoute had)
 // — a discovered model (registry gap) must still match a provider-tier
 // profile.
 func TestResolveProviderTierUsesModelProviderIDFallback(t *testing.T) {

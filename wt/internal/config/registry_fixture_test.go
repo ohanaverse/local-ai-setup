@@ -179,9 +179,8 @@ func TestRegistryFixtureNativeExposure(t *testing.T) {
 
 // TestRegistryFixtureProviderProtocols pins how wt decodes a provider's
 // `protocols` array from the fixture: the listed protocols, in order.
-// ResolveRoute's direct-vs-litellm decision reads it, so a protocol lost in
-// decoding would send that provider's models through LiteLLM when the agent
-// could dial them directly.
+// EffectiveProtocols reads it, so a protocol lost in decoding would change
+// what the registry says a provider serves.
 func TestRegistryFixtureProviderProtocols(t *testing.T) {
 	t.Setenv("WT_REGISTRY", "../../../docs/contracts/registry.sample.toml")
 

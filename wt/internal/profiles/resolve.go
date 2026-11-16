@@ -122,7 +122,7 @@ func matchesTier(p Profile, cfg *config.Config, m config.Model) bool {
 	}
 }
 
-// providerID mirrors config.ResolveRoute's own provider-id fallback:
+// providerID is a model's provider id:
 // m.ProviderID when set, else the segment before the first "/" in m.ID.
 func providerID(m config.Model) string {
 	if m.ProviderID != "" {

@@ -146,12 +146,11 @@ func (h *clientHold) end(w io.Writer) {
 	}
 }
 
-// exitTail is what the post-exit flow does in place of the registry path's
-// wt session release and stop picker: on the API path, end the client
-// session (and nothing else; the server's idle grace stops models).
+// exitTail is what the post-exit flow does after the agent: end the client
+// session (and nothing else; the server's idle grace stops models). A program
+// with no model server (a pinned command agent) has nothing to end.
 type exitTail struct {
-	remote bool
-	end    func()
+	end func()
 	// priceNote prints the stale-pricing notice from the model server's
 	// catalog (the registry's stamps are not read on this path).
 	priceNote func()
@@ -165,18 +164,13 @@ func exitTailOf(m model) exitTail {
 	h := m.hold
 	client, pricing, seen := m.client, m.catPricing, m.catSeen
 	return exitTail{
-		remote: true, end: func() { h.end(os.Stderr) },
+		end:       func() { h.end(os.Stderr) },
 		priceNote: func() { agents.PrintRemotePriceNotice(context.Background(), client, pricing, seen) },
 	}
 }
 
-// release is the tail's first step: the registry path's refcount release, or
-// the client session's end.
+// release is the tail's first step: the client session's end.
 func (t exitTail) release() {
-	if !t.remote {
-		releaseSession()
-		return
-	}
 	if t.end != nil {
 		t.end()
 	}
@@ -239,7 +233,7 @@ func (m model) beginRemoteStart(it *modelItem, allow bool, others othersPlan) (m
 	id := m.startRun
 	req := modelapi.StartRequest{Model: it.model.ID, AllowReplace: allow, Others: wireOthers(others)}
 	ch, _ := runRemoteStart(ctx, m.client, m.hold, req, id)
-	m.start = &startState{id: id, item: it, allow: allow, others: others, began: time.Now(), cancel: cancel, ch: ch, remote: true}
+	m.start = &startState{id: id, item: it, allow: allow, others: others, began: time.Now(), cancel: cancel, ch: ch}
 	m.phase = phaseStarting
 	m.status = ""
 	return m, waitForStart(ch)
@@ -288,7 +282,7 @@ func runRemoteStart(ctx context.Context, c ModelClient, h *clientHold, req model
 // footer shows it and the key acts exactly while it holds — once the job has
 // an id, and not while a cancel is already on its way.
 func (s *startState) canCancelJob() bool {
-	return s.remote && s.jobID != "" && !s.cancelSent
+	return s.jobID != "" && !s.cancelSent
 }
 
 // jobCancelMsg is the server's answer to c.
@@ -762,7 +756,7 @@ func settleRemoteStart(final tea.Model) {
 	if fm.prep != nil {
 		fm.prep.cancel()
 	}
-	if fm.start == nil || !fm.start.remote {
+	if fm.start == nil {
 		return
 	}
 	fm.start.cancel()
@@ -770,23 +764,22 @@ func settleRemoteStart(final tea.Model) {
 	}
 }
 
-// printPendingSummaryAndSurveyTail is printPendingSummaryAndSurvey with the
-// tail the launch path chose (exitTail): on the API path the client session
-// ends where the registry path releases its wt session, there is no stop
-// picker and no registry price notice, and the client session is ended even
-// when nothing launched.
-func printPendingSummaryAndSurveyTail(cfg *config.Config, tail exitTail) {
-	if !tail.remote {
-		printPendingSummaryAndSurvey(cfg)
-		return
-	}
+// printPendingSummaryAndSurveyTail runs the TUI's post-exit flow once the
+// alt-screen is gone, in the same order as the non-TUI path (issues
+// #115/#116): the client session ends (exitTail; even when nothing
+// launched), then the survey (not for a slot profile), the summary line, the after-survey stats and
+// the pricing notice from the model server's catalog. There is no stop
+// picker. It is extracted from Run() so this ordering is unit-testable
+// without a real tea.Program/TTY.
+func printPendingSummaryAndSurveyTail(tail exitTail) {
 	launched := pendingSurveyState
 	summary := pendingSummary
 	pendingSurveyState = pendingSurvey{}
 	pendingSummary = ""
 	tail.release()
 	var stats string
-	if launched.agent != "" {
+	// A slot profile is not one model: no survey, as no price notice below.
+	if launched.agent != "" && !launched.profile {
 		stats = runSurvey(launched.agent, launched.m)
 	}
 	if summary != "" {
@@ -796,7 +789,7 @@ func printPendingSummaryAndSurveyTail(cfg *config.Config, tail exitTail) {
 		fmt.Println(stats)
 	}
 	// A command agent launches no model (m.ID is empty), and a slot profile is
-	// not one priced model: neither gets the reminder, as on the registry path.
+	// not one priced model: neither gets the reminder.
 	if tail.priceNote != nil && summary != "" && launched.m.ID != "" && !launched.profile {
 		tail.priceNote()
 	}

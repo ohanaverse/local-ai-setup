@@ -30,33 +30,6 @@ type LaunchCmd struct {
 // unqualified while keeping the type definition in the config package.
 type Route = config.Route
 
-// Protocol is an alias so drivers in this package can refer to config.Protocol
-// unqualified. The constants stay in the config package.
-type Protocol = config.Protocol
-
-// ProtocolDeclarer is an optional Driver capability naming the wire protocols
-// the agent CLI speaks, ordered by preference. Drivers without it (agy, shell)
-// never route a model — agy's models are always native, shell never resolves a
-// route.
-type ProtocolDeclarer interface {
-	Protocols() []Protocol
-}
-
-// ProtocolsFor returns the named agent's declared protocols, or nil if the
-// agent is unknown or its driver doesn't implement ProtocolDeclarer. Used by
-// BuildLaunchCmd (to resolve the actual launch route) and by the model
-// picker — both need the same answer.
-func ProtocolsFor(agent string) []Protocol {
-	driver := ByName(agent)
-	if driver == nil {
-		return nil
-	}
-	if pd, ok := driver.(ProtocolDeclarer); ok {
-		return pd.Protocols()
-	}
-	return nil
-}
-
 // Driver knows how to build a launch command for one agent.
 type Driver interface {
 	// Build returns the command to run agent for the given model.
@@ -67,22 +40,9 @@ type Driver interface {
 	YoloFlag() string
 }
 
-// Syncer is an optional Driver capability: a pre-launch step that needs the
-// full config (e.g. pi syncing its model catalog). Launch paths call it once
-// before Build. target is the model about to be launched, so an
-// implementation can scope any per-provider, failure-prone work (e.g. pi's
-// exec: secret_ref resolution) to the provider actually being launched
-// instead of treating every registry provider as equally load-bearing for
-// this one launch. r is the route resolved for target — what Build is about
-// to receive — so the sync and Build agree on how the model is reached even
-// when the route differs from the LiteLLM toggle (a protocol-forced route).
-type Syncer interface {
-	SyncModels(cfg *config.Config, target config.Model, r Route) error
-}
-
 // ArgSetter is an optional Driver capability: some agents (e.g. shell) need
 // to receive the user's passthrough args to construct their command. When
-// the driver implements ArgSetter, BuildLaunchCmd passes the args before
+// the driver implements ArgSetter, BuildLaunchCmdGateway passes the args before
 // calling Build and does not append them again.
 type ArgSetter interface {
 	SetArgs(args []string)
@@ -302,27 +262,6 @@ func IsCommand(name string) bool {
 	return false
 }
 
-// BuildLaunchCmd resolves the agent driver, runs any pre-launch sync, builds
-// the exec.Cmd and appends passthrough args. It is the single shared launch
-// constructor used by both the non-TUI launch path (cmd/wt) and the TUI launch
-// path (internal/tui).
-//
-// extraArgs are user-supplied args after `--`. For regular agents they are
-// appended to the agent's command. For agents implementing ArgSetter (e.g.
-// shell), the args are passed via SetArgs and not appended again.
-//
-// It never resumes a session. wt used to look up an agent's newest session
-// for the worktree and add the agent's resume flag itself; that appended a
-// one-shot run to whatever conversation was newest (#204), broke a launch
-// whose resumed session had stored another model (#198), and doubled the flag
-// when the user passed their own. Sessions are the agent's to manage: a user
-// who wants one continued says so in extraArgs, with the agent's own flags
-// (`-- --continue`, `-- --resume <id>`, `-- --session <id>`).
-func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
-	cmd, _, err := BuildLaunchCmdInfo(agent, m, worktreePath, yolo, cfg, extraArgs)
-	return cmd, err
-}
-
 // LaunchInfo is what a built launch says about itself beyond the exec.Cmd.
 type LaunchInfo struct {
 	// ModelFallback mirrors LaunchCmd.ModelFallback: the agent will run on
@@ -332,39 +271,10 @@ type LaunchInfo struct {
 	Warn          string
 }
 
-// BuildLaunchCmdInfo is BuildLaunchCmd plus the LaunchInfo of the command it
-// built. A real launch ignores the info (a fallback only warns); wt smoke
-// reads it to fail a row whose agent would answer on a different model.
-func BuildLaunchCmdInfo(agent string, m config.Model, worktreePath string, yolo bool, cfg *config.Config, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
-	var info LaunchInfo
-	d := ByName(agent)
-	if d == nil {
-		return nil, info, fmt.Errorf("unknown agent: %s", agent)
-	}
-	// Guard nil cfg (BuildPassthroughCmd and some command-level tests pass
-	// none). A nil config resolves as direct mode.
-	if cfg == nil {
-		cfg = &config.Config{}
-	}
-	route, err := cfg.ResolveRoute(m, ProtocolsFor(agent))
-	if err != nil {
-		return nil, info, err
-	}
-	if route.Forced {
-		fmt.Fprintf(os.Stderr, "wt: %s requires LiteLLM for %s (no direct protocol overlap with provider %q) — routing through the proxy\n", agent, m.ID, route.ProviderID)
-	}
-	if s, ok := d.(Syncer); ok {
-		if err := s.SyncModels(cfg, m, route); err != nil {
-			return nil, info, err
-		}
-	}
-	return launchWithRoute(d, m, worktreePath, yolo, route, extraArgs)
-}
-
 // launchWithRoute is the part of a launch every route source shares: hand
 // ArgSetter drivers their args, build the command from route and append the
-// passthrough args. BuildLaunchCmdInfo and BuildLaunchCmdGateway differ only
-// in where route comes from and what is synced before it.
+// passthrough args (BuildLaunchCmdGateway's body after the route and the
+// sync).
 func launchWithRoute(d Driver, m config.Model, worktreePath string, yolo bool, route Route, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
 	var info LaunchInfo
 	// If the driver consumes args itself (e.g. shell), hand them over and
@@ -387,7 +297,7 @@ func launchWithRoute(d Driver, m config.Model, worktreePath string, yolo bool, r
 
 // command resolves the agent binary and returns an exec.Cmd ready to run in
 // workdir, with the driver's extra env merged over the inherited environment,
-// plus the driver's LaunchCmd, so BuildLaunchCmdInfo can report what the
+// plus the driver's LaunchCmd, so BuildLaunchCmdGateway can report what the
 // driver decided (ModelFallback) alongside the exec.Cmd.
 func command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exec.Cmd, LaunchCmd, error) {
 	lc := d.Build(m, yolo, r)

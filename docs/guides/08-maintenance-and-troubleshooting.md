@@ -233,7 +233,7 @@ A model that is already running — one you started by hand — gets its route b
 
 A model with no registry entry is routed the same way, under its discovered id `<family>/<artifact>` (`wt litellm sync --dry-run` lists it as `<id>: would route`). A `(hand-written)` row in `wt litellm list` whose name equals a discovered model's id (an alias you wrote before #179, say) keeps serving that name: wt never replaces it, so delete the row from `config.yaml` if you want wt's marked row, then run `wt litellm sync`.
 
-**Step 10 — the model is running, but something else started it? wt writes the route when you launch it; a client that skips wt needs `wt litellm sync`.** (A known gap in #179 Phase B, closed by #192.) A route is written when *wt* starts a model, or by a sync. A local model — registered or discovered — that something else started (an omlx or mtplx model you loaded by hand with the provider's own CLI, say) with no sync since is `run` in wt's picker but has no row yet. wt checks for that when it hands a running local model to an agent through LiteLLM — a `-M` pin, rotation, the picker — and in `wt smoke` and `wt start <model-id>`: it writes the model's route if it is missing, prints `wt: LiteLLM route for <id> updated` on stderr, and waits for the proxy restart before going on. The check only adds that one route: it never starts or stops a model, never removes a route (a stale one is left to the next start, stop or `wt litellm sync`), never replaces a hand-written row whose name is not a registry model id (one named like a registry id is adopted as wt's own row, as a sync does — [04-litellm-config](04-litellm-config.md) Gotchas), and never fails the launch. A client that reaches the proxy without wt gets no such check, and until a route is written it gets the proxy's `400 Invalid model name`:
+**Step 10 — the model is running, but something else started it? wt writes the route when you launch it; a client that skips wt needs `wt litellm sync`.** (A known gap in #179 Phase B, closed by #192.) A route is written when *wt* starts a model, or by a sync. A local model — registered or discovered — that something else started (an omlx or mtplx model you loaded by hand with the provider's own CLI, say) with no sync since is `run` in wt's picker but has no row yet. The model server checks for that: its catalog marks such a running model `routed: false` when it can ask the proxy, and a launch through wt — a `-M` pin, rotation, the picker — or `wt smoke` on it then runs a start job on the server, which writes the model's route and waits for the proxy restart before the launch goes on (a model whose routing the server could not ask about is launched as it is, never started). The check only adds that one route: it never starts or stops a model, never removes a route (a stale one is left to the next start, stop or `wt litellm sync`), never replaces a hand-written row whose name is not a registry model id (one named like a registry id is adopted as wt's own row, as a sync does — [04-litellm-config](04-litellm-config.md) Gotchas), and never fails the launch. A client that reaches the proxy without wt gets no such check, and until a route is written it gets the proxy's `400 Invalid model name`:
 
 ```bash
 wt litellm list | grep -x '<model-id>'   # no line = no route
@@ -241,7 +241,7 @@ wt litellm sync --dry-run                # expect: <model-id>: would route
 wt litellm sync                          # writes the row and restarts the proxy; give it ~10–20 s
 ```
 
-`wt start <model-id>` does the same for that one model: for a model that is already running it writes the route if it is missing, then prints `wt: <model-id> is already running`. If a launch through wt still ends in `Invalid model name`, look on stderr for `wt: LiteLLM route not updated: …` (the write failed). Launched from the `wt` picker, the check shows an "Updating the LiteLLM route" screen while the proxy restarts, and that line and any route warning are printed on the terminal when the agent starts (or after wt exits, if the launch did not happen). They are not shown in the picker's status line. If the launch itself fails, the status line shows the launch error, and the route line is printed on the terminal when wt exits. Also check `wt litellm list` for a `(hand-written)` row under that name: wt leaves it in place when the name is a discovered model's id (Step 9), and adopts it as its own row when the name is a registry model id ([04-litellm-config](04-litellm-config.md) Gotchas). One case the check cannot see: the row is listed in `wt litellm list` but the proxy is stale, because a restart failed or was interrupted — restart the proxy (Step 8).
+`wt start <model-id>` asks the server for the same start job. If a launch through wt still ends in `Invalid model name`, the start job's failure (on stderr, or the picker's status line) says why the route was not written; the model server's own log has the route lines. Also check `wt litellm list` for a `(hand-written)` row under that name: wt leaves it in place when the name is a discovered model's id (Step 9), and adopts it as its own row when the name is a registry model id ([04-litellm-config](04-litellm-config.md) Gotchas). One case the check cannot see: the row is listed in `wt litellm list` but the proxy is stale, because a restart failed or was interrupted — restart the proxy (Step 8).
 
 ### 3. Log triage
 
@@ -495,7 +495,7 @@ directory is gone; that is expected. Each thing it did:
 | `usage report --days N`, the Markdown report, its Reconciliation sections and "Last wt launch" line | dropped — `wt stats --window 1d\|7d\|30d`, `wt stats --json` ([07-usage-and-spend](07-usage-and-spend.md)) |
 | `litellm …` | `wt litellm …` |
 | `benchmark …`, `provider …` | `uv run --directory llmbench llmbench …`, `… llmbench provider …` |
-| `migrate`, `delete-family`, TUI `r` (download, delete), `l`, `s` | dropped — download with the provider's own tool (guide 02 Step 5); `wt litellm on\|off`, `wt start` and `wt stop` cover `l` and `s` |
+| `migrate`, `delete-family`, TUI `r` (download, delete), `l`, `s` | dropped — download with the provider's own tool (guide 02 Step 5); `wt start` and `wt stop` cover `l` and `s` (`wt litellm on\|off`, which covered routing, are retired stubs since 2026-11-15: every session routes through the model server) |
 
 llmbench is not installed on `PATH`. Where wt prints a command that starts
 with `llmbench provider …` (the start hint of a stopped pairing, the text of
@@ -556,20 +556,22 @@ ls ~/.config/local-ai/benchmarks/latest.toml    # llmbench's latest-run pointers
   them and add each with `wt model add`
   ([02-providers-and-models](02-providers-and-models.md) Step 1) before you
   delete the two.
-- **`wt litellm status` prints `litellm: off` with `url: (unset)`, and you do
-  route through LiteLLM:** wt has no copy of the routing state. wt used to
-  read the `[litellm]` table of `modelman.toml` as a fallback, and copied it
-  into `~/.config/agent-wt/config.toml` the first time it ran, on or after
+- **`wt litellm status` prints `url: (unset)` and you do route through
+  LiteLLM:** wt has no copy of the proxy's url and key. wt used to read the
+  `[litellm]` table of `modelman.toml` as a fallback, and copied it into
+  `~/.config/agent-wt/config.toml` the first time it ran, on or after
   2026-09-21, with a `config.toml` that had no `[litellm]` table. A machine
   with no `config.toml`, or one where wt has not run since that date, never
-  got the copy, and wt no longer reads the old file. Until you restore the
-  state, agents dial their providers directly (nothing is logged by the
-  proxy), and a launch that needs the proxy (codex, always) stops with
-  `litellm routing is required for this model but no URL is configured`.
-  Take the URL and key from the `[litellm]` table of `modelman.toml` and run
-  `wt litellm set --url <url> --api-key <key>`, then `wt litellm on`. Both
-  write `config.toml` (mode 0600), creating it if it does not exist; run
-  `wt litellm status` again to see `litellm: on`. If wt then stops with
+  got the copy, and wt no longer reads the old file. Until you restore it,
+  the model server (`wt-model serve`, which reads that table on its machine)
+  cannot reach the proxy. Take the URL and key from the `[litellm]` table of
+  `modelman.toml` and run `wt litellm set --url <url> --api-key <key>` on the
+  machine that runs the model server. It writes `config.toml` (mode 0600),
+  creating it if it does not exist; run `wt litellm status` again to see the
+  url and `api_key: ***` with the key's last four characters. There is no
+  routing switch to turn on: every session routes through the model server
+  ([wt-session.md](../../wt/docs/wt-session.md)), and `wt litellm on` is a
+  retired stub that exits 1. If wt then stops with
   `config error: agent "agy": unknown provider "agy"`, run `wt model init`:
   the restore created `config.toml`, and that command adds the provider row
   it needs to `registry.toml`. The key is on the command

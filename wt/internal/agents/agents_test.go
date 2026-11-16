@@ -293,16 +293,17 @@ func TestPiYoloFlag(t *testing.T) {
 	}
 }
 
-// Pi passes --model <ModelName> only when the model is present in models.json
-// and marked _launch: true. Passing --model for an unverified model would
-// launch a model pi doesn't intend to use.
+// Pi passes --model litellm/<registry id> only when the model is present
+// under the gateway's litellm block in models.json and marked _launch: true.
+// Passing --model for an unverified model would launch a model pi doesn't
+// intend to use.
 func TestPiBuildVerified(t *testing.T) {
-	writePiModels(t, `{"providers":{"ollama":{"models":[{"_launch":true,"id":"deepseek-v4-pro:cloud"}]}}}`)
+	writePiModels(t, `{"providers":{"litellm":{"models":[{"_launch":true,"id":"ollama/deepseek-v4-pro:cloud"}]}}}`)
 	d := ByName("pi")
 	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
-	lc := d.Build(m, false, directRoute(m))
-	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "ollama/deepseek-v4-pro:cloud" {
-		t.Errorf("args = %v, want [--model deepseek-v4-pro:cloud]", lc.Args)
+	lc := d.Build(m, false, litellmRoute(m))
+	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "litellm/ollama/deepseek-v4-pro:cloud" {
+		t.Errorf("args = %v, want [--model litellm/ollama/deepseek-v4-pro:cloud]", lc.Args)
 	}
 	if lc.Warn != "" {
 		t.Errorf("warn = %q, want empty for a verified model", lc.Warn)
@@ -312,10 +313,10 @@ func TestPiBuildVerified(t *testing.T) {
 // Pi falls back to its default model (no --model) and sets a warning when the
 // model is present but not marked _launch: true.
 func TestPiBuildNotVerified(t *testing.T) {
-	writePiModels(t, `{"providers":{"ollama":{"models":[{"_launch":false,"id":"deepseek-v4-pro:cloud"}]}}}`)
+	writePiModels(t, `{"providers":{"litellm":{"models":[{"_launch":false,"id":"ollama/deepseek-v4-pro:cloud"}]}}}`)
 	d := ByName("pi")
 	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
-	lc := d.Build(m, false, directRoute(m))
+	lc := d.Build(m, false, litellmRoute(m))
 	if len(lc.Args) != 0 {
 		t.Errorf("args = %v, want none (fallback to default)", lc.Args)
 	}
@@ -424,7 +425,7 @@ func TestCommandClearsInheritedEnv(t *testing.T) {
 	}
 }
 
-// BuildLaunchCmd must append extraArgs to cmd.Args for regular agents (those
+// BuildLaunchCmdGateway must append extraArgs to cmd.Args for regular agents (those
 // that do not implement ArgSetter). Failing to append means passthrough args
 // like `--verbose` after `--` are silently dropped and never reach the agent.
 func TestBuildLaunchCmdAppendsExtraArgs(t *testing.T) {
@@ -433,9 +434,9 @@ func TestBuildLaunchCmdAppendsExtraArgs(t *testing.T) {
 	register("_test_regular", func() Driver { return regularTestDriver{} })
 	t.Cleanup(func() { delete(registry, "_test_regular") })
 
-	cmd, err := BuildLaunchCmd("_test_regular", config.Model{}, "/tmp", false, &config.Config{}, []string{"--foo", "--bar"})
+	cmd, _, err := BuildLaunchCmdGateway("_test_regular", config.Model{}, "/tmp", false, Gateway{}, nil, []string{"--foo", "--bar"})
 	if err != nil {
-		t.Fatalf("BuildLaunchCmd: %v", err)
+		t.Fatalf("BuildLaunchCmdGateway: %v", err)
 	}
 	args := cmd.Args
 	if len(args) < 2 {
@@ -447,14 +448,14 @@ func TestBuildLaunchCmdAppendsExtraArgs(t *testing.T) {
 	}
 }
 
-// BuildLaunchCmd must not double-append extraArgs for agents that implement
+// BuildLaunchCmdGateway must not double-append extraArgs for agents that implement
 // ArgSetter (e.g. shell). The args must be passed to SetArgs only; if they
 // were also appended to cmd.Args the shell would receive duplicate arguments,
 // causing the command to malform or fail at runtime.
 func TestBuildLaunchCmdShellNoDoubleAppend(t *testing.T) {
-	cmd, err := BuildLaunchCmd("shell", config.Model{}, "/tmp", false, &config.Config{}, []string{"echo", "hello"})
+	cmd, _, err := BuildLaunchCmdGateway("shell", config.Model{}, "/tmp", false, Gateway{}, nil, []string{"echo", "hello"})
 	if err != nil {
-		t.Fatalf("BuildLaunchCmd: %v", err)
+		t.Fatalf("BuildLaunchCmdGateway: %v", err)
 	}
 	// The shell driver execs the args directly as argv (no bash -c wrapping):
 	// cmd.Args must be exactly [<echo path> hello] — no extra args appended.
@@ -882,7 +883,7 @@ func TestBuildLaunchCmdLeavesSessionsToTheAgent(t *testing.T) {
 		{"opencode", []string{"--continue"}, []string{"--auto=true", "--continue"}},
 		{"opencode", []string{"--session", "ses_1", "--fork"}, []string{"--auto=true", "--session", "ses_1", "--fork"}},
 	} {
-		cmd, err := BuildLaunchCmd(tc.agent, native, t.TempDir(), true, nil, tc.extra)
+		cmd, _, err := BuildLaunchCmdGateway(tc.agent, native, t.TempDir(), true, Gateway{}, nil, tc.extra)
 		if err != nil {
 			t.Fatalf("%s %v: %v", tc.agent, tc.extra, err)
 		}

@@ -23,43 +23,6 @@ type listFrame = tuilayout.ListFrame
 
 func clip(s string, width int) string { return tuilayout.Clip(s, width) }
 
-// modeLine is the line under the launcher's model table: the LiteLLM mode
-// and, after it, the highlighted row's price (costNote; "" for a row with
-// none). A price is shown whole or not at all, because the footer is clipped
-// at the terminal's edge with no sign of the cut, and a price cut there
-// reads as another price (0.33 as 0). So when the two do not fit the width
-// together the price takes the line and the mode gives way (at 40 columns:
-// under "LiteLLM: off (direct)" for every price longer than 12 characters,
-// which is all but the shortest, and under "LiteLLM: on" for a price with
-// many digits); when the price does not fit even alone, the line is the
-// mode, as for a row with no price.
-func modeLine(mode, cost string, width int) string {
-	switch {
-	case cost == "":
-		return mode
-	case lipgloss.Width(mode)+3+lipgloss.Width(cost) <= width:
-		return mode + "   " + cost
-	case lipgloss.Width(cost) <= width:
-		return cost
-	}
-	return mode
-}
-
-// withTierNote is the mode line (modeLine's) with the highlighted row's tier
-// after it: the longest of the row's tier notes (tiers.Entry.Notes, longest
-// first) that fits the width beside the line, or the line alone when not even
-// the shortest does. The tier is guidance and the TIER column shows its short
-// form, so it is the first thing this line gives up: the mode and the price
-// are kept exactly as modeLine chose them.
-func withTierNote(line string, notes []string, width int) string {
-	for _, n := range notes {
-		if lipgloss.Width(line)+3+lipgloss.Width(n) <= width {
-			return line + "   " + n
-		}
-	}
-	return line
-}
-
 // slotLine is the line under the model table while a slot-profile row is
 // highlighted; it takes the mode line's place and adds no line to the frame.
 // A blocked row shows its reason, cut with an ellipsis when it is too wide.
@@ -179,31 +142,18 @@ func (m *model) modelFrames() []listFrame {
 			if withHeader {
 				header = clip(headerStyle.Render(fmt.Sprintf("agent : %s\ntag   : %s", m.agent, m.tag)), inner) + "\n"
 			}
-			// Mode footer: the picker is where an off/on surprise surfaces (a row
-			// marked "(via proxy)" under direct mode), so name the current mode on
-			// the same screen. Falls back to direct when cfg is nil (view-only
-			// tests).
-			mode := "LiteLLM: off (direct)"
-			if m.cfg != nil && m.cfg.IsLitellm() {
-				mode = "LiteLLM: on"
-			}
-			// And the highlighted row's price in force: the COST column is
-			// given up on a narrow terminal (a table with an OpenRouter id
-			// gives it up at 80 columns), and this line is not. It is on
-			// the mode line, not a line of its own, so the footer is as tall
-			// as it was and nothing about the fit changes. The row's tier
-			// follows when there is room (withTierNote).
-			//
-			// A slot-profile row has the line to itself: its slots, or its
-			// block reason (slotLine). Every profile launches through the
-			// proxy, so neither the mode nor a price is named for it.
+			// The line under the table is the highlighted row's: a slot
+			// profile's slots or block reason (slotLine), else why the row is
+			// blocked or its client sessions, price and tier (remoteModeLine):
+			// the COST column is given up on a narrow terminal (a table with
+			// an OpenRouter id gives it up at 80 columns), and this line is
+			// not. There is no LiteLLM mode to name: the model server routes.
+			mode := ""
 			if it, ok := m.models.SelectedItem().(*modelItem); ok {
 				if it.profile != nil {
 					mode = slotLine(it.profile, it.slotTiers, inner)
-				} else if m.client != nil {
-					mode = remoteModeLine(it, inner)
 				} else {
-					mode = withTierNote(modeLine(mode, it.cost, inner), it.tier, inner)
+					mode = remoteModeLine(it, inner)
 				}
 			}
 			// Enter's effect depends on the highlighted row — launch for a cloud or
@@ -400,8 +350,6 @@ func (m *model) fitLists() {
 		}
 	case phaseAgent:
 		m.fitTo(&m.agentList, m.agentFrames()...)
-	case phaseOllamaWarn:
-		m.fitTo(&m.ollamaWarnModel, m.choiceFrame())
 	}
 }
 
@@ -410,11 +358,10 @@ func (m *model) fitTo(l *list.Model, frames ...listFrame) {
 	fitTo(l, m.width, m.height, frames...)
 }
 
-// remoteModeLine is the line under the table on the API path for the
-// highlighted row: why it is blocked, else how many client sessions use it and
+// remoteModeLine is the line under the table for the highlighted row: why it
+// is blocked, else how many client sessions use it and
 // its price, then its tier when there is room. There is no LiteLLM mode to name
-// (the server routes), and every part is shown whole or not at all, as
-// modeLine's price is.
+// (the server routes), and every part is shown whole or not at all.
 func remoteModeLine(it *modelItem, width int) string {
 	if it.blocked != "" {
 		return cutLines("blocked: "+it.blocked, width)

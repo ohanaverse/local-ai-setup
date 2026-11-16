@@ -19,7 +19,13 @@ tabs, named on its first line; `Tab` switches between them.
   selected one (or registers a `new` row) in a form, and `d` removes it.
   Each change is written at once, and the LiteLLM routes are synced once
   when you quit. `wt model` opens the editor on this tab; its keys, columns
-  and form are in [`wt-model.md`](wt-model.md).
+  and form are in [`wt-model.md`](wt-model.md). This tab is a host screen:
+  it reads and writes this machine's registry and `config.yaml`, not the
+  model server's, until it moves to `wt-model` ([`wt-session.md`](wt-session.md),
+  "Interim limits").
+
+`wt config` needs no model server: it opens, and edits `config.toml`, with
+none configured.
 
 ### Agent list
 
@@ -29,11 +35,11 @@ one of `✓ installed`, `✗ not installed`, or `✗ not configured`.
 
 > **`wt config`'s "not configured" marker is not the same as launch
 > eligibility.** This editor exists to add the missing `config.toml` entry,
-> so a `✗ not configured` row here is exactly what it says. But in the
-> worktree-launcher's own agent+command picker (`wt`, not `wt config`), an
-> installed agent with no `config.toml` entry is launchable anyway — Enter
-> launches it directly with no model routing (issue #147). Only an
-> uninstalled agent is truly blocked in the launcher.
+> so a `✗ not configured` row here is exactly what it says. But a launch
+> needs no entry: every model-driven agent with none is eligible for every
+> model the model server lists except another agent's native row, and an
+> entry only narrows that (its `supported_providers`). Only an uninstalled
+> agent is truly blocked in the launcher.
 
 ### Editing rows
 
@@ -95,11 +101,15 @@ All `wt config` settings live in `~/.config/agent-wt/` (or
 `$XDG_CONFIG_HOME/agent-wt/`). The theme subcommand writes
 `themes.toml`; other subcommands will add their own files alongside it.
 
-> **LiteLLM routing is not a `wt config` setting.** Whether agents route
-> through the LiteLLM proxy or dial providers directly is wt-owned but managed by
-> subcommands, not the editor: `wt litellm status` / `on` / `off` / `set`
-> control the `[litellm]` table in `config.toml`. There is no routing surface
-> in the editor.
+> **The model server and LiteLLM are not `wt config` settings.** Every
+> session reaches its models through the model server named by the
+> hand-edited `[model-server]` table in `config.toml` (`url`, `token_file`;
+> [`wt-session.md`](wt-session.md)). The `[litellm]` table holds the proxy's
+> url and key, which the model server reads; `wt litellm status` / `set`
+> show and change them. Its `enabled` key is retired and ignored (one note
+> per process when it is `true`) and `wt litellm on` / `off` are retired
+> stubs that exit 1. The editor saves only the agents and `default_tag`, and
+> keeps both tables as they are.
 
 > **The `[launch]` table is not a `wt config` setting either.** Its
 > `exit_prompt` key in `config.toml` is tolerated and ignored — the exit

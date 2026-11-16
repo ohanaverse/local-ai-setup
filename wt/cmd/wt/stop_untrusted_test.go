@@ -14,8 +14,6 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
@@ -367,93 +365,6 @@ func TestStopSaysNothingRunningOnlyWhenThatIsKnown(t *testing.T) {
 	}
 }
 
-// TestStopModelIDOfAProviderItCannotReadIsNotSaidToBeNotRunning verifies `wt
-// stop ollama/a:1` says the same cannot-tell as `wt stop ollama` when ollama's
-// probe gave no usable answer and its port did not refuse: a model id stops
-// nothing there, and "model ... is not running" would be a claim about a
-// model wt never read — the user would believe it is down while it is
-// loaded. A refused port is still "not running", since that much is known.
-func TestStopModelIDOfAProviderItCannotReadIsNotSaidToBeNotRunning(t *testing.T) {
-	stopped := stubStopState(t, families("ollama", survey.FamilyState{Untrusted: true}))
-	var out bytes.Buffer
-	err := runStop(&out, modelCmdConfig(), "ollama/a:1", false)
-	if err == nil || !strings.Contains(err.Error(), "cannot tell what is running on ollama") || out.Len() != 0 {
-		t.Errorf("err = %v out = %q, want a cannot-tell error and no output", err, out.String())
-	}
-	if len(*stopped) != 0 {
-		t.Errorf("stopped = %v, want nothing stopped", *stopped)
-	}
-
-	stubStopState(t, families("ollama", survey.FamilyState{Untrusted: true, Down: true}))
-	out.Reset()
-	err = runStop(&out, modelCmdConfig(), "ollama/a:1", false)
-	if err == nil || !strings.Contains(err.Error(), `model "ollama/a:1" is not running`) {
-		t.Errorf("refused port: err = %v, want the not-running error", err)
-	}
-}
-
-// stubPicker makes bare `wt stop` see a terminal and a picker that reports
-// offered and the families it could not read.
-func stubPicker(t *testing.T, offered bool, unknown ...string) {
-	t.Helper()
-	stubPickerLoading(t, offered, nil, unknown...)
-}
-
-// stubPickerLoading is stubPicker for a picker that also reports what the
-// pidfiles behind refused ports said.
-func stubPickerLoading(t *testing.T, offered bool, loading map[string]lifecycle.Loading, unknown ...string) {
-	t.Helper()
-	oldTTY, oldPick := stdinTTY, stopPickerAll
-	t.Cleanup(func() { stdinTTY, stopPickerAll = oldTTY, oldPick })
-	stdinTTY = func() bool { return true }
-	stopPickerAll = func(*config.Config) (bool, []string, map[string]lifecycle.Loading) { return offered, unknown, loading }
-}
-
-// TestStopPickerWithNothingToOfferSaysWhatItCouldNotRead verifies bare `wt
-// stop` does not print "no running local models" when the picker had nothing
-// to offer because a provider's probe gave no usable answer: it exits non-zero
-// naming the provider, and names a command that stops it only for a provider
-// wt stops as a whole. For ollama no such command exists — `wt stop ollama`
-// and `wt stop --all` stop nothing there — so the user must not be sent to one.
-func TestStopPickerWithNothingToOfferSaysWhatItCouldNotRead(t *testing.T) {
-	for _, tc := range []struct {
-		unknown []string
-		want    string
-	}{
-		{[]string{"mtplx"}, `cannot tell what is running on mtplx: the probe gave no usable answer — "wt stop mtplx" or "wt stop --all" stops mtplx`},
-		{[]string{"ollama"}, `cannot tell what is running on ollama: the probe gave no usable answer — nothing was stopped`},
-		{[]string{"mtplx", "ollama", "omlx"}, `cannot tell what is running on mtplx, ollama, omlx: the probe gave no usable answer — "wt stop mtplx", "wt stop omlx" or "wt stop --all" stops mtplx and omlx`},
-	} {
-		stubPicker(t, false, tc.unknown...)
-		var out bytes.Buffer
-		err := runStop(&out, stopCfg(), "", false)
-		if err == nil || err.Error() != tc.want || out.Len() != 0 {
-			t.Errorf("unknown %v: err = %v out = %q\n want %s and no no-running note", tc.unknown, err, out.String(), tc.want)
-		}
-	}
-}
-
-// TestStopPickerThatListedModelsNotesWhatItCouldNotRead verifies bare `wt
-// stop` says so when the picker listed models but a provider's probe gave no
-// usable answer: the list is then not everything that may be running. Without
-// the note the list looked complete while mtplx, the largest server, was up.
-func TestStopPickerThatListedModelsNotesWhatItCouldNotRead(t *testing.T) {
-	stubPicker(t, true, "mtplx", "ollama")
-	var out bytes.Buffer
-	if err := runStop(&out, stopCfg(), "", false); err != nil {
-		t.Fatal(err)
-	}
-	want := "wt: could not tell what is running on mtplx, ollama — \"wt stop mtplx\" or \"wt stop --all\" stops mtplx\n"
-	if out.String() != want {
-		t.Errorf("out = %q, want %q", out.String(), want)
-	}
-	stubPicker(t, true)
-	out.Reset()
-	if err := runStop(&out, stopCfg(), "", false); err != nil || out.Len() != 0 {
-		t.Errorf("every provider read: err = %v out = %q, want no note", err, out.String())
-	}
-}
-
 // TestStopDoesNotHaltAnExclusiveProviderThatWasNotProbed verifies `wt stop
 // mtplx` and `wt stop --all` leave alone an mtplx the inventory never probed
 // (a provider row with no location and no local model): with no probe there is
@@ -500,16 +411,13 @@ func TestStopFailurePrintsNoUsage(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "cannot tell what is running on ollama") || strings.Contains(got, "Usage:") {
 		t.Errorf("wt stop ollama: err = %v out = %q, want the cannot-tell error and no usage text", err, got)
 	}
-	stubPicker(t, false, "ollama")
-	if got, err = runStopCmd(stopCfg()); err == nil || strings.Contains(got, "Usage:") {
-		t.Errorf("wt stop: err = %v out = %q, want an error and no usage text", err, got)
-	}
 	if got, err = runStopCmd(stopCfg(), "nosuch"); err == nil || !strings.Contains(got, "Usage:") {
 		t.Errorf("wt stop nosuch: err = %v out = %q, want the usage text for an argument mistake", err, got)
 	}
-	stdinTTY = func() bool { return false }
-	if got, err = runStopCmd(stopCfg()); err == nil || !strings.Contains(got, "Usage:") {
-		t.Errorf("wt stop without a TTY: err = %v out = %q, want the usage text", err, got)
+	// With no argument the picker is the model server's (no server is
+	// configured here): its refusal is a failure, not a usage mistake.
+	if got, err = runStopCmd(stopCfg()); err == nil || !strings.Contains(err.Error(), "no model server is configured") || strings.Contains(got, "Usage:") {
+		t.Errorf("wt stop: err = %v out = %q, want the model server refusal and no usage text", err, got)
 	}
 }
 
@@ -537,8 +445,8 @@ func TestStopAllSettlesOneHaltsRestartBeforeTheNext(t *testing.T) {
 }
 
 // liveStopState points the stop state at the real read — the real inventory
-// probe and the real refcount file, both under the package's throwaway config
-// home — for a registry whose providers are httptest servers. The stop
+// probe under the package's throwaway config home (no session store since
+// Task 19) — for a registry whose providers are httptest servers. The stop
 // engines stay stubbed.
 func liveStopState(t *testing.T) {
 	t.Helper()
@@ -603,44 +511,9 @@ func TestStopHaltsAnMtplxItCannotReadThroughTheRealProbe(t *testing.T) {
 	})
 }
 
-// TestStopAsksBeforeHaltingAnOmlxItCannotReadThroughTheRealProbe is #307's
-// reproduction, through the real inventory probe and the real refcount file:
-// omlx gives no usable answer, a live wt session is on a discovered omlx
-// model no registry lists, and `wt stop omlx` and `wt stop --all` both ask
-// before the halt and halt nothing when the answer is No.
-func TestStopAsksBeforeHaltingAnOmlxItCannotReadThroughTheRealProbe(t *testing.T) {
-	liveStopState(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "no", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-	cfg := &config.Config{Providers: []config.Provider{localProvider("omlx", srv.URL+"/v1", t.TempDir())}}
-	if err := refcount.NewStore().Record(os.Getpid(), "omlx/Discovered-4bit"); err != nil {
-		t.Fatal(err)
-	}
-	halted := stubHalt(t)
-	asked := stubStopConfirm(t, false)
-	if err := runStop(io.Discard, cfg, "omlx", false); err == nil {
-		t.Fatal("wt stop omlx: declined question must be an error")
-	}
-	if err := runStopAll(io.Discard, cfg, false); err == nil {
-		t.Fatal("wt stop --all: declined question must be an error")
-	}
-	want := []string{
-		"omlx is in use by 1 live wt session(s) (omlx/Discovered-4bit), and wt could not tell what it has loaded; stop anyway?",
-		"running local models are in use by 1 live wt session(s) (omlx/Discovered-4bit), and wt could not tell what omlx has loaded; stop them all?",
-	}
-	if !slices.Equal(*asked, want) {
-		t.Errorf("asked = %q\n want  %q", *asked, want)
-	}
-	if len(*halted) != 0 {
-		t.Fatalf("halted = %v, want nothing halted after No", *halted)
-	}
-}
-
 // TestStopHaltOfARefusingPoolAsksNothing pins the idle machine: omlx's port
 // refuses, so nothing is serving and no session can lose a model, whatever
-// the refcount file still lists. `wt stop omlx` and `wt stop --all` run the
+// sessions are counted. `wt stop omlx` and `wt stop --all` run the
 // halt as before, with no question and no "could not tell" — a cleanup script
 // without --yes must not start failing because an agent is still open on a
 // server that is already down.

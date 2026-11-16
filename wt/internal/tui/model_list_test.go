@@ -7,7 +7,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -51,7 +50,7 @@ func TestModelItemDescriptionEmptyCountsInLine(t *testing.T) {
 			Location:   config.LocationLocal,
 			Tags:       []string{"code"},
 		},
-	}, usage: store}, refcount.NewStoreAt(t.TempDir()), "").items
+	}, usage: store}, "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -104,7 +103,7 @@ func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 			Tags:       []string{"code"},
 		},
 	}
-	tbl := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), "")
+	tbl := buildTable(tableInput{models: models, usage: store}, "")
 	items := tbl.items
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
@@ -160,7 +159,7 @@ func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 			},
 		},
 	}
-	items := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), "").items
+	items := buildTable(tableInput{models: models, usage: store}, "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -183,7 +182,7 @@ func TestBuildTableMarksLastLaunchedRow(t *testing.T) {
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
 		{ID: "ollama/gemma4:14b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
 	}
-	items := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), "ollama/gemma4:14b").items
+	items := buildTable(tableInput{models: models, usage: store}, "ollama/gemma4:14b").items
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
@@ -223,7 +222,7 @@ func TestBuildTableHasNoSurveyColumn(t *testing.T) {
 	models := []config.Model{
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal, Tags: []string{"code"}},
 	}
-	tbl := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), "")
+	tbl := buildTable(tableInput{models: models, usage: store}, "")
 	if strings.Contains(tbl.header, "SURVEY") {
 		t.Errorf("header = %q, want no SURVEY heading", tbl.header)
 	}
@@ -246,7 +245,7 @@ func TestBuildTableNoMarkerWithoutLastLaunched(t *testing.T) {
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
 	}
 	for _, lastID := range []string{"", "ollama/gone"} {
-		items := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), lastID).items
+		items := buildTable(tableInput{models: models, usage: store}, lastID).items
 		for i, it := range items {
 			if it.marked || strings.HasPrefix(it.Title(), markerMarked) {
 				t.Errorf("lastID %q: row %d unexpectedly marked: %q", lastID, i, it.Title())
@@ -256,13 +255,12 @@ func TestBuildTableNoMarkerWithoutLastLaunched(t *testing.T) {
 }
 
 // TestBuildTableRefColumnBlankWhenUnused verifies a model with zero
-// live sessions renders no ref digit — Title()'s 4-rune prefix stays two
+// client sessions renders no ref digit — Title()'s 4-rune prefix stays two
 // blank ref-column spaces followed by the (also blank) marker.
 func TestBuildTableRefColumnBlankWhenUnused(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
-	refStore := refcount.NewStoreAt(t.TempDir())
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
-	items := buildTable(tableInput{models: models, usage: store}, refStore, "").items
+	items := refTable(tableInput{models: models, usage: store}, nil, "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -276,15 +274,8 @@ func TestBuildTableRefColumnBlankWhenUnused(t *testing.T) {
 // Title(), ahead of the marker prefix.
 func TestBuildTableRefColumnRendersDigit(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
-	dir := t.TempDir()
-	refStore := refcount.NewStoreAt(dir)
-	for pid := 1; pid <= 3; pid++ {
-		if err := refStore.Record(pid, "ollama/gemma4:9b"); err != nil {
-			t.Fatalf("Record: %v", err)
-		}
-	}
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
-	items := buildTable(tableInput{models: models, usage: store}, refStore, "").items
+	items := refTable(tableInput{models: models, usage: store}, map[string]int{"ollama/gemma4:9b": 3}, "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -294,24 +285,17 @@ func TestBuildTableRefColumnRendersDigit(t *testing.T) {
 }
 
 // TestBuildTableRefColumnClampsAtNine verifies a model with more than
-// 9 live sessions still renders a single "9" — the design's fixed-width
+// 9 client sessions still renders a single "9" — the design's fixed-width
 // column would misalign if a two-digit count were ever rendered.
 func TestBuildTableRefColumnClampsAtNine(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
-	dir := t.TempDir()
-	refStore := refcount.NewStoreAt(dir)
-	for pid := 1; pid <= 12; pid++ {
-		if err := refStore.Record(pid, "ollama/gemma4:9b"); err != nil {
-			t.Fatalf("Record: %v", err)
-		}
-	}
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
-	items := buildTable(tableInput{models: models, usage: store}, refStore, "").items
+	items := refTable(tableInput{models: models, usage: store}, map[string]int{"ollama/gemma4:9b": 12}, "").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
 	if got := items[0].Title(); !strings.HasPrefix(got, "9   ") {
-		t.Errorf("Title() = %q, want it clamped to \"9   \" for 12 live sessions", got)
+		t.Errorf("Title() = %q, want it clamped to \"9   \" for 12 client sessions", got)
 	}
 }
 
@@ -321,13 +305,8 @@ func TestBuildTableRefColumnClampsAtNine(t *testing.T) {
 // marker, then the line).
 func TestBuildTableRefColumnBeforeMarker(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
-	dir := t.TempDir()
-	refStore := refcount.NewStoreAt(dir)
-	if err := refStore.Record(111, "ollama/gemma4:9b"); err != nil {
-		t.Fatalf("Record: %v", err)
-	}
 	models := []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal}}
-	items := buildTable(tableInput{models: models, usage: store}, refStore, "ollama/gemma4:9b").items
+	items := refTable(tableInput{models: models, usage: store}, map[string]int{"ollama/gemma4:9b": 1}, "ollama/gemma4:9b").items
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -336,95 +315,16 @@ func TestBuildTableRefColumnBeforeMarker(t *testing.T) {
 	}
 }
 
-// directOnlyTestConfig returns a Config with the gateway off (direct mode)
-// and the two providers the exception-marker tests route against, mirroring
-// a real registry.toml's ollama + openrouter provider shapes.
-func directOnlyTestConfig() *config.Config {
-	c := &config.Config{
-		Providers: []config.Provider{
-			{ID: "ollama", Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
-			{ID: "openrouter", Auth: config.AuthConfig{Type: "secret_ref", BaseURL: "https://openrouter.ai/api/v1", SecretRef: "sk-or"}},
-		},
-	}
-	return c
-}
-
 var (
 	ollamaTestModel     = config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama", Location: config.LocationLocal}
 	openrouterTestModel = config.Model{ID: "openrouter/qwen/qwen3.8-27b", ModelName: "qwen/qwen3.8-27b", ProviderID: "openrouter", Location: config.LocationCloud}
 )
 
-// TestBuildTableMarksOnlyDeviatingRows: the picker must stay quiet
-// for rows whose transport matches the current mode, and mark only rows
-// that deviate (forced through the proxy) or cannot launch — a per-row
-// transport column on every row would be noise when transport is uniform,
-// and asserting against buildTable directly avoids coupling this
-// test to lipgloss border/padding output (wt/CLAUDE.md).
-func TestBuildTableMarksOnlyDeviatingRows(t *testing.T) {
-	cfg := directOnlyTestConfig()
-	items := buildTable(tableInput{cfg: cfg, agent: "codex", models: []config.Model{ollamaTestModel, openrouterTestModel}, usage: &mockStore{}}, refcount.NewStoreAt(t.TempDir()), "").items
-
-	var ollamaItem, openrouterItem modelItem
-	for _, it := range items {
-		switch it.model.ProviderID {
-		case "ollama":
-			ollamaItem = *it
-		case "openrouter":
-			openrouterItem = *it
-		}
-	}
-	if ollamaItem.exception == "" {
-		t.Error("codex+ollama has no direct path (codex speaks only openai-responses) and should be marked")
-	}
-	if openrouterItem.exception == "" {
-		t.Error("codex+openrouter has no direct path and should be marked")
-	}
-}
-
-// TestBuildTableLitellmRequiredLabel: claude only speaks anthropic, so
-// claude+openrouter forces a litellm route. When wt's [litellm]
-// url/api_key are unset (directOnlyTestConfig leaves them zero-valued), the
-// row must say "(litellm required)" — not the generic "(unavailable)" —
-// because the fix is specifically "configure litellm", distinct from a
-// genuinely broken pairing.
-func TestBuildTableLitellmRequiredLabel(t *testing.T) {
-	cfg := directOnlyTestConfig()
-	items := buildTable(tableInput{cfg: cfg, agent: "claude", models: []config.Model{openrouterTestModel}, usage: &mockStore{}}, refcount.NewStoreAt(t.TempDir()), "").items
-	if len(items) != 1 {
-		t.Fatalf("got %d items, want 1", len(items))
-	}
-	if got := items[0].exception; got != "(litellm required)" {
-		t.Errorf("exception = %q, want %q", got, "(litellm required)")
-	}
-}
-
-// TestBuildTableUnavailableLabelForUnknownProvider: a route failure
-// unrelated to litellm configuration (here, an unknown provider id) must
-// keep the generic "(unavailable)" label — only the litellm-unconfigured
-// case gets the more specific message.
-func TestBuildTableUnavailableLabelForUnknownProvider(t *testing.T) {
-	cfg := directOnlyTestConfig()
-	m := config.Model{ID: "ghost/x", ModelName: "x", ProviderID: "ghost"}
-	items := buildTable(tableInput{cfg: cfg, agent: "claude", models: []config.Model{m}, usage: &mockStore{}}, refcount.NewStoreAt(t.TempDir()), "").items
-	if len(items) != 1 {
-		t.Fatalf("got %d items, want 1", len(items))
-	}
-	if got := items[0].exception; got != "(unavailable)" {
-		t.Errorf("exception = %q, want %q", got, "(unavailable)")
-	}
-}
-
-// TestBuildTableViaProxyLabelUnaffected: once litellm is properly
-// configured, a forced pairing keeps the existing "(via proxy)" label — the
-// new litellm-required label must only apply to the unconfigured case.
-func TestBuildTableViaProxyLabelUnaffected(t *testing.T) {
-	cfg := directOnlyTestConfig()
-	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	items := buildTable(tableInput{cfg: cfg, agent: "claude", models: []config.Model{openrouterTestModel}, usage: &mockStore{}}, refcount.NewStoreAt(t.TempDir()), "").items
-	if len(items) != 1 {
-		t.Fatalf("got %d items, want 1", len(items))
-	}
-	if got := items[0].exception; got != "(via proxy)" {
-		t.Errorf("exception = %q, want %q", got, "(via proxy)")
-	}
+// refTable is buildTable with in-use counts: what the agent flow's catalog
+// load renders, each row's count of the model server's client sessions in
+// refs (the ref column).
+func refTable(in tableInput, refs map[string]int, lastID string) modelTable {
+	rows := buildRows(in)
+	sortRows(rows)
+	return renderTable(rows, in.agent, refs, lastID)
 }

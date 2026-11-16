@@ -116,10 +116,10 @@ func TestPickerProfileErrorIsReturned(t *testing.T) {
 // slot-profile launch from the picker: its run command shares the
 // launchDoneMsg, so an agent that exits 3 makes Run's result carry status 3.
 func TestSlotProfileLaunchReturnsTheAgentsExitStatus(t *testing.T) {
-	m := slotFlowFixture(t, idleOmlxSnapshot(), cloudProfile())
+	m := model{cfg: testConfig()}
 	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
 	row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
-	msg := runSlotAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "claude", row, nil, false)()
+	msg := runSlotAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "claude", row, nil)()
 	m, _ = updateMsg(m, msg)
 	if got := exitStatusOf(runResult(m, nil)); got != 3 {
 		t.Fatalf("result status = %d, want the agent's exit status 3", got)

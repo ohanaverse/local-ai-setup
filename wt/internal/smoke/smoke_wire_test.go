@@ -15,9 +15,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
 
-// wireFixtureRows are the rows the model server would send for
-// candidatesFixture's registry: one running local model (launch), one idle on
-// disk (start) and one not on disk (block, with its reason).
+// wireFixtureRows are the rows the model server sends for three local
+// models: one running (launch), one idle on disk (start) and one not on disk
+// (block, with its reason).
 func wireFixtureRows() []modelapi.Row {
 	row := func(name, state, action, reason string, order int) modelapi.Row {
 		return modelapi.Row{
@@ -32,50 +32,31 @@ func wireFixtureRows() []modelapi.Row {
 	}
 }
 
-// TestCandidatesWireMatchRegistryRules proves CandidatesWire and
-// EligibilityWire apply the registry path's rules to the server's rows: the
-// same fixture as TestCandidatesIncludeStartRowsButNotBlocked gives the same
-// candidate list (launch and start rows, never a blocked one) and the same
-// eligibility list (no start row), and a command agent (shell) is never an
-// eligible agent. It matters because a client smoke run must advertise exactly
-// what the registry run would.
-func TestCandidatesWireMatchRegistryRules(t *testing.T) {
-	cfg, restore := candidatesFixture(t)
-	defer restore()
-	ags := append(slices.Clone(cfg.Agents), config.Agent{Name: "shell", AllProviders: true})
-
-	type view struct {
-		id     string
-		action string
-		agents string
-	}
-	var want, got []view
-	for _, c := range Candidates(cfg) {
-		want = append(want, view{c.Row.Model.ID, string(rune('0' + int(c.Row.Action()))), joinAgents(c.Agents)})
-	}
+// TestCandidatesWireRules proves CandidatesWire and EligibilityWire apply
+// smoke's rules to the server's rows: the candidates are the launch and start
+// rows, never a blocked one; the eligibility list has no start row; and a
+// command agent (shell) is never an eligible agent. It matters because a
+// smoke run must offer exactly what can run: a blocked row would be started
+// and fail, and a shell row is no agent.
+func TestCandidatesWireRules(t *testing.T) {
+	ags := []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}, {Name: "shell", AllProviders: true}}
+	var got []string
 	for _, c := range CandidatesWire(wireFixtureRows(), ags) {
-		got = append(got, view{c.Row.Model.ID, string(rune('0' + int(c.Row.Action()))), joinAgents(c.Agents)})
+		got = append(got, c.Row.Model.ID+"="+joinAgents(c.Agents))
 	}
-	if len(want) == 0 || !slices.Equal(want, got) {
-		t.Fatalf("CandidatesWire = %v, want the registry's %v", got, want)
+	if want := []string{"ollama/idle:1=claude,", "ollama/running:1=claude,"}; !slices.Equal(got, want) {
+		t.Fatalf("CandidatesWire = %v, want %v", got, want)
 	}
-
-	wantModels, wantAgents := Eligibility(cfg)
-	gotModels, gotAgents := EligibilityWire(wireFixtureRows(), ags)
-	var wantIDs, gotIDs []string
-	for _, m := range wantModels {
-		wantIDs = append(wantIDs, m.ID)
+	models, agentsFor := EligibilityWire(wireFixtureRows(), ags)
+	var ids []string
+	for _, m := range models {
+		ids = append(ids, m.ID)
 	}
-	for _, m := range gotModels {
-		gotIDs = append(gotIDs, m.ID)
+	if want := []string{"ollama/running:1"}; !slices.Equal(ids, want) {
+		t.Fatalf("EligibilityWire models = %v, want %v", ids, want)
 	}
-	if len(wantIDs) == 0 || !slices.Equal(wantIDs, gotIDs) {
-		t.Fatalf("EligibilityWire models = %v, want %v", gotIDs, wantIDs)
-	}
-	for id, w := range wantAgents {
-		if !slices.Equal(w, gotAgents[id]) {
-			t.Errorf("EligibilityWire agents for %s = %v, want %v", id, gotAgents[id], w)
-		}
+	if !slices.Equal(agentsFor["ollama/running:1"], []string{"claude"}) {
+		t.Errorf("EligibilityWire agents for ollama/running:1 = %v, want [claude]", agentsFor["ollama/running:1"])
 	}
 }
 

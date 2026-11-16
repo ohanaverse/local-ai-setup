@@ -5,7 +5,6 @@
 package catalog
 
 import (
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -391,36 +390,6 @@ func TestFindReportsDiscoveredRows(t *testing.T) {
 	}
 }
 
-// TestRefusedByRoute verifies the one route-refusal rule: only an Unmapped
-// cloud row whose route resolved AND goes through LiteLLM (routed or forced)
-// is refused. A discovered row is never refused (#179 Phase B: wt routes it
-// under its discovered id), and a route error is not a refusal (the picker
-// reports it on Enter instead). The picker, the non-TUI -M pin and `wt smoke`
-// all call this, so a change here moves all three.
-func TestRefusedByRoute(t *testing.T) {
-	direct, viaProxy, forced := config.Route{}, config.Route{Litellm: true}, config.Route{Forced: true}
-	cases := []struct {
-		name  string
-		row   Row
-		route config.Route
-		err   error
-		want  bool
-	}{
-		{"discovered via litellm", Row{Discovered: true}, viaProxy, nil, false},
-		{"discovered forced", Row{Discovered: true}, forced, nil, false},
-		{"unmapped via litellm", Row{Unmapped: true}, viaProxy, nil, true},
-		{"unmapped forced", Row{Unmapped: true}, forced, nil, true},
-		{"unmapped direct", Row{Unmapped: true}, direct, nil, false},
-		{"unmapped with route error", Row{Unmapped: true}, viaProxy, errors.New("no route"), false},
-		{"registered via litellm", Row{}, viaProxy, nil, false},
-	}
-	for _, c := range cases {
-		if got := c.row.RefusedByRoute(c.route, c.err); got != c.want {
-			t.Errorf("%s: RefusedByRoute = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
 // TestBuildMarksDiscoveredModelsPassedViaModels verifies a discovered model
 // handed in through Models (as the picker receives rows a caller already built)
 // takes Discovered/StatusNew/Running from its non-registered inventory entry, so
@@ -453,8 +422,8 @@ func TestBuildMarksDiscoveredModelsPassedViaModels(t *testing.T) {
 
 // TestBuildMarksUnmappedCloudRows pins finding 3 of the #179 review: a cloud
 // model whose provider has no LiteLLM mapping is in the catalog (configured
-// means exposed) but sync never routes it, so its row is marked Unmapped and
-// refused through the proxy — with LiteLLM off it stays launchable.
+// means exposed) but sync never routes it, so its row is marked Unmapped, the
+// mark the model server blocks the row on (internal/modelserver).
 func TestBuildMarksUnmappedCloudRows(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.Provider{
@@ -467,16 +436,6 @@ func TestBuildMarksUnmappedCloudRows(t *testing.T) {
 	rows := Build(Input{Config: cfg, Models: []config.Model{mapped, unmapped}})
 	if len(rows) != 2 || rows[0].Unmapped || !rows[1].Unmapped {
 		t.Fatalf("rows = %+v, want only acme/m Unmapped", rows)
-	}
-	viaProxy := config.Route{Litellm: true}
-	if !rows[1].RefusedByRoute(viaProxy, nil) || rows[1].RefusedByRoute(config.Route{}, nil) {
-		t.Fatal("unmapped row: want refused via LiteLLM, launchable direct")
-	}
-	if r := rows[1].RouteRefusal(viaProxy, nil); !strings.Contains(r, "acme/m") || !strings.Contains(r, "wt litellm off") {
-		t.Fatalf("RouteRefusal = %q", r)
-	}
-	if rows[0].RouteRefusal(viaProxy, nil) != "" {
-		t.Fatal("mapped cloud row refused")
 	}
 }
 

@@ -159,9 +159,9 @@ func TestOpenCodeYoloPassthroughSubcommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cmd, err := BuildLaunchCmd("opencode", config.Model{Native: true, ModelName: "native"}, t.TempDir(), true, nil, []string{"run", "do X"})
+	cmd, _, err := BuildLaunchCmdGateway("opencode", config.Model{Native: true, ModelName: "native"}, t.TempDir(), true, Gateway{}, nil, []string{"run", "do X"})
 	if err != nil {
-		t.Fatalf("BuildLaunchCmd: %v", err)
+		t.Fatalf("BuildLaunchCmdGateway: %v", err)
 	}
 	if got := cmd.Args[1:]; !slices.Equal(got, []string{"--auto=true", "run", "do X"}) {
 		t.Errorf("args = %v, want [--auto=true run \"do X\"]", got)

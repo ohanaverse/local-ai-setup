@@ -22,6 +22,11 @@ import (
 // location does not resolve.
 var ErrNotRoutable = errors.New("wt has no LiteLLM route for this model")
 
+// errProxyUnconfigured is the cause when [litellm] has no url, so there is
+// no proxy to restart or probe. (It took over from config's
+// ErrLitellmUnconfigured, deleted with the direct routes.)
+var errProxyUnconfigured = errors.New("litellm routing required but not configured")
+
 // RouteEnsureError names the model whose route could not be ensured.
 type RouteEnsureError struct {
 	ModelID string
@@ -129,7 +134,7 @@ const proxyProbeTimeout = 5 * time.Second
 // attempt (lastRestart), nil included: a restart that worked clears an
 // earlier failure, and one that failed fails the next ProbeProxy.
 //
-// An empty [litellm] url is an error wrapping config.ErrLitellmUnconfigured,
+// An empty [litellm] url is an error wrapping errProxyUnconfigured,
 // returned before anything is restarted: there is no address to wait for.
 // That is no restart attempt, so it is not remembered.
 func RestartProxy(ctx context.Context, cfg *config.Config) error {
@@ -146,7 +151,7 @@ func RestartProxy(ctx context.Context, cfg *config.Config) error {
 func RestartProxyTo(ctx context.Context, out io.Writer, cfg *config.Config) (err error) {
 	url := cfg.LitellmBaseURL()
 	if url == "" {
-		return fmt.Errorf("the LiteLLM proxy was not restarted: %w", config.ErrLitellmUnconfigured)
+		return fmt.Errorf("the LiteLLM proxy was not restarted: %w", errProxyUnconfigured)
 	}
 	WaitPendingRoutes()
 	routeWG.Add(1)
@@ -197,7 +202,7 @@ func restartFailure(warnings []string) error {
 // ProbeProxy is the last check before a slot-profile launch hands the proxy
 // to an agent. It fails in three ways:
 //
-//   - An empty [litellm] url: an error wrapping config.ErrLitellmUnconfigured.
+//   - An empty [litellm] url: an error wrapping errProxyUnconfigured.
 //   - The most recent proxy restart this process attempted failed (its
 //     command failed, or the proxy did not answer afterwards), whether it was
 //     RestartProxy or an asynchronous restart, such as the one a Start given
@@ -218,7 +223,7 @@ func restartFailure(warnings []string) error {
 func ProbeProxy(ctx context.Context, cfg *config.Config) error {
 	url := cfg.LitellmBaseURL()
 	if url == "" {
-		return fmt.Errorf("the LiteLLM proxy cannot be probed: %w", config.ErrLitellmUnconfigured)
+		return fmt.Errorf("the LiteLLM proxy cannot be probed: %w", errProxyUnconfigured)
 	}
 	if err := lastRestartErr(); err != nil {
 		return fmt.Errorf("the last LiteLLM proxy restart failed, so routes written since may not be live: %w", err)

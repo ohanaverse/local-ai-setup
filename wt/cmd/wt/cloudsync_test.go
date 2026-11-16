@@ -284,7 +284,7 @@ func TestCloudSyncCommandRefusals(t *testing.T) {
 		cmd.SetErr(new(bytes.Buffer))
 		return cmd.Execute()
 	}
-	ok := &app{cfg: cfg}
+	ok := &app{hostSet: true, hostCfg: cfg}
 	for _, tc := range []struct {
 		args []string
 		want string
@@ -304,7 +304,7 @@ func TestCloudSyncCommandRefusals(t *testing.T) {
 		}
 	}
 
-	broken := &app{cfg: &config.Config{}, loadErr: fmt.Errorf("%w at /x/registry.toml — seed it with `wt model init`", config.ErrRegistryMissing)}
+	broken := &app{hostSet: true, hostCfg: &config.Config{}, hostLoadErr: fmt.Errorf("%w at /x/registry.toml — seed it with `wt model init`", config.ErrRegistryMissing)}
 	err := run(broken, "--dry-run")
 	if err == nil || !strings.HasPrefix(err.Error(), "config error: model registry not found") || strings.Contains(err.Error(), "wt config") {
 		t.Errorf("with an unloadable config: err = %v, want the config error with no second repair", err)

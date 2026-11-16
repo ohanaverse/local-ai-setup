@@ -214,7 +214,7 @@ func TestApproveAndForceAreAcceptedWithOnlyOpenrouter(t *testing.T) {
 	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
 	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: sameOpenRouterBody})
 	for _, flags := range [][]string{{"--approve-removals", "abc"}, {"--force"}} {
-		cmd := cloudSyncCmd(&app{cfg: cfg})
+		cmd := cloudSyncCmd(&app{hostSet: true, hostCfg: cfg})
 		cmd.SetArgs(append([]string{"--only", "openrouter", "--dry-run"}, flags...))
 		cmd.SetOut(new(bytes.Buffer))
 		cmd.SetErr(new(bytes.Buffer))

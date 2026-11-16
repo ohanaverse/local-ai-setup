@@ -16,7 +16,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -80,18 +79,6 @@ func stubStopState(t *testing.T, st survey.StopState) *[]localmodels.Entry {
 	return &stopped
 }
 
-// TestStopModelIDStopsThatModel verifies `wt stop <provider>/<name>` stops
-// exactly that running model and nothing else — the core contract of the command.
-func TestStopModelIDStopsThatModel(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0), cand("ollama", "ollama/b:1", "b:1", 0)})
-	if err := runStop(io.Discard, modelCmdConfig(), "ollama/a:1", false); err != nil {
-		t.Fatal(err)
-	}
-	if len(*stopped) != 1 || (*stopped)[0].ModelID != "ollama/a:1" {
-		t.Fatalf("stopped = %v, want only ollama/a:1", *stopped)
-	}
-}
-
 // TestStopProviderStopsAllItsModels verifies a bare provider id stops every
 // running model of that provider and leaves other providers alone; this is the
 // "stop everything on ollama" shortcut.
@@ -105,15 +92,14 @@ func TestStopProviderStopsAllItsModels(t *testing.T) {
 	}
 }
 
-// TestStopInvalidArgErrors verifies an unknown provider, an unknown model, and
-// a registered-but-not-running model each exit with an error and stop nothing.
-// A typo must never silently succeed.
+// TestStopInvalidArgErrors verifies an unknown provider, and a real provider
+// wt has no stop backend for, each exit with an error and stop nothing. A
+// typo must never silently succeed. (A model id is the model server's: wt
+// stop <model> never reaches runStop.)
 func TestStopInvalidArgErrors(t *testing.T) {
 	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
 	cases := map[string]string{
 		"bogus":         "unknown provider",
-		"ollama/nope:9": "unknown model",
-		"ollama/b:1":    "not running",
 		"mlx_lm_server": "unknown provider", // real provider id, but wt has no stop backend
 	}
 	for arg, want := range cases {
@@ -140,8 +126,9 @@ func TestStopProviderNothingRunningIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestStopInUseConfirms verifies stopping a model a live wt session uses asks
-// first, declining aborts without stopping, accepting (or --yes) stops it.
+// TestStopInUseConfirms verifies stopping a provider whose model a live wt
+// session uses asks first, declining aborts without stopping, accepting (or
+// --yes) stops it.
 // This is the safety net for stopping another session's model out from under it.
 func TestStopInUseConfirms(t *testing.T) {
 	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 2)})
@@ -150,7 +137,7 @@ func TestStopInUseConfirms(t *testing.T) {
 
 	var asked string
 	confirmStop = func(q string) (bool, error) { asked = q; return false, nil }
-	if err := runStop(io.Discard, modelCmdConfig(), "ollama/a:1", false); err == nil {
+	if err := runStop(io.Discard, modelCmdConfig(), "ollama", false); err == nil {
 		t.Fatal("declined confirm must return an error (non-zero exit)")
 	}
 	if !strings.Contains(asked, "2") || len(*stopped) != 0 {
@@ -158,13 +145,13 @@ func TestStopInUseConfirms(t *testing.T) {
 	}
 
 	confirmStop = func(string) (bool, error) { return true, nil }
-	if err := runStop(io.Discard, modelCmdConfig(), "ollama/a:1", false); err != nil || len(*stopped) != 1 {
+	if err := runStop(io.Discard, modelCmdConfig(), "ollama", false); err != nil || len(*stopped) != 1 {
 		t.Fatalf("accepted: err = %v stopped = %v, want one stop", err, *stopped)
 	}
 
 	*stopped = nil
 	confirmStop = func(string) (bool, error) { t.Fatal("--yes must not prompt"); return false, nil }
-	if err := runStop(io.Discard, modelCmdConfig(), "ollama/a:1", true); err != nil || len(*stopped) != 1 {
+	if err := runStop(io.Discard, modelCmdConfig(), "ollama", true); err != nil || len(*stopped) != 1 {
 		t.Fatalf("--yes: err = %v stopped = %v", err, *stopped)
 	}
 }
@@ -176,45 +163,8 @@ func TestStopFailurePropagates(t *testing.T) {
 	old := stopEntries
 	t.Cleanup(func() { stopEntries = old })
 	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error { return errors.New("1 of 1 stops failed") }
-	if err := runStop(io.Discard, modelCmdConfig(), "ollama/a:1", false); err == nil {
+	if err := runStop(io.Discard, modelCmdConfig(), "ollama", false); err == nil {
 		t.Fatal("want the stop failure returned")
-	}
-}
-
-// TestStopNoArgNeedsTTYAndOpensPicker verifies `wt stop` with no argument
-// errors without a TTY, opens the in-use-inclusive picker (screen 2) when a TTY
-// is present, and says so when the picker reports nothing to offer. It also
-// pins that this path never probes the inventory itself (stopState) — the
-// picker owns the single snapshot, so nothing is probed twice.
-func TestStopNoArgNeedsTTYAndOpensPicker(t *testing.T) {
-	oldTTY, oldPick := stdinTTY, stopPickerAll
-	t.Cleanup(func() { stdinTTY, stopPickerAll = oldTTY, oldPick })
-	opened, offer := false, true
-	stopPickerAll = func(*config.Config) (bool, []string, map[string]lifecycle.Loading) {
-		opened = true
-		return offer, nil, nil
-	}
-
-	oldState := stopState
-	t.Cleanup(func() { stopState = oldState })
-	stopState = func(*config.Config) survey.StopState {
-		t.Fatal("no-arg wt stop probed the inventory outside the picker")
-		return survey.StopState{}
-	}
-
-	stdinTTY = func() bool { return false }
-	if err := runStop(io.Discard, modelCmdConfig(), "", false); err == nil {
-		t.Fatal("no TTY and no arg must error")
-	}
-	stdinTTY = func() bool { return true }
-	var out bytes.Buffer
-	if err := runStop(&out, modelCmdConfig(), "", false); err != nil || !opened || out.Len() != 0 {
-		t.Fatalf("err = %v opened = %v out = %q, want the picker opened and no note", err, opened, out.String())
-	}
-
-	offer, out = false, bytes.Buffer{}
-	if err := runStop(&out, modelCmdConfig(), "", false); err != nil || !strings.Contains(out.String(), "no running local models") {
-		t.Fatalf("err = %v out = %q, want the empty note when the picker had nothing", err, out.String())
 	}
 }
 
@@ -226,78 +176,6 @@ func TestStopUnknownProviderListsConfiguredStoppable(t *testing.T) {
 	err := runStop(io.Discard, modelCmdConfig(), "bogus", false)
 	if err == nil || !strings.Contains(err.Error(), "valid: ollama, omlx") {
 		t.Fatalf("err = %v, want it to list the configured stoppable providers", err)
-	}
-}
-
-// startFixture stubs the inventory: ollama/a:1 running, ollama/b:1 pulled but
-// idle (start row), omlx/c missing from disk (blocked). Returns the start recorder.
-func startFixture(t *testing.T) (*config.Config, *startRequest) {
-	t.Helper()
-	stubProbeInventory(t, localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK},
-		Entries: []localmodels.Entry{
-			{ProviderID: "ollama", Artifact: "a:1", ModelID: "ollama/a:1", ModelName: "a:1", Registered: true, Running: true, ArtifactKnown: true},
-			{ProviderID: "ollama", Artifact: "b:1", ModelID: "ollama/b:1", ModelName: "b:1", Registered: true, ArtifactKnown: true},
-			{ProviderID: "omlx", Artifact: "", ModelID: "omlx/c", ModelName: "c", Registered: true, ArtifactKnown: true},
-			// A stopped mlx_lm_server pairing (its model is added to cfg only
-			// by TestStartInvalidArgErrors): no row, wt cannot start it.
-			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/p", ModelName: "p", Registered: true},
-		},
-	})
-	return modelCmdConfig(), stubStartDriver(t, nil)
-}
-
-// TestStartRunningModelDoesNotStartIt verifies `wt start` on an already-running
-// model says so and never calls the start driver — starting twice must be
-// harmless. It is not a no-op overall: the model's missing LiteLLM route is
-// still written (#192, TestStartRunningModelRepairsRoute).
-func TestStartRunningModelDoesNotStartIt(t *testing.T) {
-	cfg, req := startFixture(t)
-	var out bytes.Buffer
-	if err := runStart(&out, cfg, themes.Theme{}, "ollama/a:1", false); err != nil {
-		t.Fatal(err)
-	}
-	if req.called || !strings.Contains(out.String(), "already running") {
-		t.Fatalf("called = %v out = %q, want the already-running note and no start", req.called, out.String())
-	}
-}
-
-// TestStartIdleModelStartsIt verifies an idle local model goes through the
-// start driver with the caller's --replace permission.
-func TestStartIdleModelStartsIt(t *testing.T) {
-	cfg, req := startFixture(t)
-	if err := runStart(io.Discard, cfg, themes.Theme{}, "ollama/b:1", true); err != nil {
-		t.Fatal(err)
-	}
-	if !req.called || req.row.Model.ID != "ollama/b:1" || !req.replace {
-		t.Fatalf("req = %+v, want ollama/b:1 started with replace", req)
-	}
-}
-
-// TestStartInvalidArgErrors verifies unknown ids, cloud ids, and registry
-// local models with no row exit with an error naming the problem and never
-// start anything. The two hidden models (omlx/c not on disk, a stopped
-// mlx_lm_server pairing) get their reason only through catalog.MissingReason
-// — the llmbench command for the pairing, since wt cannot start it.
-func TestStartInvalidArgErrors(t *testing.T) {
-	cfg, req := startFixture(t)
-	cfg.Providers = append(cfg.Providers, config.Provider{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}})
-	cfg.Models = append(cfg.Models,
-		config.Model{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x", Location: config.LocationCloud},
-		config.Model{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server", ModelName: "p", Location: config.LocationLocal},
-	)
-	cases := map[string]string{
-		"ollama/nope:9": "unknown model", "openrouter/x": "not a local model", "omlx/c": "not on disk",
-		"mlx_lm_server/p": "llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>",
-	}
-	for arg, want := range cases {
-		err := runStart(io.Discard, cfg, themes.Theme{}, arg, false)
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("runStart(%q) err = %v, want %q", arg, err, want)
-		}
-	}
-	if req.called {
-		t.Error("nothing may be started for an invalid argument")
 	}
 }
 
@@ -314,124 +192,6 @@ func TestStopUnknownProviderErrorsBeforeProbe(t *testing.T) {
 	}
 	if called {
 		t.Fatal("stopState was probed before provider validation")
-	}
-}
-
-// TestStartNoArgUsesPickerAndRunningPickDoesNotStartIt verifies the no-arg flow
-// needs a TTY, lists every local model via the shared picker, starts an idle
-// pick, and never calls the start driver for a running pick (which gets only
-// the launch-time route check, #192).
-func TestStartNoArgUsesPickerAndRunningPickDoesNotStartIt(t *testing.T) {
-	cfg, req := startFixture(t)
-	oldTTY, oldPick := stdinTTY, pickStartModelTUI
-	t.Cleanup(func() { stdinTTY, pickStartModelTUI = oldTTY, oldPick })
-
-	stdinTTY = func() bool { return false }
-	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err == nil {
-		t.Fatal("no TTY and no arg must error")
-	}
-
-	stdinTTY = func() bool { return true }
-	var offered []string
-	pick := "ollama/b:1"
-	pickStartModelTUI = func(_ *config.Config, models []config.Model, _ themes.Theme) (config.Model, bool, error) {
-		for _, m := range models {
-			offered = append(offered, m.ID)
-		}
-		return config.Model{ID: pick}, true, nil
-	}
-	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err != nil || !req.called {
-		t.Fatalf("idle pick: err = %v called = %v, want a start", err, req.called)
-	}
-	if !slices.Equal(offered, []string{"ollama/a:1", "ollama/b:1"}) {
-		t.Errorf("picker offered %v, want the running and idle models only (omlx/c is not on disk, so it has no row)", offered)
-	}
-
-	*req = startRequest{}
-	pick = "ollama/a:1"
-	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err != nil || req.called {
-		t.Fatalf("running pick: err = %v called = %v, want no start", err, req.called)
-	}
-}
-
-// TestStartCancelledPicker verifies canceling the picker (ok=false) is an
-// error mentioning cancellation and starts nothing.
-func TestStartCancelledPicker(t *testing.T) {
-	cfg, req := startFixture(t)
-	oldTTY, oldPick := stdinTTY, pickStartModelTUI
-	t.Cleanup(func() { stdinTTY, pickStartModelTUI = oldTTY, oldPick })
-	stdinTTY = func() bool { return true }
-	pickStartModelTUI = func(*config.Config, []config.Model, themes.Theme) (config.Model, bool, error) {
-		return config.Model{}, false, nil
-	}
-	if err := runStart(io.Discard, cfg, themes.Theme{}, "", false); err == nil || !strings.Contains(err.Error(), "canceled") || req.called {
-		t.Fatalf("err = %v called = %v, want canceled error and no start", err, req.called)
-	}
-}
-
-// TestStartDiscoveredRunningModel verifies a detected (unregistered) model that
-// is running is offered to the picker and `wt start` on it is a no-op, so the
-// screen-1 row set reflects live state for models missing from the registry.
-func TestStartDiscoveredRunningModel(t *testing.T) {
-	cfg, req := startFixture(t)
-	stubProbeInventory(t, localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
-		Entries: []localmodels.Entry{
-			{ProviderID: "ollama", Artifact: "d:1", ModelID: "ollama/d:1", ModelName: "d:1", Running: true, ArtifactKnown: true},
-		},
-	})
-	var out bytes.Buffer
-	if err := runStart(&out, cfg, themes.Theme{}, "ollama/d:1", false); err != nil {
-		t.Fatal(err)
-	}
-	if req.called || !strings.Contains(out.String(), "already running") {
-		t.Fatalf("called = %v out = %q, want already-running no-op", req.called, out.String())
-	}
-	found := false
-	rows, _ := localRowsSnap(cfg)
-	for _, r := range rows {
-		if r.Model.ID == "ollama/d:1" && r.Discovered && r.Running {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("localRowsSnap must include the discovered running model")
-	}
-}
-
-// TestStopSingleModelProviderStopsAndNamesWholeFamily verifies that stopping
-// one model of a single-model provider (mtplx) — which takes the whole provider
-// down — puts every co-running model in the stop list and names the collateral
-// in the output. Otherwise a sibling variant dies with no warning.
-func TestStopSingleModelProviderStopsAndNamesWholeFamily(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("mtplx", "mtplx/c", "c", 0), cand("mtplx", "mtplx/d", "d", 0), cand("ollama", "ollama/a:1", "a:1", 0)})
-	var out bytes.Buffer
-	if err := runStop(&out, modelCmdConfig(), "mtplx/c", false); err != nil {
-		t.Fatal(err)
-	}
-	if len(*stopped) != 2 {
-		t.Fatalf("stopped = %v, want both mtplx models (the provider stops as a whole) and not ollama", *stopped)
-	}
-	if !strings.Contains(out.String(), "mtplx/d") {
-		t.Errorf("out = %q, want the collateral model mtplx/d named", out.String())
-	}
-}
-
-// TestStopPoolModelLeavesSiblingsRunning pins #213 for `wt stop <omlx model>`:
-// omlx holds a pool, so stopping one model stops that model alone and names no
-// collateral. Widening it to the family, as for mtplx, unloaded models other
-// sessions were using.
-func TestStopPoolModelLeavesSiblingsRunning(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("omlx", "omlx/c", "c", 0), cand("omlx", "omlx/d", "d", 0), cand("omlx-6bit", "omlx-6bit/e", "e", 0)})
-	var out bytes.Buffer
-	if err := runStop(&out, modelCmdConfig(), "omlx/c", false); err != nil {
-		t.Fatal(err)
-	}
-	if len(*stopped) != 1 || (*stopped)[0].ModelID != "omlx/c" {
-		t.Fatalf("stopped = %v, want only omlx/c", *stopped)
-	}
-	if strings.Contains(out.String(), "also stops") {
-		t.Errorf("out = %q, want no collateral named on a pool", out.String())
 	}
 }
 
@@ -465,28 +225,6 @@ func TestStopInUseCountIsTotalAcrossModels(t *testing.T) {
 	_ = runStop(io.Discard, modelCmdConfig(), "omlx", false)
 	if !strings.Contains(asked, "3 live") || !strings.Contains(asked, "omlx/c") || !strings.Contains(asked, "omlx/d") {
 		t.Errorf("omlx prompt = %q, want 3 sessions (each pool model carries its own count) and both models named", asked)
-	}
-}
-
-// TestStartRunningModelRepairsRoute pins #192: `wt start` on a model that is
-// already running — possibly started outside wt — checks its LiteLLM route
-// and waits for the proxy, instead of only reporting "already running". It
-// still never calls the start driver.
-func TestStartRunningModelRepairsRoute(t *testing.T) {
-	cfg, req := startFixture(t)
-	events := stubEnsureRoute(t)
-	var out bytes.Buffer
-	if err := runStart(&out, cfg, themes.Theme{}, "ollama/a:1", false); err != nil {
-		t.Fatal(err)
-	}
-	if req.called {
-		t.Fatal("the start driver ran for a model that is already running")
-	}
-	if got := strings.Join(*events, ","); got != "ensure:ollama/a:1,wait" {
-		t.Fatalf("events = %q, want ensure:ollama/a:1,wait", got)
-	}
-	if !strings.Contains(out.String(), "already running") {
-		t.Fatalf("out = %q, want the already-running line", out.String())
 	}
 }
 
@@ -701,7 +439,7 @@ func stubHalt(t *testing.T, fail ...string) *[]string {
 // stdout and stderr as one text, and the command's error.
 func runStopCmd(cfg *config.Config, args ...string) (string, error) {
 	var out bytes.Buffer
-	cmd := stopCmd(&app{cfg: cfg})
+	cmd := stopCmd(&app{hostSet: true, hostCfg: cfg})
 	cmd.SetArgs(args)
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
@@ -1093,34 +831,6 @@ func TestHelpNamesSushiWhereItListsProviders(t *testing.T) {
 		if !strings.Contains(c.Long, "sushi") {
 			t.Errorf("%s: Long does not name sushi:\n%s", c.CommandPath(), c.Long)
 		}
-	}
-}
-
-// TestStartDoesNotSayRunningForAServerThatIsGone runs `wt start` through the
-// real start driver for #343's sequence: the engine starts the model, and by
-// the end of the proxy wait its server is gone. The command must fail with the
-// one line that says so and must not print "is running" — which it did, with
-// exit 0, over a port nothing was listening on.
-func TestStartDoesNotSayRunningForAServerThatIsGone(t *testing.T) {
-	cfg, _ := startFixture(t)
-	stubSignals(t)
-	stubLifecycleStart(t, []error{nil})
-	oldDriver, oldSettle, oldErr := startModel, lifecycleSettleStart, osStderr
-	startModel, osStderr = startForLaunch, io.Discard
-	lifecycleSettleStart = func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
-		return &lifecycle.StoppedError{Why: "ollama no longer answers at http://127.0.0.1:11434"}
-	}
-	t.Cleanup(func() {
-		startModel, lifecycleSettleStart, osStderr = oldDriver, oldSettle, oldErr
-	})
-
-	var out bytes.Buffer
-	err := runStart(&out, cfg, themes.Theme{}, "ollama/b:1", false)
-	if err == nil || !strings.HasPrefix(err.Error(), "ollama/b:1 is not running: ") || strings.Contains(err.Error(), "\n") {
-		t.Errorf("runStart() error = %v, want one line saying ollama/b:1 is not running", err)
-	}
-	if out.Len() != 0 {
-		t.Errorf("stdout = %q, want nothing: the model is not running", out.String())
 	}
 }
 

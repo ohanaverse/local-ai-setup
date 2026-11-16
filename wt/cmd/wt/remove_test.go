@@ -328,8 +328,8 @@ func TestRemoveCmdRegistryCheckedBeforeAnythingIsRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, err := newApp()
-	if err != nil || a.loadErr == nil {
-		t.Fatalf("newApp: %v, loadErr %v; want a load error", err, a.loadErr)
+	if err != nil || hostLoadErrOf(a) == nil {
+		t.Fatalf("newApp: %v, loadErr %v; want a load error", err, hostLoadErrOf(a))
 	}
 	if _, _, err := runRemove(t, a, t.TempDir(), "", "--yes", "topic"); exitOf(err) != 1 || !strings.Contains(fmtErr(err), "registry") {
 		t.Errorf("outside a repository: exit %d err %v, want 1 naming the registry", exitOf(err), err)
@@ -564,7 +564,7 @@ func TestRemoveCmdRegistryFailedRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.loadErr == nil {
+	if hostLoadErrOf(a) == nil {
 		t.Fatal("the broken registry loaded")
 	}
 	dir := cleanupRepo(t)
@@ -650,7 +650,7 @@ func TestRemoveCmdProtectedArtifactRefused(t *testing.T) {
 	if err := os.MkdirAll(art, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	a.cfg.Models = []config.Model{{ID: "omlx/q4", ProviderID: "omlx", ModelName: "q4", Fetch: config.ModelArtifact{LocalPath: art}}}
+	hostCfgOf(a).Models = []config.Model{{ID: "omlx/q4", ProviderID: "omlx", ModelName: "q4", Fetch: config.ModelArtifact{LocalPath: art}}}
 	stdout, _, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "--force", "--accept-loss", "-D", "--json", p)
 	if exitOf(err) != 2 || !exists(art) {
 		t.Fatalf("exit %d (%v), artifact there=%v, want 2 and kept\n%s", exitOf(err), err, exists(art), stdout)

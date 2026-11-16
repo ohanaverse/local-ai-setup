@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/spf13/cobra"
 )
@@ -70,18 +72,12 @@ func profileCmd(a *app) *cobra.Command {
 			}
 			// A -M value with the profile/ prefix names a slot profile. That
 			// branch reads slot-profiles.toml only, so it runs before any
-			// profiles.toml check. When the registry holds the prefix (a
-			// provider with id "profile", or a model whose id begins with
-			// "profile/") no slot-profile row exists and the id is a
-			// registry model's: the automatic branch below handles it.
-			// On a client session (an endpoint configured) the profile is
-			// resolved against the model server's catalog and the registry
-			// is not read; the catalog's own "profile/" holder blocks it.
-			if strings.HasPrefix(showModel, profiles.SlotIDPrefix) && a.endpointConfigured() {
+			// profiles.toml check. The profile is resolved against the model
+			// server's catalog and the registry is never read; the catalog's
+			// own "profile/" holder blocks it. With no model server
+			// configured it refuses (Task 18).
+			if strings.HasPrefix(showModel, profiles.SlotIDPrefix) {
 				return showSlotProfileRemote(cmd.Context(), cmd.OutOrStdout(), a, showAgent, showModel)
-			}
-			if strings.HasPrefix(showModel, profiles.SlotIDPrefix) && !catalog.SlotPrefixReserved(a.cfg) {
-				return showSlotProfile(cmd.OutOrStdout(), a, showAgent, showModel)
 			}
 			if a.profilesLoadErr != nil {
 				return fmt.Errorf("profiles.toml: %w", a.profilesLoadErr)
@@ -96,15 +92,20 @@ func profileCmd(a *app) *cobra.Command {
 			// (Resolve degrades to reporting no match), which still lets an
 			// agent-only run confirm the agent has no profile at all rather
 			// than failing outright.
+			// A model named with -M is the model server's: its catalog row
+			// (resolve) carries the location and provider a profile matches
+			// on, so this needs a server; with none configured it refuses.
+			// The session config has no registry, and Resolve asks nothing
+			// of it for a catalog row.
 			var m config.Model
 			if showModel != "" {
 				var err error
-				m, err = findModelByID(a.cfg, showModel)
-				if err != nil {
+				if m, err = showResolveModel(cmd.Context(), a, showModel); err != nil {
 					return err
 				}
 			}
-			rp := profiles.Resolve(a.profiles, showAgent, a.cfg, m)
+			scfg, _ := a.sessionCfg()
+			rp := profiles.Resolve(a.profiles, showAgent, scfg, m)
 			if rp.Empty() {
 				fmt.Fprintln(cmd.OutOrStdout(), "(no matching profile)")
 				return nil
@@ -173,19 +174,22 @@ func profileCmd(a *app) *cobra.Command {
 	return c
 }
 
-// findModelByID looks m up in cfg.Models by exact id, for `wt profile
-// show -M`. Unlike the launch path this does not consult live/discovered
-// inventory — it is a dry-run tool over the registry only.
-func findModelByID(cfg *config.Config, id string) (config.Model, error) {
-	if cfg == nil {
-		return config.Model{}, fmt.Errorf("no config loaded")
+// showResolveModel is `wt profile show -M <id>`'s model: the model server's
+// row for id (resolve), as the profile layer sees a launched model
+// (catalog.ToModel). Its errors say nothing was shown.
+func showResolveModel(ctx context.Context, a *app, id string) (config.Model, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	for _, m := range cfg.Models {
-		if m.ID == id {
-			return m, nil
-		}
+	ms, err := a.openModels(ctx, showStill)
+	if err != nil {
+		return config.Model{}, remoteExit(err) // openModels' errors carry the still clause
 	}
-	return config.Model{}, fmt.Errorf("model %q not found in registry", id)
+	row, err := ms.client.Resolve(ctx, id)
+	if err != nil {
+		return config.Model{}, remoteExit(modelclient.Still(err, showStill))
+	}
+	return catalog.ToModel(row), nil
 }
 
 // topLevelEnabledLineRe matches a top-level `enabled = true|false` line,

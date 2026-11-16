@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
@@ -59,10 +58,9 @@ var pendingSummary string
 
 // pendingRouteNotes holds the lines wt has for the user that arise while the
 // alt screen is up, where stderr is not reliably visible. Two things feed it:
-// what the launch-time LiteLLM route check printed (#192) —
-// `wt: LiteLLM route for <id> updated` and any route warning, collected in the
-// check's own buffer (checkLaunchRoute) — and the pre-launch notes about the
-// command being built (queueLaunchNotes). It follows pendingSummary's
+// the model server's notes about the client session (a register it refused,
+// recordRouteNotes) and the pre-launch notes about the command being built
+// (queueLaunchNotes). It follows pendingSummary's
 // capture-then-emit pattern with two emit points: runAndWaitCmd prints it the
 // moment it releases the terminal, above the agent's own output, and Run()
 // prints whatever is left after p.Run() returns (the user quit, or the launch
@@ -74,10 +72,10 @@ var pendingRouteNotes string
 // are shown exactly once. Callers pass os.Stderr at a point where it is the
 // real terminal; it takes a writer so tests can read what was printed.
 //
-// What a settling restart has printed so far (settleOut) goes out with them:
-// both emit points are where the terminal is real.
+// What the client session's heartbeat has said so far (clientNotes) goes out
+// with them: both emit points are where the terminal is real.
 func flushRouteNotes(w io.Writer) {
-	notes := pendingRouteNotes + settleOut.take() + clientNotes.take()
+	notes := pendingRouteNotes + clientNotes.take()
 	pendingRouteNotes = ""
 	if notes == "" {
 		return
@@ -154,19 +152,6 @@ func withSlotProfiles(m model, s SlotProfiles) model {
 	return m
 }
 
-// launchAgent builds the command for agent/model in worktreePath, appending
-// any passthrough args unchanged, and queues the pre-launch notes about the
-// built command. It never adds a resume flag: sessions are the agent's to
-// manage (see agents.BuildLaunchCmd). It delegates to agents.BuildLaunchCmd
-// so the launch construction logic lives in one place.
-func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
-	cmd, err := agents.BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)
-	if err == nil {
-		queueLaunchNotes(agent, cmd, extraArgs)
-	}
-	return cmd, err
-}
-
 // shellDir is a test seam over os.Getwd: the directory the user typed the
 // command in, which is what they meant a relative passthrough path against.
 var shellDir = os.Getwd
@@ -191,35 +176,24 @@ func queueLaunchNotes(agent string, cmd *exec.Cmd, extraArgs []string) {
 	}
 }
 
-// buildPassthrough is a test seam wrapping agents.BuildPassthroughCmd,
-// mirroring launchAgent above — used for an agent with no config.toml entry
-// (issue #147).
-var buildPassthrough = agents.BuildPassthroughCmd
-
 // runAndWaitCmd releases the TUI, runs the agent with stdio wired to the
 // terminal, restores the TUI, captures the post-run summary line into
 // pendingSummary (consumed by Run() after p.Run() returns), and returns a
-// launchDoneMsg. It records nothing: a command or passthrough launch has no
-// model to record.
+// launchDoneMsg. It records nothing: a command launch has no model to record.
 func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() (bool, error)) tea.Cmd {
-	return runRecordAndWaitCmd(cmd, agent, m, nil, gate)
+	return runRecordAndWaitWith(cmd, agent, m, nil, gate, func() {})
 }
 
-// runRecordAndWaitCmd is runAndWaitCmd with the launch's state writes:
-// record, when non-nil, is called once the launch is committed (the gate is
-// past and the agent starts next, or the profile failed, as it always did
-// after recording) and returns the status its errors make, "" for none. gate,
-// when non-nil, is the launch's one question (m.launchGate, through
-// m.gateFor) at the commit point; a decline calls record never, so it leaves
-// no trace. A nil gate is a direct test call: it asks nothing — the claim is
-// the run's own and is taken either way, once the gate (if any) is past.
-func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error)) tea.Cmd {
-	return runRecordAndWaitWith(cmd, agent, m, record, gate, func() { releaseSession() })
-}
-
-// runRecordAndWaitWith is runRecordAndWaitCmd with the release a launch that
-// never reached its agent makes: the registry path's wt session release
-// (releaseSession), or the API path's client session end (handlePrepared).
+// runRecordAndWaitWith is runAndWaitCmd with the launch's state writes and
+// the release a launch that never reached its agent makes (the client
+// session's end, handlePrepared). record, when non-nil, is called once the
+// launch is committed (the gate is past and the agent starts next, or the
+// profile failed, as it always did after recording) and returns the status
+// its errors make, "" for none. gate, when non-nil, is the launch's one
+// question (m.launchGate, through m.gateFor) at the commit point; a decline
+// calls record never, so it leaves no trace. A nil gate is a direct test
+// call: it asks nothing — the claim is the run's own and is taken either way,
+// once the gate (if any) is past.
 func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error), release func()) tea.Cmd {
 	if record == nil {
 		record = func() string { return "" }
@@ -236,7 +210,7 @@ func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record fu
 				}
 			}()
 		}
-		// The terminal is the user's again: print what the route check said
+		// The terminal is the user's again: print the pending notes
 		// before the profile prompt or the agent prints anything, so the
 		// lines sit above the agent's own output instead of being lost with
 		// the alt screen.
@@ -249,7 +223,7 @@ func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record fu
 				// Mirrors cmd/wt's runAgentCmd: a pre-launch profile
 				// application error (e.g. a wrapper profile naming a
 				// missing binary) is still recorded, and must still
-				// release the refcount entry that records, and still
+				// end the client session, and still
 				// populate pendingSummary
 				// (duration 0) so Run() prints it exactly as on a real
 				// exit — but there is no session to survey or a stop
@@ -283,9 +257,9 @@ func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record fu
 				// reads a git exit status inside it as the agent's own quiet
 				// exit — and main prints it once and exits non-zero, cmd/wt's
 				// -W path through refuse. Either
-				// way the start flow may already have loaded a model and
-				// written its routes; pendingSurveyState keeps the standard
-				// tail (the stop picker — nothing auto-stops) for them.
+				// way the model server may already have started a model for
+				// it; pendingSurveyState keeps the standard tail, which ends
+				// the client session so the server's idle grace can stop it.
 				_ = profileCleanup()
 				pendingSurveyState = pendingSurvey{agent: agent, m: m}
 				gerr = gateEndError(gerr)
@@ -343,22 +317,3 @@ type choiceItem struct {
 func (c choiceItem) FilterValue() string { return c.title }
 func (c choiceItem) Title() string       { return c.title }
 func (c choiceItem) Description() string { return c.desc }
-
-// ollamaChoice identifies a choice in the ollama availability prompt.
-type ollamaChoice int
-
-const (
-	ollamaProceedChoice ollamaChoice = iota
-	ollamaCancelChoice
-)
-
-// buildOllamaChoices creates the ollama availability confirmation list
-// items. With implicit rotation-by-launch, the user can navigate the
-// picker with up/down and press Enter on a different model; there is
-// no "skip to next" shortcut.
-func buildOllamaChoices() []list.Item {
-	return []list.Item{
-		choiceItem{choice: ollamaProceedChoice, title: "Proceed anyway", desc: "Launch with unavailable model (may fail)"},
-		choiceItem{choice: ollamaCancelChoice, title: "Cancel", desc: "Return to the agent+model screen"},
-	}
-}

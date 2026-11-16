@@ -179,8 +179,8 @@ func TestNewAppKeepsUnknownSlotKeys(t *testing.T) {
 	if want := []string{"profiles"}; !slices.Equal(a.slotUnknown, want) {
 		t.Fatalf("a.slotUnknown = %q, want %q", a.slotUnknown, want)
 	}
-	if got, want := slotWarnings(a), []string{`wt: slot-profiles.toml: unknown key "profiles" — ignored`}; !slices.Equal(got, want) {
-		t.Errorf("slotWarnings() = %q, want %q", got, want)
+	if got, want := slotWarningsRemote(a), []string{`wt: slot-profiles.toml: unknown key "profiles" — ignored`}; !slices.Equal(got, want) {
+		t.Errorf("slotWarningsRemote() = %q, want %q", got, want)
 	}
 }
 
@@ -211,9 +211,9 @@ default = 3
 	if a.slotChecks != nil {
 		t.Errorf("a.slotChecks = %+v, want none: a file that does not parse gives no profile", a.slotChecks)
 	}
-	got := slotWarnings(a)
+	got := slotWarningsRemote(a)
 	if len(got) != 1 {
-		t.Fatalf("slotWarnings() = %q, want exactly one line", got)
+		t.Fatalf("slotWarningsRemote() = %q, want exactly one line", got)
 	}
 	for _, want := range []string{"wt: parse slot-profiles.toml: ", "line 12", "default", " — slot profiles are unavailable"} {
 		if !strings.Contains(got[0], want) {

@@ -12,7 +12,7 @@ help:                   # Show available targets
 	@echo "  single-p      - One-P pass over the goroutine-sensitive packages (wt-ci's single-p job and test-all run this)"
 	@echo "  check     - Run lint + format-check + go-format-check"
 	@echo "  test      - Run smoke tests"
-	@echo "  test-agents - Run live one-shot agent smoke tests in both routing modes via wt litellm on/off (snapshots/restores wt's config.toml; requires gateways/agent CLIs)"
+	@echo "  test-agents - BROKEN until its rewrite (Task 20): live agent smoke tests that still flip the retired wt litellm on/off (exit 1)"
 	@echo "  clean     - Remove build artifacts"
 
 BINDIR := $(HOME)/.local/bin
@@ -83,11 +83,12 @@ go-format-check:        # Fail if any Go file is not gofmt-clean
 # without it wt-ci's single-p job replays the multi-P run from cache and
 # guards nothing.
 single-p:               # Run the goroutine-sensitive packages on one P
-	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 ./cmd/wt ./internal/tui ./internal/lifecycle ./internal/configeditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/refcount ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./cmd/wt-model
+	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 ./cmd/wt ./internal/tui ./internal/lifecycle ./internal/configeditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./cmd/wt-model
 
-test-agents:            # Run live agent smoke tests
-	@command -v wt >/dev/null 2>&1 || { echo "wt not on PATH; ensure ~/.local/bin is in PATH or run: make install"; exit 1; }
-	@scripts/agents-smoke.sh $(ARGS)
+test-agents:            # BROKEN until its rewrite (Task 20): live agent smoke tests that still flip the retired wt litellm on/off (exit 1)
+	@echo "test-agents is broken until its rewrite (Task 20): scripts/agents-smoke.sh still flips 'wt litellm on/off', retired 2026-11-15 (exit 1)." >&2
+	@echo "Run 'wt smoke <model-id> [--only claude,codex]' per model in the meantime." >&2
+	@exit 1
 
 check:                  # Run all quality checks
 	@echo "Running lint..."

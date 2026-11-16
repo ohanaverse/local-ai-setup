@@ -1,10 +1,8 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,11 +14,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -29,95 +24,6 @@ import (
 
 // startCall is what one engine call of a start carried.
 type startCall struct{ replace, owed bool }
-
-// stubLifecycleStartCalls replaces the engine with scripted outcomes (the nth
-// call returns outcomes[n], nil past the end) and records AllowReplace and
-// RestartOwed of each call.
-func stubLifecycleStartCalls(t *testing.T, outcomes []error) *[]startCall {
-	t.Helper()
-	calls := &[]startCall{}
-	old := lifecycleStart
-	lifecycleStart = func(_ context.Context, _ *config.Config, _ lifecycle.Target, opts lifecycle.Options) error {
-		n := len(*calls)
-		*calls = append(*calls, startCall{replace: opts.AllowReplace, owed: opts.RestartOwed})
-		if n >= len(outcomes) {
-			return nil
-		}
-		return outcomes[n]
-	}
-	t.Cleanup(func() { lifecycleStart = old })
-	return calls
-}
-
-// TestStartForLaunchOwed verifies the start a profile launch uses. It passes
-// the owed proxy restart to both engine attempts, and reports the restart as
-// still owed only when it returns after a refusal it did not retry: then the
-// engine touched nothing, and the caller must settle the restart itself. If
-// it reported false there, the cloud routes written before the start would
-// stay unpublished; if it reported true after the engine had restarted, the
-// proxy would restart twice.
-func TestStartForLaunchOwed(t *testing.T) {
-	occupied := func() error {
-		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
-	}
-	unknown := func() error {
-		return &lifecycle.OccupancyUnknownError{ProviderID: "mtplx", Origin: "http://localhost:8003"}
-	}
-	boom := errors.New("server exited")
-	cases := []struct {
-		name      string
-		owed      bool
-		replace   bool // --replace
-		tty       bool
-		answer    bool // the y/N answer when tty
-		outcomes  []error
-		wantCalls []startCall
-		wantStill bool
-		wantErr   string // "" means nil
-	}{
-		{"started at once", true, false, false, false, []error{nil}, []startCall{{false, true}}, false, ""},
-		{"nothing owed is passed on as false", false, false, false, false, []error{nil}, []startCall{{false, false}}, false, ""},
-		{"refused, replaced under --replace", true, true, false, false, []error{occupied(), nil}, []startCall{{false, true}, {true, true}}, false, ""},
-		{"refused, confirmed at the prompt", true, false, true, true, []error{occupied(), nil}, []startCall{{false, true}, {true, true}}, false, ""},
-		{"refused, declined at the prompt", true, false, true, false, []error{occupied()}, []startCall{{false, true}}, true, "approval missing: declined; omlx/other still running"},
-		{"refused, no terminal to ask on", true, false, false, false, []error{occupied()}, []startCall{{false, true}}, true, "--replace"},
-		{"occupancy unknown, declined", true, false, true, false, []error{unknown()}, []startCall{{false, true}}, true, "approval missing: declined; mtplx may still be serving a model"},
-		{"refused and declined with nothing owed", false, false, true, false, []error{occupied()}, []startCall{{false, false}}, false, "approval missing: declined"},
-		{"any other failure", true, false, false, false, []error{boom}, []startCall{{false, true}}, false, "server exited"},
-		{"replace granted, second attempt fails", true, true, false, false, []error{occupied(), boom}, []startCall{{false, true}, {true, true}}, false, "server exited"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			stubSignals(t)
-			stubStdinTTY(t, tc.tty)
-			oldConfirm, oldOut := confirmReplace, osStderr
-			confirmReplace = func(string) (bool, error) { return tc.answer, nil }
-			osStderr = io.Discard
-			t.Cleanup(func() { confirmReplace, osStderr = oldConfirm, oldOut })
-			calls := stubLifecycleStartCalls(t, tc.outcomes)
-
-			still, err := startForLaunchOwed(&config.Config{}, startTestRow(), tc.replace, tc.owed)
-
-			if still != tc.wantStill {
-				t.Errorf("stillOwed = %v, want %v", still, tc.wantStill)
-			}
-			switch {
-			case tc.wantErr == "" && err != nil:
-				t.Errorf("err = %v, want nil", err)
-			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
-				t.Errorf("err = %v, want it to contain %q", err, tc.wantErr)
-			}
-			if len(*calls) != len(tc.wantCalls) {
-				t.Fatalf("engine calls = %+v, want %+v", *calls, tc.wantCalls)
-			}
-			for i, want := range tc.wantCalls {
-				if (*calls)[i] != want {
-					t.Errorf("engine call %d = %+v, want %+v", i, (*calls)[i], want)
-				}
-			}
-		})
-	}
-}
 
 // slotFixtureConfig is a config with agent "claude" (providers "openrouter",
 // "omlx"), cloud models "openrouter/a" and "openrouter/b", local model
@@ -165,119 +71,9 @@ func slotMixed() map[string]string {
 	return map[string]string{"opus": "openrouter/a", "haiku": "omlx/q"}
 }
 
-// stubSlotChecks sets launchSlotChecks for one test.
-func stubSlotChecks(t *testing.T, checks ...profiles.SlotCheck) {
-	t.Helper()
-	old := launchSlotChecks
-	launchSlotChecks = checks
-	t.Cleanup(func() { launchSlotChecks = old })
-}
-
-// slotSeams records, in order, what a profile launch asked of the engine:
-// "ensure:<id>,<id>", "start:<id>:owed=<bool>", "restart", "wait" (for a
-// proxy restart in flight), "probe", "settle", "build". Its fields script each seam's result.
-type slotSeams struct {
-	events     []string
-	ensureOwed bool // what ensureSlotRoutes reports as owed when it adds nothing to owedIn
-	ensureErr  error
-	// ensureErrOn, when set, scripts the error of one ensure call by the ids
-	// it was given, so a test can fail the second call and not the first.
-	ensureErrOn func(ids []string) error
-	// startReplace is the replace argument of each startSlotModel call.
-	startReplace []bool
-	// startedOwed and startedErr script the ensure made after the start stub
-	// ran: the check of the started local model's route.
-	startedOwed bool
-	startedErr  error
-	started     bool
-	startStill  bool
-	startErr    error
-	restartErr  error
-	probeErr    error
-	buildErr    error
-	cmd         *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
-	// ensured is every id handed to ensureSlotRoutes, in call order.
-	ensured []string
-	// launch is the profile buildSlotCmd was given, nil until it runs.
-	launch *profiles.SlotLaunch
-}
-
-// log is the recorded events joined with ";".
-func (s *slotSeams) log() string { return strings.Join(s.events, ";") }
-
-// stubSlotSeams swaps the six seams of slot_launch.go and waitPendingRoutes
-// for recorders and silences osStderr. The command buildSlotCmd hands back runs in the launch's
-// worktree, as the real one does.
-func stubSlotSeams(t *testing.T) *slotSeams {
-	t.Helper()
-	s := &slotSeams{}
-	oldEnsure, oldRestart, oldProbe, oldSettle := ensureSlotRoutes, restartProxyNow, probeProxyNow, settleRoutesNow
-	oldStart, oldBuild, oldOut := startSlotModel, buildSlotCmd, osStderr
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() { s.events = append(s.events, "wait") }
-	ensureSlotRoutes = func(_ context.Context, _ io.Writer, _ *config.Config, models []config.Model, owedIn bool) (bool, error) {
-		ids := make([]string, len(models))
-		for i, m := range models {
-			ids[i] = m.ID
-		}
-		s.events = append(s.events, "ensure:"+strings.Join(ids, ","))
-		s.ensured = append(s.ensured, ids...)
-		if s.ensureErrOn != nil {
-			if err := s.ensureErrOn(ids); err != nil {
-				return false, err
-			}
-		}
-		if s.started {
-			if s.startedErr != nil {
-				return false, s.startedErr
-			}
-			return owedIn || s.startedOwed, nil
-		}
-		if s.ensureErr != nil {
-			return false, s.ensureErr
-		}
-		return owedIn || s.ensureOwed, nil
-	}
-	restartProxyNow = func(context.Context, *config.Config) error {
-		s.events = append(s.events, "restart")
-		return s.restartErr
-	}
-	probeProxyNow = func(context.Context, *config.Config) error {
-		s.events = append(s.events, "probe")
-		return s.probeErr
-	}
-	settleRoutesNow = func(context.Context, *config.Config) { s.events = append(s.events, "settle") }
-	startSlotModel = func(_ *config.Config, row catalog.Row, replace bool, owed bool) (bool, error) {
-		s.events = append(s.events, fmt.Sprintf("start:%s:owed=%t", row.Model.ID, owed))
-		s.startReplace = append(s.startReplace, replace)
-		s.started = true
-		return s.startStill, s.startErr
-	}
-	buildSlotCmd = func(sl profiles.SlotLaunch, worktreePath string, _ bool, _ *config.Config, _ []string) (*exec.Cmd, error) {
-		s.events = append(s.events, "build")
-		s.launch = &sl
-		if s.buildErr != nil {
-			return nil, s.buildErr
-		}
-		cmd := s.cmd
-		if cmd == nil {
-			cmd = exec.Command("true")
-		}
-		cmd.Dir = worktreePath
-		return cmd, nil
-	}
-	osStderr = io.Discard
-	t.Cleanup(func() {
-		ensureSlotRoutes, restartProxyNow, probeProxyNow, settleRoutesNow = oldEnsure, oldRestart, oldProbe, oldSettle
-		startSlotModel, buildSlotCmd, osStderr = oldStart, oldBuild, oldOut
-		waitPendingRoutes = oldWait
-	})
-	return s
-}
-
 // slotLaunchEnv gives one test its own config home and worktree. It returns
 // wt's state directory inside that home (where usage.jsonl, rotation.state,
-// last-picked.state and refcount.jsonl would be written) and the worktree.
+// last-picked.state would be written) and the worktree.
 func slotLaunchEnv(t *testing.T) (stateDir, worktree string) {
 	t.Helper()
 	home := t.TempDir()
@@ -285,10 +81,11 @@ func slotLaunchEnv(t *testing.T) (stateDir, worktree string) {
 	return filepath.Join(home, "agent-wt"), t.TempDir()
 }
 
-// slotRow resolves check against cfg with no inventory probe, which is enough
-// for an all-cloud profile.
-func slotRow(cfg *config.Config, check profiles.SlotCheck) catalog.Row {
-	return catalog.ResolveSlotProfile(cfg, nil, check)
+// slotRow resolves check against the model server's rows of slotWireRows
+// (openrouter/a and openrouter/b are cloud launch rows), which is enough for
+// an all-cloud profile.
+func slotRow(check profiles.SlotCheck) catalog.Row {
+	return catalog.ResolveSlotProfileWire(catalog.WireByID(slotWireRows()), check)
 }
 
 // TestApplySlotProfileAppliesArgsAndWrapper verifies the applier applies the
@@ -303,7 +100,7 @@ func TestApplySlotProfileAppliesArgsAndWrapper(t *testing.T) {
 	check.Profile.Wrapper = &profiles.WrapperSpec{Binary: "wt-test-wrapper", ArgsTemplate: []string{"run", "{{args}}"}}
 	check.Profile.Env = map[string]string{"FROM_PROFILE": "1"}
 	check.Profile.ConfigContent = map[string]any{"x": "1"}
-	row := slotRow(slotFixtureConfig(), check)
+	row := slotRow(check)
 	cmd := exec.Command("true", "--model", "opus")
 	cmd.Dir = worktree
 
@@ -341,7 +138,7 @@ func TestApplySlotProfileFailsClosed(t *testing.T) {
 	cmd := exec.Command("true")
 	cmd.Dir = worktree
 
-	cleanup, err := applySlotProfile(cmd, "claude", slotRow(slotFixtureConfig(), check))
+	cleanup, err := applySlotProfile(cmd, "claude", slotRow(check))
 	if err == nil || !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("err = %v, want the wrapper-not-installed error", err)
 	}
@@ -374,7 +171,7 @@ func TestApplySlotProfileSelfHealsALeftoverSettingsFile(t *testing.T) {
 	}
 	cmd := exec.Command("true")
 	cmd.Dir = worktree
-	row := slotRow(slotFixtureConfig(), slotFixtureCheck(0, "cloud", "opus", slotCloud()))
+	row := slotRow(slotFixtureCheck(0, "cloud", "opus", slotCloud()))
 
 	var err error
 	stderr := captureFile(t, &os.Stderr, func() {
@@ -399,22 +196,23 @@ func TestApplySlotProfileSelfHealsALeftoverSettingsFile(t *testing.T) {
 // nothing: no .claude directory in the worktree, and nothing in the config
 // home except the self-heal check's lock file. config_content travels in the
 // inline --settings argument, so an interrupted session leaves no proxy-only
-// ids behind for a later bare `claude` run. The proxy key stays out of argv.
+// ids behind for a later bare `claude` run. The gateway token stays out of
+// argv.
 func TestSlotProfileWritesNoSettingsFile(t *testing.T) {
 	stateDir, worktree := slotLaunchEnv(t)
 	fakeAgentOnPath(t, "claude")
-	cfg := slotFixtureConfig()
 	check := slotFixtureCheck(0, "cloud", "opus", slotCloud())
 	check.Profile.Env = map[string]string{"MAX_THINKING_TOKENS": "4096"}
 	check.Profile.ConfigContent = map[string]any{"modelOverrides": map[string]any{"claude-sonnet-4-6": "openrouter/b"}}
-	row := slotRow(cfg, check)
+	row := slotRow(check)
 	if row.Action() != catalog.ActionLaunch {
 		t.Fatalf("fixture: the row is not a launch row: %s", row.BlockReason())
 	}
 
-	cmd, err := agents.BuildSlotLaunchCmd(row.Profile.Launch(), worktree, false, cfg, nil)
+	gw := agents.Gateway{Origin: "http://127.0.0.1:1", Token: "sk-test-1234"}
+	cmd, err := agents.BuildSlotLaunchCmdGateway(row.Profile.Launch(), worktree, false, gw, nil)
 	if err != nil {
-		t.Fatalf("BuildSlotLaunchCmd() error = %v", err)
+		t.Fatalf("BuildSlotLaunchCmdGateway() error = %v", err)
 	}
 	cleanup, err := applySlotProfile(cmd, "claude", row)
 	if err != nil {
@@ -430,7 +228,7 @@ func TestSlotProfileWritesNoSettingsFile(t *testing.T) {
 	}
 	for _, a := range cmd.Args {
 		if strings.Contains(a, "sk-test-1234") {
-			t.Errorf("the proxy key is in argv: %q", a)
+			t.Errorf("the gateway token is in argv: %q", a)
 		}
 	}
 	if _, statErr := os.Stat(filepath.Join(worktree, ".claude")); !os.IsNotExist(statErr) {
@@ -456,29 +254,23 @@ func TestSlotProfileWritesNoSettingsFile(t *testing.T) {
 }
 
 // TestRunSlotAgentCmdPostExitFlow verifies what follows a profile session:
-// the refcount lines are released, then the stop picker runs, then the
-// summary line names the profile and the duration. There is no per-model
-// price notice and no survey, since neither belongs to one model here. A
-// stop picker that ran before the release would never offer the profile's
-// own local model.
+// the client session is ended (tail.End), then the summary line names the
+// profile and the duration. There is no per-model price notice and no survey,
+// since neither belongs to one model here, and no stop picker: the model
+// server stops idle models after its grace.
 func TestRunSlotAgentCmdPostExitFlow(t *testing.T) {
 	slotLaunchEnv(t)
-	prevNotice, prevRelease, prevPicker := emitPriceNotice, releaseSession, runStopPicker
-	t.Cleanup(func() { emitPriceNotice, releaseSession, runStopPicker = prevNotice, prevRelease, prevPicker })
 	var order []string
-	releaseSession = func() { order = append(order, "release") }
-	runStopPicker = func(*config.Config) {
-		order = append(order, "picker")
-		fmt.Fprint(os.Stdout, "PICKER-MARKER\n")
-	}
-	emitPriceNotice = func(*config.Config) { order = append(order, "notice") }
-	cfg := slotFixtureConfig()
-	row := slotRow(cfg, slotFixtureCheck(0, "cloud", "opus", slotCloud()))
+	tail := runTail{End: func() {
+		order = append(order, "end")
+		fmt.Fprint(os.Stdout, "END-MARKER\n")
+	}}
+	row := slotRow(slotFixtureCheck(0, "cloud", "opus", slotCloud()))
 	cleaned := false
 
 	var err error
 	stdout := captureFile(t, &os.Stdout, func() {
-		err = runSlotAgentCmd(exec.Command("true"), "claude", row, cfg, func() error { cleaned = true; return nil }, legacyTail())
+		err = runSlotAgentCmd(exec.Command("true"), "claude", row, func() error { cleaned = true; return nil }, tail)
 	})
 
 	if err != nil {
@@ -487,12 +279,12 @@ func TestRunSlotAgentCmdPostExitFlow(t *testing.T) {
 	if !cleaned {
 		t.Error("the applier's cleanup was not called after the run")
 	}
-	if got := strings.Join(order, ","); got != "release,picker" {
-		t.Errorf("order = %s, want release,picker (and no price notice)", got)
+	if got := strings.Join(order, ","); got != "end" {
+		t.Errorf("order = %s, want end (and no price notice)", got)
 	}
-	i, j := strings.Index(stdout, "PICKER-MARKER"), strings.Index(stdout, "\nwt: claude · profile/cloud · ")
+	i, j := strings.Index(stdout, "END-MARKER"), strings.Index(stdout, "\nwt: claude · profile/cloud · ")
 	if i < 0 || j < 0 || i > j {
-		t.Errorf("stdout = %q, want the stop picker before a summary line naming the profile", stdout)
+		t.Errorf("stdout = %q, want the session ended before a summary line naming the profile", stdout)
 	}
 	if strings.Contains(stdout, "survey ·") {
 		t.Errorf("stdout = %q, want no survey after a profile session", stdout)
@@ -501,441 +293,54 @@ func TestRunSlotAgentCmdPostExitFlow(t *testing.T) {
 
 // TestRunSlotAgentCmdReturnsARunError verifies an agent that could not be
 // run at all comes back as an error after the post-exit flow has run, so the
-// refcount lines recorded for the launch are not left behind.
+// client session registered for the launch is ended, not left to its TTL.
 func TestRunSlotAgentCmdReturnsARunError(t *testing.T) {
 	slotLaunchEnv(t)
-	prevRelease := releaseSession
-	t.Cleanup(func() { releaseSession = prevRelease })
-	released := false
-	releaseSession = func() { released = true }
-	cfg := slotFixtureConfig()
-	row := slotRow(cfg, slotFixtureCheck(0, "cloud", "opus", slotCloud()))
+	ended := false
+	row := slotRow(slotFixtureCheck(0, "cloud", "opus", slotCloud()))
 
 	var err error
 	captureFile(t, &os.Stdout, func() {
-		err = runSlotAgentCmd(exec.Command(filepath.Join(t.TempDir(), "no-such-agent")), "claude", row, cfg, func() error { return nil }, legacyTail())
+		err = runSlotAgentCmd(exec.Command(filepath.Join(t.TempDir(), "no-such-agent")), "claude", row, func() error { return nil }, runTail{End: func() { ended = true }})
 	})
 	if err == nil {
 		t.Fatal("err = nil, want the run error")
 	}
-	if !released {
-		t.Error("the session's refcount lines were not released after a failed run")
-	}
-}
-
-// runningQ is an inventory in which the fixture's local model is running.
-func runningQ() localmodels.Snapshot {
-	return localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
-		Entries: []localmodels.Entry{
-			{ProviderID: "omlx", ModelID: "omlx/q", Artifact: "q", ModelName: "q", Registered: true, Running: true, ArtifactKnown: true},
-		},
-	}
-}
-
-// pinSlotProfile runs the non-TUI launch of `-A claude -M <pin>` with extra
-// passthrough args, as launchFiltered runs it.
-func pinSlotProfile(worktree string, cfg *config.Config, pin string, extraArgs ...string) error {
-	return launchFiltered("claude", worktree, cfg, false, "", "", pin, true, extraArgs, nil, nil)
-}
-
-// slotStateFiles are the files a recorded launch writes under wt's state
-// directory.
-var slotStateFiles = []string{"usage.jsonl", "rotation.state", "last-picked.state", "refcount.jsonl"}
-
-// TestLaunchSlotProfileSteps verifies the order of the launch flow and its
-// restart count for each shape of profile. The cloud slots' routes are
-// ensured first. An idle local model is then started and told whether a
-// restart is owed, so its own restart publishes the cloud routes; a running
-// one only has its route ensured. The proxy is restarted once when a write
-// is still owed and never otherwise, and it is probed on every launch before
-// the command is built. Two restarts would cost the user 20 to 40 seconds; a
-// missing one would start Claude Code against a proxy that does not know the
-// slot's id. Each case also checks that the ids handed to the route writes
-// are exactly the distinct models the built payload's four slot variables
-// name: a slot model left out would be refused by the proxy mid-session.
-func TestLaunchSlotProfileSteps(t *testing.T) {
-	cases := []struct {
-		name       string
-		slots      map[string]string
-		running    bool // the local model is already running
-		ensureOwed bool // a route write changed config.yaml
-		want       string
-		// startedOwed: the route check after the start had to write the row.
-		startedOwed bool
-	}{
-		{"all cloud, every route exists", slotCloud(), false, false,
-			"ensure:openrouter/a,openrouter/b;wait;probe;build", false},
-		{"all cloud, a route was missing", slotCloud(), false, true,
-			"ensure:openrouter/a,openrouter/b;restart;wait;probe;build", false},
-		{"idle local model, a cloud route was missing", slotMixed(), false, true,
-			"ensure:openrouter/a;start:omlx/q:owed=true;ensure:omlx/q;wait;probe;build", false},
-		{"idle local model, routes in place", slotMixed(), false, false,
-			"ensure:openrouter/a;start:omlx/q:owed=false;ensure:omlx/q;wait;probe;build", false},
-		{"idle local model, the start left its route unwritten", slotMixed(), false, false,
-			"ensure:openrouter/a;start:omlx/q:owed=false;ensure:omlx/q;restart;wait;probe;build", true},
-		{"running local model, routes in place", slotMixed(), true, false,
-			"ensure:openrouter/a;ensure:omlx/q;wait;probe;build", false},
-		{"running local model, a route was missing", slotMixed(), true, true,
-			"ensure:openrouter/a;ensure:omlx/q;restart;wait;probe;build", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, worktree := slotLaunchEnv(t)
-			if tc.running {
-				stubProbeInventory(t, runningQ())
-			}
-			seams := stubSlotSeams(t)
-			seams.ensureOwed, seams.startedOwed = tc.ensureOwed, tc.startedOwed
-			sentinel := filepath.Join(t.TempDir(), "agent-ran")
-			seams.cmd = exec.Command("touch", sentinel)
-			stubSlotChecks(t, slotFixtureCheck(0, "p", "opus", tc.slots))
-
-			var err error
-			captureFile(t, &os.Stdout, func() {
-				err = pinSlotProfile(worktree, slotFixtureConfig(), "profile/p")
-			})
-
-			if err != nil {
-				t.Fatalf("launch error = %v", err)
-			}
-			if got := seams.log(); got != tc.want {
-				t.Errorf("steps = %s\n want  %s", got, tc.want)
-			}
-			if n := strings.Count(seams.log(), "restart"); n > 1 {
-				t.Errorf("%d proxy restarts, want at most one", n)
-			}
-			if _, statErr := os.Stat(sentinel); statErr != nil {
-				t.Error("the agent command did not run")
-			}
-			// What was routed is what the agent is told to use: the ids
-			// handed to the route writes are the distinct values of the
-			// built payload's four slot variables, no more and no fewer.
-			if seams.launch == nil {
-				t.Fatal("the slot command was never built")
-			}
-			sc, berr := agents.BuildSlotCommand(*seams.launch, false, "http://localhost:4000", "sk-test-1234")
-			if berr != nil {
-				t.Fatalf("BuildSlotCommand() error = %v", berr)
-			}
-			var payload []string
-			for _, v := range slotVarsOf(t, slotSettingsOf(t, sc.Args)) {
-				payload = append(payload, v)
-			}
-			slices.Sort(payload)
-			payload = slices.Compact(payload)
-			ensured := slices.Clone(seams.ensured)
-			slices.Sort(ensured)
-			ensured = slices.Compact(ensured)
-			if !slices.Equal(ensured, payload) {
-				t.Errorf("ids routed = %v, payload slot ids = %v: want the same set", ensured, payload)
-			}
-		})
-	}
-}
-
-// TestLaunchSlotProfilePassesReplaceToTheStart verifies the non-TUI launch
-// hands the process-wide --replace to the start of the profile's local model,
-// and hands false without it. If it always passed false,
-// `claude-wt -W x -M profile/mixed --replace` against an occupied server
-// would be refused for want of the flag it was given; if it always passed
-// true, a launch without the flag would stop a running model unasked.
-func TestLaunchSlotProfilePassesReplaceToTheStart(t *testing.T) {
-	for _, replace := range []bool{true, false} {
-		t.Run(fmt.Sprintf("replace=%t", replace), func(t *testing.T) {
-			_, worktree := slotLaunchEnv(t)
-			old := allowReplace
-			allowReplace = replace
-			t.Cleanup(func() { allowReplace = old })
-			seams := stubSlotSeams(t)
-			stubSlotChecks(t, slotFixtureCheck(0, "p", "opus", slotMixed()))
-
-			var err error
-			captureFile(t, &os.Stdout, func() {
-				err = pinSlotProfile(worktree, slotFixtureConfig(), "profile/p")
-			})
-
-			if err != nil {
-				t.Fatalf("launch error = %v", err)
-			}
-			if !slices.Equal(seams.startReplace, []bool{replace}) {
-				t.Errorf("start replace arguments = %v, want one start given %t", seams.startReplace, replace)
-			}
-		})
+	if !ended {
+		t.Error("the client session was not ended after a failed run")
 	}
 }
 
 // TestLaunchSlotProfileRecordsTheProfile verifies the bookkeeping of a profile
 // launch: one usage event under the profile's id, last-picked.state naming
-// the profile, rotation.state byte-identical, and one refcount line per
-// distinct slot model (a model filling two slots is counted once). The
-// profile then shows its launches in the picker and in `wt stats`, the
-// rotation of single-model launches is not disturbed, and another session's
-// stop picker does not offer a model this session uses.
+// the profile, rotation.state byte-identical. The profile then shows its
+// launches in the picker and in `wt stats`, and the rotation of single-model
+// launches is not disturbed.
 func TestLaunchSlotProfileRecordsTheProfile(t *testing.T) {
-	stateDir, worktree := slotLaunchEnv(t)
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	r, _ := slotRig(t, map[string]string{"opus": "openrouter/a", "sonnet": "openrouter/a", "haiku": "openrouter/b"})
+	stateDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt")
 	rotationState := filepath.Join(stateDir, "rotation.state")
 	if err := os.WriteFile(rotationState, []byte("openrouter/b\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stubSlotSeams(t)
-	stubSlotChecks(t, slotFixtureCheck(0, "cloud", "opus",
-		map[string]string{"opus": "openrouter/a", "sonnet": "openrouter/a", "haiku": "openrouter/b"}))
 
 	var err error
 	captureFile(t, &os.Stdout, func() {
-		err = pinSlotProfile(worktree, slotFixtureConfig(), "profile/cloud")
+		err = launchFilteredRemote(t.Context(), r.a, "claude", t.TempDir(), false, "", "", "profile/mix", true, nil, "", false, nil)
 	})
 	if err != nil {
 		t.Fatalf("launch error = %v", err)
 	}
 
-	counts := usage.NewStoreAt(stateDir).CountsForAgent("claude", []string{"profile/cloud", "openrouter/a"})
-	if counts["profile/cloud"].ThirtyDay != 1 || counts["openrouter/a"].ThirtyDay != 0 {
-		t.Errorf("usage = %+v, want one launch under profile/cloud and none under a slot model", counts)
+	counts := usage.NewStoreAt(stateDir).CountsForAgent("claude", []string{"profile/mix", "openrouter/a"})
+	if counts["profile/mix"].ThirtyDay != 1 || counts["openrouter/a"].ThirtyDay != 0 {
+		t.Errorf("usage = %+v, want one launch under profile/mix and none under a slot model", counts)
 	}
-	if data, _ := os.ReadFile(filepath.Join(stateDir, "last-picked.state")); string(data) != "profile/cloud\n" {
-		t.Errorf("last-picked.state = %q, want %q", data, "profile/cloud\n")
+	if data, _ := os.ReadFile(filepath.Join(stateDir, "last-picked.state")); string(data) != "profile/mix\n" {
+		t.Errorf("last-picked.state = %q, want %q", data, "profile/mix\n")
 	}
 	if data, _ := os.ReadFile(rotationState); string(data) != "openrouter/b\n" {
 		t.Errorf("rotation.state = %q, want it byte-identical (%q)", data, "openrouter/b\n")
-	}
-	refs := refcount.NewStoreAt(stateDir).Counts([]string{"openrouter/a", "openrouter/b", "profile/cloud"})
-	if refs["openrouter/a"] != 1 || refs["openrouter/b"] != 1 || refs["profile/cloud"] != 0 {
-		t.Errorf("refcounts = %v, want one line per distinct slot model and none under the profile id", refs)
-	}
-}
-
-// TestSlotProfileFailuresRunNoAgent is the fail-closed table: each row of the
-// spec's failure table ends with an error, no agent command run, and nothing
-// recorded. A failure that degraded to a launch would start Claude Code with
-// some slots still sending Anthropic ids, which the proxy rejects.
-func TestSlotProfileFailuresRunNoAgent(t *testing.T) {
-	one := func(c profiles.SlotCheck) func() []profiles.SlotCheck {
-		return func() []profiles.SlotCheck { return []profiles.SlotCheck{c} }
-	}
-	cloud := func() profiles.SlotCheck { return slotFixtureCheck(0, "p", "opus", slotCloud()) }
-	mixed := func() profiles.SlotCheck { return slotFixtureCheck(0, "p", "opus", slotMixed()) }
-	notEligible := `model "profile/p" is not in the eligible list for agent "claude"`
-	cases := []struct {
-		name   string
-		checks func() []profiles.SlotCheck // nil: no profile loaded
-		cfg    func(*config.Config)
-		seams  func(*slotSeams)
-		// running: the profile's local model is already running, so the
-		// launch takes step 5 and no start.
-		running bool
-		args    []string
-		want    string // a substring of the error
-		steps   string // the engine steps that ran before the abort
-	}{
-		{name: "slot-profiles.toml does not parse", want: notEligible},
-		{name: "a profile has no usable name",
-			checks: func() []profiles.SlotCheck {
-				return []profiles.SlotCheck{{Profile: profiles.SlotProfile{Agent: "claude"}, Err: errors.New("name is missing")}}
-			},
-			want: notEligible},
-		{name: "two profiles share a name",
-			checks: func() []profiles.SlotCheck {
-				a, b := cloud(), cloud()
-				b.Index = 1
-				a.Duplicate, b.Duplicate = true, true
-				a.Err, b.Err = profiles.ErrSlotDuplicate, profiles.ErrSlotDuplicate
-				return []profiles.SlotCheck{a, b}
-			},
-			want: "duplicate profile name"},
-		{name: "a profile fails static validation",
-			checks: func() []profiles.SlotCheck {
-				c := cloud()
-				c.Err = errors.New(`default "x" is not a slot this profile fills`)
-				return []profiles.SlotCheck{c}
-			},
-			want: `default "x" is not a slot this profile fills`},
-		{name: "a profile fails resolved validation",
-			checks: one(slotFixtureCheck(0, "p", "opus", map[string]string{"opus": "openrouter/gone"})),
-			want:   "slot opus: openrouter/gone is not in the registry"},
-		{name: "the registry has a provider with id profile",
-			checks: one(cloud()),
-			cfg: func(c *config.Config) {
-				c.Providers = append(c.Providers, config.Provider{ID: "profile", Location: config.LocationCloud})
-			},
-			want: notEligible},
-		{name: "a registry model id begins with profile/",
-			checks: one(cloud()),
-			cfg: func(c *config.Config) {
-				c.Models = append(c.Models, config.Model{ID: "profile/other", ProviderID: "openrouter", ModelName: "other"})
-			},
-			want: notEligible},
-		{name: "LiteLLM has no url",
-			checks: one(cloud()),
-			cfg:    func(c *config.Config) { c.SetLitellmForTest(config.LitellmState{APIKey: "sk-test-1234"}) },
-			want:   "no URL is configured"},
-		{name: "LiteLLM has no api key",
-			checks: one(cloud()),
-			cfg:    func(c *config.Config) { c.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000"}) },
-			want:   "no API key is configured"},
-		{name: "passthrough args contain --settings",
-			checks: one(cloud()), args: []string{"--settings", "x.json"},
-			want: "a slot profile sets --settings itself"},
-		{name: "passthrough args contain --model=",
-			checks: one(cloud()), args: []string{"--model=opus"},
-			want: "a slot profile sets --model itself"},
-		{name: "a slot's route cannot be written",
-			checks: one(cloud()),
-			seams: func(s *slotSeams) {
-				s.ensureErr = &lifecycle.RouteEnsureError{ModelID: "openrouter/a", Err: litellm.ErrMissing}
-			},
-			want:  "slot opus: LiteLLM route for openrouter/a not written: LiteLLM config not found",
-			steps: "ensure:openrouter/a,openrouter/b"},
-		{name: "the local model's start is refused with a restart owed",
-			checks: one(mixed()),
-			seams: func(s *slotSeams) {
-				s.ensureOwed, s.startStill = true, true
-				s.startErr = errors.New("approval missing: declined; omlx/other still running")
-			},
-			want:  "approval missing: declined; omlx/other still running",
-			steps: "ensure:openrouter/a;start:omlx/q:owed=true;settle"},
-		{name: "the local model's start fails",
-			checks: one(mixed()),
-			seams:  func(s *slotSeams) { s.startErr = errors.New("failed to start omlx/q: server exited") },
-			want:   "failed to start omlx/q",
-			steps:  "ensure:openrouter/a;start:omlx/q:owed=false"},
-		{name: "Ctrl+C lost to the local model's start",
-			checks: one(mixed()),
-			seams:  func(s *slotSeams) { s.startErr = errors.New("started omlx/q; launch cancelled") },
-			want:   "started omlx/q; launch cancelled",
-			steps:  "ensure:openrouter/a;start:omlx/q:owed=false"},
-		{name: "the started local model's route cannot be written",
-			checks: one(mixed()),
-			seams: func(s *slotSeams) {
-				s.startedErr = &lifecycle.RouteEnsureError{ModelID: "omlx/q", Err: litellm.ErrMissing}
-			},
-			want:  "slot haiku: LiteLLM route for omlx/q not written: LiteLLM config not found",
-			steps: "ensure:openrouter/a;start:omlx/q:owed=false;ensure:omlx/q"},
-		{name: "a running local model's route cannot be written (step 5)",
-			checks: one(mixed()), running: true,
-			seams: func(s *slotSeams) {
-				s.ensureOwed = true
-				s.ensureErrOn = func(ids []string) error {
-					if slices.Contains(ids, "omlx/q") {
-						return &lifecycle.RouteEnsureError{ModelID: "omlx/q", Err: litellm.ErrMissing}
-					}
-					return nil
-				}
-			},
-			want:  "slot haiku: LiteLLM route for omlx/q not written: LiteLLM config not found",
-			steps: "ensure:openrouter/a;ensure:omlx/q"},
-		{name: "the proxy restart fails",
-			checks: one(cloud()),
-			seams: func(s *slotSeams) {
-				s.ensureOwed = true
-				s.restartErr = errors.New("LiteLLM proxy not ready at http://localhost:4000: timed out")
-			},
-			want:  "LiteLLM proxy not ready",
-			steps: "ensure:openrouter/a,openrouter/b;restart"},
-		{name: "the proxy does not answer the probe",
-			checks: one(cloud()),
-			seams: func(s *slotSeams) {
-				s.probeErr = errors.New("the LiteLLM proxy does not answer at http://localhost:4000: connection refused")
-			},
-			want:  "does not answer at http://localhost:4000",
-			steps: "ensure:openrouter/a,openrouter/b;wait;probe"},
-		{name: "the command cannot be built",
-			checks: one(cloud()),
-			seams:  func(s *slotSeams) { s.buildErr = errors.New("agent claude not installed") },
-			want:   "agent claude not installed",
-			steps:  "ensure:openrouter/a,openrouter/b;wait;probe;build"},
-		{name: "the wrapper cannot be applied",
-			checks: func() []profiles.SlotCheck {
-				c := cloud()
-				c.Profile.Wrapper = &profiles.WrapperSpec{Binary: "wt-test-definitely-missing-binary-xyz", ArgsTemplate: []string{"{{args}}"}}
-				return []profiles.SlotCheck{c}
-			},
-			want:  "not installed",
-			steps: "ensure:openrouter/a,openrouter/b;wait;probe;build"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			stateDir, worktree := slotLaunchEnv(t)
-			if tc.running {
-				stubProbeInventory(t, runningQ())
-			}
-			seams := stubSlotSeams(t)
-			sentinel := filepath.Join(t.TempDir(), "agent-ran")
-			seams.cmd = exec.Command("touch", sentinel)
-			if tc.seams != nil {
-				tc.seams(seams)
-			}
-			if tc.checks != nil {
-				stubSlotChecks(t, tc.checks()...)
-			} else {
-				stubSlotChecks(t)
-			}
-			cfg := slotFixtureConfig()
-			if tc.cfg != nil {
-				tc.cfg(cfg)
-			}
-
-			var err error
-			stdout := captureFile(t, &os.Stdout, func() {
-				err = pinSlotProfile(worktree, cfg, "profile/p", tc.args...)
-			})
-
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("err = %v, want it to contain %q", err, tc.want)
-			}
-			if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
-				t.Error("the agent command ran after a failure")
-			}
-			if got := seams.log(); got != tc.steps {
-				t.Errorf("steps = %q, want %q", got, tc.steps)
-			}
-			if strings.Contains(stdout, "wt: claude ·") {
-				t.Errorf("stdout = %q, want no summary line: no session ran", stdout)
-			}
-			for _, name := range slotStateFiles {
-				if _, statErr := os.Stat(filepath.Join(stateDir, name)); !os.IsNotExist(statErr) {
-					t.Errorf("%s was written although the launch aborted", name)
-				}
-			}
-		})
-	}
-}
-
-// TestSlotProfileRouteErrorKeepsItsCause verifies the abort for a route that
-// could not be written names the slot and still carries the cause on its
-// chain, so a caller can tell a missing config.yaml from a lock timeout.
-func TestSlotProfileRouteErrorKeepsItsCause(t *testing.T) {
-	_, worktree := slotLaunchEnv(t)
-	seams := stubSlotSeams(t)
-	seams.ensureErr = &lifecycle.RouteEnsureError{ModelID: "openrouter/b", Err: litellm.ErrMissing}
-	stubSlotChecks(t, slotFixtureCheck(0, "p", "opus", slotCloud()))
-
-	err := pinSlotProfile(worktree, slotFixtureConfig(), "profile/p")
-	if err == nil || !strings.HasPrefix(err.Error(), "slot haiku: ") {
-		t.Fatalf("err = %v, want it to start with the slot that names openrouter/b", err)
-	}
-	if !errors.Is(err, litellm.ErrMissing) {
-		t.Errorf("err = %v, want litellm.ErrMissing still on the chain", err)
-	}
-}
-
-// TestSlotProfileStartErrorIsAStartError verifies a failed or refused start of
-// the profile's local model is marked as a start's outcome. The root command
-// reads that mark to print the message once; without it the message and the
-// server's log tail would be printed twice.
-func TestSlotProfileStartErrorIsAStartError(t *testing.T) {
-	_, worktree := slotLaunchEnv(t)
-	seams := stubSlotSeams(t)
-	seams.startErr = errors.New("failed to start omlx/q: server exited")
-	stubSlotChecks(t, slotFixtureCheck(0, "p", "opus", slotMixed()))
-
-	err := pinSlotProfile(worktree, slotFixtureConfig(), "profile/p")
-	if !isStartError(err) {
-		t.Errorf("err = %v, want it marked as a start error", err)
 	}
 }
 
@@ -945,47 +350,78 @@ func TestSlotProfileStartErrorIsAStartError(t *testing.T) {
 // kinds of profile do not stack: an automatic env or settings file applied on
 // top could redirect a slot.
 func TestSlotProfileLaunchSkipsAutomaticProfiles(t *testing.T) {
-	stateDir, worktree := slotLaunchEnv(t)
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	body := "[[profiles]]\nagent = \"claude\"\nmatch = \"provider\"\nprovider = \"openrouter\"\nenv = { WT_TEST_AUTO_PROFILE = \"1\" }\n"
-	if err := os.WriteFile(filepath.Join(stateDir, "profiles.toml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg := slotFixtureConfig()
-	store, err := profiles.Load()
-	if err != nil {
-		t.Fatalf("profiles.Load() error = %v", err)
-	}
-	if profiles.Resolve(store, "claude", cfg, cfg.Models[0]).Empty() {
-		t.Fatal("fixture: the automatic profile does not match the slot model, so the test proves nothing")
-	}
+	r, built := slotRig(t, map[string]string{"sonnet": "openrouter/a"})
+	store := profiles.Store{Enabled: true, Profiles: []profiles.Profile{{
+		Agent: "claude", Match: "provider", Provider: "openrouter", Env: map[string]string{"WT_TEST_AUTO_PROFILE": "1"},
+	}}}
 	loads, prompts := 0, 0
 	oldLoad, oldConfirm := loadProfileStore, confirmProfile
-	loadProfileStore = func() (profiles.Store, error) { loads++; return profiles.Load() }
+	loadProfileStore = func() (profiles.Store, error) { loads++; return store, nil }
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { prompts++; return true, nil }
 	t.Cleanup(func() { loadProfileStore, confirmProfile = oldLoad, oldConfirm })
-	seams := stubSlotSeams(t)
-	cmd := exec.Command("true")
-	seams.cmd = cmd
-	stubSlotChecks(t, slotFixtureCheck(0, "cloud", "opus", slotCloud()))
 
 	// The already-loaded store is handed in too, as runLaunchPath hands it to
 	// every launch: the profile path must ignore it.
 	pp := &precomputedProfiles{store: store}
+	var err error
 	captureFile(t, &os.Stdout, func() {
-		err = launchFiltered("claude", worktree, cfg, false, "", "", "profile/cloud", true, nil, nil, pp)
+		err = launchFilteredRemote(t.Context(), r.a, "claude", t.TempDir(), false, "", "", "profile/mix", true, nil, "", false, pp)
 	})
-
 	if err != nil {
 		t.Fatalf("launch error = %v", err)
 	}
 	if loads != 0 || prompts != 0 {
 		t.Errorf("profiles.toml loaded %d times and prompted %d times, want 0 and 0", loads, prompts)
 	}
-	if slices.Contains(cmd.Env, "WT_TEST_AUTO_PROFILE=1") {
-		t.Errorf("cmd.Env = %v: the automatic profile was applied to a slot-profile launch", cmd.Env)
+	if len(*built) != 1 {
+		t.Fatalf("built %d commands, want 1", len(*built))
+	}
+	if slices.Contains((*built)[0].Env, "WT_TEST_AUTO_PROFILE=1") {
+		t.Errorf("cmd.Env = %v: the automatic profile was applied to a slot-profile launch", (*built)[0].Env)
+	}
+}
+
+// TestSlotLaunchWritesClaim checks a slot-profile launch claims the worktree
+// it runs in, as every other launch does: the claim names the worktree's top
+// level in git's text, its branch and the agent, live exactly while the agent
+// runs. Why: the slot flow is a launch path like any other (Task 405), and a
+// session it starts must be visible to the "in use by another session"
+// warning.
+func TestSlotLaunchWritesClaim(t *testing.T) {
+	r, _ := slotRig(t, map[string]string{"sonnet": "openrouter/a"})
+	root := sharedRootRepo(t)
+	claimCopy := filepath.Join(t.TempDir(), "claim")
+	old := buildSlotGatewayCmd
+	buildSlotGatewayCmd = func(_ profiles.SlotLaunch, wt string, _ bool, _ agents.Gateway, _ []string) (*exec.Cmd, error) {
+		cmd := exec.Command("/bin/sh", "-c",
+			"d=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && cp \"$d/wt-sessions/"+strconv.Itoa(os.Getpid())+"\" '"+claimCopy+"' 2>/dev/null\nexit 0")
+		cmd.Dir = wt
+		return cmd, nil
+	}
+	t.Cleanup(func() { buildSlotGatewayCmd = old })
+
+	var err error
+	captureFile(t, &os.Stdout, func() {
+		err = launchFilteredRemote(t.Context(), r.a, "claude", root, false, "", "", "profile/mix", true, nil, "", false, nil)
+	})
+	if err != nil {
+		t.Fatalf("launch error = %v", err)
+	}
+	claim := readClaimFields(t, claimCopy)
+	if claim == nil {
+		t.Fatal("no claim was written for the slot-profile launch")
+	}
+	if got := claim["path"]; got != root {
+		t.Errorf("claim path = %q; want the launched worktree %q", got, root)
+	}
+	if got := claim["branch"]; got != "main" {
+		t.Errorf("claim branch = %q; want %q", got, "main")
+	}
+	if got := claim["agent"]; got != "claude" {
+		t.Errorf("claim agent = %q; want %q", got, "claude")
+	}
+	if fileExists(ownClaim(root)) {
+		t.Error("the claim outlived the agent")
 	}
 }
 
@@ -997,18 +433,9 @@ func launchCobraCmd() *cobra.Command {
 	return cmd
 }
 
-// restoreLaunchSlotChecks puts launchSlotChecks back when the test ends:
-// runLaunchPath sets it for the whole process.
-func restoreLaunchSlotChecks(t *testing.T) {
-	t.Helper()
-	old := launchSlotChecks
-	t.Cleanup(func() { launchSlotChecks = old })
-}
-
 // TestSlotWarnings verifies the warning lines of a launch: the load error;
 // one line per profile that has no usable name or agent, naming its position
-// in the file; one line when the registry has a provider "profile" while
-// a usable profile exists; and one line per modelOverrides target of a
+// in the file; and one line per modelOverrides target of a
 // passing profile that is not one of its slot models (#412), the launch-time
 // channel that warning reaches both launch paths through. A profile that
 // merely fails validation gets no line here: it has a blocked row that
@@ -1018,10 +445,6 @@ func TestSlotWarnings(t *testing.T) {
 	blocked := slotFixtureCheck(1, "broken", "opus", slotCloud())
 	blocked.Err = errors.New("default is missing")
 	unusable := profiles.SlotCheck{Index: 2, Profile: profiles.SlotProfile{Agent: "claude"}, Err: errors.New("name is missing")}
-	reserved := slotFixtureConfig()
-	reserved.Providers = append(reserved.Providers, config.Provider{ID: "profile", Location: config.LocationCloud})
-	prefixed := slotFixtureConfig()
-	prefixed.Models = append(prefixed.Models, config.Model{ID: "profile/mixed", ProviderID: "openrouter", ModelName: "mixed"})
 	overriding := slotFixtureCheck(3, "overriding", "opus", slotCloud())
 	overriding.Profile.ConfigContent = map[string]any{"modelOverrides": map[string]any{
 		"claude-opus-4-1": "openrouter/a", "claude-sonnet-4-6": "openrouter/z"}}
@@ -1034,42 +457,36 @@ func TestSlotWarnings(t *testing.T) {
 		a    *app
 		want []string
 	}{
-		{"nothing wrong", &app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, blocked}}, nil},
+		{"nothing wrong", &app{slotChecks: []profiles.SlotCheck{usable, blocked}}, nil},
 		{"a modelOverrides target that is not a slot model, once",
-			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, overriding, routedOnly}},
+			&app{slotChecks: []profiles.SlotCheck{usable, overriding, routedOnly}},
 			[]string{`wt: profile/overriding (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/z", which is not one of the profile's slot models, so wt does not make sure it is routed`}},
 		{"a blocked profile's modelOverrides says nothing more",
-			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{blockedOverriding}}, nil},
-		{"no file", &app{cfg: slotFixtureConfig()}, nil},
+			&app{slotChecks: []profiles.SlotCheck{blockedOverriding}}, nil},
+		{"no file", &app{}, nil},
 		{"the file does not parse",
-			&app{cfg: slotFixtureConfig(), slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")},
+			&app{slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")},
 			[]string{"wt: parse slot-profiles.toml: toml: line 2: unexpected EOF — slot profiles are unavailable"}},
 		{"a profile with no usable name",
-			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, unusable}},
+			&app{slotChecks: []profiles.SlotCheck{usable, unusable}},
 			[]string{"wt: slot-profiles.toml[2]: name is missing — skipped (see 'wt profile list')"}},
 		{"a file whose only content is under an unknown key",
-			&app{cfg: slotFixtureConfig(), slotUnknown: []string{"profiles"}},
+			&app{slotUnknown: []string{"profiles"}},
 			[]string{`wt: slot-profiles.toml: unknown key "profiles" — ignored`}},
 		{"unknown keys beside a usable profile, one line each",
-			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable}, slotUnknown: []string{"top", "profile.envs"}},
+			&app{slotChecks: []profiles.SlotCheck{usable}, slotUnknown: []string{"top", "profile.envs"}},
 			[]string{
 				`wt: slot-profiles.toml: unknown key "top" — ignored`,
 				`wt: slot-profiles.toml: unknown key "profile.envs" — ignored`,
 			}},
-		{"the reserved provider id",
-			&app{cfg: reserved, slotChecks: []profiles.SlotCheck{usable}},
-			[]string{`wt: the registry has a provider with id "profile" — slot profiles are unavailable`}},
-		{"a registry model id with the reserved prefix",
-			&app{cfg: prefixed, slotChecks: []profiles.SlotCheck{usable}},
-			[]string{`wt: the registry has a model whose id begins with "profile/" (profile/mixed) — slot profiles are unavailable`}},
-		{"the reserved provider id with no usable profile",
-			&app{cfg: reserved, slotChecks: []profiles.SlotCheck{unusable}},
+		{"an unusable profile alone",
+			&app{slotChecks: []profiles.SlotCheck{unusable}},
 			[]string{"wt: slot-profiles.toml[2]: name is missing — skipped (see 'wt profile list')"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := slotWarnings(tc.a); !slices.Equal(got, tc.want) {
-				t.Errorf("slotWarnings() = %q, want %q", got, tc.want)
+			if got := slotWarningsRemote(tc.a); !slices.Equal(got, tc.want) {
+				t.Errorf("slotWarningsRemote() = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -1086,21 +503,18 @@ func TestRunLaunchPathWarnsAboutSlotProfilesOncePerRun(t *testing.T) {
 	}{{"claude", 1}, {"", 1}, {"shell", 0}}
 	for _, tc := range cases {
 		t.Run("agent="+tc.agent, func(t *testing.T) {
-			restoreLaunchSlotChecks(t)
 			stubStdinTTY(t, false)
-			oldLaunch, oldSweep := launchFiltered, sweepRefcounts
-			launchFiltered = func(string, string, *config.Config, bool, string, string, string, bool, []string, []config.Model, *precomputedProfiles) error {
+			oldLaunch := launchCommand
+			launchCommand = func(string, string, *config.Config, bool, bool, []string, *precomputedProfiles) error {
 				return nil
 			}
-			sweepRefcounts = func() {}
-			t.Cleanup(func() { launchFiltered, sweepRefcounts = oldLaunch, oldSweep })
-			cfg := slotFixtureConfig()
-			cfg.Agents = append(cfg.Agents, config.Agent{Name: "shell"})
-			a := &app{cfg: cfg, slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")}
+			t.Cleanup(func() { launchCommand = oldLaunch })
+			// No model server: a model-driven agent's launch is refused,
+			// and no agent's is the picker's terminal refusal; the
+			// warnings are printed before either.
+			a := &app{slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")}
 
 			stderr := captureFile(t, &os.Stderr, func() {
-				// Without a pin an agent launch ends at "the picker needs a
-				// TTY"; the warnings are printed before that.
 				_ = runLaunchPath(launchCobraCmd(), a, tc.agent, "", "", "", nil, ".", "")
 			})
 
@@ -1127,21 +541,23 @@ func TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			restoreLaunchSlotChecks(t)
 			stubStdinTTY(t, true)
-			oldTUI, oldSweep, oldLaunch := tuiRun, sweepRefcounts, launchFiltered
-			launchFiltered = func(string, string, *config.Config, bool, string, string, string, bool, []string, []config.Model, *precomputedProfiles) error {
+			oldTUI, oldBuild := tuiRun, buildGatewayCmd
+			buildGatewayCmd = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 				t.Error("the launch went past the picker")
-				return nil
+				return nil, agents.LaunchInfo{}, errors.New("no launch")
 			}
 			tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
 				fmt.Fprintln(os.Stderr, "<the TUI ran>")
 				return errors.New("the TUI's own error")
 			}
-			sweepRefcounts = func() {}
-			t.Cleanup(func() { tuiRun, sweepRefcounts, launchFiltered = oldTUI, oldSweep, oldLaunch })
-			a := &app{cfg: slotFixtureConfig(), slotUnknown: []string{"top"},
-				slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")}
+			t.Cleanup(func() { tuiRun, buildGatewayCmd = oldTUI, oldBuild })
+			// Two launchable models on the model server: with no -M the
+			// model picker decides.
+			f := newFakeModelServer(t, wireRow("openrouter/a", "launch", 1), wireRow("openrouter/b", "launch", 2))
+			a := pointAtFake(t, f, "")
+			a.slotUnknown = []string{"top"}
+			a.slotLoadErr = errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")
 
 			var err error
 			stderr := captureFile(t, &os.Stderr, func() {
@@ -1160,10 +576,12 @@ func TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI(t *testing.T) {
 
 // TestBrokenSlotFileLeavesModelLaunchesAlone is Review Focus 1. With a TOML
 // typo in slot-profiles.toml, or one profile with a malformed name, a pinned
-// single-model launch and a rotated one behave exactly as before, wt prints
-// exactly one warning line for the problem, and `-M profile/<name>` exits
-// non-zero with the "not in the eligible list" message. A hand-written file
-// must never be able to break the launches that do not use it.
+// single-model launch on the model server behaves exactly as before (it runs
+// and records the rotation), wt prints exactly one warning line for the
+// problem, and `-M profile/<name>` (no usable slot profile by that name, so
+// a model id the server does not know) exits 1 naming the pin. A
+// hand-written file must never be able to break the launches that do not
+// use it.
 func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1178,24 +596,20 @@ func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			restoreLaunchSlotChecks(t)
 			path := writeSlotProfilesTOML(t, tc.body)
 			stateDir := filepath.Dir(path)
 			worktree := t.TempDir()
 			fakeAgentOnPath(t, "claude")
-			stubEnsureRoute(t)
-			stubSlotSeams(t)
-			oldSweep := sweepRefcounts
-			sweepRefcounts = func() {}
-			t.Cleanup(func() { sweepRefcounts = oldSweep })
+			// The slot fixture's models on a model server config.toml
+			// names, in the same config home as the slot file.
+			nameServerInConfigHome(t, slotsServer(t))
 
 			// The app as wt builds it: newApp reads the slot file from the
-			// test's config home. Only the registry is the fixture's.
+			// test's config home.
 			a, aerr := newApp()
 			if aerr != nil {
 				t.Fatalf("newApp() error = %v: a broken slot file must not stop wt", aerr)
 			}
-			a.cfg = slotFixtureConfig()
 
 			rotationState := func() string {
 				data, _ := os.ReadFile(filepath.Join(stateDir, "rotation.state"))
@@ -1230,25 +644,14 @@ func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
 				t.Errorf("%d stderr lines mention slot profiles, want one; stderr = %q", slotLines, stderr)
 			}
 
-			// A rotated launch: rotation advances to the next launchable
-			// model, as it does with no slot file at all.
-			captureFile(t, &os.Stdout, func() {
-				err = launchFiltered("claude", worktree, a.cfg, false, "", "", "", false, nil, nil, nil)
-			})
-			if err != nil {
-				t.Fatalf("rotated launch error = %v", err)
-			}
-			if got := rotationState(); got != "openrouter/b" {
-				t.Errorf("rotation.state = %q after the rotated launch, want openrouter/b", got)
-			}
-
-			// The profile itself cannot be pinned.
+			// The profile itself cannot be pinned: it is not a slot
+			// profile, so the pin goes to the model server, which has no
+			// such model.
 			captureFile(t, &os.Stderr, func() {
 				err = runLaunchPath(launchCobraCmd(), a, "claude", tc.pin, "", "", nil, worktree, "")
 			})
-			want := fmt.Sprintf("model %q is not in the eligible list for agent %q", tc.pin, "claude")
-			if err == nil || err.Error() != want {
-				t.Errorf("profile pin error = %v, want %q", err, want)
+			if err == nil || exitcode.Of(err) != 1 || !strings.Contains(err.Error(), tc.pin) {
+				t.Errorf("profile pin error = %v, want a refusal naming %s, exit 1", err, tc.pin)
 			}
 		})
 	}
@@ -1259,18 +662,15 @@ func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
 // the profile launch and runs the agent, and a pin of a blocked profile
 // returns its reason, which main turns into a non-zero exit.
 func TestRunLaunchPathLaunchesAPinnedSlotProfile(t *testing.T) {
-	restoreLaunchSlotChecks(t)
-	_, worktree := slotLaunchEnv(t)
-	oldSweep := sweepRefcounts
-	sweepRefcounts = func() {}
-	t.Cleanup(func() { sweepRefcounts = oldSweep })
-	seams := stubSlotSeams(t)
+	r := newRemoteRig(t, slotWireRows()...)
+	worktree := t.TempDir()
 	sentinel := filepath.Join(t.TempDir(), "agent-ran")
-	seams.cmd = exec.Command("touch", sentinel)
-	a := &app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{
+	t.Setenv("WT_FAKE_MARK", sentinel) // the rig's fake claude touches it
+	a := r.a
+	a.slotChecks = []profiles.SlotCheck{
 		slotFixtureCheck(0, "cloud", "opus", slotCloud()),
 		slotFixtureCheck(1, "broken", "opus", map[string]string{"opus": "openrouter/gone"}),
-	}}
+	}
 
 	var err error
 	captureFile(t, &os.Stdout, func() {
@@ -1284,7 +684,7 @@ func TestRunLaunchPathLaunchesAPinnedSlotProfile(t *testing.T) {
 	}
 
 	err = runLaunchPath(launchCobraCmd(), a, "claude", "profile/broken", "", "", nil, worktree, "")
-	if err == nil || err.Error() != "slot opus: openrouter/gone is not in the registry" {
+	if err == nil || !strings.HasPrefix(err.Error(), "slot opus: openrouter/gone is not in the model server's catalog") {
 		t.Errorf("blocked pin error = %v, want the row's reason", err)
 	}
 }
@@ -1297,70 +697,27 @@ func TestRunLaunchPathLaunchesAPinnedSlotProfile(t *testing.T) {
 // Before, the target only warned and the session started with
 // {"modelOverrides":{"claude-sonnet-4-6":5}}, which Claude Code cannot use.
 func TestRunLaunchPathRefusesANonStringOverrideTarget(t *testing.T) {
-	restoreLaunchSlotChecks(t)
-	_, worktree := slotLaunchEnv(t)
-	oldSweep := sweepRefcounts
-	sweepRefcounts = func() {}
-	t.Cleanup(func() { sweepRefcounts = oldSweep })
-	seams := stubSlotSeams(t)
+	r := newRemoteRig(t, slotWireRows()...)
+	worktree := t.TempDir()
 	sentinel := filepath.Join(t.TempDir(), "agent-ran")
-	seams.cmd = exec.Command("touch", sentinel)
+	t.Setenv("WT_FAKE_MARK", sentinel) // the rig's fake claude touches it
 	store, err := profiles.ParseSlots([]byte("[[profile]]\nname = \"numbered\"\nagent = \"claude\"\ndefault = \"opus\"\n" +
 		"[profile.slots]\nopus = \"openrouter/a\"\n[profile.config_content.modelOverrides]\nclaude-sonnet-4-6 = 5\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &app{cfg: slotFixtureConfig(), slotChecks: profiles.ValidateSlots(store, agents.SlotDrivers())}
+	a := r.a
+	a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
 
 	err = runLaunchPath(launchCobraCmd(), a, "claude", "profile/numbered", "", "", nil, worktree, "")
 	const want = `config_content.modelOverrides["claude-sonnet-4-6"] must be a model id string`
-	if err == nil || err.Error() != want {
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("runLaunchPath() error = %v, want %q", err, want)
 	}
 	if _, statErr := os.Stat(sentinel); statErr == nil {
 		t.Error("the agent ran for a profile with a non-string modelOverrides target")
 	}
-	if got := seams.log(); got != "" {
-		t.Errorf("the refused launch drove the engine: steps %q, want none", got)
-	}
-}
-
-// TestSlotLaunchWritesClaim checks a slot-profile launch claims the worktree
-// it runs in, as every other launch does: the claim names the worktree's top
-// level in git's text, its branch and the agent, live exactly while the agent
-// runs. Why: the slot flow is a launch path like any other (Task 405), and a
-// session it starts must be visible to the "in use by another session"
-// warning.
-func TestSlotLaunchWritesClaim(t *testing.T) {
-	slotLaunchEnv(t) // its own config home; the launch itself runs in a real worktree
-	root := sharedRootRepo(t)
-	claimCopy := filepath.Join(t.TempDir(), "claim")
-	seams := stubSlotSeams(t)
-	seams.cmd = exec.Command("/bin/sh", "-c",
-		"d=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && cp \"$d/wt-sessions/"+strconv.Itoa(os.Getpid())+"\" '"+claimCopy+"' 2>/dev/null\nexit 0")
-	stubSlotChecks(t, slotFixtureCheck(0, "p", "opus", slotCloud()))
-
-	var err error
-	captureFile(t, &os.Stdout, func() {
-		err = pinSlotProfile(root, slotFixtureConfig(), "profile/p")
-	})
-	if err != nil {
-		t.Fatalf("launch error = %v", err)
-	}
-	claim := readClaimFields(t, claimCopy)
-	if claim == nil {
-		t.Fatal("no claim was written for the slot-profile launch")
-	}
-	if got := claim["path"]; got != root {
-		t.Errorf("claim path = %q; want the launched worktree %q", got, root)
-	}
-	if got := claim["branch"]; got != "main" {
-		t.Errorf("claim branch = %q; want %q", got, "main")
-	}
-	if got := claim["agent"]; got != "claude" {
-		t.Errorf("claim agent = %q; want %q", got, "claude")
-	}
-	if fileExists(ownClaim(root)) {
-		t.Error("the claim outlived the agent")
+	if n := r.f.count("POST /control/v1/start") + r.f.count("POST /control/v1/sessions"); n != 0 {
+		t.Errorf("the refused launch asked the model server to start or register: %v", r.f.reqs())
 	}
 }

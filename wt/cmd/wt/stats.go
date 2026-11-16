@@ -47,10 +47,64 @@ type statsFilter struct {
 	agent  string // --agent: the survey table and the launch counts
 }
 
+// statsSpend opens one `wt stats` run's spend source: it returns the
+// report's instant (from asOf, the local clock), the function that collects
+// the usage report, and the host registry's load error for the --family note
+// (nil when none applies; read after collect). It is the command's per-call
+// seam: statsCmd passes serverSpend, the table tests a stub source.
+type statsSpend func(cmd *cobra.Command, a *app, window time.Duration, asOf time.Time, f statsFilter) (time.Time, func() usageReport, func() error)
+
+// serverSpend is the spend source of `wt stats`: the model server, whose
+// clock is the report's instant (R16: the ping that opens the client session
+// reads it). A report is never a gate: with no server configured
+// (spendNotConfigured), or one that cannot be opened or a config.toml that
+// cannot be read (spendUnavailable, the reason saying which), the local clock
+// and the launch counts remain, the family of each id coming from this
+// machine's registry when it has one that loads (hostConfig; a host machine
+// keeps its --family, and its load error is the --family note — but no note
+// for a registry simply absent at the default path, noRegistry's rule),
+// else from the id's prefix.
+func serverSpend(cmd *cobra.Command, a *app, window time.Duration, asOf time.Time, f statsFilter) (time.Time, func() usageReport, func() error) {
+	return spendFromServer(cmd, a, window, asOf, f, true)
+}
+
+// spendFromServer is serverSpend with the instant chosen per call:
+// serverClock reads it from the model server (production); false keeps the
+// asOf it is handed (statsNow), so a test can pin the report's instant and
+// still run the production collectors against a fake server.
+func spendFromServer(cmd *cobra.Command, a *app, window time.Duration, asOf time.Time, f statsFilter, serverClock bool) (time.Time, func() usageReport, func() error) {
+	ms, openErr := a.openModels(cmd.Context(), "spend is not shown")
+	if openErr == nil && serverClock {
+		asOf = ms.client.Now().UTC()
+	}
+	var hostLoadErr error
+	collect := func() usageReport {
+		if openErr != nil {
+			var families map[string]string
+			hostCfg, loadErr := a.hostConfig()
+			switch {
+			case loadErr == nil:
+				families = registryFamilies(hostCfg)
+			case noRegistry(a):
+				// No registry at the default path (a session-only
+				// machine): nothing to say; each id's prefix is its family.
+			default:
+				hostLoadErr = loadErr
+			}
+			return collectUsageNoServer(openErr, window, asOf, f, families)
+		}
+		return collectUsageRemote(cmd.Context(), ms, window, asOf, f)
+	}
+	return asOf, collect, func() error { return hostLoadErr }
+}
+
 // statsCmd returns the `wt stats` command. It is a report, never a gate:
-// an empty store, a missing psql and an unreachable database all exit 0.
-// Only a malformed --window value is an error.
-func statsCmd(a *app) *cobra.Command {
+// no model server, an unreachable one and a spend database it cannot read
+// all exit 0. Only a malformed --window value is an error.
+func statsCmd(a *app) *cobra.Command { return statsCmdWith(a, serverSpend) }
+
+// statsCmdWith is statsCmd reading its spend through spend.
+func statsCmdWith(a *app, spend statsSpend) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stats",
 		Short: "Report survey stats, launches and LiteLLM spend per model",
@@ -59,14 +113,18 @@ func statsCmd(a *app) *cobra.Command {
 			"speed) per model and per agent×model combo.\n\n" +
 			"The usage table: per model, wt launches from usage.jsonl beside the\n" +
 			"requests, prompt and completion tokens and spend the LiteLLM proxy logged.\n" +
-			"Spend is read with psql from the proxy's database. Its connection string\n" +
-			"is the first of: WT_LITELLM_DATABASE_URL; MODELMAN_LITELLM_DATABASE_URL\n" +
-			"(the legacy alias); general_settings.database_url in LiteLLM's config.yaml;\n" +
-			"and DATABASE_URL, when config.yaml names none. A config.yaml value written\n" +
-			"os.environ/NAME, and DATABASE_URL, are looked up in wt's environment and\n" +
-			"then in the EnvironmentVariables of the proxy's LaunchAgent plist.\n\n" +
-			"Without psql, a reachable database or a configured URL, the launches\n" +
-			"still print, the spend cells show \"-\", and one note on stderr says why.",
+			"Spend comes from the model server ([model-server] in config.toml), which\n" +
+			"reads it with psql from the proxy's database on its own machine. Its\n" +
+			"connection string there is the first of: WT_LITELLM_DATABASE_URL;\n" +
+			"MODELMAN_LITELLM_DATABASE_URL (the legacy alias);\n" +
+			"general_settings.database_url in LiteLLM's config.yaml; and\n" +
+			"DATABASE_URL, when config.yaml names none. A config.yaml value written\n" +
+			"os.environ/NAME, and DATABASE_URL, are looked up in wt's environment on\n" +
+			"the server's machine and then in the EnvironmentVariables of the proxy's\n" +
+			"LaunchAgent plist.\n\n" +
+			"With no model server configured, one that does not answer, or no spend\n" +
+			"database it can read, the launches still print, the spend cells show\n" +
+			"\"-\", and one note on stderr says why.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			windowName := mustGetString(cmd, "window")
 			window, err := parseStatsWindow(windowName)
@@ -79,39 +137,7 @@ func statsCmd(a *app) *cobra.Command {
 				agent:  mustGetString(cmd, "agent"),
 			}
 
-			asOf := statsNow()
-			// With a model server configured the spend comes from it, and the
-			// report's instant is the server's clock (R16): the ping that
-			// opens the session reads it. A server that cannot be opened
-			// leaves the local clock and the launch counts, and says why.
-			var (
-				ms      *modelSession
-				openErr error
-			)
-			remote := a.endpointConfigured()
-			if _, cerr := a.sessionCfg(); remote && cerr != nil && !endpointInEnv() {
-				// A report is never a gate: a config.toml that cannot be read
-				// is not an endpoint here (endpointConfigured's safest reading
-				// is for the commands that need the server), so the legacy
-				// spend path and its notes run. One note says why the spend
-				// did not come from the server.
-				remote = false
-				fmt.Fprintf(cmd.ErrOrStderr(), "wt: note: config.toml could not be read (%s); so wt cannot tell whether a model server is configured; spend is read from LiteLLM's database, not from the model server\n", visibleID(cerr.Error()))
-			}
-			if remote {
-				if ms, openErr = a.openModels(cmd.Context(), "spend is not shown"); openErr == nil {
-					asOf = ms.client.Now().UTC()
-				}
-			}
-			collect := func() usageReport {
-				switch {
-				case !remote:
-					return collectUsage(cmd.Context(), a.cfg, window, asOf, f)
-				case openErr != nil:
-					return collectUsageNoServer(openErr, window, asOf, f)
-				}
-				return collectUsageRemote(cmd.Context(), ms, window, asOf, f)
-			}
+			asOf, collect, hostLoadErr := spend(cmd, a, window, statsNow(), f)
 			rows := buildStatsRows(survey.NewStore().Events(), window, asOf, f)
 
 			out := cmd.OutOrStdout()
@@ -136,8 +162,8 @@ func statsCmd(a *app) *cobra.Command {
 				}
 				fmt.Fprintln(out)
 
-				// After the survey table: collectUsage runs the spend query (psql,
-				// up to a few seconds against a down or hanging database), and
+				// After the survey table: collect asks the model server for spend
+				// (up to a few seconds against a slow server or database), and
 				// the survey table does not need it — printing first keeps the
 				// first table off that critical path. (--json waits anyway: one
 				// document prints only when complete.)
@@ -149,8 +175,8 @@ func statsCmd(a *app) *cobra.Command {
 				}
 			}
 			notes := rep.notes()
-			if f.family != "" && a.loadErr != nil && !remote {
-				notes = append(notes, registryNote(a.loadErr))
+			if lerr := hostLoadErr(); f.family != "" && lerr != nil {
+				notes = append(notes, registryNote(lerr))
 			}
 			for _, note := range notes {
 				fmt.Fprintf(cmd.ErrOrStderr(), "wt: %s\n", note)

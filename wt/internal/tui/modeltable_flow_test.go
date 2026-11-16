@@ -6,22 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
-
-// flowEnter builds the eligible list the way the caller does and enters the
-// model phase, isolating usage/rotation state from the host.
-func flowEnter(t *testing.T, m model, agent string) model {
-	t.Helper()
-	tempStateDir(t)
-	stubUsageStore(t)
-	stubRefcountStore(t)
-	models, _ := m.cfg.EligibleModels(agent, m.activeTags, m.activeFamily)
-	got, _ := m.enterModelPhase(agent, models, "code")
-	return got
-}
 
 func itemIDs(got model) []string {
 	var ids []string
@@ -33,25 +19,6 @@ func itemIDs(got model) []string {
 
 func indexOfID(got model, id string) int {
 	return slices.Index(itemIDs(got), id)
-}
-
-// TestEnterModelPhaseShowsNonRunningAndDiscoveredRows verifies the picker now
-// lists a configured local model that is not running and a discovered model
-// alongside cloud models, instead of hiding local models the way the old gate
-// did — the point of the new table.
-func TestEnterModelPhaseShowsNonRunningAndDiscoveredRows(t *testing.T) {
-	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
-		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true},
-		{ProviderID: "omlx", Artifact: "extra", ModelID: config.DiscoveredModelID("omlx", "extra")},
-	}})
-	got := flowEnter(t, model{cfg: modelTestConfig(), width: 80, height: 24}, "claude")
-
-	ids := itemIDs(got)
-	for _, want := range []string{"claude/opus", "omlx/qwen3.8", config.DiscoveredModelID("omlx", "extra")} {
-		if indexOfID(got, want) < 0 {
-			t.Errorf("ids = %v, missing %q", ids, want)
-		}
-	}
 }
 
 // TestEnterModelPhaseHeaderIsListTitle verifies the column header is the
@@ -70,60 +37,6 @@ func TestEnterModelPhaseHeaderIsListTitle(t *testing.T) {
 	}
 	if strings.Index(got.models.Title, "MODEL") != rowPrefixWidth+strings.Index(first.line, first.model.ID) {
 		t.Errorf("MODEL column misaligned: title %q vs line %q", got.models.Title, first.line)
-	}
-}
-
-// TestEnterModelPhaseHidesDiscoveredWhenFiltered verifies -T/-F (activeTags /
-// activeFamily) drop discovered rows, which have no tags or family.
-func TestEnterModelPhaseHidesDiscoveredWhenFiltered(t *testing.T) {
-	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
-		{ProviderID: "omlx", Artifact: "extra", ModelID: config.DiscoveredModelID("omlx", "extra")},
-	}})
-	disc := config.DiscoveredModelID("omlx", "extra")
-
-	unfiltered := flowEnter(t, model{cfg: modelTestConfig(), width: 80, height: 24}, "claude")
-	if indexOfID(unfiltered, disc) < 0 {
-		t.Fatalf("control: discovered row absent without filter: %v", itemIDs(unfiltered))
-	}
-	filtered := flowEnter(t, model{cfg: modelTestConfig(), width: 80, height: 24, activeTags: "code"}, "claude")
-	if indexOfID(filtered, disc) >= 0 {
-		t.Errorf("discovered row present with -T filter: %v", itemIDs(filtered))
-	}
-}
-
-// TestEnterModelPhaseSingleRowShortcut verifies the one-row shortcut still
-// applies (exactly one row that is launchable), and does NOT apply when the
-// only row is non-launchable (the table shows so the hint is visible).
-func TestEnterModelPhaseSingleRowShortcut(t *testing.T) {
-	requireBinary(t, "claude")
-	cfg := &config.Config{
-		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}}},
-		Models:     []config.Model{{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}}},
-		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
-	}
-	m := model{cfg: cfg, agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}
-	_, cmd := func() (model, tea.Cmd) {
-		tempStateDir(t)
-		stubUsageStore(t)
-		stubRefcountStore(t)
-		models, _ := cfg.EligibleModels("claude", "", "")
-		return m.enterModelPhase("claude", models, "code")
-	}()
-	if cmd == nil {
-		t.Error("single launchable row: want launch cmd, got nil")
-	}
-
-	// A single non-launchable row must show the table instead.
-	local := &config.Config{
-		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
-		Models:     []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
-		Agents:     []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
-	}
-	got := flowEnter(t, model{cfg: local, width: 80, height: 24}, "pi")
-	if got.phase != phaseModel || len(got.models.Items()) != 1 {
-		t.Errorf("phase = %v items = %d, want phaseModel with 1 blocked row", got.phase, len(got.models.Items()))
 	}
 }
 
@@ -154,39 +67,6 @@ func TestEnterModelPhaseAllLocalNoneRunningShowsStartableRows(t *testing.T) {
 		if !mi.start || mi.blocked != "" {
 			t.Errorf("%s: start = %v blocked = %q, want a startable row", mi.model.ID, mi.start, mi.blocked)
 		}
-	}
-}
-
-// TestEnterModelPhaseNoRotationDefaultsToNativeRow pins the disclosed
-// consequence of #172 in the main TUI: the no-rotation fallback selects the
-// first actionable row, and native-first makes that the native row, so a
-// bare wt opened for an agent with a native model starts highlighted on the
-// agent's own subscription model. Rotation state normally decides the cursor;
-// this is the fresh-install / stale-state path, and a sort change moves it
-// silently, so it is asserted rather than assumed.
-func TestEnterModelPhaseNoRotationDefaultsToNativeRow(t *testing.T) {
-	cfg := &config.Config{
-		DefaultTag: "code",
-		Providers: []config.Provider{
-			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
-			{ID: "openrouter", Location: config.LocationCloud},
-		},
-		Models: []config.Model{
-			// Deliberately cheaper than nothing: cost alone must not put it
-			// ahead of the native row.
-			{ID: "openrouter/cheap", ProviderID: "openrouter", ModelName: "cheap", Family: "cheap", Tags: []string{"code"},
-				Cost: config.ModelCost{InputPricePerMillion: f64(0.1), OutputPricePerMillion: f64(0.1)}},
-			{ID: "claude/native", ProviderID: "claude", ModelName: "native", Family: "claude", Native: true, Tags: []string{"code"}},
-		},
-		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"claude", "openrouter"}}},
-	}
-	got := flowEnter(t, model{cfg: cfg, width: 80, height: 24}, "claude")
-
-	if got.phase != phaseModel {
-		t.Fatalf("phase = %v, want phaseModel", got.phase)
-	}
-	if id := selectedModelID(got); id != "claude/native" {
-		t.Errorf("cursor on %q (index %d), want claude/native — native-first must be the default selection too", id, got.models.Index())
 	}
 }
 

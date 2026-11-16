@@ -107,7 +107,7 @@ func TestConfigCmd_InvalidConfig_LaunchesEditor(t *testing.T) {
 	call := stubConfigEditor(t, configeditor.Result{}, nil)
 
 	a, _ := newTestApp(t)
-	a.cfgErr = fmt.Errorf("validation failed")
+	setHostCfgErr(a, fmt.Errorf("validation failed"))
 	cmd := configCmd(a)
 	cmd.SetArgs([]string{})
 	cmd.SetOut(&bytes.Buffer{})

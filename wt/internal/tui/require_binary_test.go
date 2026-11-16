@@ -8,7 +8,7 @@ import (
 )
 
 // requireBinary skips the test if the named agent binary is absent from PATH.
-// TUI launch-path tests call agents.BuildLaunchCmd, which resolves the real
+// TUI launch-path tests call agents.BuildLaunchCmdGateway, which resolves the real
 // binary via exec.LookPath (not the stubbable "installed" seam), so exercising
 // the launch wiring needs a binary on PATH. Prefer stubFakeBinary below when
 // the test only needs the resolution to *succeed* — that runs everywhere,

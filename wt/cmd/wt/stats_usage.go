@@ -14,7 +14,6 @@ import (
 
 	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -237,19 +236,6 @@ func registryNote(loadErr error) string {
 	return fmt.Sprintf("wt's configuration did not load (%s), so --family matched each id's provider prefix", what)
 }
 
-// querySpend asks the LiteLLM database for per-model totals after start and
-// up to and including end (spend.InWindow). A seam: cmd/wt's TestMain replaces it, so no test resolves a
-// connection string or runs psql.
-var querySpend = realQuerySpend
-
-func realQuerySpend(ctx context.Context, start, end time.Time) (spend.Result, error) {
-	dsn, err := litellm.DatabaseURL()
-	if err != nil {
-		return spend.Result{}, err
-	}
-	return spend.Query(ctx, dsn, start, end)
-}
-
 // stdoutWidth is the terminal's width in columns, or 0 when stdout is not
 // a terminal (a pipe or a file has no width to fit). A seam so tests do not
 // depend on where `go test` was run.
@@ -263,44 +249,13 @@ func realStdoutWidth() int {
 	return w
 }
 
-// collectUsage builds the usage report for one window ending at asOf,
-// (asOf-window, asOf]: the spend query covers it, and the launches are the
-// ones usage.jsonl dates inside that same window. Both halves leave out an
-// event dated exactly asOf-window and count one dated exactly asOf (#298); a
-// launch after asOf is in neither half. It never fails: every way of having
-// no spend data is a status and a reason, and the launch counts are reported
-// regardless.
-func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration, asOf time.Time, f statsFilter) usageReport {
-	rep := usageReport{SpendStatus: spendOK, Narrowed: f.model != "" || f.family != ""}
-	var sp *spend.Result
-	if f.agent != "" {
-		rep.SpendStatus = spendSkipped
-		rep.SpendReason = spendSkippedReason
-	} else if res, err := querySpend(ctx, asOf.Add(-window), asOf); err != nil {
-		rep.SpendStatus = spendUnavailable
-		// spend.ErrNoConnectionString is the same answer from the other
-		// package: DatabaseURL never returns a blank string, but a querySpend
-		// that got one some other way was refused, not failed.
-		if errors.Is(err, litellm.ErrNoDatabase) || errors.Is(err, spend.ErrNoConnectionString) {
-			rep.SpendStatus = spendNotConfigured
-		}
-		rep.SpendReason = "spend unavailable: " + err.Error()
-	} else {
-		sp = &res
-		rep.Unattributed = res.Unattributed
-	}
-	// The same asOf the spend query ends at: launches are bucketed against
-	// the report's instant, never against a second read of the clock.
-	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, sp, registryFamilies(cfg), f)
-	return rep
-}
-
-// collectUsageRemote is collectUsage on the model server: the spend comes
+// collectUsageRemote builds the usage report for one window ending at asOf,
+// (asOf-window, asOf], on the model server: the spend comes
 // from GET spend (Client.Spend) and the id-to-family map from the catalog's
 // rows, so no psql, config.yaml or registry is read. asOf is the server's now
 // (ms.client.Now(), R16): the window is (asOf-window, asOf] on the server's
 // clock, so a client clock that runs behind cannot cut off the newest
-// requests. Like collectUsage it never fails: spend_not_configured is
+// requests. It never fails: spend_not_configured is
 // spendNotConfigured, any other failure is spendUnavailable with the reason
 // (M8), and the launch counts are reported regardless. A catalog that cannot
 // be read leaves every family to the id's provider prefix.
@@ -341,17 +296,28 @@ func collectUsageRemote(ctx context.Context, ms *modelSession, window time.Durat
 
 // collectUsageNoServer is collectUsageRemote's answer when the model server
 // could not be opened (unreachable, refused or not configured): no spend,
-// the reason, and the launch counts with every family the id's prefix.
-func collectUsageNoServer(openErr error, window time.Duration, asOf time.Time, f statsFilter) usageReport {
+// the reason (spendNotConfigured when no server is configured, else
+// spendUnavailable), and the launch counts. families names each id's family
+// (the host registry's, when this machine has one that loads); an id it does
+// not name takes its provider prefix.
+func collectUsageNoServer(openErr error, window time.Duration, asOf time.Time, f statsFilter, families map[string]string) usageReport {
 	rep := usageReport{Narrowed: f.model != "" || f.family != ""}
-	if f.agent != "" {
+	var nc *modelclient.NotConfiguredError
+	switch {
+	case f.agent != "":
 		rep.SpendStatus = spendSkipped
 		rep.SpendReason = spendSkippedReason
-	} else {
+	case errors.As(openErr, &nc):
+		rep.SpendStatus = spendNotConfigured
+		rep.SpendReason = "spend unavailable: " + openErr.Error()
+	default:
 		rep.SpendStatus = spendUnavailable
 		rep.SpendReason = "spend unavailable: " + openErr.Error()
 	}
-	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, nil, map[string]string{}, f)
+	if families == nil {
+		families = map[string]string{}
+	}
+	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, nil, families, f)
 	return rep
 }
 

@@ -321,9 +321,9 @@ the same entry matches an `ollama`, `omlx`, or `mtplx` model.
   an applied profile sets in `env` for one of these eight variables wins
   over wt's, and the others keep wt's values. A value exported in your shell
   never reaches claude; wt replaces it. A value has to be what the endpoint
-  routes: the registry id through LiteLLM, the provider-side name on a
-  direct route. The only placeholder here, `{{model_name}}`, is the
-  provider-side name, so through LiteLLM write the registry id out. To give
+  routes: the gateway id (the registry id unless the model server names
+  another). The only placeholder here, `{{model_name}}`, is the
+  provider-side name, so write the registry id out. To give
   each slot its own model, use a slot profile, which names a registry model
   per slot: see [slot-profiles.md](slot-profiles.md).
   A profile that overrides one `ANTHROPIC_DEFAULT_<SLOT>_MODEL` should set

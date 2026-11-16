@@ -88,6 +88,12 @@ type fakeModelServer struct {
 	Pricing   *modelapi.Pricing
 	Spend     modelapi.SpendReport
 	SpendCode string
+	// SpendMsg, when set, is the message a SpendCode answer carries in
+	// place of the default; SpendFn, when set, answers GET spend from the
+	// request's own start and end (as the server's query does) in place of
+	// Spend.
+	SpendMsg  string
+	SpendFn   func(start, end time.Time) modelapi.SpendReport
 	ClockSkew time.Duration
 	// Candidates is what GET candidates answers.
 	Candidates modelapi.CandidateList
@@ -176,10 +182,23 @@ func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(modelapi.Catalog{Schema: f.Schema, Generated: f.Generated, Providers: f.Providers, Rows: f.Rows, Pricing: f.Pricing})
 	case "/control/v1/spend":
 		if f.SpendCode != "" {
-			f.apiErr(w, http.StatusServiceUnavailable, f.SpendCode, "the LiteLLM database is not reachable")
+			msg := "the LiteLLM database is not reachable"
+			if f.SpendMsg != "" {
+				msg = f.SpendMsg
+			}
+			f.apiErr(w, http.StatusServiceUnavailable, f.SpendCode, msg)
 			return
 		}
 		rep := f.Spend
+		if f.SpendFn != nil {
+			start, serr := time.Parse(time.RFC3339Nano, r.URL.Query().Get("start"))
+			end, eerr := time.Parse(time.RFC3339Nano, r.URL.Query().Get("end"))
+			if serr != nil || eerr != nil {
+				f.apiErr(w, http.StatusBadRequest, modelapi.CodeBadRequest, "bad window")
+				return
+			}
+			rep = f.SpendFn(start, end)
+		}
 		if rep.Rows == nil {
 			rep.Rows = []modelapi.SpendRow{}
 		}
@@ -370,41 +389,25 @@ func pointAtFake(t *testing.T, f *fakeModelServer, extra string) *app {
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return &app{cfg: &config.Config{DefaultTag: "code"}}
+	return &app{hostSet: true, hostCfg: &config.Config{DefaultTag: "code"}}
 }
 
-// TestEndpointConfiguredFromConfigOrEnv proves endpointConfigured is true for
-// a [model-server] url or token_file in config.toml and for each WT_MODEL_*
-// variable, and false when none is set.
-func TestEndpointConfiguredFromConfigOrEnv(t *testing.T) {
-	cfgHome := func(t *testing.T, body string) {
-		home := t.TempDir()
-		t.Setenv("XDG_CONFIG_HOME", home)
-		_ = os.MkdirAll(filepath.Join(home, "agent-wt"), 0o755)
-		if err := os.WriteFile(filepath.Join(home, "agent-wt", "config.toml"), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
+// nameServerInConfigHome writes config.toml in the current XDG_CONFIG_HOME
+// naming f, its token in a 0600 file: pointAtFake for a test that has
+// already chosen its config home (a slot file is in it).
+func nameServerInConfigHome(t *testing.T, f *fakeModelServer) {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range []struct {
-		name, toml, env, val string
-		want                 bool
-	}{
-		{"nothing", "default_tag = \"code\"\n", "", "", false},
-		{"url", "[model-server]\nurl = \"http://127.0.0.1:1\"\n", "", "", true},
-		{"token_file", "[model-server]\ntoken_file = \"~/t\"\n", "", "", true},
-		{"env url", "", "WT_MODEL_URL", "http://127.0.0.1:1", true},
-		{"env token file", "", "WT_MODEL_TOKEN_FILE", "/x", true},
-		{"env token", "", "WT_MODEL_TOKEN", "t", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfgHome(t, tc.toml)
-			if tc.env != "" {
-				t.Setenv(tc.env, tc.val)
-			}
-			if got := (&app{}).endpointConfigured(); got != tc.want {
-				t.Errorf("endpointConfigured = %v, want %v", got, tc.want)
-			}
-		})
+	tok := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tok, []byte(f.Token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("default_tag = \"code\"\n\n[model-server]\nurl = %q\ntoken_file = %q\n", f.URL, tok)
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -433,10 +436,12 @@ func TestSessionCfgNeedsNoRegistry(t *testing.T) {
 	}
 }
 
-// TestAppCfgIsStillTheRegistryUntilTheFlip proves that, with an endpoint
-// configured, newApp still loads the registry into a.cfg and that sessionCfg
-// does not replace it: Task 10 changes no host command.
-func TestAppCfgIsStillTheRegistryUntilTheFlip(t *testing.T) {
+// TestHostConfigIsTheRegistryAndNewAppReadsNone proves the flip's split of
+// the two configs (R3): newApp reads no registry, sessionCfg never does, and
+// hostConfig loads it on first use and caches it. A newApp that loaded the
+// registry would make every session run read host state, and fail on a
+// session machine whose registry is broken.
+func TestHostConfigIsTheRegistryAndNewAppReadsNone(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	dir := filepath.Join(home, "agent-wt")
@@ -451,15 +456,22 @@ func TestAppCfgIsStillTheRegistryUntilTheFlip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := a.cfg
-	if len(a.cfg.Models) == 0 {
-		t.Fatal("a.cfg.Models is empty: the registry is no longer loaded")
+	if a.hostSet {
+		t.Fatal("newApp read the registry")
 	}
-	if _, err := a.sessionCfg(); err != nil {
+	scfg, err := a.sessionCfg()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if a.cfg != before || len(a.cfg.Models) == 0 {
-		t.Error("sessionCfg replaced a.cfg")
+	if len(scfg.Models) != 0 || a.hostSet {
+		t.Errorf("sessionCfg read the registry: %d models, hostSet %v", len(scfg.Models), a.hostSet)
+	}
+	host, err := a.hostConfig()
+	if err != nil || len(host.Models) == 0 {
+		t.Fatalf("hostConfig = %d models, %v; want the registry's", len(host.Models), err)
+	}
+	if again, _ := a.hostConfig(); again != host {
+		t.Error("hostConfig is not cached")
 	}
 }
 
@@ -656,12 +668,11 @@ func TestModelClientSeamRefusesNonLoopback(t *testing.T) {
 	}
 }
 
-// TestEndpointConfiguredInlineTokenOnlyAndLoadFailure proves a [model-server]
-// holding only an inline token counts as configured (so openModels can report
-// the problem), that a config.toml that fails to load counts as configured
-// (the error surfaces from openModels instead of a quiet legacy path), and
-// that openModels then reports each.
-func TestEndpointConfiguredInlineTokenOnlyAndLoadFailure(t *testing.T) {
+// TestOpenModelsReportsInlineTokenAndLoadFailure proves openModels reports a
+// [model-server] holding only an inline token (the problem, not the value)
+// and a config.toml that fails to load, rather than reading either as "no
+// model server": each is its own refusal, so the user fixes the right thing.
+func TestOpenModelsReportsInlineTokenAndLoadFailure(t *testing.T) {
 	write := func(t *testing.T, body string) {
 		home := t.TempDir()
 		t.Setenv("XDG_CONFIG_HOME", home)
@@ -672,18 +683,13 @@ func TestEndpointConfiguredInlineTokenOnlyAndLoadFailure(t *testing.T) {
 	}
 	write(t, "[model-server]\ntoken = \"secret\"\n")
 	a := &app{}
-	if !a.endpointConfigured() {
-		t.Error("inline token only: endpointConfigured = false")
-	}
 	if _, err := a.openModels(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "token_file") {
 		t.Errorf("openModels err = %v, want the inline-token problem", err)
 	}
 	write(t, "this is [not toml\n")
 	b := &app{}
-	if !b.endpointConfigured() {
-		t.Error("unloadable config: endpointConfigured = false")
-	}
-	if _, err := b.openModels(context.Background(), "x"); err == nil {
-		t.Error("unloadable config: openModels err = nil")
+	var nc *modelclient.NotConfiguredError
+	if _, err := b.openModels(context.Background(), "x"); err == nil || errors.As(err, &nc) {
+		t.Errorf("unloadable config: openModels err = %v, want the load error, not not-configured", err)
 	}
 }

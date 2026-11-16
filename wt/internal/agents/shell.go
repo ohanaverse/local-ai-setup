@@ -19,7 +19,7 @@ func init() {
 	register("shell", func() Driver { return &shellDriver{} })
 }
 
-// SetArgs stores the user's passthrough args. Called by BuildLaunchCmd via
+// SetArgs stores the user's passthrough args. Called by BuildLaunchCmdGateway via
 // the ArgSetter interface before Build.
 func (d *shellDriver) SetArgs(args []string) {
 	d.args = args

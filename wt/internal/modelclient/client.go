@@ -319,9 +319,13 @@ func (c *Client) Candidates(ctx context.Context, q CandidateQuery) (modelapi.Can
 	return out, nil
 }
 
-// Spend reads the LiteLLM spend log between start and end.
+// Spend reads the LiteLLM spend log between start and end. Both bounds go
+// with their fractional seconds (RFC 3339 allows them; the server parses
+// them): `wt stats` buckets its launches against the same instant, and a
+// bound cut to the second would leave a request at the report's instant out
+// of the spend window while its launch is in.
 func (c *Client) Spend(ctx context.Context, start, end time.Time) (modelapi.SpendReport, error) {
-	v := url.Values{"start": {start.Format(time.RFC3339)}, "end": {end.Format(time.RFC3339)}}
+	v := url.Values{"start": {start.Format(time.RFC3339Nano)}, "end": {end.Format(time.RFC3339Nano)}}
 	var out modelapi.SpendReport
 	if err := c.checked(ctx, "GET", "/control/v1/spend", v, nil, &out); err != nil {
 		return out, err

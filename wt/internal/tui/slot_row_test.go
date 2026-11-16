@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
@@ -50,7 +49,7 @@ func slotCheckFor(index int, name, def string, slots map[string]string) profiles
 
 // slotPicker enters the model phase for "claude" on cfg with checks as the
 // picker's slot profiles, in a terminal of width x height. It isolates the
-// state directory and the usage and refcount stores (flowEnter). The
+// state directory and the usage store (flowEnter). The
 // inventory is whatever the test stubbed before the call; with no stub it is
 // TestMain's: every local model on disk and none running.
 func slotPicker(t *testing.T, cfg *config.Config, checks []profiles.SlotCheck, width, height int) model {
@@ -68,75 +67,6 @@ func slotRowChecks() []profiles.SlotCheck {
 		slotCheckFor(0, "cloud", "opus", map[string]string{"opus": "openrouter/a", "haiku": "openrouter/b"}),
 		slotCheckFor(1, "mixed", "sonnet", map[string]string{"sonnet": "openrouter/a", "haiku": "omlx/qwen3.8"}),
 		slotCheckFor(2, "broken", "opus", map[string]string{"opus": "openrouter/a", "haiku": "openrouter/gone"}),
-	}
-}
-
-// idleOmlxSnapshot is the fixture's local model on disk and not running,
-// which makes its own row, and a profile that names it, a start row.
-func idleOmlxSnapshot() localmodels.Snapshot {
-	return localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
-		Entries: []localmodels.Entry{
-			{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", ModelName: "qwen3.8", Registered: true, ArtifactKnown: true},
-		},
-	}
-}
-
-// slotTable builds the picker's table for "claude" over cfg and snap with
-// checks opted in, the way tableFor does, with a usage store of its own.
-func slotTable(t *testing.T, cfg *config.Config, snap localmodels.Snapshot, checks []profiles.SlotCheck) modelTable {
-	t.Helper()
-	models, err := cfg.EligibleModels("claude", "", "")
-	if err != nil {
-		t.Fatalf("EligibleModels: %v", err)
-	}
-	store := stubUsageStore(t)
-	for i := 0; i < 2; i++ {
-		if err := store.RecordFor("claude", "profile/cloud"); err != nil {
-			t.Fatalf("seed usage: %v", err)
-		}
-	}
-	return buildTable(tableInput{cfg: cfg, agent: "claude", models: models, inventory: &snap, usage: store, slots: checks}, stubRefcountStore(t), "")
-}
-
-// tableItem is the table's item for id.
-func tableItem(t *testing.T, tbl modelTable, id string) *modelItem {
-	t.Helper()
-	for _, it := range tbl.items {
-		if it.model.ID == id {
-			return it
-		}
-	}
-	t.Fatalf("the table has no row %q", id)
-	return nil
-}
-
-// TestProfileRowsNeedTheOptIn pins that the table has profile rows only when
-// its input carries the slot profiles, and none under -T or -F. `wt start`
-// and `wt smoke` build their picker from the same function without them; a
-// profile row there would be offered as a model to start.
-func TestProfileRowsNeedTheOptIn(t *testing.T) {
-	cfg := slotTestConfig()
-	models, _ := cfg.EligibleModels("claude", "", "")
-	snap := runningOmlxSnapshot()
-	count := func(in tableInput) int {
-		in.cfg, in.agent, in.models, in.inventory = cfg, "claude", models, &snap
-		n := 0
-		for _, it := range buildTable(in, nil, "").items {
-			if strings.HasPrefix(it.model.ID, profiles.SlotIDPrefix) {
-				n++
-			}
-		}
-		return n
-	}
-	if got := count(tableInput{slots: slotRowChecks()}); got != 3 {
-		t.Errorf("with the slot profiles: %d profile rows, want 3", got)
-	}
-	if got := count(tableInput{}); got != 0 {
-		t.Errorf("without the slot profiles: %d profile rows, want none", got)
-	}
-	if got := count(tableInput{slots: slotRowChecks(), hideDiscovered: true}); got != 0 {
-		t.Errorf("under -T or -F: %d profile rows, want none", got)
 	}
 }
 
@@ -170,131 +100,6 @@ func TestSortRowsPutsProfilesBetweenNativeAndTheRest(t *testing.T) {
 	want := "claude/native,profile/alpha,profile/start,profile/zeta,omlx/idle,openrouter/cheap,openrouter/dear"
 	if strings.Join(got, ",") != want {
 		t.Errorf("order = %s\nwant    %s", strings.Join(got, ","), want)
-	}
-}
-
-// TestRefreshedTableKeepsProfileRows pins that a table rebuilt after a start
-// attempt still has its profile rows. The rebuild runs from a reduced copy of
-// the model, and a field left out of that copy is lost on every refresh: the
-// profiles would vanish from the picker the first time a start failed.
-func TestRefreshedTableKeepsProfileRows(t *testing.T) {
-	stubInventory(t, runningOmlxSnapshot())
-	m := slotPicker(t, slotTestConfig(), slotRowChecks(), 80, 24)
-	before := strings.Join(itemIDs(m), ",")
-
-	m, cmd := m.refreshTable()
-	m = drainCmds(t, m, cmd)
-
-	if got := strings.Join(itemIDs(m), ","); got != before || !strings.Contains(got, "profile/mixed") {
-		t.Errorf("rows after a refresh = %s, want %s", got, before)
-	}
-}
-
-// TestProfileRowCells pins what a slot profile's row shows in each column,
-// and that the row is judged by resolved validation alone. FAMILY is
-// "profile", LOC says cloud, local or mixed, RUNNING is the local model's,
-// COST is the default slot model's price, and the usage columns count
-// launches recorded under the profile's own id. A profile row has no route
-// of its own, so asking ResolveRoute about it fails with "unknown provider":
-// the row would be marked "(unavailable)", and a start profile would be
-// turned into a blocked one that Enter refuses.
-func TestProfileRowCells(t *testing.T) {
-	for _, c := range []struct {
-		name, id               string
-		snap                   localmodels.Snapshot
-		loc, running, cost, d7 string
-		start                  bool
-		blocked                string
-	}{
-		{"all cloud", "profile/cloud", runningOmlxSnapshot(), "cloud", "-", " 0.4000  0.0400  1.6000", "2", false, ""},
-		{"mixed, local running", "profile/mixed", runningOmlxSnapshot(), "mixed", "run", " 0.4000  0.0400  1.6000", "0", false, ""},
-		{"mixed, local idle", "profile/mixed", idleOmlxSnapshot(), "mixed", "-", " 0.4000  0.0400  1.6000", "0", true, ""},
-		{"blocked", "profile/broken", runningOmlxSnapshot(), "cloud", "-", " 0.4000  0.0400  1.6000", "0", false,
-			"slot haiku: openrouter/gone is not in the registry"},
-	} {
-		tbl := slotTable(t, slotTestConfig(), c.snap, slotRowChecks())
-		it := tableItem(t, tbl, c.id)
-		cell := func(col int) string { return strings.TrimRight(it.cells[col], " ") }
-		for _, want := range []struct {
-			col       int
-			name, val string
-		}{
-			{colFamily, "FAMILY", "profile"}, {colModel, "MODEL", c.id}, {colLoc, "LOC", c.loc},
-			{colStatus, "STATUS", "ok"}, {colRunning, "RUNNING", c.running}, {colCost, "COST", c.cost},
-			{col7D, "7D", c.d7},
-		} {
-			if got := cell(want.col); got != want.val {
-				t.Errorf("%s: %s = %q, want %q", c.name, want.name, got, want.val)
-			}
-		}
-		if it.profile == nil || it.cost != "" || it.ref != 0 {
-			t.Errorf("%s: profile set = %t, cost note = %q, ref = %d; want the profile carried, no price note and no in-use count", c.name, it.profile != nil, it.cost, it.ref)
-		}
-		if it.exception != "" || it.start != c.start || it.blocked != c.blocked {
-			t.Errorf("%s: exception = %q start = %t blocked = %q, want no route note, start = %t and blocked = %q",
-				c.name, it.exception, it.start, it.blocked, c.start, c.blocked)
-		}
-	}
-
-	// A profile whose slots resolve to nothing has no location to name.
-	none := []profiles.SlotCheck{slotCheckFor(0, "none", "opus", map[string]string{"opus": "openrouter/gone"})}
-	it := tableItem(t, slotTable(t, slotTestConfig(), runningOmlxSnapshot(), none), "profile/none")
-	if loc, cost := strings.TrimSpace(it.cells[colLoc]), strings.TrimSpace(it.cells[colCost]); loc != "-" || cost != "-" {
-		t.Errorf("unresolved profile: LOC = %q COST = %q, want a dash in each", loc, cost)
-	}
-}
-
-// TestBlockedProfileRowShowsItsLocalModelsState pins the RUNNING cell of a
-// profile blocked before its local model is judged: with no [litellm] url the
-// row is blocked, and the cell still reads "run" while the profile's one
-// local model is serving and "-" once it is idle. A dash on a blocked row
-// would tell the user the model was stopped when it was holding memory. The
-// row stays blocked with the rule's own reason and is not a start row.
-func TestBlockedProfileRowShowsItsLocalModelsState(t *testing.T) {
-	const reason = "a slot profile always uses the LiteLLM proxy, but no URL is configured — run 'wt litellm set --url ... --api-key ...'"
-	for _, c := range []struct {
-		name    string
-		snap    localmodels.Snapshot
-		running string
-	}{
-		{"local running", runningOmlxSnapshot(), "run"},
-		{"local idle", idleOmlxSnapshot(), "-"},
-	} {
-		cfg := slotTestConfig()
-		cfg.SetLitellmForTest(config.LitellmState{APIKey: "sk-test"})
-		it := tableItem(t, slotTable(t, cfg, c.snap, slotRowChecks()), "profile/mixed")
-		if got := strings.TrimRight(it.cells[colRunning], " "); got != c.running {
-			t.Errorf("%s: RUNNING = %q, want %q", c.name, got, c.running)
-		}
-		if it.blocked != reason || it.start {
-			t.Errorf("%s: blocked = %q start = %t, want the row blocked with %q", c.name, it.blocked, it.start, reason)
-		}
-	}
-}
-
-// TestProfileRowCostFollowsTheDefaultSlotsClock pins that a profile row is
-// priced as its default slot's model at the table's own instant, with the
-// "~" mark when that model is priced by time of day. Priced from the row's
-// own (empty) model it would show a dash for every profile.
-func TestProfileRowCostFollowsTheDefaultSlotsClock(t *testing.T) {
-	cfg := slotTestConfig()
-	cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/a")].Cost = timedTableRows(deepseekDear)[0].Model.Cost
-	models, _ := cfg.EligibleModels("claude", "", "")
-	snap := runningOmlxSnapshot()
-	for _, c := range []struct {
-		name string
-		in   tableInput
-		want string
-	}{
-		{"dear window", tableInput{now: deepseekDear}, " 1.3200  0.0440  3.9600~"},
-		{"cheap window", tableInput{now: ollamaPeak}, " 0.6600  0.0220  1.9800~"},
-	} {
-		in := c.in
-		in.cfg, in.agent, in.models, in.inventory, in.slots = cfg, "claude", models, &snap, slotRowChecks()
-		it := tableItem(t, buildTable(in, nil, ""), "profile/cloud")
-		if got := strings.TrimRight(it.cells[colCost], " "); got != c.want {
-			t.Errorf("%s: COST = %q, want %q", c.name, got, c.want)
-		}
 	}
 }
 
@@ -425,7 +230,7 @@ func TestProfileRowScreenFitsAndShowsItsSlots(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {40, 12}, {120, 50}} {
 		width, height := size[0], size[1]
 		name := fmt.Sprintf("%dx%d", width, height)
-		stubInventory(t, runningOmlxSnapshot())
+		stubRunning(t, "omlx/qwen3.8")
 		m := slotPicker(t, slotTestConfig(), slotRowChecks(), width, height)
 		if got, want := strings.Join(itemIDs(m), ","), "profile/broken,profile/cloud,profile/mixed,"; !strings.HasPrefix(got, want) {
 			t.Fatalf("%s: rows = %s, want the three profiles first, alphabetically", name, got)
@@ -435,14 +240,14 @@ func TestProfileRowScreenFitsAndShowsItsSlots(t *testing.T) {
 		m = resized(t, m, width, height)
 		plain := m.View()
 		assertFits(t, name+", model row", plain, width, height)
-		if got, want := footerLine(t, plain), "LiteLLM: on   cost 0.4/0.04/1.6"; got != want {
+		if got, want := footerLine(t, plain), "cost 0.4/0.04/1.6"; got != want {
 			t.Errorf("%s, model row: the line under the table = %q, want %q", name, got, want)
 		}
 
 		for id, want := range map[string]string{
 			"profile/cloud":  "opus* a · haiku b",
 			"profile/mixed":  "sonnet* a · haiku qwen3.8",
-			"profile/broken": cutLines("slot haiku: openrouter/gone is not in the registry", width-2*pickerPadX),
+			"profile/broken": cutLines("slot haiku: openrouter/gone is not in the model server's catalog", width-2*pickerPadX),
 		} {
 			m.models.Select(indexOfID(m, id))
 			m = resized(t, m, width, height)
@@ -486,7 +291,7 @@ func TestProfileSlotLineIsCutToWholeEntriesOnScreen(t *testing.T) {
 		{40, 12, opus + " · +3 more"},
 		{120, 50, opus + " · " + fable + " · " + sonnet + " · " + haiku},
 	} {
-		stubInventory(t, runningOmlxSnapshot())
+		stubRunning(t, "omlx/qwen3.8")
 		m := slotPicker(t, cfg, checks, c.width, c.height)
 		m.models.Select(indexOfID(m, "profile/ollama-cloud"))
 		m = resized(t, m, c.width, c.height)
@@ -495,30 +300,5 @@ func TestProfileSlotLineIsCutToWholeEntriesOnScreen(t *testing.T) {
 		if got := footerLine(t, view); got != c.want {
 			t.Errorf("%dx%d: the line under the table = %q, want %q", c.width, c.height, got, c.want)
 		}
-	}
-}
-
-// TestLoneProfileRowKeepsThePickerOpen pins the single-row shortcut: a table
-// whose one row is a profile opens the picker and waits for Enter. The
-// shortcut launches the highlighted row as a model, and a profile row's model
-// is only its id, so auto-launching it would fail with "unknown provider".
-func TestLoneProfileRowKeepsThePickerOpen(t *testing.T) {
-	cfg := slotTestConfig()
-	// The agent's own eligible list is the local model alone, and the probe
-	// confirms it is not on disk, so it has no row.
-	cfg.Agents[0].SupportedProviders = []string{"omlx"}
-	stubInventory(t, localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
-		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/qwen3.8", ModelName: "qwen3.8", Registered: true, ArtifactKnown: true}},
-	})
-	checks := []profiles.SlotCheck{slotCheckFor(0, "cloud", "opus", map[string]string{"opus": "openrouter/a"})}
-
-	m := slotPicker(t, cfg, checks, 80, 24)
-
-	if got := strings.Join(itemIDs(m), ","); got != "profile/cloud" {
-		t.Fatalf("rows = %s, want the profile alone", got)
-	}
-	if m.phase != phaseModel || m.status != "" || m.launchModel.ID != "" {
-		t.Errorf("phase = %v status = %q launch model = %q, want the picker open and nothing launched", m.phase, m.status, m.launchModel.ID)
 	}
 }

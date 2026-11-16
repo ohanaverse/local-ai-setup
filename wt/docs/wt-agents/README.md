@@ -5,8 +5,11 @@ Per-agent reference docs for the agents launched by `wt` (via the `*-wt` shims i
 ## LiteLLM routes are wt-owned
 
 `wt` owns everything LiteLLM-side: the `~/.config/litellm/config.yaml` routes
-(`model_list` rows and the settings wt enforces), the proxy restart, and the
-routing on/off switch. Every configured cloud and native model is in the
+(`model_list` rows and the settings wt enforces) and the proxy restart. A
+session never dials LiteLLM or a provider itself: every non-native model an
+agent uses goes through the model server's gateway (`wt-model serve`,
+[wt-session.md](../wt-session.md)), which forwards to LiteLLM with the
+`[litellm]` key. There are no direct routes and no routing switch. Every configured cloud and native model is in the
 picker (#179; see the root `CLAUDE.md`'s *Routing is derived, not stored*);
 local models are listed from live
 provider probes — with or without a registry entry (an unregistered model is
@@ -15,7 +18,7 @@ are added and removed automatically by
 `wt start` / `wt stop` (and the TUI start flow and `wt smoke`).
 
 ```bash
-wt litellm status                 # routing on/off + url + api_key_set
+wt litellm status                 # url + api_key_set
 wt litellm sync [--dry-run]       # route every registry cloud model + every running (or pulled ollama) local model
 wt litellm list                   # routed ids in config.yaml (hand-written rows marked)
 ```
@@ -25,20 +28,20 @@ need a route.
 
 ## LiteLLM proxy lifecycle
 
-With LiteLLM routing on (`wt litellm on`), `wt` routes non-native models
-through the LiteLLM proxy at `:4000`. The proxy loads its model list from
+Every session reaches its non-native models through the model server's
+gateway, which forwards to the LiteLLM proxy at `:4000`. The proxy loads its model list from
 `~/.config/litellm/config.yaml`
 **only at startup** — editing that file does not take effect until the proxy is
 restarted; until then it serves a stale model list and returns
 `400 Invalid model name passed in model=…` for any newly added model.
 
-**The on/off routing switch is wt-owned.** Whether agents route
-through the proxy or dial providers directly lives in the `[litellm]` table
-(`enabled`/`url`/`api_key`) of wt's own `~/.config/agent-wt/config.toml` and is
-toggled with `wt litellm on` / `wt litellm off` (current state:
-`wt litellm status`). Toggling is routing policy only — it never starts,
-stops, or restarts the proxy; the proxy-process lifecycle below is a separate
-concern.
+**There is no routing switch.** The `[litellm]` table of wt's own
+`~/.config/agent-wt/config.toml` holds the proxy's `url` and `api_key`
+(`wt litellm set`, shown by `wt litellm status`), which `wt-model serve`
+reads; a session reads neither. Its `enabled` key is retired (2026-11-15):
+still parsed and kept on save, read by nothing, and a true value prints one
+note per process. `wt litellm on` / `wt litellm off` are hidden stubs that
+exit 1.
 
 **wt owns reconciliation.** `wt litellm sync` (and the
 automatic route updates from `wt start`/`wt stop`) write `config.yaml` and then
@@ -47,9 +50,9 @@ restart the proxy after a change. Every one of them then waits up to 30s for
 pre-probe before the restart was not refused: `wt litellm sync` and the
 commands that run it after a registry write (`wt cloud-sync`, `wt model
 add|edit|rm|init`, the Models tab of `wt config`) before they return (#382),
-and the automatic route updates from `wt start`/`wt stop`/`wt smoke`/the TUI
-start flow and stop picker, and the route check at launch, before wt exits or
-hands the proxy to an agent. A proxy that does not answer in time is a
+and the automatic route updates from the host's `wt stop <provider>`/`--all`
+and the model server's start and stop jobs, before wt exits or hands the
+proxy to a client. A proxy that does not answer in time is a
 warning, never a failed command: the routes were written.
 
 **The restart lets a request in flight finish.** With no restart command
@@ -172,9 +175,8 @@ directly when exactly one model is launchable for the agent (a cloud model,
 or a local model already running), whatever stopped or blocked models the
 agent also has. So `-W foo -A pi` (no `-M`) shows the model picker only when
 several models, or none, are launchable. When the worktree picker or the
-agent+command picker was shown, the model picker is skipped only when its
-table holds a single row and that row is launchable: one launchable model
-beside a stopped local model or a blocked row still shows the picker.
+agent+command picker was shown, the model picker is always shown, even for a
+single launchable row.
 `-W foo -M claude/opus` (no `-A`) shows the agent+command picker first and
 then validates the pin against the chosen agent.
 
@@ -211,9 +213,9 @@ picker simply shows no tags.
 The agent+command picker lists every registered agent and command. An
 agent with no binary on PATH is marked "not installed", and selecting it is
 blocked with a clear error rather than advancing to a model screen that can
-never succeed. An installed agent with no `config.toml` entry is marked
-"not configured — launches directly with no model" and launches bare,
-without the model layer; it is refused only when `-M` is also given.
+never succeed. Every model-driven agent goes to the model picker, configured
+in `config.toml` or not (its models come from the model server); the old bare
+launch of an unconfigured agent is gone.
 
 ### Arguments after `--`
 
@@ -234,15 +236,15 @@ agent starts in**, which is not always the one you typed the command in:
 `-W <name>` outside a repository stops with `wt: not in a git repo: …`, and
 the worktree picker is never shown there. `--cwd` needs none. Outside a
 repository it is the same launch as inside one (agent and model pickers,
-`-M` pins and slot profiles, LiteLLM routes, automatic profiles, rotation and
-usage records, the stop picker and summary afterwards) with one difference:
+`-M` pins and slot profiles, the model server's gateway, automatic profiles,
+rotation and usage records, the summary afterwards) with one difference:
 the [main guard](../../README.md#main-guard) is a git hook, so it is installed
 only when the directory is inside a checkout. Nothing wt records about a
 launch is keyed by a repository or a branch (the one directory-keyed item,
 claude's `config_content` backup, uses the absolute settings path, which
 cannot collide), so a launch outside
 a repository shares no state with one inside it beyond what every launch
-shares (which model was launched last, how often, and which are in use).
+shares (which model was launched last, and how often).
 Without `--cwd`, wt outside a repository already launches in the directory
 you typed the command in; `--cwd` there says the same thing explicitly, and
 a script can pass it without knowing where it runs.
@@ -321,11 +323,12 @@ The post-run steps run in a fixed order — identical in the TUI and non-TUI
 paths, with the user's interactive steps first and the informational output
 last so the prompts cannot scroll it away:
 
-> release this session's refcount entry → survey → stop picker → summary
-> line → after-survey stats → pricing notice
+> end the client session → survey → summary line → after-survey stats →
+> pricing notice
 
-The survey and the stop picker therefore run **before**
-the summary line. A slot-profile session runs the same order without the
+The survey therefore runs **before** the summary line. There is no stop
+picker: the model server stops a model no client session holds once its
+idle grace has passed (`wt stop` stops one by hand). A slot-profile session runs the same order without the
 survey, the after-survey stats and the pricing notice.
 
 **Exit status.** Once these steps have run, wt exits with the agent's own
@@ -342,8 +345,8 @@ from the launch goroutine) and exits 1, exactly as the non-TUI launch does. A
 user does next (0 on quitting), since no agent status exists to report.
 
 - **Survey — currently switched off.** wt does not ask it (`survey.Enabled`
-  is `false` since 2026-10-05, #136), so a session goes straight to the stop
-  picker and there is no after-survey block. The code is kept and the survey
+  is `false` since 2026-10-05, #136), so a session goes straight to the
+  summary and there is no after-survey block. The code is kept and the survey
   may return; when on, it behaves as follows. Prompts up to four questions on the parent terminal (did it
   work? speed 1-5? quality 1-5? — and on non-skip answers, what task were
   you doing), each answerable with Enter to skip. It silently does nothing
@@ -357,29 +360,22 @@ user does next (0 on quitting), since no agent status exists to report.
   and ignored: no value is validated or consulted and any value survives wt's
   saves; a non-empty value prints one note per process: `wt: note: config.toml:
   [launch] exit_prompt is no longer used and is ignored`.
-- **Stop picker** (`survey.Picker`, issue #115). Offers to stop running
-  local models that no live wt session is using (refcount zero, probe
-  trusted, stop backend exists). One line, applied on Enter: space-separated
-  numbers stop those models, `a` or `all` stops every listed one, and a
-  bare Enter (or `q`/`esc`) stops nothing. A line it cannot read stops
-  nothing and asks again. Anything left running can be stopped later with
-  `wt stop`. It is silent
-  when nothing qualifies, when stdin is not a TTY, for command agents, and
-  after a native-model session (a native launch runs no local server of its
-  own).
-  wt releases its own refcount entry first, or the model this session just
-  used would always count as in use.
-  Its stops run on a context of their own, cancelled by Ctrl+C or SIGTERM:
-  the stop in flight is abandoned, the remaining models are skipped, and wt
-  still prints its summary. Nothing above the picker is watching for those
-  signals any more — the agent has already exited — so this is the only
-  Ctrl+C handling left on the path.
-- **After a slot-profile session** the order is shorter: release the
-  session's refcount entries (one per slot model) → stop picker → summary
-  line. The summary names the profile (`wt: claude · profile/<name> · <duration>`).
+- **The client session ends first.** wt deletes this session's registration
+  on the model server (bounded at 3 s, on a context no Ctrl-C reaches), so
+  the server's idle scan sees the model free. A failure is a `wt: note:`; the
+  server forgets an unrenewed session within a minute anyway.
+- **No stop picker.** The exit-flow stop picker (`survey.Picker`, #115) and
+  the local refcount store it read were removed with the model server: a
+  session has no local model of its own to stop. `wt stop` with no argument
+  is a numbered picker over the model server's running local models.
+- **Pricing notice.** From the model server's catalog `pricing`, aged on the
+  server's clock: printed when the registry's OpenRouter prices are more than
+  7 days old (or never refreshed), and only when the catalog has an
+  OpenRouter-priced model. A failed fetch prints nothing.
+- **After a slot-profile session** the order is shorter: end the client
+  session → summary line. The summary names the profile (`wt: claude · profile/<name> · <duration>`).
   There is no survey and no pricing notice, since a profile is not one
-  priced model. The stop picker is the same one: it offers every running
-  local model no live session uses, not only the profile's.
+  priced model.
 
 See `docs/wt-stats.md` for how the collected survey data is reported.
 

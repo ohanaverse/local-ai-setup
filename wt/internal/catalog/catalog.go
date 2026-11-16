@@ -14,7 +14,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // Status is a row's presence state.
@@ -48,9 +47,9 @@ type Row struct {
 	// Unmapped marks a cloud row whose provider has no LiteLLM mapping: it
 	// is in the catalog (every configured model is, #179) but sync never
 	// routes it, so a launch through the proxy would fail with "Invalid
-	// model name". RefusedByRoute refuses it there; direct, it launches (true
-	// only for pre-server Build rows: a row FromWire converts follows the
-	// server's block instead).
+	// model name". The model server blocks such a row
+	// (internal/modelserver's catalog); a row FromWire converts follows that
+	// block.
 	Unmapped bool
 	// Profile is set on a slot-profile row and nil on every model row. A
 	// profile row's Model holds the row id ("profile/<name>") and nothing
@@ -83,10 +82,6 @@ type Input struct {
 	Models         []config.Model
 	Inventory      *localmodels.Snapshot
 	HideDiscovered bool
-	// SlotProfiles opts in to slot-profile rows: the statically validated
-	// profiles (profiles.ValidateSlots). nil means no profile rows. Only the
-	// agent picker and the -M pin set it; `wt start` and `wt smoke` never do.
-	SlotProfiles []profiles.SlotCheck
 }
 
 // Build turns Input into rows.
@@ -161,7 +156,7 @@ func Build(in Input) []Row {
 			seen[e.ModelID] = true
 		}
 	}
-	return append(rows, slotRows(in)...)
+	return rows
 }
 
 // listed reports whether a registered inventory entry gets a row: it is
@@ -262,15 +257,6 @@ func MissingReason(cfg *config.Config, snap *localmodels.Snapshot, id string) st
 	return ""
 }
 
-// NoRowsReason is the message for an agent whose eligible list is non-empty
-// but builds zero rows: every eligible model is a registry local model with no
-// row (confirmed not on disk, a stopped mlx_lm_server pairing, or no inventory
-// entry). `wt` (non-TUI) and the TUI picker share it so both name the real
-// cause instead of a -T/-F mismatch; pinning one with -M gets MissingReason.
-func NoRowsReason(agent string) string {
-	return fmt.Sprintf("no matching model for agent %q is in the cloud, running, or on disk — registry local models that are neither on disk nor running are hidden (pull or download one, or pin it with -M to see why)", agent)
-}
-
 // Find returns the row for id, discovered rows included — a -M pin names a
 // model, not necessarily a registry entry.
 func Find(rows []Row, id string) (Row, bool) {
@@ -328,26 +314,4 @@ func (r Row) BlockReason() string {
 		return ""
 	}
 	return notRunning(r.Model)
-}
-
-// RefusedByRoute reports whether the row must be refused because of how it
-// routes: an Unmapped cloud model has no LiteLLM route, so it cannot be
-// launched through the proxy. A discovered local model is never refused
-// (#179 Phase B): wt routes it under its discovered id once it is running. It
-// is false when the route failed to resolve (a launch row with a route error
-// stays selectable and reports the error on Enter). The picker table, the
-// non-TUI -M pin and `wt smoke` all decide through this one rule, and
-// RouteRefusal gives them its one wording. "Direct, it launches" holds only
-// for pre-server Build rows; a row converted by FromWire follows the server's
-// block.
-func (r Row) RefusedByRoute(route config.Route, routeErr error) bool {
-	return r.Unmapped && routeErr == nil && (route.Litellm || route.Forced)
-}
-
-// RouteRefusal is RefusedByRoute's reason, or "" when the row is not refused.
-func (r Row) RouteRefusal(route config.Route, routeErr error) string {
-	if !r.RefusedByRoute(route, routeErr) {
-		return ""
-	}
-	return fmt.Sprintf("cloud model %s is not in LiteLLM (provider %q has no LiteLLM mapping) — turn LiteLLM routing off (wt litellm off) to use it", r.Model.ID, r.Model.ProviderID)
 }

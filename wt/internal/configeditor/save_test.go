@@ -233,8 +233,9 @@ models = []
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reloaded.IsLitellm() || reloaded.LitellmAPIKey() != "sk-concurrent" {
-		t.Fatalf("editor save clobbered concurrent litellm change: enabled=%v", reloaded.IsLitellm())
+	enabled := reloaded.LitellmTable != nil && reloaded.LitellmTable.Enabled
+	if !enabled || reloaded.LitellmAPIKey() != "sk-concurrent" {
+		t.Fatalf("editor save clobbered concurrent litellm change: enabled=%v", enabled)
 	}
 	found := false
 	for _, a := range reloaded.Agents {

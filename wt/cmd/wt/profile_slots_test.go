@@ -11,6 +11,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
@@ -103,14 +104,15 @@ func TestProfileListSlotSection(t *testing.T) {
 			&app{profiles: profiles.Store{Enabled: true}, slotChecks: checks, slotUnknown: []string{"profile.envs"}},
 			"(no profiles defined)\n" + section +
 				"  warning: slot-profiles.toml: unknown key \"profile.envs\" — ignored\n", ""},
-		{"the registry has a provider with id profile",
-			&app{cfg: reservedProvider, profiles: profiles.Store{Enabled: true}, slotChecks: checks},
-			"(no profiles defined)\n" + section +
-				"  warning: the registry has a provider with id \"profile\" — slot profiles are unavailable\n", ""},
-		{"a registry model id begins with profile/",
-			&app{cfg: reservedModel, profiles: profiles.Store{Enabled: true}, slotChecks: checks},
-			"(no profiles defined)\n" + section +
-				"  warning: the registry has a model whose id begins with \"profile/\" (profile/mixed) — slot profiles are unavailable\n", ""},
+		// A session reads no registry (Task 18): a host registry holding the
+		// "profile/" prefix says nothing here; the model server's catalog
+		// blocks the profile's launch and `wt profile show` instead.
+		{"the host registry has a provider with id profile",
+			&app{hostSet: true, hostCfg: reservedProvider, profiles: profiles.Store{Enabled: true}, slotChecks: checks},
+			"(no profiles defined)\n" + section, ""},
+		{"a host registry model id begins with profile/",
+			&app{hostSet: true, hostCfg: reservedModel, profiles: profiles.Store{Enabled: true}, slotChecks: checks},
+			"(no profiles defined)\n" + section, ""},
 		{"slot-profiles.toml does not parse",
 			&app{profiles: profiles.Store{Enabled: true}, slotLoadErr: slotErr},
 			"(no profiles defined)\nslot profiles: parse slot-profiles.toml: toml: line 2: unexpected EOF\n",
@@ -147,18 +149,38 @@ func TestProfileListSlotSection(t *testing.T) {
 // slotShowApp is an app holding the fixture config and three slot profiles:
 // an all-cloud one, one whose local model is idle, and one naming a model
 // that is not in the registry.
-func slotShowApp() *app {
-	return &app{
-		cfg:      slotFixtureConfig(),
-		profiles: profiles.Store{Enabled: true},
-		slotChecks: []profiles.SlotCheck{
-			slotFixtureCheck(0, "cloud", "opus", slotCloud()),
-			slotFixtureCheck(1, "mixed", "opus", slotMixed()),
-			slotFixtureCheck(2, "broken", "opus", map[string]string{"opus": "openrouter/gone"}),
-			opusplanFixtureCheck(3, "planned"),
-		},
+func slotShowApp(t *testing.T) *app {
+	t.Helper()
+	a := pointAtFake(t, slotShowServer(t), "")
+	a.profiles = profiles.Store{Enabled: true}
+	a.slotChecks = []profiles.SlotCheck{
+		slotFixtureCheck(0, "cloud", "opus", slotCloud()),
+		slotFixtureCheck(1, "mixed", "opus", slotMixed()),
+		slotFixtureCheck(2, "broken", "opus", map[string]string{"opus": "openrouter/gone"}),
+		opusplanFixtureCheck(3, "planned"),
 	}
+	return a
 }
+
+// slotShowServer is the model server `wt profile show` reads a slot profile
+// against: the slot fixture's two cloud models, launchable, and its local
+// omlx/q, stopped (a start row); its token is "sk-test-1234", so the preview
+// masks it as ***1234. slotShowOrigin is its address.
+func slotShowServer(t *testing.T) *fakeModelServer {
+	t.Helper()
+	f := newFakeModelServer(t,
+		modelapi.Row{ID: "openrouter/a", GatewayID: "openrouter/a", ProviderID: "openrouter", ModelName: "a", Family: "a", Location: "cloud",
+			Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 1},
+		modelapi.Row{ID: "openrouter/b", GatewayID: "openrouter/b", ProviderID: "openrouter", ModelName: "b", Family: "b", Location: "cloud",
+			Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 2},
+		localRow("omlx/q", modelapi.StateStopped, modelapi.ActionStart, nil))
+	f.Token = "sk-test-1234"
+	slotShowOrigin = f.URL
+	return f
+}
+
+// slotShowOrigin is the address of the last slotShowServer.
+var slotShowOrigin string
 
 // opusplanFixtureCheck is a profile whose default is claude's opusplan
 // alias, as ValidateSlots returns it: opus and sonnet filled, resting on
@@ -171,10 +193,11 @@ func opusplanFixtureCheck(index int, name string) profiles.SlotCheck {
 }
 
 // TestProfileShowSlotProfile verifies `wt profile show -A claude -M
-// profile/<name>` for a launch row, a start row and a blocked row. It prints
-// the picker's verdict, each slot's registry id and provider-side name (the
-// default marked, an unfilled slot shown with the default's model), and the
-// command wt would run. The proxy key is masked everywhere. A blocked profile
+// profile/<name>` for a launch row, a start row and a blocked row, read
+// against the model server's catalog. It prints the picker's verdict, each
+// slot's model id and provider-side name (the default marked, an unfilled
+// slot shown with the default's model), and the command wt would run against
+// the gateway. The session token is masked everywhere. A blocked profile
 // prints its reason and returns an error, so the command exits non-zero. It
 // starts no model and touches no route: this is the command a user runs to
 // find out why a profile will not launch, and it must be safe to run.
@@ -191,7 +214,7 @@ func TestProfileShowSlotProfile(t *testing.T) {
 			"slot opus*: openrouter/a (a)\n",
 			"slot sonnet: openrouter/a (a) [default's model]\n",
 			"slot haiku: openrouter/b (b)\n",
-			"env: ANTHROPIC_BASE_URL=http://localhost:4000\n",
+			"env: ANTHROPIC_BASE_URL={{origin}}\n",
 			"env: ANTHROPIC_AUTH_TOKEN=***1234\n",
 			"env: ANTHROPIC_API_KEY=\n",
 			"unset: ANTHROPIC_SMALL_FAST_MODEL\n",
@@ -221,17 +244,15 @@ func TestProfileShowSlotProfile(t *testing.T) {
 		}, ""},
 		{"blocked row", "profile/broken", []string{
 			"profile/broken (claude): blocked\n",
-			"reason: slot opus: openrouter/gone is not in the registry\n",
-		}, "profile/broken is blocked: slot opus: openrouter/gone is not in the registry"},
+			"reason: slot opus: openrouter/gone is not in the model server's catalog\n",
+		}, "profile/broken is blocked: slot opus: openrouter/gone is not in the model server's catalog"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			seams := stubSlotSeams(t)
-			started := stubStartDriver(t, nil)
-
-			out, err := runProfileCmd(t, slotShowApp(), "show", "-A", "claude", "-M", tc.id)
+			out, err := runProfileCmd(t, slotShowApp(t), "show", "-A", "claude", "-M", tc.id)
 
 			for _, want := range tc.want {
+				want = strings.ReplaceAll(want, "{{origin}}", slotShowOrigin)
 				if !strings.Contains(out, want) {
 					t.Errorf("stdout lacks %q; stdout =\n%s", want, out)
 				}
@@ -248,9 +269,6 @@ func TestProfileShowSlotProfile(t *testing.T) {
 			if tc.wantErr != "" && strings.Contains(out, "args:") {
 				t.Errorf("a blocked profile printed a command:\n%s", out)
 			}
-			if seams.log() != "" || started.called {
-				t.Errorf("`wt profile show` drove the engine: steps %q, start asked for: %v", seams.log(), started.called)
-			}
 		})
 	}
 }
@@ -260,9 +278,9 @@ func TestProfileShowSlotProfile(t *testing.T) {
 // agent, and a slot-profiles.toml that did not load. Each is an error, never
 // an empty report that reads as "nothing would apply".
 func TestProfileShowSlotProfileErrors(t *testing.T) {
-	withPi := slotShowApp()
-	withPi.cfg.Agents = append(withPi.cfg.Agents, config.Agent{Name: "pi", SupportedProviders: []string{"openrouter", "omlx"}})
-	broken := slotShowApp()
+	withPi := slotShowApp(t)
+	hostCfgOf(withPi).Agents = append(hostCfgOf(withPi).Agents, config.Agent{Name: "pi", SupportedProviders: []string{"openrouter", "omlx"}})
+	broken := slotShowApp(t)
 	broken.slotChecks = nil
 	broken.slotLoadErr = errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")
 	cases := []struct {
@@ -272,7 +290,7 @@ func TestProfileShowSlotProfileErrors(t *testing.T) {
 		id      string
 		wantErr string
 	}{
-		{"unknown name", slotShowApp(), "claude", "profile/nope", `slot profile "profile/nope" is not defined for agent "claude"`},
+		{"unknown name", slotShowApp(t), "claude", "profile/nope", `slot profile "profile/nope" is not defined for agent "claude"`},
 		{"another agent's profile", withPi, "pi", "profile/cloud", `slot profile "profile/cloud" is not defined for agent "pi"`},
 		{"the file did not load", broken, "claude", "profile/cloud", "parse slot-profiles.toml: toml: line 2: unexpected EOF"},
 	}
@@ -303,8 +321,7 @@ func TestProfileShowSlotProfileIgnoresProfilesToml(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			stubSlotSeams(t)
-			a := slotShowApp()
+			a := slotShowApp(t)
 			damage(a)
 			out, err := runProfileCmd(t, a, "show", "-A", "claude", "-M", "profile/cloud")
 			if err != nil || !strings.HasPrefix(out, "profile/cloud (claude): launch\n") {
@@ -347,12 +364,13 @@ MAX_THINKING_TOKENS = "4096"
 	if err != nil {
 		t.Fatal(err)
 	}
+	srv := slotShowServer(t)
 	newApp := func() *app {
-		return &app{cfg: slotFixtureConfig(), profiles: profiles.Store{Enabled: true},
-			slotChecks: profiles.ValidateSlots(store, agents.SlotDrivers())}
+		a := pointAtFake(t, srv, "")
+		a.profiles = profiles.Store{Enabled: true}
+		a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
+		return a
 	}
-	seams := stubSlotSeams(t)
-	started := stubStartDriver(t, nil)
 
 	out, err := runProfileCmd(t, newApp(), "list")
 	wantList := "(no profiles defined)\nslot profiles:\n" +
@@ -373,8 +391,8 @@ MAX_THINKING_TOKENS = "4096"
 	if err != nil || !strings.HasPrefix(out, "profile/table-env (claude): launch\n") || !strings.Contains(out, `"MAX_THINKING_TOKENS": "4096"`) {
 		t.Errorf("show table-env = (%q, %v), want a launch row whose settings carry the table", out, err)
 	}
-	if seams.log() != "" || started.called {
-		t.Errorf("the profile commands drove the engine: steps %q, start asked for: %v", seams.log(), started.called)
+	if n := srv.count("POST"); n != 0 {
+		t.Errorf("the profile commands asked the model server to start or register (%d POSTs): %v", n, srv.reqs())
 	}
 }
 
@@ -449,12 +467,13 @@ claude-sonnet-4-6 = 5
 	if err != nil {
 		t.Fatal(err)
 	}
+	srv := slotShowServer(t)
 	newApp := func() *app {
-		return &app{cfg: slotFixtureConfig(), profiles: profiles.Store{Enabled: true},
-			slotChecks: profiles.ValidateSlots(store, agents.SlotDrivers())}
+		a := pointAtFake(t, srv, "")
+		a.profiles = profiles.Store{Enabled: true}
+		a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
+		return a
 	}
-	seams := stubSlotSeams(t)
-	started := stubStartDriver(t, nil)
 	warnings := []string{
 		`profile/unrouted (claude): config_content.modelOverrides["claude-haiku-4-5"] targets "omlx/q", which is not one of the profile's slot models, so wt does not make sure it is routed`,
 		`profile/unrouted (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/b", which is not one of the profile's slot models, so wt does not make sure it is routed`,
@@ -514,10 +533,10 @@ claude-sonnet-4-6 = 5
 	}
 
 	want := []string{"wt: " + warnings[0], "wt: " + warnings[1]}
-	if got := slotWarnings(newApp()); !slices.Equal(got, want) {
-		t.Errorf("slotWarnings() = %q\nwant %q", got, want)
+	if got := slotWarningsRemote(newApp()); !slices.Equal(got, want) {
+		t.Errorf("slotWarningsRemote() = %q\nwant %q", got, want)
 	}
-	if seams.log() != "" || started.called {
-		t.Errorf("the profile commands drove the engine: steps %q, start asked for: %v", seams.log(), started.called)
+	if n := srv.count("POST"); n != 0 {
+		t.Errorf("the profile commands asked the model server to start or register (%d POSTs): %v", n, srv.reqs())
 	}
 }
