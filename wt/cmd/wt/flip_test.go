@@ -353,10 +353,10 @@ func TestModelLaunchRefusesBeforeAnyGitWork(t *testing.T) {
 // with a model server configured, a registry.toml that does not parse, or a
 // registry link that leads nowhere, is no launch's error. A model-driven
 // launch (claude's native row on the server) and a shell launch both run,
-// exit 0, and config.toml is not rewritten (config.Load, the registry's
-// loader, would have migrated it). A launch that read the host registry
-// would refuse every model on a session machine whose registry is broken —
-// or that has a stale one left behind.
+// exit 0, and neither stream carries a registry error or the "configuration
+// did not load" note. A launch that read the host registry would refuse
+// every model on a session machine whose registry is broken — or that has a
+// stale one left behind.
 func TestLaunchRunsBesideABrokenRegistry(t *testing.T) {
 	for _, reg := range []struct {
 		name  string
@@ -385,17 +385,6 @@ func TestLaunchRunsBesideABrokenRegistry(t *testing.T) {
 				withCleanConfigEnv(t, home)
 				cfgDir := filepath.Join(home, ".config", "agent-wt")
 				nativeOpusServer(t, cfgDir)
-				// A config.toml with an agent: config.Load would add agy and
-				// rewrite it, so an unchanged file proves it never ran.
-				cfgPath := filepath.Join(cfgDir, "config.toml")
-				body, err := os.ReadFile(cfgPath)
-				if err != nil {
-					t.Fatal(err)
-				}
-				body = append(body, []byte("\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\n")...)
-				if err := os.WriteFile(cfgPath, body, 0o644); err != nil {
-					t.Fatal(err)
-				}
 				regPath := filepath.Join(home, ".config", "local-ai", "registry.toml")
 				if err := os.MkdirAll(filepath.Dir(regPath), 0o755); err != nil {
 					t.Fatal(err)
@@ -412,12 +401,16 @@ func TestLaunchRunsBesideABrokenRegistry(t *testing.T) {
 
 				var out string
 				var code int
-				captureFile(t, &os.Stdout, func() { out, code = runRoot(t, launch.args(mark)...) })
+				notes := captureNotes(t)
+				fileOut := captureFile(t, &os.Stdout, func() { out, code = runRoot(t, launch.args(mark)...) })
+				out += fileOut + notes.String()
 				if code != 0 || !fileExists(mark) {
 					t.Errorf("exit %d, ran %v; want 0 and the launch run beside a broken registry\n%s", code, fileExists(mark), out)
 				}
-				if after, _ := os.ReadFile(cfgPath); string(after) != string(body) {
-					t.Errorf("config.toml was rewritten: the registry's loader ran\n%s", after)
+				for _, bad := range []string{"registry", "did not load"} {
+					if strings.Contains(out, bad) {
+						t.Errorf("the launch surfaced %q beside a broken registry:\n%s", bad, out)
+					}
 				}
 			})
 		}

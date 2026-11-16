@@ -463,8 +463,10 @@ func rootCmd() *cobra.Command {
 			// launchFilteredRemote and the picker give, decided without a
 			// network call). A model-driven agent always needs one; with no
 			// agent the picker does (without a terminal the picker's own
-			// refusal, below, comes first, as before). A command agent needs
-			// none.
+			// refusal, below, comes first, as before; for `-W <new>` that
+			// is only after plan.Ensure has created the worktree and
+			// branch, which this check does not change). A command agent
+			// needs none.
 			if (agent != "" && !agents.IsCommand(agent)) || (agent == "" && stdinTTY()) {
 				if _, err := a.buildModels(launchStill); err != nil {
 					return remoteExit(err) // buildModels' errors carry the still clause
