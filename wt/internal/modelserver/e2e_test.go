@@ -250,7 +250,7 @@ func TestEndToEndSessionLifecycle(t *testing.T) {
 	}
 	// (10) the session is gone
 	st, b := call(t, ts, "POST", "/control/v1/sessions/s1/heartbeat", `{"models":[]}`)
-	wantAPIError(t, st, b, http.StatusGone, "unknown_session")
+	wantAPIError(t, st, b, http.StatusGone, modelapi.CodeUnknownSession)
 }
 
 // TestTwoStartsRunInOrderAndSurviveDisconnect pins, over HTTP, that start

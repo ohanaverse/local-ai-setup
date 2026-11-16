@@ -5,10 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -70,8 +75,11 @@ func wantAPIError(t *testing.T, status int, body []byte, wantStatus int, code st
 	if err := json.Unmarshal(body, &e); err != nil {
 		t.Fatalf("body %q is not an APIError: %v", body, err)
 	}
-	if status != wantStatus || e.Code != code {
-		t.Fatalf("got %d code %q (%s), want %d %q", status, e.Code, e.Error, wantStatus, code)
+	if status != wantStatus || e.Error.Code != code {
+		t.Fatalf("got %d code %q (%s), want %d %q", status, e.Error.Code, e.Error.Message, wantStatus, code)
+	}
+	if !slices.Contains(modelapi.ErrorCodes, e.Error.Code) {
+		t.Fatalf("code %q is not an exported modelapi constant", e.Error.Code)
 	}
 	return e
 }
@@ -84,10 +92,10 @@ func TestControlRequiresToken(t *testing.T) {
 	_, ts := newTestServer(t, f, nil)
 	for _, auth := range []string{"", "Bearer wrong", "Basic " + testToken, testToken} {
 		st, b := callAuth(t, ts, "GET", "/control/v1/catalog", "", auth)
-		wantAPIError(t, st, b, http.StatusUnauthorized, "unauthorized")
+		wantAPIError(t, st, b, http.StatusUnauthorized, modelapi.CodeUnauthorized)
 	}
 	st, b := callAuth(t, ts, "POST", "/control/v1/start", `{"model":"omlx/a"}`, "Bearer wrong")
-	wantAPIError(t, st, b, http.StatusUnauthorized, "unauthorized")
+	wantAPIError(t, st, b, http.StatusUnauthorized, modelapi.CodeUnauthorized)
 	if got := f.callList(); len(got) != 0 {
 		t.Errorf("calls = %q, want none behind a 401", got)
 	}
@@ -155,13 +163,13 @@ func TestResolveUnknownCarriesMissingReason(t *testing.T) {
 	}
 	st, b = call(t, ts, "GET", "/control/v1/resolve?model=omlx%2Fb", "")
 	e := wantAPIError(t, st, b, http.StatusNotFound, modelapi.CodeUnknownModel)
-	if !strings.Contains(e.Error, "not on disk") {
-		t.Errorf("error = %q, want the MissingReason text", e.Error)
+	if !strings.Contains(e.Error.Message, "not on disk") {
+		t.Errorf("error = %q, want the MissingReason text", e.Error.Message)
 	}
 	st, b = call(t, ts, "GET", "/control/v1/resolve?model=nope%2Fnone", "")
 	e = wantAPIError(t, st, b, http.StatusNotFound, modelapi.CodeUnknownModel)
-	if !strings.Contains(e.Error, "nope/none") {
-		t.Errorf("error = %q, want it to name the id", e.Error)
+	if !strings.Contains(e.Error.Message, "nope/none") {
+		t.Errorf("error = %q, want it to name the id", e.Error.Message)
 	}
 }
 
@@ -192,9 +200,9 @@ func TestStartReturnsJobRefAndJobCompletes(t *testing.T) {
 		t.Fatalf("job = %+v, want succeeded", js)
 	}
 	st, b = call(t, ts, "GET", "/control/v1/jobs/nope", "")
-	wantAPIError(t, st, b, http.StatusNotFound, "unknown_job")
+	wantAPIError(t, st, b, http.StatusNotFound, modelapi.CodeUnknownJob)
 	st, b = call(t, ts, "POST", "/control/v1/jobs/nope/cancel", "")
-	wantAPIError(t, st, b, http.StatusNotFound, "unknown_job")
+	wantAPIError(t, st, b, http.StatusNotFound, modelapi.CodeUnknownJob)
 }
 
 // TestStopReturnsJobRef pins that stop is a 202 JobRef whose job runs the
@@ -230,14 +238,14 @@ func TestStopReturnsJobRef(t *testing.T) {
 func TestHeartbeatUnknownSessionIs410(t *testing.T) {
 	_, ts := newTestServer(t, &fakeLife{snap: serverSnap()}, nil)
 	st, b := call(t, ts, "POST", "/control/v1/sessions/ghost/heartbeat", `{"models":[]}`)
-	wantAPIError(t, st, b, http.StatusGone, "unknown_session")
+	wantAPIError(t, st, b, http.StatusGone, modelapi.CodeUnknownSession)
 	call(t, ts, "POST", "/control/v1/sessions", `{"id":"s1","models":["omlx/a"]}`)
 	if st, b := call(t, ts, "POST", "/control/v1/sessions/s1/heartbeat", `{"models":["omlx/b"]}`); st != 204 {
 		t.Fatalf("heartbeat = %d %s, want 204", st, b)
 	}
 	call(t, ts, "DELETE", "/control/v1/sessions/s1", "")
 	st, b = call(t, ts, "POST", "/control/v1/sessions/s1/heartbeat", `{"models":[]}`)
-	wantAPIError(t, st, b, http.StatusGone, "unknown_session")
+	wantAPIError(t, st, b, http.StatusGone, modelapi.CodeUnknownSession)
 }
 
 // TestEndSessionIsIdempotent pins that DELETE of a session is 204 whether or
@@ -266,9 +274,9 @@ func TestUnknownBodyFieldIsIgnored(t *testing.T) {
 		t.Fatalf("register with an unknown field = %d %s, want 204", st, b)
 	}
 	st, b := call(t, ts, "POST", "/control/v1/start", `not json`)
-	wantAPIError(t, st, b, http.StatusBadRequest, "bad_request")
+	wantAPIError(t, st, b, http.StatusBadRequest, modelapi.CodeBadRequest)
 	st, b = call(t, ts, "POST", "/control/v1/sessions", `{"id":`)
-	wantAPIError(t, st, b, http.StatusBadRequest, "bad_request")
+	wantAPIError(t, st, b, http.StatusBadRequest, modelapi.CodeBadRequest)
 }
 
 // TestHeartbeatAcceptsEmptyBody pins that a heartbeat with no body at all is
@@ -293,12 +301,12 @@ func TestTrailingDataInBodyIsRefused(t *testing.T) {
 	f := &fakeLife{snap: serverSnap()}
 	_, ts := newTestServer(t, f, nil)
 	st, b := call(t, ts, "POST", "/control/v1/start", `{"model":"omlx/a"}{"model":"omlx/b"}`)
-	e := wantAPIError(t, st, b, http.StatusBadRequest, "bad_request")
-	if !strings.Contains(e.Error, "trailing data") {
+	e := wantAPIError(t, st, b, http.StatusBadRequest, modelapi.CodeBadRequest)
+	if !strings.Contains(e.Error.Message, "trailing data") {
 		t.Errorf("error = %q, want it to name the trailing data", e.Error)
 	}
 	st, b = call(t, ts, "POST", "/control/v1/sessions", `{"id":"s1","models":["omlx/a"]}{"id":"s2","models":[]}`)
-	wantAPIError(t, st, b, http.StatusBadRequest, "bad_request")
+	wantAPIError(t, st, b, http.StatusBadRequest, modelapi.CodeBadRequest)
 	if got := f.callList(); len(got) != 0 {
 		t.Errorf("life calls = %q, want none: nothing in the refused bodies was applied", got)
 	}
@@ -481,7 +489,7 @@ func TestStartStopRejectEmptyModel(t *testing.T) {
 	for _, path := range []string{"/control/v1/start", "/control/v1/stop"} {
 		for _, body := range []string{``, `{}`, `{"model":""}`} {
 			st, b := call(t, ts, "POST", path, body)
-			wantAPIError(t, st, b, http.StatusBadRequest, "bad_request")
+			wantAPIError(t, st, b, http.StatusBadRequest, modelapi.CodeBadRequest)
 		}
 	}
 	if got := f.callList(); len(got) != 0 {
@@ -497,5 +505,124 @@ func TestNewServerRejectsNonPositiveIdleGrace(t *testing.T) {
 		if _, err := NewServer(Options{Listen: "127.0.0.1:0", Token: "t", IdleGrace: g}, d); err == nil {
 			t.Errorf("IdleGrace %s accepted, want an error", g)
 		}
+	}
+}
+
+// TestUnroutedControlPathsAnswerTheErrorObject pins that an unknown path is a
+// 404 not_found and a wrong method a 405 method_not_allowed with an Allow
+// header, both as the API's error object, and that the token check still runs
+// first (an unauthenticated caller gets 401, not a route hint).
+func TestUnroutedControlPathsAnswerTheErrorObject(t *testing.T) {
+	f := &fakeLife{snap: serverSnap()}
+	_, ts := newTestServer(t, f, nil)
+	st, b := call(t, ts, "GET", "/control/v1/nope", "")
+	wantAPIError(t, st, b, http.StatusNotFound, modelapi.CodeNotFound)
+
+	req, err := http.NewRequest("DELETE", ts.URL+"/control/v1/catalog", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ = io.ReadAll(resp.Body)
+	wantAPIError(t, resp.StatusCode, b, http.StatusMethodNotAllowed, modelapi.CodeMethodNotAllowed)
+	if allow := resp.Header.Get("Allow"); !strings.Contains(allow, "GET") {
+		t.Errorf("Allow = %q, want it to list GET", allow)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+
+	st, b = callAuth(t, ts, "GET", "/control/v1/nope", "", "")
+	e := wantAPIError(t, st, b, http.StatusUnauthorized, modelapi.CodeUnauthorized)
+	if e.Error.Message != modelapi.MsgUnauthorized {
+		t.Errorf("401 message = %q", e.Error.Message)
+	}
+	st, b = callAuth(t, ts, "DELETE", "/control/v1/catalog", "", "")
+	wantAPIError(t, st, b, http.StatusUnauthorized, modelapi.CodeUnauthorized)
+}
+
+// TestWriteErrorCodesAreConstants pins that every writeError call in the
+// non-test sources passes a modelapi.Code* constant, never a literal, so a
+// client can switch on every code the server writes.
+func TestWriteErrorCodesAreConstants(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			c, ok := n.(*ast.CallExpr)
+			if !ok || len(c.Args) < 3 {
+				return true
+			}
+			if id, ok := c.Fun.(*ast.Ident); !ok || id.Name != "writeError" {
+				return true
+			}
+			calls++
+			sel, ok := c.Args[2].(*ast.SelectorExpr)
+			if !ok {
+				return true // the generic writeError(w, status, code, msg) helper body passes parameters
+			}
+			if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "modelapi" || !strings.HasPrefix(sel.Sel.Name, "Code") {
+				t.Errorf("%s: writeError code is not a modelapi.Code* constant", f)
+			}
+			return true
+		})
+		ast.Inspect(file, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok && len(c.Args) >= 3 {
+				if id, ok := c.Fun.(*ast.Ident); ok && id.Name == "writeError" {
+					if _, lit := c.Args[2].(*ast.BasicLit); lit {
+						t.Errorf("%s: writeError called with a string literal code", f)
+					}
+				}
+			}
+			return true
+		})
+	}
+	if calls == 0 {
+		t.Fatal("found no writeError calls; the scan is broken")
+	}
+}
+
+// TestServerAnswersMatchErrorSamples pins that what the server answers for a
+// 401 and an unknown model is the fixture's error_unauthorized and
+// error_unknown_model shape (the same message for the 401, the same code and a
+// non-empty message for the unknown model).
+func TestServerAnswersMatchErrorSamples(t *testing.T) {
+	raw, err := os.ReadFile("../../../docs/contracts/model-api.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Unauthorized modelapi.APIError `json:"error_unauthorized"`
+		UnknownModel modelapi.APIError `json:"error_unknown_model"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeLife{snap: serverSnap()}
+	_, ts := newTestServer(t, f, nil)
+	st, b := callAuth(t, ts, "GET", "/control/v1/catalog", "", "")
+	got := wantAPIError(t, st, b, http.StatusUnauthorized, doc.Unauthorized.Error.Code)
+	if got != doc.Unauthorized {
+		t.Errorf("401 body %+v, fixture %+v", got, doc.Unauthorized)
+	}
+	st, b = call(t, ts, "GET", "/control/v1/resolve?model=nope/none", "")
+	got = wantAPIError(t, st, b, http.StatusNotFound, doc.UnknownModel.Error.Code)
+	if got.Error.Message == "" {
+		t.Error("unknown model answered an empty message")
 	}
 }

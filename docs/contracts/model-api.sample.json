@@ -49,5 +49,9 @@
     "code": "in_use",
     "message": "omlx/qwen3.8-35b is in use by 2 live session(s); confirm to stop it anyway",
     "sessions": ["sess-1", "sess-2"]
-  }
+  },
+  "error_unauthorized": {"error": {"message": "missing or wrong bearer token", "code": "unauthorized"}},
+  "error_unknown_model": {"error": {"message": "unknown model \"nope/none\"", "code": "unknown_model"}},
+  "gateway_error_unauthorized": {"error": {"message": "missing or wrong bearer token", "type": "authentication_error", "code": "unauthorized"}},
+  "gateway_error_proxy_unavailable": {"error": {"message": "model proxy is restarting", "type": "api_error", "code": "proxy_unavailable"}}
 }

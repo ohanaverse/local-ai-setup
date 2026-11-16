@@ -95,7 +95,7 @@ func (s *Server) routes() http.Handler {
 	ctl.HandleFunc("DELETE /control/v1/sessions/{id}", s.endSession)
 
 	root := http.NewServeMux()
-	root.Handle("/control/v1/", requireToken(s.o.Token, ctl))
+	root.Handle("/control/v1/", requireToken(s.o.Token, controlErrors(ctl)))
 	// The gateway authenticates itself; it is not wrapped again.
 	root.Handle("/v1/", modelgateway.New(modelgateway.Config{
 		Upstream: s.o.Upstream, UpstreamKey: s.o.UpstreamKey, Token: s.o.Token,
@@ -118,12 +118,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "bad_request", "invalid request body: "+err.Error())
+		writeError(w, http.StatusBadRequest, modelapi.CodeBadRequest, "invalid request body: "+err.Error())
 		return false
 	}
 	var extra json.RawMessage
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "bad_request", "trailing data after the JSON request body")
+		writeError(w, http.StatusBadRequest, modelapi.CodeBadRequest, "trailing data after the JSON request body")
 		return false
 	}
 	return true
@@ -163,7 +163,7 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Model == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "model is required")
+		writeError(w, http.StatusBadRequest, modelapi.CodeBadRequest, "model is required")
 		return
 	}
 	id := s.jobs.Submit("start", req.Model, s.d.StartJob(req, s.sessions))
@@ -176,7 +176,7 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Model == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "model is required")
+		writeError(w, http.StatusBadRequest, modelapi.CodeBadRequest, "model is required")
 		return
 	}
 	id := s.jobs.Submit("stop", req.Model, s.d.StopJob(req, s.sessions))
@@ -186,7 +186,7 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 	st, ok := s.jobs.Get(r.PathValue("id"))
 	if !ok {
-		writeError(w, http.StatusNotFound, "unknown_job", "no such job")
+		writeError(w, http.StatusNotFound, modelapi.CodeUnknownJob, "no such job")
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
@@ -194,7 +194,7 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 	if !s.jobs.Cancel(r.PathValue("id")) {
-		writeError(w, http.StatusNotFound, "unknown_job", "no such job")
+		writeError(w, http.StatusNotFound, modelapi.CodeUnknownJob, "no such job")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -206,7 +206,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.sessions.Register(req.ID, req.Models); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		writeError(w, http.StatusBadRequest, modelapi.CodeBadRequest, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -218,7 +218,7 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.sessions.Heartbeat(r.PathValue("id"), req.Models) {
-		writeError(w, http.StatusGone, "unknown_session", "session is unknown or has lapsed; register again")
+		writeError(w, http.StatusGone, modelapi.CodeUnknownSession, "session is unknown or has lapsed; register again")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -269,4 +269,41 @@ func (s *Server) Serve(ctx context.Context, announce func(addr string)) error {
 		return serveErr
 	}
 	return nil
+}
+
+// statusProbe records the status and Allow header a handler would write, and
+// drops its body.
+type statusProbe struct {
+	hdr    http.Header
+	status int
+}
+
+func (p *statusProbe) Header() http.Header         { return p.hdr }
+func (p *statusProbe) Write(b []byte) (int, error) { return len(b), nil }
+func (p *statusProbe) WriteHeader(code int)        { p.status = code }
+
+// controlErrors wraps the control mux so a path or method it does not route
+// answers the API's error object (404 not_found, 405 method_not_allowed with
+// Allow) instead of ServeMux's plain-text body. It runs behind requireToken, so
+// an unauthenticated caller still gets the 401 first.
+func controlErrors(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h, pattern := mux.Handler(r)
+		if pattern == "" {
+			p := &statusProbe{hdr: http.Header{}, status: http.StatusOK}
+			h.ServeHTTP(p, r)
+			switch p.status {
+			case http.StatusNotFound:
+				writeError(w, http.StatusNotFound, modelapi.CodeNotFound, "no such control endpoint")
+				return
+			case http.StatusMethodNotAllowed:
+				if allow := p.hdr.Get("Allow"); allow != "" {
+					w.Header().Set("Allow", allow)
+				}
+				writeError(w, http.StatusMethodNotAllowed, modelapi.CodeMethodNotAllowed, "method not allowed for this control endpoint")
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
 }

@@ -38,7 +38,7 @@ func LoadToken(path string) (string, error) {
 func writeError(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(modelapi.APIError{Error: msg, Code: code})
+	_ = json.NewEncoder(w).Encode(modelapi.APIError{Error: modelapi.ErrorObject{Message: msg, Code: code}})
 }
 
 // requireToken wraps next so a request without the bearer token is a 401 and
@@ -47,7 +47,7 @@ func requireToken(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or wrong bearer token")
+			writeError(w, http.StatusUnauthorized, modelapi.CodeUnauthorized, modelapi.MsgUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)

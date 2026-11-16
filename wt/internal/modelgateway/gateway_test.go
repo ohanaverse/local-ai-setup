@@ -172,12 +172,13 @@ func TestGatewayRestartingIs503(t *testing.T) {
 	if ra := resp.Header.Get("Retry-After"); ra != "5" {
 		t.Errorf("Retry-After %q, want 5", ra)
 	}
-	var e modelapi.APIError
+	var e modelapi.GatewayError
 	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
 		t.Fatal(err)
 	}
-	if e.Error != "model proxy is restarting" || e.Code != "proxy_unavailable" {
-		t.Errorf("body %+v", e)
+	want := modelapi.GatewayErrorObject{Message: modelapi.MsgProxyUnavailable, Type: modelapi.TypeAPI, Code: modelapi.CodeProxyUnavailable}
+	if e.Error != want {
+		t.Errorf("body %+v, want %+v", e, want)
 	}
 }
 
@@ -216,5 +217,30 @@ func TestGatewayIgnoresClientDisconnectCleanly(t *testing.T) {
 	}
 	if got := do(t, "POST", gw.URL+"/v1/ok", map[string]string{"x-api-key": testToken}).StatusCode; got != 200 {
 		t.Errorf("gateway after disconnect: status %d", got)
+	}
+}
+
+// TestGateway401IsOpenAIStyle pins that the gateway's own 401 is the
+// OpenAI-style error object with the shared wording and never carries the
+// upstream key.
+func TestGateway401IsOpenAIStyle(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer up.Close()
+	gw := newGateway(t, up)
+	resp := do(t, "POST", gw.URL+"/v1/messages", nil)
+	if resp.StatusCode != 401 {
+		t.Fatalf("status %d, want 401", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(b), testKey) {
+		t.Errorf("body leaks the upstream key: %s", b)
+	}
+	var e modelapi.GatewayError
+	if err := json.Unmarshal(b, &e); err != nil {
+		t.Fatal(err)
+	}
+	want := modelapi.GatewayErrorObject{Message: modelapi.MsgUnauthorized, Type: modelapi.TypeAuthentication, Code: modelapi.CodeUnauthorized}
+	if e.Error != want {
+		t.Errorf("body %+v, want %+v", e, want)
 	}
 }

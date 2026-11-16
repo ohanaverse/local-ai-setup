@@ -51,9 +51,9 @@ func New(c Config) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "5")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(modelapi.APIError{
-				Error: "model proxy is restarting", Code: "proxy_unavailable",
-			})
+			_ = json.NewEncoder(w).Encode(modelapi.GatewayError{Error: modelapi.GatewayErrorObject{
+				Message: modelapi.MsgProxyUnavailable, Type: modelapi.TypeAPI, Code: modelapi.CodeProxyUnavailable,
+			}})
 		},
 	}
 	mux := http.NewServeMux()
@@ -66,7 +66,9 @@ func authenticated(token string, next http.Handler) http.Handler {
 		if !validToken(r, token) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(modelapi.APIError{Error: "unauthorized", Code: "unauthorized"})
+			_ = json.NewEncoder(w).Encode(modelapi.GatewayError{Error: modelapi.GatewayErrorObject{
+				Message: modelapi.MsgUnauthorized, Type: modelapi.TypeAuthentication, Code: modelapi.CodeUnauthorized,
+			}})
 			return
 		}
 		next.ServeHTTP(w, r)

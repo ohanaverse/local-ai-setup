@@ -9,6 +9,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -37,6 +38,11 @@ func TestFixtureMatchesTypes(t *testing.T) {
 		"session_beat":     &SessionBeat{},
 		"problem":          &Problem{},
 		"problem_in_use":   &Problem{},
+
+		"error_unauthorized":              &APIError{},
+		"error_unknown_model":             &APIError{},
+		"gateway_error_unauthorized":      &GatewayError{},
+		"gateway_error_proxy_unavailable": &GatewayError{},
 	}
 	if len(doc) != len(members) {
 		t.Fatalf("fixture has %d members, want %d", len(doc), len(members))
@@ -84,6 +90,13 @@ func TestEveryProblemCodeIsDocumented(t *testing.T) {
 		"CodeCancelled":        CodeCancelled,
 		"CodeUnknownModel":     CodeUnknownModel,
 		"CodeBlocked":          CodeBlocked,
+		"CodeBadRequest":       CodeBadRequest,
+		"CodeUnauthorized":     CodeUnauthorized,
+		"CodeNotFound":         CodeNotFound,
+		"CodeMethodNotAllowed": CodeMethodNotAllowed,
+		"CodeUnknownJob":       CodeUnknownJob,
+		"CodeUnknownSession":   CodeUnknownSession,
+		"CodeProxyUnavailable": CodeProxyUnavailable,
 	}
 	// The table must list every Code* constant the package declares.
 	fset := token.NewFileSet()
@@ -102,6 +115,14 @@ func TestEveryProblemCodeIsDocumented(t *testing.T) {
 					t.Errorf("constant %s is missing from the codes table in this test", n.Name)
 				}
 			}
+		}
+	}
+	if len(codes) != len(ErrorCodes) {
+		t.Errorf("ErrorCodes lists %d codes, the Code* constants are %d", len(ErrorCodes), len(codes))
+	}
+	for name, v := range codes {
+		if !slices.Contains(ErrorCodes, v) {
+			t.Errorf("%s is missing from ErrorCodes", name)
 		}
 	}
 	snake := regexp.MustCompile(`^[a-z]+(_[a-z]+)*$`)
@@ -133,5 +154,44 @@ func TestEveryProblemCodeIsDocumented(t *testing.T) {
 	}
 	if doc.InUse.Code != CodeInUse || len(doc.InUse.Sessions) == 0 {
 		t.Errorf("fixture problem_in_use = %+v, want code in_use with sessions", doc.InUse)
+	}
+}
+
+// TestErrorSamplesUseConstants pins that the fixture's error samples carry the
+// shared wording, the OpenAI-style types and codes from ErrorCodes.
+func TestErrorSamplesUseConstants(t *testing.T) {
+	raw, err := os.ReadFile("../../../docs/contracts/model-api.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Unauthorized  APIError     `json:"error_unauthorized"`
+		UnknownModel  APIError     `json:"error_unknown_model"`
+		GwUnauth      GatewayError `json:"gateway_error_unauthorized"`
+		GwUnavailable GatewayError `json:"gateway_error_proxy_unavailable"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Unauthorized.Error != (ErrorObject{Message: MsgUnauthorized, Code: CodeUnauthorized}) {
+		t.Errorf("error_unauthorized = %+v", doc.Unauthorized)
+	}
+	if doc.UnknownModel.Error.Code != CodeUnknownModel || doc.UnknownModel.Error.Message == "" {
+		t.Errorf("error_unknown_model = %+v", doc.UnknownModel)
+	}
+	if doc.GwUnauth.Error != (GatewayErrorObject{Message: MsgUnauthorized, Type: TypeAuthentication, Code: CodeUnauthorized}) {
+		t.Errorf("gateway_error_unauthorized = %+v", doc.GwUnauth)
+	}
+	if doc.GwUnavailable.Error != (GatewayErrorObject{Message: MsgProxyUnavailable, Type: TypeAPI, Code: CodeProxyUnavailable}) {
+		t.Errorf("gateway_error_proxy_unavailable = %+v", doc.GwUnavailable)
+	}
+	for _, c := range []string{CodeBadRequest, CodeUnauthorized, CodeNotFound, CodeMethodNotAllowed, CodeUnknownJob, CodeUnknownSession, CodeProxyUnavailable} {
+		if !slices.Contains(ErrorCodes, c) {
+			t.Errorf("%q missing from ErrorCodes", c)
+		}
+	}
+	var e error = doc.Unauthorized.Err()
+	if e.Error() != MsgUnauthorized {
+		t.Errorf("Err() = %q", e)
 	}
 }
