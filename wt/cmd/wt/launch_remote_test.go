@@ -517,7 +517,7 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 // launch with no -M and several launchable models: on a terminal it opens the
 // model server's picker (whose cursor lands on the rotation's next row), as
 // the registry path opens its picker, instead of launching a model the user
-// never saw; without a terminal it still rotates, so a script keeps working.
+// never saw; without a terminal it refuses as the registry path does.
 func TestSeveralMatchesOpenThePickerOnTheServer(t *testing.T) {
 	cloud := func(id string, order int) modelapi.Row {
 		return modelapi.Row{ID: id, GatewayID: id, ProviderID: "openrouter", ModelName: strings.TrimPrefix(id, "openrouter/"), Family: "f",
@@ -547,14 +547,15 @@ func TestSeveralMatchesOpenThePickerOnTheServer(t *testing.T) {
 		t.Errorf("an agent was built before the picker: %d", len(*r.built))
 	}
 
+	// Without a terminal the registry path's rule (P5): refuse, naming -M,
+	// and launch nothing; never a silent rotation.
 	stubStdinTTY(t, false)
 	called = false
-	captureFile(t, &os.Stdout, func() {
-		if err := runLaunchPath(cmd, r.a, "claude", "", "", "", nil, t.TempDir(), ""); err != nil {
-			t.Fatalf("runLaunchPath without a terminal: %v", err)
-		}
-	})
-	if called || len(*r.built) != 1 {
-		t.Errorf("no terminal: tuiRun called %v, builds %d, want the rotation's launch", called, len(*r.built))
+	err := runLaunchPath(cmd, r.a, "claude", "", "", "", nil, t.TempDir(), "")
+	if !errors.Is(err, errModelPickerNeedsTTY) {
+		t.Errorf("no terminal: err = %v, want %v", err, errModelPickerNeedsTTY)
+	}
+	if called || len(*r.built) != 0 || index(r.f.Reqs, "POST /control/v1/sessions") >= 0 {
+		t.Errorf("no terminal: tuiRun called %v, builds %d, requests %v: want nothing registered or launched", called, len(*r.built), r.f.Reqs)
 	}
 }

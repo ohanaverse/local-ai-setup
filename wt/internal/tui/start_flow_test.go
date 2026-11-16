@@ -2015,6 +2015,15 @@ func TestReplaceDialogFromOccupiedProblem(t *testing.T) {
 	if len(reqs) != 2 || reqs[0].AllowReplace || !reqs[1].AllowReplace {
 		t.Errorf("start requests = %+v, want a first without and a second with allow_replace", reqs)
 	}
+	// The dialog asks, never the job driver: RunStart is handed no Answerer,
+	// so every question comes back as the job's problem.
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, a := range f.answerers {
+		if a != nil {
+			t.Errorf("RunStart call %d was handed an Answerer %T, want nil", i+1, a)
+		}
+	}
 }
 
 // TestStartCtrlCDetachesAndKeepsJob pins R8's detach: ctrl+c on the start
@@ -2214,5 +2223,84 @@ func TestStartScreenTextCannotForgeLines(t *testing.T) {
 	m, _ = updateMsg(m, recvStart(t, m))
 	if strings.ContainsAny(m.status, "\n\x1b\x07") || !strings.Contains(m.status, "forged status") {
 		t.Errorf("status = %q, want one printable line", m.status)
+	}
+}
+
+// TestCancelThatLosesTheRaceDoesNotLaunch pins that c means "no launch" even
+// when the job finishes first: whether the server took the cancel too late
+// or refused it because the job had already finished, a start that then
+// succeeds goes back to the table saying the model started and the launch
+// was called off (the registry path's words, with the job id), takes the
+// model out of the client session, and launches no agent.
+func TestCancelThatLosesTheRaceDoesNotLaunch(t *testing.T) {
+	for _, refused := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refused=%v", refused), func(t *testing.T) {
+			finish := make(chan struct{})
+			f := &fakeModels{cat: startRowCatalog()}
+			f.onCancel = func(string) { close(finish) }
+			if refused {
+				f.cancelErr = errors.New("job j7 already finished")
+			}
+			f.startFn = func(ctx context.Context, _ int, _ modelapi.StartRequest, prog modelclient.Progress) (modelapi.JobStatus, error) {
+				prog(modelclient.JobView{ID: "j7", State: modelapi.JobRunning, Step: "loading"})
+				select {
+				case <-finish:
+					return modelapi.JobStatus{ID: "j7", State: modelapi.JobSucceeded}, nil
+				case <-ctx.Done():
+					return detached("j7")
+				}
+			}
+			old := buildGatewayLaunch
+			buildGatewayLaunch = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+				t.Error("an agent was built after the user cancelled")
+				return nil, agents.LaunchInfo{}, errors.New("no")
+			}
+			t.Cleanup(func() { buildGatewayLaunch = old })
+			m := remoteTable(t, f)
+			m, _ = enterRemote(t, m, "omlx/qwen3.8")
+			m, _ = updateMsg(m, recvStart(t, m))
+			m, cmd := updateMsg(m, keyRune('c'))
+			m, _ = updateMsg(m, cmd())
+			m, cmd = updateMsg(m, recvStart(t, m))
+			if m.phase != phaseModel || m.committed {
+				t.Fatalf("phase %v, committed %v: want the table and no launch", m.phase, m.committed)
+			}
+			if want := "started omlx/qwen3.8; launch cancelled (job j7)"; !strings.Contains(m.status, want) {
+				t.Errorf("status = %q, want %q", m.status, want)
+			}
+			if cmd == nil {
+				t.Fatal("no command to take the model out of the client session")
+			}
+			if msg := cmd(); msg != nil {
+				t.Errorf("drop command returned %#v, want nothing to launch", msg)
+			}
+			if h := f.history(); !slices.Contains(h, "remove omlx/qwen3.8") {
+				t.Errorf("calls = %v, want the model dropped from the client session", h)
+			}
+		})
+	}
+}
+
+// TestDetachedStartGoroutineNeverBlocks pins that a start the flow stopped
+// waiting for cannot leak its goroutine: after a detach nothing reads the
+// start's channel, so with the channel full the job's final result is
+// dropped instead of blocking forever.
+func TestDetachedStartGoroutineNeverBlocks(t *testing.T) {
+	f := &fakeModels{}
+	f.startFn = func(ctx context.Context, _ int, _ modelapi.StartRequest, prog modelclient.Progress) (modelapi.JobStatus, error) {
+		for i := 0; i < 16; i++ {
+			prog(modelclient.JobView{ID: "j1", State: modelapi.JobRunning})
+		}
+		<-ctx.Done()
+		return detached("j1")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	_, finished := runRemoteStart(ctx, f, &clientHold{client: f}, modelapi.StartRequest{Model: "omlx/qwen3.8"}, 1)
+	waitStarts(t, f, 1)
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the detached start's goroutine is still blocked on its channel")
 	}
 }

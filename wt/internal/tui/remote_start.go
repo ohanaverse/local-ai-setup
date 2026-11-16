@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -206,7 +207,7 @@ func (m model) beginRemoteStart(it *modelItem, allow bool, others othersPlan) (m
 	m.startRun++
 	id := m.startRun
 	req := modelapi.StartRequest{Model: it.model.ID, AllowReplace: allow, Others: wireOthers(others)}
-	ch := runRemoteStart(ctx, m.client, m.hold, req, id)
+	ch, _ := runRemoteStart(ctx, m.client, m.hold, req, id)
 	m.start = &startState{id: id, item: it, allow: allow, others: others, began: time.Now(), cancel: cancel, ch: ch, remote: true}
 	m.phase = phaseStarting
 	m.status = ""
@@ -220,9 +221,11 @@ func (m model) beginRemoteStart(it *modelItem, allow bool, others othersPlan) (m
 // comes back in the result and the dialog asks it, then starts again with the
 // answer. A start that fails re-registers the session without the model; one
 // whose ctx was cancelled (a detach, a quit) leaves that to its canceller.
-func runRemoteStart(ctx context.Context, c ModelClient, h *clientHold, req modelapi.StartRequest, id int) <-chan tea.Msg {
+func runRemoteStart(ctx context.Context, c ModelClient, h *clientHold, req modelapi.StartRequest, id int) (<-chan tea.Msg, <-chan struct{}) {
 	ch := make(chan tea.Msg, 16)
+	finished := make(chan struct{})
 	go func() {
+		defer close(finished)
 		defer close(ch)
 		note := h.hold(ctx, req.Model)
 		prog := func(v modelclient.JobView) {
@@ -235,9 +238,19 @@ func runRemoteStart(ctx context.Context, c ModelClient, h *clientHold, req model
 		if err != nil && ctx.Err() == nil {
 			h.drop(ctx, req.Model)
 		}
-		ch <- startDoneMsg{id: id, err: err, note: note}
+		done := startDoneMsg{id: id, err: err, note: note}
+		if ctx.Err() != nil {
+			// Detached or quit: nothing may read the channel again, so a
+			// full one must not hold this goroutine forever.
+			select {
+			case ch <- done:
+			default:
+			}
+			return
+		}
+		ch <- done
 	}()
-	return ch
+	return ch, finished
 }
 
 // canCancelJob is the one predicate behind c on the start screen (T5): the
@@ -256,7 +269,8 @@ type jobCancelMsg struct {
 // handleRemoteStartKey is the start screen's keyboard on the API path (R8):
 // ctrl+c detaches once the job has an id (the job keeps running) and leaves
 // wt before it has one (T1); c cancels the job (canCancelJob). Every other
-// key does nothing.
+// key does nothing — esc and q included, on purpose: the footer names only
+// keys that act (T5), and ctrl+c is the one way off this screen.
 func (m model) handleRemoteStartKey(msg tea.KeyMsg) (model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
@@ -283,7 +297,7 @@ func (m model) handleRemoteStartKey(msg tea.KeyMsg) (model, tea.Cmd) {
 			return m, nil
 		}
 		next := *m.start
-		next.cancelSent, next.cancelErr = true, ""
+		next.cancelSent, next.cancelAsked, next.cancelErr = true, true, ""
 		m.start = &next
 		c, runID, jobID := m.client, next.id, next.jobID
 		return m, func() tea.Msg {
@@ -332,6 +346,18 @@ func (m model) finishRemoteStart(msg startDoneMsg) (model, tea.Cmd) {
 		m.status = withNote(note, status)
 		m.phase = phaseModel
 		return m, nil
+	}
+	if msg.err == nil && st.cancelAsked {
+		// c lost the race: the job was past cancelling (or the server
+		// refused the cancel because it had finished). The model is up, but
+		// the user asked for no launch: none, and nothing will use it.
+		m.status = withNote(note, fmt.Sprintf("started %s; launch cancelled (job %s)", st.item.model.ID, st.jobID))
+		m.phase = phaseModel
+		h, modelID := m.hold, st.item.model.ID
+		return m, func() tea.Msg {
+			h.drop(context.Background(), modelID)
+			return nil
+		}
 	}
 	if msg.err == nil {
 		m.phase = phaseModel
@@ -449,15 +475,35 @@ func problemHeader(id string, p modelapi.Problem, sameFamily, othersAsked bool, 
 	return strings.Join(lines, "\n")
 }
 
-// remoteLaunchFailedMsg is a launch on the gateway that could not be built:
-// the terminal was never released and the picker comes back.
-type remoteLaunchFailedMsg struct{ err error }
+// launchPrep is the API path's launch while it prepares on the model server
+// (phaseLaunching): the client session's register and, for an agent that
+// syncs the gateway's models, the catalog read, then the agent's command.
+// Nothing local runs until it is done, so a quit here leaves no agent behind.
+type launchPrep struct {
+	id      int
+	modelID string
+	cancel  context.CancelFunc
+	// quitting is set once ctrl+c asked wt to quit, as routingState.quitting:
+	// the prep's result, which can still be delivered before the QuitMsg, is
+	// dropped and launches nothing.
+	quitting bool
+}
+
+// remotePreparedMsg is a finished prep: the agent's command built against
+// the gateway, or why it could not be.
+type remotePreparedMsg struct {
+	id  int
+	cmd *exec.Cmd
+	err error
+}
 
 // launchRemote launches it on the gateway, the non-TUI launchFilteredRemote's
-// steps in its run command: the client session holds the model, the agent is
-// built against the gateway (with the server's non-native models for an agent
-// that syncs them), the rotation is recorded once the launch gate is past, and
-// the post-exit flow ends the client session (exitTail).
+// steps: the server work (hold the model in the client session, read the
+// server's non-native models for an agent that syncs them, build the agent
+// against the gateway) runs in a prep command behind the launching screen;
+// only once it is done does Update hand the built command to the run command,
+// which records the rotation once the launch gate is past. The post-exit flow
+// ends the client session (exitTail).
 func (m model) launchRemote(it *modelItem) (model, tea.Cmd) {
 	mdl := it.model
 	if row, ok := m.wire[it.model.ID]; ok {
@@ -468,17 +514,19 @@ func (m model) launchRemote(it *modelItem) (model, tea.Cmd) {
 	if m.hold == nil {
 		m.hold = &clientHold{client: m.client}
 	}
-	r := remoteRun{
-		client: m.client, hold: m.hold, agent: m.agent, model: mdl, path: m.selectedPath,
-		yolo: m.yolo, extraArgs: m.extraArgs, gate: m.gateFor(), note: m.startNote,
-	}
-	m.startNote = ""
-	return m.commitLaunch(remoteRunCmd(r))
+	ctx, cancel := context.WithCancel(context.Background())
+	m.prepRun++
+	m.prep = &launchPrep{id: m.prepRun, modelID: mdl.ID, cancel: cancel}
+	m.phase = phaseLaunching
+	return m, prepRemoteLaunchCmd(ctx, prepInput{
+		id: m.prepRun, client: m.client, hold: m.hold, agent: m.agent, model: mdl,
+		path: m.selectedPath, yolo: m.yolo, extraArgs: m.extraArgs,
+	})
 }
 
-// remoteRun is what a launch on the gateway needs, copied out of the model so
-// its command never reads it.
-type remoteRun struct {
+// prepInput is what the prep command reads, copied out of the model.
+type prepInput struct {
+	id        int
 	client    ModelClient
 	hold      *clientHold
 	agent     string
@@ -486,28 +534,29 @@ type remoteRun struct {
 	path      string
 	yolo      bool
 	extraArgs []string
-	gate      func() (bool, error)
-	note      string // the start's note, ahead of a build failure
 }
 
-// remoteRunCmd is the launch's run command. Holding the model starts the
-// client session's heartbeat when this is its first model, so the heartbeat
-// goroutine belongs to this command (and is stopped by the post-exit end),
-// never to Update. A build that fails takes the model out of the client
-// session and returns to the picker before the terminal is released.
-func remoteRunCmd(r remoteRun) tea.Cmd {
+// prepRemoteLaunchCmd does the launch's server work. Holding the model
+// starts the client session's heartbeat when it is the first one, so the
+// heartbeat goroutine belongs to this command (the post-exit end stops it),
+// never to Update. A prep that fails, or that esc or ctrl+c cancelled, takes
+// the model out of the client session and builds nothing more.
+func prepRemoteLaunchCmd(ctx context.Context, in prepInput) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
-		if note := r.hold.hold(ctx, r.model.ID); note != "" {
+		bg := context.WithoutCancel(ctx)
+		if note := in.hold.hold(ctx, in.model.ID); note != "" && ctx.Err() == nil {
 			fmt.Fprintf(clientNotes, "wt: note: %s\n", note)
 		}
 		fail := func(err error) tea.Msg {
-			r.hold.drop(ctx, r.model.ID)
-			return remoteLaunchFailedMsg{err: errors.New(withNote(r.note, "launch failed: "+cleanup.Flatten(err.Error())))}
+			in.hold.drop(bg, in.model.ID)
+			return remotePreparedMsg{id: in.id, err: err}
+		}
+		if ctx.Err() != nil {
+			return fail(ctx.Err())
 		}
 		var models []config.Model
-		if _, ok := agents.ByName(r.agent).(agents.GatewaySyncer); ok && !r.model.Native {
-			cat, err := r.client.Catalog(ctx)
+		if _, ok := agents.ByName(in.agent).(agents.GatewaySyncer); ok && !in.model.Native {
+			cat, err := in.client.Catalog(ctx)
 			if err != nil {
 				return fail(err)
 			}
@@ -517,28 +566,78 @@ func remoteRunCmd(r remoteRun) tea.Cmd {
 				}
 			}
 		}
-		cmd, _, err := buildGatewayLaunch(r.agent, r.model, r.path, r.yolo, r.client.Gateway(), models, r.extraArgs)
+		if ctx.Err() != nil {
+			return fail(ctx.Err())
+		}
+		cmd, _, err := buildGatewayLaunch(in.agent, in.model, in.path, in.yolo, in.client.Gateway(), models, in.extraArgs)
 		if err != nil {
 			return fail(err)
 		}
 		if wd, werr := shellDir(); werr == nil {
-			for _, n := range agents.RelativeArgNotes(r.agent, wd, cmd.Dir, r.extraArgs) {
+			for _, n := range agents.RelativeArgNotes(in.agent, wd, cmd.Dir, in.extraArgs) {
 				fmt.Fprintln(clientNotes, n)
 			}
 		}
-		agent, id := r.agent, r.model.ID
-		record := func() string {
-			if err := rotation.New().RecordFor(agent, id); err != nil {
-				return err.Error()
-			}
-			return ""
-		}
-		// A launch that never reached the agent (the profile failed) ends
-		// the client session where the registry path releases its wt
-		// session.
-		h := r.hold
-		return runRecordAndWaitWith(cmd, r.agent, r.model, record, r.gate, func() { h.end(os.Stderr) })()
+		return remotePreparedMsg{id: in.id, cmd: cmd}
 	}
+}
+
+// handlePrepared applies a finished prep: a failure returns to the picker
+// with the reason (and the start's note ahead of it), a built command goes to
+// the run command. A prep the user left (esc, ctrl+c) or one superseded is
+// dropped.
+func (m model) handlePrepared(msg remotePreparedMsg) (model, tea.Cmd) {
+	if m.prep == nil || msg.id != m.prep.id || m.prep.quitting || m.phase != phaseLaunching {
+		return m, nil
+	}
+	m.prep.cancel()
+	m.prep = nil
+	m.phase = phaseModel
+	note := m.startNote
+	m.startNote = ""
+	if msg.err != nil {
+		m.status = withNote(note, "launch failed: "+cleanup.Flatten(msg.err.Error()))
+		return m, nil
+	}
+	agent, id, h := m.agent, m.launchModel.ID, m.hold
+	record := func() string {
+		if err := rotation.New().RecordFor(agent, id); err != nil {
+			return err.Error()
+		}
+		return ""
+	}
+	// A launch that never reached the agent (the profile failed) ends the
+	// client session where the registry path releases its wt session.
+	return m.commitLaunch(runRecordAndWaitWith(msg.cmd, agent, m.launchModel, record, m.gateFor(), func() { h.end(os.Stderr) }))
+}
+
+// handleLaunchingKey is the launching screen's keyboard: esc goes back to the
+// table and ctrl+c quits wt, both calling the prep off (its result is
+// dropped, no agent is built or run); every other key does nothing.
+func (m model) handleLaunchingKey(msg tea.KeyMsg) (model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.prep.cancel()
+		quitting := *m.prep
+		quitting.quitting = true
+		m.prep = &quitting
+		return m, tea.Quit
+	case "esc":
+		m.prep.cancel()
+		m.prep = nil
+		m.phase = phaseModel
+		m.startNote = ""
+		return m, nil
+	}
+	return m, nil
+}
+
+// launchingView is the launching screen: what is being prepared, and the
+// keys that act (T5, T6).
+func (m model) launchingView() string {
+	body := tuilayout.WrapText("Launching "+m.prep.modelID+" — registering the client session with the model server…", m.width)
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	return body + "\n\n" + dim.Render("esc back · ctrl+c quit")
 }
 
 // remoteStartingView is the start screen on the API path: the model, what the
@@ -600,6 +699,9 @@ func settleRemoteStart(final tea.Model) {
 	}
 	if fm.catalogCancel != nil {
 		fm.catalogCancel()
+	}
+	if fm.prep != nil {
+		fm.prep.cancel()
 	}
 	if fm.start == nil || !fm.start.remote {
 		return

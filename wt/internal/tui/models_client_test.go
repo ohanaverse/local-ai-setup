@@ -17,6 +17,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -40,6 +41,13 @@ type fakeModels struct {
 	cancelled []string
 	// onCancel, when set, runs after CancelJob records its id.
 	onCancel func(string)
+	// cancelErr is what CancelJob answers (the server refusing the cancel).
+	cancelErr error
+	// answerers are the Answerer each RunStart call was handed.
+	answerers []modelclient.Answerer
+	// registerBlock, when set, holds the client session's first register
+	// until it is closed or the register's context is cancelled.
+	registerBlock chan struct{}
 	// registerErr is what the client session's first register returns.
 	registerErr error
 	// log is every start, cancel and client session call, in order:
@@ -78,7 +86,18 @@ type fakeSession struct {
 	models []string
 }
 
-func (s *fakeSession) Start(context.Context) error {
+func (s *fakeSession) Start(ctx context.Context) error {
+	s.f.mu.Lock()
+	block := s.f.registerBlock
+	s.f.mu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			s.f.record("register cancelled")
+			return ctx.Err()
+		}
+	}
 	s.f.record("register " + strings.Join(s.models, ","))
 	s.f.mu.Lock()
 	defer s.f.mu.Unlock()
@@ -116,10 +135,11 @@ func (f *fakeModels) Resolve(_ context.Context, id string) (modelapi.Row, error)
 	return f.resolveRow, f.resolveErr
 }
 
-func (f *fakeModels) RunStart(ctx context.Context, req modelapi.StartRequest, _ modelclient.Answerer, prog modelclient.Progress) (modelapi.JobStatus, error) {
+func (f *fakeModels) RunStart(ctx context.Context, req modelapi.StartRequest, ans modelclient.Answerer, prog modelclient.Progress) (modelapi.JobStatus, error) {
 	f.record("start " + req.Model)
 	f.mu.Lock()
 	f.starts = append(f.starts, req)
+	f.answerers = append(f.answerers, ans)
 	n, fn := len(f.starts), f.startFn
 	f.mu.Unlock()
 	if fn == nil {
@@ -131,12 +151,12 @@ func (f *fakeModels) CancelJob(_ context.Context, id string) error {
 	f.record("cancel " + id)
 	f.mu.Lock()
 	f.cancelled = append(f.cancelled, id)
-	hook := f.onCancel
+	hook, err := f.onCancel, f.cancelErr
 	f.mu.Unlock()
 	if hook != nil {
 		hook(id)
 	}
-	return nil
+	return err
 }
 func (f *fakeModels) NewSession(models []string, _ modelclient.SessionOptions) ClientSession {
 	return &fakeSession{f: f, models: slices.Clone(models)}
@@ -377,8 +397,10 @@ func TestPinnedModelUsesResolve(t *testing.T) {
 	if len(f.resolved) != 1 || f.resolved[0] != "openrouter/kimi-3" {
 		t.Fatalf("resolved = %v, want the pinned id", f.resolved)
 	}
-	if m.phase != phaseModel || selectedModelID(m) != "openrouter/kimi-3" {
-		t.Errorf("phase %v, cursor %q, want the table on the pinned row", m.phase, selectedModelID(m))
+	// The pinned launch row launches (Task 13): the launching screen, with
+	// the table's cursor on the pinned row behind it.
+	if m.phase != phaseLaunching || selectedModelID(m) != "openrouter/kimi-3" {
+		t.Errorf("phase %v, cursor %q, want the pinned row launching", m.phase, selectedModelID(m))
 	}
 
 	const msg = `unknown model "openrouter/nope": the registry has no such id`
@@ -514,8 +536,8 @@ func TestPinnedModelStartsOrLaunchesOnTheServer(t *testing.T) {
 	n.pinnedModel = "openrouter/glm-5.3"
 	n, cmd = n.enterModelPhaseForAgent()
 	n, cmd = updateMsg(n, cmd())
-	if !n.committed || cmd == nil || n.launchModel.ID != "openrouter/glm-5.3" {
-		t.Errorf("committed %v, cmd nil %v, launch %q: want the pinned launch row launched", n.committed, cmd == nil, n.launchModel.ID)
+	if n.phase != phaseLaunching || cmd == nil || n.launchModel.ID != "openrouter/glm-5.3" {
+		t.Errorf("phase %v, cmd nil %v, launch %q: want the pinned launch row launching", n.phase, cmd == nil, n.launchModel.ID)
 	}
 }
 
@@ -532,5 +554,30 @@ func waitStarts(t *testing.T, f *fakeModels, n int) []modelapi.StartRequest {
 			t.Fatalf("start requests = %d, want %d", len(f.startReqs()), n)
 		}
 		runtime.Gosched()
+	}
+}
+
+// TestPickerRotationCursorSkipsStartRows pins that the picker's cursor and
+// the non-TUI endpoint launch rotate over the same list: the launchable
+// registered rows in the server's order. A start row is never the
+// rotation's next, so the cursor after the last launchable row wraps to the
+// first launchable one, not to a model that would have to be started.
+func TestPickerRotationCursorSkipsStartRows(t *testing.T) {
+	cat := modelapi.Catalog{Schema: 1, Generated: "2026-11-16T12:00:00Z", Rows: []modelapi.Row{
+		wireRow("omlx/qwen3.8", "qwen", func(r *modelapi.Row) {
+			r.Location, r.State, r.Action, r.Order = "local", modelapi.StateStopped, modelapi.ActionStart, 1
+		}),
+		wireRow("openrouter/a", "a", func(r *modelapi.Row) { r.Order = 2 }),
+		wireRow("openrouter/b", "b", func(r *modelapi.Row) { r.Order = 3 }),
+	}}
+	f := &fakeModels{cat: cat}
+	m := remoteModel(t, f, 80, 24)
+	if err := rotation.New().RecordFor("claude", "openrouter/b"); err != nil {
+		t.Fatal(err)
+	}
+	m, cmd := m.enterModelPhaseForAgent()
+	m = settle(t, m, cmd)
+	if got := selectedModelID(m); got != "openrouter/a" {
+		t.Errorf("cursor = %q, want openrouter/a (the start row is not in the rotation)", got)
 	}
 }

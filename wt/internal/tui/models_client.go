@@ -170,13 +170,16 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 			msg.cursor = r.pinned
 			return msg
 		}
-		var actionable []config.Model
-		for _, it := range msg.tbl.items {
-			if it.blocked == "" {
-				actionable = append(actionable, it.model)
+		// The rotation is the non-TUI endpoint launch's: the launchable
+		// registered rows in the server's order (resolveModelRemote's list).
+		// A row the server would have to start is never the rotation's next.
+		var launchable []modelapi.Row
+		for _, r := range catalog.Launchable(eligible) {
+			if r.Registered {
+				launchable = append(launchable, r)
 			}
 		}
-		if next, ok := rot.NextFromOrder(actionable, catalog.RegisteredOrdered(cat.Rows)); ok {
+		if next, ok := rot.NextFromOrder(catalog.RegisteredOrdered(launchable), catalog.RegisteredOrdered(cat.Rows)); ok {
 			msg.cursor = next.ID
 		}
 		return msg

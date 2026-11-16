@@ -700,6 +700,18 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 			m, _ = updateMsg(m, jobCancelMsg{id: m.start.id, err: errors.New("model server at http://127.0.0.1:8099 is not reachable (connection refused)")})
 			return m
 		})},
+		{"launching, model server", modelPhase(func(t *testing.T, width, height int) model {
+			// The launching screen while the client session registers.
+			cat := startRowCatalog()
+			cat.Rows[1].ID = "openrouter/a-model-id-long-enough-to-wrap-at-forty-columns-and-more"
+			f := &fakeModels{cat: cat, registerBlock: make(chan struct{})}
+			m := remoteTable(t, f)
+			m, _ = enterRemote(t, m, cat.Rows[1].ID)
+			if m.phase != phaseLaunching {
+				t.Fatalf("phase = %v, want the launching screen", m.phase)
+			}
+			return m
+		})},
 		{"cleanup list", func(t *testing.T, width, height int) string {
 			return newSizedCleanupList(t, longRowsFixture(), width, height).View()
 		}},

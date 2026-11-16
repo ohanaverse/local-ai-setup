@@ -42,8 +42,8 @@ const launchStill = "nothing was launched"
 //  1. resolve the model on the server (resolveModelRemote: a -M pin through
 //     resolve, else the catalog's one launchable row);
 //  2. several launchable rows and no pin: on a terminal, errRemoteNeedsPicker
-//     (the caller opens the picker); otherwise rotation over the server's
-//     registered rows in their order (rotation.NextFromOrder);
+//     (the caller opens the picker, whose cursor is the rotation's next
+//     row); without one the registry path's pickerNeedsTTYError;
 //  3. register the client session with the model before any start, so the
 //     server's idle scan counts it; a failed register is one `wt: note:` and
 //     the launch goes on (client sessions are advisory);
@@ -83,17 +83,16 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	}
 
 	row, rot, err := resolveModelRemote(ctx, ms, *ag, tags, family, pinned)
-	if err != nil && pinned == "" && len(rot) > 0 && stdinTTY() {
-		// Several launchable models and a terminal: the user picks, as on
-		// the registry path (runLaunchPath opens the model server's picker,
-		// its cursor on the rotation's next row). Nothing is registered or
-		// started yet.
-		return errRemoteNeedsPicker
-	}
 	if err != nil && pinned == "" && len(rot) > 0 {
-		if next, ok := rotateRemote(ctx, ms, rot); ok {
-			row, err = next, nil
+		// Several launchable models and no -M: the user picks, as on the
+		// registry path. On a terminal runLaunchPath opens the model server's
+		// picker (its cursor on the rotation's next row); without one this is
+		// the registry path's refusal (P5), naming -M. Nothing is registered
+		// or started yet.
+		if stdinTTY() {
+			return errRemoteNeedsPicker
 		}
+		return pickerNeedsTTYError(agent)
 	}
 	if err != nil {
 		return remoteExit(modelclient.Still(err, launchStill))
@@ -149,26 +148,6 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 		fmt.Fprintf(osStderr, "wt: note: %v\n", rerr)
 	}
 	return runLaunch(cmd, agent, m, cfg, pp, extraArgs, runTail{Remote: true, End: end})
-}
-
-// rotateRemote picks the next model after the last launched one among the
-// launchable registered rows rot, in the server's registry order.
-func rotateRemote(ctx context.Context, ms *modelSession, rot []modelapi.Row) (modelapi.Row, bool) {
-	cat, err := ms.client.Catalog(ctx)
-	if err != nil {
-		return modelapi.Row{}, false
-	}
-	eligible := catalog.RegisteredOrdered(rot)
-	next, ok := rotation.New().NextFromOrder(eligible, catalog.RegisteredOrdered(cat.Rows))
-	if !ok {
-		return modelapi.Row{}, false
-	}
-	for _, r := range rot {
-		if r.ID == next.ID {
-			return r, true
-		}
-	}
-	return modelapi.Row{}, false
 }
 
 // gatewayModels is the server's non-native models, which a GatewaySyncer

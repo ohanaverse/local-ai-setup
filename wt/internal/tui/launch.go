@@ -219,7 +219,7 @@ func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record fun
 
 // runRecordAndWaitWith is runRecordAndWaitCmd with the release a launch that
 // never reached its agent makes: the registry path's wt session release
-// (releaseSession), or the API path's client session end (remoteRunCmd).
+// (releaseSession), or the API path's client session end (handlePrepared).
 func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error), release func()) tea.Cmd {
 	if record == nil {
 		record = func() string { return "" }

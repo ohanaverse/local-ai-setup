@@ -304,7 +304,10 @@ type startState struct {
 	jobID      string
 	job        *modelclient.JobView
 	cancelSent bool
-	cancelErr  string
+	// cancelAsked is set by c and never cleared, not even when the server
+	// refuses the cancel: a start that then succeeds launches nothing.
+	cancelAsked bool
+	cancelErr   string
 }
 
 // pastCancel reports whether the start has got past anything a cancel could

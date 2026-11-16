@@ -39,6 +39,7 @@ const (
 	phaseNewWorktree                 // create-new-worktree prompt
 	phaseStarting                    // a start runs through the lifecycle engine, with live progress
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
+	phaseLaunching                   // the API path's launch prepares on the model server (remote_start.go)
 	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
 	phaseSlot                        // a slot-profile launch is writing its routes, restarting or probing the proxy
 	phaseCatalog                     // the model server's catalog is loading, or its fetch failed (F retries)
@@ -89,6 +90,10 @@ type model struct {
 	// wire is the eligible catalog rows the API table was built from, by id:
 	// what a start or a launch reads (catalog.NeedsStart, ToModel).
 	wire map[string]modelapi.Row
+	// prep is the API path's launch while it prepares on the model server
+	// (phaseLaunching); prepRun numbers them so a superseded result drops.
+	prep    *launchPrep
+	prepRun int
 	// hold is the API path's client session, created on the first model
 	// chosen and ended by the post-exit flow (exitTail).
 	hold *clientHold
@@ -308,13 +313,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m.handleCatalogMsg(msg)
 	case jobCancelMsg:
 		return m.handleJobCancel(msg)
-	case remoteLaunchFailedMsg:
-		// The launch on the gateway could not be built: nothing ran and the
-		// terminal was never released. Back to the picker, free to retry.
-		m.status = msg.err.Error()
-		m.committed = false
-		m.phase = phaseModel
-		return m, nil
+	case remotePreparedMsg:
+		return m.handlePrepared(msg)
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.
@@ -437,6 +437,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// the cursor, pop a screen or quit by accident. Only ctrl+c gets out.
 		if m.phase == phaseRouting {
 			return m.handleRouteKey(msg)
+		}
+		// And the API path's launch prep, which nothing but esc and ctrl+c
+		// may interrupt.
+		if m.phase == phaseLaunching && m.prep != nil {
+			return m.handleLaunchingKey(msg)
 		}
 		// And a profile launch's route stage, for the same reason.
 		if m.phase == phaseSlot && m.slot != nil {
@@ -758,6 +763,12 @@ func (m model) View() string {
 			return "start progress (waiting for window size)"
 		}
 		return clip(m.startingView(), m.width)
+	}
+	if m.phase == phaseLaunching && m.prep != nil {
+		if m.width <= 0 || m.height <= 0 {
+			return "launch (waiting for window size)"
+		}
+		return clip(m.launchingView(), m.width)
 	}
 	if m.phase == phaseRouting {
 		if m.width <= 0 || m.height <= 0 {

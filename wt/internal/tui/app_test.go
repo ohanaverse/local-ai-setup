@@ -1662,8 +1662,12 @@ func TestRemoteLaunchRunsTheAgentOnTheGateway(t *testing.T) {
 	}
 	t.Cleanup(func() { buildGatewayLaunch = old })
 	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
+	if m.phase != phaseLaunching || cmd == nil {
+		t.Fatalf("phase %v, cmd nil %v: want the launching screen and its prep", m.phase, cmd == nil)
+	}
+	m, cmd = updateMsg(m, cmd())
 	if !m.committed || cmd == nil {
-		t.Fatalf("committed %v, cmd nil %v: want the launch committed", m.committed, cmd == nil)
+		t.Fatalf("committed %v, cmd nil %v: want the launch committed once prepared", m.committed, cmd == nil)
 	}
 	msg, ok := cmd().(launchDoneMsg)
 	if !ok || msg.err != nil {
@@ -1677,5 +1681,50 @@ func TestRemoteLaunchRunsTheAgentOnTheGateway(t *testing.T) {
 	}
 	if last, _ := rotation.New().Last(); last != "openrouter/glm-5.3" {
 		t.Errorf("rotation last = %q, want the launched model recorded", last)
+	}
+}
+
+// TestCtrlCDuringLaunchPrepLeavesWithoutAnAgent pins that the launch's server
+// work (the client session's register, the gateway's model list) runs behind
+// the launching screen, not under a live picker: ctrl+c there quits wt, the
+// prep's result is dropped, the agent is never built or spawned, and the
+// client session is ended. Before this, the run command did that work and
+// went on to release the terminal and run the agent after the TUI had gone.
+func TestCtrlCDuringLaunchPrepLeavesWithoutAnAgent(t *testing.T) {
+	f := &fakeModels{cat: startRowCatalog(), registerBlock: make(chan struct{})}
+	m := remoteTable(t, f)
+	old := buildGatewayLaunch
+	buildGatewayLaunch = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+		t.Error("the agent was built after ctrl+c")
+		return exec.Command("true"), agents.LaunchInfo{}, nil
+	}
+	t.Cleanup(func() { buildGatewayLaunch = old })
+	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
+	if m.phase != phaseLaunching || cmd == nil || m.committed {
+		t.Fatalf("phase %v, cmd nil %v, committed %v: want the launching screen, a prep command and nothing committed", m.phase, cmd == nil, m.committed)
+	}
+	if v := plain(m); !strings.Contains(v, "openrouter/glm-5.3") || !strings.Contains(v, "ctrl+c quit") {
+		t.Errorf("launching view = %q, want the model and ctrl+c quit", v)
+	}
+	got := make(chan tea.Msg, 1)
+	go func() { got <- cmd() }()
+	m, quit := updateMsg(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if quit == nil || quit() != tea.Quit() {
+		t.Fatal("ctrl+c on the launching screen did not quit")
+	}
+	settleRemoteStart(m) // what Run does once the program is over
+	var msg tea.Msg
+	select {
+	case msg = <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the prep command did not end after ctrl+c")
+	}
+	m, run := updateMsg(m, msg)
+	if run != nil || m.committed {
+		t.Errorf("the prep's result after ctrl+c committed a launch (cmd nil %v, committed %v)", run == nil, m.committed)
+	}
+	exitTailOf(m).release()
+	if h := f.history(); len(h) == 0 || h[len(h)-1] != "end" {
+		t.Errorf("calls = %v, want the client session ended", h)
 	}
 }
