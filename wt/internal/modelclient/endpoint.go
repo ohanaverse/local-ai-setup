@@ -32,7 +32,7 @@ func (e *NotConfiguredError) Error() string {
 		lead += "; [litellm] is no longer used by wt"
 	case e.MissingURL:
 		lead = "the model server url is not configured"
-	default:
+	case e.MissingToken:
 		lead = "the model server token is not configured"
 	}
 	return lead + " — set url and token_file under [model-server] in config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE); start a server yourself with 'wt-model serve --listen ADDR --token-file PATH', because wt never starts one"
@@ -55,9 +55,18 @@ func (e *stillError) Unwrap() error { return e.err }
 // config key to check, not the server's flag (a loose file keeps its chmod
 // sentence). Other errors pass through.
 func SessionTokenError(err error) error {
+	return sessionTokenError(err, false)
+}
+
+// sessionTokenError is SessionTokenError with the source of the failing path:
+// fromEnv names WT_MODEL_TOKEN_FILE as the thing to fix instead of config.
+func sessionTokenError(err error, fromEnv bool) error {
 	var te *tokenfile.Error
 	if !errors.As(err, &te) {
 		return err
+	}
+	if fromEnv {
+		return Still(err, "check the file WT_MODEL_TOKEN_FILE names")
 	}
 	return Still(err, "check token_file under [model-server] in config.toml")
 }
@@ -70,14 +79,16 @@ func ResolveEndpoint(url, tokenFile string, env func(string) string) (Endpoint, 
 		url = v
 	}
 	var tok string
+	fromEnv := false
 	switch {
 	case env("WT_MODEL_TOKEN_FILE") != "":
 		tokenFile = env("WT_MODEL_TOKEN_FILE")
+		fromEnv = true
 		fallthrough
 	case tokenFile != "" && env("WT_MODEL_TOKEN") == "":
 		t, err := tokenfile.Load(tokenFile)
 		if err != nil {
-			return Endpoint{}, SessionTokenError(err)
+			return Endpoint{}, sessionTokenError(err, fromEnv)
 		}
 		tok = t
 	case env("WT_MODEL_TOKEN") != "":

@@ -138,9 +138,13 @@ func (s *Session) change(ctx context.Context, f func([]string) []string) error {
 }
 
 // End stops the heartbeat, waits for its goroutine to return (so no beat in
-// flight can re-register afterwards), then deletes the client session on a
+// flight can re-register afterwards — though a re-register already on the wire
+// when End cancels can still land after the DELETE, and the server drops it at
+// its 60 s TTL), then deletes the client session on a
 // context ctx cannot cancel, bounded at 3 s. A second call returns the first
-// call's result and sends nothing.
+// call's result and sends nothing. End can also wait on an in-flight
+// Add/Remove/Start register, which holds the session mutex, bounded by that
+// call's own context or the 10 s request timeout.
 func (s *Session) End(ctx context.Context) error {
 	s.endOnce.Do(func() {
 		s.mu.Lock()

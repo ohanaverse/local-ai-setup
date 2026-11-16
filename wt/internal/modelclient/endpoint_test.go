@@ -81,11 +81,51 @@ func TestResolveEndpointPrecedence(t *testing.T) {
 		t.Fatalf("file beats literal = %+v, %v", ep, err)
 	}
 
+	ep, err = ResolveEndpoint("", good, envOf(map[string]string{"WT_MODEL_URL": "http://env:2", "WT_MODEL_TOKEN": "literal"}))
+	if err != nil || ep.Token != "literal" {
+		t.Fatalf("literal beats config token_file = %+v, %v", ep, err)
+	}
+
 	loose := tokenFileWith(t, "loose", "x", 0o644)
 	_, err = ResolveEndpoint("http://cfg:1", loose, envOf(nil))
 	var te *tokenfile.Error
 	if !errors.As(err, &te) || te.Kind != tokenfile.KindLoose {
 		t.Errorf("loose file err = %v", err)
+	}
+}
+
+// TestEnvTokenFileErrorsNameTheEnvVar proves a failing path that came from
+// WT_MODEL_TOKEN_FILE names that variable, not the config key, while a
+// config-sourced path keeps the config key; and that an unreadable path (a
+// directory) is a KindRead error.
+func TestEnvTokenFileErrorsNameTheEnvVar(t *testing.T) {
+	loose := tokenFileWith(t, "loose", "x", 0o644)
+	_, err := ResolveEndpoint("http://cfg:1", "", envOf(map[string]string{"WT_MODEL_TOKEN_FILE": loose}))
+	if err == nil || !strings.Contains(err.Error(), "WT_MODEL_TOKEN_FILE") || strings.Contains(err.Error(), "token_file under [model-server]") {
+		t.Errorf("env-sourced err = %v", err)
+	}
+	_, err = ResolveEndpoint("http://cfg:1", loose, envOf(nil))
+	if err == nil || !strings.Contains(err.Error(), "token_file under [model-server]") || strings.Contains(err.Error(), "WT_MODEL_TOKEN_FILE") {
+		t.Errorf("config-sourced err = %v", err)
+	}
+	// A 0700 directory passes the stat and mode checks, then reading fails.
+	dir := filepath.Join(t.TempDir(), "d")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ResolveEndpoint("http://cfg:1", dir, envOf(nil))
+	var te *tokenfile.Error
+	if !errors.As(err, &te) || te.Kind != tokenfile.KindRead {
+		t.Errorf("directory err = %v, want KindRead", err)
+	}
+}
+
+// TestZeroNotConfiguredErrorIsNotATokenError proves the zero value, with
+// neither flag set, does not claim the token is missing.
+func TestZeroNotConfiguredErrorIsNotATokenError(t *testing.T) {
+	got := (&NotConfiguredError{}).Error()
+	if !strings.HasPrefix(got, "no model server is configured") || strings.Contains(got, "token is not configured") {
+		t.Errorf("zero value = %q", got)
 	}
 }
 

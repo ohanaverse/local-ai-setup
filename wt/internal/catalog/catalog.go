@@ -48,7 +48,9 @@ type Row struct {
 	// Unmapped marks a cloud row whose provider has no LiteLLM mapping: it
 	// is in the catalog (every configured model is, #179) but sync never
 	// routes it, so a launch through the proxy would fail with "Invalid
-	// model name". RefusedByRoute refuses it there; direct, it launches.
+	// model name". RefusedByRoute refuses it there; direct, it launches (true
+	// only for pre-server Build rows: a row FromWire converts follows the
+	// server's block instead).
 	Unmapped bool
 	// Profile is set on a slot-profile row and nil on every model row. A
 	// profile row's Model holds the row id ("profile/<name>") and nothing
@@ -335,7 +337,9 @@ func (r Row) BlockReason() string {
 // is false when the route failed to resolve (a launch row with a route error
 // stays selectable and reports the error on Enter). The picker table, the
 // non-TUI -M pin and `wt smoke` all decide through this one rule, and
-// RouteRefusal gives them its one wording.
+// RouteRefusal gives them its one wording. "Direct, it launches" holds only
+// for pre-server Build rows; a row converted by FromWire follows the server's
+// block.
 func (r Row) RefusedByRoute(route config.Route, routeErr error) bool {
 	return r.Unmapped && routeErr == nil && (route.Litellm || route.Forced)
 }

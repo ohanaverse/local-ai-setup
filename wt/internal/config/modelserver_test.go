@@ -113,9 +113,10 @@ default_provider = "google"
 	}
 }
 
-// TestModelServerTableRoundTripsASave proves an unrelated PatchSave keeps the
-// [model-server] table intact, like [launch].
-func TestModelServerTableRoundTripsASave(t *testing.T) {
+// TestModelServerTableSurvivesAnUnrelatedSave proves an unrelated PatchSave
+// keeps the [model-server] table intact, like [launch]: struct-equal when
+// read back and still present as a table in the file.
+func TestModelServerTableSurvivesAnUnrelatedSave(t *testing.T) {
 	path := sessionHome(t, `default_tag = "code"
 
 [model-server]
@@ -137,8 +138,44 @@ token_file = "~/tok"
 		t.Errorf("table = %+v, want %+v", again.ModelServerTable, cfg.ModelServerTable)
 	}
 	raw, _ := os.ReadFile(path)
-	if !strings.Contains(string(raw), "[model-server]") {
-		t.Errorf("table missing:\n%s", raw)
+	for _, want := range []string{"[model-server]", `url = "http://127.0.0.1:9"`, `token_file = "~/tok"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("%q missing:\n%s", want, raw)
+		}
+	}
+}
+
+// TestWholeFileSaveNeverWritesSynthesizedAgents proves Save of a LoadSession
+// config drops the in-memory all-providers agents (R13) while keeping an
+// explicit entry, so a whole-file save cannot persist them.
+func TestWholeFileSaveNeverWritesSynthesizedAgents(t *testing.T) {
+	path := sessionHome(t, `default_tag = "code"
+
+[[agents]]
+name = "claude"
+supported_providers = ["ollama"]
+
+[model-server]
+url = "http://127.0.0.1:9"
+token_file = "/t"
+`)
+	cfg, err := LoadSession("claude", "pi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(cfg.Agents)
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), `"pi"`) || strings.Contains(string(raw), `'pi'`) {
+		t.Errorf("synthesized agent was written:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), `name = "claude"`) {
+		t.Errorf("explicit agent lost:\n%s", raw)
+	}
+	if len(cfg.Agents) != before {
+		t.Errorf("Save mutated the caller's agents: %d", len(cfg.Agents))
 	}
 }
 

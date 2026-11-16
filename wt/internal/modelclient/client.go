@@ -48,7 +48,9 @@ type Client struct {
 type Option func(*Client)
 
 // WithHTTPClient replaces the default HTTP client (a 5 s dial timeout and no
-// overall timeout: the per-request timeout bounds each control call).
+// overall timeout: the per-request timeout bounds each control call). A
+// caller-supplied client keeps its own redirect policy, so one that follows
+// redirects could replay the bearer token to the redirect target.
 func WithHTTPClient(hc *http.Client) Option { return func(c *Client) { c.hc = hc } }
 
 // WithRequestTimeout sets the bound on one control call.

@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -16,6 +17,20 @@ type Gateway struct {
 	Origin string // scheme://host:port, no wire-path suffix
 	Token  string // the gateway token (not a provider key)
 }
+
+// ErrGatewayUnconfigured is what errors.Is finds in every empty-gateway
+// refusal (no origin or no token); the message of each stays its own text.
+var ErrGatewayUnconfigured = errors.New("the model-server gateway is not configured")
+
+// gatewayUnconfigured is an error that reads msg and matches
+// ErrGatewayUnconfigured.
+type gatewayUnconfiguredError struct{ msg string }
+
+func gatewayUnconfigured(msg string) error { return &gatewayUnconfiguredError{msg} }
+
+func (e *gatewayUnconfiguredError) Error() string { return e.msg }
+
+func (e *gatewayUnconfiguredError) Is(target error) bool { return target == ErrGatewayUnconfigured }
 
 // origin is Origin without a trailing slash, the form every driver appends a
 // wire path to.
@@ -64,8 +79,8 @@ func BuildLaunchCmdGateway(agent string, m config.Model, worktreePath string, yo
 	}
 	route := GatewayRoute(gw, m)
 	if route.Litellm {
-		if gw.Origin == "" || gw.Token == "" {
-			return nil, LaunchInfo{}, fmt.Errorf("the model-server gateway needs both an origin and a token")
+		if gw.origin() == "" || gw.Token == "" {
+			return nil, LaunchInfo{}, gatewayUnconfigured("the model-server gateway needs both an origin and a token")
 		}
 		if s, ok := d.(GatewaySyncer); ok {
 			if err := s.SyncGateway(gw, models, m); err != nil {
@@ -83,7 +98,7 @@ func BuildSlotLaunchCmdGateway(sl profiles.SlotLaunch, worktreePath string, yolo
 		return nil, err
 	}
 	if gw.origin() == "" || gw.Token == "" {
-		return nil, fmt.Errorf("a slot profile needs the model-server gateway, but its origin or token is empty")
+		return nil, gatewayUnconfigured("a slot profile needs the model-server gateway, but its origin or token is empty")
 	}
 	return slotLaunchCmd(sl, worktreePath, yolo, gw.origin(), gw.Token, extraArgs)
 }

@@ -2,6 +2,7 @@ package agents
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
 const (
@@ -113,7 +113,14 @@ func leaks(s string) bool {
 func TestGatewayLaunchCells(t *testing.T) {
 	m := gwCloudModel()
 	m.Location = config.LocationCloud
+	// The registry row carries the provider's own origin and key, as a
+	// direct or LiteLLM route would; a builder that copied them into a
+	// launch would trip the leak check below.
+	m.ModelInfo = map[string]any{"api_base": providerOrigin, "api_key": providerKey}
 	piHomeModelsPath(t)
+	if !leaks(providerOrigin) || !leaks(providerKey) {
+		t.Fatal("leaks no longer recognises the provider origin or key")
+	}
 	for _, agent := range []string{"claude", "codex", "copilot", "opencode", "pi"} {
 		t.Run(agent, func(t *testing.T) {
 			fakeBin(t, agent)
@@ -126,6 +133,9 @@ func TestGatewayLaunchCells(t *testing.T) {
 			env := strings.Join(cmd.Env, "\n")
 			if leaks(args) || leaks(env) {
 				t.Fatalf("provider origin/key leaked: args=%s", args)
+			}
+			if strings.Contains(args, m.ID) || strings.Contains(env, m.ID) {
+				t.Fatalf("registry id %q reached the launch: args=%s", m.ID, args)
 			}
 			switch agent {
 			case "claude":
@@ -165,9 +175,10 @@ func TestGatewayLaunchCells(t *testing.T) {
 // env or args: the subscription must win, and the gateway token must never
 // reach an agent that does not use the gateway.
 func TestNativeModelLaunchesBare(t *testing.T) {
-	for _, agent := range []string{"claude", "copilot"} {
+	for _, agent := range []string{"claude", "copilot", "pi"} {
 		t.Run(agent, func(t *testing.T) {
 			fakeBin(t, agent)
+			piFile := piHomeModelsPath(t)
 			cmd, _, err := BuildLaunchCmdGateway(agent, nativeModel(agent), t.TempDir(), false, testGW(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -181,6 +192,9 @@ func TestNativeModelLaunchesBare(t *testing.T) {
 			}
 			if strings.Contains(all, testGWToken) || strings.Contains(all, testGWOrigin) {
 				t.Errorf("gateway credential reached a native launch: %s", all)
+			}
+			if _, err := os.Stat(piFile); err == nil {
+				t.Errorf("a native %s launch wrote %s", agent, piFile)
 			}
 		})
 	}
@@ -213,8 +227,15 @@ func TestSlotGatewayCmdCarriesGateway(t *testing.T) {
 	if _, err := BuildSlotLaunchCmdGateway(gwSlotLaunch(m), t.TempDir(), false, testGW(), []string{"--model=x"}); err == nil {
 		t.Error("passthrough --model accepted")
 	}
-	if _, err := BuildSlotLaunchCmdGateway(gwSlotLaunch(m), t.TempDir(), false, Gateway{}, nil); err == nil {
-		t.Error("empty gateway accepted")
+	for _, gw := range []Gateway{{}, {Origin: "/", Token: testGWToken}, {Origin: testGWOrigin}} {
+		_, err := BuildSlotLaunchCmdGateway(gwSlotLaunch(m), t.TempDir(), false, gw, nil)
+		if !errors.Is(err, ErrGatewayUnconfigured) {
+			t.Errorf("gateway %+v: err = %v, want ErrGatewayUnconfigured", gw, err)
+		}
+		_, _, err = BuildLaunchCmdGateway("claude", m, t.TempDir(), false, gw, nil, nil)
+		if !errors.Is(err, ErrGatewayUnconfigured) {
+			t.Errorf("gateway %+v (single): err = %v, want ErrGatewayUnconfigured", gw, err)
+		}
 	}
 }
 
@@ -224,7 +245,8 @@ func TestSlotGatewayCmdCarriesGateway(t *testing.T) {
 // several, withdraws it; the user's own variable wins; a slot profile anchors
 // on the default slot and is lowered by the smallest other slot.
 func TestClaudeWindowFromHostContext(t *testing.T) {
-	stubTiers(t, tiers.Index{})
+	// A conflicting tiers entry for the same model: HostContext must win.
+	stubTiers(t, windowIndex(t, map[string]int{"c/a": 8000}))
 	cloud := config.Model{ID: "c/a", ProviderID: "c", ModelName: "a", HostContext: 200000}
 	small := config.Model{ID: "c/b", ProviderID: "c", ModelName: "b", HostContext: 64000}
 	local := config.Model{ID: "l/x", ProviderID: "l", ModelName: "x"}

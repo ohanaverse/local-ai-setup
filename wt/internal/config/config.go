@@ -1501,6 +1501,13 @@ func writeConfigFile(cfg *Config) error {
 	trimmed := *cfg
 	trimmed.Providers = nil
 	trimmed.Models = nil
+	// Agents LoadSession synthesized (AllProviders) exist only in memory.
+	trimmed.Agents = make([]Agent, 0, len(cfg.Agents))
+	for _, a := range cfg.Agents {
+		if !a.AllProviders {
+			trimmed.Agents = append(trimmed.Agents, a)
+		}
+	}
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(&trimmed); err != nil {
 		return err

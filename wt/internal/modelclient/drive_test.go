@@ -349,7 +349,8 @@ func TestRunStartAttachesToAnActiveJob(t *testing.T) {
 
 // TestAttachedJobProblemIsAskedOfTheAttacher pins that when the job this
 // client joined ends occupied, this client's own Replace is asked and its own
-// answer goes into the re-post (the first requester's flags do not carry).
+// answer goes into the re-post (the first requester's flags do not carry). A
+// declining attacher ends as *DeclinedError with only the one start posted.
 func TestAttachedJobProblemIsAskedOfTheAttacher(t *testing.T) {
 	jf := newJobFake(t)
 	jf.active = []modelapi.JobStatus{*running("j9")}
@@ -365,6 +366,13 @@ func TestAttachedJobProblemIsAskedOfTheAttacher(t *testing.T) {
 		}
 		return done(id)
 	}
+	decline := &fakeAnswerer{replaceOK: false}
+	_, err := jf.driver(newFakeClock()).RunStart(ctx(), modelapi.StartRequest{Model: "omlx/m"}, decline, nil)
+	var de *DeclinedError
+	if !errors.As(err, &de) || decline.replace != 1 || len(jf.starts) != 1 {
+		t.Fatalf("decline: err=%v replace=%d starts=%d", err, decline.replace, len(jf.starts))
+	}
+	jf.starts = nil
 	ans := &fakeAnswerer{replaceOK: true}
 	js, err := jf.driver(newFakeClock()).RunStart(ctx(), modelapi.StartRequest{Model: "omlx/m"}, ans, nil)
 	if err != nil || js.ID != "j10" {
