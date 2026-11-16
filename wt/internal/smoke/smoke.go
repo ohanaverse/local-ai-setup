@@ -270,6 +270,16 @@ func StubOutcome(output string, exitCode int) execOutcome {
 }
 
 func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+	return runAgent(ctx, agentName, m, prompt, rowDir, timeout, profileApplier, cleanup, func(yolo bool) (*exec.Cmd, agents.LaunchInfo, error) {
+		// Built with no directory: it is set once the agent is known to run.
+		return agents.BuildLaunchCmdInfo(agentName, m, "", yolo, cfg, nil)
+	})
+}
+
+// runAgent builds one agent's one-shot command with build and runs it: the
+// body shared by the registry path (realBuildAndRun) and the gateway path
+// (realGatewayRun), which differ only in how the launch command is built.
+func runAgent(ctx context.Context, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error, build func(yolo bool) (*exec.Cmd, agents.LaunchInfo, error)) execOutcome {
 	// Always initialize cleanup to a no-op so RunRow's defer cleanup() is
 	// safe even when we return early (BuildLaunchCmd failure, no OneShotRunner).
 	*cleanup = func() error { return nil }
@@ -287,8 +297,7 @@ func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, 
 	// fixed sentinel prompt. That is why cmd/wt hands each row a fresh
 	// temporary directory (NewRowDir) unless --cwd was passed.
 	yolo := agentName != "codex"
-	// Built with no directory: it is set below, once the agent is known to run.
-	cmd, info, err := agents.BuildLaunchCmdInfo(agentName, m, "", yolo, cfg, nil)
+	cmd, info, err := build(yolo)
 	if err != nil {
 		return execOutcome{StartErr: err}
 	}
@@ -458,6 +467,12 @@ func RunRow(ctx context.Context, cfg *config.Config, agentName string, m config.
 			fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
 		}
 	}()
+	return classifyRow(agentName, m, prompt, sentinel, timeout, start, out)
+}
+
+// classifyRow turns one finished run into its row: PASS, FAIL or SKIP by the
+// rules RunRow documents. It is shared by the registry and gateway paths.
+func classifyRow(agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, start time.Time, out execOutcome) RowResult {
 	res := RowResult{
 		Agent:    agentName,
 		Model:    m.ID,

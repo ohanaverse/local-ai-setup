@@ -626,6 +626,53 @@ otherwise` under the first line and marks `sonnet*`.
 
 `wt profile on|off` and `wt profile status` govern automatic profiles only.
 
+## On a client session (model server)
+
+When `config.toml` names a model server (`[model-server]` `url` and
+`token_file`, or `WT_MODEL_URL` and `WT_MODEL_TOKEN_FILE`/`WT_MODEL_TOKEN`),
+slot profiles are read against the server's catalog instead of the registry,
+and the launch goes through the server's gateway
+([wt-model-server.md](../wt-model-server.md)). `slot-profiles.toml` stays in
+the client's own config home.
+
+| Command | Needs the model server |
+|---|---|
+| `wt profile slots candidates` | yes: the ranking runs on the model-server host, which holds the registry and `tiers.toml`. Same `--json` document (`tiers_generated_at`, `stale_sources`, `candidates`) |
+| `wt profile slots add`, `set` | yes: a slot id must be a row of the server's catalog. A server that does not answer fails the command (exit 1, `…; nothing was changed`) and the file is not touched |
+| `wt profile show -A <agent> -M profile/<name>` | yes: the verdict is resolved against the catalog. The preview shows the gateway origin and the client token masked (`***` plus its last four characters); the `[litellm]` url and key are never read |
+| `wt profile slots rm`, `usage` | no: both work offline, with no server and no registry |
+| `wt profile list` | no: it reports the static check only |
+
+`modeltiers run` (which refreshes `tiers.toml`) runs on the model-server
+host, not on the client's machine.
+
+A launch (`-M profile/<name>`, or Enter on the profile's row in the picker)
+does, in order: one catalog read; the profile resolved against it; one
+register of the client session with every distinct slot model; a start job
+for the one local slot model, only when it is stopped or known not to be
+routed (a running model whose routing the server could not ask about is
+never started); the command built against the gateway; the agent run with
+the client session's heartbeat; and the client session ended when the agent
+exits. There is no route write, proxy restart, refcount line or stop picker
+on this path: the server stops a model nobody uses after its idle grace
+(`wt-model serve --idle-grace`). A failed register is one `wt: note:` line
+and the launch goes on. Ctrl-C during the start detaches from the job, which
+keeps running on the server (exit 2, `nothing was launched`).
+
+The resolved rules differ from the registry path's in three places:
+
+- a slot id the catalog does not list blocks with
+  `slot <slot>: <id> is not in the model server's catalog`;
+- a native model blocks with
+  `slot <slot>: <id> is a native model, which has no gateway route` (the
+  gateway's origin and token never reach a native model);
+- a slot model the server blocks blocks the profile with the server's own
+  reason, after `slot <slot>: `.
+
+When the catalog holds the reserved `profile/` prefix, a profile launch or
+`show` stops with `the model server's catalog has … — slot profiles are
+unavailable`, and the picker lists no profile row.
+
 ## Failures
 
 Each of these stops before the agent starts. Nothing degrades to a launch

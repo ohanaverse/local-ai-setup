@@ -478,7 +478,7 @@ func TestRunSlotAgentCmdPostExitFlow(t *testing.T) {
 
 	var err error
 	stdout := captureFile(t, &os.Stdout, func() {
-		err = runSlotAgentCmd(exec.Command("true"), "claude", row, cfg, func() error { cleaned = true; return nil })
+		err = runSlotAgentCmd(exec.Command("true"), "claude", row, cfg, func() error { cleaned = true; return nil }, legacyTail())
 	})
 
 	if err != nil {
@@ -513,7 +513,7 @@ func TestRunSlotAgentCmdReturnsARunError(t *testing.T) {
 
 	var err error
 	captureFile(t, &os.Stdout, func() {
-		err = runSlotAgentCmd(exec.Command(filepath.Join(t.TempDir(), "no-such-agent")), "claude", row, cfg, func() error { return nil })
+		err = runSlotAgentCmd(exec.Command(filepath.Join(t.TempDir(), "no-such-agent")), "claude", row, cfg, func() error { return nil }, legacyTail())
 	})
 	if err == nil {
 		t.Fatal("err = nil, want the run error")
@@ -1134,7 +1134,7 @@ func TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI(t *testing.T) {
 				t.Error("the launch went past the picker")
 				return nil
 			}
-			tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
+			tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
 				fmt.Fprintln(os.Stderr, "<the TUI ran>")
 				return errors.New("the TUI's own error")
 			}

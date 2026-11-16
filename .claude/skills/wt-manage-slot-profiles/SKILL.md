@@ -15,6 +15,8 @@ Do the steps that fit the request, in this order. A plain "clean up my profiles"
 
 Every write goes through `wt profile slots add|set|rm`, which backs the file up (`slot-profiles.toml.bak-<stamp>`), keeps every other entry and comment byte for byte, checks slot ids against the registry and refuses a result that would leave a profile unusable. Each command prints the backup path and then the `wt profile list` slot section; read it, and stop and report if any profile there is not `ok`.
 
+**With a model server** (`config.toml` has a `[model-server]` table, or `WT_MODEL_URL` is set): `wt profile slots candidates|add|set` and `wt profile show -M profile/<name>` read the server's catalog and fail when it does not answer (exit 1; `add`/`set` say `nothing was changed` and leave the file alone). Tell the user the server is unreachable and stop; do not retry the write another way. `wt profile slots rm|usage` and `wt profile list` need no server. On such a machine a slot id must be a row of the server's catalog, not of a local registry, and the `modeltiers run` refresh below runs on the model-server host: ask the user to run it there (or to say where it runs) instead of running it here. Exiting a launched profile ends its client session; the server stops an unused local model after its idle grace, so there is nothing to stop by hand. See `wt/docs/wt-agents/slot-profiles.md`, "On a client session (model server)".
+
 ## 1 Freshness
 
 The ranking is only as current as `tiers.toml`.
@@ -29,7 +31,7 @@ Read `tiers_generated_at` and `stale_sources`. If `tiers_generated_at` is `null`
 uv run --directory modeltiers modeltiers run     # add --dry-run first if the user wants to see the report without writing
 ```
 
-Run it only on a yes. Then by exit code (`docs/guides/12-model-tiers.md`, step 3):
+Run it only on a yes, and on the machine that holds the registry (the model-server host, when there is one). Then by exit code (`docs/guides/12-model-tiers.md`, step 3):
 
 - **0**: written; re-run `candidates --json` and go on.
 - **1**: not written. Show the last stderr line (`ERROR: modeltiers run FAILED (exit 1): …`), which names the cause; go on with the old file and say how old it is.

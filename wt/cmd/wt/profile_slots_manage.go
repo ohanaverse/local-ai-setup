@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/candidates"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/slotedit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
@@ -88,9 +91,32 @@ func parseEnvFlags(flag string, vals []string) (map[string]string, error) {
 	return env, nil
 }
 
-// slotEditOptions builds the Apply options: the registry's model ids and the
-// profile that must be usable afterwards ("" for a removal).
-func slotEditOptions(a *app, target string) (slotedit.Options, error) {
+// slotEditStill is what a refused `profile slots add|set|rm` says is still
+// true.
+const slotEditStill = "nothing was changed"
+
+// slotEditOptions builds the Apply options for an add or a set: the model ids
+// a slot of target may name, and target, the profile that must be usable
+// afterwards. With a model server configured the ids are its catalog's rows
+// (one Catalog read), and a server that does not answer fails the command
+// hard (exit 1, nothing was changed): a write that cannot be checked against
+// what the server serves is not made. Without one they are the registry's.
+func slotEditOptions(ctx context.Context, a *app, target string) (slotedit.Options, error) {
+	if a.endpointConfigured() {
+		ms, err := a.openModels(ctx, slotEditStill)
+		if err != nil {
+			return slotedit.Options{}, remoteExit(err) // openModels' errors carry the still clause
+		}
+		cat, err := ms.client.Catalog(ctx)
+		if err != nil {
+			return slotedit.Options{}, remoteExit(modelclient.Still(err, slotEditStill))
+		}
+		ids := make([]string, 0, len(cat.Rows))
+		for _, r := range cat.Rows {
+			ids = append(ids, r.ID)
+		}
+		return slotedit.Options{Drivers: agents.SlotDrivers(), ModelIDs: ids, Target: target}, nil
+	}
 	if a.cfg == nil {
 		if a.cfgErr != nil {
 			return slotedit.Options{}, fmt.Errorf("no config loaded: %w", a.cfgErr)
@@ -102,6 +128,13 @@ func slotEditOptions(a *app, target string) (slotedit.Options, error) {
 		ids = append(ids, m.ID)
 	}
 	return slotedit.Options{Drivers: agents.SlotDrivers(), ModelIDs: ids, Target: target}, nil
+}
+
+// slotRemoveOptions builds the Apply options for a removal: no target and no
+// model ids (a removal checks no profile's ids), so `profile slots rm` needs
+// neither a registry nor a model server.
+func slotRemoveOptions() slotedit.Options {
+	return slotedit.Options{Drivers: agents.SlotDrivers()}
 }
 
 // applySlotEdit runs edit through slotedit.Apply on slot-profiles.toml, then
@@ -140,7 +173,7 @@ func slotsAddCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			o, err := slotEditOptions(a, name)
+			o, err := slotEditOptions(cmd.Context(), a, name)
 			if err != nil {
 				return err
 			}
@@ -188,7 +221,7 @@ func slotsSetCmd(a *app) *cobra.Command {
 			if cmd.Flags().Changed("default") {
 				patch.Default = &def
 			}
-			o, err := slotEditOptions(a, name)
+			o, err := slotEditOptions(cmd.Context(), a, name)
 			if err != nil {
 				return err
 			}
@@ -209,13 +242,9 @@ func slotsRmCmd(a *app) *cobra.Command {
 		Use: "rm <name>", Short: "Remove a slot profile", Args: cobra.ExactArgs(1), SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			o, err := slotEditOptions(a, "")
-			if err != nil {
-				return err
-			}
 			return applySlotEdit(cmd.OutOrStdout(), a, func(src []byte) ([]byte, error) {
 				return slotedit.Remove(src, name)
-			}, o)
+			}, slotRemoveOptions())
 		},
 	}
 }
@@ -335,6 +364,114 @@ func toCandidateJSON(c candidates.Candidate) candidateJSON {
 	return j
 }
 
+// wireCandidateJSON is one of the model server's candidates in the same
+// shape as toCandidateJSON's: the document the wt-manage-slot-profiles skill
+// reads does not depend on where the ranking ran.
+func wireCandidateJSON(c modelapi.Candidate) candidateJSON {
+	j := candidateJSON{
+		ID: c.ID, Provider: c.Provider, Location: c.Location, Tier: c.Tier, Confidence: c.Confidence,
+		Score: c.Score, Rated: c.Rated, OpenWeights: c.OpenWeights, Context: c.Context, OutputPerMillion: c.OutputPerMillion,
+		Subscription: c.Subscription, SubscriptionPeriod: c.SubscriptionPeriod, Flags: c.Flags,
+	}
+	if j.Flags == nil {
+		j.Flags = []string{}
+	}
+	return j
+}
+
+// candidateReport is one `profile slots candidates` answer, from the
+// registry or from the model server: the ranked candidates and the tiers
+// file's freshness (generated is nil when there is no tiers file), aged
+// against now. genRaw is the model server's stamp when it is not an RFC 3339
+// time (generated is then nil): it is passed through as it came, with no age.
+type candidateReport struct {
+	generated *time.Time
+	genRaw    string
+	stale     []string
+	cands     []candidateJSON
+	now       time.Time
+}
+
+// write prints the report as `--json` (the skill's document) or as the table.
+func (r candidateReport) write(w io.Writer, asJSON bool) error {
+	if asJSON {
+		out := struct {
+			GeneratedAt *string         `json:"tiers_generated_at"`
+			Stale       []string        `json:"stale_sources"`
+			Candidates  []candidateJSON `json:"candidates"`
+		}{Stale: []string{}, Candidates: []candidateJSON{}}
+		if r.generated != nil || r.genRaw != "" {
+			s := r.genRaw
+			if r.generated != nil {
+				s = r.generated.UTC().Format(time.RFC3339)
+			}
+			out.GeneratedAt = &s
+			if len(r.stale) > 0 {
+				out.Stale = r.stale
+			}
+		}
+		out.Candidates = append(out.Candidates, r.cands...)
+		return writeJSON(w, out)
+	}
+	if r.generated != nil {
+		fmt.Fprintf(w, "tiers.toml: %s old\n", ageDays(r.now.Sub(*r.generated)))
+		if len(r.stale) > 0 {
+			fmt.Fprintf(w, "stale sources: %s\n", strings.Join(r.stale, ", "))
+		}
+	} else if r.genRaw != "" {
+		fmt.Fprintf(w, "tiers.toml: generated %s (not a timestamp, so its age is not shown)\n", visibleID(r.genRaw))
+		if len(r.stale) > 0 {
+			fmt.Fprintf(w, "stale sources: %s\n", strings.Join(r.stale, ", "))
+		}
+	} else {
+		fmt.Fprintln(w, "tiers.toml: not found")
+	}
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "MODEL\tTIER\tSCORE\tOPEN\tCONTEXT\tOUT $/M\tFLAGS")
+	for _, c := range r.cands {
+		score := "-"
+		if c.Score != nil {
+			score = fmt.Sprintf("%.1f", *c.Score)
+		}
+		open := ""
+		if c.OpenWeights {
+			open = "open"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", c.ID, c.Tier, score, open, c.Context, fmtPrice(c.OutputPerMillion), strings.Join(c.Flags, ","))
+	}
+	return tw.Flush()
+}
+
+// candidatesStill is what a `profile slots candidates` that could not ask the
+// model server says is still true.
+const candidatesStill = "no candidates were listed"
+
+// remoteCandidates is the candidate ranking from the model server (one
+// Candidates call), where the registry and tiers.toml live. Its tiers file is
+// aged on the server's clock.
+func remoteCandidates(ctx context.Context, a *app, q modelclient.CandidateQuery) (candidateReport, error) {
+	ms, err := a.openModels(ctx, candidatesStill)
+	if err != nil {
+		return candidateReport{}, remoteExit(err) // openModels' errors carry the still clause
+	}
+	cl, err := ms.client.Candidates(ctx, q)
+	if err != nil {
+		return candidateReport{}, remoteExit(modelclient.Still(err, candidatesStill))
+	}
+	r := candidateReport{stale: cl.StaleSources, now: ms.client.Now()}
+	if cl.TiersGenerated != "" {
+		if t, perr := time.Parse(time.RFC3339, cl.TiersGenerated); perr == nil {
+			r.generated = &t
+		} else {
+			r.genRaw = cl.TiersGenerated // shown as it came, with no age
+		}
+	}
+	for _, c := range cl.Candidates {
+		r.cands = append(r.cands, wireCandidateJSON(c))
+	}
+	return r, nil
+}
+
 func fmtPrice(p *float64) string {
 	if p == nil {
 		return "-"
@@ -366,57 +503,36 @@ func slotsCandidatesCmd(a *app) *cobra.Command {
 			if cmd.Flags().Changed("per-provider") && near == "" {
 				return fmt.Errorf("--per-provider needs --near")
 			}
+			var providers []string
+			for _, p := range strings.Split(provider, ",") {
+				if p = strings.TrimSpace(p); p != "" {
+					providers = append(providers, p)
+				}
+			}
+			// A client session asks the model server, which holds the
+			// registry and tiers.toml; it fails hard when the server does not
+			// answer.
+			if a.endpointConfigured() {
+				r, err := remoteCandidates(cmd.Context(), a, modelclient.CandidateQuery{OpenOnly: openOnly, Providers: providers, Near: near, PerProvider: perProvider})
+				if err != nil {
+					return err
+				}
+				return r.write(w, asJSON)
+			}
 			if a.cfg == nil {
 				return fmt.Errorf("no config loaded")
 			}
-			q := candidates.Query{OpenOnly: openOnly, Near: near, PerProvider: perProvider}
-			for _, p := range strings.Split(provider, ",") {
-				if p = strings.TrimSpace(p); p != "" {
-					q.Providers = append(q.Providers, p)
-				}
-			}
+			q := candidates.Query{OpenOnly: openOnly, Near: near, PerProvider: perProvider, Providers: providers}
 			ix, fresh, haveFresh := tiers.LoadWithFreshness()
-			cs := candidates.Rank(a.cfg.Models, ix, q)
-			if asJSON {
-				out := struct {
-					GeneratedAt *string         `json:"tiers_generated_at"`
-					Stale       []string        `json:"stale_sources"`
-					Candidates  []candidateJSON `json:"candidates"`
-				}{Stale: []string{}, Candidates: []candidateJSON{}}
-				if haveFresh {
-					s := fresh.GeneratedAt.UTC().Format(time.RFC3339)
-					out.GeneratedAt = &s
-					if len(fresh.StaleSources) > 0 {
-						out.Stale = fresh.StaleSources
-					}
-				}
-				for _, c := range cs {
-					out.Candidates = append(out.Candidates, toCandidateJSON(c))
-				}
-				return writeJSON(w, out)
-			}
+			r := candidateReport{now: time.Now()}
 			if haveFresh {
-				fmt.Fprintf(w, "tiers.toml: %s old\n", ageDays(time.Since(fresh.GeneratedAt)))
-				if len(fresh.StaleSources) > 0 {
-					fmt.Fprintf(w, "stale sources: %s\n", strings.Join(fresh.StaleSources, ", "))
-				}
-			} else {
-				fmt.Fprintln(w, "tiers.toml: not found")
+				g := fresh.GeneratedAt
+				r.generated, r.stale = &g, fresh.StaleSources
 			}
-			tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(tw, "MODEL\tTIER\tSCORE\tOPEN\tCONTEXT\tOUT $/M\tFLAGS")
-			for _, c := range cs {
-				score := "-"
-				if c.HasScore {
-					score = fmt.Sprintf("%.1f", c.Score)
-				}
-				open := ""
-				if c.OpenWeights {
-					open = "open"
-				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", c.ID, c.Tier, score, open, c.Context, fmtPrice(c.OutputPerMillion), strings.Join(c.Flags, ","))
+			for _, c := range candidates.Rank(a.cfg.Models, ix, q) {
+				r.cands = append(r.cands, toCandidateJSON(c))
 			}
-			return tw.Flush()
+			return r.write(w, asJSON)
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "print JSON")

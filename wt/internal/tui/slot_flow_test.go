@@ -82,7 +82,7 @@ func TestWithSlotProfilesCarriesChecksAndApplier(t *testing.T) {
 	}
 	checks := []profiles.SlotCheck{{Index: 0, Usable: true, Profile: profiles.SlotProfile{Name: "cloud", Agent: "claude"}}}
 
-	m := withSlotProfiles(newRunModel(false, false, "", "claude", "", "", "", nil, themes.Default, ".", &config.Config{}, nil), SlotProfiles{Checks: checks, Apply: apply})
+	m := withSlotProfiles(newRunModel(false, false, "", "claude", "", "", "", nil, themes.Default, ".", nil, &config.Config{}, nil), SlotProfiles{Checks: checks, Apply: apply})
 
 	if len(m.slotChecks) != 1 || m.slotChecks[0].Profile.Name != "cloud" {
 		t.Fatalf("slotChecks = %+v, want the one check handed in", m.slotChecks)
@@ -356,6 +356,32 @@ func TestEnterOnProfileRowRunsTheStepsThenLaunches(t *testing.T) {
 	}
 }
 
+// TestRunSlotAndWaitWritesNoRefcountLineOnTheAPIPath pins the remote flag of
+// the slot run command: on the API path the client session holds the slot
+// models, so no refcount line is written for them, while the registry path's
+// run (the control) writes one per distinct slot model.
+func TestRunSlotAndWaitWritesNoRefcountLineOnTheAPIPath(t *testing.T) {
+	slotFlowFixture(t, idleOmlxSnapshot(), cloudProfile())
+	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
+	row := catalog.ResolveSlotProfileWire(catalog.WireByID(slotRemoteCatalog().Rows), cloudProfile())
+	ids := []string{"openrouter/a", "openrouter/b"}
+	for _, tc := range []struct {
+		remote bool
+		want   int
+	}{{true, 0}, {false, 1}} {
+		msg := runSlotAndWaitCmd(exec.Command("true"), "claude", row, nil, tc.remote)()
+		if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
+			t.Fatalf("remote=%v: run = %#v, want a clean launchDoneMsg", tc.remote, msg)
+		}
+		counts := refcount.NewStore().Counts(ids)
+		for _, id := range ids {
+			if counts[id] != tc.want {
+				t.Errorf("remote=%v: refcounts = %v, want %d for %s", tc.remote, counts, tc.want, id)
+			}
+		}
+	}
+}
+
 // TestProfileLaunchWithEveryRouteInPlaceRestartsNothing pins success
 // criterion 5: when no route write changed config.yaml the proxy is not
 // restarted, only probed. A restart on every profile launch would cost each
@@ -551,7 +577,7 @@ func TestSlotApplierErrorAbortsTheLaunch(t *testing.T) {
 			}
 			oldStderr := os.Stderr
 			os.Stderr = w
-			msg := runSlotAndWaitCmd(exec.Command("touch", sentinel), "claude", row, nil)()
+			msg := runSlotAndWaitCmd(exec.Command("touch", sentinel), "claude", row, nil, false)()
 			os.Stderr = oldStderr
 			_ = w.Close()
 			stderr, _ := io.ReadAll(r)

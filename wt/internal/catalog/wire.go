@@ -115,6 +115,18 @@ func RegisteredOrdered(rows []modelapi.Row) []config.Model {
 	return out
 }
 
+// NonNativeModels is the rows a gateway syncer lists (pi's models.json): every
+// row that is not a native model, as models, in the catalog's order.
+func NonNativeModels(rows []modelapi.Row) []config.Model {
+	var out []config.Model
+	for _, r := range rows {
+		if !r.Native {
+			out = append(out, ToModel(r))
+		}
+	}
+	return out
+}
+
 // NeedsStart reports whether the model must be started (or its route added)
 // before a launch: the server says start, or a running local model the
 // gateway is known not to list. An unknown route reads as false (R7).

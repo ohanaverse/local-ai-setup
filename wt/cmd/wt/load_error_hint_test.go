@@ -195,6 +195,15 @@ func TestStatsFamilyNoteNamesTheRepairThatWorks(t *testing.T) {
 				t.Fatal("newApp() loaded a broken home without a load error")
 			}
 			_, stderr := runStats(t, a, "--family", "gemma4")
+			// An unparseable config.toml also says, first, why the spend did not
+			// come from the model server.
+			rest, noted := strings.CutPrefix(stderr, "wt: note: config.toml could not be read (")
+			if noted != (c.name == "unparseable config.toml") {
+				t.Fatalf("case %q: config note present = %v, want it exactly for an unparseable config.toml\n%s", c.name, noted, stderr)
+			}
+			if noted {
+				_, stderr, _ = strings.Cut(rest, "\n")
+			}
 			const spendNote = "wt: spend unavailable: querySpend not stubbed in this test\n"
 			note, ok := strings.CutPrefix(stderr, spendNote)
 			if !ok {

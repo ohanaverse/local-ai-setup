@@ -195,6 +195,7 @@ Opt-in overlays from `~/.config/agent-wt/profiles.toml` (`profiles.Resolve`), ap
 **No flag points a claude launch at another LiteLLM** (the URL comes only from `[litellm]` in `config.toml`). To A/B a proxy setting, run a scratch `litellm --config <scratch>.yaml --port 4001` and start `claude` directly with the env `claudeDriver.BuildSlots` builds (`internal/agents/claude_slots.go`: `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`, per-slot `ANTHROPIC_DEFAULT_*_MODEL` plus `_NAME` in the `--settings` env JSON, `--model`). The scratch config holds the omlx key, so delete it afterwards.
 
 - **A slot profile is its own launch unit**: `launchSlotProfile` (`cmd/wt`) and `slot_flow.go` (`internal/tui`) run the same ten steps. Change both paths together.
+- **On a client session the twins are `launchSlotProfileRemote` (`cmd/wt`) and `beginRemoteSlotLaunch` (`slot_flow.go`)**: one catalog read, register every `Distinct()` slot model, start the local one only when `catalog.NeedsStart`, build against the gateway; `TestSlotFlowParity` (both packages, `internal/profiles/testdata/slot_launch_remote_parity.txt`) holds them to the same server calls. `profile slots rm|usage` never open a client.
 - **The file's problems are warnings, never a stopped wt** (`slotWarnings`; #418, #419).
 - **Fail closed, always the proxy, no file written**: nothing reads `cfg.IsLitellm()`; `config_content` travels only in inline `--settings`, the proxy token only in the process env.
 - **Automatic profiles are never applied to a slot-profile launch** (`applySlotProfile`, never `applyProfileForLaunch`).
@@ -206,6 +207,8 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md#profiles-inte
 ## Smoke test (`wt smoke`)
 
 `wt smoke [model-id]` runs a one-shot prompt through every agent eligible for one model, built like a real launch (`agents.BuildLaunchCmdInfo`), and reports PASS/FAIL/SKIP ([docs/wt-smoke.md](docs/wt-smoke.md)). Each row runs in its own temporary git repo unless `--cwd` (standing in a repository root that warns and proceeds, terminal or not); permission checks are off (yolo forced on except codex) and the directory is not a sandbox (#193). A model fallback is FAIL; the default prompt never contains its sentinel verbatim. `--tools` is the tool-call check (a nonce planted in the row's directory, read with a tool) and `--hops N` chains N dependent reads; both are exclusive with `--prompt` and `--cwd`, and their combination is validated before the model is resolved.
+
+**With a model server configured `runSmoke` branches to `runSmokeRemote`** (client session: `smoke.CandidatesWire`, one client session for the run, a start job only when `catalog.NeedsStart`, rows through `smoke.RunRowGateway`, no exit stop picker; a gateway 503 is rerun once, a gateway that stays down is SKIP, never FAIL; test seam `smoke.SetGatewayRunForTest`); the shared row loop is `(*app).runSmokeRows`. [docs/wt-smoke.md](docs/wt-smoke.md) "With a model server configured".
 
 Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row directories, yolo, process-group cleanup, env stripping, Ctrl+C, or timeouts (180s cloud, 900s local).
 

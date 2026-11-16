@@ -31,9 +31,11 @@ var tierRank = map[string]int{"location": 0, "provider": 1, "model": 2}
 // route conditions, then merges them in tier order (location, provider,
 // model) so a more specific tier overwrites a less specific tier's
 // same-named Env/ConfigContent key; Args and Wrapper are whole-field
-// replacement (see design spec §3). An unresolvable location (registry
-// gap) is treated conservatively as non-local, mirroring
-// Config.InCatalog's own fail-closed treatment.
+// replacement (see design spec §3). A location tier reads m.Location when it
+// is set (a client session's catalog row) and cfg.ResolveLocation(m)
+// otherwise; an unresolvable location (registry gap, or a nil cfg) is treated
+// conservatively as non-local, mirroring Config.InCatalog's own fail-closed
+// treatment.
 func Resolve(store Store, agent string, cfg *config.Config, m config.Model) ResolvedProfile {
 	type tiered struct {
 		rank int
@@ -90,6 +92,17 @@ func matchesTier(p Profile, cfg *config.Config, m config.Model) bool {
 	switch p.Match {
 	case "location":
 		if p.Location == "" {
+			return false
+		}
+		// A catalog row (catalog.ToModel on a client session) carries the
+		// model server's location: that word decides, and the session config,
+		// which has no registry, is never asked. A model without one is the
+		// registry's to resolve, and with no config to resolve it from it
+		// matches nothing.
+		if m.Location != "" {
+			return string(m.Location) == p.Location
+		}
+		if cfg == nil {
 			return false
 		}
 		loc, err := cfg.ResolveLocation(m)

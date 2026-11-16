@@ -63,7 +63,7 @@ func TestAgentExitStatusPropagatesThroughTheTail(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	if os.Getenv("WT_TEST_AGENT_EXIT_CHILD") == "1" {
 		runStopPicker = func(*config.Config) {}
-		_ = runAgentCmd(exec.Command("sh", "-c", "exit 3"), "shell", config.Model{}, &config.Config{}, nil)
+		_ = runAgentCmd(exec.Command("sh", "-c", "exit 3"), "shell", config.Model{}, &config.Config{}, nil, legacyTail())
 		os.Exit(0)
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestAgentExitStatusPropagatesThroughTheTail$")

@@ -15,6 +15,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
@@ -292,6 +293,21 @@ type startState struct {
 	// routingState.quitting does for the route check. The state itself is
 	// kept so Run() can print what the engine printed (startOutput.release).
 	quitting bool
+
+	// The API path's start (remote; remote_start.go): the job the server
+	// runs. jobID is "" until the first poll names it, and only then can the
+	// job be detached from or cancelled (canCancelJob). job is the last
+	// poll's view, cancelSent a cancel on its way, cancelErr a cancel the
+	// server refused. stage, out, result and pastCancel are the registry
+	// path's and stay unused here (R8).
+	remote     bool
+	jobID      string
+	job        *modelclient.JobView
+	cancelSent bool
+	// cancelAsked is set by c and never cleared, not even when the server
+	// refuses the cancel: a start that then succeeds launches nothing.
+	cancelAsked bool
+	cancelErr   string
 }
 
 // pastCancel reports whether the start has got past anything a cancel could
@@ -398,6 +414,9 @@ func (rs *replaceState) syncStopChoice(whole bool) bool {
 type startStageMsg struct {
 	id    int
 	stage lifecycle.Stage
+	// job is a poll's view of the API path's start job; nil on the registry
+	// path.
+	job *modelclient.JobView
 }
 type startDoneMsg struct {
 	id int
@@ -411,6 +430,9 @@ type startDoneMsg struct {
 	// message has already waited for every proxy restart the start, or that
 	// check's route removal, may have left running.
 	out string
+	// note is the API path's register note: the client session the start
+	// registered first was refused ("" when it was taken).
+	note string
 }
 type startTickMsg struct{ id int }
 
@@ -460,6 +482,9 @@ func buildOthersChoices(id string, sameFamily, othersListed bool, stoppable int)
 // retryStart starts the refused row again with the answers the user gave:
 // a profile launch's start carries the restart it still owes.
 func (m model) retryStart(it *modelItem, allow bool, others othersPlan) (model, tea.Cmd) {
+	if m.client != nil {
+		return m.beginRemoteStart(it, allow, others)
+	}
 	if m.slot != nil {
 		return m.beginStartOwed(it, allow, others, m.slot.owed)
 	}
@@ -615,6 +640,9 @@ func (m model) beginStartOwed(it *modelItem, allowReplace bool, others othersPla
 // also marks the start as quitting, so its startDoneMsg cannot launch an
 // agent in the gap before the QuitMsg is handled (see startState.quitting).
 func (m model) handleStartKey(msg tea.KeyMsg) (model, tea.Cmd) {
+	if m.start.remote {
+		return m.handleRemoteStartKey(msg)
+	}
 	if m.start.pastCancel() {
 		if msg.String() == "ctrl+c" {
 			// A copy, not a write through the pointer, as in handleRouteKey:
@@ -660,6 +688,10 @@ func (m model) handleStartMsg(msg tea.Msg) (model, tea.Cmd) {
 		if m.start == nil || msg.id != m.start.id {
 			return m, nil
 		}
+		if msg.job != nil {
+			m = m.remoteProgress(msg.job)
+			return m, waitForStart(m.start.ch)
+		}
 		m.start.stage = msg.stage
 		return m, waitForStart(m.start.ch)
 	case startTickMsg:
@@ -670,6 +702,9 @@ func (m model) handleStartMsg(msg tea.Msg) (model, tea.Cmd) {
 	case startDoneMsg:
 		if m.start == nil || msg.id != m.start.id {
 			return m, nil
+		}
+		if m.start.remote {
+			return m.finishRemoteStart(msg)
 		}
 		return m.finishStart(msg)
 	}
@@ -870,6 +905,9 @@ func refusalHeader(cfg *config.Config, id string, occ *lifecycle.OccupiedError, 
 }
 
 func (m model) startingView() string {
+	if m.start.remote {
+		return m.remoteStartingView()
+	}
 	elapsed := time.Since(m.start.began).Round(time.Second)
 	if m.start.cancelling {
 		// Name only the key that still does something: esc and q are ignored

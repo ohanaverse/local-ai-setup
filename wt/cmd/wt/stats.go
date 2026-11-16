@@ -80,6 +80,38 @@ func statsCmd(a *app) *cobra.Command {
 			}
 
 			asOf := statsNow()
+			// With a model server configured the spend comes from it, and the
+			// report's instant is the server's clock (R16): the ping that
+			// opens the session reads it. A server that cannot be opened
+			// leaves the local clock and the launch counts, and says why.
+			var (
+				ms      *modelSession
+				openErr error
+			)
+			remote := a.endpointConfigured()
+			if _, cerr := a.sessionCfg(); remote && cerr != nil && !endpointInEnv() {
+				// A report is never a gate: a config.toml that cannot be read
+				// is not an endpoint here (endpointConfigured's safest reading
+				// is for the commands that need the server), so the legacy
+				// spend path and its notes run. One note says why the spend
+				// did not come from the server.
+				remote = false
+				fmt.Fprintf(cmd.ErrOrStderr(), "wt: note: config.toml could not be read (%s); so wt cannot tell whether a model server is configured; spend is read from LiteLLM's database, not from the model server\n", visibleID(cerr.Error()))
+			}
+			if remote {
+				if ms, openErr = a.openModels(cmd.Context(), "spend is not shown"); openErr == nil {
+					asOf = ms.client.Now().UTC()
+				}
+			}
+			collect := func() usageReport {
+				switch {
+				case !remote:
+					return collectUsage(cmd.Context(), a.cfg, window, asOf, f)
+				case openErr != nil:
+					return collectUsageNoServer(openErr, window, asOf, f)
+				}
+				return collectUsageRemote(cmd.Context(), ms, window, asOf, f)
+			}
 			rows := buildStatsRows(survey.NewStore().Events(), window, asOf, f)
 
 			out := cmd.OutOrStdout()
@@ -92,7 +124,7 @@ func statsCmd(a *app) *cobra.Command {
 				// One JSON document: writeStatsJSON writes nothing until it is
 				// complete, so there is no first table to show before the spend
 				// query: query, then write.
-				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, f)
+				rep = collect()
 				if err := writeStatsJSON(out, buildStatsJSON(windowName, asOf, rows, rep)); err != nil {
 					return err
 				}
@@ -109,7 +141,7 @@ func statsCmd(a *app) *cobra.Command {
 				// the survey table does not need it — printing first keeps the
 				// first table off that critical path. (--json waits anyway: one
 				// document prints only when complete.)
-				rep = collectUsage(cmd.Context(), a.cfg, window, asOf, f)
+				rep = collect()
 				if len(rep.Rows) == 0 {
 					fmt.Fprintln(out, "no usage data")
 				} else {
@@ -117,7 +149,7 @@ func statsCmd(a *app) *cobra.Command {
 				}
 			}
 			notes := rep.notes()
-			if f.family != "" && a.loadErr != nil {
+			if f.family != "" && a.loadErr != nil && !remote {
 				notes = append(notes, registryNote(a.loadErr))
 			}
 			for _, note := range notes {

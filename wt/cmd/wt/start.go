@@ -457,11 +457,12 @@ func decideOthers(cfg *config.Config, id string, occ *lifecycle.OccupiedError, a
 	case "keep":
 		return lifecycle.OthersAnswer{Decided: true}, nil
 	}
+	others, unknown := legacyOthers(cfg, occ)
 	if !stdinTTY() {
-		fmt.Fprint(osStderr, othersWarning(cfg, id, occ))
+		fmt.Fprint(osStderr, othersWarning(id, others, unknown))
 		return lifecycle.OthersAnswer{Decided: true}, nil
 	}
-	question, canStop := othersQuestion(cfg, id, occ)
+	question, canStop := othersQuestion(id, others, unknown, legacyOthersCounts(occ))
 	choice, err := ask(question, canStop)
 	if err != nil {
 		return lifecycle.OthersAnswer{}, err

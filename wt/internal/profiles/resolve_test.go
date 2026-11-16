@@ -230,3 +230,32 @@ func TestResolvedProfileEmptyCountsConfigDefaults(t *testing.T) {
 		t.Error("Empty() = false for the zero value, want true")
 	}
 }
+
+// TestProfilesResolveUsesRowLocation proves a location-tier profile matches
+// on the model's own Location when it is set: on the model server's path the
+// model is a catalog row (catalog.ToModel carries the server's location) and
+// the session config has no registry, so there is no provider to resolve a
+// location from. The row's word decides, whatever a provider row of the same
+// id would say; a session config that is nil or has no providers matches a
+// row without a location nowhere and never panics.
+func TestProfilesResolveUsesRowLocation(t *testing.T) {
+	store := Store{Enabled: true, Profiles: []Profile{
+		{Agent: "claude", Match: "location", Location: "local", Env: map[string]string{"X": "1"}},
+	}}
+	row := config.Model{ID: "omlx/q", ProviderID: "omlx", ModelName: "q", Location: config.LocationLocal}
+	for name, cfg := range map[string]*config.Config{"nil config": nil, "session config": {}} {
+		if rp := Resolve(store, "claude", cfg, row); rp.Env["X"] != "1" {
+			t.Errorf("%s: Env = %v, want the local profile applied from the row's location", name, rp.Env)
+		}
+		bare := row
+		bare.Location = ""
+		if rp := Resolve(store, "claude", cfg, bare); !rp.Empty() {
+			t.Errorf("%s: a row with no location matched %+v, want nothing", name, rp)
+		}
+	}
+	// The row's word wins over a provider the config happens to know.
+	cloudCfg := &config.Config{Providers: []config.Provider{{ID: "omlx", Location: config.LocationCloud}}}
+	if rp := Resolve(store, "claude", cloudCfg, row); rp.Env["X"] != "1" {
+		t.Errorf("row location local under a cloud provider row: Env = %v, want the row's location to decide", rp.Env)
+	}
+}

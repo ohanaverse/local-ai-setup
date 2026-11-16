@@ -200,6 +200,8 @@ func (m *model) modelFrames() []listFrame {
 			if it, ok := m.models.SelectedItem().(*modelItem); ok {
 				if it.profile != nil {
 					mode = slotLine(it.profile, it.slotTiers, inner)
+				} else if m.client != nil {
+					mode = remoteModeLine(it, inner)
 				} else {
 					mode = withTierNote(modeLine(mode, it.cost, inner), it.tier, inner)
 				}
@@ -406,4 +408,41 @@ func (m *model) fitLists() {
 // fitTo sizes l to the room its frames leave in this model's window.
 func (m *model) fitTo(l *list.Model, frames ...listFrame) {
 	fitTo(l, m.width, m.height, frames...)
+}
+
+// remoteModeLine is the line under the table on the API path for the
+// highlighted row: why it is blocked, else how many client sessions use it and
+// its price, then its tier when there is room. There is no LiteLLM mode to name
+// (the server routes), and every part is shown whole or not at all, as
+// modeLine's price is.
+func remoteModeLine(it *modelItem, width int) string {
+	if it.blocked != "" {
+		return cutLines("blocked: "+it.blocked, width)
+	}
+	join := func(parts ...string) string {
+		var out []string
+		for _, p := range parts {
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		return strings.Join(out, "   ")
+	}
+	sess := ""
+	if it.ref > 0 {
+		sess = fmt.Sprintf("%d client session(s)", it.ref)
+	}
+	line := ""
+	for _, cand := range []string{join(sess, it.cost), it.cost, sess} {
+		if lipgloss.Width(cand) <= width {
+			line = cand
+			break
+		}
+	}
+	for _, n := range it.tier {
+		if cand := join(line, n); lipgloss.Width(cand) <= width {
+			return cand
+		}
+	}
+	return line
 }

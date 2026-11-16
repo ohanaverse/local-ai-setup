@@ -89,7 +89,7 @@ Global rotation: each successful single-model launch records its model id in `~/
 - TUI callers fetch the agent's full catalog once (`cfg.ModelsForAgent`), narrow it with `cfg.EligibleModelsIn` (single-traversal filter), and pass it to `enterModelPhase`.
 
 ```bash
-go run ./cmd/wt rotate code    # debug helper: print the model after the last-launched in the "code" tag group
+go run ./cmd/wt rotate code    # debug helper: print the model after the last-launched in the "code" tag group (with a model server configured, over its catalog's registered rows that carry the tag, in the server's order)
 ```
 
 ## Start/stop (`wt start`, `wt stop`)

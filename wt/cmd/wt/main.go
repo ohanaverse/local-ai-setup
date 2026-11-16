@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -100,12 +102,61 @@ func runLaunchPath(
 	args []string,
 	launchPath, root string,
 ) error {
+	// With a model server configured, a launch that has its directory and its
+	// agent goes through the server (launchFilteredRemote): no refcount, no
+	// registry, no ollama or route check, no local probe. The picker (no
+	// directory or no agent yet) stays on the registry path until it moves to
+	// the server too.
+	//
+	// Several launchable models with no -M on a terminal are the picker's
+	// to decide (errRemoteNeedsPicker), as on the registry path: the launch
+	// falls through to runTUI below with the directory and agent it has.
+	remote := a.endpointConfigured()
+	// What is wrong with slot-profiles.toml is said once, before any picker
+	// opens or any launch starts, and only for a launch that could use a
+	// profile: no agent chosen yet, or an agent whose driver has slots. A
+	// client session says it without the registry's "profile/" holder
+	// (slotWarningsRemote), which it never reads.
+	var slotNotes []string
+	if _, ok := agents.SlotsFor(agent); agent == "" || ok {
+		if remote {
+			slotNotes = slotWarningsRemote(a)
+		} else {
+			slotNotes = slotWarnings(a)
+		}
+	}
+	printSlotNotes := func() {
+		for _, line := range slotNotes {
+			fmt.Fprintln(os.Stderr, line)
+		}
+	}
+	pickOnServer := false
+	if remote && launchPath != "" && agent != "" {
+		if root != "" {
+			maybeInstallGuard()
+		}
+		printSlotNotes()
+		err := func() error {
+			holdLaunch(agent, launchPath)
+			defer releaseRootClaim()
+			return launchFilteredRemote(context.Background(), a, agent, launchPath, yolo(cmd), tags, family, pinned, cmd.Flags().Changed("model"), args, string(othersMode), allowReplace, a.profileState())
+		}()
+		if !errors.Is(err, errRemoteNeedsPicker) {
+			return printOnce(cmd, err)
+		}
+		pickOnServer = true
+		root = "" // the guard is installed
+	}
+
 	// Sweep dead-pid entries from the live-session refcount state before
 	// anything else — this is the single funnel every launch goes through
 	// (TUI, non-TUI, -W, --cwd, outside-repo, and shell-wt), and the sweep
 	// must run even for shell-wt (which never builds a model picker) to
-	// keep other concurrent sessions' counts accurate. Best-effort.
-	sweepRefcounts()
+	// keep other concurrent sessions' counts accurate. Best-effort. The
+	// model server's client sessions keep no refcount file: skipped there.
+	if !remote {
+		sweepRefcounts()
+	}
 
 	// applyProfile closes over a's already-loaded profiles.toml state
 	// (newApp() loaded and validated it once) so the TUI launch path
@@ -116,8 +167,12 @@ func runLaunchPath(
 	// A slot-profile launch never reaches applyProfile. The TUI is handed
 	// the loaded slot profiles and applySlotProfile, the fail-closed applier
 	// the non-TUI path calls directly, as tui.SlotProfiles.
+	// profileCfg is the config the profile layer reads: the registry's, or
+	// on the model server's path the session config the picker is handed
+	// (runTUI sets it), as launchFilteredRemote's runLaunch reads it.
+	profileCfg := a.cfg
 	applyProfile := func(cmd *exec.Cmd, agentName string, m config.Model) (func() error, error) {
-		return applyProfileForLaunch(cmd, agentName, m, a.cfg, a.profileState())
+		return applyProfileForLaunch(cmd, agentName, m, profileCfg, a.profileState())
 	}
 
 	// removeFuncs gives every picker load's row actions the same removal
@@ -139,21 +194,13 @@ func runLaunchPath(
 		return cleanupRemoveFuncs(a, snap, in, 0, protErr)
 	}
 
-	// Slot profiles are pin targets for resolveModel during this run. What is
-	// wrong with slot-profiles.toml is said here, before any picker opens,
-	// and only for a launch that could use a profile: no agent chosen yet, or
-	// an agent whose driver has slots.
+	// Slot profiles are pin targets for resolveModel during this run. The
+	// slot notes (above) are printed here unless the client session's launch
+	// already printed them before falling through to the picker.
 	launchSlotChecks = a.slotChecks
-	var slotNotes []string
-	if _, ok := agents.SlotsFor(agent); agent == "" || ok {
-		slotNotes = slotWarnings(a)
+	if !pickOnServer {
+		printSlotNotes()
 	}
-	printSlotNotes := func() {
-		for _, line := range slotNotes {
-			fmt.Fprintln(os.Stderr, line)
-		}
-	}
-	printSlotNotes()
 	// The TUI's alternate screen covers what was just printed for as long as
 	// a picker is up, so a launch that went through the TUI says it again
 	// once the TUI has returned and the terminal is the user's.
@@ -162,7 +209,24 @@ func runLaunchPath(
 		// (internal/tui's launchGate) — except for a preset path, which
 		// RunE's confirmLaunch above has already asked about, so a root
 		// launch is asked at most once.
-		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
+		// With a model server configured the picker reads its table from it
+		// (and the session config, which has no registry); otherwise nil is
+		// the legacy registry path.
+		var models tui.ModelClient
+		tuiCfg := a.cfg
+		if remote {
+			ms, merr := a.buildModels(launchStill)
+			if merr != nil {
+				return printOnce(cmd, remoteExit(merr))
+			}
+			scfg, serr := a.sessionCfg()
+			if serr != nil {
+				return printOnce(cmd, remoteExit(modelclient.Still(serr, launchStill)))
+			}
+			models, tuiCfg = tui.NewModelClient(ms.client, ms.ep), scfg
+			profileCfg = scfg
+		}
+		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, models, tuiCfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
 		printSlotNotes()
 		// tui.Run returns the agent's run error after its post-exit flow;
 		// a non-zero exit becomes wt's own status, as on the non-TUI path,
@@ -188,7 +252,7 @@ func runLaunchPath(
 	// directory is not known until the user picks inside the TUI, so never
 	// short-circuit to launchFiltered here — a pinned agent or command must
 	// still pick a worktree.
-	if launchPath == "" {
+	if launchPath == "" || pickOnServer {
 		return runTUI()
 	}
 
@@ -656,7 +720,7 @@ func rootCmd() *cobra.Command {
 	cmd.Flags().Bool("check-guard", false, "Check if the main guard is installed and exit")
 	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
-	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), servedCmd(a), warmCmd(a), litellmCmd(a), profileCmd(a), modelCmd(a), cloudSyncCmd(a), worktreesCmd(a), removeCmd(a), rescueCmd(a), restoreRootCmd(a))
+	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), servedCmd(a), warmCmd(a), litellmCmd(a), profileCmd(a), modelCmd(a), cloudSyncCmd(a), worktreesCmd(a), removeCmd(a), rescueCmd(a), restoreRootCmd(a), jobCmd(a))
 	silenceUsageOnError(cmd)
 	return cmd
 }

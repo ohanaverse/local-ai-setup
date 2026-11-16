@@ -1,20 +1,27 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -1565,5 +1572,229 @@ func TestModelSelectorWrapsInAppAndStandalone(t *testing.T) {
 	updated, _ := nm.models.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if got := updated.Index(); got != 0 {
 		t.Errorf("model phase: down from the last row = %d, want wrap to 0", got)
+	}
+}
+
+// TestSessionRegisteredBeforeStartAndEndedOnExit pins the client session's
+// life on the model server: it is registered when a model is chosen, before
+// the start is posted (the server's idle scan must see it), never from
+// Update; a start that fails re-registers it without the model; a launch row
+// registers from its run command; a failed register is a status note, not a
+// refusal; and the post-exit flow ends it where the registry path releases
+// its wt session, with no refcount release.
+func TestSessionRegisteredBeforeStartAndEndedOnExit(t *testing.T) {
+	f := &fakeModels{cat: startRowCatalog()}
+	f.startFn = func(context.Context, int, modelapi.StartRequest, modelclient.Progress) (modelapi.JobStatus, error) {
+		return modelapi.JobStatus{}, &modelclient.JobError{Problem: modelapi.Problem{Code: modelapi.CodeFailed, Message: "omlx refused to load"}}
+	}
+	m := remoteTable(t, f)
+	m, _ = enterRemote(t, m, "omlx/qwen3.8")
+	m, _ = updateMsg(m, recvStart(t, m))
+	if want := []string{"register omlx/qwen3.8", "start omlx/qwen3.8", "remove omlx/qwen3.8"}; !reflect.DeepEqual(f.history(), want) {
+		t.Fatalf("calls = %v, want %v", f.history(), want)
+	}
+	if !strings.Contains(m.status, "omlx refused to load") {
+		t.Errorf("status = %q, want the start's failure", m.status)
+	}
+
+	old := buildGatewayLaunch
+	buildGatewayLaunch = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+		return nil, agents.LaunchInfo{}, errors.New("no agent here")
+	}
+	t.Cleanup(func() { buildGatewayLaunch = old })
+	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
+	if len(f.history()) != 3 || cmd == nil {
+		t.Fatalf("Enter on a launch row: calls %v, cmd nil %v: want no call from Update and a run command", f.history(), cmd == nil)
+	}
+	m, _ = updateMsg(m, cmd())
+	if !strings.Contains(m.status, "launch failed: no agent here") || m.committed {
+		t.Errorf("status %q, committed %v: want the failure and the picker free to retry", m.status, m.committed)
+	}
+	if want := []string{"add openrouter/glm-5.3", "remove openrouter/glm-5.3"}; !reflect.DeepEqual(f.history()[3:], want) {
+		t.Errorf("launch row calls = %v, want %v", f.history()[3:], want)
+	}
+
+	oldRelease := releaseSession
+	releaseSession = func() { t.Error("the model server's path released a refcount wt session") }
+	t.Cleanup(func() { releaseSession = oldRelease })
+	pendingSurveyState = pendingSurvey{agent: "claude", m: config.Model{ID: "openrouter/glm-5.3"}}
+	t.Cleanup(func() { pendingSurveyState = pendingSurvey{} })
+	oldSurvey := runSurvey
+	runSurvey = func(string, config.Model) string { return "" }
+	t.Cleanup(func() { runSurvey = oldSurvey })
+	oldStop, oldNotice := runStopPhase, emitPriceNotice
+	runStopPhase = func(*config.Config) { t.Error("the model server's path offered the stop picker") }
+	emitPriceNotice = func(*config.Config) { t.Error("the model server's path read the registry's price stamps") }
+	t.Cleanup(func() { runStopPhase, emitPriceNotice = oldStop, oldNotice })
+	printPendingSummaryAndSurveyTail(m.cfg, exitTailOf(m))
+	h := f.history()
+	if h[len(h)-1] != "end" || slices.Index(h, "end") != len(h)-1 {
+		t.Errorf("calls = %v, want the client session ended once, last", h)
+	}
+
+	// A register the server refuses is a note on the status line; the start
+	// still goes ahead.
+	g := &fakeModels{cat: startRowCatalog(), registerErr: errors.New("model server at http://x:1 is not reachable")}
+	g.startFn = f.startFn
+	n := remoteTable(t, g)
+	n, _ = enterRemote(t, n, "omlx/qwen3.8")
+	n, _ = updateMsg(n, recvStart(t, n))
+	if !strings.Contains(n.status, "did not register this client session") || !slices.Contains(g.history(), "start omlx/qwen3.8") {
+		t.Errorf("status %q, calls %v: want the register note and the start still posted", n.status, g.history())
+	}
+}
+
+// TestRemoteLaunchRunsTheAgentOnTheGateway pins the launch half of the API
+// path, the non-TUI remote launch's steps in the run command: the agent is
+// built against the server's gateway with the model's gateway id, the client
+// session holds the model before the agent runs, the rotation is recorded,
+// and nothing on the registry path (the refcount, the stop picker) is touched.
+func TestRemoteLaunchRunsTheAgentOnTheGateway(t *testing.T) {
+	f := &fakeModels{cat: startRowCatalog()}
+	m := remoteTable(t, f)
+	var built config.Model
+	old := buildGatewayLaunch
+	buildGatewayLaunch = func(agent string, mdl config.Model, path string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
+		built = mdl
+		cmd := exec.Command("true")
+		cmd.Dir = path
+		return cmd, agents.LaunchInfo{}, nil
+	}
+	t.Cleanup(func() { buildGatewayLaunch = old })
+	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
+	if m.phase != phaseLaunching || cmd == nil {
+		t.Fatalf("phase %v, cmd nil %v: want the launching screen and its prep", m.phase, cmd == nil)
+	}
+	m, cmd = updateMsg(m, cmd())
+	if !m.committed || cmd == nil {
+		t.Fatalf("committed %v, cmd nil %v: want the launch committed once prepared", m.committed, cmd == nil)
+	}
+	msg, ok := cmd().(launchDoneMsg)
+	if !ok || msg.err != nil {
+		t.Fatalf("run command = %#v, want the agent's clean exit", msg)
+	}
+	if built.ID != "openrouter/glm-5.3" || built.GatewayID != "openrouter/glm-5.3" {
+		t.Errorf("built %+v, want the chosen row's model with its gateway id", built)
+	}
+	if h := f.history(); !reflect.DeepEqual(h, []string{"register openrouter/glm-5.3"}) {
+		t.Errorf("calls = %v, want the client session registered by the run command", h)
+	}
+	if last, _ := rotation.New().Last(); last != "openrouter/glm-5.3" {
+		t.Errorf("rotation last = %q, want the launched model recorded", last)
+	}
+}
+
+// stubGatewayBuild replaces the agent builder with one that builds a no-op
+// command, for the tests that drive a launch prep by hand.
+func stubGatewayBuild(t *testing.T) {
+	t.Helper()
+	old := buildGatewayLaunch
+	buildGatewayLaunch = func(_ string, _ config.Model, path string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
+		cmd := exec.Command("true")
+		cmd.Dir = path
+		return cmd, agents.LaunchInfo{}, nil
+	}
+	t.Cleanup(func() { buildGatewayLaunch = old })
+}
+
+// TestLateEscDropsThePreparedModel pins that a prep finished before the esc
+// reached Update (its result arrives stale) still takes its model out of the
+// client session: nothing will launch it, so the server's idle scan must not
+// be kept from stopping it.
+func TestLateEscDropsThePreparedModel(t *testing.T) {
+	f := &fakeModels{cat: startRowCatalog()}
+	m := remoteTable(t, f)
+	stubGatewayBuild(t)
+	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
+	msg := cmd() // the prep ran to its end, holding the model
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.phase != phaseModel {
+		t.Fatalf("phase = %v, want the table after esc", m.phase)
+	}
+	m, drop := updateMsg(m, msg)
+	if m.committed || drop == nil {
+		t.Fatalf("committed %v, cmd nil %v: want nothing launched and a drop command", m.committed, drop == nil)
+	}
+	if got := drop(); got != nil {
+		t.Errorf("drop command returned %#v, want nothing", got)
+	}
+	if h := f.history(); !slices.Contains(h, "remove openrouter/glm-5.3") {
+		t.Errorf("calls = %v, want the model dropped from the client session", h)
+	}
+}
+
+// TestEscThenReEnterKeepsTheModelForTheNewLaunch pins the ordering guard on
+// the stale drop: the first prep's late result arrives while a second launch
+// of the same model is preparing, and must not take the model out from under
+// it (the new prep's hold was a no-op, the model being held already).
+func TestEscThenReEnterKeepsTheModelForTheNewLaunch(t *testing.T) {
+	f := &fakeModels{cat: startRowCatalog()}
+	m := remoteTable(t, f)
+	stubGatewayBuild(t)
+	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
+	stale := cmd()
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, cmd2 := enterRemote(t, m, "openrouter/glm-5.3")
+	if m.phase != phaseLaunching || cmd2 == nil {
+		t.Fatalf("phase %v, cmd nil %v: want the second launching screen", m.phase, cmd2 == nil)
+	}
+	m, drop := updateMsg(m, stale)
+	if drop != nil {
+		t.Errorf("the stale prep's result returned a command; it must not drop the model under the new launch")
+	}
+	if m.phase != phaseLaunching {
+		t.Fatalf("phase = %v, the stale result must not leave the launching screen", m.phase)
+	}
+	m, run := updateMsg(m, cmd2())
+	if !m.committed || run == nil {
+		t.Errorf("committed %v, cmd nil %v: want the new launch committed", m.committed, run == nil)
+	}
+	if h := f.history(); slices.Contains(h, "remove openrouter/glm-5.3") {
+		t.Errorf("calls = %v, the model was dropped from the new launch", h)
+	}
+}
+
+// TestCtrlCDuringLaunchPrepLeavesWithoutAnAgent pins that the launch's server
+// work (the client session's register, the gateway's model list) runs behind
+// the launching screen, not under a live picker: ctrl+c there quits wt, the
+// prep's result is dropped, the agent is never built or spawned, and the
+// client session is ended. Before this, the run command did that work and
+// went on to release the terminal and run the agent after the TUI had gone.
+func TestCtrlCDuringLaunchPrepLeavesWithoutAnAgent(t *testing.T) {
+	f := &fakeModels{cat: startRowCatalog(), registerBlock: make(chan struct{})}
+	m := remoteTable(t, f)
+	old := buildGatewayLaunch
+	buildGatewayLaunch = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+		t.Error("the agent was built after ctrl+c")
+		return exec.Command("true"), agents.LaunchInfo{}, nil
+	}
+	t.Cleanup(func() { buildGatewayLaunch = old })
+	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
+	if m.phase != phaseLaunching || cmd == nil || m.committed {
+		t.Fatalf("phase %v, cmd nil %v, committed %v: want the launching screen, a prep command and nothing committed", m.phase, cmd == nil, m.committed)
+	}
+	if v := plain(m); !strings.Contains(v, "openrouter/glm-5.3") || !strings.Contains(v, "ctrl+c quit") {
+		t.Errorf("launching view = %q, want the model and ctrl+c quit", v)
+	}
+	got := make(chan tea.Msg, 1)
+	go func() { got <- cmd() }()
+	m, quit := updateMsg(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if quit == nil || quit() != tea.Quit() {
+		t.Fatal("ctrl+c on the launching screen did not quit")
+	}
+	settleRemoteStart(m) // what Run does once the program is over
+	var msg tea.Msg
+	select {
+	case msg = <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the prep command did not end after ctrl+c")
+	}
+	m, run := updateMsg(m, msg)
+	if run != nil || m.committed {
+		t.Errorf("the prep's result after ctrl+c committed a launch (cmd nil %v, committed %v)", run == nil, m.committed)
+	}
+	exitTailOf(m).release()
+	if h := f.history(); len(h) == 0 || h[len(h)-1] != "end" {
+		t.Errorf("calls = %v, want the client session ended", h)
 	}
 }

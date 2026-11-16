@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
@@ -37,8 +39,10 @@ const (
 	phaseNewWorktree                 // create-new-worktree prompt
 	phaseStarting                    // a start runs through the lifecycle engine, with live progress
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
+	phaseLaunching                   // the API path's launch prepares on the model server (remote_start.go)
 	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
 	phaseSlot                        // a slot-profile launch is writing its routes, restarting or probing the proxy
+	phaseCatalog                     // the model server's catalog is loading, or its fetch failed (F retries)
 )
 
 // model holds the entire UI state.
@@ -73,6 +77,36 @@ type model struct {
 	tag   string         // active rotation tag group
 	cfg   *config.Config // loaded config for the model catalog
 	theme themes.Theme   // active color theme; passed from cmd/wt
+
+	// client is the model server the picker reads its table from; nil is the
+	// legacy registry path (deleted in a later task).
+	client ModelClient
+	// catPricing is the pricing member of the latest catalog the picker
+	// loaded and catSeen says there was one: the stale-pricing notice after a
+	// launch reads them, and fetches once only when no catalog was loaded.
+	catPricing *modelapi.Pricing
+	catSeen    bool
+	// catalogFailed is true while phaseCatalog shows a failed fetch (m.status
+	// then holds its `error: ` text and F retries).
+	catalogFailed bool
+	// catalogCancel cancels the catalog fetch in flight: esc, a superseding
+	// F and the program's end call it.
+	catalogCancel context.CancelFunc
+	// wire is the eligible catalog rows the API table was built from, by id:
+	// what a start or a launch reads (catalog.NeedsStart, ToModel).
+	wire map[string]modelapi.Row
+	// prep is the API path's launch while it prepares on the model server
+	// (phaseLaunching); prepRun numbers them so a superseded result drops.
+	prep    *launchPrep
+	prepRun int
+	// hold is the API path's client session, created on the first model
+	// chosen and ended by the post-exit flow (exitTail).
+	hold *clientHold
+	// rslot is a slot-profile launch on the API path from its prep to the
+	// agent's build (slot_flow.go's beginRemoteSlotLaunch): set while its
+	// local model's start runs, so the start's success builds the profile's
+	// command instead of launching the local model alone.
+	rslot *remoteSlot
 
 	// model picker (the agent+model screen IS the picker)
 	models list.Model // bubble/list of agent+tag models
@@ -284,7 +318,26 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.status = "launch failed: " + msg.err.Error()
 		m.committed = false
 		m.phase = phaseModel
-		return m.refreshTable()
+		next, refresh := m.refreshTable()
+		if h := m.hold; h != nil && len(msg.ids) > 0 {
+			// The API path: nothing will use the profile's models now, so
+			// they leave the client session (a command, never in Update).
+			ids := msg.ids
+			drop := func() tea.Msg {
+				dropAll(h, ids)
+				return nil
+			}
+			return next, tea.Batch(refresh, drop)
+		}
+		return next, refresh
+	case catalogLoadedMsg, catalogFailedMsg:
+		return m.handleCatalogMsg(msg)
+	case jobCancelMsg:
+		return m.handleJobCancel(msg)
+	case remotePreparedMsg:
+		return m.handlePrepared(msg)
+	case remoteSlotPreparedMsg:
+		return m.handleRemoteSlotPrepared(msg)
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.
@@ -408,6 +461,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		if m.phase == phaseRouting {
 			return m.handleRouteKey(msg)
 		}
+		// And the API path's launch prep, which nothing but esc and ctrl+c
+		// may interrupt.
+		if m.phase == phaseLaunching && m.prep != nil {
+			return m.handleLaunchingKey(msg)
+		}
 		// And a profile launch's route stage, for the same reason.
 		if m.phase == phaseSlot && m.slot != nil {
 			return m.handleSlotKey(msg)
@@ -425,6 +483,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			return m.updateRows(msg)
+		}
+		// The catalog's loading and failed screens own the keyboard (only the
+		// keys they list act).
+		if m.phase == phaseCatalog {
+			return m.handleCatalogKey(msg)
 		}
 		// A status that has the screen to itself (statusAlone) is taken down
 		// by the next key, which does nothing else: the table was not on
@@ -484,12 +547,14 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				return m, nil
 			}
 			if m.phase == phaseOllamaWarn || m.phase == phaseReplaceConfirm {
+				var drop tea.Cmd
 				if m.phase == phaseReplaceConfirm {
 					m = m.dropSlot()
+					m, drop = m.dropRemoteSlot()
 				}
 				m.phase = phaseModel
 				m.status = ""
-				return m, nil
+				return m, drop
 			}
 			if m.phase == phaseNewWorktree {
 				m.phase = phaseList
@@ -545,6 +610,12 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				highlighted, ok := m.models.SelectedItem().(*modelItem)
 				if !ok {
 					return m, nil
+				}
+				if m.client != nil {
+					// The API path: a blocked row says why, a row the server
+					// must start runs the start job, any other launches on
+					// the gateway (remote_start.go).
+					return m.chooseRemote(highlighted, highlighted.model.ID == m.pinnedModel)
 				}
 				if highlighted.profile != nil && highlighted.blocked == "" {
 					// A slot profile is its own launch unit: its routes, its
@@ -616,8 +687,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 						// A profile launch that got this far ends here; a
 						// restart it still owes is settled (dropSlot).
 						m = m.dropSlot()
+						m, drop := m.dropRemoteSlot()
 						m.phase = phaseModel
-						return m, nil
+						return m, drop
 					case replaceProceedChoice:
 						return m.retryStart(m.replace.item, true, m.replace.others)
 					case othersKeepChoice:
@@ -718,6 +790,12 @@ func (m model) View() string {
 		}
 		return clip(m.startingView(), m.width)
 	}
+	if m.phase == phaseLaunching && m.prep != nil {
+		if m.width <= 0 || m.height <= 0 {
+			return "launch (waiting for window size)"
+		}
+		return clip(m.launchingView(), m.width)
+	}
 	if m.phase == phaseRouting {
 		if m.width <= 0 || m.height <= 0 {
 			return "route update (waiting for window size)"
@@ -735,6 +813,9 @@ func (m model) View() string {
 			return "replace confirm (waiting for window size)"
 		}
 		return drawnFrame(&m.replace.choices, m.height, m.replaceFrames()...)(m.replace.choices.View())
+	}
+	if m.phase == phaseCatalog {
+		return m.catalogView()
 	}
 	if m.phase == phaseModel {
 		if m.width <= 0 || m.height <= 0 {
@@ -876,6 +957,9 @@ func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmod
 // the registry is walked once per entry. A config error or an empty eligible
 // list sets the status and leaves the phase where it is.
 func (m model) enterModelPhaseForAgent() (model, tea.Cmd) {
+	if m.client != nil {
+		return m.beginCatalogLoad()
+	}
 	firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
 	fullCatalog, err := m.cfg.ModelsForAgent(m.agent)
 	if err != nil {
@@ -1336,8 +1420,9 @@ const loadingStatus = "loading worktrees..."
 // newRunModel builds the TUI's initial model from Run's arguments. It is split
 // out of Run so tests can pin the argument-to-field plumbing (e.g. --replace)
 // without starting a real tea.Program.
-func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, removeFuncs RemoveFuncsBuilder) model {
+func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, removeFuncs RemoveFuncsBuilder) model {
 	return model{
+		client:       models,
 		status:       loadingStatus,
 		cfg:          cfg,
 		theme:        theme,
@@ -1382,7 +1467,8 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // at the agent/command picker (or model phase when agent is pinned). When
 // prePath is inside a git repo, repoRoot is seeded so the new-worktree prompt
 // has a valid directory even if it becomes reachable from the pre-path entry
-// point. cfg is the already-loaded config from cmd/wt's newApp (validated
+// point. models, when non-nil, is the model server the picker reads its
+// table from; nil is the legacy registry path. cfg is the already-loaded config from cmd/wt's newApp (validated
 // before Run is called); it is not re-loaded here.
 // applyProfile, when non-nil, applies a local-model launch profile before
 // the agent's cmd.Run() and is called from runAndWaitCmd for every launch
@@ -1398,8 +1484,8 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // When the launched agent's run failed, Run returns that error (an
 // *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
 // cmd/wt exits with the agent's status (#412).
-func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
-	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, cfg, removeFuncs), slots)
+func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
+	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, models, cfg, removeFuncs), slots)
 	p := tea.NewProgram(initial, tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.
@@ -1407,10 +1493,15 @@ func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, ex
 	pendingSummary = ""
 	pendingRouteNotes = ""
 	settleOut = &startOutput{what: settleOutWhat}
+	clientNotes = &startOutput{what: "client session"}
 	drainLine.Store(nil)
 	pendingSurveyState = pendingSurvey{}
 	profileApplier = applyProfile
 	finalModel, err := p.Run()
+	// A start or a catalog fetch the user quit out of on the API path stops
+	// waiting first (the job keeps running on the server), so its goroutine
+	// is over before anything prints.
+	settleRemoteStart(finalModel)
 	// The alt-screen is now torn down (p.Run() has returned and bubbletea
 	// has called exitAltScreen), so stdout reaches the user's terminal
 	// rather than a discarded buffer.
@@ -1424,7 +1515,13 @@ func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, ex
 	// itself failed does no hand-off (RunCleanupList's rule) but still gets
 	// its log.
 	serr := finishRowSession(finalModel, err)
-	printPendingSummaryAndSurvey(cfg)
+	// The API path's tail ends the client session in place of the registry
+	// path's wt session release and stop picker (exitTail).
+	if fm, ok := finalModel.(model); ok && fm.client != nil {
+		printPendingSummaryAndSurveyTail(cfg, exitTailOf(fm))
+	} else {
+		printPendingSummaryAndSurvey(cfg)
+	}
 	if rerr := runResult(finalModel, err); rerr != nil {
 		return rerr
 	}
@@ -1534,6 +1631,8 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 	// A settling restart started from the picker can still be running, and
 	// main() waits for it: from here on its lines have a terminal to go to.
 	settleOut.release(w)
+	// So can the API path's client session heartbeat, until its end.
+	clientNotes.release(w)
 	// A start that was still running when wt quit (ctrl+c twice on the start
 	// screen) never reported, so what the engine had printed is still in its
 	// buffer: print it, and let whatever the engine and its proxy restart

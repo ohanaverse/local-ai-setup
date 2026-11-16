@@ -89,6 +89,56 @@ terminal (scripts, CI), `--json` or not, the start keeps them and prints
 one warning line to stderr (only stdin counts: `wt smoke <id> --json | jq`
 run from a terminal still asks on the terminal) — see [Other providers' models](wt-start-stop.md#other-providers-models-412).
 
+## With a model server configured
+
+With a `[model-server]` endpoint (or `WT_MODEL_URL`), `wt smoke` is a client
+session: it reads `config.toml` only, never `registry.toml`, and everything
+about models goes through the model server (`wt-model`; see
+[wt-model-server.md](wt-model-server.md)). The report, the PASS/FAIL/SKIP words,
+the sentinel rules, `--json` and the exit codes are the same. What differs:
+
+- The model and its eligible agents come from the server's catalog
+  (`smoke.CandidatesWire`: the same rules as the registry path, over the
+  server's rows). A pinned id the server does not know prints the server's own
+  text; one it knows but that cannot be tested prints its block reason, or
+  `model "<id>" cannot be smoke-tested right now (...)` when no agent can use
+  it. Both are exit 1.
+- One client session is registered for the whole run, with the model, before
+  anything is started, and it ends on every way out. A model that needs a start
+  (the server says start, or it is running but the gateway is known not to list
+  it; a route the server could not read never starts anything) is started by a
+  server job, answering its questions as `wt start` does.
+- Each row's agent is built against the gateway (the endpoint's origin and
+  token, never a provider's) and waits for the gateway to answer before it runs.
+- **A 503 from the gateway** (another client session's start or auto-stop
+  restarts the proxy mid-run): a row that FAILs while the gateway's model list
+  answers 503 waits for the gateway again and is rerun once; its result is the
+  rerun's. A gateway that stays down for the wait (3 minutes) makes the row a
+  SKIP with `gateway unavailable (503) — the model server may be restarting
+  LiteLLM`, never a FAIL, and the exit code is unaffected. wt retries only what
+  it drives: an agent that gives up on a 503 inside its own run owns its own
+  retries, and one that does not retry fails its row. That is a recorded limit
+  (#598), not something smoke papers over. The 503 probe is a point-in-time
+  check made after the row failed: an agent that retries internally can outlast
+  a LiteLLM restart and then fail without a rerun. Once one row finds the
+  gateway down for the whole wait, the remaining rows are SKIP with the same
+  reason at once (no further 3-minute waits). A model server that is gone or
+  refuses the client (unreachable, lost, token refused, clock skew) stops the
+  remaining rows: the rows already run are reported and the run exits 1 naming
+  the cause once.
+- **There is no stop picker.** The exit flow ends the client session instead;
+  once smoke has registered a local model (smoke started it or it was already
+  running), the model server stops it after its idle grace (`--idle-grace`,
+  default 10 minutes) unless another client session uses it. A cloud model is
+  never stopped. On a terminal, one note says so: when smoke started the model,
+  `wt: note: smoke started <id>; the model server stops it after its idle grace
+  unless a client session uses it`; when it was already running,
+  `wt: note: smoke used <id>, which was already running; the model server stops
+  it after its idle grace unless a client session uses it`. `--json` and a
+  non-terminal stdin print no note. Do not smoke a model a benchmark is about
+  to use, or re-isolate it afterwards: the idle stop can unload it between the
+  smoke and the benchmark's first request.
+
 ## Tool-use permission
 
 Every one-shot launch except codex runs with the agent's
@@ -167,6 +217,9 @@ text the prompt contains would pass on that echo whatever the model replied,
 or if no model replied at all.
 
 ## Exit flow
+
+(With a model server configured the exit flow is the session's end, with no
+stop picker: see "With a model server configured" above.)
 
 Once a model has been resolved, `wt smoke`, on a TTY, shows the stop picker
 so models it started (or any running model nothing else uses) can be

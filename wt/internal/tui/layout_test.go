@@ -16,6 +16,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
@@ -630,6 +632,14 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		{"model picker, profile row", profilePicker("profile/mixed", "")},
 		{"model picker, profile row, status", profilePicker("profile/mixed", layoutStatus)},
 		{"model picker, blocked profile row", profilePicker("profile/broken", "")},
+		{"catalog loading", func(t *testing.T, width, height int) string {
+			loading, _ := catalogScreens(t, width, height)
+			return loading
+		}},
+		{"catalog fetch failed", func(t *testing.T, width, height int) string {
+			_, failed := catalogScreens(t, width, height)
+			return failed
+		}},
 		{"ollama warning", modelPhase(func(t *testing.T, width, height int) model {
 			m := model{cfg: &config.Config{}, theme: themes.Default, phase: phaseOllamaWarn, width: width, height: height}
 			m.ollamaWarnModel = list.New(buildOllamaChoices(), ThemedListDelegate(m.theme), 78, 22)
@@ -672,6 +682,35 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 				t.Fatalf("phase = %v, want phaseStarting", next.phase)
 			}
 			return next
+		})},
+		{"starting, model server", modelPhase(func(t *testing.T, width, height int) model {
+			// The API path's start screen with every line it can show: a
+			// long step, the job id of a start it joined, a cancel the
+			// server refused.
+			f := &fakeModels{cat: startRowCatalog()}
+			f.startFn = func(ctx context.Context, _ int, _ modelapi.StartRequest, prog modelclient.Progress) (modelapi.JobStatus, error) {
+				prog(modelclient.JobView{ID: "0f6c1d9e-4b2a-4c8e-9d7f-123456789abc", State: modelapi.JobRunning, Attached: true,
+					Step: "loading the model into memory and waiting for the LiteLLM proxy restart to finish", Elapsed: 93 * time.Second})
+				<-ctx.Done()
+				return detached("j")
+			}
+			m := remoteTable(t, f)
+			m, _ = enterRemote(t, m, "omlx/qwen3.8")
+			m, _ = updateMsg(m, recvStart(t, m))
+			m, _ = updateMsg(m, jobCancelMsg{id: m.start.id, err: errors.New("model server at http://127.0.0.1:8099 is not reachable (connection refused)")})
+			return m
+		})},
+		{"launching, model server", modelPhase(func(t *testing.T, width, height int) model {
+			// The launching screen while the client session registers.
+			cat := startRowCatalog()
+			cat.Rows[1].ID = "openrouter/a-model-id-long-enough-to-wrap-at-forty-columns-and-more"
+			f := &fakeModels{cat: cat, registerBlock: make(chan struct{})}
+			m := remoteTable(t, f)
+			m, _ = enterRemote(t, m, cat.Rows[1].ID)
+			if m.phase != phaseLaunching {
+				t.Fatalf("phase = %v, want the launching screen", m.phase)
+			}
+			return m
 		})},
 		{"cleanup list", func(t *testing.T, width, height int) string {
 			return newSizedCleanupList(t, longRowsFixture(), width, height).View()
@@ -880,7 +919,7 @@ func TestDrawnFrameIsTheFrameTheListWasSizedFor(t *testing.T) {
 // not the placeholder and must survive.
 func TestLoadingStatusIsClearedWhenWorktreesLoad(t *testing.T) {
 	loadedMsg := rowsLoadedMsg{report: pickerFixture(), repoRoot: "/repo"}
-	fresh := newRunModel(false, false, "", "", "", "", "", nil, themes.Theme{}, "", &config.Config{}, nil)
+	fresh := newRunModel(false, false, "", "", "", "", "", nil, themes.Theme{}, "", nil, &config.Config{}, nil)
 	fresh.width, fresh.height = 80, 24
 	if !strings.Contains(fresh.View(), "loading worktrees") {
 		t.Fatalf("before the load the view is %q, want the loading placeholder", fresh.View())

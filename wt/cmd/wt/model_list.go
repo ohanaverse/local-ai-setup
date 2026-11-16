@@ -23,7 +23,7 @@ var modelListColumns = []plainColumn{
 }
 
 func modelListCmd(a *app) *cobra.Command {
-	var asJSON bool
+	var asJSON, fromServer bool
 	c := &cobra.Command{
 		Use:   "list",
 		Short: "List every registry model and every local model found on this machine",
@@ -42,11 +42,20 @@ func modelListCmd(a *app) *cobra.Command {
 			"read as absent; a line on stderr names the row and the problem, and --json\n" +
 			"has the same in each model's \"malformed\" array. A cost.time_prices row that\n" +
 			"breaks the registry's rules (an unknown timezone, a time that is not HH:MM)\n" +
-			"is named the same way: the model picker does not apply such a row.",
-		Example:      "  wt model list\n  wt model list --json",
+			"is named the same way: the model picker does not apply such a row.\n\n" +
+			"--server lists the model server's catalog instead, as a client session sees\n" +
+			"it (MODEL, STATE running|loading|stopped|blocked|unknown, LOC, TIER and the\n" +
+			"client sessions using the model). Its --json is a different document from the\n" +
+			"registry's, described by docs/contracts/model-list.server.sample.json. Needs a\n" +
+			"model server ([model-server] in config.toml, or WT_MODEL_URL).",
+		Example:      "  wt model list\n  wt model list --json\n  wt model list --server\n  wt model list --server --json",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if fromServer {
+				cmd.SilenceUsage, cmd.SilenceErrors = true, true
+				return runModelListServer(cmd.Context(), cmd.OutOrStdout(), a, asJSON, stdoutWidth())
+			}
 			// The load error only: a registry with a gap in it (a model
 			// whose provider has no row) is exactly what this list is for.
 			if a.loadErr != nil {
@@ -56,6 +65,7 @@ func modelListCmd(a *app) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "machine-readable output, with size_bytes and path for every row")
+	c.Flags().BoolVar(&fromServer, "server", false, "list the model server's catalog (a client session's view) instead of the registry")
 	return c
 }
 

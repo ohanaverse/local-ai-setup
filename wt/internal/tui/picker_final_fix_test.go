@@ -122,7 +122,7 @@ func TestPickerRunStartBumpsTheGeneration(t *testing.T) {
 	h.stubRun = func(items []removal.Item, progress func(removal.Outcome)) []removal.Outcome {
 		return nil
 	}
-	m := newRunModel(false, false, "", "", "", "", "", nil, themes.Default, "", nil, nil)
+	m := newRunModel(false, false, "", "", "", "", "", nil, themes.Default, "", nil, nil, nil)
 	m.width, m.height = 120, 40
 	m.rows = newRowList(h.report, rowListOpts{Mode: modeLaunch, Theme: themes.Default, Now: rmLater(), RemoveFuncs: h.funcs()})
 	m.rows.width, m.rows.height = 120, 40

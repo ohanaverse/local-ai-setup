@@ -16,13 +16,19 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -80,7 +86,8 @@ func smokeCmd(a *app) *cobra.Command {
 				// cobra's "Error:" line gone the summary would stand alone
 				// above main's one line. A "no" at the --cwd launch question
 				// is a decline (exit 3), not a usage mistake either.
-				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err) || errors.Is(err, errCancelled)
+				_, coded := exitcode.Code(err) // a model-server failure is not a usage mistake either
+				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err) || errors.Is(err, errCancelled) || coded
 				return err
 			}
 			if anyFail {
@@ -155,7 +162,11 @@ var smokeSignalCtx = func() (context.Context, context.CancelFunc) {
 // and prints the report. It returns whether any row FAILed rather than exiting,
 // so the deferred stop flow runs before the caller sets the exit code.
 func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err error) {
-	if a.cfgErr != nil {
+	// With a model server configured the run is a client session: it reads
+	// config.toml only, never the registry, so a registry that does not load
+	// is not its error (runSmokeRemote).
+	remote := a.endpointConfigured()
+	if !remote && a.cfgErr != nil {
 		return false, configError(a.cfgErr)
 	}
 
@@ -166,7 +177,6 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	if err != nil {
 		return false, err
 	}
-	toolCheck, hops, promptOverride := toolFlags.toolCheck, toolFlags.hops, toolFlags.prompt
 
 	// The launch warnings run here, for the flag-validation reason above:
 	// with --cwd (the root command's persistent flag) every row runs in the
@@ -187,6 +197,10 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		if gerr := confirmLaunch(t, terr, cmd.InOrStdin(), osStderr, stdinTTY()); gerr != nil {
 			return false, gerr // declined: exit 3, like every other no
 		}
+	}
+
+	if remote {
+		return runSmokeRemote(cmd, a, args, toolFlags, inPlace, cwd)
 	}
 
 	var modelID string
@@ -266,84 +280,17 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 
 	runID := smoke.NewRunID()
 
-	// Reuse newApp()'s already-loaded profiles.toml state instead of
-	// loading and re-validating the file a second time. If profiles.toml
-	// was missing or malformed, degrade gracefully: smoke still runs but
-	// without profile application (same best-effort posture as
-	// applyProfileForLaunch).
-	pp := a.profileState()
-	store, loadErr, validateErr := pp.store, pp.loadErr, pp.validateErr
-	if loadErr != nil {
-		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", loadErr)
-	}
-	if validateErr != nil {
-		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", validateErr)
-	}
-
 	// Ctrl+C or SIGTERM cancels ctx instead of killing wt: the running row's
 	// agent is killed with its process group, its directory is removed, and
 	// the rows that ran are still reported.
 	ctx, stopSignals := smokeSignalCtx()
 	defer stopSignals()
 
-	rows := make([]smoke.RowResult, 0, len(agentsToRun))
-	for _, agentName := range agentsToRun {
-		prompt, sentinel, planted := promptOverride, "", map[string]string(nil)
-		switch {
-		case toolCheck:
-			prompt, sentinel, planted = smoke.ToolPrompt(agentName, hops)
-		case promptOverride == "":
-			prompt, sentinel = smoke.DefaultPrompt(agentName, runID)
-		}
-		logSmokeStart(stderr, agentName, m.ID)
-
-		// Resolve the profile for this agent×model pair. If one matches,
-		// build a ProfileApplier that applies it via the same
-		// applyResolvedProfile used by a real launch (cmd/wt/launch.go),
-		// so smoke and a real launch can never drift on apply/rollback
-		// semantics.
-		var pa smoke.ProfileApplier
-		if loadErr == nil && validateErr == nil && store.Enabled {
-			rp := profiles.Resolve(store, agentName, a.cfg, m)
-			if !rp.Empty() {
-				pa = func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
-					return applyResolvedProfile(cmd, agentName, rp, oneShotArgs)
-				}
-			}
-		}
-
-		// The row's directory is made only once the agent is known to run:
-		// a row whose agent is not installed never pays for it or the sweep.
-		rowDir, removeRowDir := smoke.FixedDir(cwd), func() {}
-		if !inPlace {
-			// One directory per row, so one agent's leftovers cannot reach
-			// the next agent's run. A directory that cannot be created fails
-			// its own row (RunRow reports the error): the rows that have
-			// already run are still reported.
-			rowDir = func() (string, error) {
-				dir, remove, err := smoke.NewRowDir()
-				if err != nil {
-					return "", err
-				}
-				removeRowDir = remove
-				// What the agent records about this directory in its own
-				// state (claude's project entry, pi's sessions) goes with it.
-				rowDirs = append(append(rowDirs, dir), smoke.AgentStateDirs(agentName, dir)...)
-				return dir, nil
-			}
-		}
-		if planted != nil {
-			rowDir = smoke.WithFiles(rowDir, planted)
-		}
-		r := smoke.RunRow(ctx, a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
-		removeRowDir()
-		logSmokeResult(stderr, r)
-		rows = append(rows, r)
-		if ctx.Err() != nil {
-			interrupted = true
-			break
-		}
-	}
+	var rows []smoke.RowResult
+	rows, interrupted = a.runSmokeRows(ctx, stderr, a.cfg, m, agentsToRun, toolFlags, runID, inPlace, cwd, &rowDirs,
+		func(ctx context.Context, agentName, prompt, sentinel string, rowDir smoke.RowDir, pa smoke.ProfileApplier) smoke.RowResult {
+			return smoke.RunRow(ctx, a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
+		}, nil)
 	// Restore the default handler: a second Ctrl+C during the report, the
 	// sweep or the stop picker kills wt.
 	stopSignals()
@@ -357,6 +304,20 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		err = errSmokeInterrupted
 	}
 	return anyFail, err
+}
+
+// serverGone reports whether a readiness error means the model server is gone
+// or refuses this client (unreachable, lost, token refused, clock skew), as
+// opposed to a gateway that is merely down: no later row can run either.
+func serverGone(err error) bool {
+	var (
+		unreachable *modelclient.UnreachableError
+		lost        *modelclient.LostServerError
+		unauth      *modelclient.UnauthorizedError
+		skew        *modelclient.SkewError
+		notServer   *modelclient.NotModelServerError
+	)
+	return errors.As(err, &unreachable) || errors.As(err, &lost) || errors.As(err, &unauth) || errors.As(err, &skew) || errors.As(err, &notServer)
 }
 
 // Default per-agent smoke budgets. Local models cold-prefill the 10-40k-token
@@ -374,7 +335,21 @@ func smokeTimeout(cfg *config.Config, m config.Model, explicit time.Duration) ti
 	if explicit != 0 {
 		return explicit
 	}
-	if loc, err := cfg.ResolveLocation(m); err == nil && loc == config.LocationLocal {
+	loc, err := cfg.ResolveLocation(m)
+	if err != nil {
+		return smokeCloudTimeout
+	}
+	return smokeTimeoutAt(loc, 0)
+}
+
+// smokeTimeoutAt is smokeTimeout for a location already known: a client
+// session has no registry to resolve it from, and the catalog row carries the
+// model server's answer (row.Location).
+func smokeTimeoutAt(loc config.Location, explicit time.Duration) time.Duration {
+	if explicit != 0 {
+		return explicit
+	}
+	if loc == config.LocationLocal {
 		return smokeLocalTimeout
 	}
 	return smokeCloudTimeout
@@ -612,4 +587,326 @@ func printSmokeJSON(w io.Writer, runID, modelID string, rows []smoke.RowResult) 
 		return false, err
 	}
 	return anyFail, nil
+}
+
+// smokeRowFunc runs one agent's row for the model under test: the registry
+// path's smoke.RunRow, or a client session's smoke.RunRowGateway.
+type smokeRowFunc func(ctx context.Context, agentName, prompt, sentinel string, rowDir smoke.RowDir, pa smoke.ProfileApplier) smoke.RowResult
+
+// runSmokeRows runs every agent in agentsToRun through run, one row each, and
+// returns the rows it ran and whether Ctrl+C cut the run short. It is the part
+// of a smoke run the registry path and a client session share: the prompt, the
+// profile for the agent x model pair (resolved against cfg), the row's
+// directory and its progress lines. Every directory it makes is added to
+// *rowDirs for the caller's end-of-run sweep.
+func (a *app) runSmokeRows(ctx context.Context, stderr io.Writer, cfg *config.Config, m config.Model, agentsToRun []string, tf smokeToolFlags, runID string, inPlace bool, cwd string, rowDirs *[]string, run smokeRowFunc, halt func() bool) (rows []smoke.RowResult, interrupted bool) {
+	// Reuse newApp()'s already-loaded profiles.toml state instead of
+	// loading and re-validating the file a second time. If profiles.toml
+	// was missing or malformed, degrade gracefully: smoke still runs but
+	// without profile application (same best-effort posture as
+	// applyProfileForLaunch).
+	pp := a.profileState()
+	store, loadErr, validateErr := pp.store, pp.loadErr, pp.validateErr
+	if loadErr != nil {
+		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", loadErr)
+	}
+	if validateErr != nil {
+		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", validateErr)
+	}
+
+	rows = make([]smoke.RowResult, 0, len(agentsToRun))
+	for _, agentName := range agentsToRun {
+		prompt, sentinel, planted := tf.prompt, "", map[string]string(nil)
+		switch {
+		case tf.toolCheck:
+			prompt, sentinel, planted = smoke.ToolPrompt(agentName, tf.hops)
+		case tf.prompt == "":
+			prompt, sentinel = smoke.DefaultPrompt(agentName, runID)
+		}
+		logSmokeStart(stderr, agentName, m.ID)
+
+		// Resolve the profile for this agent×model pair. If one matches,
+		// build a ProfileApplier that applies it via the same
+		// applyResolvedProfile used by a real launch (cmd/wt/launch.go),
+		// so smoke and a real launch can never drift on apply/rollback
+		// semantics.
+		var pa smoke.ProfileApplier
+		if loadErr == nil && validateErr == nil && store.Enabled {
+			rp := profiles.Resolve(store, agentName, cfg, m)
+			if !rp.Empty() {
+				pa = func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
+					return applyResolvedProfile(cmd, agentName, rp, oneShotArgs)
+				}
+			}
+		}
+
+		// The row's directory is made only once the agent is known to run:
+		// a row whose agent is not installed never pays for it or the sweep.
+		rowDir, removeRowDir := smoke.FixedDir(cwd), func() {}
+		if !inPlace {
+			// One directory per row, so one agent's leftovers cannot reach
+			// the next agent's run. A directory that cannot be created fails
+			// its own row (RunRow reports the error): the rows that have
+			// already run are still reported.
+			rowDir = func() (string, error) {
+				dir, remove, err := smoke.NewRowDir()
+				if err != nil {
+					return "", err
+				}
+				prev := removeRowDir
+				removeRowDir = func() { prev(); remove() } // a rerun's directory too
+				// What the agent records about this directory in its own
+				// state (claude's project entry, pi's sessions) goes with it.
+				*rowDirs = append(append(*rowDirs, dir), smoke.AgentStateDirs(agentName, dir)...)
+				return dir, nil
+			}
+		}
+		if planted != nil {
+			rowDir = smoke.WithFiles(rowDir, planted)
+		}
+		r := run(ctx, agentName, prompt, sentinel, rowDir, pa)
+		removeRowDir()
+		logSmokeResult(stderr, r)
+		rows = append(rows, r)
+		if ctx.Err() != nil {
+			interrupted = true
+			break
+		}
+		if halt != nil && halt() {
+			break
+		}
+	}
+	return rows, interrupted
+}
+
+// smokeStill is what a client smoke run that stopped short says is still true.
+const smokeStill = "nothing was run"
+
+// resolveSmokeModelRemote is resolveSmokeModel over the model server's rows.
+// It reads the catalog and keeps the candidates (smoke.CandidatesWire over the
+// session's agents); a pinned id that is one resolves directly, and one that is
+// not is asked of the server (Resolve) so the refusal says why: an id the
+// server does not know is its own text (unknown, or the reason a local model
+// is missing); a blocked row is its block_reason; any other row is "exists but
+// cannot be tested" (no agent can use it). With no id the shared picker opens
+// over the candidates (a terminal is needed first, P5). The second result is
+// the catalog's rows, which a gateway syncer (pi) lists. Server errors carry
+// remoteExit and the still clause; a refusal is a plain error (exit 1).
+func resolveSmokeModelRemote(ctx context.Context, ms *modelSession, cfg *config.Config, theme themes.Theme, modelID string) (smokeTarget, []modelapi.Row, error) {
+	if modelID == "" && !stdinTTY() {
+		return smokeTarget{}, nil, fmt.Errorf("wt smoke needs a TTY to list models; pass a model id directly (wt smoke <provider>/<name>)")
+	}
+	cat, err := ms.client.Catalog(ctx)
+	if err != nil {
+		return smokeTarget{}, nil, remoteExit(modelclient.Still(err, smokeStill))
+	}
+	cands := smoke.CandidatesWire(cat.Rows, cfg.Agents)
+	target := func(id string) (smokeTarget, bool) {
+		for _, c := range cands {
+			if c.Row.Model.ID == id {
+				return smokeTarget{Row: c.Row, Agents: c.Agents}, true
+			}
+		}
+		return smokeTarget{}, false
+	}
+	if modelID != "" {
+		if t, ok := target(modelID); ok {
+			return t, cat.Rows, nil
+		}
+		row, rerr := ms.client.Resolve(ctx, modelID)
+		var unknown *modelclient.UnknownModelError
+		switch {
+		case errors.As(rerr, &unknown):
+			return smokeTarget{}, nil, errors.New(unknown.Message)
+		case rerr != nil:
+			return smokeTarget{}, nil, remoteExit(modelclient.Still(rerr, smokeStill))
+		case row.Action == modelapi.ActionBlock:
+			reason := row.BlockReason
+			if reason == "" {
+				reason = fmt.Sprintf("model %q is blocked", row.ID)
+			}
+			return smokeTarget{}, nil, errors.New(reason)
+		}
+		return smokeTarget{}, nil, fmt.Errorf(
+			"model %q cannot be smoke-tested right now (no agent supports it, or its route is not set up — check `wt litellm status` on the model server host)", modelID)
+	}
+	if len(cands) == 0 {
+		return smokeTarget{}, nil, fmt.Errorf("the model server has no models to test; add one on the server host with wt model add, or pull a local one there")
+	}
+	models := make([]config.Model, len(cands))
+	for i, c := range cands {
+		models[i] = c.Row.Model
+	}
+	m, ok, perr := pickModelTUI(nil, models, theme)
+	if perr != nil {
+		return smokeTarget{}, nil, perr
+	}
+	if !ok {
+		return smokeTarget{}, nil, fmt.Errorf("model selection canceled")
+	}
+	if t, ok := target(m.ID); ok {
+		return t, cat.Rows, nil
+	}
+	return smokeTarget{}, nil, fmt.Errorf("unknown model %q", m.ID)
+}
+
+// runSmokeRemote is runSmoke on a client session (a model server is
+// configured). It reads config.toml only and talks to the model server. In
+// order:
+//
+//  1. resolve the model (resolveSmokeModelRemote), the agents to run and the
+//     timeout (the row's location decides the default);
+//  2. register ONE client session with the model before any start, so the
+//     server's idle scan counts it; a failed register is one note and the run
+//     goes on;
+//  3. run a start job only when catalog.NeedsStart says so (a start row, or a
+//     running local model the gateway is known not to list; an unknown route
+//     never starts, R7);
+//  4. run every row through the gateway (smoke.RunRowGateway: the endpoint
+//     origin and token, a wait for the gateway before each row, one rerun
+//     after a 503), then end the session on every path (the exit stop prompt
+//     of the registry path does not exist here: the model server stops what
+//     smoke started once its idle grace passes);
+//  5. print the report; on a terminal, when smoke started a model, one note
+//     says so.
+func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags, inPlace bool, cwd string) (anyFail bool, err error) {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cfg, err := a.sessionCfg()
+	if err != nil {
+		return false, remoteExit(modelclient.Still(err, smokeStill))
+	}
+	ms, err := a.openModels(ctx, smokeStill)
+	if err != nil {
+		return false, remoteExit(err) // openModels' errors carry the still clause
+	}
+	var modelID string
+	if len(args) > 0 {
+		modelID = args[0]
+	}
+	t, catRows, err := resolveSmokeModelRemote(ctx, ms, cfg, a.theme, modelID)
+	if err != nil {
+		return false, err
+	}
+	m, eligible := t.Row.Model, t.Agents
+	if len(eligible) == 0 {
+		return false, fmt.Errorf("model %q has no currently eligible agents", m.ID)
+	}
+	agentsToRun, err := filterOnlyAgents(eligible, mustGetString(cmd, "only"))
+	if err != nil {
+		return false, err
+	}
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	if cmd.Flags().Changed("timeout") {
+		if err := validateSmokeTimeout(timeout); err != nil {
+			return false, err
+		}
+	}
+	timeout = smokeTimeoutAt(t.Row.Location, timeout)
+	jsonOut, _ := cmd.Flags().GetBool("json")
+	stderr := cmd.ErrOrStderr()
+
+	// The client session holds the model from before its start to the end of
+	// the run. end runs once, on a context no cancel reaches, and never fails
+	// the run; after a register the server refused, its DELETE is refused too,
+	// which is not news.
+	note := func(s string) { fmt.Fprintf(osStderr, "wt: note: %s\n", s) }
+	sess := ms.client.NewSession([]string{m.ID}, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
+	registered := true
+	if rerr := sess.Start(ctx); rerr != nil {
+		registered = !registerRefused(rerr)
+		note(fmt.Sprintf("the model server did not register this client session (%s) — the run goes on, but the server may stop %s once it is idle", rerr, m.ID))
+	}
+	var endOnce sync.Once
+	end := func() {
+		endOnce.Do(func() {
+			if eerr := sess.End(context.WithoutCancel(ctx)); eerr != nil && registered {
+				note(fmt.Sprintf("could not end the client session on the model server (%s) — it forgets it within a minute", eerr))
+			}
+		})
+	}
+	defer end()
+
+	started := false
+	if t.Row.Wire != nil && catalog.NeedsStart(*t.Row.Wire) {
+		replace, _ := cmd.Flags().GetBool("replace")
+		if serr := startRemote(ctx, ms, *t.Row.Wire, string(othersMode), replace); serr != nil {
+			// Nothing will use the model: take it out of the client session
+			// before it ends.
+			_ = sess.Remove(context.WithoutCancel(ctx), m.ID)
+			end()
+			return false, remoteExit(stillUnlessTyped(serr, smokeStill))
+		}
+		started = true
+	}
+
+	// Every row's directory, swept once more when the run ends (see runSmoke).
+	var rowDirs []string
+	defer func() {
+		for _, d := range smoke.SweepRowDirs(rowDirs) {
+			fmt.Fprintf(stderr, "wt: could not remove the smoke directory %s\n", d)
+		}
+	}()
+
+	runID := smoke.NewRunID()
+	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token}
+	gwModels := catalog.NonNativeModels(catRows)
+	sctx, stopSignals := smokeSignalCtx()
+	defer stopSignals()
+	// Two things end a run early. A gateway that stayed down for a row's whole
+	// wait makes every later row SKIP at once (each would otherwise wait its
+	// own 3 minutes), and a model server that is gone or refuses this client
+	// stops the run: the rows that ran are reported, the cause is named once.
+	var gwDown bool
+	var fatal error
+	ready := func(ctx context.Context) error {
+		err := ms.client.WaitGatewayReady(ctx)
+		if serverGone(err) && fatal == nil {
+			fatal = err
+		}
+		return err
+	}
+	rows, interrupted := a.runSmokeRows(sctx, stderr, cfg, m, agentsToRun, tf, runID, inPlace, cwd, &rowDirs,
+		func(ctx context.Context, agentName, prompt, sentinel string, rowDir smoke.RowDir, pa smoke.ProfileApplier) smoke.RowResult {
+			if gwDown {
+				return smoke.RowResult{Agent: agentName, Model: m.ID, Status: smoke.StatusSkip, Err: errors.New(smoke.GatewayDownReason)}
+			}
+			r := smoke.RunRowGateway(ctx, gw, gwModels, agentName, m, prompt, sentinel, timeout, rowDir, pa, ready)
+			if r.Status == smoke.StatusSkip && r.Err != nil && r.Err.Error() == smoke.GatewayDownReason {
+				gwDown = true
+			}
+			return r
+		}, func() bool { return fatal != nil })
+	if fatal != nil && len(rows) > 0 && rows[len(rows)-1].Err != nil && errors.Is(rows[len(rows)-1].Err, fatal) {
+		rows = rows[:len(rows)-1] // the row that found the server gone says nothing about the model
+	}
+	// The rows are over: the model is no longer in use. Restore the default
+	// handler too: a second Ctrl+C during the report kills wt.
+	end()
+	stopSignals()
+
+	if jsonOut {
+		anyFail, err = printSmokeJSON(cmd.OutOrStdout(), runID, m.ID, rows)
+	} else {
+		anyFail, err = printSmokeHuman(cmd.OutOrStdout(), runID, m.ID, rows)
+	}
+	if !jsonOut && stdinTTY() {
+		// The server's auto-stop reaches any local model a client session
+		// registered, so the note covers a model smoke only used, too.
+		switch {
+		case started:
+			fmt.Fprintf(stderr, "wt: note: smoke started %s; the model server stops it after its idle grace unless a client session uses it\n", cleanup.Flatten(m.ID))
+		case t.Row.Location == config.LocationLocal:
+			fmt.Fprintf(stderr, "wt: note: smoke used %s, which was already running; the model server stops it after its idle grace unless a client session uses it\n", cleanup.Flatten(m.ID))
+		}
+	}
+	if fatal != nil && err == nil {
+		err = remoteExit(modelclient.Still(fatal, "the remaining rows did not run"))
+	}
+	if interrupted && err == nil {
+		err = errSmokeInterrupted
+	}
+	return anyFail, err
 }
