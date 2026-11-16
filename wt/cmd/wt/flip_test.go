@@ -63,16 +63,11 @@ func noServerHome(t *testing.T) (home, marker string) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubStdinTTY(t, false)
 
-	oldProbe, oldRoute, oldSweep, oldBuild, oldTUI := probeInventory, ensureModelRoute, sweepRefcounts, buildGatewayCmd, tuiRun
+	oldProbe, oldBuild, oldTUI := probeInventory, buildGatewayCmd, tuiRun
 	probeInventory = func(*config.Config) localmodels.Snapshot {
 		t.Error("a local provider was probed")
 		return localmodels.Snapshot{}
 	}
-	ensureModelRoute = func(*config.Config, config.Model) bool {
-		t.Error("the launch-time route check ran")
-		return false
-	}
-	sweepRefcounts = func() { t.Error("the refcount file was swept") }
 	buildGatewayCmd = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		t.Error("an agent was built against a gateway")
 		return nil, agents.LaunchInfo{}, os.ErrInvalid
@@ -82,7 +77,7 @@ func noServerHome(t *testing.T) (home, marker string) {
 		return nil
 	}
 	t.Cleanup(func() {
-		probeInventory, ensureModelRoute, sweepRefcounts, buildGatewayCmd, tuiRun = oldProbe, oldRoute, oldSweep, oldBuild, oldTUI
+		probeInventory, buildGatewayCmd, tuiRun = oldProbe, oldBuild, oldTUI
 	})
 	t.Chdir(t.TempDir())
 	return home, marker

@@ -1,7 +1,9 @@
 // Tests for the usage half of the `wt stats` command: both tables, the
 // degraded modes, the notes and the filters. No test here reaches a
-// database: TestMain replaces querySpend, and stubSpend is the only way a
-// test gets spend rows.
+// database or a model server: the table tests read their spend from
+// querySpend, a test-only source (stubSpend is the only way a test gets spend
+// rows), through collectUsage, which builds the report with the production
+// buildUsageRows the server path (collectUsageRemote) uses too.
 package main
 
 import (
@@ -17,9 +19,11 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/spf13/cobra"
 )
 
@@ -94,16 +98,54 @@ func runStats(t *testing.T, a *app, args ...string) (stdout, stderr string) {
 	return runStatsOn(t, statsCmd(a), args...)
 }
 
-// directSpend is the spend source `wt stats` read before the flip: psql
-// through the host's LiteLLM config (collectUsage, querySpend), on the local
-// clock, with the host registry's families and load error. No command reads
-// it since Task 18; statsDirectCmd keeps its code covered until Task 19.
+// querySpend is the table tests' spend source, standing in for the model
+// server's GET spend: unstubbed it fails, so a test sees "spend unavailable"
+// (the degraded report) unless it calls stubSpend.
+var querySpend = func(context.Context, time.Time, time.Time) (spend.Result, error) {
+	return spend.Result{}, errors.New("querySpend not stubbed in this test")
+}
+
+// collectUsage builds the usage report the table tests drive, for one window
+// ending at asOf,
+// (asOf-window, asOf]: the spend query covers it, and the launches are the
+// ones usage.jsonl dates inside that same window. Both halves leave out an
+// event dated exactly asOf-window and count one dated exactly asOf (#298); a
+// launch after asOf is in neither half. It never fails: every way of having
+// no spend data is a status and a reason, and the launch counts are reported
+// regardless.
+func collectUsage(ctx context.Context, cfg *config.Config, window time.Duration, asOf time.Time, f statsFilter) usageReport {
+	rep := usageReport{SpendStatus: spendOK, Narrowed: f.model != "" || f.family != ""}
+	var sp *spend.Result
+	if f.agent != "" {
+		rep.SpendStatus = spendSkipped
+		rep.SpendReason = "--agent narrows launches only; LiteLLM does not log which agent sent a request, so spend is not shown"
+	} else if res, err := querySpend(ctx, asOf.Add(-window), asOf); err != nil {
+		rep.SpendStatus = spendUnavailable
+		// A stub that answers "no database" stands for the server's
+		// spend_not_configured.
+		if errors.Is(err, litellm.ErrNoDatabase) || errors.Is(err, spend.ErrNoConnectionString) {
+			rep.SpendStatus = spendNotConfigured
+		}
+		rep.SpendReason = "spend unavailable: " + err.Error()
+	} else {
+		sp = &res
+		rep.Unattributed = res.Unattributed
+	}
+	// The same asOf the spend query ends at: launches are bucketed against
+	// the report's instant, never against a second read of the clock.
+	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, sp, registryFamilies(cfg), f)
+	return rep
+}
+
+// directSpend is the spend source the table tests run `wt stats` on
+// (statsCmdWith's per-call seam): collectUsage over querySpend, on the local
+// clock, with the host registry's families and load error.
 func directSpend(cmd *cobra.Command, a *app, window time.Duration, asOf time.Time, f statsFilter) (time.Time, func() usageReport, func() error) {
 	cfg, loadErr := a.hostConfig()
 	return asOf, func() usageReport { return collectUsage(cmd.Context(), cfg, window, asOf, f) }, func() error { return loadErr }
 }
 
-// runStatsDirect is runStats on the pre-flip spend source (directSpend).
+// runStatsDirect is runStats on the table tests' spend source (directSpend).
 func runStatsDirect(t *testing.T, a *app, args ...string) (stdout, stderr string) {
 	t.Helper()
 	return runStatsOn(t, statsCmdWith(a, directSpend), args...)
@@ -361,46 +403,6 @@ func TestStatsCmdDegradesWhenSpendIsUnavailable(t *testing.T) {
 	}
 }
 
-// TestCollectUsageClassifiesMissingSpend verifies the report's spend status
-// for each outcome: ok, not_configured (nothing names a database, or the
-// spend package refused a blank connection string), unavailable (anything
-// else that failed) and skipped (--agent). The status is how a caller tells
-// the cases apart, and what --json consumers branch on (spend_status); "not
-// configured" must not be lumped with "the database is down".
-func TestCollectUsageClassifiesMissingSpend(t *testing.T) {
-	a, _ := newTestApp(t)
-	asOf := time.Now().UTC()
-	for _, tc := range []struct {
-		name, agent string
-		err         error
-		want        string
-	}{
-		{"ok", "", nil, spendOK},
-		{"no database", "", fmt.Errorf("%w: reason", litellm.ErrNoDatabase), spendNotConfigured},
-		{"a blank connection string", "", spend.ErrNoConnectionString, spendNotConfigured},
-		{"bad config.yaml", "", fmt.Errorf("%w: reason", litellm.ErrInvalid), spendUnavailable},
-		{"no psql", "", spend.ErrNoPsql, spendUnavailable},
-		{"database down", "", fmt.Errorf("%w at 127.0.0.1:5432: Connection refused", spend.ErrUnreachable), spendUnavailable},
-		{"agent", "claude", nil, spendSkipped},
-	} {
-		stubSpend(t, spend.Result{Unattributed: 2}, tc.err)
-		rep := collectUsage(context.Background(), hostCfgOf(a), survey.Window30d, asOf, statsFilter{agent: tc.agent})
-		if rep.SpendStatus != tc.want {
-			t.Errorf("%s: SpendStatus = %q, want %q", tc.name, rep.SpendStatus, tc.want)
-		}
-		if (rep.SpendReason == "") != (tc.want == spendOK) {
-			t.Errorf("%s: SpendReason = %q, want a reason exactly when spend is missing", tc.name, rep.SpendReason)
-		}
-		wantUn := int64(0) // no spend data, no count
-		if tc.want == spendOK {
-			wantUn = 2
-		}
-		if rep.Unattributed != wantUn {
-			t.Errorf("%s: Unattributed = %d, want %d", tc.name, rep.Unattributed, wantUn)
-		}
-	}
-}
-
 // TestStatsCmdNotesRequestsWithNoModel verifies requests the proxy logged
 // with an empty model group are counted in a stderr note rather than shown
 // as a nameless row or dropped in silence. The count explains a REQUESTS
@@ -638,34 +640,6 @@ func TestStatsCmdUsesTheTerminalWidth(t *testing.T) {
 		if w := lipgloss.Width(line); w > 80 {
 			t.Errorf("usage table line is %d columns wide at an 80-column terminal: %q", w, line)
 		}
-	}
-}
-
-// TestStatsNeverReachesADatabaseByDefault pins both guards between a
-// cmd/wt test and the developer's LiteLLM database. First, TestMain's
-// querySpend stub: an unstubbed `wt stats` reports "not stubbed" instead of
-// querying. Second, the real seam itself under this package's throwaway
-// config home: the registry is redirected and nothing names config.yaml, so
-// litellm.DatabaseURL refuses before it reads config.yaml or the proxy's
-// LaunchAgent plist, and before psql is looked for. PATH is emptied and the
-// plist path pointed at nothing for that half so that, if the guard ever
-// regresses, the worst this test can do is fail — it still cannot read the
-// real plist or run psql.
-func TestStatsNeverReachesADatabaseByDefault(t *testing.T) {
-	a, _ := newTestApp(t)
-	_, stderr := runStatsDirect(t, a)
-	if stderr != "wt: spend unavailable: querySpend not stubbed in this test\n" {
-		t.Errorf("stderr = %q, want TestMain's stub to have answered", stderr)
-	}
-
-	t.Setenv("PATH", t.TempDir())
-	t.Setenv("WT_LITELLM_PLIST", filepath.Join(t.TempDir(), "no-such.plist"))
-	for _, k := range []string{"WT_LITELLM_DATABASE_URL", "MODELMAN_LITELLM_DATABASE_URL", "WT_LITELLM_CONFIG", "MODELMAN_LITELLM_CONFIG", "DATABASE_URL"} {
-		t.Setenv(k, "")
-	}
-	_, err := realQuerySpend(context.Background(), time.Now().Add(-time.Hour), time.Now())
-	if !errors.Is(err, litellm.ErrNoDatabase) {
-		t.Fatalf("realQuerySpend err = %v, want litellm.ErrNoDatabase (redirected registry, config.yaml unnamed)", err)
 	}
 }
 

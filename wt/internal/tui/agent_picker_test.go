@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -145,7 +144,9 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 	m.activeTags = "code,design"
 	m.activeFamily = "gemma4"
 
-	gotModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = withServer(t, m)
+	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	gotModel, _ = settleCatalog(t, gotModel.(model), cmd)
 	nm, ok := gotModel.(model)
 	if !ok {
 		t.Fatalf("Update(Enter) returned %T, want model", gotModel)
@@ -226,64 +227,6 @@ func selectAgentRow(m *model, name string) {
 			m.agentList.Select(i)
 			break
 		}
-	}
-}
-
-// TestPhaseAgentEnterSkipsPickerWhenSingleModel asserts that when the
-// eligible model list contains exactly one item, Enter in phaseAgent
-// bypasses the model picker and runs the agent immediately. Regression
-// coverage for the spec'd single-model picker-skip behavior — without
-// this branch, a user with one eligible model still sees a 1-item picker
-// and has to press Enter twice (once to confirm, once to launch).
-func TestPhaseAgentEnterSkipsPickerWhenSingleModel(t *testing.T) {
-	// Isolate the usage store and rotation state the picker entry reads, so
-	// the single-model skip decision cannot depend on host state.
-	tempStateDir(t)
-	stubUsageStore(t)
-	requireBinary(t, "claude")
-	m := buildModelInPhaseAgent(t, singleModelConfig())
-	m.selectedPath = t.TempDir()
-
-	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	nm := gotModel.(model)
-	if nm.phase == phaseModel {
-		t.Fatalf("phase = phaseModel; want the picker skipped and the launch command returned")
-	}
-	if cmd == nil {
-		t.Fatal("expected launch cmd from single-model skip; got nil")
-	}
-}
-
-// TestPinnedAgentSingleModelSkipsPicker asserts the CLI-pinned path
-// (`wt -A claude` with one eligible model) also skips the picker. This
-// is the selectedEntryMsg handler with m.initialAgent set; the same
-// enterModelPhase helper drives both code paths, so a regression here
-// would surface in either.
-func TestPinnedAgentSingleModelSkipsPicker(t *testing.T) {
-	// Isolate the usage store and rotation state the pinned-agent
-	// enterModelPhase path reads (it scans usage for the list build and
-	// rotation for cursor positioning even when the picker is skipped).
-	tempStateDir(t)
-	stubUsageStore(t)
-	requireBinary(t, "claude")
-	t.Cleanup(stubInstalled("claude"))
-	m := model{
-		cfg:          singleModelConfig(),
-		phase:        phaseList,
-		width:        80,
-		height:       24,
-		initialAgent: "claude",
-		activeTags:   "code",
-	}
-	m.selectedPath = t.TempDir()
-
-	gotModel, cmd := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	nm := gotModel.(model)
-	if nm.phase == phaseModel {
-		t.Fatalf("phase = phaseModel; want picker-skip for pinned-agent CLI path with single model")
-	}
-	if cmd == nil {
-		t.Fatal("expected launch cmd from single-model skip in pinned-agent path; got nil")
 	}
 }
 
@@ -409,40 +352,8 @@ func TestBuildAgentListAdapter(t *testing.T) {
 	}
 }
 
-// An agent with no config.toml entry but a real binary on PATH is marked
-// passthrough (launchable directly, no model) rather than blocked with a
-// "not configured" issue — the fix for issue #147 (a fresh machine with no
-// wt configuration must still be able to launch a real agent).
-func TestBuildAgentListMarksInstalledUnconfiguredAsPassthrough(t *testing.T) {
-	cfg := &config.Config{
-		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
-		},
-	}
-	t.Cleanup(stubInstalled("claude", "opencode"))
-
-	items := buildAgentList(cfg)
-	var oc agentItem
-	found := false
-	for _, it := range items {
-		if ai, ok := it.(agentItem); ok && ai.name == "opencode" {
-			oc, found = ai, true
-		}
-	}
-	if !found {
-		t.Fatal("missing opencode entry")
-	}
-	if !oc.passthrough {
-		t.Error("opencode should be marked passthrough (installed, no config.toml entry)")
-	}
-	if oc.issue != "" {
-		t.Errorf("opencode issue = %q, want empty for a passthrough row", oc.issue)
-	}
-}
-
-// An uninstalled, unconfigured agent must stay blocked (its existing "not
-// configured"/"not installed" issue text), never marked passthrough — there
-// is no binary to launch bare.
+// An uninstalled, unconfigured agent must stay blocked with its "not
+// installed" issue text: there is no binary to launch.
 func TestBuildAgentListUninstalledStaysBlockedNotPassthrough(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
@@ -454,9 +365,6 @@ func TestBuildAgentListUninstalledStaysBlockedNotPassthrough(t *testing.T) {
 	items := buildAgentList(cfg)
 	for _, it := range items {
 		if ai, ok := it.(agentItem); ok && ai.name == "opencode" {
-			if ai.passthrough {
-				t.Error("uninstalled opencode must not be marked passthrough")
-			}
 			if !strings.Contains(ai.issue, "not installed") {
 				t.Errorf("uninstalled opencode issue = %q, want it to mention \"not installed\"", ai.issue)
 			}
@@ -464,92 +372,6 @@ func TestBuildAgentListUninstalledStaysBlockedNotPassthrough(t *testing.T) {
 		}
 	}
 	t.Fatal("missing opencode entry")
-}
-
-// Selecting a passthrough row in phaseAgent calls the buildPassthrough seam
-// and launches with no model — the picker half of issue #147's fix.
-func TestPhaseAgentEnterLaunchesPassthroughForUnconfiguredAgent(t *testing.T) {
-	cfg := &config.Config{
-		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
-		},
-	}
-	t.Cleanup(stubInstalled("claude", "opencode"))
-
-	var gotAgent, gotPath string
-	oldBuildPassthrough := buildPassthrough
-	buildPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string) (*exec.Cmd, error) {
-		gotAgent, gotPath = agent, worktreePath
-		return exec.Command("true"), nil
-	}
-	t.Cleanup(func() { buildPassthrough = oldBuildPassthrough })
-
-	m := model{cfg: cfg, phase: phaseAgent, width: 80, height: 24, selectedPath: "/tmp/repo"}
-	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
-	selectAgentRow(&m, "opencode")
-
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if gotAgent != "opencode" {
-		t.Errorf("buildPassthrough agent = %q, want opencode", gotAgent)
-	}
-	if gotPath != "/tmp/repo" {
-		t.Errorf("buildPassthrough worktreePath = %q, want /tmp/repo", gotPath)
-	}
-	if cmd == nil {
-		t.Fatal("expected a launch cmd")
-	}
-}
-
-// The pinned-agent CLI path (`-A <installed-but-unconfigured-agent>`, no
-// -M) must also launch via the buildPassthrough seam instead of blocking on
-// "not configured" or building a model catalog that doesn't exist.
-func TestProceedFromSelectedPathPinnedUnconfiguredAgentPassesThrough(t *testing.T) {
-	t.Cleanup(stubInstalled("opencode"))
-
-	var called bool
-	oldBuildPassthrough := buildPassthrough
-	buildPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string) (*exec.Cmd, error) {
-		called = true
-		return exec.Command("true"), nil
-	}
-	t.Cleanup(func() { buildPassthrough = oldBuildPassthrough })
-
-	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode"}
-	m.selectedPath = t.TempDir()
-
-	gotModel, cmd := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	nm := gotModel.(model)
-	if !called {
-		t.Fatal("expected buildPassthrough to be called")
-	}
-	if cmd == nil {
-		t.Fatal("expected a launch cmd")
-	}
-	if nm.status != "" {
-		t.Errorf("status = %q, want empty", nm.status)
-	}
-}
-
-// `-A <unconfigured-agent> -M <id>` must error rather than silently
-// dropping the pin or passing through — decision #5 of the passthrough
-// design.
-func TestProceedFromSelectedPathPinnedUnconfiguredAgentWithModelErrors(t *testing.T) {
-	t.Cleanup(stubInstalled("opencode"))
-
-	m := model{
-		cfg: &config.Config{}, phase: phaseList, width: 80, height: 24,
-		initialAgent: "opencode", pinnedModel: "ollama/foo",
-	}
-	m.selectedPath = t.TempDir()
-
-	gotModel, cmd := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
-	nm := gotModel.(model)
-	if cmd != nil {
-		t.Errorf("expected no launch cmd, got %v", cmd)
-	}
-	if !strings.Contains(nm.status, "not configured") || !strings.Contains(nm.status, "ollama/foo") {
-		t.Errorf("status = %q, want it to mention not configured and the pinned model", nm.status)
-	}
 }
 
 // A pinned agent that is not installed must still be blocked with a clear

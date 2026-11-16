@@ -36,35 +36,19 @@ Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude
 
 - **`claude/native`** — passes no `--model` flag and clears any inherited `ANTHROPIC_*` env vars, so Claude Code uses its native subscription (the model configured in `~/.claude/settings.json`).
 - **`claude/<alias>`** (`claude/opus`, `claude/opusplan`, …) — the native subscription too, with `--model <alias>`. Add one with `wt model add claude <alias> --family claude`. `claude/opusplan` runs Opus in plan mode and Sonnet otherwise (checked on 2026-10-14, #391), so outside plan mode it works on Sonnet where a bare `claude/native` launch works on your account's default model.
-- **Ollama-routed models** — passes `--model <name>` and points Claude Code at the local Ollama gateway via `ANTHROPIC_*` env vars (see [Cloud models via Ollama](#cloud-models-via-ollama)). It also maps all four of Claude Code's model slots to that model (see [Model slots on a single-model launch](#model-slots-on-a-single-model-launch)).
+- **Every other model** — passes `--model <gateway id>` and points Claude Code at the model server's gateway via `ANTHROPIC_*` env vars (see [Through the model server's gateway](#through-the-model-servers-gateway)). It also maps all four of Claude Code's model slots to that model (see [Model slots on a single-model launch](#model-slots-on-a-single-model-launch)).
 
-For Ollama-routed models, the launcher passes the **bare** provider-specific name (`config.Model.ModelName`), not the registry key (`config.Model.ID`, which is `provider/model` form). Using the registry key here would forward `ollama/<model>` to the Ollama gateway, which would not recognize the prefixed id.
+### Through the model server's gateway
 
-### Cloud models via Ollama
-
-When a non-native model (e.g., `minimax-m3:cloud`) is selected, `claude-wt` sets Anthropic-compatible environment variables pointing at the local Ollama gateway:
+Every non-native model goes through the model server's gateway (`wt-model serve`; see [wt-session.md](../wt-session.md)); there are no direct routes, and wt never points Claude Code at a provider or at LiteLLM itself. The launcher sets:
 
 ```bash
-ANTHROPIC_AUTH_TOKEN=ollama
+ANTHROPIC_AUTH_TOKEN="<gateway token>"
 ANTHROPIC_API_KEY=""
-ANTHROPIC_BASE_URL="http://localhost:11434"
+ANTHROPIC_BASE_URL="<gateway origin>"  # no /v1; a trailing slash is normalized
 ```
 
-The values shown are for the default ollama provider row. The base URL is the origin of the model's registry provider address (`auth.base_url` in `registry.toml` with a trailing `/v1` dropped; `http://localhost:11434` for the default ollama row), and `ANTHROPIC_AUTH_TOKEN` is that provider's resolved `secret_ref`, falling back to the placeholder `ollama` when the provider has no key. This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
-
-### LiteLLM routing
-
-When LiteLLM routing is enabled (`wt litellm status`), `claude-wt` routes non-native models through the LiteLLM proxy (URL from the `[litellm]` table in wt's config.toml, typically `http://localhost:4000`) instead of dialing the provider directly. The launcher sets:
-
-```bash
-ANTHROPIC_AUTH_TOKEN="<litellm.api_key>"
-ANTHROPIC_API_KEY=""
-ANTHROPIC_BASE_URL="http://localhost:4000"  # trailing slash is normalized
-```
-
-The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`), not the bare provider-specific name. The API key comes from `[litellm].api_key` in wt's `~/.config/agent-wt/config.toml` and is forwarded to the LiteLLM proxy as the provider's auth token. Native models (`claude/native`, `claude/opus`, etc.) continue to use the native subscription and ignore LiteLLM routing.
-
-claude only speaks the `anthropic` wire protocol, so a provider that doesn't serve it (e.g. openrouter, `openai-chat` only) forces LiteLLM routing regardless of the on/off setting — wt prints a one-line stderr notice when that happens.
+The `--model` value is the model's gateway id — its full registry id (e.g. `ollama/qwen3.8:27b-mlx`) unless the server names another — never the bare provider-specific name. The token is the model server's client token, which the gateway swaps for the LiteLLM key; no provider key and no `[litellm]` key reaches Claude Code. Native models (`claude/native`, `claude/opus`, etc.) continue to use the native subscription and never see the gateway or its token.
 
 ### Model slots on a single-model launch
 
@@ -75,10 +59,9 @@ Anthropic id such as `claude-haiku-5-5`, which another endpoint rejects with
 `Invalid model name`; Claude Code then falls back to the session model.
 
 So on every single-model launch where wt points Claude Code at another
-endpoint (a direct provider or the LiteLLM proxy; never `claude/native` or
-another native model), wt sets eight more variables in the process
-environment, shown here for a launch of `ollama/qwen3.8:27b-mlx` through
-LiteLLM (an example id):
+endpoint (the model server's gateway; never `claude/native` or another
+native model), wt sets eight more variables in the process environment,
+shown here for a launch of `ollama/qwen3.8:27b-mlx` (an example id):
 
 ```bash
 ANTHROPIC_DEFAULT_FABLE_MODEL="ollama/qwen3.8:27b-mlx"
@@ -92,8 +75,7 @@ ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="qwen3.8:27b-mlx"
 ```
 
 - Each `ANTHROPIC_DEFAULT_<SLOT>_MODEL` is exactly the value of `--model`:
-  the registry id through LiteLLM, the bare provider-side name on a direct
-  route.
+  the gateway id.
 - Each `ANTHROPIC_DEFAULT_<SLOT>_MODEL_NAME` is the model's provider-side
   name, the label Claude Code's `/model` picker shows for the slot.
 
@@ -123,10 +105,10 @@ other id it assumes 200K tokens and prints `Model "…" isn't recognized ·
 context assumed to be 200k tokens` at startup. That notice is Claude Code's
 own message, not a wt fault.
 
-When the model's entry in `tiers.toml` (modeltiers' output, read-only here)
-has a `context` **taken from the model's own host row**
-(`context_basis = "host"`), wt also sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to
-it, so Claude Code compacts against the real window and the notice goes away.
+When the model's entry in the host's `tiers.toml` (modeltiers' output, read
+by the model server, which reports it as the row's `context`) has a `context`
+**taken from the model's own host row** (`context_basis = "host"`), wt also
+sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to it, so Claude Code compacts against the real window and the notice goes away.
 `tiers.toml` records a window for **cloud** models from models.dev, and none
 for a local build, whose served window modeltiers cannot know. When the
 model's host has no row of its own, modeltiers still writes the largest

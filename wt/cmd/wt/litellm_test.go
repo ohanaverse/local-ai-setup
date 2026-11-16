@@ -340,20 +340,12 @@ func TestLitellmSyncNoWarningForUnprobedProvider(t *testing.T) {
 	}
 }
 
-// TestLitellmStatusAndToggle pins the routing-state functions: the retired
-// toggle's function (no command reaches it since the flip; Task 19 deletes
-// it) still flips enabled and warns when url/key are unset, `set` updates
-// url/key independently, and status never prints the key (only
-// api_key_set) nor the retired enabled.
-func TestLitellmStatusAndToggle(t *testing.T) {
+// TestLitellmStatusAndSet pins the proxy url/key functions the host keeps:
+// `set` updates url/key, and status never prints the key (only api_key_set)
+// nor the retired enabled.
+func TestLitellmStatusAndSet(t *testing.T) {
 	cfg, _ := litellmStateEnv(t)
-	var out, errOut bytes.Buffer
-	if err := runLitellmToggle(&out, &errOut, cfg, true); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(errOut.String(), "litellm.url or litellm.api_key is not set") {
-		t.Fatalf("no incomplete-config warning: %q", errOut.String())
-	}
+	var out bytes.Buffer
 	u, k := "http://localhost:4000", "sk-123456"
 	if err := runLitellmSet(&out, cfg, &u, &k); err != nil {
 		t.Fatal(err)
@@ -371,9 +363,6 @@ func TestLitellmStatusAndToggle(t *testing.T) {
 	}
 	if err := json.Unmarshal(out.Bytes(), &st); err != nil || strings.Contains(out.String(), "enabled") || st.URL != u || !st.APIKeySet {
 		t.Fatalf("status = %s (%v)", out.String(), err)
-	}
-	if err := runLitellmToggle(&out, &errOut, cfg, false); err != nil || cfg.IsLitellm() {
-		t.Fatalf("off failed: err=%v enabled=%v", err, cfg.IsLitellm())
 	}
 }
 
@@ -463,20 +452,6 @@ func TestLitellmSetIndependentAndClear(t *testing.T) {
 	}
 	if cfg.LitellmBaseURL() != u2 {
 		t.Errorf("clearing the key changed the url: %q", cfg.LitellmBaseURL())
-	}
-}
-
-// TestLitellmOffWarnsWhenUnconfigured pins the `off` warning: agents whose
-// protocols force LiteLLM still fail to launch without url/key, so the user is
-// told. Existing behavior; expected to pass immediately.
-func TestLitellmOffWarnsWhenUnconfigured(t *testing.T) {
-	cfg, _ := litellmStateEnv(t)
-	var out, errOut bytes.Buffer
-	if err := runLitellmToggle(&out, &errOut, cfg, false); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(errOut.String(), "will still fail to launch") {
-		t.Errorf("no off warning: %q", errOut.String())
 	}
 }
 

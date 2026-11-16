@@ -68,7 +68,7 @@ aligned_sources = ["arena_agent", "eci"]
 // id is not "<provider>/<name>" (an openrouter id with a slash in its name).
 func TestTierColumnShowsTheFilesRatings(t *testing.T) {
 	writeTiers(t)
-	tbl := slotTable(t, slotTestConfig(), idleOmlxSnapshot(), slotRowChecks())
+	tbl := slotTable(t, slotTestConfig(), slotRowChecks())
 	if !strings.Contains(tbl.header, "TIER") {
 		t.Fatalf("header %q has no TIER column", tbl.header)
 	}
@@ -99,7 +99,7 @@ func TestTierColumnShowsTheFilesRatings(t *testing.T) {
 // about it, and no mode line carries a tier.
 func TestTierColumnWithoutAFile(t *testing.T) {
 	t.Setenv(tiers.OutEnv, filepath.Join(t.TempDir(), "absent.toml"))
-	tbl := slotTable(t, slotTestConfig(), idleOmlxSnapshot(), slotRowChecks())
+	tbl := slotTable(t, slotTestConfig(), slotRowChecks())
 	for _, it := range tbl.items {
 		if got := strings.TrimSpace(it.cells[colTier]); got != "-" {
 			t.Errorf("%s: TIER = %q with no tiers file, want -", it.model.ID, got)
@@ -126,49 +126,18 @@ func TestAnAllDashTierColumnIsDroppedFirst(t *testing.T) {
 	}
 	t.Run("rated", func(t *testing.T) {
 		writeTiers(t)
-		cols := oneTooNarrow(slotTable(t, slotTestConfig(), idleOmlxSnapshot(), slotRowChecks()))
+		cols := oneTooNarrow(slotTable(t, slotTestConfig(), slotRowChecks()))
 		if cols.Shown(col30D) || !cols.Shown(colTier) || !cols.Shown(col7D) {
 			t.Errorf("rated table: 30D shown %v, 7D shown %v, TIER shown %v; want 30D dropped and 7D and TIER kept", cols.Shown(col30D), cols.Shown(col7D), cols.Shown(colTier))
 		}
 	})
 	t.Run("no tiers file", func(t *testing.T) {
 		t.Setenv(tiers.OutEnv, filepath.Join(t.TempDir(), "absent.toml"))
-		cols := oneTooNarrow(slotTable(t, slotTestConfig(), idleOmlxSnapshot(), slotRowChecks()))
+		cols := oneTooNarrow(slotTable(t, slotTestConfig(), slotRowChecks()))
 		if cols.Shown(colTier) || !cols.Shown(col30D) || !cols.Shown(colCost) {
 			t.Errorf("unrated table: TIER shown %v, 30D shown %v, COST shown %v; want only TIER dropped", cols.Shown(colTier), cols.Shown(col30D), cols.Shown(colCost))
 		}
 	})
-}
-
-// TestWithTierNote pins how the mode line takes the tier: after the mode and
-// price modeLine chose, the longest note that fits, shorter ones as the width
-// shrinks, and none at all before the mode or the price gives way. The tier
-// is guidance the TIER column already shows; the price and the mode are not
-// shown anywhere else on a narrow terminal.
-func TestWithTierNote(t *testing.T) {
-	notes := tiers.Entry{Tier: "standard", Code: "S", Confidence: "high", Aligned: 44.3, HasAligned: true, Sources: 3}.Notes()
-	base := "LiteLLM: on   cost 0.4/0.04/1.6"
-	for _, c := range []struct {
-		width int
-		want  string
-	}{
-		{200, base + "   tier standard · score 44 (3 sources) · high confidence"},
-		{76, base + "   tier standard · score 44 (3 sources)"},
-		{60, base + "   tier standard · score 44"},
-		{50, base + "   tier standard"},
-		{40, base},
-	} {
-		got := withTierNote(base, notes, c.width)
-		if got != c.want {
-			t.Errorf("width %d: %q, want %q", c.width, got, c.want)
-		}
-		if lipgloss.Width(got) > c.width {
-			t.Errorf("width %d: %q is %d columns", c.width, got, lipgloss.Width(got))
-		}
-	}
-	if got := withTierNote(base, nil, 200); got != base {
-		t.Errorf("no notes: %q, want the line unchanged", got)
-	}
 }
 
 // TestSlotLineTiers pins the slot line with ratings: each rated slot model's
@@ -206,10 +175,10 @@ func TestPickerScreenShowsTiers(t *testing.T) {
 		width, height     int
 		modelLine, slotLn string
 	}{
-		{80, 24, "LiteLLM: on   cost 0.4/0.04/1.6   tier standard · score 44 (3 sources)", "sonnet* a S44 · haiku qwen3.8 Q31"},
-		{160, 40, "LiteLLM: on   cost 0.4/0.04/1.6   tier standard · score 44 (3 sources) · high confidence", "sonnet* a S44 · haiku qwen3.8 Q31"},
+		{80, 24, "cost 0.4/0.04/1.6   tier standard · score 44 (3 sources) · high confidence", "sonnet* a S44 · haiku qwen3.8 Q31"},
+		{160, 40, "cost 0.4/0.04/1.6   tier standard · score 44 (3 sources) · high confidence", "sonnet* a S44 · haiku qwen3.8 Q31"},
 	} {
-		stubInventory(t, runningOmlxSnapshot())
+		stubRunning(t, "omlx/qwen3.8")
 		m := slotPicker(t, slotTestConfig(), slotRowChecks(), c.width, c.height)
 		m.models.Select(indexOfID(m, "openrouter/a"))
 		m = resized(t, m, c.width, c.height)

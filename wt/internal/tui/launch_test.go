@@ -12,41 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
-
-// TestLaunchAgentUnknownAgent asserts that asking for an unregistered agent
-// returns a clear error. Without this guard the TUI could try to exec a
-// nil driver.
-func TestLaunchAgentUnknownAgent(t *testing.T) {
-	_, err := launchAgent("not-an-agent", config.Model{}, "/tmp", false, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for unknown agent")
-	}
-	if !strings.Contains(err.Error(), "unknown agent") {
-		t.Errorf("error = %q, want 'unknown agent'", err.Error())
-	}
-}
-
-// TestLaunchAgentNeverAddsAResumeFlag pins that the picker's launch starts
-// the agent fresh: wt adds no resume or session flag of its own. Continuing a
-// conversation is done with the agent's own flags after `--`.
-func TestLaunchAgentNeverAddsAResumeFlag(t *testing.T) {
-	stubFakeBinary(t, "claude")
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "claude", Auth: config.AuthConfig{Type: "native"}}},
-	}
-	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet", ProviderID: "claude"}, "/tmp/repo", false, cfg, nil)
-	if err != nil {
-		t.Fatalf("launchAgent: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
-		t.Errorf("args = %q, should not contain resume/session flags", got)
-	}
-}
 
 // TestRunAndWaitCmdWiresStdio uses a no-op command (true) to verify
 // that runAndWaitCmd wires Stdin/Stdout/Stderr and returns a
@@ -178,44 +147,6 @@ func TestRunAndWaitCmdCapturesPendingSurvey(t *testing.T) {
 	}
 }
 
-// launchAgent must invoke the pi driver's SyncModels before building the
-// command, mirroring the non-TUI path. Without it, the TUI launch would fall
-// back to pi's default model for a rotation-selected model. The sync runs
-// before LookPath, so it is observable even when pi is not installed.
-func TestLaunchAgentSyncsPi(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".pi", "agent")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	modelsPath := filepath.Join(dir, "models.json")
-	if err := os.WriteFile(modelsPath, []byte(`{"providers":{"ollama":{"models":[]}}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-		Models: []config.Model{
-			{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"},
-		},
-	}
-	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
-	cmd, err := launchAgent("pi", m, "/tmp", false, cfg, nil)
-	if err != nil && !strings.Contains(err.Error(), "not installed") {
-		t.Fatalf("launchAgent: %v", err)
-	}
-	data, _ := os.ReadFile(modelsPath)
-	if !strings.Contains(string(data), "deepseek-v4-pro:cloud") {
-		t.Errorf("models.json = %s, want it to contain deepseek-v4-pro:cloud (sync ran)", string(data))
-	}
-	if err == nil {
-		got := strings.Join(cmd.Args, " ")
-		if !strings.Contains(got, "--model ollama/deepseek-v4-pro:cloud") {
-			t.Errorf("args = %q, want --model ollama/deepseek-v4-pro:cloud (sync + verify)", got)
-		}
-	}
-}
-
 // TestRunAndWaitCmdAppliesProfileApplier is the regression lock for the
 // code-review finding that runAndWaitCmd (the interactive picker's launch
 // path) never applied local-model launch profiles at all. It stubs
@@ -256,8 +187,7 @@ func TestRunAndWaitCmdAppliesProfileApplier(t *testing.T) {
 // TestRunAndWaitCmdProfileApplierErrorSkipsRun is the regression lock for
 // the TUI-side equivalent of the non-TUI runAgentCmd fix (plan item #5): a
 // pre-launch profileApplier error must skip cmd.Run() entirely, still
-// release the refcount entry launchAndRecord's record writes (it is still
-// called for a profile error), still populate pendingSummary (duration 0),
+// populate pendingSummary (duration 0),
 // and come back as a launchDoneMsg carrying the error — not print it — so
 // Run returns it once and main reports it as `wt: <error>` with exit 1
 // (#412). It must NOT populate pendingSurveyState, since nothing ran and
@@ -265,13 +195,9 @@ func TestRunAndWaitCmdAppliesProfileApplier(t *testing.T) {
 func TestRunAndWaitCmdProfileApplierErrorSkipsRun(t *testing.T) {
 	oldApplier := profileApplier
 	t.Cleanup(func() { profileApplier = oldApplier })
-	oldRelease := releaseSession
-	t.Cleanup(func() { releaseSession = oldRelease })
 	pendingSummary, pendingSurveyState = "", pendingSurvey{}
 	t.Cleanup(func() { pendingSummary, pendingSurveyState = "", pendingSurvey{} })
 
-	released := false
-	releaseSession = func() { released = true }
 	profileApplier = func(cmd *exec.Cmd, agent string, m config.Model) (func() error, error) {
 		return nil, errors.New("wrapper not installed")
 	}
@@ -289,9 +215,6 @@ func TestRunAndWaitCmdProfileApplierErrorSkipsRun(t *testing.T) {
 	}
 	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
 		t.Error("sentinel file exists — cmd.Run() executed despite the profileApplier error")
-	}
-	if !released {
-		t.Error("releaseSession() was not called on a profileApplier error")
 	}
 	if pendingSummary == "" {
 		t.Error("pendingSummary was not set on a profileApplier error")
@@ -357,8 +280,7 @@ func relativeArgTUIFixture(t *testing.T) (launch, other string) {
 // unchanged.
 func TestLaunchAgentQueuesTheRelativePathNote(t *testing.T) {
 	launch, other := relativeArgTUIFixture(t)
-	native := config.Model{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true}
-	cmd, err := launchAgent("claude", native, launch, false, nil, []string{"../../other", "--verbose"})
+	cmd, err := buildNativeLaunch(launch, []string{"../../other", "--verbose"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +297,7 @@ func TestLaunchAgentQueuesTheRelativePathNote(t *testing.T) {
 	}
 	// A launch that failed and is retried builds the command again; the note
 	// must not pile up.
-	if _, err := launchAgent("claude", native, launch, false, nil, []string{"../../other", "--verbose"}); err != nil {
+	if _, err := buildNativeLaunch(launch, []string{"../../other", "--verbose"}); err != nil {
 		t.Fatal(err)
 	}
 	if n := strings.Count(pendingRouteNotes, "wt: note:"); n != 1 {
@@ -388,26 +310,12 @@ func TestLaunchAgentQueuesTheRelativePathNote(t *testing.T) {
 	}
 }
 
-// TestPassthroughLaunchQueuesTheRelativePathNote pins the same for an agent
-// with no config entry, which the picker launches through launchPassthrough.
-func TestPassthroughLaunchQueuesTheRelativePathNote(t *testing.T) {
-	launch, other := relativeArgTUIFixture(t)
-	m := model{selectedPath: launch, extraArgs: []string{"../../other"}}
-	if got, _ := m.launchPassthrough("claude"); strings.Contains(got.status, "launch failed") {
-		t.Fatalf("status = %q, want the launch built", got.status)
-	}
-	if !strings.Contains(pendingRouteNotes, `"../../other" is a relative path`) || !strings.Contains(pendingRouteNotes, other) {
-		t.Fatalf("pending notes = %q, want the relative-path note naming %s", pendingRouteNotes, other)
-	}
-}
-
 // TestLaunchAgentQueuesNothingWithoutAMistakenPath pins that an ordinary
 // picker launch leaves the queue empty.
 func TestLaunchAgentQueuesNothingWithoutAMistakenPath(t *testing.T) {
 	launch, _ := relativeArgTUIFixture(t)
-	native := config.Model{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true}
 	for _, args := range [][]string{nil, {"run", "say hi"}, {"--verbose"}} {
-		if _, err := launchAgent("claude", native, launch, false, nil, args); err != nil {
+		if _, err := buildNativeLaunch(launch, args); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -426,7 +334,6 @@ func TestPickerLaunchesStraightThroughAPriorSession(t *testing.T) {
 	stubFakeBinary(t, "claude")
 	tempStateDir(t)
 	stubUsageStore(t)
-	stubRefcountStore(t)
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -447,21 +354,18 @@ func TestPickerLaunchesStraightThroughAPriorSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	native := config.Model{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true}
-	m := model{cfg: &config.Config{}, phase: phaseModel, agent: "claude", tag: "code", selectedPath: launch, width: 80, height: 24, models: singleModelList(native)}
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	next := got.(model)
+	next, cmd := enterRemote(t, nativePicker(t, launch), "claude/native")
 
 	if cmd == nil {
 		t.Fatalf("no launch command: phase = %v status = %q", next.phase, next.status)
 	}
-	if next.phase != phaseModel || strings.Contains(next.status, "launch failed") {
+	if next.phase != phaseLaunching || strings.Contains(next.status, "launch failed") {
 		t.Fatalf("phase = %v status = %q, want the launch to go straight ahead", next.phase, next.status)
 	}
 	if view := next.View(); strings.Contains(view, "Resume") {
 		t.Fatalf("the picker still shows a resume prompt:\n%s", view)
 	}
-	built, err := launchAgent("claude", native, launch, false, &config.Config{}, nil)
+	built, err := buildNativeLaunch(launch, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,15 +423,15 @@ func TestPickerLaunchClaimsPickedWorktree(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	tempStateDir(t)
 	stubUsageStore(t)
-	stubRefcountStore(t)
 	answerOnStdio(t, "")
 
-	native := config.Model{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true}
-	m := model{cfg: &config.Config{}, phase: phaseModel, agent: "claude", tag: "code", selectedPath: picked, width: 80, height: 24, models: singleModelList(native)}
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	next := got.(model)
-	if cmd == nil || strings.Contains(next.status, "launch failed") {
+	next, prep := enterRemote(t, nativePicker(t, picked), "claude/native")
+	if prep == nil {
 		t.Fatalf("no launch command: phase = %v status = %q", next.phase, next.status)
+	}
+	next, cmd := updateMsg(next, prep())
+	if cmd == nil || strings.Contains(next.status, "launch failed") {
+		t.Fatalf("no run command: phase = %v status = %q", next.phase, next.status)
 	}
 	done, ok := cmd().(launchDoneMsg)
 	if !ok || done.err != nil {
@@ -549,4 +453,29 @@ func TestPickerLaunchClaimsPickedWorktree(t *testing.T) {
 	if claimExists(root) {
 		t.Error("the claim outlived the agent")
 	}
+}
+
+// nativeModel is the native claude model the launch tests run.
+var nativeModel = config.Model{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true}
+
+// buildNativeLaunch builds the native claude launch in dir with args the way
+// the picker does (the launch build, then the queued pre-launch notes).
+func buildNativeLaunch(dir string, args []string) (*exec.Cmd, error) {
+	cmd, _, err := buildGatewayLaunch("claude", nativeModel, dir, false, agents.Gateway{}, nil, args)
+	if err == nil {
+		queueLaunchNotes("claude", cmd, args)
+	}
+	return cmd, err
+}
+
+// nativePicker is the model picker over a model server whose catalog holds
+// the native claude model alone, with dir as the chosen worktree.
+func nativePicker(t *testing.T, dir string) model {
+	t.Helper()
+	f := &fakeModels{cat: modelapi.Catalog{Schema: 1, Generated: "2026-11-16T12:00:00Z", Rows: []modelapi.Row{
+		wireRow("claude/native", "claude", func(r *modelapi.Row) { r.Native, r.ModelName, r.Order = true, "native", 1 }),
+	}}}
+	m := remoteTable(t, f)
+	m.selectedPath = dir
+	return m
 }

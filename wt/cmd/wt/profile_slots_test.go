@@ -249,9 +249,6 @@ func TestProfileShowSlotProfile(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			seams := stubSlotSeams(t)
-			started := stubStartDriver(t, nil)
-
 			out, err := runProfileCmd(t, slotShowApp(t), "show", "-A", "claude", "-M", tc.id)
 
 			for _, want := range tc.want {
@@ -271,9 +268,6 @@ func TestProfileShowSlotProfile(t *testing.T) {
 			}
 			if tc.wantErr != "" && strings.Contains(out, "args:") {
 				t.Errorf("a blocked profile printed a command:\n%s", out)
-			}
-			if seams.log() != "" || started.called {
-				t.Errorf("`wt profile show` drove the engine: steps %q, start asked for: %v", seams.log(), started.called)
 			}
 		})
 	}
@@ -327,7 +321,6 @@ func TestProfileShowSlotProfileIgnoresProfilesToml(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			stubSlotSeams(t)
 			a := slotShowApp(t)
 			damage(a)
 			out, err := runProfileCmd(t, a, "show", "-A", "claude", "-M", "profile/cloud")
@@ -378,8 +371,6 @@ MAX_THINKING_TOKENS = "4096"
 		a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
 		return a
 	}
-	seams := stubSlotSeams(t)
-	started := stubStartDriver(t, nil)
 
 	out, err := runProfileCmd(t, newApp(), "list")
 	wantList := "(no profiles defined)\nslot profiles:\n" +
@@ -400,8 +391,8 @@ MAX_THINKING_TOKENS = "4096"
 	if err != nil || !strings.HasPrefix(out, "profile/table-env (claude): launch\n") || !strings.Contains(out, `"MAX_THINKING_TOKENS": "4096"`) {
 		t.Errorf("show table-env = (%q, %v), want a launch row whose settings carry the table", out, err)
 	}
-	if seams.log() != "" || started.called {
-		t.Errorf("the profile commands drove the engine: steps %q, start asked for: %v", seams.log(), started.called)
+	if n := srv.count("POST"); n != 0 {
+		t.Errorf("the profile commands asked the model server to start or register (%d POSTs): %v", n, srv.reqs())
 	}
 }
 
@@ -483,8 +474,6 @@ claude-sonnet-4-6 = 5
 		a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
 		return a
 	}
-	seams := stubSlotSeams(t)
-	started := stubStartDriver(t, nil)
 	warnings := []string{
 		`profile/unrouted (claude): config_content.modelOverrides["claude-haiku-4-5"] targets "omlx/q", which is not one of the profile's slot models, so wt does not make sure it is routed`,
 		`profile/unrouted (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/b", which is not one of the profile's slot models, so wt does not make sure it is routed`,
@@ -544,10 +533,10 @@ claude-sonnet-4-6 = 5
 	}
 
 	want := []string{"wt: " + warnings[0], "wt: " + warnings[1]}
-	if got := slotWarnings(newApp()); !slices.Equal(got, want) {
-		t.Errorf("slotWarnings() = %q\nwant %q", got, want)
+	if got := slotWarningsRemote(newApp()); !slices.Equal(got, want) {
+		t.Errorf("slotWarningsRemote() = %q\nwant %q", got, want)
 	}
-	if seams.log() != "" || started.called {
-		t.Errorf("the profile commands drove the engine: steps %q, start asked for: %v", seams.log(), started.called)
+	if n := srv.count("POST"); n != 0 {
+		t.Errorf("the profile commands asked the model server to start or register (%d POSTs): %v", n, srv.reqs())
 	}
 }

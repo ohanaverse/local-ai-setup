@@ -29,8 +29,8 @@ func (s *syncBuf) String() string {
 	return s.b.String()
 }
 
-// TestSelectReturnsTheChosenIndices proves Select, the prompt the stop picker
-// and `wt stop` on the model server share, prints the header and numbered
+// TestSelectReturnsTheChosenIndices proves Select, the prompt of `wt stop` on
+// the model server, prints the header and numbered
 // labels and returns the indices a line chooses in list order, or nothing for
 // an empty line.
 func TestSelectReturnsTheChosenIndices(t *testing.T) {
@@ -66,7 +66,7 @@ func TestSelectCancelledByContext(t *testing.T) {
 	}
 }
 
-// TestSelectEdgeInputs proves the legacy stop picker's parse through Select:
+// TestSelectEdgeInputs proves the picker's parse through Select:
 // q, skip, esc and an empty line choose nothing; a number out of range or a
 // non-number rejects the whole line and asks again (the reason printed); an
 // exhausted reader chooses nothing.

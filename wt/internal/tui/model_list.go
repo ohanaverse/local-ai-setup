@@ -7,7 +7,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -21,30 +20,15 @@ var newUsageStore = realNewUsageStore
 // seam: a Store rooted at the default config dir.
 func realNewUsageStore() usage.Store { return usage.NewStore() }
 
-// newRefcountStore is a seam for tests: production uses
-// realNewRefcountStore (the default config dir); tests swap it to isolate
-// from the real refcount.jsonl.
-var newRefcountStore = realNewRefcountStore
-
-// realNewRefcountStore is the production implementation of the
-// newRefcountStore seam: a Store rooted at the default config dir.
-func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
-
 // modelItem adapts a config.Model to a list.Item for the model picker.
 // The compact representation is baked onto .line; marked records the
 // rotation's last-launched row and ref is the live "in use" session count
 // (issue #73) — both are composed into the rendered prefix by Title()
 // rather than baked into .line, so FilterValue (fuzzy matching) and every
-// .line consumer see the unprefixed format. exception, when non-empty,
-// appends a per-row deviation note in Title() (e.g. "(via proxy)" for a
-// row protocol negotiation forces through LiteLLM, "(litellm required)" for
-// a row that needs litellm but wt's [litellm] url/api_key aren't
-// configured, "(not in LiteLLM)" for an Unmapped cloud row whose route
-// would go through LiteLLM, which also sets blocked, "(unavailable)" for any other route resolution failure).
+// .line consumer see the unprefixed format.
 // blocked, when non-empty, is the hint the agent flow's model phase shows on
-// Enter instead of launching or starting: a local provider wt has no lifecycle
-// backend for, or an Unmapped cloud row whose route would go through LiteLLM (see
-// catalog.Row Action/BlockReason). A non-running local model is deliberately
+// Enter instead of launching or starting: the row's block reason (the model
+// server's, catalog.Row Action/BlockReason). A non-running local model is deliberately
 // NOT one of these — it is a start row — and a local model that is not on disk
 // is not one either: it has no row at all. Every
 // picker honors it: the agent flow shows it on Enter, and the standalone
@@ -57,15 +41,14 @@ func realNewRefcountStore() refcount.Store { return refcount.NewStore() }
 // cols, the layout the whole table shares (nil for an item built by hand, in
 // which case the full line is drawn).
 type modelItem struct {
-	model     config.Model
-	line      string
-	cells     []string
-	cols      *tuilayout.Columns
-	marked    bool
-	ref       int
-	exception string
-	blocked   string // non-empty: the agent flow's Enter shows this instead of launching or starting
-	start     bool   // Enter starts the model through the lifecycle engine
+	model   config.Model
+	line    string
+	cells   []string
+	cols    *tuilayout.Columns
+	marked  bool
+	ref     int
+	blocked string // non-empty: the agent flow's Enter shows this instead of launching or starting
+	start   bool   // Enter starts the model through the lifecycle engine
 	// cost is the row's price in force as the launcher's mode line names it
 	// for the highlighted row (costNote); "" for a row with no per-token
 	// price.
@@ -119,15 +102,12 @@ func (m modelItem) FilterValue() string { return m.line }
 
 // Title renders the compact one-line model representation with the ref
 // column (issue #73's "in use" count) prepended before the last-launched
-// marker prefix, and any exception note appended after the line.
+// marker prefix.
 func (m modelItem) Title() string {
 	prefix := refColumn(m.ref)
 	line := m.line
 	if m.cols != nil {
 		line = m.cols.Line(m.cells)
-	}
-	if m.exception != "" {
-		line += " " + m.exception
 	}
 	if m.marked {
 		return prefix + markerMarked + line

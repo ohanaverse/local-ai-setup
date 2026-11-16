@@ -12,7 +12,6 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -27,7 +26,6 @@ type cwdLaunch struct {
 	claimSeen  bool     // the agent found this wt's root session claim while it ran
 	guarded    bool     // maybeInstallGuard was called
 	guardRoot  string   // the checkout root git reported when it was called, links resolved ("" if none)
-	released   int      // times releaseSession was called (the registry path's refcount release; never since the flip)
 	ended      int      // times the client session was ended on the model server (DELETE sessions/ID)
 	stateDir   string   // the scratch config home's agent-wt directory
 	stateFiles []string // the files a launch wrote there, sorted
@@ -85,9 +83,7 @@ func runPinnedLaunch(t *testing.T, dir string, where []string, extra ...string) 
 			res.guardRoot, _ = filepath.EvalSymlinks(strings.TrimSpace(string(out)))
 		}
 	}
-	oldRelease := releaseSession
-	releaseSession = func() { res.released++ }
-	t.Cleanup(func() { tuiRun, maybeInstallGuard, releaseSession = oldTUI, oldGuard, oldRelease })
+	t.Cleanup(func() { tuiRun, maybeInstallGuard = oldTUI, oldGuard })
 
 	before, err := os.ReadDir(cfgDir)
 	if err != nil {
@@ -148,9 +144,8 @@ func physical(t *testing.T, dir string) string {
 
 // wantCwdBookkeeping asserts the state one single-model --cwd launch records:
 // the rotation pointer, the picker's marker and one usage event for the pair,
-// all in the scratch config home, no live-session line (a client session of
-// the model server keeps no refcount file), and that the launch ended its
-// client session on the server exactly once and released no refcount entry.
+// all in the scratch config home, and that the launch ended its client
+// session on the server exactly once.
 func wantCwdBookkeeping(t *testing.T, res cwdLaunch) {
 	t.Helper()
 	for _, name := range []string{"rotation.state", "last-picked.state"} {
@@ -166,11 +161,8 @@ func wantCwdBookkeeping(t *testing.T, res cwdLaunch) {
 	if got := usage.NewStoreAt(res.stateDir).CountsForAgent("claude", []string{"claude/opus"})["claude/opus"]; got.ThirtyDay != 1 {
 		t.Errorf("usage events for claude × claude/opus = %d, want 1", got.ThirtyDay)
 	}
-	if got := refcount.NewStoreAt(res.stateDir).Counts([]string{"claude/opus"})["claude/opus"]; got != 0 {
-		t.Errorf("live-session count for claude/opus = %d, want 0: a client session keeps no refcount line", got)
-	}
-	if res.released != 0 || res.ended != 1 {
-		t.Errorf("releaseSession called %d times, client session ended %d times; want 0 and 1", res.released, res.ended)
+	if res.ended != 1 {
+		t.Errorf("client session ended %d times; want 1", res.ended)
 	}
 }
 

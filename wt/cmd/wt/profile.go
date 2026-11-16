@@ -192,21 +192,6 @@ func showResolveModel(ctx context.Context, a *app, id string) (config.Model, err
 	return catalog.ToModel(row), nil
 }
 
-// findModelByID looks m up in cfg.Models by exact id, for `wt profile
-// show -M`. Unlike the launch path this does not consult live/discovered
-// inventory — it is a dry-run tool over the registry only.
-func findModelByID(cfg *config.Config, id string) (config.Model, error) {
-	if cfg == nil {
-		return config.Model{}, fmt.Errorf("no config loaded")
-	}
-	for _, m := range cfg.Models {
-		if m.ID == id {
-			return m, nil
-		}
-	}
-	return config.Model{}, fmt.Errorf("model %q not found in registry", id)
-}
-
 // topLevelEnabledLineRe matches a top-level `enabled = true|false` line,
 // capturing whatever trailing same-line content follows it (group 1: any
 // run of spaces/tabs, then an optional `#` comment) plus an optional

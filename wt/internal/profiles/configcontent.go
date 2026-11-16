@@ -175,7 +175,7 @@ func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedPr
 }
 
 // mergeOpenCodeEnv merges content into the OPENCODE_CONFIG_CONTENT entry in
-// cmd.Env. It searches from the END of cmd.Env, not the start: BuildLaunchCmd
+// cmd.Env. It searches from the END of cmd.Env, not the start: BuildLaunchCmdGateway
 // (internal/agents) builds cmd.Env as os.Environ() (the inherited parent
 // environment) followed by the driver's own env entries, so if the parent
 // process already happens to export OPENCODE_CONFIG_CONTENT (e.g. wt was
@@ -243,12 +243,8 @@ func backupKeysPath(target string) string { return backupKey(target) + ".keys" }
 // alone isn't enough to prevent that.
 func backupOwnerPath(target string) string { return backupKey(target) + ".owner" }
 
-// pidAlive reports whether pid is a live process, mirroring
-// internal/refcount.pidAlive's signal-0-probe convention (duplicated
-// rather than imported: refcount's contract is scoped to live-session
-// model-usage counts, and a cross-package dependency for one liveness
-// probe isn't worth it). Package-level var so tests can inject live/dead
-// pids deterministically.
+// pidAlive reports whether pid is a live process (a signal-0 probe).
+// Package-level var so tests can inject live/dead pids deterministically.
 var pidAlive = func(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || err == syscall.EPERM

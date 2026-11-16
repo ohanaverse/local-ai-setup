@@ -69,9 +69,22 @@ type GatewaySyncer interface {
 	SyncGateway(gw Gateway, models []config.Model, target config.Model) error
 }
 
-// BuildLaunchCmdGateway is BuildLaunchCmdInfo against the gateway: the same
-// launch construction with GatewayRoute for the route and GatewaySyncer for
-// the sync. models is the server's non-native models, for pi's file.
+// BuildLaunchCmdGateway is the one launch constructor (the direct-route
+// builders were deleted with Task 19): GatewayRoute for the route and
+// GatewaySyncer for the sync. models is the server's non-native models, for
+// pi's file.
+//
+// extraArgs are user-supplied args after `--`. For regular agents they are
+// appended to the agent's command. For agents implementing ArgSetter (e.g.
+// shell), the args are passed via SetArgs and not appended again.
+//
+// It never resumes a session. wt used to look up an agent's newest session
+// for the worktree and add the agent's resume flag itself; that appended a
+// one-shot run to whatever conversation was newest (#204), broke a launch
+// whose resumed session had stored another model (#198), and doubled the flag
+// when the user passed their own. Sessions are the agent's to manage: a user
+// who wants one continued says so in extraArgs, with the agent's own flags
+// (`-- --continue`, `-- --resume <id>`, `-- --session <id>`).
 func BuildLaunchCmdGateway(agent string, m config.Model, worktreePath string, yolo bool, gw Gateway, models []config.Model, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
 	d := ByName(agent)
 	if d == nil {
@@ -91,8 +104,8 @@ func BuildLaunchCmdGateway(agent string, m config.Model, worktreePath string, yo
 	return launchWithRoute(d, m, worktreePath, yolo, route, extraArgs)
 }
 
-// BuildSlotLaunchCmdGateway is BuildSlotLaunchCmd with gw in place of the
-// [litellm] url and key.
+// BuildSlotLaunchCmdGateway builds a slot profile's launch against gw, the
+// only proxy a slot profile uses.
 func BuildSlotLaunchCmdGateway(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw Gateway, extraArgs []string) (*exec.Cmd, error) {
 	if err := CheckSlotPassthrough(sl.Agent, extraArgs); err != nil {
 		return nil, err

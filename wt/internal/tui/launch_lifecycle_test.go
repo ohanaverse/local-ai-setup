@@ -95,15 +95,15 @@ func TestEnterInModelPhaseDoesNotQuitImmediately(t *testing.T) {
 		t.Fatalf("agent did not run to completion: marker file missing: %v", err)
 	}
 
-	// Now drive the Enter handler and verify it returns ONLY runAndWaitCmd,
-	// not a batched Quit. Use a model whose agent is unknown so launchAgent
-	// errors out — we don't need a real agent here, just to assert the cmd
-	// shape returned by the Enter handler.
-	m := model{cfg: testConfig(), phase: phaseModel, agent: "not-a-real-agent", tag: "code",
-		selectedPath: tmp, models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
-	res, enteredCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	// launchAgent errors for unknown agents, so Update returns nil cmd and
-	// sets status on the returned model. Verify that:
+	// Now drive the Enter handler: with an agent no driver knows, the
+	// launch's build fails once its prep on the model server is back, and
+	// that update returns no command and sets the status.
+	m := remotePickerFor(t, "not-a-real-agent", wireRow("openrouter/gemma4", "gemma4", nil))
+	res, prep := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if prep == nil {
+		t.Fatal("Enter started no launch prep")
+	}
+	res, enteredCmd := res.(model).Update(prep())
 	if enteredCmd != nil {
 		t.Fatalf("expected nil cmd on launch failure, got %T", enteredCmd)
 	}
@@ -120,8 +120,8 @@ func TestEnterInModelPhaseDoesNotQuitImmediately(t *testing.T) {
 // returns immediately — killing the agent via process exit.
 //
 // We register a stub driver via the agents package's exported RegisterTest
-// helper. The stub driver builds a no-op `true` command. The returned cmd
-// must NOT be a BatchMsg when the Enter handler is invoked.
+// helper. The stub driver builds a no-op `true` command. The run command the
+// launch's prep hands back must NOT be a BatchMsg.
 func TestEnterInModelPhaseReturnsRunAndWaitNotBatchedQuit(t *testing.T) {
 	truePath, err := exec.LookPath("true")
 	if err != nil {
@@ -130,9 +130,12 @@ func TestEnterInModelPhaseReturnsRunAndWaitNotBatchedQuit(t *testing.T) {
 	cleanup := agents.RegisterTest("wt-stub", func() agents.Driver { return stubDriver{path: truePath} })
 	t.Cleanup(cleanup)
 
-	m := model{cfg: testConfig(), phase: phaseModel, agent: "wt-stub", tag: "code",
-		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m := remotePickerFor(t, "wt-stub", wireRow("openrouter/gemma4", "gemma4", nil))
+	res, prep := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if prep == nil {
+		t.Fatal("Enter started no launch prep")
+	}
+	_, cmd := res.(model).Update(prep())
 
 	if cmd == nil {
 		t.Fatal("Enter returned nil cmd on success path")

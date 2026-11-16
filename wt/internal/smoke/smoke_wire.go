@@ -71,7 +71,7 @@ func walkWire(rows []modelapi.Row, ags []config.Agent, includeStart bool) []Cand
 
 // gatewayRun builds and runs one agent's one-shot launch command against the
 // gateway: a package var so tests can stub it with canned outcomes, as
-// buildAndRun is for the registry path.
+// it is the only agent-run seam.
 var gatewayRun = realGatewayRun
 
 // SetGatewayRunForTest replaces the gateway agent-run seam with fn, which
@@ -129,7 +129,7 @@ func gatewayIs503(ctx context.Context, gw agents.Gateway) bool {
 	return resp.StatusCode == http.StatusServiceUnavailable
 }
 
-// RunRowGateway is RunRow over the gateway: the same one-shot run and the
+// RunRowGateway runs one agent's one-shot row over the gateway: the one-shot run and the
 // same classification, with the launch built by agents.BuildLaunchCmdGateway
 // (the endpoint origin and token, never a provider's). ready is
 // modelclient.Client.WaitGatewayReady: it is called before the row, and once

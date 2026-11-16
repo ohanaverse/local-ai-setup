@@ -353,5 +353,5 @@ only switch is `survey.Enabled` in the source.
 
 After a recorded answer, the same accumulated stats `wt stats` reports are
 printed for the current model (all agents) and the current agent×model
-combo, at the 1d/7d/30d windows — after the stop picker and the summary
+combo, at the 1d/7d/30d windows — after the summary
 line, so the interactive prompts cannot scroll them away.

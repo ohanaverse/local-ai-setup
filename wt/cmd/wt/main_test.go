@@ -637,38 +637,6 @@ func TestCommandAgentWithoutModelLaunchesDirectly(t *testing.T) {
 	}
 }
 
-// TestNeedsModelPicker is a table test for the predicate that decides whether
-// the CLI routes to the model picker or to launchFiltered. The predicate is
-// the single source of truth for picker routing across --cwd, -W, and the
-// outside-repo path — getting it wrong causes either silent auto-launches
-// the user didn't ask for, or TTY errors when they did.
-//
-// The predicate captures the CURRENT picker-routing rule. A subsequent fix
-// layer (resolveModel short-circuit, added in a separate task) restores the
-// pre-PR auto-launch behavior for the "pinned agent, no pin" case when the
-// eligible model list has exactly one entry.
-func TestNeedsModelPicker(t *testing.T) {
-	tests := []struct {
-		name          string
-		agent, pinned string
-		want          bool
-	}{
-		{"unpinned agent, no pin", "", "", true},
-		{"pinned agent, no pin (routes to TUI; resolveModel may short-circuit)", "claude", "", true},
-		{"pinned command, no pin", "shell", "", false},
-		{"pinned agent, valid pin", "claude", "claude/opus", false},
-		{"unpinned agent, valid pin", "", "claude/opus", true},
-		{"pinned command, valid pin (no model layer)", "shell", "claude/opus", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := needsModelPicker(tt.agent, tt.pinned); got != tt.want {
-				t.Errorf("needsModelPicker(%q, %q) = %v, want %v", tt.agent, tt.pinned, got, tt.want)
-			}
-		})
-	}
-}
-
 // TestAgentWithOneEligibleModelAutoLaunches verifies that `wt --cwd -A claude`
 // with exactly one eligible model in config auto-launches via launchFiltered
 // instead of routing to the model picker. This restores the pre-PR-2 UX
@@ -991,8 +959,7 @@ func TestCommandAgentDirectLaunchSkipsMissingRegistry(t *testing.T) {
 // and model are already pinned, a pinned agent or command must still pick a
 // worktree. The guard is stubbed because the real guard.Install operates on
 // the test process's cwd and would install the hook into the repo under test.
-// A model server is configured (the picker's table comes from it), and no
-// branch sweeps the refcount file any more: a client session keeps none.
+// A model server is configured (the picker's table comes from it).
 func TestRunLaunchPath(t *testing.T) {
 	repo := t.TempDir()
 	if err := exec.Command("git", "-C", repo, "init", "-q").Run(); err != nil {
@@ -1018,15 +985,13 @@ func TestRunLaunchPath(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			// Stub tuiRun, launchCommand, maybeInstallGuard, and
-			// sweepRefcounts to capture the dispatched path, guard
-			// behavior, and that no branch sweeps the refcount file.
+			// Stub tuiRun, launchCommand and maybeInstallGuard to capture
+			// the dispatched path and guard behavior.
 			oldTUI := tuiRun
 			oldLaunch := launchCommand
 			oldGuard := maybeInstallGuard
-			oldSweep := sweepRefcounts
 			var gotPath string
-			var gotTUI, gotLaunch, gotGuard, gotSweep bool
+			var gotTUI, gotLaunch, gotGuard bool
 			tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
 				gotTUI = true
 				gotPath = c.launchPath
@@ -1038,12 +1003,10 @@ func TestRunLaunchPath(t *testing.T) {
 				return nil
 			}
 			maybeInstallGuard = func() { gotGuard = true }
-			sweepRefcounts = func() { gotSweep = true }
 			defer func() {
 				tuiRun = oldTUI
 				launchCommand = oldLaunch
 				maybeInstallGuard = oldGuard
-				sweepRefcounts = oldSweep
 			}()
 
 			cmd := &cobra.Command{}
@@ -1066,30 +1029,7 @@ func TestRunLaunchPath(t *testing.T) {
 			if gotGuard != c.wantGuard {
 				t.Errorf("maybeInstallGuard called = %v, want %v", gotGuard, c.wantGuard)
 			}
-			if gotSweep {
-				t.Error("sweepRefcounts called: a client session keeps no refcount file")
-			}
 		})
-	}
-}
-
-// TestResolveModelCloudOnlyResolves verifies resolveModel returns the one
-// eligible model of a cloud-only config with a nil error, which is the
-// condition runLaunchPath's auto-launch short-circuit tests, so
-// `wt -A claude` with one eligible model launches without a picker.
-func TestResolveModelCloudOnlyResolves(t *testing.T) {
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}}},
-		Models:    []config.Model{{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}}},
-		Agents:    []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
-	}
-
-	m, _, err := resolveModel("claude", cfg, "", "", "")
-	if err != nil {
-		t.Fatalf("resolveModel error = %v, want nil", err)
-	}
-	if m.ID != "claude/opus" {
-		t.Errorf("resolveModel() = %v, want claude/opus", m)
 	}
 }
 
@@ -1145,8 +1085,7 @@ func TestNoWtCommandIsHidden(t *testing.T) {
 
 // A configured agent (a real config.toml entry) on a machine with no
 // registry.toml at all (a session machine) must reach the model picker like
-// any other launch whose model is not resolved, never the bare passthrough
-// launch (which bypasses model routing): the session reads config.toml's
+// any other launch whose model is not resolved: the session reads config.toml's
 // agents and the model server's rows, not the registry (see
 // TestWorktreeWithAgentWithoutModelShowsModelPicker).
 func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
@@ -1157,14 +1096,6 @@ func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 	// and no registry.toml is written at all.
 	pointAtFake(t, newFakeModelServer(t, wireRow("openrouter/a", "launch", 1), wireRow("openrouter/b", "launch", 2)),
 		"\n[[agents]]\nname = \"pi\"\nsupported_providers = [\"openrouter\"]\n")
-
-	var passthroughCalled bool
-	oldLaunchPassthrough := launchPassthrough
-	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config, pp *precomputedProfiles) error {
-		passthroughCalled = true
-		return nil
-	}
-	defer func() { launchPassthrough = oldLaunchPassthrough }()
 
 	var gotAgent string
 	oldTuiRun := tuiRun
@@ -1181,19 +1112,13 @@ func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 	if _, err := runWT(t, "-W", "my-feature", "--new", "-A", "pi"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if passthroughCalled {
-		t.Error("launchPassthrough was called, want pi to be treated as configured (registry-missing must not erase config.toml's agents)")
-	}
 	if gotAgent != "pi" {
 		t.Errorf("tuiRun agent = %q, want pi (configured agent with no resolvable model falls through to the picker)", gotAgent)
 	}
 }
 
 // An unpinned launch (`-W` with no `-A`) must still route to the TUI's
-// agent/command picker, not be misread as an unconfigured-agent passthrough
-// for an empty agent name. Without the `agent != ""` guard on the new
-// branch, cfg.AgentByName("") always fails too, which would otherwise
-// short-circuit straight into agents.BuildPassthroughCmd("", ...).
+// agent/command picker: an empty agent name is never launched directly.
 func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
 	dir := initTestRepo(t)
 	t.Chdir(dir)
@@ -1210,22 +1135,11 @@ func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
 	stdinTTY = func() bool { return true }
 	defer func() { stdinTTY = oldStdinTTY }()
 
-	var passthroughCalled bool
-	oldLaunchPassthrough := launchPassthrough
-	launchPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string, cfg *config.Config, pp *precomputedProfiles) error {
-		passthroughCalled = true
-		return nil
-	}
-	defer func() { launchPassthrough = oldLaunchPassthrough }()
-
 	if _, err := runWT(t, "-W", "my-feature", "--new"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !tuiCalled {
 		t.Error("expected tuiRun to be called for an unpinned -W launch")
-	}
-	if passthroughCalled {
-		t.Error("launchPassthrough must not be called when no agent is pinned")
 	}
 }
 
@@ -1334,8 +1248,6 @@ func TestCwdFlagLaunchesInTheCurrentDirectory(t *testing.T) {
 // newApp loaded and the fail-closed applier. With the zero value the picker
 // shows no profile row and says nothing about why.
 func TestRunLaunchPathHandsTheTUIItsSlotProfiles(t *testing.T) {
-	// runLaunchPath sets the process-wide launchSlotChecks; this restores it.
-	stubSlotChecks(t)
 	var got tui.SlotProfiles
 	oldTuiRun := tuiRun
 	tuiRun = func(yolo, allowReplace bool, _ string, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, _ tui.ModelClient, cfg *config.Config, _ tui.ProfileApplier, slots tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {

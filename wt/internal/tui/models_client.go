@@ -131,7 +131,7 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 		if r.pinned != "" && !pinnedProfile && strings.HasPrefix(r.pinned, profiles.SlotIDPrefix) {
 			// A profile the file holds says why it has no row: hidden by -T/-F,
 			// or another agent's (the registry path's reason, #412).
-			if reason := catalog.SlotPinReason(nil, r.slots, r.agent.Name, r.pinned, r.tags, r.family); reason != "" {
+			if reason := catalog.SlotPinReason(r.slots, r.agent.Name, r.pinned, r.tags, r.family); reason != "" {
 				msg.pinErr = reason
 				return msg
 			}
@@ -199,7 +199,7 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 		}
 		rot := rotation.New()
 		lastID, _ := rot.LastPicked()
-		msg.tbl = renderTable(rows, nil, r.agent.Name, refs, lastID)
+		msg.tbl = renderTable(rows, r.agent.Name, refs, lastID)
 		if r.pinned != "" {
 			msg.cursor = r.pinned
 			return msg
@@ -418,6 +418,10 @@ func (m model) newModelList(tbl modelTable, cursor string) list.Model {
 	ml := list.New(items, delegate, m.width-2, m.height-2)
 	ml.Title = tbl.header
 	styleTableTitle(&ml, m.theme)
+	// As every picker list: no status bar (its "N items" line is room the
+	// fit does not count) and a cursor that wraps at either edge (spec §6).
+	ml.SetShowStatusBar(false)
+	ml.InfiniteScrolling = true
 	if pos < 0 {
 		pos = max(first, 0)
 	}

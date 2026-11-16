@@ -2,13 +2,13 @@
 
 Finds every agent currently eligible for one model and runs a one-shot
 prompt through each, using wt's real launch machinery
-(`agents.BuildLaunchCmd`) — the same construction a real `wt -A <agent> -M
-<id>` launch uses. Reports PASS/FAIL/SKIP per agent with enough detail to
+(`agents.BuildLaunchCmdGateway`, against the model server's gateway) — the
+same construction a real `wt -A <agent> -M <id>` launch uses. Reports PASS/FAIL/SKIP per agent with enough detail to
 diagnose a failure without re-running anything by hand.
 
 This is a live debugging tool over whichever model you point it at right
 now, distinct from `make test-agents` (`agents-smoke.sh`'s hand-curated
-regression matrix across a fixed model list and both routing modes).
+regression matrix across a fixed model list).
 
 ```bash
 wt smoke                        # list eligible models, prompt for a pick (needs a TTY)
@@ -67,20 +67,19 @@ launch after a start: the model's provider is in the agent's
 `supported_providers` and the row is a launch row (cloud, or a local model
 the live probe reports running and loaded) or a start row (an idle local
 model wt can start, or one omlx is still loading). Rows that cannot run —
-no lifecycle backend, or an unmapped cloud model whose route goes through
-LiteLLM — are excluded, and a local model that is not on disk has no row;
+no lifecycle backend, or an unmapped cloud model with no LiteLLM route — are
+excluded, and a local model that is not on disk has no row;
 passing either by id names the
 reason (not on disk, no lifecycle backend) as `wt start` does, while other ineligible ids (for
 example a model no agent supports) get a generic "cannot be smoke-tested"
 message
-(`smoke.Candidates` walks the same `catalog` rows a real launch consults).
+(`smoke.CandidatesWire` walks the same catalog rows a real launch consults).
 A discovered model (on disk, no registry entry) is eligible like any other:
-wt routes it under its discovered id when it starts it, so agents that go
-through LiteLLM can run it. A target that is already running — whoever
-started it — has its route written first if it is missing
-(`wt: LiteLLM route for <id> updated`).
-An idle pick, or one omlx is still loading, is started first through the
-shared start driver, honouring
+the model server routes it under its discovered id when it starts it. A
+target that is already running but that the gateway is known not to list is
+started (and so routed) on the server first.
+An idle pick, or one omlx is still loading, is started first by a start job
+on the model server, honouring
 the root `--replace` flag when another model occupies an mtplx
 (one model per process) slot, or an omlx load would unload another model.
 Models of other providers loaded beside it are asked about on a TTY
@@ -89,17 +88,16 @@ terminal (scripts, CI), `--json` or not, the start keeps them and prints
 one warning line to stderr (only stdin counts: `wt smoke <id> --json | jq`
 run from a terminal still asks on the terminal) — see [Other providers' models](wt-start-stop.md#other-providers-models-412).
 
-## With a model server configured
+## On the model server
 
-With a `[model-server]` endpoint (or `WT_MODEL_URL`), `wt smoke` is a client
-session: it reads `config.toml` only, never `registry.toml`, and everything
-about models goes through the model server (`wt-model`; see
-[wt-model-server.md](wt-model-server.md)). The report, the PASS/FAIL/SKIP words,
-the sentinel rules, `--json` and the exit codes are the same. What differs:
+`wt smoke` is a client session of the model server (a `[model-server]`
+endpoint, or `WT_MODEL_URL`; with none configured it refuses, exit 1): it
+reads `config.toml` only, never `registry.toml`, and everything about models
+goes through the model server (`wt-model`; see
+[wt-model-server.md](wt-model-server.md)). In detail:
 
 - The model and its eligible agents come from the server's catalog
-  (`smoke.CandidatesWire`: the same rules as the registry path, over the
-  server's rows). A pinned id the server does not know prints the server's own
+  (`smoke.CandidatesWire`, over the server's rows). A pinned id the server does not know prints the server's own
   text; one it knows but that cannot be tested prints its block reason, or
   `model "<id>" cannot be smoke-tested right now (...)` when no agent can use
   it. Both are exit 1.
@@ -175,7 +173,7 @@ directory after it exits (a session-save hook, for example). A row is not over
 until the agent's process group is empty: `wt smoke` waits up to 5 seconds for
 what the agent left running, then kills what remains. That applies with
 `--cwd` too. It then removes the row's directory, and sweeps them all once
-more at the end of the run (after the stop picker) for a process that left the
+more at the end of the run for a process that left the
 group; anything written later than that is left in the system temp directory,
 under a `wt-smoke-*` name.
 
@@ -218,21 +216,14 @@ or if no model replied at all.
 
 ## Exit flow
 
-(With a model server configured the exit flow is the session's end, with no
-stop picker: see "With a model server configured" above.)
-
-Once a model has been resolved, `wt smoke`, on a TTY, shows the stop picker
-so models it started (or any running model nothing else uses) can be
-stopped. (wt smoke never records a session refcount entry — its agents run
-one-shot — so there is none to release first.) This runs after PASS or FAIL
-once the start step (if any) succeeded, but not after a failed or cancelled
-start, an invalid or aborted selection, and is skipped entirely for `--json`
-or a non-TTY stdin. A FAIL still exits 1 regardless. A failed or Ctrl+C-ed
-start returns its error directly without the stop picker. Ctrl+C (or SIGTERM)
+The exit flow is the client session's end, with no stop picker (see "On the
+model server" above): the model server stops a model smoke registered after
+its idle grace unless another client session uses it. A FAIL exits 1. A
+failed or Ctrl+C-ed start returns its error directly. Ctrl+C (or SIGTERM)
 while an agent is running kills that agent and everything it spawned, fails
 its row as `interrupted`, removes the row's directory, runs no further agent,
-prints the report for the rows that ran and exits 1 without the stop picker (a
-started model stays up; use `wt stop`). A second Ctrl+C ends wt at once.
+prints the report for the rows that ran and exits 1. A second Ctrl+C ends wt
+at once.
 
 ## Progress (stderr)
 

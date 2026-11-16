@@ -51,7 +51,7 @@ type statsFilter struct {
 // report's instant (from asOf, the local clock), the function that collects
 // the usage report, and the host registry's load error for the --family note
 // (nil when none applies; read after collect). It is the command's per-call
-// seam: statsCmd passes serverSpend.
+// seam: statsCmd passes serverSpend, the table tests a stub source.
 type statsSpend func(cmd *cobra.Command, a *app, window time.Duration, asOf time.Time, f statsFilter) (time.Time, func() usageReport, func() error)
 
 // serverSpend is the spend source of `wt stats`: the model server, whose
@@ -154,8 +154,8 @@ func statsCmdWith(a *app, spend statsSpend) *cobra.Command {
 				}
 				fmt.Fprintln(out)
 
-				// After the survey table: collectUsage runs the spend query (psql,
-				// up to a few seconds against a down or hanging database), and
+				// After the survey table: collect asks the model server for spend
+				// (up to a few seconds against a slow server or database), and
 				// the survey table does not need it — printing first keeps the
 				// first table off that critical path. (--json waits anyway: one
 				// document prints only when complete.)

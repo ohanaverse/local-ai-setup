@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/candidates"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -334,24 +333,8 @@ type candidateJSON struct {
 	Flags              []string `json:"flags"`
 }
 
-func toCandidateJSON(c candidates.Candidate) candidateJSON {
-	j := candidateJSON{
-		ID: c.ID, Provider: c.Provider, Location: c.Location, Tier: c.Tier, Confidence: c.Confidence,
-		Rated: c.Rated, OpenWeights: c.OpenWeights, Context: c.Context, OutputPerMillion: c.OutputPerMillion,
-		Subscription: c.Subscription, SubscriptionPeriod: c.SubscriptionPeriod, Flags: c.Flags,
-	}
-	if j.Flags == nil {
-		j.Flags = []string{}
-	}
-	if c.HasScore {
-		s := c.Score
-		j.Score = &s
-	}
-	return j
-}
-
 // wireCandidateJSON is one of the model server's candidates in the same
-// shape as toCandidateJSON's: the document the wt-manage-slot-profiles skill
+// shape the registry path's ranking used to print: the document the wt-manage-slot-profiles skill
 // reads does not depend on where the ranking ran.
 func wireCandidateJSON(c modelapi.Candidate) candidateJSON {
 	j := candidateJSON{

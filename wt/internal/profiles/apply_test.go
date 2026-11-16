@@ -24,7 +24,7 @@ func TestApplyEnvAndArgsEnvWinsOnCollision(t *testing.T) {
 }
 
 // TestApplyEnvAndArgsExtraArgsAppended verifies ExtraArgs land at the end
-// of cmd.Args, after whatever BuildLaunchCmd already assembled (driver
+// of cmd.Args, after whatever BuildLaunchCmdGateway already assembled (driver
 // args, user passthrough, resume flag) — matching cmd/wt's
 // applyResolvedProfile ordering (env/args before config_content/wrapper).
 func TestApplyEnvAndArgsExtraArgsAppended(t *testing.T) {

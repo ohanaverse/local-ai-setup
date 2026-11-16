@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,8 +297,8 @@ func TestResolveSecretExecMemoizedConcurrent(t *testing.T) {
 
 // TestResolveSecretExecMemoized pins that an exec: ref only actually runs
 // the command once per process, no matter how many times it is resolved —
-// ResolveRoute and pi's models.json sync both resolve the same ref on every
-// pi launch, and the underlying command here is a Vault-backed credential
+// the probes and the LiteLLM route sync can resolve the same ref in one run,
+// and the underlying command here is a Vault-backed credential
 // helper that may trigger a slow network call or an interactive OIDC login
 // prompt. A non-memoized implementation would pay that cost twice per
 // launch.
@@ -1013,204 +1012,6 @@ tags = ["code", "design"]
 	}
 }
 
-// TestResolveRouteDirectUsesProviderBaseURL is the regression for the
-// original bug this feature exists to fix: before this change, every
-// non-ollama provider silently dialed localhost:11434 in direct mode.
-func TestResolveRouteDirectUsesProviderBaseURL(t *testing.T) {
-	cfg := &Config{
-		Providers: []Provider{{
-			ID:   "openrouter",
-			Auth: AuthConfig{Type: "secret_ref", SecretRef: "sk-or-v1-test", BaseURL: "https://openrouter.ai/api/v1"},
-		}},
-	}
-	m := Model{ID: "openrouter/z-ai/glm-4.6", ModelName: "z-ai/glm-4.6", ProviderID: "openrouter"}
-
-	route, err := cfg.ResolveRoute(m, []Protocol{ProtocolOpenAIChat})
-	if err != nil {
-		t.Fatalf("ResolveRoute: %v", err)
-	}
-	if route.BaseOrigin != "https://openrouter.ai/api" {
-		t.Errorf("BaseOrigin = %q, want https://openrouter.ai/api", route.BaseOrigin)
-	}
-	if route.APIKey != "sk-or-v1-test" {
-		t.Errorf("APIKey = %q", route.APIKey)
-	}
-	if route.ModelRef != "z-ai/glm-4.6" {
-		t.Errorf("ModelRef = %q, want bare ModelName in direct mode", route.ModelRef)
-	}
-}
-
-// TestResolveRouteDirectDialsMtplxWhereWtServesIt verifies a direct route
-// reads the provider's address as wt's own probes do (#348): with an mtplx
-// base_url that names no port the agent is pointed at the port `wt start`
-// served the model on. Pointed at the url as written it dials port 80 and
-// the launch of a model wt has just started fails to connect.
-func TestResolveRouteDirectDialsMtplxWhereWtServesIt(t *testing.T) {
-	cfg := &Config{Providers: []Provider{{
-		ID: "mtplx", Protocols: []Protocol{ProtocolOpenAIChat},
-		Auth: AuthConfig{Type: "none", BaseURL: "http://127.0.0.1/v1"},
-	}}}
-	route, err := cfg.ResolveRoute(Model{ID: "mtplx/Y--Q35", ModelName: "Y/Q35", ProviderID: "mtplx"}, []Protocol{ProtocolOpenAIChat})
-	if err != nil {
-		t.Fatalf("ResolveRoute: %v", err)
-	}
-	if route.BaseOrigin != "http://127.0.0.1:8003" || route.Litellm {
-		t.Errorf("route = %+v, want a direct route to http://127.0.0.1:8003", route)
-	}
-}
-
-// TestResolveRouteDirectExecSecretErrorAborts ensures that a failing exec:
-// secret_ref aborts route resolution with that error, instead of silently
-// treating it as an empty API key and letting the launch proceed to a
-// confusing downstream 401 from the provider.
-func TestResolveRouteDirectExecSecretErrorAborts(t *testing.T) {
-	scriptDir := t.TempDir()
-	failScript := filepath.Join(scriptDir, "fail.sh")
-	if err := os.WriteFile(failScript, []byte("#!/bin/sh\necho 'no key found' >&2\nexit 2\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cfg := &Config{
-		Providers: []Provider{{
-			ID:   "nyt-litellm",
-			Auth: AuthConfig{Type: "api_key", BaseURL: "https://llm-gateway.nyt.net", SecretRef: "exec:" + failScript},
-		}},
-	}
-	m := Model{ID: "nyt-litellm/claude-sonnet-4-6", ModelName: "claude-sonnet-4-6", ProviderID: "nyt-litellm"}
-
-	_, err := cfg.ResolveRoute(m, []Protocol{ProtocolOpenAIChat})
-	if err == nil {
-		t.Fatal("ResolveRoute: want error from failing exec: secret_ref, got nil")
-	}
-	if !strings.Contains(err.Error(), "no key found") {
-		t.Errorf("ResolveRoute error = %q, want it to include the helper's stderr (\"no key found\")", err.Error())
-	}
-}
-
-// TestResolveRouteLitellmMissingAPIKeyErrors ensures that litellm routing
-// with a URL but no API key fails fast at ResolveRoute, instead of launching
-// the agent with an empty gateway token and surfacing an opaque runtime 401
-// from the proxy.
-func TestResolveRouteLitellmMissingAPIKeyErrors(t *testing.T) {
-	cfg := &Config{
-		litellm:   LitellmState{Enabled: true, URL: "http://localhost:4000"}, // no APIKey
-		Providers: []Provider{{ID: "ollama", Auth: AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-	}
-	m := Model{ID: "ollama/x", ModelName: "x", ProviderID: "ollama"}
-
-	_, err := cfg.ResolveRoute(m, []Protocol{ProtocolAnthropic})
-	if err == nil {
-		t.Fatal("expected an error for litellm routing with a URL but no API key")
-	}
-	if !errors.Is(err, ErrLitellmUnconfigured) {
-		t.Errorf("err = %v, want it to wrap ErrLitellmUnconfigured", err)
-	}
-}
-
-// TestResolveRouteMissingBaseURLErrors ensures a provider with no
-// base_url fails at launch with an actionable message, instead of the
-// pre-fix behavior of silently misrouting to ollama's port.
-func TestResolveRouteMissingBaseURLErrors(t *testing.T) {
-	cfg := &Config{
-		Providers: []Provider{{ID: "omlx", Auth: AuthConfig{Type: "none"}}},
-	}
-	m := Model{ID: "omlx/some-model", ModelName: "some-model", ProviderID: "omlx"}
-
-	_, err := cfg.ResolveRoute(m, []Protocol{ProtocolOpenAIChat})
-	if err == nil {
-		t.Fatal("expected an error for a provider with no base_url in direct mode")
-	}
-	if errors.Is(err, ErrLitellmUnconfigured) {
-		t.Errorf("err = %v, a missing direct auth.base_url must not wrap ErrLitellmUnconfigured", err)
-	}
-}
-
-// TestClaudeForcesLitellmForOpenRouter: claude only speaks anthropic;
-// openrouter only serves openai-chat. The empty intersection must force
-// litellm even when the user has it switched off, rather than launching
-// claude against an endpoint it cannot speak to.
-func TestClaudeForcesLitellmForOpenRouter(t *testing.T) {
-	cfg := &Config{
-		Providers: []Provider{{
-			ID:   "openrouter",
-			Auth: AuthConfig{Type: "secret_ref", SecretRef: "k", BaseURL: "https://openrouter.ai/api/v1"},
-		}},
-	}
-	m := Model{ID: "openrouter/z-ai/glm-4.6", ModelName: "z-ai/glm-4.6", ProviderID: "openrouter"}
-
-	_, err := cfg.ResolveRoute(m, []Protocol{ProtocolAnthropic})
-	if err == nil {
-		// forced litellm requires a configured gateway URL
-		t.Fatalf("ResolveRoute: expected error when forced litellm has no URL, got nil")
-	}
-	if !errors.Is(err, ErrLitellmUnconfigured) {
-		t.Errorf("err = %v, want it to wrap ErrLitellmUnconfigured", err)
-	}
-
-	cfg.litellm = LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	route, err := cfg.ResolveRoute(m, []Protocol{ProtocolAnthropic})
-	if err != nil {
-		t.Fatalf("ResolveRoute: %v", err)
-	}
-	if !route.Litellm || !route.Forced {
-		t.Errorf("route = %+v, want Litellm=true Forced=true", route)
-	}
-}
-
-// TestCodexForcesLitellmWhenProviderLacksResponses: codex speaks only
-// openai-responses, and no local provider serves it — codex has no
-// working direct path at all, and must always be routed through the
-// proxy regardless of the on/off setting.
-func TestCodexForcesLitellmWhenProviderLacksResponses(t *testing.T) {
-	cfg := &Config{
-		litellm: LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"},
-		Providers: []Provider{{
-			ID:   "ollama",
-			Auth: AuthConfig{Type: "none", BaseURL: "http://localhost:11434"},
-		}},
-	}
-	m := Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-
-	route, err := cfg.ResolveRoute(m, []Protocol{ProtocolOpenAIResponses})
-	if err != nil {
-		t.Fatalf("ResolveRoute: %v", err)
-	}
-	if !route.Forced {
-		t.Errorf("route = %+v, want Forced=true", route)
-	}
-}
-
-// TestDirectRouteWhenProtocolsOverlap: when the intersection is non-empty
-// and litellm is off, the pairing must dial direct — forced-litellm must
-// not over-trigger for pairings that actually work (e.g. copilot+ollama).
-func TestDirectRouteWhenProtocolsOverlap(t *testing.T) {
-	cfg := &Config{
-		Providers: []Provider{{
-			ID:   "ollama",
-			Auth: AuthConfig{Type: "none", BaseURL: "http://localhost:11434"},
-		}},
-	}
-	m := Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-
-	route, err := cfg.ResolveRoute(m, []Protocol{ProtocolOpenAIChat})
-	if err != nil {
-		t.Fatalf("ResolveRoute: %v", err)
-	}
-	if route.Litellm || route.Forced {
-		t.Errorf("route = %+v, want a direct, non-forced route", route)
-	}
-}
-
-// TestLitellmDirectByDefault asserts that a zero-value [litellm] state is
-// treated as direct (no proxy). This is the safe default: until the user
-// explicitly runs `wt litellm on`, wt must keep routing agents to
-// their provider endpoints directly.
-func TestLitellmDirectByDefault(t *testing.T) {
-	cfg := &Config{}
-	if cfg.IsLitellm() {
-		t.Fatalf("expected default routing mode not to be litellm")
-	}
-}
-
 // TestInCatalogNativeAlways asserts that native models are always in the
 // catalog, with nothing but the row itself. Native providers cannot route
 // through LiteLLM, so hiding them would make the agent unusable.
@@ -1261,25 +1062,6 @@ func TestMigrateDropsLegacyGatewayBlock(t *testing.T) {
 	written, _ := os.ReadFile(Path())
 	if strings.Contains(string(written), "[gateway]") {
 		t.Error("Save must not re-emit a deleted [gateway] block")
-	}
-}
-
-// TestLitellmEnabledMissingURLFailsAtLaunchNotValidate: routing that is on
-// with no URL must not fail Validate(), which runs on every wt invocation,
-// `wt litellm set` (the command that repairs it) included. It must only
-// surface when a route is actually resolved at launch.
-func TestLitellmEnabledMissingURLFailsAtLaunchNotValidate(t *testing.T) {
-	cfg := &Config{
-		DefaultTag: "code",
-		litellm:    LitellmState{Enabled: true}, // no URL
-		Providers:  []Provider{{ID: "ollama", Auth: AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("Validate() must not fail on an incomplete [litellm] table: %v", err)
-	}
-	_, err := cfg.ResolveRoute(Model{ID: "ollama/x", ProviderID: "ollama"}, []Protocol{ProtocolOpenAIChat})
-	if err == nil {
-		t.Error("ResolveRoute must error when litellm is required but unconfigured")
 	}
 }
 

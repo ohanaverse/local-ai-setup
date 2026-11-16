@@ -20,8 +20,12 @@ wt stop --all                    # stop every running local model, then the omlx
 wt job <id>                      # show a model server job (a start or stop); --cancel cancels it
 ```
 
-With a model server configured, `wt start`, `wt stop <model>` and `wt job` go
-through it (see "Start and stop on the model server" below).
+`wt start`, `wt stop <model>`, bare `wt stop` and `wt job` go through the
+model server (see "Start and stop on the model server" below; with none
+configured they refuse, exit 1). `wt stop <provider>` and `--all` act on
+this machine's registry. Where a section below describes the registry-side
+behavior of `wt start` or of a model-id stop, that is now what the model
+server's start and stop jobs do on its host.
 
 ## `wt start [model]`
 
@@ -284,29 +288,19 @@ through it (see "Start and stop on the model server" below).
   service up, and the error names it. It takes no argument. A running
   mlx_lm_server pairing is not stopped, because wt has no engine for one;
   `llmbench provider stop mlx_lm_server` stops it.
-- No argument: the stop picker (needs a TTY). Unlike the exit-flow pickers
-  it also lists models in use by other wt sessions, marked with their
-  session count. Type the numbers to stop, separated by spaces (`1 3`), or
-  `a` / `all` for every listed model, and press Enter; Enter on an empty
-  line stops nothing. There is no separate confirming step. A line with
-  anything else on it stops nothing and the prompt asks again. With nothing
-  to list it prints `wt: no running local models` and exits 0 — unless a
-  provider's probe gave no usable answer, when it fails with
-  `cannot tell what is running on <provider>` (exit 1). For mtplx and omlx
-  the message names the commands that stop a server wt cannot read
-  (`"wt stop mtplx" or "wt stop --all" stops mtplx`); for ollama there is
-  none, and it ends `nothing was stopped`. When the picker does have models
-  to list, it prints one line after it for a provider it could not read
-  (`wt: could not tell what is running on mtplx — ...`): the list is then
-  not everything that may be running. The picker lists running models, so
-  it has no row for an mtplx that is still loading and stops none; wt names
-  it instead, in place of `no running local models` or after the picker:
-  `wt: mtplx is still loading (pid N) — "wt stop mtplx" or "wt stop --all" stops it`.
-  The other two things a pidfile can name are reported as `wt stop mtplx`
-  reports them: the `left alone` note, and exit 1 with
-  `cannot tell whether mtplx is still loading`.
+- No argument: a numbered picker over the model server's running local
+  models (needs a TTY), each marked with the client sessions using it (see
+  "Start and stop on the model server" below). Type the numbers to stop,
+  separated by spaces (`1 3`), or `a` / `all` for every listed model, and
+  press Enter; Enter on an empty line stops nothing.
 
 ### In-use confirmation
+
+The host's `wt stop <provider>` and `--all` count no sessions since the
+local session store was removed (Task 19): a client session's use of a model
+is the model server's to know, and a model-id stop on the server asks about
+the client sessions using it. What follows is the question as the host asks
+it when it does count sessions.
 
 If live wt sessions use the target, wt asks
 `... in use by N live wt session(s) (models); stop anyway? [y/N]` on the

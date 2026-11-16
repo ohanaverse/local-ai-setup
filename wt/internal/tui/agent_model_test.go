@@ -2,7 +2,6 @@ package tui
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,10 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -58,8 +55,8 @@ func singleModelList(m config.Model) list.Model {
 // for the given agent+tag, with the cursor on the globally rotated model.
 // Tests that exercise rotation, the list, or the View use this helper
 // instead of constructing model literals. It routes through the production
-// list-build path (buildTable, the same builder
-// enterModelPhase uses) so tests exercise the compact, divider-free
+// list-build path (buildTable, the table renderer
+// the catalog load uses too) so tests exercise the compact, divider-free
 // item layout the picker actually renders. The usage counts come through
 // the newUsageStore seam so callers that stub the seam (or isolate
 // XDG_CONFIG_HOME via tempStateDir) never read the host's real usage.jsonl.
@@ -82,7 +79,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	// Mirror production enterModelPhase: read the last-launched ID from
 	// rotation state so tests exercise the same marker wiring.
 	lastID, _ := rotation.New().Last()
-	items := buildTable(tableInput{models: models, usage: newUsageStore()}, newRefcountStore(), lastID).items
+	items := buildTable(tableInput{models: models, usage: newUsageStore()}, lastID).items
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
@@ -129,7 +126,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	// Rotation positions the cursor only when the last-launched model is a
 	// registry model; otherwise the first launchable row stays selected.
 	if lastID != "" && config.IndexModelByID(cfg.Models, lastID) >= 0 {
-		if next, ok := rotation.New().NextFromEligible(launchable, cfg); ok {
+		if next, ok := rotation.New().NextFromOrder(launchable, cfg.Models); ok {
 			if idx, ok := idIndex[next.ID]; ok {
 				pos = idx
 			}
@@ -143,8 +140,9 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 // selectedEntryMsg (which builds m.agentList and transitions to
 // phaseAgent), select the agent row matching `agentName`, then fire
 // Enter on the picker. The returned model is whatever phaseAgent
-// Enter produces — phaseModel on the happy path, or phaseAgent
-// with m.status set if the catalog is empty for that agent+tag.
+// Enter produces once the model server's catalog (catalogFor m.cfg, when
+// the test attached no server) has loaded — phaseModel on the happy path, or
+// phaseAgent with m.status set if the catalog is empty for that agent+tag.
 // Tests that used to drive only selectedEntryMsg and assert
 // phaseModel state now call this helper to land at the same
 // post-transition state the production code reaches when the
@@ -152,14 +150,18 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 func drivePhaseAgentEnter(t *testing.T, m model, agentName string) model {
 	t.Helper()
 	requireBinary(t, "claude")
+	if m.client == nil {
+		m = withServer(t, m)
+	}
 	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
 	m = got.(model)
 	if m.phase != phaseAgent {
 		t.Fatalf("after selectedEntryMsg: phase = %v, want phaseAgent", m.phase)
 	}
 	selectAgentRow(&m, agentName)
-	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	return got.(model)
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ := settleCatalog(t, got.(model), cmd)
+	return next
 }
 
 // TestSelectedEntryMsgEmptyListStaysOnList asserts that when the agent+tag
@@ -225,20 +227,20 @@ func TestPinnedAgentEmptyListStatusUsesFirstActiveTag(t *testing.T) {
 		width:        80,
 		height:       24,
 	}
+	m = withServer(t, m)
 	got, _ := m.Update(rowsLoadedMsg{report: pickerFixture(), repoRoot: "/repo"})
 	m = got.(model)
-	got, _ = m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: "/tmp/feature"}})
-	gotModel := got.(model)
+	got, cmd := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: "/tmp/feature"}})
+	gotModel, _ := settleCatalog(t, got.(model), cmd)
 	if !strings.Contains(gotModel.status, `tag "design"`) {
 		t.Fatalf("status = %q, want first active tag design", gotModel.status)
 	}
 }
 
 // TestPinnedAgentErrorRenderedOnList asserts that a pinned --agent whose
-// model catalog is empty surfaces its error on the worktree list instead of
-// swallowing it. PR 2 moved model resolution into the pinned selectedEntryMsg
-// path; without the ready-phaseList status render, `wt --agent <agent>` with
-// an empty catalog failed with zero on-screen feedback.
+// model catalog is empty surfaces its error on screen (the agent picker the
+// catalog load routes back to) instead of swallowing it: `wt --agent <agent>`
+// with an empty catalog once failed with zero on-screen feedback.
 func TestPinnedAgentErrorRenderedOnList(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -249,12 +251,13 @@ func TestPinnedAgentErrorRenderedOnList(t *testing.T) {
 	m := model{cfg: cfg, initialAgent: "claude", width: 80, height: 24}
 	// Load the worktree list first so m.ready is true; the pinned-path
 	// error then must render on the ready list, not via the loading branch.
+	m = withServer(t, m)
 	got, _ := m.Update(rowsLoadedMsg{report: pickerFixture(), repoRoot: "/repo"})
 	m = got.(model)
-	got, _ = m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: "/tmp/feature"}})
-	gotModel := got.(model)
-	if gotModel.phase != phaseList {
-		t.Fatalf("phase = %v, want phaseList (pinned agent error stays on list)", gotModel.phase)
+	got, cmd := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: "/tmp/feature"}})
+	gotModel, _ := settleCatalog(t, got.(model), cmd)
+	if gotModel.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent (an empty catalog routes back to the agent picker)", gotModel.phase)
 	}
 	if gotModel.status == "" {
 		t.Fatal("status = empty, want a config error")
@@ -377,9 +380,12 @@ func TestYoloFlagPassedToLaunch(t *testing.T) {
 // TestUnknownAgentLaunchShowsError asserts that pressing Enter with an
 // unregistered agent surfaces a readable error instead of launching.
 func TestUnknownAgentLaunchShowsError(t *testing.T) {
-	m := model{cfg: testConfig(), phase: phaseModel, agent: "not-an-agent", tag: "code",
-		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m := remotePickerFor(t, "not-an-agent", wireRow("openrouter/gemma4", "gemma4", nil))
+	got, prep := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if prep == nil {
+		t.Fatal("Enter started no launch prep")
+	}
+	got, cmd := got.(model).Update(prep())
 	gotModel := got.(model)
 	if cmd != nil {
 		t.Errorf("expected nil cmd for unknown agent, got %v", cmd)
@@ -418,7 +424,7 @@ func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	dir := tempStateDir(t)
 	// State file: rotation.state holding a single model-id-per-line
-	// ("ollama/gemma4:9b\n"). Last() reads that line and NextFromEligible
+	// ("ollama/gemma4:9b\n"). Last() reads that line and NextFromOrder
 	// returns the next model (gemma4:14b). The cursor lands on gemma4:14b.
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
@@ -538,29 +544,6 @@ func TestPhaseModelUpDownMovesCursor(t *testing.T) {
 	}
 }
 
-// TestPhaseModelEnterStaysInApp asserts Enter in the picker does
-// NOT get consumed by bubble/list (which would otherwise launch
-// the highlighted item twice). The picker intercepts Enter for
-// ollama check + launch; the list is not allowed to handle it.
-func TestPhaseModelEnterStaysInApp(t *testing.T) {
-	// Isolate rotation state so the host's real rotation file can't
-	// shift the cursor and make this test order-dependent.
-	tempStateDir(t)
-	m := phaseModelWithList(t, testConfig(), "claude", "code")
-	// Enter runs the ollama check on the highlighted model; the daemon lists
-	// nothing, so the picker's own handler answers with the "not available"
-	// warning and no launch follows.
-	stubOllamaList(t)
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gm, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update(Enter) returned %T, want model", got)
-	}
-	if gm.phase != phaseOllamaWarn || cmd != nil {
-		t.Errorf("after Enter: phase = %d, command = %v; want the ollama warning (%d) and no command", gm.phase, cmd != nil, phaseOllamaWarn)
-	}
-}
-
 // TestNoRKeyInModelPhase asserts pressing 'r' in phaseModel is a
 // no-op. Rotation now advances via launchAndRecord on a committed
 // launch (callers go through launchAndRecord, not on Enter or any
@@ -616,6 +599,7 @@ func TestSelectedEntryNoLastStartsAtZero(t *testing.T) {
 func TestSelectedEntryPositionsAfterLast(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:14b")
+	stubRunning(t, "ollama/gemma4:9b", "ollama/gemma4:14b", "ollama/gemma4:design")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
@@ -653,7 +637,7 @@ func TestSelectedEntryLastMissingFallsBackToZero(t *testing.T) {
 // TestSelectedEntryLastDiscoveredIDFallsBackToFirstRow asserts a
 // last-launched id that belongs to a discovered (non-registry) model leaves
 // the cursor on the first launchable row. Such ids are never in cfg.Models, so
-// without the registry guard NextFromEligible would jump to the registry-first
+// without the registry guard NextFromOrder would jump to the registry-first
 // model (gemma4:9b) instead.
 func TestSelectedEntryLastDiscoveredIDFallsBackToFirstRow(t *testing.T) {
 	dir := tempStateDir(t)
@@ -680,6 +664,7 @@ func TestSelectedEntryLastDiscoveredIDFallsBackToFirstRow(t *testing.T) {
 func TestSelectedEntryLastLastInListWrapsToZero(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:14b")
+	stubRunning(t, "ollama/gemma4:9b", "ollama/gemma4:14b", "ollama/gemma4:design")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
@@ -703,258 +688,6 @@ func TestSelectedEntryLastLastInListWrapsToZero(t *testing.T) {
 // TestSelectedEntryPositionsAfterLast, and
 // TestNextEntryAfterLaunchAdvancesCursor.
 
-// TestEnterInModelPhaseDoesNotRecordBeforeLaunch asserts that pressing Enter
-// alone does NOT write rotation state. Recording must happen only when the
-// launch actually commits (launchAndRecord), so a launch that never runs —
-// here the ollama availability warning fires, since the stubbed daemon lists
-// no model — must not advance the rotation.
-// This is the regression guard for the "rotation advances on cancelled
-// launches" bug: without it, a user who cancels the ollama warning (or hits
-// an ollama-check error) would silently skip a model
-// on the next picker entry despite never launching anything.
-func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
-	dir := tempStateDir(t)
-	m := phaseModelWithList(t, testConfig(), "claude", "code")
-
-	// Pin the cursor to the top row (with no last-launched seed the helper
-	// lands on the registry-first model, which the table may sort lower).
-	m.models.Select(0)
-	if m.models.Index() != 0 {
-		t.Fatalf("precondition: cursor = %d, want 0", m.models.Index())
-	}
-
-	stubOllamaList(t)
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if phase := got.(model).phase; phase != phaseOllamaWarn {
-		t.Fatalf("precondition: phase = %d, want the ollama warning", phase)
-	}
-
-	// The launch did not commit (the ollama warning gates it), so no
-	// rotation state must have been written.
-	if _, err := os.Stat(filepath.Join(dir, "rotation.state")); err == nil {
-		t.Errorf("rotation state written on Enter without a committed launch")
-	} else if !os.IsNotExist(err) {
-		t.Fatalf("stat rotation state: %v", err)
-	}
-}
-
-// TestLaunchAndRecordWritesLast asserts that launchAndRecord —
-// the single commit point reached only after the ollama check is
-// satisfied — writes the launched model's ID
-// via rotation.RecordFor to the global rotation state file. This is
-// the positive counterpart to
-// TestEnterInModelPhaseDoesNotRecordBeforeLaunch: the rotation
-// advances exactly when a launch commits, no sooner. It also asserts the
-// usage store gets an event tagged with the launching agent, so per-pair
-// counts work for any agent-model pair, and that a different agent's count
-// for the same model stays 0 (no cross-agent leakage).
-func TestLaunchAndRecordWritesLast(t *testing.T) {
-	dir := tempStateDir(t)
-	m := phaseModelWithList(t, testConfig(), "claude", "code")
-	// First model row sits at index 0.
-	first, ok := m.models.Items()[0].(*modelItem)
-	if !ok {
-		t.Fatalf("items[0] is %T, want *modelItem", m.models.Items()[0])
-	}
-	// launchAndRecord returns the command that records the model captured
-	// in m.launchModel and runs the agent (here `true`); the recording is
-	// what we verify.
-	keepPendingPostExit(t)
-	m.launchModel = first.model
-	_, run := m.launchAndRecord(exec.Command("true"))
-	run()
-
-	data, err := os.ReadFile(filepath.Join(dir, "rotation.state"))
-	if err != nil {
-		t.Fatalf("read state after launchAndRecord: %v", err)
-	}
-	if got := strings.TrimSpace(string(data)); got != first.model.ID {
-		t.Errorf("state file = %q, want %q (launched model)", got, first.model.ID)
-	}
-
-	got := refcount.NewStoreAt(dir).Counts([]string{first.model.ID})
-	if got[first.model.ID] != 1 {
-		t.Fatalf("refcount Counts = %d, want 1", got[first.model.ID])
-	}
-	if u := usage.NewStoreAt(dir).CountsForAgent("claude", []string{first.model.ID})[first.model.ID]; u.ThirtyDay != 1 {
-		t.Fatalf("usage claude pair 30d = %d, want 1", u.ThirtyDay)
-	}
-	if u := usage.NewStoreAt(dir).CountsForAgent("codex", []string{first.model.ID})[first.model.ID]; u.ThirtyDay != 0 {
-		t.Fatalf("usage codex pair 30d = %d, want 0", u.ThirtyDay)
-	}
-}
-
-// TestLaunchAndRecordWritesRefcount asserts that launchAndRecord also
-// records a live-session refcount entry (this test process's pid + the
-// launched model), so the picker's "in use" column can reflect a
-// concurrent wt session. This is the TUI-side counterpart to
-// TestLaunchAndRecordWritesLast, verifying the second state write at the
-// same commit point.
-func TestLaunchAndRecordWritesRefcount(t *testing.T) {
-	dir := tempStateDir(t)
-	m := phaseModelWithList(t, testConfig(), "claude", "code")
-	first, ok := m.models.Items()[0].(*modelItem)
-	if !ok {
-		t.Fatalf("items[0] is %T, want *modelItem", m.models.Items()[0])
-	}
-	keepPendingPostExit(t)
-	m.launchModel = first.model
-	_, run := m.launchAndRecord(exec.Command("true"))
-	run()
-
-	got := refcount.NewStoreAt(dir).Counts([]string{first.model.ID})
-	if got[first.model.ID] != 1 {
-		t.Fatalf("refcount Counts = %d, want 1", got[first.model.ID])
-	}
-}
-
-// TestNextEntryAfterLaunchAdvancesCursor asserts that the cursor after a
-// committed launch lands on the model AFTER the just-launched one. This is
-// the core promise of rotation-by-launch: every launch advances the
-// rotation. The launch is committed via launchAndRecord (the real recording
-// path) rather than bare Enter, so the test exercises the contract without
-// depending on a real agent binary or ollama being available. PR 2 added a
-// phaseAgent step before phaseModel, so each picker entry drives both
-// transitions (worktree pick → phaseAgent Enter) to reach the rotation
-// snapshot it asserts on.
-func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
-	dir := tempStateDir(t)
-	// Seed: last-launched is gemma4:9b. Picker entry 1 will land on
-	// gemma4:14b at index 1.
-	seedState(t, dir, "ollama/gemma4:9b")
-
-	// Picker entry 1: drive the full PR-2 path (worktree pick →
-	// phaseAgent → phaseModel) so m.models is built and cursor is
-	// positioned at "next-to-use".
-	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
-	m = drivePhaseAgentEnter(t, m, "claude")
-	if got := selectedModelID(m); got != "ollama/gemma4:14b" {
-		t.Fatalf("entry 1: cursor on %q, want ollama/gemma4:14b", got)
-	}
-
-	// Commit the launch of gemma4:14b (the highlighted model) via the
-	// shared commit point. The returned tea.Cmd records the launch,
-	// advancing the rotation to gemma4:14b, and runs the agent (`true`).
-	keepPendingPostExit(t)
-	m.launchModel = m.models.Items()[m.models.Index()].(*modelItem).model
-	_, run := m.launchAndRecord(exec.Command("true"))
-	run()
-
-	// Picker entry 2 (e.g., user backed out and picked again, or the app
-	// restarted). Drive selectedEntryMsg → phaseAgent → Enter; the
-	// phaseAgent Enter handler rebuilds the rotation, sees gemma4:14b
-	// as last-launched, and advances to the next model. PR 3b: the
-	// picker shows all 3 testConfig models (no implicit tag filter),
-	// so "next" from gemma4:14b (index 1) is gemma4:design (index 2).
-	m2 := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
-	m2 = drivePhaseAgentEnter(t, m2, "claude")
-	// (Assert on the selected model, not an index: rows are unscored, so
-	// they sort by id.)
-	if got := selectedModelID(m2); got != "ollama/gemma4:design" {
-		t.Errorf("entry 2: cursor on %q, want ollama/gemma4:design (next after gemma4:14b in 3-item snapshot)", got)
-	}
-}
-
-// TestNextEntryAfterManualPickAdvancesFromManualPick asserts the rotation
-// advances from the user's manual pick when they launch it. If the user
-// navigates to a non-rotation-suggested model and launches, the next entry
-// should land on the model AFTER the manual pick — not the model after the
-// prior rotation pick. This protects against "manual picks are ignored"
-// regressions. The launch is committed via launchAndRecord so the test
-// exercises the real recording path without a real agent or ollama. PR 2
-// added a phaseAgent step before phaseModel, so each picker entry now
-// drives the worktree pick and the phaseAgent Enter to reach phaseModel.
-func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
-	// No prior state. Picker entry 1 lands on the first model row
-	// at index 0.
-	tempStateDir(t)
-
-	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
-	m = drivePhaseAgentEnter(t, m, "claude")
-	// No state: the cursor starts on the first launchable table row, 14b.
-	if got := selectedModelID(m); got != "ollama/gemma4:14b" {
-		t.Fatalf("entry 1: cursor on %q, want ollama/gemma4:14b", got)
-	}
-
-	// User navigates down to gemma4:9b — a manual pick that differs from the
-	// initial suggestion.
-	// (Capture the returned model so the cursor advance sticks; m.models
-	// is a value field, so the in-place update inside Update() doesn't
-	// propagate unless we use the result.)
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = got.(model)
-	if sel := selectedModelID(m); sel != "ollama/gemma4:9b" {
-		t.Fatalf("after Down: cursor on %q, want ollama/gemma4:9b", sel)
-	}
-
-	// Commit the launch of gemma4:9b (the manual pick) via the shared
-	// commit point. The returned tea.Cmd records it and runs `true`.
-	keepPendingPostExit(t)
-	m.launchModel = m.models.Items()[m.models.Index()].(*modelItem).model
-	_, run := m.launchAndRecord(exec.Command("true"))
-	run()
-
-	// Picker entry 2: last-launched is gemma4:9b (the manual pick); the
-	// rotation's next in registry order is gemma4:14b.
-	m2 := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
-	m2 = drivePhaseAgentEnter(t, m2, "claude")
-	if got := selectedModelID(m2); got != "ollama/gemma4:14b" {
-		t.Errorf("entry 2: cursor on %q, want ollama/gemma4:14b (next after manual pick gemma4:9b)", got)
-	}
-}
-
-// TestPinnedModelValidSkipsPicker asserts that a pinned -M model that is in
-// the agent's eligible list skips the model picker and proceeds straight to
-// launch. This is the `-M` without `-A` flow: the agent is picked first, then
-// the pinned model is validated and, when valid, launched without a picker.
-func TestPinnedModelValidSkipsPicker(t *testing.T) {
-	requireBinary(t, "claude")
-	tempStateDir(t)
-	cfg := testConfig()
-	m := model{cfg: cfg, agent: "claude", pinnedModel: "ollama/gemma4:9b", selectedPath: t.TempDir(), width: 80, height: 24}
-	fullCatalog, err := cfg.ModelsForAgent("claude")
-	if err != nil {
-		t.Fatalf("ModelsForAgent: %v", err)
-	}
-	models, err := cfg.EligibleModelsIn("claude", fullCatalog, "", "")
-	if err != nil {
-		t.Fatalf("EligibleModelsIn: %v", err)
-	}
-	got, cmd := m.enterModelPhase("claude", models, "code")
-	if cmd == nil {
-		t.Fatal("expected a launch cmd (pinned model valid, picker skipped), got nil")
-	}
-	if sel := selectedModelID(got); sel != "ollama/gemma4:9b" {
-		t.Errorf("selected %q, want the pinned ollama/gemma4:9b", sel)
-	}
-}
-
-// TestPinnedModelInvalidShowsError asserts that a pinned -M model that is NOT
-// in the agent's eligible list surfaces an inline error naming the model and
-// agent, and does not launch. The user can then pick a different agent.
-func TestPinnedModelInvalidShowsError(t *testing.T) {
-	tempStateDir(t)
-	cfg := testConfig()
-	m := model{cfg: cfg, pinnedModel: "ollama/missing", width: 80, height: 24}
-	fullCatalog, err := cfg.ModelsForAgent("claude")
-	if err != nil {
-		t.Fatalf("ModelsForAgent: %v", err)
-	}
-	models, err := cfg.EligibleModelsIn("claude", fullCatalog, "", "")
-	if err != nil {
-		t.Fatalf("EligibleModelsIn: %v", err)
-	}
-	got, cmd := m.enterModelPhase("claude", models, "code")
-	if cmd != nil {
-		t.Errorf("expected nil cmd (pinned model invalid), got %v", cmd)
-	}
-	for _, want := range []string{"not in the eligible list", "ollama/missing", "claude"} {
-		if !strings.Contains(got.status, want) {
-			t.Errorf("status = %q, want to contain %q", got.status, want)
-		}
-	}
-}
-
 // TestPinnedModelWithoutAgentValidatesAfterAgentPick drives the full picker
 // flow (worktree pick → agent pick) with a pinned -M model and an unpinned
 // agent, asserting the invalid pin keeps the user on the agent picker with an
@@ -968,8 +701,8 @@ func TestPinnedModelWithoutAgentValidatesAfterAgentPick(t *testing.T) {
 	if gotModel.phase != phaseAgent {
 		t.Errorf("phase = %v, want phaseAgent (invalid pinned model stays on agent picker)", gotModel.phase)
 	}
-	if !strings.Contains(gotModel.status, "not in the eligible list") {
-		t.Errorf("status = %q, want 'not in the eligible list'", gotModel.status)
+	if !strings.Contains(gotModel.status, `unknown model "ollama/missing"`) {
+		t.Errorf("status = %q, want the model server's unknown-model refusal", gotModel.status)
 	}
 }
 

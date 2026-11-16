@@ -20,7 +20,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -124,13 +123,14 @@ func TestInvalidPinFromProceedFromSelectedPathRoutesToAgentPicker(t *testing.T) 
 	requireBinary(t, "claude")
 	tempStateDir(t)
 	cfg := testConfig()
-	m := model{cfg: cfg, initialAgent: "claude", pinnedModel: "ollama/missing", phase: phaseList, width: 80, height: 24}
-	got, _ := m.proceedFromSelectedPath()
+	m := withServer(t, model{cfg: cfg, initialAgent: "claude", pinnedModel: "ollama/missing", phase: phaseList, width: 80, height: 24})
+	got, cmd := m.proceedFromSelectedPath()
+	got, _ = settleCatalog(t, got, cmd)
 	if got.phase != phaseAgent {
 		t.Errorf("phase = %d, want phaseAgent (%d) so the user can pick a different agent", got.phase, phaseAgent)
 	}
-	if !strings.Contains(got.status, "not in the eligible list") {
-		t.Errorf("status = %q, want it to contain \"not in the eligible list\"", got.status)
+	if !strings.Contains(got.status, `unknown model "ollama/missing"`) {
+		t.Errorf("status = %q, want the model server's unknown-model refusal", got.status)
 	}
 	if got.pinnedModel != "" {
 		t.Errorf("pinnedModel = %q, want empty (clear the bad pin so re-entry validates fresh)", got.pinnedModel)
@@ -324,263 +324,6 @@ func TestSelectedEntryMsgBareBranchResolveErrorReturnsToList(t *testing.T) {
 
 // (TestViewModelPhase was rewritten in agent_model_test.go using the
 // new picker-based View.)
-
-// ollamaCheckConfig is a registry with one direct-route ollama model for the
-// claude agent, whose ollama provider row has the given base_url.
-func ollamaCheckConfig(baseURL string) *config.Config {
-	return &config.Config{
-		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: baseURL}}},
-		Models: []config.Model{
-			{ID: "ollama/test-model-xyz-not-real", ModelName: "test-model-xyz-not-real", ProviderID: "ollama", Tags: []string{"code"}},
-		},
-		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-	}
-}
-
-// ollamaCheckPicker is the model picker on ollamaCheckConfig's one model,
-// with usage (seam) and rotation (XDG) state isolated: phaseModelWithList
-// reads both via config.Dir(), so without isolation the fixture's cursor and
-// counts depend on the host's real state files.
-func ollamaCheckPicker(t *testing.T, baseURL string) model {
-	t.Helper()
-	tempStateDir(t)
-	stubUsageStore(t)
-	m := phaseModelWithList(t, ollamaCheckConfig(baseURL), "claude", "code")
-	m.selectedPath = "/repo"
-	return m
-}
-
-// TestOllamaWarnShownWhenUnavailable asserts that when the highlighted model
-// is an ollama model its daemon does not list, Enter moves to phaseOllamaWarn
-// — and that the daemon asked is the one the registry's ollama provider row
-// names. The list is stubbed (#317): the test used to pass only because the
-// developer's own ollama happened not to have the model, and failed whenever
-// `ollama list` exited non-zero there.
-func TestOllamaWarnShownWhenUnavailable(t *testing.T) {
-	m := ollamaCheckPicker(t, "http://127.0.0.1:9/v1")
-	origins := stubOllamaList(t, "some-other-model")
-
-	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	mm := newM.(model)
-
-	if mm.phase != phaseOllamaWarn {
-		t.Fatalf("expected phaseOllamaWarn, got %d (status %q)", mm.phase, mm.status)
-	}
-	if !strings.Contains(mm.ollamaWarnModel.Title, "test-model-xyz-not-real") {
-		t.Fatalf("expected title to contain model name, got %q", mm.ollamaWarnModel.Title)
-	}
-	if len(*origins) != 1 || (*origins)[0] != "http://127.0.0.1:9" {
-		t.Errorf("ollama list was pinned to %v, want [http://127.0.0.1:9], the registry row's daemon", *origins)
-	}
-}
-
-// TestNoOllamaWarnWhenModelIsListed is the mirror of
-// TestOllamaWarnShownWhenUnavailable: the daemon lists the model, so Enter
-// shows no warning and goes on to the launch of that model. Without it the
-// "available" answer of the check had no test in this package.
-func TestNoOllamaWarnWhenModelIsListed(t *testing.T) {
-	m := ollamaCheckPicker(t, "http://127.0.0.1:9/v1")
-	stubOllamaList(t, "some-other-model", "test-model-xyz-not-real")
-
-	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	mm := newM.(model)
-
-	if mm.phase == phaseOllamaWarn {
-		t.Fatal("expected no ollama warn for a model the daemon lists")
-	}
-	if strings.Contains(mm.status, "ollama check failed") {
-		t.Errorf("status = %q, want no failed check", mm.status)
-	}
-	if mm.launchModel.ID != "ollama/test-model-xyz-not-real" {
-		t.Errorf("launchModel = %q, want the highlighted model on its way to launch", mm.launchModel.ID)
-	}
-}
-
-// TestOllamaCheckFailureStaysOnThePicker pins what Enter does when the check
-// cannot tell: the picker stays up with the reason as its status, and nothing
-// is launched and no "not available" warning is shown. Three ways to get
-// there: `ollama list` failed (the daemon is down), the registry's ollama
-// row names no daemon to ask (a path, or an address with no scheme) — where
-// no command may run at all, since ollama would fall back to its default
-// daemon — and this package's TestMain
-// default, which is what keeps a test that forgot to stub the list from
-// running the developer's ollama. The status must fit every terminal size,
-// and at 80 columns and wider it must be readable through to what to do: the
-// view cuts a status line at the terminal's width, and the first wording of
-// the no-daemon reason lost its value and its remedy there.
-func TestOllamaCheckFailureStaysOnThePicker(t *testing.T) {
-	failing := func(t *testing.T) *[]string {
-		var origins []string
-		t.Cleanup(ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
-			origins = append(origins, origin)
-			return nil, true, errors.New("exit status 1")
-		}))
-		return &origins
-	}
-	for _, tc := range []struct {
-		name, baseURL string
-		stub          func(*testing.T) *[]string
-		want          string // in the status
-		at80          string // on screen, uncut, at 80 columns and wider
-		calls         int
-	}{
-		{"list failed", "http://127.0.0.1:9/v1", failing, "ollama check failed: ollama list: exit status 1",
-			"ollama check failed: ollama list: exit status 1", 1},
-		{"base_url is a path", "/v1", failing, "ollama check failed: ollama row's base_url must be http://host:port",
-			`ollama check failed: ollama row's base_url must be http://host:port, not ""`, 0},
-		{"base_url has no scheme", "localhost:11434", failing, `must be http://host:port, not "localhost:11434"`,
-			"ollama check failed: ollama row's base_url must be http://host:port, not ", 0},
-		{"unstubbed", "http://127.0.0.1:9/v1", nil, "ollamacheck list not stubbed in this test",
-			"ollama check failed: ollama list: ollamacheck list not stubbed in this test", 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := ollamaCheckPicker(t, tc.baseURL)
-			origins := &[]string{}
-			if tc.stub != nil {
-				origins = tc.stub(t)
-			}
-
-			newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			mm := newM.(model)
-
-			if mm.phase != phaseModel {
-				t.Errorf("phase = %d, want the model picker", mm.phase)
-			}
-			if !strings.Contains(mm.status, tc.want) {
-				t.Errorf("status = %q, want it to contain %q", mm.status, tc.want)
-			}
-			if cmd != nil || mm.launchModel.ID != "" {
-				t.Errorf("a launch was begun (cmd %v, launchModel %q); want none", cmd != nil, mm.launchModel.ID)
-			}
-			if len(*origins) != tc.calls {
-				t.Errorf("ollama list ran %d times (%v), want %d", len(*origins), *origins, tc.calls)
-			}
-			for _, width := range layoutWidths {
-				for _, height := range layoutHeights {
-					sized := resized(t, mm, width, height)
-					view := sized.View()
-					assertFits(t, tc.name, view, width, height)
-					if !strings.Contains(view, "ollama check failed") {
-						t.Errorf("%s at %dx%d: the status is not on screen:\n%s", tc.name, width, height, view)
-					}
-					if width >= 80 && !strings.Contains(view, tc.at80) {
-						t.Errorf("%s at %dx%d: the status is cut before the end of %q:\n%s", tc.name, width, height, tc.at80, view)
-					}
-				}
-			}
-		})
-	}
-}
-
-// TestNoOllamaWarnForNonOllamaModel asserts that non-ollama models skip the
-// availability check and proceed directly to launch.
-func TestNoOllamaWarnForNonOllamaModel(t *testing.T) {
-	requireBinary(t, "claude")
-	cfg := &config.Config{
-		DefaultTag: "code",
-		// claude×openrouter has no protocol overlap, so the launch resolves to a
-		// forced-litellm route; a gateway URL is required for it to succeed.
-		Providers: []config.Provider{{ID: "openrouter", Auth: config.AuthConfig{Type: "secret_ref", BaseURL: "https://openrouter.ai/api/v1", SecretRef: "sk-or"}}},
-		Models: []config.Model{
-			{ID: "openrouter/gpt-4", ProviderID: "openrouter", ModelName: "gpt-4", Tags: []string{"code"}},
-		},
-	}
-	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	m := model{cfg: cfg, phase: phaseModel, width: 80, height: 24, agent: "claude", tag: "code", selectedPath: "/repo",
-		models: singleModelList(cfg.Models[0])}
-
-	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
-	mm := newM.(model)
-
-	if mm.phase == phaseOllamaWarn {
-		t.Fatal("expected no ollama warn for non-ollama model")
-	}
-	// Should have produced the launch command.
-	if cmd == nil {
-		t.Fatal("expected a command from enter on non-ollama model")
-	}
-}
-
-// TestNoOllamaWarnInLitellmMode asserts that the ollama availability check is
-// skipped when the gateway is in litellm mode. In gateway mode models may be
-// served by any upstream behind LiteLLM, so a model absent from `ollama list`
-// must not trigger the unavailable-model warning.
-func TestNoOllamaWarnInLitellmMode(t *testing.T) {
-	// Isolate usage (seam) and rotation (XDG) state, as in
-	// TestOllamaWarnShownWhenUnavailable.
-	tempStateDir(t)
-	stubUsageStore(t)
-	cfg := ollamaCheckConfig("http://localhost:11434")
-	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	m := phaseModelWithList(t, cfg, "claude", "code")
-	m.selectedPath = "/repo"
-
-	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	mm := newM.(model)
-
-	if mm.phase == phaseOllamaWarn {
-		t.Fatal("expected no ollama warn in litellm mode")
-	}
-}
-
-// TestOllamaWarnCancel returns to phaseModel.
-func TestOllamaWarnCancel(t *testing.T) {
-	cfg := &config.Config{
-		DefaultTag: "code",
-		Models: []config.Model{
-			{ID: "ollama/test-model-xyz-not-real", ModelName: "test-model-xyz-not-real", ProviderID: "ollama", Tags: []string{"code"}},
-		},
-	}
-	m := model{cfg: cfg, phase: phaseOllamaWarn, width: 80, height: 24, agent: "claude", tag: "code", selectedPath: "/repo"}
-	// Build a stub picker with the unavailable model as the highlighted
-	// item, so ollamaWarn has a model to reference if proceedToLaunch
-	// is ever called from this test.
-	items := []list.Item{modelItem{model: cfg.Models[0]}}
-	m.models = list.New(items, list.NewDefaultDelegate(), 78, 22)
-	m.ollamaWarnModel = list.New(buildOllamaChoices(), list.NewDefaultDelegate(), 78, 22)
-
-	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("esc")})
-	mm := newM.(model)
-
-	if mm.phase != phaseModel {
-		t.Fatalf("expected phaseModel after cancel, got %d", mm.phase)
-	}
-}
-
-// TestOllamaWarnHasProceedAndCancelOnly asserts the ollama
-// availability warning has two choices: proceed and cancel.
-// The "skip" choice (which rotated to the next model) is gone
-// because rotation now advances via rotation.RecordFor at the
-// launchAndRecord commit point, not on Enter.
-func TestOllamaWarnHasProceedAndCancelOnly(t *testing.T) {
-	choices := buildOllamaChoices()
-	if len(choices) != 2 {
-		t.Fatalf("ollama choices = %d, want 2 (proceed + cancel)", len(choices))
-	}
-	// Verify the two surviving choices are the ones we expect, and
-	// no entry references the removed "skip" wording.
-	for _, c := range choices {
-		oi, ok := c.(choiceItem)
-		if !ok {
-			t.Fatalf("choice is %T, want choiceItem", c)
-		}
-		if oi.choice == ollamaProceedChoice {
-			if oi.title != "Proceed anyway" {
-				t.Errorf("proceed title = %q, want %q", oi.title, "Proceed anyway")
-			}
-		} else if oi.choice == ollamaCancelChoice {
-			if oi.title != "Cancel" {
-				t.Errorf("cancel title = %q, want %q", oi.title, "Cancel")
-			}
-		} else {
-			t.Errorf("unexpected choice %v (%q)", oi.choice, oi.title)
-		}
-		if strings.Contains(strings.ToLower(oi.title), "skip") {
-			t.Errorf("choice title %q still mentions 'skip'", oi.title)
-		}
-	}
-}
 
 // TestNKeyOpensNewWorktreePhase asserts pressing `n` on the picker
 // transitions to phaseNewWorktree. Without this wiring, the keyboard
@@ -984,21 +727,6 @@ func TestSecondEnterAtTheCommitPointIsIgnored(t *testing.T) {
 	}
 }
 
-// TestSecondEnterAtLaunchAndRecordIsIgnored pins the same guard at the model
-// path's own commit point (launchAndRecord), where a session with a model
-// actually launches: two Enters there must produce one run command, never two
-// recordings, two gates and two agents.
-func TestSecondEnterAtLaunchAndRecordIsIgnored(t *testing.T) {
-	m := model{cfg: &config.Config{}, agent: "claude", launchModel: config.Model{ID: "prov/m"}}
-	m1, first := m.launchAndRecord(exec.Command("true"))
-	if first == nil {
-		t.Fatal("the first Enter did not start a run command")
-	}
-	if _, second := m1.launchAndRecord(exec.Command("true")); second != nil {
-		t.Error("a second Enter started a second run command at launchAndRecord; the commit point takes one launch")
-	}
-}
-
 // TestRetryAfterASlotAbortDispatchesARunCommand checks the commit-point guard
 // is an in-flight guard, not a latch: the slot applier's failure (slotAbortMsg;
 // the flow returns to the model picker) releases it, so the deliberate retry
@@ -1359,19 +1087,19 @@ func TestPrePathInitSkipsWorktreePicker(t *testing.T) {
 // directly.
 func TestPrePathInitPinnedGoesToModel(t *testing.T) {
 	// Isolate usage (seam) and rotation (XDG) state: the pinned-agent path
-	// runs enterModelPhase, which scans usage.jsonl for the list build and
+	// loads the catalog, which scans usage.jsonl for the list build and
 	// reads rotation.state for cursor positioning.
 	tempStateDir(t)
 	stubUsageStore(t)
 	requireBinary(t, "claude")
-	m := model{prePath: "/repo/.worktrees/feat", cfg: testConfig(), initialAgent: "claude"}
+	m := withServer(t, model{prePath: "/repo/.worktrees/feat", cfg: testConfig(), initialAgent: "claude"})
 	msg := m.Init()()
 	sel, ok := msg.(selectedEntryMsg)
 	if !ok {
 		t.Fatalf("Init cmd returned %T, want selectedEntryMsg", msg)
 	}
-	got, _ := m.Update(sel)
-	nm := got.(model)
+	got, cmd := m.Update(sel)
+	nm, _ := settleCatalog(t, got.(model), cmd)
 	if nm.phase != phaseModel {
 		t.Errorf("phase = %v, want phaseModel (pinned agent with prePath)", nm.phase)
 	}
@@ -1415,12 +1143,11 @@ func TestPrePathInitPinnedCommandLaunches(t *testing.T) {
 // both package vars so a later launch in the same process doesn't replay
 // stale state. Full ordering is pinned by TestPostExitOrder.
 func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
-	prevSummary, prevSurvey, prevRunSurvey, prevNotice := pendingSummary, pendingSurveyState, runSurvey, emitPriceNotice
+	prevSummary, prevSurvey, prevRunSurvey := pendingSummary, pendingSurveyState, runSurvey
 	t.Cleanup(func() {
 		pendingSummary = prevSummary
 		pendingSurveyState = prevSurvey
 		runSurvey = prevRunSurvey
-		emitPriceNotice = prevNotice
 	})
 
 	pendingSummary = "wt: claude · claude/sonnet · 1s"
@@ -1434,7 +1161,7 @@ func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
 		return ""
 	}
 	noticeCalled := false
-	emitPriceNotice = func(*config.Config) { noticeCalled = true }
+	tail := exitTail{priceNote: func() { noticeCalled = true }}
 
 	old := os.Stdout
 	r, w, err := os.Pipe()
@@ -1442,7 +1169,7 @@ func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	printPendingSummaryAndSurvey(&config.Config{})
+	printPendingSummaryAndSurveyTail(tail)
 	w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
@@ -1463,7 +1190,7 @@ func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
 		t.Errorf("pendingSurveyState = %+v, want cleared", pendingSurveyState)
 	}
 	if !noticeCalled {
-		t.Error("emitPriceNotice was not invoked after the summary")
+		t.Error("the price notice was not invoked after the summary")
 	}
 }
 
@@ -1471,24 +1198,23 @@ func TestPrintPendingSummaryAndSurveyOrder(t *testing.T) {
 // never invoked when no launch happened (pendingSurveyState.agent == ""),
 // e.g. the user quit from the worktree picker without launching anything.
 func TestPrintPendingSummaryAndSurveySkipsWhenNoLaunch(t *testing.T) {
-	prevSurvey, prevRunSurvey, prevNotice := pendingSurveyState, runSurvey, emitPriceNotice
+	prevSurvey, prevRunSurvey := pendingSurveyState, runSurvey
 	t.Cleanup(func() {
 		pendingSurveyState = prevSurvey
 		runSurvey = prevRunSurvey
-		emitPriceNotice = prevNotice
 	})
 	pendingSurveyState = pendingSurvey{}
 	called := false
 	runSurvey = func(agent string, m config.Model) string { called = true; return "" }
 	noticeCalled := false
-	emitPriceNotice = func(*config.Config) { noticeCalled = true }
+	tail := exitTail{priceNote: func() { noticeCalled = true }}
 
-	printPendingSummaryAndSurvey(&config.Config{})
+	printPendingSummaryAndSurveyTail(tail)
 	if called {
 		t.Fatal("runSurvey was invoked with no pending launch")
 	}
 	if noticeCalled {
-		t.Error("emitPriceNotice invoked with no launch")
+		t.Error("the price notice was invoked with no launch")
 	}
 }
 
@@ -1498,19 +1224,18 @@ func TestPrintPendingSummaryAndSurveySkipsWhenNoLaunch(t *testing.T) {
 // is meaningless there and was previously firing unconditionally alongside
 // the summary line.
 func TestPrintPendingSummaryAndSurveySkipsPriceNoticeForCommandAgent(t *testing.T) {
-	prevSummary, prevSurvey, prevRunSurvey, prevNotice := pendingSummary, pendingSurveyState, runSurvey, emitPriceNotice
+	prevSummary, prevSurvey, prevRunSurvey := pendingSummary, pendingSurveyState, runSurvey
 	t.Cleanup(func() {
 		pendingSummary = prevSummary
 		pendingSurveyState = prevSurvey
 		runSurvey = prevRunSurvey
-		emitPriceNotice = prevNotice
 	})
 
 	pendingSummary = "wt: shell · 1s"
 	pendingSurveyState = pendingSurvey{agent: "shell", m: config.Model{}}
 	runSurvey = func(agent string, m config.Model) string { return "" }
 	noticeCalled := false
-	emitPriceNotice = func(*config.Config) { noticeCalled = true }
+	tail := exitTail{priceNote: func() { noticeCalled = true }}
 
 	old := os.Stdout
 	r, w, err := os.Pipe()
@@ -1518,31 +1243,30 @@ func TestPrintPendingSummaryAndSurveySkipsPriceNoticeForCommandAgent(t *testing.
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	printPendingSummaryAndSurvey(&config.Config{})
+	printPendingSummaryAndSurveyTail(tail)
 	w.Close()
 	os.Stdout = old
 	_, _ = io.ReadAll(r)
 
 	if noticeCalled {
-		t.Error("emitPriceNotice was invoked for a command agent (m.ID == \"\")")
+		t.Error("the price notice was invoked for a command agent (m.ID == \"\")")
 	}
 }
 
 // TestModelSelectorWrapsInAppAndStandalone pins spec §6: the cursor wraps
 // in the model selector on both of its build paths — the launcher's model
-// phase (enterModelPhase) and the standalone start picker (newPickModel) —
+// phase (the catalog load) and the standalone start picker (newPickModel) —
 // through bubbles' InfiniteScrolling. Why: the same screen two flows reach
 // must not dead-end at either list edge; a flag set on one build site only
 // would leave the other flow's cursor stuck.
 func TestModelSelectorWrapsInAppAndStandalone(t *testing.T) {
 	stubUsageStore(t)
-	stubRefcountStore(t)
-	stubInventory(t, runningOmlxSnapshot())
+	stubRunning(t, "omlx/qwen3.8")
 	tempStateDir(t)
 	cfg := modelTestConfig()
 
 	// Standalone start picker.
-	pm := newPickModel(cfg, cfg.Models, themes.Default, false)
+	pm := newPickModel(pickModels(), themes.Default)
 	if !pm.list.InfiniteScrolling {
 		t.Fatal("standalone picker does not wrap (InfiniteScrolling unset)")
 	}
@@ -1560,8 +1284,7 @@ func TestModelSelectorWrapsInAppAndStandalone(t *testing.T) {
 	}
 
 	// The launcher's model phase.
-	m := model{cfg: cfg, width: 80, height: 24}
-	nm, _ := m.enterModelPhase("claude", cfg.Models, "")
+	nm := flowEnter(t, model{cfg: cfg, width: 80, height: 24}, "claude")
 	if len(nm.models.Items()) == 0 {
 		t.Fatal("model phase list is empty")
 	}
@@ -1580,8 +1303,7 @@ func TestModelSelectorWrapsInAppAndStandalone(t *testing.T) {
 // the start is posted (the server's idle scan must see it), never from
 // Update; a start that fails re-registers it without the model; a launch row
 // registers from its run command; a failed register is a status note, not a
-// refusal; and the post-exit flow ends it where the registry path releases
-// its wt session, with no refcount release.
+// refusal; and the post-exit flow ends it, once and last.
 func TestSessionRegisteredBeforeStartAndEndedOnExit(t *testing.T) {
 	f := &fakeModels{cat: startRowCatalog()}
 	f.startFn = func(context.Context, int, modelapi.StartRequest, modelclient.Progress) (modelapi.JobStatus, error) {
@@ -1614,19 +1336,12 @@ func TestSessionRegisteredBeforeStartAndEndedOnExit(t *testing.T) {
 		t.Errorf("launch row calls = %v, want %v", f.history()[3:], want)
 	}
 
-	oldRelease := releaseSession
-	releaseSession = func() { t.Error("the model server's path released a refcount wt session") }
-	t.Cleanup(func() { releaseSession = oldRelease })
 	pendingSurveyState = pendingSurvey{agent: "claude", m: config.Model{ID: "openrouter/glm-5.3"}}
 	t.Cleanup(func() { pendingSurveyState = pendingSurvey{} })
 	oldSurvey := runSurvey
 	runSurvey = func(string, config.Model) string { return "" }
 	t.Cleanup(func() { runSurvey = oldSurvey })
-	oldStop, oldNotice := runStopPhase, emitPriceNotice
-	runStopPhase = func(*config.Config) { t.Error("the model server's path offered the stop picker") }
-	emitPriceNotice = func(*config.Config) { t.Error("the model server's path read the registry's price stamps") }
-	t.Cleanup(func() { runStopPhase, emitPriceNotice = oldStop, oldNotice })
-	printPendingSummaryAndSurveyTail(m.cfg, exitTailOf(m))
+	printPendingSummaryAndSurveyTail(exitTailOf(m))
 	h := f.history()
 	if h[len(h)-1] != "end" || slices.Index(h, "end") != len(h)-1 {
 		t.Errorf("calls = %v, want the client session ended once, last", h)

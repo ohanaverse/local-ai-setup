@@ -82,18 +82,6 @@ func TestClaudeBuildNativeSetsNoSlotVars(t *testing.T) {
 	}
 }
 
-// singleModelTestCfg is a registry with one keyless anthropic-protocol
-// provider, routed through LiteLLM or directly.
-func singleModelTestCfg(litellm bool) *config.Config {
-	cfg := &config.Config{Providers: []config.Provider{{
-		ID:        "ollama",
-		Protocols: []config.Protocol{config.ProtocolAnthropic},
-		Auth:      config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"},
-	}}}
-	cfg.SetLitellmForTest(config.LitellmState{Enabled: litellm, URL: "http://localhost:4000", APIKey: slotTestKey})
-	return cfg
-}
-
 // TestBuildLaunchCmdClaudeReplacesInheritedSlotVars pins the built command's
 // environment: a slot variable exported in the user's shell does not survive
 // beside wt's, so the command holds exactly one entry per variable, wt's. An
@@ -108,14 +96,12 @@ func TestBuildLaunchCmdClaudeReplacesInheritedSlotVars(t *testing.T) {
 
 	for _, tc := range []struct {
 		name    string
-		litellm bool
 		wantRef string
 	}{
-		{"litellm", true, "ollama/qwen3.8:27b-mlx"},
-		{"direct", false, "qwen3.8:27b-mlx"},
+		{"gateway", "ollama/qwen3.8:27b-mlx"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, err := BuildLaunchCmd("claude", m, t.TempDir(), false, singleModelTestCfg(tc.litellm), nil)
+			cmd, _, err := BuildLaunchCmdGateway("claude", m, t.TempDir(), false, testGW(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -150,9 +136,8 @@ func TestBuildLaunchCmdClaudeReplacesInheritedSlotVars(t *testing.T) {
 func TestBuildLaunchCmdClaudeNativeKeepsInheritedSlotVars(t *testing.T) {
 	fakeSlotClaude(t)
 	t.Setenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-from-the-shell")
-	cfg := &config.Config{Providers: []config.Provider{{ID: "claude", Auth: config.AuthConfig{Type: "native"}}}}
 	m := config.Model{ID: "claude/native", ModelName: "native", ProviderID: "claude", Native: true}
-	cmd, err := BuildLaunchCmd("claude", m, t.TempDir(), false, cfg, nil)
+	cmd, _, err := BuildLaunchCmdGateway("claude", m, t.TempDir(), false, testGW(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

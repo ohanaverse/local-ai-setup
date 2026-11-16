@@ -17,17 +17,16 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 )
 
-// stopDeps are the picker's seams: live inventory, the two live-session
-// refcount reads, the batch of stops, the batch's single proxy restart and the
-// pidfile read behind a refused port. Tests substitute all six.
+// stopDeps are `wt stop`'s seams: live inventory, the two live-session
+// reads, the batch of stops, the batch's single proxy restart and the pidfile
+// read behind a refused port. Tests substitute all six.
 type stopDeps struct {
 	inventory func(*config.Config) localmodels.Snapshot
 	counts    func(modelIDs []string) map[string]int
 	// live is the session count of every model id with a live session,
-	// unregistered ids included (refcount.Live) — the family-wide count.
+	// unregistered ids included — the family-wide count.
 	live func() map[string]int
 	// begin starts a batch of stops (lifecycle.BeginStops): it sends every
 	// ollama stop at once, and the batch's Stop then finishes one model at a
@@ -56,32 +55,16 @@ type stopBatch interface {
 	Accepted() []localmodels.Entry
 }
 
+// defaultStopDeps reads no sessions: the local refcount store was deleted
+// with Task 19, and a client session's use of a model is the model server's
+// to know (its sessions endpoint), not the host's. So the host `wt stop`
+// counts no sessions and never asks about one; counts and live stay seams
+// for the tests that pin how a count would be worded.
 func defaultStopDeps() stopDeps {
-	store := refcount.NewStore()
-	// Sweep first: Sweep otherwise runs only at launch start, so an entry
-	// left by a killed session would count as "in use" forever. Once per
-	// stopDeps, which serves one read of the state (defaultStopDeps is called
-	// per read): both reads below want the same pruned file, and Sweep takes
-	// the store's lock and rewrites the file whether or not it dropped
-	// anything, so sweeping again in the same read is pure work.
-	swept := false
-	sweep := func() {
-		if swept {
-			return
-		}
-		swept = true
-		_ = store.Sweep()
-	}
 	return stopDeps{
 		inventory: localmodels.Inventory,
-		counts: func(ids []string) map[string]int {
-			sweep()
-			return store.Counts(ids)
-		},
-		live: func() map[string]int {
-			sweep()
-			return store.Live()
-		},
+		counts:    func([]string) map[string]int { return map[string]int{} },
+		live:      func() map[string]int { return nil },
 		begin: func(ctx context.Context, cfg *config.Config, entries []localmodels.Entry) stopBatch {
 			return lifecycle.BeginStops(ctx, cfg, entries)
 		},
@@ -89,45 +72,6 @@ func defaultStopDeps() stopDeps {
 		loading: lifecycle.LoadingServer,
 		machine: lifecycle.MachineEntry,
 	}
-}
-
-// ReleaseSession drops this wt process's own refcount entry, best-effort: a
-// failure warns on stderr but never fails the exit path, since the next
-// launch's Sweep prunes a dead pid's entry anyway. One implementation for both
-// post-exit paths (cmd/wt's runAgentCmd and internal/tui's
-// printPendingSummaryAndSurvey), which used to carry identical copies of this
-// function and its warning string. Call it BEFORE Picker: the picker offers
-// only models no live session uses, so wt's own entry would otherwise always
-// count the model this session just used as in use.
-func ReleaseSession() {
-	if err := refcount.NewStore().Release(os.Getpid()); err != nil {
-		fmt.Fprintf(os.Stderr, "note: refcount state not released: %v\n", err)
-	}
-}
-
-// Picker offers to stop running local models that no live wt session is
-// using (issue #115). It prints nothing and returns immediately when stdin is
-// not a TTY or when no such model exists. The caller must release wt's own
-// refcount entry first, or the model the session just used would always count
-// as in use.
-func Picker(r io.Reader, w io.Writer, cfg *config.Config) { PickerWith(r, w, cfg, Options{}) }
-
-// Options tunes the stop picker. IncludeInUse lists models a live wt session
-// uses (marked with the count) — for explicit `wt stop`; the exit flows leave
-// it false.
-type Options struct{ IncludeInUse bool }
-
-// PickerWith is Picker with options; same silent-when-not-a-TTY behavior. It
-// reports whether the picker had any model to offer (false when stdin is not a
-// TTY), the provider families whose probe gave no usable answer
-// (StopState.Unknown) and what the pidfiles behind refused ports said
-// (StopState.Loading), so a caller like `wt stop` can say "nothing running"
-// only when that is known, without probing the inventory a second time.
-func PickerWith(r io.Reader, w io.Writer, cfg *config.Config, opts Options) (offered bool, unknown []string, loading map[string]lifecycle.Loading) {
-	if !stdinTTY() {
-		return false, nil, nil
-	}
-	return runStopPickerWith(r, w, cfg, defaultStopDeps(), opts)
 }
 
 // Candidate is one running local model wt can stop, with how many live wt
@@ -156,7 +100,8 @@ type FamilyState struct {
 	Down bool
 	// Sessions is the number of live wt sessions on any model of the family,
 	// and Users the model ids they use, sorted. Taken from every live
-	// refcount entry, so it does not depend on the candidates: it counts a
+	// session (stopDeps.live; none since Task 19 deleted the refcount store),
+	// so it does not depend on the candidates: it counts a
 	// model that does not read as running and a discovered model no registry
 	// lists. A stop that takes the whole provider down asks about these.
 	Sessions int
@@ -193,7 +138,7 @@ func (s StopState) Unknown() []string {
 // Loading returns, by family, what a pidfile behind a refused port said
 // (FamilyState.Loading) for the families where it said anything: a server
 // still loading, a live process that is not one, or a process table wt could
-// not read. None of them is a candidate, so the picker cannot list them.
+// not read. None of them is a candidate, so `wt stop` cannot list them.
 func (s StopState) Loading() map[string]lifecycle.Loading {
 	out := map[string]lifecycle.Loading{}
 	for fam, fs := range s.Families {
@@ -363,84 +308,17 @@ func candidatesFrom(snap localmodels.Snapshot, d stopDeps) []Candidate {
 // closure, so what the two share is the intent, not the declaration form.)
 var stopSignalCtx = realStopSignalCtx
 
-// realStopSignalCtx returns a context cancelled by Ctrl+C or SIGTERM. The
-// picker's stops run after the agent has exited, so nothing above it is
-// watching for those signals any more: without a context of its own, a wedged
-// `ollama stop`/`omlx stop`/`mtplx stop` would block a session that has already
-// finished its agent, with no way out but killing the terminal. Cancelling is
+// realStopSignalCtx returns a context cancelled by Ctrl+C or SIGTERM. Without
+// a context of its own, a wedged `ollama stop`/`omlx stop`/`mtplx stop` would
+// block `wt stop` with no way out but killing the terminal. Cancelling is
 // deliberately not fatal — the stop in flight is killed, the rest are skipped,
 // and wt still prints its summary.
 func realStopSignalCtx() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
-func runStopPicker(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps) {
-	runStopPickerWith(r, w, cfg, d, Options{})
-}
-
-// runStopPickerWith runs the picker and reports whether it had any model to
-// offer, the families it could not read (StopState.Unknown) and what it
-// cannot list because no port answers for it (StopState.Loading).
-func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps, opts Options) (bool, []string, map[string]lifecycle.Loading) {
-	var offered []localmodels.Entry
-	var labels []string
-	st := stopState(cfg, d)
-	unknown, loading := st.Unknown(), st.Loading()
-	for _, c := range st.Candidates {
-		if !opts.IncludeInUse && c.Sessions > 0 {
-			continue
-		}
-		label := c.Entry.ModelID
-		if c.Sessions > 0 {
-			plural := "s"
-			if c.Sessions == 1 {
-				plural = ""
-			}
-			label += fmt.Sprintf(" (%d session%s)", c.Sessions, plural)
-		}
-		offered = append(offered, c.Entry)
-		labels = append(labels, label)
-	}
-	if len(offered) == 0 {
-		return false, unknown, loading
-	}
-	header := exitFlowHeader
-	if opts.IncludeInUse {
-		header = "Stop running local models? (sessions = live wt sessions using it)"
-	}
-	// Ctrl+C/SIGTERM are caught for the whole picker — the menu read included —
-	// so the default disposition cannot kill wt before the summary, the stats
-	// and the deferred drain below run. See realStopSignalCtx.
-	ctx, cancel := stopSignalCtx()
-	defer cancel()
-	// The picker read lines the same way the survey did; drop any paste
-	// residue so it cannot run as shell commands after wt exits. Deferred so it
-	// also runs on the skip paths below: "q"/"esc", or a bare Enter, leave just
-	// as much residue queued as a confirmed stop does.
-	defer flushTTY()
-	// The reader goroutine in Select and this one both write to w: it prints
-	// the prompt, and a signal landing before the read is answered prints
-	// "cancelled" here. One serialized writer keeps their lines whole —
-	// unserialized, a signal arriving mid-prompt interleaves the two on a
-	// terminal and races outright when w is a test's bytes.Buffer. The same
-	// writer carries the stop loop's output below.
-	w = &lockedWriter{w: w}
-	selected, cancelled := Select(ctx, r, w, header, labels)
-	if cancelled {
-		return true, unknown, loading
-	}
-	if len(selected) == 0 {
-		return true, unknown, loading
-	}
-	entries := make([]localmodels.Entry, 0, len(selected))
-	for _, i := range selected {
-		entries = append(entries, offered[i])
-	}
-	_ = stopEntries(ctx, w, cfg, d, entries)
-	return true, unknown, loading
-}
-
-// Select is the numbered prompt `wt stop` and the stop picker share: it
+// Select is the numbered prompt of a client session's `wt stop` picker
+// (cmd/wt's model_cmds_remote.go): it
 // prints header and labels, reads one line on its own goroutine and races that
 // read against ctx. It returns the chosen indices in list order (see
 // chooseLabeled for what a line may say); nothing chosen is an empty result,
@@ -472,7 +350,7 @@ func Select(ctx context.Context, r io.Reader, w io.Writer, header string, labels
 // "the user asked to stop" from "a stop failed" and leave the rest alone.
 var ErrStopCancelled = errors.New("cancelled")
 
-// stopEntries is the picker's stop loop: stops with progress lines, one
+// stopEntries is `wt stop`'s stop loop: stops with progress lines, one
 // failure never blocks the rest, Ctrl+C (ctx) cancels the stop in flight and
 // skips the remainder. Returns nil, a "N of M stops failed" error, or
 // ErrStopCancelled.
@@ -569,18 +447,16 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 // goroutine does not survive main returning, and a restart killed mid-flight
 // leaves the proxy serving the removed routes — or before it hands the proxy to
 // anything else. Its one caller, `wt stop`, reaches the wait from main's exit
-// path; the picker's own call to stopEntries exits the same way.
+// path.
 func StopEntries(w io.Writer, cfg *config.Config, entries []localmodels.Entry) error {
 	ctx, cancel := stopSignalCtx()
 	defer cancel()
 	return stopEntries(ctx, w, cfg, defaultStopDeps(), entries)
 }
 
-const exitFlowHeader = "Stop running local models? (none are in use by another wt session)"
-
-// lockedWriter serializes writes to one writer from the picker's two
+// lockedWriter serializes writes to one writer from Select's two
 // goroutines: the reader printing the prompt (the header and list, then one
-// line per rejected answer) and the picker printing "cancelled" when a signal
+// line per rejected answer) and Select printing "cancelled" when a signal
 // wins the race. It keeps each write whole rather than ordering the two, which
 // is all a terminal needs and is what makes a shared bytes.Buffer race-free.
 type lockedWriter struct {

@@ -106,13 +106,13 @@ func TestNextReturnsFirstEligibleWhenEmpty(t *testing.T) {
 		config.Model{ID: "claude/sonnet", ProviderID: "claude"},
 	)
 	r := NewAt(t.TempDir())
-	got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg)
+	got, ok := r.NextFromOrder(eligibleFor(t, cfg), cfg.Models)
 	if !ok || got.ID != "claude/sonnet" {
-		t.Fatalf("NextFromEligible = %q, %v; want claude/sonnet, true", got.ID, ok)
+		t.Fatalf("NextFromOrder = %q, %v; want claude/sonnet, true", got.ID, ok)
 	}
 }
 
-// TestNextAdvancesAfterLast asserts that rotation.NextFromEligible picks
+// TestNextAdvancesAfterLast asserts that rotation.NextFromOrder picks
 // the model in the global list that follows the model recorded by
 // rotation.RecordFor (the same model returned by rotation.Last).
 // Without this advance, every launch would pick the same model
@@ -126,9 +126,9 @@ func TestNextAdvancesAfterLast(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.RecordFor("", "claude/sonnet")
-	got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg)
+	got, ok := r.NextFromOrder(eligibleFor(t, cfg), cfg.Models)
 	if !ok || got.ID != "claude/opus" {
-		t.Fatalf("NextFromEligible = %q, %v; want claude/opus, true", got.ID, ok)
+		t.Fatalf("NextFromOrder = %q, %v; want claude/opus, true", got.ID, ok)
 	}
 }
 
@@ -143,9 +143,9 @@ func TestNextWrapsAround(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.RecordFor("", "claude/opus")
-	got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg)
+	got, ok := r.NextFromOrder(eligibleFor(t, cfg), cfg.Models)
 	if !ok || got.ID != "claude/sonnet" {
-		t.Fatalf("NextFromEligible = %q, %v; want claude/sonnet, true", got.ID, ok)
+		t.Fatalf("NextFromOrder = %q, %v; want claude/sonnet, true", got.ID, ok)
 	}
 }
 
@@ -160,9 +160,9 @@ func TestNextSkipsIneligibleModels(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.RecordFor("", "ollama/b")
-	got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg)
+	got, ok := r.NextFromOrder(eligibleFor(t, cfg), cfg.Models)
 	if !ok || got.ID != "claude/sonnet" {
-		t.Fatalf("NextFromEligible = %q, %v; want claude/sonnet, true", got.ID, ok)
+		t.Fatalf("NextFromOrder = %q, %v; want claude/sonnet, true", got.ID, ok)
 	}
 }
 
@@ -182,8 +182,8 @@ func TestNextReturnsFalseWhenNoModels(t *testing.T) {
 	if len(eligible) != 0 {
 		t.Fatalf("eligible = %v, want none", eligible)
 	}
-	if _, ok := r.NextFromEligible(eligible, cfg); ok {
-		t.Fatal("NextFromEligible returned ok=true with no eligible models")
+	if _, ok := r.NextFromOrder(eligible, cfg.Models); ok {
+		t.Fatal("NextFromOrder returned ok=true with no eligible models")
 	}
 }
 
@@ -197,9 +197,9 @@ func TestNextFallsBackToStartWhenLastUnknown(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAt(dir)
 	_ = r.RecordFor("", "claude/ghost")
-	got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg)
+	got, ok := r.NextFromOrder(eligibleFor(t, cfg), cfg.Models)
 	if !ok || got.ID != "claude/sonnet" {
-		t.Fatalf("NextFromEligible = %q, %v; want claude/sonnet, true", got.ID, ok)
+		t.Fatalf("NextFromOrder = %q, %v; want claude/sonnet, true", got.ID, ok)
 	}
 }
 
@@ -299,9 +299,9 @@ func TestFirstAfterEmpty(t *testing.T) {
 	}
 }
 
-// TestRotationNextFromEligible verifies the rotation core can operate on
+// TestRotationNextFromOrder verifies the rotation core can operate on
 // a precomputed eligible slice without recomputing it from cfg.EligibleModels.
-func TestRotationNextFromEligible(t *testing.T) {
+func TestRotationNextFromOrder(t *testing.T) {
 	dir := t.TempDir()
 	r := NewAt(dir)
 	cfg := &config.Config{
@@ -316,7 +316,7 @@ func TestRotationNextFromEligible(t *testing.T) {
 	}
 
 	eligible := []config.Model{{ID: "b"}, {ID: "c"}}
-	m, ok := r.NextFromEligible(eligible, cfg)
+	m, ok := r.NextFromOrder(eligible, cfg.Models)
 	if !ok {
 		t.Fatal("expected a next model")
 	}
@@ -343,24 +343,24 @@ func TestRecordForAttributesUsageToAgent(t *testing.T) {
 	}
 }
 
-// TestNextFromEligibleNeverPicksDiscovered pins #179 Phase B's rotation rule:
+// TestNextFromOrderNeverPicksDiscovered pins #179 Phase B's rotation rule:
 // rotation walks the registry's model order, so a discovered (unregistered)
 // model is never auto-selected even when it is launchable — the user can
 // still pick one in the picker or pin it with -M. A discovered model has no
 // overlay family or tags, so rotating onto it would launch a model the user
 // never configured.
-func TestNextFromEligibleNeverPicksDiscovered(t *testing.T) {
+func TestNextFromOrderNeverPicksDiscovered(t *testing.T) {
 	cfg := &config.Config{Models: []config.Model{
 		{ID: "omlx/registered", ProviderID: "omlx", ModelName: "registered"},
 	}}
 	disc := config.Model{ID: config.DiscoveredModelID("omlx", "stray"), ProviderID: "omlx", ModelName: "stray", Source: config.SourceDiscovered}
 	r := NewAt(t.TempDir())
-	m, ok := r.NextFromEligible([]config.Model{disc, cfg.Models[0]}, cfg)
+	m, ok := r.NextFromOrder([]config.Model{disc, cfg.Models[0]}, cfg.Models)
 	if !ok || m.ID != "omlx/registered" {
-		t.Fatalf("NextFromEligible = (%q, %v), want the registered model", m.ID, ok)
+		t.Fatalf("NextFromOrder = (%q, %v), want the registered model", m.ID, ok)
 	}
-	if m, ok := r.NextFromEligible([]config.Model{disc}, cfg); ok {
-		t.Fatalf("NextFromEligible(discovered only) = %q, want no pick", m.ID)
+	if m, ok := r.NextFromOrder([]config.Model{disc}, cfg.Models); ok {
+		t.Fatalf("NextFromOrder(discovered only) = %q, want no pick", m.ID)
 	}
 }
 
@@ -472,8 +472,8 @@ func TestRecordProfileLeavesRotationStateAlone(t *testing.T) {
 	if got, _ := r.Last(); got != "claude/sonnet" {
 		t.Errorf("Last = %q, want claude/sonnet", got)
 	}
-	if got, ok := r.NextFromEligible(eligibleFor(t, cfg), cfg); !ok || got.ID != "claude/opus" {
-		t.Errorf("NextFromEligible = %q, %v; want claude/opus, true (rotation did not move)", got.ID, ok)
+	if got, ok := r.NextFromOrder(eligibleFor(t, cfg), cfg.Models); !ok || got.ID != "claude/opus" {
+		t.Errorf("NextFromOrder = %q, %v; want claude/opus, true (rotation did not move)", got.ID, ok)
 	}
 	if got, ok := r.LastPicked(); !ok || got != "profile/mixed" {
 		t.Errorf("LastPicked = %q, %v; want profile/mixed, true", got, ok)
@@ -553,7 +553,7 @@ func TestRecordKeepsUsageWhenLastPickedFails(t *testing.T) {
 }
 
 // TestNextFromOrderMatchesRegistryRotation pins that NextFromOrder walks the
-// ordered slice the way NextFromEligible walks cfg.Models: after the last
+// ordered slice the way NextFromOrder walks cfg.Models: after the last
 // launch, wrapping, skipping the ineligible, and from index 0 when the last
 // launch is absent from the order.
 func TestNextFromOrderMatchesRegistryRotation(t *testing.T) {

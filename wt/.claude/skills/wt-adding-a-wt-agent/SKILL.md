@@ -19,17 +19,15 @@ agent needs a `[[agents]]` entry.
 ## Driver implementation details
 
 1. Create `internal/agents/<name>.go` implementing the `Driver` interface:
-   - `Build(m config.Model, yolo bool, r Route) LaunchCmd` — dial from the resolved `Route` (base origin, API key, model ref); never hardcode a provider endpoint
+   - `Build(m config.Model, yolo bool, r Route) LaunchCmd` — dial from the `Route` (`agents.GatewayRoute`: the model server's gateway origin, its token, the model's gateway id); never hardcode a provider endpoint
    - `YoloFlag() string`
-   - `Protocols() []Protocol` (the `ProtocolDeclarer` capability) — the wire protocols the agent speaks; this drives route resolution
-2. Implement other optional capabilities as needed: `Seeder`, `Syncer`, `ArgSetter`, `StateDirer` (if the agent keeps per-working-directory state, so `wt smoke` can remove it for its temporary directories)
+2. Implement other optional capabilities as needed: `Seeder`, `GatewaySyncer` (an agent that keeps its own model catalog file, like pi's `models.json`), `ArgSetter`, `StateDirer` (if the agent keeps per-working-directory state, so `wt smoke` can remove it for its temporary directories)
 3. Register from the driver file's own `init()` with `register("<name>", func() Driver { return <name>Driver{} })` (`register` is defined in `internal/agents/agents.go`)
 4. Add a model-id regression test (`Test<Name>OllamaPrefix`) using a model with distinct `ID`/`ModelName` to catch wrong id passthrough
-5. Add the agent to the protocol table and the capability table in `wt/docs/internals/agents.md`
+5. Add the agent to the capability table in `wt/docs/internals/agents.md`
 
 **Key gotchas:**
-- The model ref comes from `Route.ModelRef` — `ResolveRoute` already picked `m.ID` (litellm/forced) or `m.ModelName` (direct); don't re-derive it
-- If the agent's protocol is served by no local provider (empty intersection in `ResolveRoute`), it always routes through LiteLLM and wt prints the forced-LiteLLM stderr notice — codex is the current example
-- Don't add session handling: wt never resumes a session (there is no `Resumer` capability and no `internal/session` package). The user continues a conversation with the agent's own flags after `--`, which `BuildLaunchCmd` appends unchanged
-- Test both routing modes (direct/litellm) if the agent will route through LiteLLM
-- **`Build` must start with `if m.Native { return <bare LaunchCmd> }`.** Every existing driver (claude, codex, copilot, pi, opencode) does this so the unconfigured-agent passthrough sentinel (`config.Model{Native: true, ModelName: "native"}`, issue #147) launches the bare binary with no `--model`/gateway env. Forgetting it emits provider env vars pointing at an empty base URL instead of a plain command — write a `Test<Name>NativeBypass` test (see `opencode_test.go`'s `TestOpenCodeNativeBypass`) to pin it.
+- The model ref comes from `Route.ModelRef` — `GatewayRoute` already picked the gateway id (`m.GatewayID`, else `m.ID`); don't re-derive it. There are no direct routes: every non-native launch goes through the model server's gateway, which speaks every wire protocol LiteLLM does
+- Don't add session handling: wt never resumes a session (there is no `Resumer` capability and no `internal/session` package). The user continues a conversation with the agent's own flags after `--`, which `BuildLaunchCmdGateway` appends unchanged
+- Test the gateway route (`litellmRoute`/`GatewayRoute` in the driver tests, and a `TestGatewayMatrix<Name>` cell in `gateway_matrix_test.go`)
+- **`Build` must start with `if m.Native { return <bare LaunchCmd> }`.** Every existing driver (claude, codex, copilot, pi, opencode) does this so a native model (`config.Model{Native: true, ...}`) launches the bare binary with no `--model`/gateway env, and the gateway token never reaches it. Forgetting it emits provider env vars pointing at an empty base URL instead of a plain command — write a `Test<Name>NativeBypass` test (see `opencode_test.go`'s `TestOpenCodeNativeBypass`) to pin it.

@@ -118,7 +118,7 @@ func stopBlockers(cfg *config.Config, sessions *sessionreg.Registry, en localmod
 // the registry model's provider when the id is registered (a cloud model has
 // none: ""), else the id's own prefix, since a discovered id is
 // family-prefixed (config.DiscoveredModelID). The same rule as
-// internal/survey's stop picker.
+// internal/survey's stop state (modelFamily).
 func modelFamily(cfg *config.Config, id string) string {
 	if i := config.IndexModelByID(cfg.Models, id); i >= 0 {
 		m := cfg.Models[i]

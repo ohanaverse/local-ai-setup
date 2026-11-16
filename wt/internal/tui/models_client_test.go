@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"slices"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
@@ -55,6 +55,8 @@ type fakeModels struct {
 	// and "catalog" for each Catalog call while logCatalog is set.
 	log        []string
 	logCatalog bool
+	// gw is what Gateway answers: the zero gateway unless a test names one.
+	gw agents.Gateway
 }
 
 func (f *fakeModels) record(s string) {
@@ -137,6 +139,16 @@ func (f *fakeModels) Resolve(_ context.Context, id string) (modelapi.Row, error)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolved = append(f.resolved, id)
+	if f.resolveRow.ID == "" && f.resolveErr == nil {
+		// No scripted answer: the catalog's own row, or the server's
+		// unknown-model refusal.
+		for _, r := range f.cat.Rows {
+			if r.ID == id {
+				return r, nil
+			}
+		}
+		return modelapi.Row{}, &modelclient.UnknownModelError{Message: fmt.Sprintf("unknown model %q", id)}
+	}
 	return f.resolveRow, f.resolveErr
 }
 
@@ -166,7 +178,7 @@ func (f *fakeModels) CancelJob(_ context.Context, id string) error {
 func (f *fakeModels) NewSession(models []string, _ modelclient.SessionOptions) ClientSession {
 	return &fakeSession{f: f, models: slices.Clone(models)}
 }
-func (f *fakeModels) Gateway() agents.Gateway { return agents.Gateway{} }
+func (f *fakeModels) Gateway() agents.Gateway { return f.gw }
 func (f *fakeModels) Now() time.Time          { return time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC) }
 
 func (f *fakeModels) calls() int {
@@ -345,7 +357,7 @@ func TestTableRowsFromWire(t *testing.T) {
 	for _, r := range tr {
 		refs[r.Model.ID] = r.Wire.Sessions
 	}
-	tbl := renderTable(tr, nil, "claude", refs, "")
+	tbl := renderTable(tr, "claude", refs, "")
 	var ids []string
 	for _, it := range tbl.items {
 		ids = append(ids, it.model.ID)
@@ -521,25 +533,6 @@ func TestRemoteDetailNamesClientSessions(t *testing.T) {
 	}
 }
 
-// TestRemotePathSkipsLegacyPhases pins that nothing on the API path reads the
-// local inventory or enters the ollama or routing phases.
-func TestRemotePathSkipsLegacyPhases(t *testing.T) {
-	old := runInventory
-	runInventory = func(*config.Config) localmodels.Snapshot {
-		t.Error("the local inventory was probed on the API path")
-		return localmodels.Snapshot{}
-	}
-	t.Cleanup(func() { runInventory = old })
-	f := &fakeModels{cat: smallCatalog()}
-	m := remoteModel(t, f, 80, 24)
-	m, cmd := m.enterModelPhaseForAgent()
-	m = settle(t, m, cmd)
-	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.phase == phaseOllamaWarn || m.phase == phaseRouting || m.phase == phaseStarting {
-		t.Errorf("phase = %v, want none of the legacy phases", m.phase)
-	}
-}
-
 // TestPinnedModelStartsOrLaunchesOnTheServer pins a -M pin on the API path as
 // the registry path treats it: the pin is the user's act, so a pinned row the
 // server must start runs the start flow (with --replace, the pin's
@@ -635,7 +628,7 @@ func TestRemoteTailPrintsThePriceNoticeFromTheLoadedCatalog(t *testing.T) {
 		runSurvey = func(string, config.Model) string { return "" }
 		t.Cleanup(func() { runSurvey = old })
 		before := f.catCalls
-		out := captureStdout(t, func() { printPendingSummaryAndSurveyTail(m.cfg, exitTailOf(m)) })
+		out := captureStdout(t, func() { printPendingSummaryAndSurveyTail(exitTailOf(m)) })
 		return out, f.catCalls - before
 	}
 	glm := config.Model{ID: "openrouter/glm-5.3"}

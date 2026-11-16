@@ -297,7 +297,7 @@ func TestSlotRootLaunchClaimsUntilTheAgentExits(t *testing.T) {
 	agent.Dir = root
 	row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
 	m := model{agent: "claude", selectedPath: root}
-	msg := runSlotAndWaitCmd(agent, "claude", row, m.gateFor(), false)()
+	msg := runSlotAndWaitCmd(agent, "claude", row, m.gateFor())()
 	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
 		t.Fatalf("msg = %#v; the agent did not see the claim while it ran", msg)
 	}
@@ -455,7 +455,7 @@ func TestDeclinedSlotGateKeepsTheStopTail(t *testing.T) {
 	keepPendingPostExit(t)
 	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
 	row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
-	msg := runSlotAndWaitCmd(exec.Command("true"), "claude", row, func() (bool, error) { return false, nil }, false)()
+	msg := runSlotAndWaitCmd(exec.Command("true"), "claude", row, func() (bool, error) { return false, nil })()
 	if done, ok := msg.(launchDoneMsg); !ok || done.err != errLaunchDeclined {
 		t.Fatalf("msg = %#v; a decline ends the run with errLaunchDeclined (exit 3)", msg)
 	}

@@ -17,7 +17,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 	"github.com/spf13/cobra"
@@ -39,34 +38,6 @@ var tuiRun = tui.Run
 // not depend on the host's installed binaries. cmd/wt's TestMain defaults it
 // to true so existing tests are unaffected unless they opt into stubbing it.
 var installed = agents.Installed
-
-// sweepRefcounts is a seam for tests: production sweeps the live-session
-// refcount state at the top of every launch; tests stub it to observe the
-// call without touching a real state file.
-var sweepRefcounts = realSweepRefcounts
-
-// realSweepRefcounts drops dead-pid entries from refcount.jsonl (issue
-// #73). Best-effort: a sweep failure means stale "in use" counts, never a
-// blocked launch.
-func realSweepRefcounts() {
-	_ = refcount.NewStore().Sweep()
-}
-
-// needsModelPicker reports whether the CLI must route to the interactive
-// model picker. True when:
-//   - the user did not pin an agent (no -A), OR
-//   - the user pinned an agent that is not a command AND no model is pinned
-//     (the launch path would have to pick a model itself).
-//
-// A pinned command (e.g. shell) returns false regardless of model pin
-// because commands have no model layer. A pinned agent + pinned model
-// returns false because every launch input is resolved.
-//
-// This predicate is the single source of truth for picker routing across
-// --cwd, -W, and the outside-repo path; if you change it, retest all three.
-func needsModelPicker(agent, pinned string) bool {
-	return agent == "" || (pinned == "" && !agents.IsCommand(agent))
-}
 
 func main() {
 	err := rootCmd().Execute()
@@ -103,8 +74,8 @@ func runLaunchPath(
 	launchPath, root string,
 ) error {
 	// Every launch goes through the model server (Task 18): a launch that has
-	// its directory and its agent runs launchFilteredRemote (no refcount, no
-	// registry, no ollama or route check, no local probe), which refuses a
+	// its directory and its agent runs launchFilteredRemote (no registry, no
+	// local probe), which refuses a
 	// model-driven agent before anything starts when no server is
 	// configured, and launches a command agent (shell) without one. The
 	// picker (no directory or no agent yet) reads its table from the server
@@ -140,7 +111,7 @@ func runLaunchPath(
 			return launchFilteredRemote(context.Background(), a, agent, launchPath, yolo(cmd), tags, family, pinned, cmd.Flags().Changed("model"), args, string(othersMode), allowReplace, a.profileState())
 		}()
 		if !errors.Is(err, errRemoteNeedsPicker) {
-			return printOnce(cmd, err)
+			return err
 		}
 		pickOnServer = true
 		root = "" // the guard is installed
@@ -166,10 +137,10 @@ func runLaunchPath(
 	case agents.IsCommand(agent):
 		// A command needs no model; nothing below asks for one.
 	default:
-		return printOnce(cmd, remoteExit(merr)) // buildModels' errors carry the still clause
+		return remoteExit(merr) // buildModels' errors carry the still clause
 	}
 	if serr != nil {
-		return printOnce(cmd, remoteExit(modelclient.Still(serr, launchStill)))
+		return remoteExit(modelclient.Still(serr, launchStill))
 	}
 
 	// applyProfile closes over a's already-loaded profiles.toml state
@@ -206,10 +177,8 @@ func runLaunchPath(
 		return cleanupRemoveFuncs(a, snap, in, 0, protErr)
 	}
 
-	// Slot profiles are pin targets for the picker during this run. The
-	// slot notes (above) are printed here unless the launch already printed
-	// them before falling through to the picker.
-	launchSlotChecks = a.slotChecks
+	// The slot notes (above) are printed here unless the launch already
+	// printed them before falling through to the picker.
 	if !pickOnServer {
 		printSlotNotes()
 	}
@@ -233,28 +202,9 @@ func runLaunchPath(
 	// like runAgentCmd's os.Exit it prints nothing: no cobra "Error:" line
 	// or usage block, no main "wt:" line (#412). Any other error is main's
 	// one "wt:" line: cobra's "Error:" copy and usage block would only
-	// repeat it, as printOnce spares a failed start.
+	// repeat it.
 	err = agentExitStatus(err)
 	if err != nil {
-		cmd.SilenceErrors = true
-		cmd.SilenceUsage = true
-	}
-	return err
-}
-
-// printOnce leaves the error of a launch whose -M pin could not be started
-// to main, which prints every error after "wt:". cobra prints it as well, as
-// "Error: …", and a failed start's message carries the server's log tail, so
-// it came out twice in full (#344). The root command now silences that line
-// for the whole tree (SilenceErrors); marking it here too keeps a command not
-// built through rootCmd quiet.
-//
-// cobra's usage block goes with it: the root command prints one after every
-// error, and a start that failed or was refused is not a usage mistake. Left
-// in, it stood between the start's progress lines and main's one line, with
-// no "Error:" above it any more to say why it was there.
-func printOnce(cmd *cobra.Command, err error) error {
-	if isStartError(err) {
 		cmd.SilenceErrors = true
 		cmd.SilenceUsage = true
 	}
@@ -469,13 +419,13 @@ func rootCmd() *cobra.Command {
 			agent := agentFlag
 
 			// Read the filter flags (-M/-T/-F). They are plumbed through to
-			// launchFiltered even when empty. The TUI fallback below forwards
+			// launchFilteredRemote even when empty. The TUI fallback below forwards
 			// them to tui.Run for the model picker.
 			tags := mustGetString(cmd, "tags")
 			family := mustGetString(cmd, "family")
 			pinned := mustGetString(cmd, "model")
-			// --replace is a process-wide launch mode: resolveModel's start
-			// path reads it, and the TUI receives it as an argument.
+			// --replace is a process-wide launch mode: the launch's start
+			// reads it, and the TUI receives it as an argument.
 			allowReplace, _ = cmd.Flags().GetBool("replace")
 
 			// Launch paths require a config.toml that loads. The `wt config`
@@ -497,7 +447,7 @@ func rootCmd() *cobra.Command {
 
 			// A pinned model-driven agent whose binary is missing can never
 			// launch, configured or not; fail before any worktree work rather
-			// than deep inside BuildLaunchCmd after a worktree may already
+			// than deep inside BuildLaunchCmdGateway after a worktree may already
 			// have been created. Commands (e.g. shell) have no binary
 			// requirement of their own — ListEntries/IssueFor already treat
 			// them as always-installed.
@@ -515,7 +465,7 @@ func rootCmd() *cobra.Command {
 			// none.
 			if (agent != "" && !agents.IsCommand(agent)) || (agent == "" && stdinTTY()) {
 				if _, err := a.buildModels(launchStill); err != nil {
-					return printOnce(cmd, remoteExit(err)) // buildModels' errors carry the still clause
+					return remoteExit(err) // buildModels' errors carry the still clause
 				}
 			}
 
@@ -581,8 +531,8 @@ func rootCmd() *cobra.Command {
 			//
 			// It needs no repository. The one thing a --cwd launch takes
 			// from git is the checkout root, and that root only says
-			// whether to install the main guard (runLaunchPath): rotation,
-			// usage and refcount state are keyed by model, agent and pid,
+			// whether to install the main guard (runLaunchPath): rotation
+			// and usage state are keyed by model, agent and pid,
 			// never by a repository or a branch (claude's config_content
 			// backup is keyed by the absolute settings path, so it cannot
 			// collide either). So a

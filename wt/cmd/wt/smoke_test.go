@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,93 +18,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/spf13/cobra"
 )
-
-// smokeFixtureConfig builds a one-agent, two-model config: one model is
-// running (eligible), the other is registered but never running (not
-// eligible) — enough to exercise resolveSmokeModel's
-// three outcomes (eligible / registered-but-ineligible / unknown). Eligibility
-// now reads live inventory rows, so the probe is stubbed with qwen3.8:27b-mlx
-// running — that is what makes it eligible while not-eligible:x, absent from
-// the snapshot, stays a start row no launch can use — and no test here probes
-// this machine's real servers.
-func smokeFixtureConfig(t *testing.T) *config.Config {
-	t.Helper()
-	stubSmokeProbe(t, localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
-		Entries: []localmodels.Entry{
-			{ProviderID: "ollama", Artifact: "qwen3.8:27b-mlx", ModelID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", Registered: true, Running: true, ArtifactKnown: true},
-			{ProviderID: "ollama", Artifact: "not-eligible:x", ModelID: "ollama/not-eligible:x", ModelName: "not-eligible:x", Registered: true, ArtifactKnown: true},
-			{ProviderID: "ollama", Artifact: "", ModelID: "ollama/gone:x", ModelName: "gone:x", Registered: true, ArtifactKnown: true},
-		},
-	})
-	cfg := &config.Config{
-		Providers: []config.Provider{
-			// Serves claude's wire protocol with a base_url so an idle model's
-			// start row resolves a direct route (a forced-LiteLLM route with no
-			// gateway would error and drop the row from smoke.Candidates).
-			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}, Protocols: []config.Protocol{config.ProtocolAnthropic}},
-		},
-		Models: []config.Model{
-			{ID: "ollama/qwen3.8:27b-mlx", ProviderID: "ollama", ModelName: "qwen3.8:27b-mlx", Location: config.LocationLocal},
-			{ID: "ollama/not-eligible:x", ProviderID: "ollama", ModelName: "not-eligible:x", Location: config.LocationLocal},
-			{ID: "ollama/gone:x", ProviderID: "ollama", ModelName: "gone:x", Location: config.LocationLocal},
-		},
-		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
-		},
-	}
-	return cfg
-}
-
-// stubSmokeProbe makes smoke.Eligibility (which resolveSmokeModel calls)
-// see snap instead of probing live: cmd/wt cannot assign internal/smoke's
-// package-private seam, so internal/smoke exposes SetSmokeProbeForTest for
-// exactly this — the same package-level seam-and-restore pattern as
-// cmd/wt's own probeInventory seam in resolve.go.
-func stubSmokeProbe(t *testing.T, snap localmodels.Snapshot) {
-	t.Helper()
-	t.Cleanup(smoke.SetSmokeProbeForTest(snap))
-}
-
-// smokeDirectCmd is `wt smoke` as it ran before the flip: the command's
-// flags, prelude and exit handling around runSmokeDirect over a's host
-// config (the registry path). No command reaches that path since Task 18;
-// these tests keep its code covered until Task 19 deletes both.
-func smokeDirectCmd(a *app) *cobra.Command {
-	cmd := smokeCmd(a)
-	cmd.RunE = func(c *cobra.Command, args []string) error {
-		if cerr := a.hostConfigErr(); cerr != nil {
-			return smokeFinish(c, false, configError(cerr))
-		}
-		tf, inPlace, cwd, err := smokePrelude(c)
-		if err != nil {
-			return smokeFinish(c, false, err)
-		}
-		anyFail, err := runSmokeDirect(c, a, hostCfgOf(a), args, tf, inPlace, cwd)
-		return smokeFinish(c, anyFail, err)
-	}
-	return cmd
-}
 
 // runSmokeCmd runs `wt smoke` with args, as the command, on a. It returns
 // stdout and stderr apart, and the command's error.
 func runSmokeCmd(a *app, args ...string) (stdout, stderr string, err error) {
 	return runSmokeOn(smokeCmd(a), args...)
-}
-
-// runSmokeDirectCmd is runSmokeCmd on the registry path (smokeDirectCmd).
-func runSmokeDirectCmd(a *app, args ...string) (stdout, stderr string, err error) {
-	return runSmokeOn(smokeDirectCmd(a), args...)
 }
 
 // runSmokeOn runs cmd with args and returns stdout and stderr apart, and its
@@ -117,227 +43,6 @@ func runSmokeOn(cmd *cobra.Command, args ...string) (stdout, stderr string, err 
 	cmd.SetArgs(args)
 	err = cmd.Execute()
 	return out.String(), errOut.String(), err
-}
-
-// TestResolveSmokeModelPinnedEligible asserts a pinned id already in the
-// eligible set resolves directly, with no TTY/picker interaction.
-func TestResolveSmokeModelPinnedEligible(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	tgt, err := resolveSmokeModel(cfg, themes.Default, "ollama/qwen3.8:27b-mlx")
-	if err != nil {
-		t.Fatalf("resolveSmokeModel: %v", err)
-	}
-	m, eligible := tgt.Row.Model, tgt.Agents
-	if m.ID != "ollama/qwen3.8:27b-mlx" {
-		t.Fatalf("got model %q", m.ID)
-	}
-	if len(eligible) != 1 || eligible[0] != "claude" {
-		t.Fatalf("eligible agents = %v, want [claude]", eligible)
-	}
-}
-
-// TestResolveSmokeModelPinnedNotEligible asserts a pinned id that exists in
-// the registry but cannot be smoke-tested (a local model absent from disk)
-// gets a specific "cannot be smoke-tested" message, distinct from
-// "unknown model".
-func TestResolveSmokeModelPinnedNotEligible(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	_, err := resolveSmokeModel(cfg, themes.Default, "ollama/gone:x")
-	if err == nil || !strings.Contains(err.Error(), "cannot be smoke-tested") {
-		t.Fatalf("err = %v, want a cannot-be-smoke-tested message", err)
-	}
-	// The advice must name a command that actually changes the state wt reads:
-	// routing state lives in wt's config.toml, and `wt litellm ...` is what
-	// writes it. The retired `modelman litellm ...` must not come back.
-	if !strings.Contains(err.Error(), "`wt litellm status`") || strings.Contains(err.Error(), "modelman litellm") {
-		t.Fatalf("hint = %v, want `wt litellm status`", err)
-	}
-}
-
-// TestResolveSmokeModelPinnedBlockedNamesReason asserts a pinned local model
-// the provider answered is not on disk (registered, so it has no row) gets
-// catalog.MissingReason's pull/download wording — the same `wt start` gives —
-// rather than the generic three-guess message, so the user learns what to fix.
-// The generic message also mentions "not on disk", so the assertion keys on
-// MissingReason's own "pull or download" phrase.
-func TestResolveSmokeModelPinnedBlockedNamesReason(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	stubProbeInventory(t, localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
-		Entries: []localmodels.Entry{
-			{ProviderID: "ollama", Artifact: "", ModelID: "ollama/gone:x", ModelName: "gone:x", Registered: true, ArtifactKnown: true},
-		},
-	})
-	_, err := resolveSmokeModel(cfg, themes.Default, "ollama/gone:x")
-	if err == nil || !strings.Contains(err.Error(), "pull or download it first") {
-		t.Fatalf("err = %v, want MissingReason's not-on-disk reason", err)
-	}
-}
-
-// TestResolveSmokeModelIdleLocalIsStartTarget verifies a registered local model
-// that is pulled but not running now resolves (with Start() true) instead of
-// erroring, since `wt smoke` starts it before testing.
-func TestResolveSmokeModelIdleLocalIsStartTarget(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	got, err := resolveSmokeModel(cfg, themes.Theme{}, "ollama/not-eligible:x")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.Start() || len(got.Agents) == 0 {
-		t.Fatalf("target = %+v, want a start target with agents", got)
-	}
-}
-
-// TestSmokeStopFlow verifies the exit flow runs the stop picker — and touches no
-// refcount state, since wt smoke never records a session — and is skipped for
-// --json or without a TTY (JSON consumers and pipes must not get an interactive
-// prompt).
-func TestSmokeStopFlow(t *testing.T) {
-	oldRel, oldPick, oldTTY := releaseSession, runStopPicker, stdinTTY
-	t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY = oldRel, oldPick, oldTTY })
-	var calls []string
-	releaseSession = func() { calls = append(calls, "release") }
-	runStopPicker = func(*config.Config) { calls = append(calls, "picker") }
-
-	stdinTTY = func() bool { return true }
-	smokeStopFlow(nil, false)
-	if strings.Join(calls, ",") != "picker" {
-		t.Fatalf("calls = %v, want only the picker (no release: nothing was recorded)", calls)
-	}
-	calls = nil
-	smokeStopFlow(nil, true)
-	stdinTTY = func() bool { return false }
-	smokeStopFlow(nil, false)
-	if len(calls) != 0 {
-		t.Fatalf("calls = %v, want none for --json / no TTY", calls)
-	}
-}
-
-// TestSmokeCmdIdlePinStartsRunsThenStops is the end-to-end ordering check: for
-// an idle pinned model the command starts it once, settles the route hook's
-// async LiteLLM proxy restart, then runs the agent row, then runs the stop
-// flow, and a FAILed row triggers smokeExit(1) only after the stop flow — so
-// the deferred cleanup is never skipped by the exit. The wait belongs before
-// the row and not after it: the row's one-shot prompt goes through the proxy,
-// so a model wt itself just started would report a spurious FAIL against a
-// mid-restart proxy or a route table that predates it.
-func TestSmokeCmdIdlePinStartsRunsThenStops(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	var events []string
-	oldStart := startModel
-	startModel = func(*config.Config, catalog.Row, bool) error {
-		events = append(events, "start")
-		return nil
-	}
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() { events = append(events, "wait") }
-	t.Cleanup(func() { waitPendingRoutes = oldWait })
-	oldRel, oldPick, oldTTY, oldExit := releaseSession, runStopPicker, stdinTTY, smokeExit
-	t.Cleanup(func() {
-		startModel, releaseSession, runStopPicker, stdinTTY, smokeExit = oldStart, oldRel, oldPick, oldTTY, oldExit
-	})
-	releaseSession = func() {}
-	runStopPicker = func(*config.Config) { events = append(events, "stop") }
-	stdinTTY = func() bool { return true }
-	smokeExit = func(code int) { events = append(events, fmt.Sprintf("exit%d", code)) }
-	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
-		events = append(events, "row")
-		*cleanup = func() error { return nil }
-		return smoke.StubOutcome("boom", 1)
-	}))
-
-	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/not-eligible:x"); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(events, ","); got != "start,wait,row,stop,exit1" {
-		t.Fatalf("events = %s, want start,wait,row,stop,exit1", got)
-	}
-}
-
-// TestResolveSmokeModelUnknown asserts a pinned id absent from the
-// registry entirely gets "unknown model".
-func TestResolveSmokeModelUnknown(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	_, err := resolveSmokeModel(cfg, themes.Default, "ollama/does-not-exist")
-	if err == nil || !strings.Contains(err.Error(), "unknown model") {
-		t.Fatalf("err = %v, want unknown model error", err)
-	}
-}
-
-// TestResolveSmokeModelNoModelNoTTY asserts omitting the model id without a
-// TTY fails clearly, pointing at passing a model id directly, instead of
-// trying to open a picker and failing opaquely.
-func TestResolveSmokeModelNoModelNoTTY(t *testing.T) {
-	stubStdinTTY(t, false)
-
-	cfg := smokeFixtureConfig(t)
-	_, err := resolveSmokeModel(cfg, themes.Default, "")
-	if err == nil || !strings.Contains(err.Error(), "needs a TTY") {
-		t.Fatalf("err = %v, want a TTY-required message", err)
-	}
-}
-
-// TestResolveSmokeModelNoneEligible asserts an empty eligible set errors
-// with actionable guidance instead of silently opening an empty picker.
-func TestResolveSmokeModelNoneEligible(t *testing.T) {
-	cfg := &config.Config{}
-	_, err := resolveSmokeModel(cfg, themes.Default, "")
-	if err == nil || !strings.Contains(err.Error(), "no models are available") {
-		t.Fatalf("err = %v, want a no-eligible-models message", err)
-	}
-}
-
-// TestResolveSmokeModelInteractivePicksViaTUI asserts that omitting the
-// model id on a TTY delegates to the shared tui.PickStartModel picker (the same
-// decorated list the wt agent flow uses) rather than a bare numbered
-// prompt, and resolves to whatever model the picker returns.
-func TestResolveSmokeModelInteractivePicksViaTUI(t *testing.T) {
-	stubStdinTTY(t, true)
-
-	oldPick := pickModelTUI
-	pickModelTUI = func(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
-		// Candidates now include idle start models, so pick the running one by id
-		// rather than relying on list order.
-		for _, m := range models {
-			if m.ID == "ollama/qwen3.8:27b-mlx" {
-				return m, true, nil
-			}
-		}
-		return models[0], true, nil
-	}
-	defer func() { pickModelTUI = oldPick }()
-
-	cfg := smokeFixtureConfig(t)
-	tgt, err := resolveSmokeModel(cfg, themes.Default, "")
-	if err != nil {
-		t.Fatalf("resolveSmokeModel: %v", err)
-	}
-	m, eligible := tgt.Row.Model, tgt.Agents
-	if m.ID != "ollama/qwen3.8:27b-mlx" {
-		t.Fatalf("got model %q, want the picker's returned model", m.ID)
-	}
-	if len(eligible) != 1 || eligible[0] != "claude" {
-		t.Fatalf("eligible agents = %v, want [claude]", eligible)
-	}
-}
-
-// TestResolveSmokeModelInteractiveCanceled asserts that canceling the TUI
-// picker (Esc/q/Ctrl+C) surfaces a clear error instead of silently
-// resolving to a zero-value model.
-func TestResolveSmokeModelInteractiveCanceled(t *testing.T) {
-	stubStdinTTY(t, true)
-
-	oldPick := pickModelTUI
-	pickModelTUI = func(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
-		return config.Model{}, false, nil
-	}
-	defer func() { pickModelTUI = oldPick }()
-
-	cfg := smokeFixtureConfig(t)
-	_, err := resolveSmokeModel(cfg, themes.Default, "")
-	if err == nil || !strings.Contains(err.Error(), "canceled") {
-		t.Fatalf("err = %v, want a canceled-picker message", err)
-	}
 }
 
 // TestFilterOnlyAgentsEmpty asserts an empty --only returns the eligible
@@ -552,209 +257,6 @@ func TestSmokePickerSkipsAgentlessRouteCheck(t *testing.T) {
 	}
 }
 
-// TestSmokeCmdFailedStartSkipsStopFlow verifies that when starting the pinned
-// idle model fails, wt smoke returns the error without opening the stop picker.
-// The picker belongs to a run that started something; offering it after a
-// failed start buries the error under an interactive prompt.
-func TestSmokeCmdFailedStartSkipsStopFlow(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	oldStart, oldRel, oldPick, oldTTY := startModel, releaseSession, runStopPicker, stdinTTY
-	t.Cleanup(func() { startModel, releaseSession, runStopPicker, stdinTTY = oldStart, oldRel, oldPick, oldTTY })
-	startModel = func(*config.Config, catalog.Row, bool) error { return errors.New("start failed") }
-	releaseSession = func() {}
-	pickerRan := false
-	runStopPicker = func(*config.Config) { pickerRan = true }
-	stdinTTY = func() bool { return true }
-
-	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/not-eligible:x"); err == nil || !strings.Contains(err.Error(), "start failed") {
-		t.Fatalf("err = %v, want the start failure", err)
-	}
-	if pickerRan {
-		t.Fatal("stop picker ran after a failed start")
-	}
-}
-
-// TestSmokeTimeoutDefaultsByLocation asserts an unset --timeout resolves to
-// the short cloud default for cloud (and unresolvable) models and the long
-// local default for local ones, and that an explicit value always wins. Local
-// models cold-prefill 10-40k-token agent preambles at tens of tok/s, taking
-// minutes; a cloud-sized budget would fail them spuriously.
-func TestSmokeTimeoutDefaultsByLocation(t *testing.T) {
-	cfg := &config.Config{Providers: []config.Provider{
-		{ID: "ollama", Location: config.LocationLocal},
-		{ID: "openrouter", Location: config.LocationCloud},
-	}}
-	local := config.Model{ID: "ollama/x", ProviderID: "ollama"}
-	cloud := config.Model{ID: "openrouter/y", ProviderID: "openrouter"}
-	unknown := config.Model{ID: "nope/z", ProviderID: "nope"}
-
-	if got := smokeTimeout(cfg, local, 0); got != smokeLocalTimeout {
-		t.Fatalf("local default = %s, want %s", got, smokeLocalTimeout)
-	}
-	if got := smokeTimeout(cfg, cloud, 0); got != smokeCloudTimeout {
-		t.Fatalf("cloud default = %s, want %s", got, smokeCloudTimeout)
-	}
-	if got := smokeTimeout(cfg, unknown, 0); got != smokeCloudTimeout {
-		t.Fatalf("unresolvable default = %s, want %s", got, smokeCloudTimeout)
-	}
-	if got := smokeTimeout(cfg, local, 42*time.Second); got != 42*time.Second {
-		t.Fatalf("explicit = %s, want 42s", got)
-	}
-}
-
-// TestSmokeCmdExplicitZeroTimeoutRejected verifies that passing --timeout 0
-// (or a negative value) through the command fails validation before anything is
-// started, even though an unset flag also defaults to 0. Without the
-// Changed("timeout") guard, 0 would silently mean "use the location default",
-// or reach the row timer and fail every row immediately.
-func TestSmokeCmdExplicitZeroTimeoutRejected(t *testing.T) {
-	for _, val := range []string{"0", "-5s"} {
-		cfg := smokeFixtureConfig(t)
-		oldStart, oldRel, oldPick, oldTTY := startModel, releaseSession, runStopPicker, stdinTTY
-		t.Cleanup(func() { startModel, releaseSession, runStopPicker, stdinTTY = oldStart, oldRel, oldPick, oldTTY })
-		started := false
-		startModel = func(*config.Config, catalog.Row, bool) error { started = true; return nil }
-		releaseSession = func() {}
-		runStopPicker = func(*config.Config) {}
-		stdinTTY = func() bool { return true }
-
-		_, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/not-eligible:x", "--timeout", val)
-		if err == nil || !strings.Contains(err.Error(), "timeout") {
-			t.Fatalf("--timeout %s: err = %v, want a timeout validation error", val, err)
-		}
-		if started {
-			t.Fatalf("--timeout %s: model was started despite invalid timeout", val)
-		}
-	}
-}
-
-// TestSmokeCmdAppliesLocalModelProfile verifies that wt smoke resolves and
-// applies a local-model profile for a matching agent×model pair. It populates
-// the app's precomputed profile state (a.profiles) with a model-tier profile
-// for claude, the way newApp() would after loading profiles.toml, and runs
-// smoke against a model that matches it. The smoke row is stubbed via
-// SetBuildAndRunForTest so no real agent binary runs. The test asserts that
-// the smoke run completes without error, proving the profile resolution and
-// application path doesn't crash (the profile's config_content is written to
-// a temp file and restored by the cleanup).
-func TestSmokeCmdAppliesLocalModelProfile(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	// Add a model-tier profile for claude that sets an env var and adds an arg.
-	store := profiles.Store{
-		Enabled: true,
-		Profiles: []profiles.Profile{
-			{
-				Agent: "claude",
-				Match: "model",
-				Model: "ollama/qwen3.8:27b-mlx",
-				Env:   map[string]string{"WT_PROFILE_TEST": "applied"},
-				Args:  []string{"--profile-test"},
-			},
-		},
-	}
-
-	var events []string
-	oldStart, oldRel, oldPick, oldTTY := startModel, releaseSession, runStopPicker, stdinTTY
-	t.Cleanup(func() {
-		startModel, releaseSession, runStopPicker, stdinTTY = oldStart, oldRel, oldPick, oldTTY
-	})
-	startModel = func(*config.Config, catalog.Row, bool) error { return nil }
-	releaseSession = func() {}
-	runStopPicker = func(*config.Config) {}
-	stdinTTY = func() bool { return false } // skip interactive stop picker
-	smokeExit = func(code int) {}           // prevent os.Exit(1) on a FAIL row
-
-	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
-		events = append(events, "row")
-		*cleanup = func() error { return nil }
-		return smoke.StubOutcome("ok", 0)
-	}))
-
-	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg, profiles: store}, "ollama/qwen3.8:27b-mlx"); err != nil {
-		t.Fatalf("smoke executed with error: %v", err)
-	}
-	if got := strings.Join(events, ","); got != "row" {
-		t.Fatalf("events = %s, want row", got)
-	}
-}
-
-// TestSmokeCmdRunningPinEnsuresRouteBeforeRows pins #192 for smoke: a target
-// that is already running skips the start, so no start hook writes its route.
-// Smoke checks the route and waits for the proxy before the first row, or a
-// model started outside wt reports a spurious FAIL on every row.
-func TestSmokeCmdRunningPinEnsuresRouteBeforeRows(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	events := stubEnsureRoute(t)
-	oldStart, oldRel, oldPick, oldTTY, oldExit := startModel, releaseSession, runStopPicker, stdinTTY, smokeExit
-	t.Cleanup(func() {
-		startModel, releaseSession, runStopPicker, stdinTTY, smokeExit = oldStart, oldRel, oldPick, oldTTY, oldExit
-	})
-	startModel = func(*config.Config, catalog.Row, bool) error {
-		*events = append(*events, "start")
-		return nil
-	}
-	releaseSession = func() {}
-	runStopPicker = func(*config.Config) { *events = append(*events, "stop") }
-	stdinTTY = func() bool { return true }
-	smokeExit = func(code int) { *events = append(*events, fmt.Sprintf("exit%d", code)) }
-	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
-		*events = append(*events, "row")
-		*cleanup = func() error { return nil }
-		return smoke.StubOutcome("boom", 1)
-	}))
-
-	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/qwen3.8:27b-mlx"); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(*events, ","); got != "ensure:ollama/qwen3.8:27b-mlx,wait,row,stop,exit1" {
-		t.Fatalf("events = %s, want ensure:ollama/qwen3.8:27b-mlx,wait,row,stop,exit1", got)
-	}
-}
-
-// smokeRowDirs runs `wt smoke` on the fixture's running model with a stubbed
-// agent run and returns the directory the (single) row's agent was given,
-// whether it was a git repository while the row ran, and whether it still
-// exists once the command has returned. cwdFlag passes --cwd.
-func smokeRowDirs(t *testing.T, cwdFlag bool) (dir string, wasGitRepo, existsAfter bool) {
-	t.Helper()
-	cfg := smokeFixtureConfig(t)
-	stubEnsureRoute(t)
-	oldRel, oldPick, oldTTY := releaseSession, runStopPicker, stdinTTY
-	t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY = oldRel, oldPick, oldTTY })
-	releaseSession = func() {}
-	runStopPicker = func(*config.Config) {}
-	stdinTTY = func() bool { return false }
-	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, cwd string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
-		dir = cwd
-		_, err := os.Stat(filepath.Join(cwd, ".git"))
-		wasGitRepo = err == nil
-		*cleanup = func() error { return nil }
-		// Exit 0 with a --prompt override: exit-code-only, so the row passes
-		// and the command returns without smokeExit.
-		return smoke.StubOutcome("ok", 0)
-	}))
-
-	cmd := smokeDirectCmd(&app{hostSet: true, hostCfg: cfg})
-	// --cwd is a persistent flag of the root command; a bare smokeCmd has no
-	// parent to inherit it from.
-	cmd.Flags().Bool("cwd", false, "")
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	args := []string{"ollama/qwen3.8:27b-mlx", "--prompt", "say ok"}
-	if cwdFlag {
-		args = append(args, "--cwd")
-	}
-	cmd.SetArgs(args)
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if dir == "" {
-		t.Fatal("no row ran")
-	}
-	_, err := os.Stat(dir)
-	return dir, wasGitRepo, err == nil
-}
-
 // TestSmokeCmdRunsRowsInAFreshGitRepo pins #193: smoke runs each agent with
 // permission checks off, so by default a row runs in a fresh temporary git
 // repository — never the caller's directory, where a model's stray tool call
@@ -796,21 +298,6 @@ func TestSmokeCmdCwdFlagRunsInPlace(t *testing.T) {
 	}
 }
 
-// smokeRootCmd builds a bare smoke command the way TestSmokeToolFlagConflicts
-// does: a --cwd flag of its own (a bare smokeCmd has no parent to inherit it
-// from), captured output, and the caller's stdin choice.
-func smokeRootCmd(t *testing.T, cfg *config.Config, stdin io.Reader, args ...string) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
-	t.Helper()
-	cmd := smokeDirectCmd(&app{hostSet: true, hostCfg: cfg})
-	cmd.Flags().Bool("cwd", false, "")
-	var out, errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetIn(stdin)
-	cmd.SetArgs(args)
-	return cmd, &out, &errOut
-}
-
 // TestSmokeCmdCwdAtRootWarnsAndProceeds checks wt smoke --cwd standing in a
 // repository root warns and proceeds, terminal or not: the root warning is
 // printed, no terminal gets no question (a question would read a pipe), and a
@@ -832,13 +319,13 @@ func TestSmokeCmdCwdAtRootWarnsAndProceeds(t *testing.T) {
 		{name: "terminal, no", tty: true, in: strings.NewReader("n\n"), wantErr: "approval missing: declined; nothing was launched"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := smokeFixtureConfig(t)
+			r := smokeRig(t, func(string, string, string, *func() error) smoke.ExecOutcome { return smoke.StubOutcome("ok", 0) })
 			stubStdinTTY(t, tc.tty)
 			root := sharedRootRepo(t)
 			t.Chdir(root)
 			notes := captureNotes(t)
 
-			cmd, _, _ := smokeRootCmd(t, cfg, tc.in, "--cwd", "ollama/does-not-exist")
+			cmd, _, _ := smokeRootCmd(t, r, tc.in, "--cwd", "ollama/does-not-exist")
 			err := cmd.Execute()
 			if tc.name == "terminal, no" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) || exitcode.Of(err) != 3 {
@@ -864,31 +351,159 @@ func TestSmokeCmdCwdAtRootWarnsAndProceeds(t *testing.T) {
 	}
 }
 
+// TestSmokeInheritsTheRootCwdFlag pins the wiring the tests above assume:
+// smokeRowDirs registers a --cwd flag of its own, because a bare smokeCmd has
+// no parent, so on their own they would still pass if the root command lost
+// the flag — and `wt smoke --cwd` would then be an unknown-flag error.
+func TestSmokeInheritsTheRootCwdFlag(t *testing.T) {
+	sc, _, err := rootCmd().Find([]string{"smoke"})
+	if err != nil || sc.Name() != "smoke" {
+		t.Fatalf("no smoke command under the root command (err = %v)", err)
+	}
+	f := sc.InheritedFlags().Lookup("cwd")
+	if f == nil {
+		t.Fatal("wt smoke does not inherit --cwd from the root command")
+	}
+	if f.Value.Type() != "bool" {
+		t.Fatalf("--cwd is a %s flag, want bool: runSmoke reads it with GetBool", f.Value.Type())
+	}
+	if !strings.Contains(f.Usage, "current directory") {
+		t.Errorf("--cwd usage %q does not say what it does for wt smoke (runs in the current directory)", f.Usage)
+	}
+}
+
+// smokeRig is a fake model server holding one cloud row, openrouter/a, that
+// every model-driven agent can run, with each row's agent run replaced by fn
+// (the agent's name, the prompt, the row's directory and its cleanup). No
+// agent process runs and no registry is read.
+func smokeRig(t *testing.T, fn func(agentName, prompt, cwd string, cleanup *func() error) smoke.ExecOutcome) *remoteRig {
+	t.Helper()
+	r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+	t.Cleanup(smoke.SetGatewayRunForTest(func(_ agents.Gateway, _ []config.Model, agentName string, _ config.Model, prompt, cwd string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+		*cleanup = func() error { return nil }
+		return fn(agentName, prompt, cwd, cleanup)
+	}))
+	oldExit := smokeExit
+	t.Cleanup(func() { smokeExit = oldExit })
+	smokeExit = func(int) {}
+	return r
+}
+
+// smokeRootCmd builds a bare smoke command on r's app: a --cwd flag of its own
+// (a bare smokeCmd has no parent to inherit it from), captured output, and the
+// caller's stdin choice.
+func smokeRootCmd(t *testing.T, r *remoteRig, stdin io.Reader, args ...string) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	cmd := smokeCmd(r.a)
+	cmd.Flags().Bool("cwd", false, "")
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetIn(stdin)
+	cmd.SetArgs(args)
+	return cmd, &out, &errOut
+}
+
+// smokeRowDirs runs `wt smoke` on the fake's cloud model with a stubbed agent
+// run and returns the directory the (single) row's agent was given, whether
+// it was a git repository while the row ran, and whether it still exists once
+// the command has returned. cwdFlag passes --cwd.
+func smokeRowDirs(t *testing.T, cwdFlag bool) (dir string, wasGitRepo, existsAfter bool) {
+	t.Helper()
+	r := smokeRig(t, func(_, _, cwd string, _ *func() error) smoke.ExecOutcome {
+		dir = cwd
+		_, err := os.Stat(filepath.Join(cwd, ".git"))
+		wasGitRepo = err == nil
+		// Exit 0 with a --prompt override: exit-code-only, so the row passes.
+		return smoke.StubOutcome("ok", 0)
+	})
+	args := []string{"openrouter/a", "--only", "claude", "--prompt", "say ok"}
+	if cwdFlag {
+		args = append(args, "--cwd")
+	}
+	cmd, _, _ := smokeRootCmd(t, r, strings.NewReader(""), args...)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if dir == "" {
+		t.Fatal("no row ran")
+	}
+	_, err := os.Stat(dir)
+	return dir, wasGitRepo, err == nil
+}
+
+// TestSmokeCmdExplicitZeroTimeoutRejected verifies that passing --timeout 0
+// (or a negative value) through the command fails validation before anything is
+// started, even though an unset flag also defaults to 0. Without the
+// Changed("timeout") guard, 0 would silently mean "use the location default",
+// or reach the row timer and fail every row immediately.
+func TestSmokeCmdExplicitZeroTimeoutRejected(t *testing.T) {
+	for _, val := range []string{"0", "-5s"} {
+		r := newRemoteRig(t, localRow("omlx/q", modelapi.StateStopped, modelapi.ActionStart, nil))
+		stubGatewayRows(t, r, passRows)
+		run := smokeOnFake(t, r, "omlx/q", "--only", "claude", "--timeout", val)
+		if run.err == nil || !strings.Contains(run.err.Error(), "timeout") {
+			t.Fatalf("--timeout %s: err = %v, want a timeout validation error", val, run.err)
+		}
+		if n := r.f.count("POST"); n != 0 {
+			t.Fatalf("--timeout %s: the model server was asked to start or register (%d POSTs) despite an invalid timeout", val, n)
+		}
+	}
+}
+
+// TestSmokeCmdAppliesLocalModelProfile verifies that wt smoke resolves and
+// applies a local-model profile for a matching agent×model pair: the app's
+// precomputed profile state (a.profiles) holds a model-tier profile for
+// claude, the way newApp() would after loading profiles.toml, and smoke runs
+// against the model it matches. The row's agent run is stubbed, and it is
+// handed the profile applier. The run completes without error, proving the
+// profile resolution and application path doesn't crash.
+func TestSmokeCmdAppliesLocalModelProfile(t *testing.T) {
+	r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+	r.a.profiles = profiles.Store{
+		Enabled: true,
+		Profiles: []profiles.Profile{{
+			Agent: "claude", Match: "model", Model: "openrouter/a",
+			Env:  map[string]string{"WT_PROFILE_TEST": "applied"},
+			Args: []string{"--profile-test"},
+		}},
+	}
+	var rows []string
+	appliers := 0
+	t.Cleanup(smoke.SetGatewayRunForTest(func(_ agents.Gateway, _ []config.Model, agentName string, _ config.Model, _, _ string, _ time.Duration, pa smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+		rows = append(rows, agentName)
+		if pa != nil {
+			appliers++
+		}
+		*cleanup = func() error { return nil }
+		return smoke.StubOutcome("ok", 0)
+	}))
+	run := smokeOnFake(t, r, "openrouter/a", "--only", "claude")
+	if run.err != nil {
+		t.Fatalf("smoke executed with error: %v\n%s", run.err, run.stderr)
+	}
+	if strings.Join(rows, ",") != "claude" || appliers != 1 {
+		t.Fatalf("rows = %v, appliers = %d; want one claude row handed the profile applier", rows, appliers)
+	}
+}
+
 // TestSmokeCmdRowDirFailureFailsTheRow pins what a row directory that cannot
 // be created costs: that row FAILs with the reason and the report is still
 // printed. Returning the error instead would discard every row that had
 // already run — minutes of a local model's time — and leave a --json caller
 // with no report at all.
 func TestSmokeCmdRowDirFailureFailsTheRow(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	stubEnsureRoute(t)
-	oldRel, oldPick, oldTTY, oldExit := releaseSession, runStopPicker, stdinTTY, smokeExit
-	t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY, smokeExit = oldRel, oldPick, oldTTY, oldExit })
-	releaseSession = func() {}
-	runStopPicker = func(*config.Config) {}
-	stdinTTY = func() bool { return false }
+	ran := false
+	r := smokeRig(t, func(string, string, string, *func() error) smoke.ExecOutcome {
+		ran = true
+		return smoke.StubOutcome("ok", 0)
+	})
 	exitCode := 0
 	smokeExit = func(code int) { exitCode = code }
-	ran := false
-	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
-		ran = true
-		*cleanup = func() error { return nil }
-		return smoke.StubOutcome("ok", 0)
-	}))
 
 	// Set last: a temp root that does not exist makes os.MkdirTemp fail.
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
-	out, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/qwen3.8:27b-mlx", "--json")
+	out, _, err := runSmokeCmd(r.a, "openrouter/a", "--only", "claude", "--json")
 	if err != nil {
 		t.Fatalf("smoke returned %v instead of reporting the row", err)
 	}
@@ -909,34 +524,22 @@ func TestSmokeCmdRowDirFailureFailsTheRow(t *testing.T) {
 
 // TestSmokeCmdInterruptEndsTheRun pins Ctrl+C during a row: the row's
 // directory is still removed, no further agent runs, the rows that did run
-// are still reported, the stop picker is not shown, and the command fails.
-// Before, the signal killed wt outright: no cleanup ran and the row's
-// directory stayed in the temp dir.
+// are still reported, and the command fails without a usage block. Before,
+// the signal killed wt outright: no cleanup ran and the row's directory
+// stayed in the temp dir.
 func TestSmokeCmdInterruptEndsTheRun(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	cfg.Agents = append(cfg.Agents, config.Agent{Name: "pi", SupportedProviders: []string{"ollama"}})
-	stubEnsureRoute(t)
-	oldRel, oldPick, oldTTY, oldExit, oldSig := releaseSession, runStopPicker, stdinTTY, smokeExit, smokeSignalCtx
-	t.Cleanup(func() {
-		releaseSession, runStopPicker, stdinTTY, smokeExit, smokeSignalCtx = oldRel, oldPick, oldTTY, oldExit, oldSig
-	})
-	releaseSession = func() {}
-	picked := false
-	runStopPicker = func(*config.Config) { picked = true }
-	stdinTTY = func() bool { return true }
-	smokeExit = func(int) {}
 	ctx, cancel := context.WithCancel(context.Background())
-	smokeSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, cancel }
-
 	var dirs []string
-	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, cwd string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+	r := smokeRig(t, func(_, _, cwd string, _ *func() error) smoke.ExecOutcome {
 		dirs = append(dirs, cwd)
-		*cleanup = func() error { return nil }
 		cancel() // Ctrl+C lands while the first agent runs
 		return smoke.StubOutcome("ok", 0)
-	}))
+	})
+	oldSig := smokeSignalCtx
+	t.Cleanup(func() { smokeSignalCtx = oldSig })
+	smokeSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 
-	out, errOut, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/qwen3.8:27b-mlx", "--prompt", "say ok")
+	out, errOut, err := runSmokeCmd(r.a, "openrouter/a", "--only", "claude,pi", "--prompt", "say ok")
 	if err == nil || !strings.Contains(err.Error(), "interrupted") {
 		t.Fatalf("err = %v, want an interrupted error", err)
 	}
@@ -948,9 +551,6 @@ func TestSmokeCmdInterruptEndsTheRun(t *testing.T) {
 	}
 	if !strings.Contains(out, "claude") && !strings.Contains(out, "pi") {
 		t.Errorf("the row that ran was not reported:\n%s", out)
-	}
-	if picked {
-		t.Error("the stop picker was shown after an interrupt")
 	}
 	// An interrupt is not a usage mistake: the flag summary must not follow it.
 	// (cobra prints it to the command's out writer when one is set.)
@@ -966,16 +566,8 @@ func TestSmokeCmdInterruptEndsTheRun(t *testing.T) {
 func TestSmokeCmdRemovesTheAgentStateDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	cfg := smokeFixtureConfig(t)
-	stubEnsureRoute(t)
-	oldRel, oldPick, oldTTY := releaseSession, runStopPicker, stdinTTY
-	t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY = oldRel, oldPick, oldTTY })
-	releaseSession = func() {}
-	runStopPicker = func(*config.Config) {}
-	stdinTTY = func() bool { return false }
 	var stateDir string
-	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, _ string, cwd string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
-		*cleanup = func() error { return nil }
+	r := smokeRig(t, func(_, _, cwd string, _ *func() error) smoke.ExecOutcome {
 		// What claude does on a real run, keyed on the directory it sees.
 		real, err := filepath.EvalSymlinks(cwd)
 		if err != nil {
@@ -986,37 +578,16 @@ func TestSmokeCmdRemovesTheAgentStateDir(t *testing.T) {
 			t.Error(err)
 		}
 		return smoke.StubOutcome("ok", 0)
-	}))
+	})
 
-	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/qwen3.8:27b-mlx", "--prompt", "say ok"); err != nil {
-		t.Fatal(err)
+	if _, errOut, err := runSmokeCmd(r.a, "openrouter/a", "--only", "claude", "--prompt", "say ok"); err != nil {
+		t.Fatalf("%v\n%s", err, errOut)
 	}
 	if stateDir == "" {
 		t.Fatal("no row ran")
 	}
 	if _, err := os.Stat(stateDir); err == nil {
 		t.Fatalf("claude's project directory %s was left behind", stateDir)
-	}
-}
-
-// TestSmokeInheritsTheRootCwdFlag pins the wiring the tests above assume:
-// smokeRowDirs registers a --cwd flag of its own, because a bare smokeCmd has
-// no parent, so on their own they would still pass if the root command lost
-// the flag — and `wt smoke --cwd` would then be an unknown-flag error.
-func TestSmokeInheritsTheRootCwdFlag(t *testing.T) {
-	sc, _, err := rootCmd().Find([]string{"smoke"})
-	if err != nil || sc.Name() != "smoke" {
-		t.Fatalf("no smoke command under the root command (err = %v)", err)
-	}
-	f := sc.InheritedFlags().Lookup("cwd")
-	if f == nil {
-		t.Fatal("wt smoke does not inherit --cwd from the root command")
-	}
-	if f.Value.Type() != "bool" {
-		t.Fatalf("--cwd is a %s flag, want bool: runSmoke reads it with GetBool", f.Value.Type())
-	}
-	if !strings.Contains(f.Usage, "current directory") {
-		t.Errorf("--cwd usage %q does not say what it does for wt smoke (runs in the current directory)", f.Usage)
 	}
 }
 
@@ -1039,26 +610,17 @@ func TestSmokeToolFlagConflicts(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cfg := smokeFixtureConfig(t)
-			oldRel, oldPick, oldTTY, oldExit := releaseSession, runStopPicker, stdinTTY, smokeExit
-			t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY, smokeExit = oldRel, oldPick, oldTTY, oldExit })
-			releaseSession = func() {}
-			runStopPicker = func(*config.Config) {}
-			stdinTTY = func() bool { return false }
-			smokeExit = func(int) {}
-
-			cmd := smokeDirectCmd(&app{hostSet: true, hostCfg: cfg})
-			// A bare smokeCmd has no parent, so --cwd is registered here.
-			cmd.Flags().Bool("cwd", false, "")
-			cmd.SetOut(&bytes.Buffer{})
-			cmd.SetErr(&bytes.Buffer{})
-			cmd.SetArgs(c.args)
+			r := smokeRig(t, func(string, string, string, *func() error) smoke.ExecOutcome { return smoke.StubOutcome("ok", 0) })
+			cmd, _, _ := smokeRootCmd(t, r, strings.NewReader(""), c.args...)
 			err := cmd.Execute()
 			if err == nil {
 				t.Fatalf("err = nil, want a %q error", c.want)
 			}
 			if !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("err = %v, want it to mention %q", err, c.want)
+			}
+			if n := len(r.f.reqs()); n != 0 {
+				t.Errorf("the model server got %d requests before the usage error: %v", n, r.f.reqs())
 			}
 		})
 	}
@@ -1071,18 +633,9 @@ func TestSmokeToolFlagConflicts(t *testing.T) {
 // forces a tool call, and its absence from the prompt is what stops an agent
 // that echoes its prompt from passing without reading anything.
 func TestSmokeToolsPlantsTheNonceInTheRowDirectory(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	stubEnsureRoute(t)
-	oldRel, oldPick, oldTTY, oldExit := releaseSession, runStopPicker, stdinTTY, smokeExit
-	t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY, smokeExit = oldRel, oldPick, oldTTY, oldExit })
-	releaseSession = func() {}
-	runStopPicker = func(*config.Config) {}
-	stdinTTY = func() bool { return false }
-	smokeExit = func(int) {}
-
 	var prompt, dir string
 	var files map[string]string
-	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, p string, cwd string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+	r := smokeRig(t, func(_, p, cwd string, _ *func() error) smoke.ExecOutcome {
 		prompt, dir = p, cwd
 		files = map[string]string{}
 		entries, err := os.ReadDir(cwd)
@@ -1100,12 +653,11 @@ func TestSmokeToolsPlantsTheNonceInTheRowDirectory(t *testing.T) {
 			}
 			files[e.Name()] = string(b)
 		}
-		*cleanup = func() error { return nil }
 		return smoke.StubOutcome("ok", 0)
-	}))
+	})
 
-	if _, _, err := runSmokeDirectCmd(&app{hostSet: true, hostCfg: cfg}, "ollama/qwen3.8:27b-mlx", "--tools"); err != nil {
-		t.Fatal(err)
+	if _, errOut, err := runSmokeCmd(r.a, "openrouter/a", "--only", "claude", "--tools"); err != nil {
+		t.Fatalf("%v\n%s", err, errOut)
 	}
 	if dir == "" {
 		t.Fatal("no row ran")

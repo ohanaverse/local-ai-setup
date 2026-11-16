@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
 // TestStartHasNoJSONOrPlanFlag pins the removal of `wt start --json` and
@@ -14,10 +16,8 @@ import (
 func TestStartHasNoJSONOrPlanFlag(t *testing.T) {
 	for _, flag := range []string{"--json", "--plan"} {
 		t.Run(flag, func(t *testing.T) {
-			cfg := loadingFixture(t)
-			started := stubLifecycleStart(t, nil)
-			driver := stubStartDriver(t, nil)
-			c := startCmd(&app{hostSet: true, hostCfg: cfg})
+			r := newRemoteRig(t, localRow("omlx/c", modelapi.StateStopped, modelapi.ActionStart, nil))
+			c := startCmd(r.a)
 			var out, errOut bytes.Buffer
 			c.SetOut(&out)
 			c.SetErr(&errOut)
@@ -26,8 +26,8 @@ func TestStartHasNoJSONOrPlanFlag(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "unknown flag: "+flag) {
 				t.Fatalf("err = %v, want cobra's unknown flag: %s", err, flag)
 			}
-			if len(*started) != 0 || driver.called || out.Len() != 0 {
-				t.Errorf("starts = %d, driver called = %v, stdout = %q; want nothing done", len(*started), driver.called, out.String())
+			if n := len(r.f.reqs()); n != 0 || out.Len() != 0 {
+				t.Errorf("model server requests = %d, stdout = %q; want nothing done", n, out.String())
 			}
 		})
 	}

@@ -68,10 +68,9 @@ env = { ANTHROPIC_DEFAULT_HAIKU_MODEL = "ollama/small-from-the-profile" }
 		Protocols: []config.Protocol{config.ProtocolAnthropic},
 		Auth:      config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"},
 	}}}
-	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 	m := config.Model{ID: "ollama/big", ModelName: "big", ProviderID: "ollama"}
 
-	cmd, err := agents.BuildLaunchCmd("claude", m, t.TempDir(), false, cfg, nil)
+	cmd, _, err := agents.BuildLaunchCmdGateway("claude", m, t.TempDir(), false, agents.Gateway{Origin: "http://localhost:4000", Token: "sk-test"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

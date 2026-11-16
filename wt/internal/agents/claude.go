@@ -17,8 +17,6 @@ type claudeDriver struct{}
 
 func (claudeDriver) YoloFlag() string { return "--dangerously-skip-permissions" }
 
-func (claudeDriver) Protocols() []Protocol { return []Protocol{config.ProtocolAnthropic} }
-
 func (claudeDriver) InstructionPointers() []InstructionPointer {
 	return []InstructionPointer{
 		{Path: "CLAUDE.md", Content: "@AGENTS.md\n"},
@@ -61,11 +59,9 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	}
 
 	// The Anthropic client needs a non-empty auth token even when the
-	// endpoint doesn't validate it (e.g. ollama's direct gateway, where
-	// r.APIKey resolves to "" for an auth.type=none provider); fall back
-	// to the "ollama" placeholder only when ResolveRoute gave us no real
-	// key, so a direct-mode provider with a configured secret_ref (not
-	// just ollama) actually authenticates with it.
+	// endpoint doesn't validate it; fall back to the "ollama" placeholder
+	// only when the route carries no key (a gateway route always carries
+	// the gateway token).
 	token := r.APIKey
 	if token == "" {
 		token = "ollama"

@@ -11,7 +11,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
-// resolveModelRemote is resolveModel over the model server's rows. With a pin
+// resolveModelRemote resolves a launch's model over the model server's rows. With a pin
 // it asks the server to resolve it (the id goes in the query): the server's
 // unknown-model message and a blocked row's block_reason are the errors, and a
 // start row comes back for the caller to start. Without a pin it lists the
@@ -19,7 +19,7 @@ import (
 // launch rows. The second result is the list rotation walks: registered rows
 // only, in Order, never a blocked or start row and never a discovered model.
 // One launchable row is the answer; several are "multiple models match". A pin
-// must also be one the agent can use under -T and -F, as in resolveModel.
+// must also be one the agent can use under -T and -F.
 //
 // Its errors (Catalog, Resolve, a block reason, an ineligible pin) come back
 // WITHOUT a still clause: the caller adds it.

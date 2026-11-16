@@ -102,63 +102,42 @@ Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define 
 
 **Old-binary delta:** a `wt` built before the registry-consumer merge (2026-08-28) serves its catalog from `~/.config/agent-wt/config.toml` `[[models]]` blocks (which still sit on disk as one-time migration output), not from `registry.toml`, and its picker misses registry-only entries. Same flags, different catalog; rebuild (Prerequisites) before trusting the picker.
 
-### 4. LiteLLM routing mode
+### 4. LiteLLM routing
 
-By default (routing off) wt agents dial providers directly — e.g. Ollama on
-`localhost:11434`. To route non-native traffic through the LiteLLM proxy
-(`localhost:4000`) and populate the dashboard, flip the routing switch with
-`wt litellm`. The switch lives in wt's own `~/.config/agent-wt/config.toml`
-(the `[litellm]` table):
+Every session reaches its non-native models through the model server
+(`wt-model serve`, configured under `[model-server]` in
+`~/.config/agent-wt/config.toml`; see [wt/docs/wt-session.md](../../wt/docs/wt-session.md)),
+whose gateway forwards to the LiteLLM proxy (`localhost:4000`). There is no
+routing switch and no direct route: a launch never dials a provider or the
+proxy itself. The `[litellm]` table in wt's `config.toml` holds only the
+proxy's URL and key, which the model server reads:
 
 ```bash
-wt litellm status   # on/off + url + api_key_set (key never printed)
-wt litellm on       # route non-native models through LiteLLM
-wt litellm off      # dial providers directly where possible
-wt litellm set --url http://localhost:4000 --api-key sk-…   # proxy URL/key wt uses
+wt litellm status   # url + api_key_set (key never printed)
+wt litellm set --url http://localhost:4000 --api-key sk-…   # proxy URL/key the model server uses
 ```
 
-This is a routing-policy-only toggle: it writes `enabled`/`url`/`api_key`
-into `[litellm]` and never starts, stops, or restarts the proxy (that stays
-the LaunchAgent job — guide 04 §5). Route management is separate and also
-wt-owned: `wt litellm sync` writes `config.yaml` (every configured cloud
-model, plus the running local models — an ollama model while it is pulled;
-`--dry-run` previews it), `wt litellm list` reads it back, and
-`wt start`/`wt stop` add and remove local-model routes automatically (see
+Its `enabled` key is retired: kept on save, read by nothing, and a true
+value prints one note per run. `wt litellm on` / `wt litellm off` are hidden
+stubs that exit 1. Route management is separate and also wt-owned:
+`wt litellm sync` writes `config.yaml` (every configured cloud model, plus
+the running local models — an ollama model while it is pulled; `--dry-run`
+previews it), `wt litellm list` reads it back, and the model server's start
+and stop jobs add and remove local-model routes automatically (see
 [04-litellm-config](04-litellm-config.md) §2 and §6).
 
-Two mechanisms stack on top of the on/off switch:
-
 - **No model is hidden for want of a route; the route is what makes it reachable.**
-  The picker has no routing column (#179): every native and cloud registry
-  model the agent supports is in the list, and local models are listed from
-  what is on disk or running, registered or not. A registry local model that
-  is not on disk, and a stopped `mlx_lm_server` pairing, have no row. What
-  decides whether a model is reachable through LiteLLM is its `config.yaml`
-  route — `wt litellm list` shows the set; a cloud model is routed by
-  `wt litellm sync` as soon as it is in the registry, and a local model by
-  `wt start`. A local model that is
-  already running when wt launches it has its route written at launch if it
-  is missing, and so does a registry cloud model whose route has gone
-  missing from `config.yaml`.
-- **Protocol forcing (can override `off`).** Agents declare wire protocols
-  (claude: `anthropic`; codex: `openai-responses`; copilot/opencode/pi:
-  `openai-chat`) and registry providers declare the protocols they serve
-  (ollama: `["anthropic","openai-chat"]`; default `["openai-chat"]`). With no
-  intersection wt routes through LiteLLM even with routing off, printing a
-  stderr notice (example — the model id is whatever you launched):
+  The picker has no routing column (#179): every native and cloud model the
+  agent supports is in the list, and local models are listed from what is on
+  disk or running on the model server's host, registered or not. A registry
+  local model that is not on disk, and a stopped `mlx_lm_server` pairing,
+  have no row. What decides whether a model is reachable through LiteLLM is
+  its `config.yaml` route — `wt litellm list` shows the set; a cloud model is
+  routed by `wt litellm sync` as soon as it is in the registry, and a local
+  model when the model server starts it.
 
-  ```text
-  wt: codex requires LiteLLM for ollama/qwen3.8:27b-mlx (no direct protocol overlap with provider "ollama") — routing through the proxy
-  ```
-
-  So codex (`openai-responses` only) has no direct path for any local
-  provider, and claude + openrouter forces LiteLLM too (`ResolveRoute` in
-  `internal/config/config.go`). If routing is then required but no URL is
-  configured, the launch errors pointing at `wt litellm set --url …
-  --api-key …` (or `wt litellm on`).
-
-In this mode the model name passed to agents is the registry id (e.g.
-`ollama/qwen3.8:27b-mlx`) — or the discovered id, for a local model with no
+The model name passed to agents is the gateway id — the registry id (e.g.
+`ollama/qwen3.8:27b-mlx`), or the discovered id for a local model with no
 registry entry — matching LiteLLM's `model_list` entries.
 
 ### 5. Rotation
@@ -172,7 +151,7 @@ registry entry — matching LiteLLM's `model_list` entries.
   ```
 
   Output is a single model id — e.g. `ollama/kimi-k2.7-code:cloud` (example; yours depends on your registry and last launch) — i.e. "the model after the last-launched one, walking the global list filtered to tag `code`". It prints only; it never writes state.
-- `rotation.state` is written by every single-model **launch**, through the picker or not (`Rotation.RecordFor()`), which also writes `last-picked.state` and appends to `usage.jsonl` (§8). A cancelled ollama warning and `esc` leave rotation untouched.
+- `rotation.state` is written by every single-model **launch**, through the picker or not (`Rotation.RecordFor()`), which also writes `last-picked.state` and appends to `usage.jsonl` (§8). `esc` leaves rotation untouched.
 - The picker's `> ` marker is read from `~/.config/agent-wt/last-picked.state`: the row launched last, which can be a slot profile (§10). Launching a slot profile moves the marker and **does not** move rotation: `rotation.state` keeps the last single-model launch, and the next rotated launch is what it would have been. When your last pick was a slot profile that is still usable, the cursor starts on it.
 
   ```bash

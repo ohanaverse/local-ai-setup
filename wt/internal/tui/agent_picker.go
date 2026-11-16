@@ -18,14 +18,10 @@ func realInstalled(bin string) bool { return agents.Installed(bin) }
 // agentItem is one row in the phaseAgent picker. command distinguishes
 // agents (require model layer) from commands (launch directly). issue is a
 // short, human-readable problem that prevents launch ("" = launchable).
-// passthrough marks an agent that is installed but has no config.toml
-// entry: Enter launches it directly with no model (issue #147). issue and
-// passthrough are mutually exclusive — buildAgentList sets at most one.
 type agentItem struct {
-	name        string
-	command     bool
-	issue       string
-	passthrough bool
+	name    string
+	command bool
+	issue   string
 }
 
 func (a agentItem) FilterValue() string { return a.name }
@@ -44,21 +40,17 @@ func (a agentItem) Description() string {
 	if a.command {
 		return "no model; runs passthrough commands or interactive shell"
 	}
-	if a.passthrough {
-		return "not configured — launches directly with no model"
-	}
 	return "agent: launches with a model"
 }
 
 // buildAgentList constructs the agent+command picker rows from the shared
 // agents.ListEntries helper. Each configured agent and registered command
 // appears once, sorted alphabetically; command classification and issue
-// text are preserved on each row. An installed agent with no config.toml
-// entry is marked passthrough (issue #147) instead of carrying
-// ListEntries' "not configured" issue, so the row is launchable — Enter
-// runs it bare, with no model. An uninstalled agent stays blocked with its
-// issue regardless of configured state: there is no binary to launch
-// either way. The installed check is threaded through the tui.installed
+// text are preserved on each row. An uninstalled agent is blocked with its
+// issue: there is no binary to launch. A session synthesizes an agent for
+// every model-driven driver config.toml does not name (R13), so a driver is
+// never "not configured" here; the old bare passthrough is gone. The
+// installed check is threaded through the tui.installed
 // seam so tests can stub it deterministically.
 func buildAgentList(cfg *config.Config) []list.Item {
 	entries := agents.ListEntries(cfg, installed)
@@ -70,8 +62,6 @@ func buildAgentList(cfg *config.Config) []list.Item {
 			// No issue, no passthrough — commands always launch directly.
 		case !e.Installed:
 			it.issue = agents.NotInstalledIssue
-		case !e.Configured:
-			it.passthrough = true
 		default:
 			it.issue = e.Issue
 		}

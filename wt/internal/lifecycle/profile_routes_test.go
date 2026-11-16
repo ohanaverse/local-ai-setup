@@ -472,8 +472,8 @@ func TestRestartProxyWithoutAURL(t *testing.T) {
 	stubRoutes(t, litellm.Result{}, nil)
 	restarts := fakeRestarter(t)
 	err := RestartProxy(context.Background(), routesCfg())
-	if !errors.Is(err, config.ErrLitellmUnconfigured) {
-		t.Fatalf("RestartProxy = %v, want an error wrapping config.ErrLitellmUnconfigured", err)
+	if !errors.Is(err, errProxyUnconfigured) {
+		t.Fatalf("RestartProxy = %v, want an error wrapping errProxyUnconfigured", err)
 	}
 	if n := restarts.Load(); n != 0 {
 		t.Fatalf("restarts = %d, want 0", n)
@@ -498,7 +498,7 @@ func TestProbeProxy(t *testing.T) {
 		{name: "answers", url: proxyURL, waits: 1},
 		{name: "a trailing slash is trimmed", url: proxyURL + "/", waits: 1},
 		{name: "does not answer", url: proxyURL, waitErr: down, wantErr: "the LiteLLM proxy does not answer at http://localhost:4000: " + down.Error(), wantIs: down, waits: 1},
-		{name: "no url", url: "", wantErr: "the LiteLLM proxy cannot be probed: " + config.ErrLitellmUnconfigured.Error(), wantIs: config.ErrLitellmUnconfigured},
+		{name: "no url", url: "", wantErr: "the LiteLLM proxy cannot be probed: " + errProxyUnconfigured.Error(), wantIs: errProxyUnconfigured},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

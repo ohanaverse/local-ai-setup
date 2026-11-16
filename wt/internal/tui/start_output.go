@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-
-	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 )
 
 // startOutputMax is how much of one start's output is kept. The engine
@@ -71,20 +69,6 @@ func (o *startOutput) textLocked() string {
 		what = "start"
 	}
 	return string(kept) + fmt.Sprintf("wt: … %d more bytes of %s output not kept\n", o.dropped+len(o.buf)-len(kept), what)
-}
-
-// RestartNotice takes the proxy restart's notices (lifecycle.RestartNoticer).
-// The in-progress one is for the waiting screen while the alt screen is up,
-// and is printed only once release has given the output a real terminal.
-func (o *startOutput) RestartNotice(n litellm.Notice) {
-	o.mu.Lock()
-	released := o.to != nil
-	o.mu.Unlock()
-	if n.InProgress && !released {
-		showDrain(n.Msg)
-		return
-	}
-	fmt.Fprintf(o, "wt: %s\n", n.Msg)
 }
 
 // take returns what has been kept so far and forgets it, for a reader that

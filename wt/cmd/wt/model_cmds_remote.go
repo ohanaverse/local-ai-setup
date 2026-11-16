@@ -113,7 +113,7 @@ func runStartRemote(ctx context.Context, out io.Writer, ms *modelSession, theme 
 		for i, r := range local {
 			models[i] = catalog.ToModel(r)
 		}
-		m, ok, perr := pickStartModelTUI(nil, models, theme)
+		m, ok, perr := pickStartModelTUI(models, theme)
 		if perr != nil {
 			return exitcode.New(1, perr, false)
 		}

@@ -24,7 +24,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 )
 
 // remoteAgentScript is the fake claude a remote launch runs: it sleeps
@@ -119,8 +118,8 @@ func fastModelClient(ep modelclient.Endpoint) *modelclient.Client {
 }
 
 // failOnRegistry makes every registry and local-provider seam fail the test
-// if it is reached: the registry file is garbage, the local inventory probe,
-// the ollama check, the route check and the refcount sweep all report.
+// if it is reached: the registry file is garbage and the local inventory
+// probe reports.
 func failOnRegistry(t *testing.T) {
 	t.Helper()
 	reg := filepath.Join(t.TempDir(), "registry.toml")
@@ -128,21 +127,12 @@ func failOnRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WT_REGISTRY", reg)
-	oldProbe, oldRoute, oldSweep := probeInventory, ensureModelRoute, sweepRefcounts
+	oldProbe := probeInventory
 	probeInventory = func(*config.Config) localmodels.Snapshot {
 		t.Error("the remote path probed a local provider")
 		return localmodels.Snapshot{}
 	}
-	ensureModelRoute = func(*config.Config, config.Model) bool {
-		t.Error("the remote path ran the launch-time route check")
-		return false
-	}
-	sweepRefcounts = func() { t.Error("the remote path swept the refcount file") }
-	t.Cleanup(ollamacheck.StubListForTest(func(string) ([]string, bool, error) {
-		t.Error("the remote path ran the ollama check")
-		return nil, true, nil
-	}))
-	t.Cleanup(func() { probeInventory, ensureModelRoute, sweepRefcounts = oldProbe, oldRoute, oldSweep })
+	t.Cleanup(func() { probeInventory = oldProbe })
 }
 
 // TestLaunchRemoteRegistersBeforeStart pins the body order of a remote launch
@@ -292,23 +282,17 @@ func TestLaunchRemoteEndsTheSessionBeforeExit(t *testing.T) {
 	}
 }
 
-// TestLaunchRemoteNeverOffersTheStopPickerOrRefcount proves a launch through
-// runLaunchPath with an endpoint configured reaches none of the registry
-// path's tail or set-up: the stop picker, the refcount release and sweep, the
-// registry's price notice, the ollama check and the route check all panic if
-// reached, and the agent still launches.
-func TestLaunchRemoteNeverOffersTheStopPickerOrRefcount(t *testing.T) {
+// TestLaunchRemoteReachesNoHostSeam proves a launch through runLaunchPath
+// with an endpoint configured reaches none of the host's set-up: the local
+// inventory probe panics if reached (the stop picker, the refcount, the
+// registry's price notice, the ollama check and the route check of the old
+// registry path are gone, and the boundary test keeps them out), and the
+// agent still launches.
+func TestLaunchRemoteReachesNoHostSeam(t *testing.T) {
 	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
-	oldPicker, oldRelease, oldSweep, oldNotice, oldRoute, oldTUI := runStopPicker, releaseSession, sweepRefcounts, emitPriceNotice, ensureModelRoute, tuiRun
-	t.Cleanup(func() {
-		runStopPicker, releaseSession, sweepRefcounts, emitPriceNotice, ensureModelRoute, tuiRun = oldPicker, oldRelease, oldSweep, oldNotice, oldRoute, oldTUI
-	})
-	runStopPicker = func(*config.Config) { panic("runStopPicker reached on the remote path") }
-	releaseSession = func() { panic("releaseSession reached on the remote path") }
-	sweepRefcounts = func() { panic("sweepRefcounts reached on the remote path") }
-	emitPriceNotice = func(*config.Config) { panic("emitPriceNotice reached on the remote path") }
-	ensureModelRoute = func(*config.Config, config.Model) bool { panic("ensureModelRoute reached on the remote path") }
-	t.Cleanup(ollamacheck.StubListForTest(func(string) ([]string, bool, error) { panic("ollamacheck reached on the remote path") }))
+	oldProbe, oldTUI := probeInventory, tuiRun
+	t.Cleanup(func() { probeInventory, tuiRun = oldProbe, oldTUI })
+	probeInventory = func(*config.Config) localmodels.Snapshot { panic("probeInventory reached on the remote path") }
 	tuiRun = nil // a nil func panics if called
 
 	cmd := &cobra.Command{}

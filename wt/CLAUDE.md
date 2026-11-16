@@ -50,13 +50,13 @@ shell-wt -W test -- npm test    # → exec npm test in .worktrees/test
 
 After the launched subprocess exits, the TUI and non-TUI paths run the same fixed sequence — [docs/wt-agents/README.md#post-exit-order](docs/wt-agents/README.md#post-exit-order). Change both paths together.
 
-- `survey.ReleaseSession()` runs before the stop picker; the summary line (`agents.Summary`) never affects the exit code.
+- The client session ends first (`runTail.End`, the TUI's `exitTail.end`); there is no stop picker (the model server stops an idle model after its grace; `survey.Picker`, `ReleaseSession` and `internal/refcount` were deleted with Task 19). The summary line (`agents.Summary`) never affects the exit code.
 - **wt exits with the agent's status on both paths, after the whole tail** (#412): non-TUI `os.Exit(ee.ExitCode())`; TUI `tui.Run` returns the error and `runTUI` makes an `exitCodeError`. **Never `os.Exit` inside `internal/tui`.**
-- A batch of stops costs one LiteLLM restart and one ollama wait (#379, #142); a stop ollama accepted and still lists at the bound is `*lifecycle.StillFinishingError`, not a failure.
-- A slot-profile session's tail is release → stop picker → summary (no survey, no price notice).
+- A batch of host stops (`wt stop <provider>`/`--all`) costs one LiteLLM restart and one ollama wait (#379, #142); a stop ollama accepted and still lists at the bound is `*lifecycle.StillFinishingError`, not a failure.
+- A slot-profile session's tail is end → summary (no survey, no price notice).
 - **There is no post-exit prompt.** `internal/exitprompt` (its `Offer`) is **deleted** (Task 304): nothing is asked when the agent exits and an untouched session worktree is never offered for removal — cleanup is user-driven (`wt worktrees`, `wt remove`). The agent's exit status (above) is the tail's only outcome. A `[launch] exit_prompt` key is tolerated and ignored (`config.LaunchState` round-trips it; no value is validated or consulted) and a non-empty value prints one note per process: `wt: note: config.toml: [launch] exit_prompt is no longer used and is ignored`.
 
-Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before changing the summary line, the stop picker, the stale-pricing notice, the survey, session handling, or profiles.
+Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before changing the summary line, the stale-pricing notice, the survey, session handling, or profiles.
 
 ## Session survey (Go)
 
@@ -71,7 +71,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters.
 
 - **Test seams are per-call values, not package globals** — pass hooks and inputs where the call happens (`rootmove.Engine.Hooks`, `cleanup.GatherInputs.PRList`/`PRBaseList`, `internal/lifecycle`'s `env` struct), so parallel tests cannot leak stub state into each other. A package-var seam (`var x = realX`, swapped and restored around the test) is the migrating exception, not the rule: convert it to per-call when you touch its package.
-- **Tests stay off the developer's machine**: each package's `TestMain` isolates what it reaches — `lifecycle.IsolateProcessesForTest()` (every process family's pidfile, signals, the wired-limit read), `tiers.IsolateForTest` (model-table packages), `config.IsolateConfigHomeForTest` (anything reaching `config.Dir()`), `gitenv.IsolateForTest()` (anything that can run git; `TestEveryPackageThatRunsGitIsolatesIt`). A new package or launch path needs the same (route check via `stubEnsureRoute(t)`); no test runs `psql`; scratch registries go through `WT_REGISTRY`.
+- **Tests stay off the developer's machine**: each package's `TestMain` isolates what it reaches — `lifecycle.IsolateProcessesForTest()` (every process family's pidfile, signals, the wired-limit read), `tiers.IsolateForTest` (model-table packages), `config.IsolateConfigHomeForTest` (anything reaching `config.Dir()`), `gitenv.IsolateForTest()` (anything that can run git; `TestEveryPackageThatRunsGitIsolatesIt`). A new package needs the same; a session path runs against a fake model server (`cmd/wt/boundary_test.go` keeps it off the registry and the lifecycle); no test runs `psql`; scratch registries go through `WT_REGISTRY`.
 - **Assert on unexported functions directly**; parsing rendered lipgloss output flakes under forced-color ANSI.
 - **A test that creates worktrees builds a fresh repo per case** (`t.TempDir()` + `gitInit`): one wrong success leaves `.worktrees/<name>`, and the path-collision error then masks every later case. Use a branch name like `topic`, not `feature`, when a case also needs `feature/<x>` (git forbids a ref that is both a leaf and a directory).
 - **A test that depends on filesystem case-sensitivity probes and skips** (write `CaseProbe`, stat `caseprobe`), and asserts on `git for-each-ref` output, never `refExists`: on a case-insensitive volume `show-ref` resolves `Feature/x` through `feature/x`'s ref file and says yes.
@@ -91,7 +91,7 @@ make -C .. test-all   # CI-equivalent: root lint + llmbench + modeltiers + wt
 
 ## Go module
 
-Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt`, `cmd/wt-model` plus `internal/{config,provider,tomlw,tiers,candidates,slotedit,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,gittest,scratchdir,launchwarn,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke,cleanup,dirtsnap,removal,rescue,rootmove,modelapi,sessionreg,modeljobs,modelgateway,modelserver}`.
+Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt`, `cmd/wt-model` plus `internal/{config,provider,tomlw,tiers,candidates,slotedit,cloudsync,rotation,usage,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,gittest,scratchdir,launchwarn,themes,tui,tuilayout,configeditor,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke,cleanup,dirtsnap,removal,rescue,rootmove,modelapi,modelclient,sessionreg,modeljobs,modelgateway,modelserver}`.
 
 **Never use the stock `toml.Encoder` on the registry** (`internal/tomlw` reproduces tomli-w's layout). `internal/spend` never takes the connection string as a `psql` argument (#282).
 
@@ -134,10 +134,10 @@ Full rules: [docs/internals/config-and-registry.md](docs/internals/config-and-re
 
 Every model row wt shows or resolves is built by `internal/catalog` from the agent's eligible list plus one live `localmodels.Inventory` snapshot (no stored flag). A row's action is **launch** (cloud, or local and running), **start** (local ollama/omlx/omlx-6bit/mtplx/rec/sushi, not running or still loading) or **block**.
 
-- **`config.Provider.Origin` is the one reading of a provider's address** (#348): probes, routes, direct routes and pi's `models.json` all use it, and so must any new reader. A test never binds or dials the mtplx default port 8003.
+- **`config.Provider.Origin` is the one reading of a provider's address** (#348): the probes and the LiteLLM routes use it, and so must any new reader. A test never binds or dials the mtplx default port 8003.
 - **`localmodels.ServedIDs` is the one answer to "what is this server serving"** (#201).
-- A `-M` pin is looked up among all rows (`catalog.Find`, else `catalog.MissingReason`); without `-M`, the non-TUI path picks only launch rows — only a pin may start a model.
-- **A slot-profile row is not a model row** (`Model` holds only `profile/<name>`, `Row.Profile` the rest): test `r.Profile != nil` before reading any other `Model` field, calling `ResolveRoute`, or launching/starting `Model`.
+- A `-M` pin is looked up among all rows (`catalog.Find`, else `catalog.MissingReason`, on the model server); without `-M`, the non-TUI path picks only launch rows of the server's catalog — only a pin may start a model.
+- **A slot-profile row is not a model row** (`Model` holds only `profile/<name>`, `Row.Profile` the rest): test `r.Profile != nil` before reading any other `Model` field, or launching/starting `Model`. A session resolves profiles against the model server's catalog only (`catalog.ResolveSlotProfileWire`).
 
 Read [docs/internals/local-models.md](docs/internals/local-models.md) before changing row policy, the inventory probes, omlx loaded-state detection, pin resolution, rotation, or `wt start`/`wt stop`.
 
@@ -146,11 +146,11 @@ Read [docs/internals/local-models.md](docs/internals/local-models.md) before cha
 The start/stop engine (`Start`, `Stop`, `BeginStops` + `SettleRoutes`); backends ollama (`Shared`), omlx (`Pool`), every process-server family (mtplx, rec and sushi, `Exclusive`; one spec-driven `processServer` backend, a `Process` row in `internal/provider/table.go`). rec is `ScopeMachine` (one instance per machine, found through `rec status`) and `ServedOnly` (no artifacts: only its registered `rec/flint` is listed). sushi is `ScopePort` and `ServedOnly`: one model-less `sushi serve` on port 12345 that loads the pack on the first request naming it, so wt lists no artifacts for it either.
 
 - **Anything that displaces a model needs `AllowReplace`** (`*OccupiedError`); unknown occupancy is `*OccupancyUnknownError`, never assumed empty. Other providers' models beside the target need `Options.Others` (#412); `--replace` never answers it.
-- **A start/stop wt performs updates `config.yaml`** through `internal/litellm` (route hook); `lifecycle.EnsureModelRoute` (#192) never fails a launch, a slot-profile launch uses the failing `profile_routes.go` calls.
-- **Call `WaitPendingRoutes()` on every process exit and before handing a model to an agent**: the `config.yaml` write is synchronous, the proxy restart and readiness wait are async. The restart goroutine runs on `context.WithoutCancel(ctx)` on purpose.
-- **A `Start` that returned nil is followed by one `SettleStart(ctx, out, cfg, target)`** (#343, #349); each package has one seam over it that its `TestMain` stubs (`lifecycleSettleStart` in `cmd/wt`, `settleStart` in `internal/tui`).
+- **A start/stop wt performs updates `config.yaml`** through `internal/litellm` (route hook). Only the host runs the engine (the model server's jobs, `wt stop <provider>`/`--all`); a session never starts, stops or routes a model in process.
+- **Call `WaitPendingRoutes()` on every host process exit and before handing a model to a client**: the `config.yaml` write is synchronous, the proxy restart and readiness wait are async. The restart goroutine runs on `context.WithoutCancel(ctx)` on purpose.
+- **A `Start` that returned nil is followed by one `SettleStart(ctx, out, cfg, target)`** (#343, #349), on the model server's start job.
 - **A failed start is printed once, by `main`** (#344): the root command silences cobra's `Error:` line for the whole tree, and `silenceUsageOnError` (the walk at the end of `rootCmd`) silences usage on every runnable subcommand except one carrying `usageOnMistakeAnnotation` (`stop`, `smoke`, which print usage themselves on a usage mistake; `TestEveryRunnableCommandSilencesUsage` pins the set). A new command needs nothing; `TestOneErrorLineThroughTheRealTree` shows the one-line shape.
-- **An ollama stop ollama accepted but has not carried out is `*StillFinishingError`, never nil** (#379); only the stop loop reads it as an outcome (exit 0). The TUI stops models only after the alt screen is gone.
+- **An ollama stop ollama accepted but has not carried out is `*StillFinishingError`, never nil** (#379); only the stop loop reads it as an outcome (exit 0). The TUI stops no model (`TestTUIStopsNoModel`).
 - **wt signals a process only after identifying it** (`server_loading.go`): a pid is never enough (user's own, a process server's exact argv on the provider's port, recorded start time, rechecked before SIGKILL). The pidfile stays a bare pid (llmbench shares it).
 - **An empty `Stop` means "signal the verified pid"** (sushi has no stop command, and running the bare binary is not a stop): `processServer.stop` calls `stopByPid`, which shares `signalVerifiedServer` with `stopLoadingServer` (SIGTERM to the group when wt recorded the start, else the pid alone; `stopGrace` 10 s; SIGKILL only if the same start time remains; the pidfile and `.wt` go once the process is gone; then `stopByPid` waits `stopTimeout` for the port to close). `loadingServer` refuses a pidfile pid <= 1 or wt's own. No verified pid: a port that does not answer is nothing to stop (nil), one that answers is `*NotStartedByWtError` ("… was not started by wt; stop it yourself"). `TestTableInvariants` requires `PidfileDefault`, `Subcommand` and `PortFlag` of a spec with an empty `Stop`. A sushi llmbench started has a bare-pid pidfile and no `.wt` record: `wt stop` still stops it when its argv matches, with no start-time check against pid reuse.
 - **`ProcessSpec.WarmupSeconds` and `ReadyHTTP`.** `WarmupSeconds` (contract key `warmup_seconds`; mtplx 120, rec 120, sushi 400; required and positive, `warmupBudget` fails a start without one) is the warmup window and the cap on each chat request. `ReadyHTTP` (contract kind `http-get`, `Path "/health"`) is ready on exactly HTTP 200 and names no model: sushi answers it before any pack is loaded, so the warmup performs the cold load and then `confirmLoaded` requires the exact id among the loaded models.
@@ -160,7 +160,7 @@ The start/stop engine (`Start`, `Stop`, `BeginStops` + `SettleRoutes`); backends
 - **The wired-limit preflight** (`wiredlimit.go`, `wiredLimitFamilies` gates it by family id, today `sushi`) runs in `start` before the others question and before any stop. It reads `sysctl -n iogpu.wired_limit_mb hw.memsize` (0 means 75% of `hw.memsize`) and needs `floor(total *.safetensors bytes * 11 / 10 / 1048576)` MiB (`ngram_table.bin` excluded; 49,506,491,792 bytes, i.e. 47,213 MiB of bytes, is 51,934 MiB). Below that it fails with `sudo sysctl iogpu.wired_limit_mb=59000` (resets on reboot); wt never sets the sysctl. What it cannot measure prints `wt: skipping the memory check (<why>)` and the start goes on. llmbench applies the same integer rule, gated by the contract's `wired_limit` (a lifecycle test pins `wiredLimitFamilies` to it) and reading the pack directory from the contract's `model_dir` (the contract test pins it to `DefaultModelDir`). A failed sushi warmup gets the fix appended only for eight phrases (`memoryRefusalMarkers`; the bare word `iogpu` is not one), pinned by a test on each side. A warmup request is capped at the time left in the `WarmupSeconds` window, so the budget is the most a warmup can take.
 - **A key the registry names goes with every probe of a process server** (`localmodels.FamilyAPIKeyErr`): a `secret_ref` that cannot be read ends a start before the spawn (`*KeyUnreadableError`); a refused key is `localmodels.ErrKeyRefused` (family `partial`, not `down`). rec's key (`exec:rec auth token`) also goes into its LiteLLM route. A `ScopeMachine` family's existing instance is adopted when it serves the target at the registry's address and asked about before it is replaced otherwise (details and known limits: `docs/internals/local-models.md`).
 
-Read [docs/internals/local-models.md](docs/internals/local-models.md#lifecycle-internallifecycle) before changing start/stop, the route hook, the launch-time route check, restart or readiness waits, or replace.
+Read [docs/internals/local-models.md](docs/internals/local-models.md#lifecycle-internallifecycle) before changing start/stop, the route hook, restart or readiness waits, or replace.
 
 ## Rotation (Go)
 
@@ -173,15 +173,15 @@ Details and pinned tests: [docs/internals/local-models.md](docs/internals/local-
 
 ## Agents (Go)
 
-Each agent registers a `Driver`; `BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)` is the shared constructor for both launch paths (it resolves one `config.Route` via `cfg.ResolveRoute(m, agents.ProtocolsFor(agent))`).
+Each agent registers a `Driver`; `BuildLaunchCmdGateway(agent, m, worktreePath, yolo, gw, models, extraArgs)` is the one launch constructor for both launch paths and `wt smoke` (its route is `agents.GatewayRoute(gw, m)`).
 
-- An empty agent/provider wire-protocol intersection forces LiteLLM regardless of the toggle — so **codex always routes through LiteLLM**. Litellm/forced routes use the registry id (`m.ID`); direct routes the provider-side name (`m.ModelName`).
+- **The route is always the model server's gateway**: there are no direct routes (`config.ResolveRoute`, the protocol intersection and `IsLitellm` were deleted with Task 19). `Route.ModelRef` is the gateway id (`m.GatewayID`, else `m.ID`); a native model gets the zero `Route` and never sees the gateway token.
 - **copilot uses the chat-completions wire (`WIRE_API=completions`)** — its `responses` wire drops leading characters.
 - **claude maps all four model slots on every non-native single-model launch** (`claudeSlotVars`); an applied profile's `env` is appended later and wins.
-- **claude declares a gateway model's context window** (#405): `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from the `context` of its `tiers.toml` entry **only when `context_basis` is `host`** (`claudeWindow`; #470: a `largest_row` window, or a file with no basis, is never declared; cloud models only, a local build has none). The single-model launch sets it unless the user's environment already has it; a slot profile sets the smallest window among the slots that have one, provided the default slot has one (`claudeSlotWindow`, #471; opusplan anchors on the smaller of opus and sonnet, none if either is unknown; a slot with no window is ignored, not a veto) unless the profile's env, `config_content.env` or the user's environment names it. The `loadTiers` seam is stubbed by tests and `tiers.IsolateForTest` closes the real file.
+- **claude declares a gateway model's context window** (#405): `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from the model's `HostContext` — the `context` of its host `tiers.toml` entry, which the model server reports **only when `context_basis` is `host`** (`claudeWindow`; #470: a `largest_row` window, or a file with no basis, is never declared; cloud models only, a local build has none). The single-model launch sets it unless the user's environment already has it; a slot profile sets the smallest window among the slots that have one, provided the default slot has one (`claudeSlotWindow`, #471; opusplan anchors on the smaller of opus and sonnet, none if either is unknown; a slot with no window is ignored, not a veto) unless the profile's env, `config_content.env` or the user's environment names it. The driver reads no `tiers.toml` (tests set `HostContext`).
 - agy is a native passthrough, not a command agent: `-A agy` without `-M` errors when more than one agy model is eligible.
 
-Read [docs/internals/agents.md](docs/internals/agents.md) before changing a driver, `Route`, an optional capability (`Seeder`, `Syncer`, `ArgSetter`, …), or `ollamacheck.Check`. Per-agent env/args: [docs/wt-agents/](docs/wt-agents/). New driver: the `wt-adding-a-wt-agent` skill.
+Read [docs/internals/agents.md](docs/internals/agents.md) before changing a driver, `Route`, or an optional capability (`Seeder`, `GatewaySyncer`, `ArgSetter`, …). Per-agent env/args: [docs/wt-agents/](docs/wt-agents/). New driver: the `wt-adding-a-wt-agent` skill.
 
 ## Profiles (`internal/profiles`)
 
@@ -194,10 +194,9 @@ Opt-in overlays from `~/.config/agent-wt/profiles.toml` (`profiles.Resolve`), ap
 
 **No flag points a claude launch at another LiteLLM** (the URL comes only from `[litellm]` in `config.toml`). To A/B a proxy setting, run a scratch `litellm --config <scratch>.yaml --port 4001` and start `claude` directly with the env `claudeDriver.BuildSlots` builds (`internal/agents/claude_slots.go`: `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`, per-slot `ANTHROPIC_DEFAULT_*_MODEL` plus `_NAME` in the `--settings` env JSON, `--model`). The scratch config holds the omlx key, so delete it afterwards.
 
-- **A slot profile is its own launch unit**: `launchSlotProfile` (`cmd/wt`) and `slot_flow.go` (`internal/tui`) run the same ten steps. Change both paths together.
-- **On a client session the twins are `launchSlotProfileRemote` (`cmd/wt`) and `beginRemoteSlotLaunch` (`slot_flow.go`)**: one catalog read, register every `Distinct()` slot model, start the local one only when `catalog.NeedsStart`, build against the gateway; `TestSlotFlowParity` (both packages, `internal/profiles/testdata/slot_launch_remote_parity.txt`) holds them to the same server calls. `profile slots rm|usage` never open a client.
-- **The file's problems are warnings, never a stopped wt** (`slotWarnings`; #418, #419).
-- **Fail closed, always the proxy, no file written**: nothing reads `cfg.IsLitellm()`; `config_content` travels only in inline `--settings`, the proxy token only in the process env.
+- **A slot profile is its own launch unit; the twins are `launchSlotProfileRemote` (`cmd/wt`) and `beginRemoteSlotLaunch` (`slot_flow.go`)**: one catalog read, register every `Distinct()` slot model, start the local one only when `catalog.NeedsStart`, build against the gateway; `TestSlotFlowParity` (both packages, `internal/profiles/testdata/slot_launch_remote_parity.txt`) holds them to the same server calls. `profile slots rm|usage` never open a client.
+- **The file's problems are warnings, never a stopped wt** (`slotWarningsRemote`; #418, #419).
+- **Fail closed, always the gateway, no file written**: `config_content` travels only in inline `--settings`, the gateway token only in the process env.
 - **Automatic profiles are never applied to a slot-profile launch** (`applySlotProfile`, never `applyProfileForLaunch`).
 - **A default may be an agent alias** (`SlotCapable.DefaultAlias`, #391): use `SlotCheck.RestSlot()`/`FilledOrder()`, never `Profile.Default`.
 - **Read each input file once per command** (`wt profile slots usage|candidates`: `tiers.LoadWithFreshness`, `usage.AllActivity`): a second parse re-reads a file that may have changed between them, so a report can mix two generations — and the duplicated I/O buys nothing.
@@ -206,9 +205,9 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md#profiles-inte
 
 ## Smoke test (`wt smoke`)
 
-`wt smoke [model-id]` runs a one-shot prompt through every agent eligible for one model, built like a real launch (`agents.BuildLaunchCmdInfo`), and reports PASS/FAIL/SKIP ([docs/wt-smoke.md](docs/wt-smoke.md)). Each row runs in its own temporary git repo unless `--cwd` (standing in a repository root that warns and proceeds, terminal or not); permission checks are off (yolo forced on except codex) and the directory is not a sandbox (#193). A model fallback is FAIL; the default prompt never contains its sentinel verbatim. `--tools` is the tool-call check (a nonce planted in the row's directory, read with a tool) and `--hops N` chains N dependent reads; both are exclusive with `--prompt` and `--cwd`, and their combination is validated before the model is resolved.
+`wt smoke [model-id]` runs a one-shot prompt through every agent eligible for one model, built like a real launch (`agents.BuildLaunchCmdGateway`), and reports PASS/FAIL/SKIP ([docs/wt-smoke.md](docs/wt-smoke.md)). Each row runs in its own temporary git repo unless `--cwd` (standing in a repository root that warns and proceeds, terminal or not); permission checks are off (yolo forced on except codex) and the directory is not a sandbox (#193). A model fallback is FAIL; the default prompt never contains its sentinel verbatim. `--tools` is the tool-call check (a nonce planted in the row's directory, read with a tool) and `--hops N` chains N dependent reads; both are exclusive with `--prompt` and `--cwd`, and their combination is validated before the model is resolved.
 
-**`runSmoke` always runs `runSmokeRemote`** (no model server configured: the refusal; `runSmokeDirect` is the dead registry path Task 19 deletes) (client session: `smoke.CandidatesWire`, one client session for the run, a start job only when `catalog.NeedsStart`, rows through `smoke.RunRowGateway`, no exit stop picker; a gateway 503 is rerun once, a gateway that stays down is SKIP, never FAIL; test seam `smoke.SetGatewayRunForTest`); the shared row loop is `(*app).runSmokeRows`. [docs/wt-smoke.md](docs/wt-smoke.md) "With a model server configured".
+**`runSmoke` always runs `runSmokeRemote`** (no model server configured: the refusal) (client session: `smoke.CandidatesWire`, one client session for the run, a start job only when `catalog.NeedsStart`, rows through `smoke.RunRowGateway`, no exit stop picker; a gateway 503 is rerun once, a gateway that stays down is SKIP, never FAIL; test seam `smoke.SetGatewayRunForTest`); the shared row loop is `(*app).runSmokeRows`. [docs/wt-smoke.md](docs/wt-smoke.md) "On the model server".
 
 Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row directories, yolo, process-group cleanup, env stripping, Ctrl+C, or timeouts (180s cloud, 900s local).
 
@@ -248,19 +247,19 @@ Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before
 
 ## TUI (Go)
 
-`internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`): worktree → agent+command → model picker → launch, plus starting, routing, slot-profile, replace-confirm and ollama-warning screens; a picker is skipped when its selection is resolved.
+`internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`): worktree → agent+command → model picker → launch, plus catalog, starting, launching and replace-confirm screens (every model comes from the model server); a picker is skipped when its selection is resolved.
 
 - **A view fits the terminal** (`internal/tuilayout`): every bubbles list screen renders through a `listFrame`, sized only by `fitTo` in `Update`; the worktree picker's row list is sized by `fitLists`, fits its row table (`rowtable.go` over `tuilayout.Columns`) to its width every frame and lays itself out with blank filler pinning the footer to the last terminal line (`TestEveryListPhaseFitsTheTerminal` covers both).
-- **The update goroutine never waits**: use non-blocking `tryEnsureModelRoute`; waits run in a command behind `phaseRouting` (`settleStart`, #343).
-- **A start prints into the flow, not onto the screen** (#275) and cannot be cancelled from the routing stage on (`pastCancel`).
-- **A slot-profile launch waits behind `phaseSlot`**; `flushRouteNotesAfterRun` settles any restart still owed on every way out.
+- **The update goroutine never waits**: every model-server call (catalog, resolve, start job, launch prep) runs in a command.
+- **A start is a job on the model server** (`remote_start.go`): its screen shows the job's step; ctrl+c detaches, `c` cancels the job.
+- **A slot-profile launch prepares behind the launching screen** (`beginRemoteSlotLaunch`); no route is written and no proxy restarted.
 - **A model table is priced once, when built** (`modelrows.go`): read `tableRow.price()`/`timePriced()`, never `Model.Cost`'s flat fields or a clock.
 - **TIER's score orders the picker's model rows** (descending, within the running-local and other bands) but is never routed on; a missing or unparseable `tiers.toml` is `-` and unscored, never an error.
 - A test that sets state by hand goes through `Update` before reading `View()`.
 
 > **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`) skip the TUI; `-W`/`--cwd` need a TTY when `-A` or `-M` is omitted. A launch warning's question is asked only on a terminal; with no TTY the warnings print and the launch proceeds (nothing is refused, and a new name is still created and announced).
 
-Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, start-on-select, the launch-time route check, or the model table.
+Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, start-on-select, or the model table.
 
 ## Worktree (Go)
 
@@ -309,7 +308,7 @@ Read [docs/internals/cleanup-and-removal.md](docs/internals/cleanup-and-removal.
 
 - **Change the wire types, the page and the fixture together** (#600): `internal/modelapi`, `docs/wt-model-server.md` and `../docs/contracts/model-api.sample.json` move in one change; so does any error message, code or the startup banner (`announceFormat`, which scripts parse).
 - **Never open the server without a token** (#600): `--token-file` is required on every address, loopback included, and `NewServer` refuses an empty token. The gateway replaces the client's credentials with the LiteLLM key from `[litellm]`; it never forwards them.
-- **Auto-stop is the only stop nobody asked for** (#600): it considers only models a session registered. Until the client phase lands, a model a host-local `wt` session uses can be auto-stopped (the pid refcount is invisible to it).
+- **Auto-stop is the only stop nobody asked for** (#600): it considers only models a session registered. Every `wt` session is a client of the model server since Task 18 and registers its models, so auto-stop sees them.
 - **`wt-model` is the server, `wt model` the registry command** (#600): write them that way in prose.
 - `Deps.Config` reloads the registry per request, job and scan. `cmd/wt-model`'s tests inject a fake `Deps` through `depsFactory`; its `TestMain` carries the four isolations (config home, git, tiers, lifecycle processes).
 

@@ -113,7 +113,7 @@ func TestPatchSavePreservesConcurrentLitellmChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reloaded.IsLitellm() || reloaded.LitellmAPIKey() != "sk-concurrent" {
+	if !reloaded.litellm.Enabled || reloaded.LitellmAPIKey() != "sk-concurrent" {
 		t.Fatalf("editor save clobbered concurrent litellm change: %+v", reloaded.litellm)
 	}
 	if !hasAgent(reloaded.Agents, "claude") {
@@ -158,7 +158,7 @@ func TestUpdateLitellmPreservesConcurrentAgentChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reloaded.IsLitellm() {
+	if !reloaded.litellm.Enabled {
 		t.Fatal("litellm process's own change was lost")
 	}
 	if !hasAgent(reloaded.Agents, "claude") {

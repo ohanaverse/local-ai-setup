@@ -2,12 +2,6 @@ package main
 
 import (
 	"fmt"
-	"strings"
-
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
 // othersFlag is the value of the root --others flag (#412): "" asks about
@@ -31,8 +25,8 @@ func (f *othersFlag) Set(v string) error {
 func (f *othersFlag) Type() string { return "keep|stop" }
 
 // othersMode is the process-wide --others answer, set by flag parsing and
-// read by driveStart, which every non-TUI start goes through (`wt start`,
-// `wt smoke`, a -M pin, a slot profile's local model). Like allowReplace it
+// read by every start a session asks the model server for (`wt start`,
+// `wt smoke`, a -M pin, a slot profile's local model, the picker). Like allowReplace it
 // is CLI mode state, not per-launch state. rootCmd resets it.
 var othersMode othersFlag
 
@@ -53,49 +47,4 @@ func (c othersChoice) String() string {
 		return "stop"
 	}
 	return "cancel"
-}
-
-// chooseOthers is a test seam over the others prompt on /dev/tty.
-var chooseOthers = promptOthers
-
-// legacyOthers is a lifecycle refusal's others in the form the prompt helpers
-// (answerer.go) take: each resident as the wire carries one (its label and
-// memory figure), and each family wt cannot read named with its address, as
-// the registry path has always worded it.
-func legacyOthers(cfg *config.Config, occ *lifecycle.OccupiedError) ([]modelapi.Resident, []string) {
-	others := make([]modelapi.Resident, len(occ.Others))
-	for i, r := range occ.Others {
-		others[i] = modelapi.Resident{ID: r.Entry.ModelID, Label: r.Label(), Stoppable: r.Stoppable, Figure: r.Figure()}
-	}
-	unknown := make([]string, len(occ.OthersUnknown))
-	for i, f := range occ.OthersUnknown {
-		unknown[i] = fmt.Sprintf("%s at %s", f, localmodels.FamilyOrigin(cfg, f))
-	}
-	return others, unknown
-}
-
-// legacyOthersCounts is how many wt sessions use each other resident, from
-// the refcount file (the registry path only).
-func legacyOthersCounts(occ *lifecycle.OccupiedError) map[string]int {
-	ids := make([]string, len(occ.Others))
-	for i, r := range occ.Others {
-		ids[i] = r.Entry.ModelID
-	}
-	if len(ids) == 0 {
-		return map[string]int{}
-	}
-	return sessionCounts(ids)
-}
-
-// othersCancelled is the error of a declined others question: what is still
-// loaded, by id.
-func othersCancelled(occ *lifecycle.OccupiedError) error {
-	ids := make([]string, len(occ.Others))
-	for i, r := range occ.Others {
-		ids[i] = r.Entry.ModelID
-	}
-	if len(ids) == 0 {
-		return declined("nothing was stopped")
-	}
-	return declined(strings.Join(ids, ", ") + " still loaded")
 }

@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -30,7 +28,7 @@ func tableTestRows() []tableRow {
 // rows with family "-" and cost "-". The header must not carry the EXPOSED
 // column removed by #179 (configured is exposed — there is no flag to show).
 func TestRenderTableHeaderAndCells(t *testing.T) {
-	tbl := renderTable(tableTestRows(), nil, "", nil, "")
+	tbl := renderTable(tableTestRows(), "", nil, "")
 	last := -1
 	for _, h := range []string{"FAMILY", "MODEL", "LOC", "STATUS", "RUNNING", "COST", "1D", "7D", "30D"} {
 		i := strings.Index(tbl.header, h)
@@ -65,7 +63,7 @@ func TestRenderTableHeaderAndCells(t *testing.T) {
 // it. This is what makes the header trustworthy — a drift would mislabel
 // every column.
 func TestRenderTableColumnsAlign(t *testing.T) {
-	tbl := renderTable(tableTestRows(), nil, "", nil, "")
+	tbl := renderTable(tableTestRows(), "", nil, "")
 	runes := func(s string) []rune { return []rune(s) }
 	// header includes the 4-rune prefix (ref column + marker) that Title() adds to rows
 	col := func(name string) int { return len(runes(tbl.header[:strings.Index(tbl.header, name)])) }
@@ -86,7 +84,7 @@ func TestRenderTableColumnsAlign(t *testing.T) {
 // starts it, only the last-launched row is marked, and the in-use ref count is
 // picked up.
 func TestRenderTableBlockedAndMarkers(t *testing.T) {
-	tbl := renderTable(tableTestRows(), nil, "", map[string]int{"openrouter/cheap": 2}, "omlx/Qwen3.8-27B-4bit")
+	tbl := renderTable(tableTestRows(), "", map[string]int{"openrouter/cheap": 2}, "omlx/Qwen3.8-27B-4bit")
 	if tbl.items[0].blocked != "" || tbl.items[1].blocked != "" {
 		t.Error("cloud and running rows must not be blocked")
 	}
@@ -109,44 +107,6 @@ func TestRenderTableBlockedAndMarkers(t *testing.T) {
 	}
 }
 
-// TestRenderTableDiscoveredSelectableUnderLitellm verifies a discovered model
-// is selectable with LiteLLM routing on, exactly as in direct mode (#179
-// Phase B): wt routes it under its discovered id, so the old "(not in
-// LiteLLM)" block would refuse a model the proxy serves. Under routing it is
-// labelled "(via proxy)" only when the route is forced, like any other row.
-func TestRenderTableDiscoveredSelectableUnderLitellm(t *testing.T) {
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
-		Agents:    []config.Agent{{Name: "opencode", SupportedProviders: []string{"omlx"}}},
-	}
-	row := tableRow{Row: catalog.Row{Model: config.Model{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal}, Location: config.LocationLocal, Status: catalog.StatusNew, Running: true, Discovered: true}}
-
-	for _, enabled := range []bool{false, true} {
-		cfg.SetLitellmForTest(config.LitellmState{Enabled: enabled, URL: "http://localhost:4000", APIKey: "sk-test"})
-		tbl := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
-		if it := tbl.items[0]; it.blocked != "" || it.exception != "" {
-			t.Errorf("litellm enabled=%v: blocked=%q exception=%q, want a selectable row", enabled, it.blocked, it.exception)
-		}
-	}
-}
-
-// TestRenderTableDiscoveredLitellmUnconfigured verifies that a discovered row
-// under enabled-but-unconfigured LiteLLM (no URL/key) is labelled
-// "(litellm required)" and stays launchable: a route error is reported on
-// Enter, like any launch row's.
-func TestRenderTableDiscoveredLitellmUnconfigured(t *testing.T) {
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
-		Agents:    []config.Agent{{Name: "opencode", SupportedProviders: []string{"omlx"}}},
-	}
-	cfg.SetLitellmForTest(config.LitellmState{Enabled: true})
-	row := tableRow{Row: catalog.Row{Model: config.Model{ID: "omlx/disc", ProviderID: "omlx", ModelName: "disc", Location: config.LocationLocal}, Location: config.LocationLocal, Status: catalog.StatusNew, Running: true, Discovered: true}}
-	tbl := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
-	if tbl.items[0].exception != "(litellm required)" || tbl.items[0].blocked != "" {
-		t.Errorf("exception=%q blocked=%q, want (litellm required) and no block", tbl.items[0].exception, tbl.items[0].blocked)
-	}
-}
-
 // TestRenderTableUnknownStatusAligns verifies a 7-rune "unknown" cell widens
 // the STATUS column for the whole table rather than pushing every later column
 // out of line — the header and the rows must agree, or RUNNING and COST start
@@ -164,7 +124,7 @@ func TestRenderTableDiscoveredLitellmUnconfigured(t *testing.T) {
 func TestRenderTableUnknownStatusAligns(t *testing.T) {
 	rows := tableTestRows()
 	rows[1].Status = catalog.StatusUnknown // running omlx row: widest status, non-empty RUNNING
-	tbl := renderTable(rows, nil, "", nil, "")
+	tbl := renderTable(rows, "", nil, "")
 	col := func(name string) int { return len([]rune(tbl.header[:strings.Index(tbl.header, name)])) }
 	line := func(i int) []rune { return []rune(strings.Repeat(" ", 4) + tbl.items[i].line) }
 	if got := string(line(1)[col("STATUS") : col("STATUS")+7]); got != "unknown" {
@@ -172,69 +132,6 @@ func TestRenderTableUnknownStatusAligns(t *testing.T) {
 	}
 	if got := string(line(1)[col("RUNNING") : col("RUNNING")+3]); got != "run" {
 		t.Errorf("RUNNING cell = %q (column drift after a widened STATUS)", got)
-	}
-}
-
-// TestRenderTableResolvesRoutesConcurrently pins that renderTable resolves
-// different rows' routes in parallel rather than one at a time: a slow
-// provider (e.g. a hung exec: secret_ref helper) must not add its own
-// latency on top of every other row's otherwise-fast resolution. Before this
-// fix, a sequential per-row loop meant N distinct slow providers summed
-// their costs into renderTable's total wall-clock time.
-func TestRenderTableResolvesRoutesConcurrently(t *testing.T) {
-	scriptDir := t.TempDir()
-	// Two DISTINCT scripts (not the same ref twice): config.ResolveSecret
-	// memoizes per exact ref string, so reusing one script for both
-	// providers would let the second resolution ride the first's cached
-	// result and pass even without this fix.
-	slowScript1 := filepath.Join(scriptDir, "slow1.sh")
-	slowScript2 := filepath.Join(scriptDir, "slow2.sh")
-	if err := os.WriteFile(slowScript1, []byte("#!/bin/sh\nsleep 1\necho sk-slow-1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(slowScript2, []byte("#!/bin/sh\nsleep 1\necho sk-slow-2\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &config.Config{
-		Providers: []config.Provider{
-			{ID: "slow-provider", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "api_key", BaseURL: "http://localhost:9001", SecretRef: "exec:" + slowScript1}},
-			{ID: "slow-provider-2", Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "api_key", BaseURL: "http://localhost:9002", SecretRef: "exec:" + slowScript2}},
-		},
-		Agents: []config.Agent{{Name: "opencode", SupportedProviders: []string{"slow-provider", "slow-provider-2"}}},
-	}
-	rows := []tableRow{
-		{Row: catalog.Row{Model: config.Model{ID: "slow-provider/m1", ProviderID: "slow-provider", ModelName: "m1"}, Status: catalog.StatusOK}},
-		{Row: catalog.Row{Model: config.Model{ID: "slow-provider-2/m2", ProviderID: "slow-provider-2", ModelName: "m2"}, Status: catalog.StatusOK}},
-	}
-
-	start := time.Now()
-	renderTable(rows, cfg, "opencode", nil, "")
-	elapsed := time.Since(start)
-
-	// Two distinct providers each with a ~1s exec: helper: sequential
-	// resolution would take >=2s, parallel resolution ~1s.
-	if elapsed > 1500*time.Millisecond {
-		t.Errorf("renderTable took %v resolving 2 distinct 1s-slow providers, want ~1s (parallel), not ~2s (sequential)", elapsed)
-	}
-}
-
-// TestRenderTableStartRowNotStartableWhenRouteUnresolvable verifies a
-// non-running local row whose route cannot resolve (LiteLLM on but
-// unconfigured) is blocked instead of startable. Starting it would spawn the
-// server — and possibly stop another model via replace — only for the launch to
-// fail at ResolveRoute afterwards.
-func TestRenderTableStartRowNotStartableWhenRouteUnresolvable(t *testing.T) {
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
-		Agents:    []config.Agent{{Name: "opencode", SupportedProviders: []string{"omlx"}}},
-	}
-	cfg.SetLitellmForTest(config.LitellmState{Enabled: true})
-	row := tableRow{Row: catalog.Row{Model: config.Model{ID: "omlx/x", ProviderID: "omlx", ModelName: "x", Location: config.LocationLocal}, Location: config.LocationLocal, Status: catalog.StatusOK}}
-	tbl := renderTable([]tableRow{row}, cfg, "opencode", nil, "")
-	it := tbl.items[0]
-	if it.start || it.blocked == "" || it.exception != "(litellm required)" {
-		t.Errorf("start=%v blocked=%q exception=%q, want a blocked, non-startable row", it.start, it.blocked, it.exception)
 	}
 }
 
@@ -250,7 +147,7 @@ func TestRenderTableShowsALoadingModelAsLoad(t *testing.T) {
 	// omlx/Qwen3.8-27B-4bit: Running and Loading. The shared rows leave its
 	// provider empty, which a launch row never needs and a start row does.
 	rows[1].Loading, rows[1].Model.ProviderID = true, "omlx"
-	tbl := renderTable(rows, nil, "", nil, "")
+	tbl := renderTable(rows, "", nil, "")
 	it := tbl.items[1]
 	fields := strings.Fields(it.line)
 	if !slices.Contains(fields, "load") || slices.Contains(fields, "run") {
@@ -259,7 +156,7 @@ func TestRenderTableShowsALoadingModelAsLoad(t *testing.T) {
 	if !it.start || it.blocked != "" {
 		t.Errorf("loading row: start = %v blocked = %q, want a start row", it.start, it.blocked)
 	}
-	plain := renderTable(tableTestRows(), nil, "", nil, "")
+	plain := renderTable(tableTestRows(), "", nil, "")
 	if plain.header != tbl.header {
 		t.Errorf("a loading row changed the header:\n%q\n%q", plain.header, tbl.header)
 	}
@@ -350,7 +247,7 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 		// because the mark says what the model is, not what hour it is.
 		{"no clock", time.Time{}, " 1.3200  0.0440  3.9600~", " 0.5000  0.0500  2.0000~"},
 	} {
-		tbl := renderTable(timedTableRows(c.at), nil, "", nil, "")
+		tbl := renderTable(timedTableRows(c.at), "", nil, "")
 		if got := costCellOf(t, tbl, deepseek); got != c.deepseek {
 			t.Errorf("%s: deepseek's COST = %q, want %q", c.name, got, c.deepseek)
 		}
@@ -378,14 +275,14 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 	}
 
 	// A table with no time-priced model is drawn as it always was.
-	if tbl := renderTable(tableTestRows(), nil, "", nil, ""); strings.Contains(tbl.header, "~") || !strings.Contains(tbl.header, "  COST  ") {
+	if tbl := renderTable(tableTestRows(), "", nil, ""); strings.Contains(tbl.header, "~") || !strings.Contains(tbl.header, "  COST  ") {
 		t.Errorf("header of a table with no time-priced model = %q, want a plain COST heading", tbl.header)
 	}
 	// A discovered row shows no price, and so no mark, whatever its cost
 	// table holds.
 	rows := timedTableRows(ollamaPeak)
 	rows[0].Discovered = true
-	if got := costCellOf(t, renderTable(rows, nil, "", nil, ""), deepseek); strings.TrimSpace(got) != "-" {
+	if got := costCellOf(t, renderTable(rows, "", nil, ""), deepseek); strings.TrimSpace(got) != "-" {
 		t.Errorf("a discovered row's COST = %q, want -", got)
 	}
 	// A time-priced model with no price in force (rows only, outside their
@@ -394,7 +291,7 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 	bare := timedTableRows(deepseekDear)[:1]
 	bare[0].Model.Cost.InputPricePerMillion, bare[0].Model.Cost.CachePricePerMillion, bare[0].Model.Cost.OutputPricePerMillion = nil, nil, nil
 	bare[0] = bare[0].pricedAt(deepseekDear)
-	tbl := renderTable(bare, nil, "", nil, "")
+	tbl := renderTable(bare, "", nil, "")
 	if got := costCellOf(t, tbl, deepseek); got != "-~  " || strings.Contains(tbl.header, "varies") {
 		t.Errorf("rows only, outside their windows: COST = %q, header %q; want \"-~\" under a plain COST heading", got, tbl.header)
 	}
@@ -405,7 +302,7 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 	odd := timedTableRows(deepseekDear)[:1]
 	odd[0].Model.Cost.TimePrices[0].Windows = []config.CostWindow{{Days: []string{"mon"}, Start: "9:00", End: "17:00"}}
 	odd[0] = odd[0].pricedAt(deepseekDear)
-	tbl = renderTable(odd, nil, "", nil, "")
+	tbl = renderTable(odd, "", nil, "")
 	if got := costCellOf(t, tbl, deepseek); got != " 1.3200  0.0440  3.9600" || strings.Contains(tbl.header, "~") {
 		t.Errorf("a row that is not applied: COST = %q, header %q; want the flat price unmarked under a plain COST heading", got, tbl.header)
 	}
@@ -417,11 +314,11 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 	night[0].Model.Cost.TimePrices = []config.TimePrice{{Label: "night", Timezone: "UTC", OutputPricePerMillion: f64(1.5),
 		Windows: []config.CostWindow{{Days: []string{"sun"}, Start: "22:00", End: "06:00"}}}}
 	night[0] = night[0].pricedAt(deepseekDear)
-	if got := costCellOf(t, renderTable(night, nil, "", nil, ""), deepseek); got != " 1.3200  0.0440  1.5000~" {
+	if got := costCellOf(t, renderTable(night, "", nil, ""), deepseek); got != " 1.3200  0.0440  1.5000~" {
 		t.Errorf("a window past midnight, the morning after its day: COST = %q, want the night price, marked", got)
 	}
 	night[0] = night[0].pricedAt(ollamaPeak)
-	if got := costCellOf(t, renderTable(night, nil, "", nil, ""), deepseek); got != " 1.3200  0.0440  3.9600~" {
+	if got := costCellOf(t, renderTable(night, "", nil, ""), deepseek); got != " 1.3200  0.0440  3.9600~" {
 		t.Errorf("a window past midnight, outside it: COST = %q, want the flat price, marked", got)
 	}
 }

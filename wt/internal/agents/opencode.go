@@ -27,8 +27,6 @@ type opencodeDriver struct{}
 // ("wt --yolo -A opencode -- run <prompt>").
 func (opencodeDriver) YoloFlag() string { return "--auto=true" }
 
-func (opencodeDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAIChat} }
-
 // OpenCode routes through a wt-declared custom provider
 // (@ai-sdk/openai-compatible, chat completions wire) in both gateway and
 // direct mode. The builtin "openai" provider cannot serve registry ids

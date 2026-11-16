@@ -58,8 +58,8 @@ const OllamaBaseURL = provider.OllamaOrigin
 // Enabled is retired (2026-11-15): every session routes through the model
 // server, so nothing decides on it any more. It is still parsed and
 // round-trips every save (a file is never rewritten to drop it), and a true
-// value prints one note per process (IgnoredLitellmKeys). IsLitellm, its one
-// reader, serves only the direct path no command reaches since then.
+// value prints one note per process (IgnoredLitellmKeys). Nothing reads it
+// (IsLitellm and the direct routes were deleted with Task 19).
 type LitellmState struct {
 	Enabled bool   `toml:"enabled"`
 	URL     string `toml:"url"`
@@ -100,11 +100,6 @@ func (c *Config) UpdateLitellm(mutate func(*LitellmState)) error {
 // LitellmConfigured reports whether both the proxy URL and API key are set.
 func (c *Config) LitellmConfigured() bool { return c.litellm.URL != "" && c.litellm.APIKey != "" }
 
-// IsLitellm reports the retired [litellm].enabled. Only the direct route
-// resolution (ResolveRoute) reads it, which no command reaches since every
-// session routes through the model server.
-func (c *Config) IsLitellm() bool { return c.litellm.Enabled }
-
 // LitellmBaseURL returns the proxy URL with any trailing
 // slashes removed. Drivers append their own protocol suffix (/v1, /v1/),
 // so a user URL like "http://localhost:4000/" must not produce a double
@@ -122,139 +117,22 @@ func (c *Config) SetLitellmForTest(s LitellmState) { c.litellm = s }
 
 // ── Provider ──────────────────────────────────────────────
 
-// ErrLitellmUnconfigured wraps a ResolveRoute failure caused specifically by
-// litellm routing being required (forced by a protocol mismatch, or chosen
-// via the on/off toggle) while wt's [litellm] url/api_key are
-// unset. Callers (the model picker) use errors.Is against this sentinel to
-// show a more specific "litellm required" label instead of a generic
-// "unavailable" one, which would also cover unrelated failures like an
-// unknown provider or a direct-mode provider missing auth.base_url.
 // BinaryName is the name the running binary prints before its own notes; the
 // one-time schema-migration line on Load's stderr starts with it. wt is the
 // default; wt-model sets it at startup so its lines name wt-model (N1/M3).
 var BinaryName = "wt"
 
-var ErrLitellmUnconfigured = errors.New("litellm routing required but not configured")
-
-// Route is everything a driver needs to dial one model for one launch,
-// resolved once by ResolveRoute so drivers stop knowing about specific
-// providers (e.g. ollama) or transports.
+// Route is everything a driver needs to dial one model for one launch: since
+// the model server (Task 19) always the gateway, built by
+// agents.GatewayRoute, so drivers stop knowing about specific providers (e.g.
+// ollama) or transports. There are no direct routes.
 type Route struct {
 	BaseOrigin string // scheme://host:port, no wire-path suffix
 	APIKey     string
-	ModelRef   string   // m.ID via the proxy, m.ModelName direct — a property of the endpoint's own catalog
-	Display    string   // m.ModelName, for catalog "name" fields
-	ProviderID string   // registry provider id; meaningful only when !Litellm
-	Protocol   Protocol // chosen common protocol, meaningful only when !Litellm
-	Litellm    bool
-	Forced     bool // true if litellm was required regardless of the on/off setting
-}
-
-// ResolveRoute resolves the Route for launching model m for an agent that
-// speaks agentProtocols. It first checks protocol overlap: an empty
-// intersection forces LiteLLM regardless of the on/off toggle. Otherwise,
-// if LiteLLM is on the route goes through the gateway using the full
-// registry id, and if it is off the route dials the model's own provider
-// (auth.base_url, resolved through Provider.Origin, and auth.secret_ref,
-// resolved through ResolveSecret) using the provider-side model name
-// (m.ModelName). Returns an error when direct mode is required (forced or
-// chosen) but the provider has no base_url or LiteLLM is forced but
-// unconfigured.
-func (c *Config) ResolveRoute(m Model, agentProtocols []Protocol) (Route, error) {
-	if m.Native {
-		return Route{}, nil // drivers never call this for native models
-	}
-	// Command agents (e.g. shell) and some test seams pass an empty model.
-	// There is no provider endpoint to resolve in that case.
-	if m.ID == "" && m.ProviderID == "" {
-		return Route{}, nil
-	}
-
-	providerID := m.ProviderID
-	if providerID == "" && strings.Contains(m.ID, "/") {
-		providerID = strings.SplitN(m.ID, "/", 2)[0]
-	}
-	provider := c.ProviderByID(providerID)
-	if provider == nil {
-		return Route{}, fmt.Errorf("unknown provider %q for model %q", providerID, m.ID)
-	}
-	// Native providers never route through a gateway; this mirrors deriveNative
-	// and keeps manually-constructed test configs from needing the Native bit
-	// set on every native model.
-	if provider.Auth.Type == "native" {
-		return Route{}, nil
-	}
-
-	common := intersectProtocols(agentProtocols, provider.EffectiveProtocols())
-	forced := len(agentProtocols) > 0 && len(common) == 0
-	useLitellm := forced || c.IsLitellm()
-
-	if useLitellm {
-		if c.LitellmBaseURL() == "" {
-			return Route{}, fmt.Errorf(
-				"litellm routing is required for this model but no URL is configured — "+
-					"run 'wt litellm set --url ... --api-key ...': %w",
-				ErrLitellmUnconfigured)
-		}
-		if c.LitellmAPIKey() == "" {
-			return Route{}, fmt.Errorf(
-				"litellm routing is required for this model but no API key is configured — "+
-					"run 'wt litellm set --url ... --api-key ...': %w",
-				ErrLitellmUnconfigured)
-		}
-		return Route{
-			BaseOrigin: c.LitellmBaseURL(),
-			APIKey:     c.LitellmAPIKey(),
-			ModelRef:   m.ID,
-			Display:    m.ModelName,
-			ProviderID: providerID,
-			Litellm:    true,
-			Forced:     forced,
-		}, nil
-	}
-
-	if provider.Auth.BaseURL == "" {
-		return Route{}, fmt.Errorf(
-			"direct routing: provider %q has no auth.base_url in registry.toml — "+
-				"set one", providerID)
-	}
-	apiKey := ""
-	if provider.Auth.SecretRef != "" {
-		var err error
-		apiKey, err = ResolveSecret(provider.Auth.SecretRef)
-		if err != nil {
-			return Route{}, fmt.Errorf("resolving credentials for provider %q: %w", providerID, err)
-		}
-	}
-	protocol := ProtocolOpenAIChat
-	if len(common) > 0 {
-		protocol = common[0]
-	}
-	return Route{
-		BaseOrigin: provider.Origin(),
-		APIKey:     apiKey,
-		ModelRef:   m.ModelName,
-		Display:    m.ModelName,
-		ProviderID: providerID,
-		Protocol:   protocol,
-		Litellm:    false,
-	}, nil
-}
-
-// intersectProtocols returns the protocol values common to a and b, ordered
-// by a's preference.
-func intersectProtocols(a, b []Protocol) []Protocol {
-	set := make(map[Protocol]bool, len(b))
-	for _, p := range b {
-		set[p] = true
-	}
-	var out []Protocol
-	for _, p := range a {
-		if set[p] {
-			out = append(out, p)
-		}
-	}
-	return out
+	ModelRef   string // the id the gateway resolves (the model's GatewayID, else its registry id)
+	Display    string // m.ModelName, for catalog "name" fields
+	ProviderID string // registry provider id
+	Litellm    bool   // set on every gateway route; false only on the zero Route of a native or command launch
 }
 
 // Provider is a source of models with connection info.
@@ -304,8 +182,7 @@ const MtplxPort = provider.MtplxPort
 // 80: the start succeeded and every probe after it found nothing there (#348).
 //
 // Every reader of the provider's address goes through here — the probes
-// (localmodels.FamilyOrigin), a direct route (ResolveRoute, pi's models.json)
-// and a LiteLLM route's api_base — so they name one server.
+// (localmodels.FamilyOrigin) and a LiteLLM route's api_base — so they name one server.
 //
 // Everything else is left as written, and a url with no port keeps its
 // scheme's own (80, 443): a url that names a port; an https url or a host
@@ -378,9 +255,8 @@ func IsLoopbackHost(host string) bool {
 //     legitimately resolves to ""). Memoized per raw ref for the lifetime
 //     of the process — including across concurrent callers — so a ref
 //     resolved from multiple call sites or goroutines in one launch
-//     (ResolveRoute and pi's models.json sync both resolve the same
-//     provider's secret_ref; the TUI can resolve routes for several table
-//     rows concurrently) only runs the command once. Only a successful
+//     (the probes and the LiteLLM route sync can both resolve the same
+//     provider's secret_ref) only runs the command once. Only a successful
 //     resolution is memoized this way — a failure is not cached, so a
 //     transient problem (e.g. not yet logged into Vault) can succeed on a
 //     later call without restarting wt.
@@ -388,7 +264,7 @@ func IsLoopbackHost(host string) bool {
 //     var — unchanged: a missing var resolves to "", never an error.
 //   - anything else is used verbatim, unchanged.
 //
-// Shared by direct-mode provider auth and LiteLLM's SecretRef:true policy
+// Shared by the probes' provider auth and LiteLLM's SecretRef:true policy
 // api_key (internal/litellm.BuildEntry).
 var envRefName = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
@@ -1029,7 +905,7 @@ func (c *Config) validate() []error {
 	// Note: no semantic validation of the [litellm] routing state here. A
 	// malformed [litellm] table in wt's own config.toml already fails the
 	// config load like any malformed config.toml; a missing or empty URL/key
-	// only surfaces when ResolveRoute actually needs it at launch time.
+	// only surfaces where it is needed (`wt-model serve`, the route sync).
 
 	// Providers and models are registry.toml's rows, so every error in these
 	// two loops is marked ErrRegistryEntry (or is an ErrLocation): `wt config`

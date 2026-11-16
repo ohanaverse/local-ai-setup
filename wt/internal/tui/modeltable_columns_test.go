@@ -44,7 +44,7 @@ func realisticTable() modelTable {
 			},
 		},
 	}
-	return renderTable(rows, nil, "claude", map[string]int{"omlx/Qwen3.8-27B-Instruct-MLX-6bit": 2}, "openrouter/anthropic/claude-sonnet-4.5-thinking")
+	return renderTable(rows, "claude", map[string]int{"omlx/Qwen3.8-27B-Instruct-MLX-6bit": 2}, "openrouter/anthropic/claude-sonnet-4.5-thinking")
 }
 
 // The realistic table as it was rendered before columns could be dropped,
@@ -56,43 +56,6 @@ const (
 	goldenRow1   = "2   qwen3.8  omlx/Qwen3.8-27B-Instruct-MLX-6bit               -     local  ok      run      -                        1   4   9"
 	goldenRow2   = "    -        ollama/gemma4:9b                                 -     local  new     -        -                        0   0   0"
 )
-
-// refusedTable is a table whose widest row ends in an exception note: a cloud
-// model whose provider has no LiteLLM mapping, with routing through the proxy
-// on, reads "(not in LiteLLM)" after its columns. The second row has no note.
-// The agent is "" so no row is forced through the proxy (that would add
-// "(via proxy)" to both and print the forced-route notice).
-func refusedTable(t *testing.T) modelTable {
-	t.Helper()
-	cfg := &config.Config{
-		Providers: []config.Provider{
-			{ID: "zcloud", Location: config.LocationCloud, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "https://zcloud.example"}},
-			{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
-		},
-	}
-	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
-	rows := []tableRow{
-		{
-			Row: catalog.Row{
-				Model: config.Model{ID: "zcloud/glm-5.5-turbo-preview-2026-09", ProviderID: "zcloud", ModelName: "glm-5.5-turbo-preview-2026-09", Family: "glm",
-					Cost: config.ModelCost{InputPricePerMillion: f64(1), CachePricePerMillion: f64(0.1), OutputPricePerMillion: f64(4)}},
-				Location: config.LocationCloud, Status: catalog.StatusOK, Unmapped: true,
-			},
-			counts: usage.UsageCounts{OneDay: 2, SevenDay: 30, ThirtyDay: 211},
-		},
-		{
-			Row: catalog.Row{
-				Model:    config.Model{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8"},
-				Location: config.LocationLocal, Status: catalog.StatusOK, Running: true,
-			},
-		},
-	}
-	tbl := renderTable(rows, cfg, "", nil, "")
-	if got := tbl.items[0].exception; got != "(not in LiteLLM)" || tbl.items[1].exception != "" {
-		t.Fatalf("fixture: exceptions = %q / %q, want \"(not in LiteLLM)\" on the first row only", got, tbl.items[1].exception)
-	}
-	return tbl
-}
 
 // tablePicker is the agent flow's model picker over realisticTable in a
 // terminal of the given size, with the cursor on the running local row.
@@ -277,44 +240,6 @@ func TestModelTableColumnBoundaries(t *testing.T) {
 	}
 }
 
-// TestModelTableCountsTheExceptionNote pins that the note a row appends after
-// its columns — "(not in LiteLLM)", "(via proxy)" — is part of the width the
-// column fit counts: wherever the three kept columns and the note fit, the
-// note is whole, and each further column appears only where the row has room
-// for it AND the note. The note is why a blocked row cannot be chosen; a fit
-// that left it out kept columns the row had no room for, and the list cut the
-// row inside the note.
-func TestModelTableCountsTheExceptionNote(t *testing.T) {
-	tbl := func() modelTable { return refusedTable(t) }
-	// The refused row with only the kept columns is 68 columns wide (prefix 4,
-	// a 36-column id, STATUS, "-" and the 17 columns of the note with its
-	// space), plus the picker's 4.
-	const keptFit = 72
-	for width := keptFit; width <= 160; width++ {
-		m := pickerOver(t, tbl(), width, 24)
-		if cut := tableCut(m); cut != "" {
-			t.Errorf("width %d (columns %q): %s is cut", width, shownColumns(m.models.Title), cut)
-		}
-		if !strings.Contains(m.View(), " (not in LiteLLM)") {
-			t.Errorf("width %d: view lacks the whole exception note", width)
-		}
-	}
-	// With the note counted, each column arrives later than the header alone
-	// would allow (FAMILY at 87, where the header fits from 73). No row of
-	// this table is rated, so TIER, all dashes, is the last column to arrive
-	// (unratedDropOrder).
-	assertColumnBoundaries(t, tbl, []columnBoundary{
-		{keptFit, "MODEL STATUS RUNNING"},
-		{87, "FAMILY MODEL STATUS RUNNING"},
-		{94, "FAMILY MODEL LOC STATUS RUNNING"},
-		{119, "FAMILY MODEL LOC STATUS RUNNING COST"},
-		{123, "FAMILY MODEL LOC STATUS RUNNING COST 1D"},
-		{127, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D"},
-		{132, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D"},
-		{138, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"},
-	})
-}
-
 // TestModelTableUnchangedWhenItFits pins that at a width with room for
 // everything the table is byte for byte what it was before columns could be
 // dropped: the same columns, order and padding, the marker and ref prefixes,
@@ -414,10 +339,7 @@ func TestModelTableFilterMatchesHiddenColumns(t *testing.T) {
 // give the full table back when widened.
 func TestStandalonePickerDropsColumnsToo(t *testing.T) {
 	stubUsageStore(t)
-	stubRefcountStore(t)
-	stubInventory(t, runningOmlxSnapshot())
-	cfg := modelTestConfig()
-	pm := newPickModel(cfg, cfg.Models, themes.Default, false)
+	pm := newPickModel(pickModels(), themes.Default)
 	full := pm.list.Title
 
 	// 45 is the narrowest terminal that holds the header with FAMILY: 42
@@ -429,7 +351,7 @@ func TestStandalonePickerDropsColumnsToo(t *testing.T) {
 		t.Errorf("columns at 45 = %q, want survey, usage, cost and location dropped", got)
 	}
 	assertFits(t, "standalone picker", narrow.View(), 45, 24)
-	if view := narrow.View(); !strings.Contains(view, "omlx/qwen3.8") || !strings.Contains(view, "RUNNING") || !strings.Contains(view, "run") || strings.Contains(view, "RUNNING…") {
+	if view := narrow.View(); !strings.Contains(view, "omlx/qwen3.8") || !strings.Contains(view, "RUNNING") || strings.Contains(view, "RUNNING…") {
 		t.Errorf("view at 45 = %q, want the model id and the running column, whole", view)
 	}
 

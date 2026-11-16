@@ -20,19 +20,16 @@ type smokeRemoteRun struct {
 	stdout, stderr string
 	err            error
 	exits          []int
-	stopPicker     int
 }
 
-// smokeOnFake runs `wt smoke args...` on rig's app with smokeExit and the
-// stop picker stubbed (a real exit would end the test binary; the picker must
-// never open on a client session).
+// smokeOnFake runs `wt smoke args...` on rig's app with smokeExit stubbed (a
+// real exit would end the test binary).
 func smokeOnFake(t *testing.T, r *remoteRig, args ...string) smokeRemoteRun {
 	t.Helper()
 	var run smokeRemoteRun
-	oldExit, oldPick := smokeExit, runStopPicker
-	t.Cleanup(func() { smokeExit, runStopPicker = oldExit, oldPick })
+	oldExit := smokeExit
+	t.Cleanup(func() { smokeExit = oldExit })
 	smokeExit = func(code int) { run.exits = append(run.exits, code) }
-	runStopPicker = func(*config.Config) { run.stopPicker++ }
 	run.stdout, run.stderr, run.err = runSmokeCmd(r.a, args...)
 	return run
 }
@@ -143,8 +140,9 @@ func TestSmokeRemoteNeverStartsAnUnknownRoute(t *testing.T) {
 	}
 }
 
-// TestSmokeRemoteNoStopPrompt pins the exit flow of a client run: the stop
-// picker is never offered, even on a terminal; a model smoke started gets the
+// TestSmokeRemoteNoStopPrompt pins the exit flow of a client run: there is no
+// stop question (wt has no stop picker; the server's idle grace stops a
+// model), even on a terminal; a model smoke started gets the
 // one note saying the model server stops it after its idle grace; a model it
 // did not start, and a --json run, get no note.
 func TestSmokeRemoteNoStopPrompt(t *testing.T) {
@@ -154,8 +152,8 @@ func TestSmokeRemoteNoStopPrompt(t *testing.T) {
 		stubGatewayRows(t, r, passRows)
 		stubStdinTTY(t, true)
 		run := smokeOnFake(t, r, "omlx/q", "--only", "claude")
-		if run.err != nil || run.stopPicker != 0 {
-			t.Fatalf("err = %v stop pickers = %d", run.err, run.stopPicker)
+		if run.err != nil {
+			t.Fatalf("err = %v", run.err)
 		}
 		if got := run.stderr + r.stderr.String(); strings.Count(got, note) != 1 {
 			t.Errorf("stderr = %q, want the note once", got)
@@ -166,8 +164,8 @@ func TestSmokeRemoteNoStopPrompt(t *testing.T) {
 		stubGatewayRows(t, r, passRows)
 		stubStdinTTY(t, true)
 		run := smokeOnFake(t, r, "omlx/q", "--only", "claude", "--json")
-		if run.stopPicker != 0 || strings.Contains(run.stderr+r.stderr.String(), "smoke started") {
-			t.Errorf("pickers = %d stderr = %q", run.stopPicker, run.stderr+r.stderr.String())
+		if strings.Contains(run.stderr+r.stderr.String(), "smoke started") {
+			t.Errorf("stderr = %q", run.stderr+r.stderr.String())
 		}
 	})
 	t.Run("nothing started prints no note", func(t *testing.T) {
@@ -175,8 +173,8 @@ func TestSmokeRemoteNoStopPrompt(t *testing.T) {
 		stubGatewayRows(t, r, passRows)
 		stubStdinTTY(t, true)
 		run := smokeOnFake(t, r, "openrouter/a", "--only", "claude")
-		if run.stopPicker != 0 || strings.Contains(run.stderr+r.stderr.String(), "smoke started") {
-			t.Errorf("pickers = %d stderr = %q", run.stopPicker, run.stderr+r.stderr.String())
+		if strings.Contains(run.stderr+r.stderr.String(), "smoke started") {
+			t.Errorf("stderr = %q", run.stderr+r.stderr.String())
 		}
 	})
 }

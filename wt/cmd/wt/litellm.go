@@ -602,27 +602,6 @@ func runLitellmStatus(out io.Writer, cfg *config.Config, asJSON bool) error {
 	return nil
 }
 
-// runLitellmToggle was `wt litellm on|off`. Since the flip (Task 18) no
-// command reaches it: the two are retired stubs (retiredLitellmToggleCmd).
-// Task 19 deletes it with the rest of the direct path.
-func runLitellmToggle(out, errOut io.Writer, cfg *config.Config, on bool) error {
-	if err := cfg.UpdateLitellm(func(s *config.LitellmState) { s.Enabled = on }); err != nil {
-		return err
-	}
-	if on {
-		fmt.Fprintln(out, "litellm: on")
-		if !cfg.LitellmConfigured() {
-			fmt.Fprintln(errOut, "warning: litellm.url or litellm.api_key is not set — wt will fail at launch time; run 'wt litellm set --url ... --api-key ...'")
-		}
-		return nil
-	}
-	fmt.Fprintln(out, "litellm: off")
-	if !cfg.LitellmConfigured() {
-		fmt.Fprintln(errOut, "warning: litellm.url or litellm.api_key is not set — agents whose protocols force LiteLLM will still fail to launch")
-	}
-	return nil
-}
-
 func runLitellmSet(out io.Writer, cfg *config.Config, url, key *string) error {
 	if err := cfg.UpdateLitellm(func(s *config.LitellmState) {
 		if url != nil {
