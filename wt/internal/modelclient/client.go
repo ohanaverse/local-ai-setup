@@ -132,8 +132,14 @@ func (c *Client) send(ctx context.Context, method, rawurl string, body any) (*re
 	resp, err := c.hc.Do(req)
 	var data []byte
 	if err == nil {
-		data, err = io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+		// One byte past the limit, so an answer at or over it is named
+		// rather than silently truncated into a decode error that would
+		// misread it as not a wt-model server.
+		data, err = io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 		resp.Body.Close()
+	}
+	if err == nil && len(data) > maxResponse {
+		return nil, &ResponseTooLargeError{Addr: c.addr(), Limit: maxResponse}
 	}
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {

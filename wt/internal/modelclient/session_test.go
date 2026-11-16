@@ -286,6 +286,12 @@ func TestHeartbeatUnauthorizedNotesTokenAndKeepsRunning(t *testing.T) {
 	if len(ns) != 1 || !strings.Contains(ns[0], "token_file under [model-server]") || !strings.Contains(ns[0], "rotated") || !strings.Contains(ns[0], "client session") {
 		t.Errorf("notes = %q", ns)
 	}
+	// The note's cost claim must stay truthful: a stopped loop cannot renew
+	// the client session, whose lapse puts the model in the auto-stopper's
+	// idle clock, and the way out is restarting wt for the new token.
+	if !strings.Contains(ns[0], "restart wt") || !strings.Contains(ns[0], "auto-stop") {
+		t.Errorf("notes = %q lack the renewal cost and the way out", ns)
+	}
 	if err := s.End(ctx()); err != nil {
 		t.Errorf("End: %v", err)
 	}

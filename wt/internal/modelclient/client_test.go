@@ -1,6 +1,7 @@
 package modelclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -167,6 +168,26 @@ func TestUnauthorizedIsTyped(t *testing.T) {
 		") — check token_file under [model-server] in config.toml and that the server was started with the same token"
 	if err.Error() != want {
 		t.Errorf("text = %q\nwant %q", err.Error(), want)
+	}
+}
+
+// TestAnswerPastTheReadLimitIsNamed pins the read limit: a server whose answer
+// runs past 32 MiB is refused as *ResponseTooLargeError naming the size, not
+// silently truncated into a decode error that would misread it as not a
+// wt-model server.
+func TestAnswerPastTheReadLimitIsNamed(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxResponse+1))
+	}))
+	defer s.Close()
+	_, err := New(Endpoint{URL: s.URL, Token: tok}).Catalog(ctx())
+	var te *ResponseTooLargeError
+	if !errors.As(err, &te) || te.Limit != maxResponse {
+		t.Fatalf("err = %v, want *ResponseTooLargeError with the 32 MiB limit", err)
+	}
+	if !strings.Contains(err.Error(), "larger than 32 MiB") {
+		t.Errorf("text = %q", err.Error())
 	}
 }
 

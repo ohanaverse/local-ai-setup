@@ -59,6 +59,18 @@ type UnknownModelError struct{ Message string }
 
 func (e *UnknownModelError) Error() string { return e.Message }
 
+// ResponseTooLargeError says the server's answer was larger than the client's
+// read limit, so it was not decoded at all: naming the limit is truer than a
+// truncation the decoder would misread as the server not speaking this API.
+type ResponseTooLargeError struct {
+	Addr  string
+	Limit int // the read limit, in bytes (32 MiB today)
+}
+
+func (e *ResponseTooLargeError) Error() string {
+	return fmt.Sprintf("model server at %s sent an answer larger than %d MiB — this wt reads answers up to that size", clean(e.Addr), e.Limit>>20)
+}
+
 // GatewayDownError says the gateway kept answering 503 for the whole wait.
 type GatewayDownError struct{ Addr string }
 
