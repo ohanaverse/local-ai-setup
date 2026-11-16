@@ -238,6 +238,12 @@ const startQueued = "queued behind another start or stop on the model server"
 // server's step is a remote party's text, flattened to one printable line
 // (M11) here as well as in modelclient.
 func startProgressRemote(out io.Writer, id string) modelclient.Progress {
+	return jobProgressRemote(out, "starting", id)
+}
+
+// jobProgressRemote is startProgressRemote for any job: verb is the line's
+// first word ("starting", "stopping").
+func jobProgressRemote(out io.Writer, verb, id string) modelclient.Progress {
 	id = cleanup.Flatten(id)
 	said := false
 	var last string
@@ -254,6 +260,10 @@ func startProgressRemote(out io.Writer, id string) modelclient.Progress {
 			return
 		}
 		said, last, lastAt = true, detail, v.Elapsed
-		fmt.Fprintf(out, "wt: starting %s — %s (%s)\n", id, detail, v.Elapsed.Round(time.Second))
+		fmt.Fprintf(out, "wt: %s %s — %s (%s)\n", verb, id, detail, v.Elapsed.Round(time.Second))
 	}
 }
+
+// setModel names the model the answerer's texts speak of: `wt start` with no
+// id learns it from the picker, after the answerer was built.
+func (a *cliAnswerer) setModel(id string) { a.id = id }

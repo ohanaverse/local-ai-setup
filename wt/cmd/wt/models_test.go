@@ -52,12 +52,30 @@ type fakeModelServer struct {
 	Registers      [][]string
 	RegisterStatus int
 	BeatStatus     int
+	// Stops records every POST stop body, in order. StopOutcome, when set, is
+	// the final problem of the n-th stop's job (nil succeeds); StopStep is the
+	// step a succeeded stop job reads (a still-finishing stop sets it).
+	Stops       []modelapi.StopRequest
+	StopOutcome func(n int, req modelapi.StopRequest) *modelapi.Problem
+	StopStep    string
+	// ActiveStart, when set, is the id of a start job already running for
+	// every model: GET jobs lists it and POST start answers its id (the
+	// server's one-job-per-model submit) instead of creating a job.
+	ActiveStart string
+	// Fixed serves these job statuses verbatim on GET jobs/{id}. A cancel of
+	// one makes later polls read it running for CancelRunning polls, then
+	// cancelled.
+	Fixed         map[string]modelapi.JobStatus
+	CancelRunning int
+	Cancels       []string
 	// Log, when set, gets each request line appended as it arrives (a child
 	// process's fake reports to its parent through it).
 	Log string
 
-	polls map[string]int
-	jobs  map[string]*modelapi.Problem
+	polls     map[string]int
+	jobs      map[string]*modelapi.Problem
+	kinds     map[string]string
+	cancelled map[string]int
 }
 
 // reqs is a copy of Reqs, taken under the lock.
@@ -81,7 +99,7 @@ func (f *fakeModelServer) count(prefix string) int {
 func newFakeModelServer(t *testing.T, rows ...modelapi.Row) *fakeModelServer {
 	t.Helper()
 	f := &fakeModelServer{Token: "tok", Rows: rows, APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion,
-		polls: map[string]int{}, jobs: map[string]*modelapi.Problem{}}
+		polls: map[string]int{}, jobs: map[string]*modelapi.Problem{}, kinds: map[string]string{}, cancelled: map[string]int{}}
 	f.Server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.Close)
 	return f
@@ -123,13 +141,41 @@ func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.apiErr(w, 404, modelapi.CodeUnknownModel, fmt.Sprintf("unknown model %q on the server", id))
 	case "/control/v1/jobs":
-		_ = json.NewEncoder(w).Encode(modelapi.JobList{Jobs: []modelapi.JobStatus{}})
+		jobs := []modelapi.JobStatus{}
+		if f.ActiveStart != "" {
+			jobs = append(jobs, modelapi.JobStatus{ID: f.ActiveStart, Kind: "start", Model: r.URL.Query().Get("model"), State: modelapi.JobRunning})
+		}
+		_ = json.NewEncoder(w).Encode(modelapi.JobList{Jobs: jobs})
+	case "/control/v1/stop":
+		var req modelapi.StopRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		f.mu.Lock()
+		n := len(f.Stops)
+		f.Stops = append(f.Stops, req)
+		var p *modelapi.Problem
+		if f.StopOutcome != nil {
+			p = f.StopOutcome(n, req)
+		}
+		id := fmt.Sprintf("stop-%d", n)
+		f.jobs[id], f.kinds[id] = p, "stop"
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(modelapi.JobRef{ID: id})
 	case "/control/v1/start":
 		var req modelapi.StartRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		f.mu.Lock()
 		n := len(f.Starts)
 		f.Starts = append(f.Starts, req)
+		if f.ActiveStart != "" {
+			if _, ok := f.jobs[f.ActiveStart]; !ok {
+				f.jobs[f.ActiveStart] = nil
+			}
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(modelapi.JobRef{ID: f.ActiveStart})
+			return
+		}
 		var p *modelapi.Problem
 		if f.Outcome != nil {
 			p = f.Outcome(n, req)
@@ -153,6 +199,21 @@ func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{})
 	default:
 		switch {
+		case strings.HasPrefix(r.URL.Path, "/control/v1/jobs/") && strings.HasSuffix(r.URL.Path, "/cancel"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/control/v1/jobs/"), "/cancel")
+			f.mu.Lock()
+			_, fixed := f.Fixed[id]
+			_, made := f.jobs[id]
+			f.Cancels = append(f.Cancels, id)
+			if fixed {
+				f.cancelled[id] = 0
+			}
+			f.mu.Unlock()
+			if !fixed && !made {
+				f.apiErr(w, 404, modelapi.CodeUnknownJob, "no such job")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		case strings.HasPrefix(r.URL.Path, "/control/v1/jobs/"):
 			f.poll(w, strings.TrimPrefix(r.URL.Path, "/control/v1/jobs/"))
 		case strings.HasSuffix(r.URL.Path, "/heartbeat") && f.BeatStatus != 0:
@@ -172,20 +233,40 @@ func (f *fakeModelServer) poll(w http.ResponseWriter, id string) {
 		f.OnPoll()
 	}
 	f.mu.Lock()
+	if fx, ok := f.Fixed[id]; ok {
+		if n, was := f.cancelled[id]; was {
+			f.cancelled[id] = n + 1
+			if n < f.CancelRunning {
+				fx.State, fx.Step, fx.Result = modelapi.JobRunning, "cancelling", nil
+			} else {
+				fx.State, fx.Step = modelapi.JobCancelled, "cancelled"
+				fx.Result = &modelapi.JobResult{Error: &modelapi.Problem{Code: modelapi.CodeCancelled, Message: "cancelled"}}
+			}
+		}
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(fx)
+		return
+	}
 	p, ok := f.jobs[id]
 	f.polls[id]++
 	first := f.polls[id] == 1
-	hang, step := f.Hang, f.Step
+	hang, step, kind, stopStep := f.Hang, f.Step, f.kinds[id], f.StopStep
 	f.mu.Unlock()
+	if kind == "" {
+		kind = "start"
+	}
 	if !ok {
 		f.apiErr(w, 404, modelapi.CodeUnknownJob, "unknown job")
 		return
 	}
-	js := modelapi.JobStatus{ID: id, Kind: "start", State: modelapi.JobRunning, Step: step}
+	js := modelapi.JobStatus{ID: id, Kind: kind, State: modelapi.JobRunning, Step: step}
 	switch {
 	case first || hang:
 	case p == nil:
 		js.State, js.Result = modelapi.JobSucceeded, &modelapi.JobResult{OK: true}
+		if kind == "stop" {
+			js.Step = stopStep
+		}
 	default:
 		js.State, js.Result = modelapi.JobFailed, &modelapi.JobResult{Error: p}
 	}

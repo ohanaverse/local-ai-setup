@@ -16,6 +16,13 @@ wt stop <target> --yes           # skip the in-use confirmation
 wt stop --all                    # stop every running local model, then the omlx service (and an mtplx wt cannot read)
 ```
 
+```bash
+wt job <id>                      # show a model server job (a start or stop); --cancel cancels it
+```
+
+With a model server configured, `wt start`, `wt stop <model>` and `wt job` go
+through it (see "Start and stop on the model server" below).
+
 ## `wt start [model]`
 
 - `model` — `<provider>/<name>`, as with `-M`. Omitted: the screen-1 model
@@ -590,6 +597,53 @@ A start that fails exits 2 with the server's message and `; nothing was launched
 A server that does not answer, refuses the token (`check token_file under [model-server] in config.toml`)
 or does not know the pin exits 1 before anything is registered or started.
 
+## Start and stop on the model server
+
+With a model server configured (`[model-server]` in `config.toml`, or
+`WT_MODEL_URL`/`WT_MODEL_TOKEN_FILE`/`WT_MODEL_TOKEN`) `wt start` and `wt stop`
+ask the server ([wt-model-server.md](wt-model-server.md)) instead of this
+machine's providers. With none configured nothing here applies. The registry is
+not read.
+
+**`wt start [model]`** starts one local model the server lists.
+
+- Without an id it opens the model picker over the server's local models and
+  needs a terminal; without one it exits 1 with
+  `the model picker needs a TTY; pass a model id (wt start ID) to start without it`.
+- A running model the gateway lists, or whose route the server could not read,
+  is left alone: `<id> is already running` on stdout, exit 0. A model that is
+  running but known not to be routed is started again, which adds the route.
+- A start for a model whose start job is already running attaches to that job.
+- A cloud model is the server's to refuse; its message is the error.
+- The questions and their flags (`--replace`, `--others`) are those of "A
+  launch on the model server" above, and so is the progress on stderr.
+- Before the job wt registers a client session with the model, so the
+  server's idle scan counts it; it ends the client session on every exit.
+  After a successful start it says on stderr
+  `wt: note: <id> is up; the model server stops it after its idle grace unless a client session uses it`
+  and prints `<id> is running` on stdout.
+- Ctrl+C detaches: the job keeps running, exit 2 with
+  `detached — job <job> keeps running on the model server (watch it with 'wt job <job>', cancel it with 'wt job <job> --cancel')`.
+  A "no" exits 3 with `declined — nothing was started`.
+
+**`wt stop <model-id>`** stops one model through the server. A provider name and
+`--all` are not stopped through the server: they act on this machine as above.
+
+- Without an argument it opens a numbered picker over the server's running local
+  models, marking each that client sessions use (`<id> (2 client session(s))`).
+  It needs a terminal; without one it exits 1 with
+  `the stop picker needs a TTY; pass a model id (wt stop ID) to stop without it`.
+- A model other client sessions use asks first
+  (`2 client session(s) use <id>; stop it anyway? [y/N]`). `--yes` answers it. With no
+  terminal and no `--yes` the stop exits 3, nothing stopped:
+  `approval missing: 2 client session(s) use <id>; pass --yes to stop it anyway (there is no terminal to ask); nothing was stopped`.
+  The request names no client session: `wt stop` registers none.
+- A stop the provider accepted but has not finished is a success (exit 0):
+  `<id> — still finishing: …`.
+- Success prints `<id> stopped` on stdout. Ctrl+C detaches as for a start.
+
+**`wt job ID`** shows or cancels a job by id: [wt-job.md](wt-job.md).
+
 ## Selection screens
 
 1. **Model screen** (`wt`, `wt start`, `wt smoke`): the shared model table.
@@ -649,9 +703,14 @@ The one question with a safe default is not a refusal: with no terminal and no
 `--others`, `wt start` keeps other providers' models loaded, warns once and
 goes on.
 
+On the model server the codes are: `0` done (also "already running", and a stop
+still finishing), `1` could not start (no terminal for a picker, a server that
+does not answer or refuses the token, a model it does not know), `2` the job
+failed or was detached with Ctrl+C, `3` declined or approval missing.
+
 An error of `wt start` is printed once, on stderr, as `wt: <message>`. A
 failed mtplx start ends with the server's last log lines
 (`...; log tail: <lines>`): at most 512 bytes of the log, from the start of
 a line (a last line longer than that is shown cut).
 
-See also [`wt-smoke.md`](wt-smoke.md).
+See also [`wt-smoke.md`](wt-smoke.md) and [`wt-job.md`](wt-job.md).

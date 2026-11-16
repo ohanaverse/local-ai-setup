@@ -1,0 +1,35 @@
+{
+  "success": {
+    "version": 1,
+    "job": {
+      "id": "job-1",
+      "kind": "start",
+      "model": "omlx/q",
+      "state": "succeeded",
+      "step": "ready",
+      "created": "2026-11-16T10:00:00Z",
+      "updated": "2026-11-16T10:00:05Z",
+      "result": {"ok": true}
+    }
+  },
+  "failed": {
+    "version": 1,
+    "job": {
+      "id": "job-2",
+      "kind": "start",
+      "model": "omlx/q",
+      "state": "failed",
+      "step": "failed",
+      "created": "2026-11-16T10:00:00Z",
+      "updated": "2026-11-16T10:00:05Z",
+      "result": {"ok": false, "error": {"code": "failed", "message": "omlx/q did not answer within 400s"}}
+    }
+  },
+  "error": {
+    "version": 1,
+    "error": {
+      "message": "the model server no longer knows job job-9 (it finished and was dropped from its list, or the server restarted) — run 'wt model list --server' to see whether the model came up",
+      "code": "unknown_job"
+    }
+  }
+}

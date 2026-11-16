@@ -418,24 +418,15 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 	// also runs on the skip paths below: "q"/"esc", or a bare Enter, leave just
 	// as much residue queued as a confirmed stop does.
 	defer flushTTY()
-	// The reader goroutine below and this one both write to w: it prints the
-	// prompt, and a signal landing before the read is answered prints
+	// The reader goroutine in Select and this one both write to w: it prints
+	// the prompt, and a signal landing before the read is answered prints
 	// "cancelled" here. One serialized writer keeps their lines whole —
 	// unserialized, a signal arriving mid-prompt interleaves the two on a
-	// terminal and races outright when w is a test's bytes.Buffer.
+	// terminal and races outright when w is a test's bytes.Buffer. The same
+	// writer carries the stop loop's output below.
 	w = &lockedWriter{w: w}
-	// The menu read blocks in a syscall a signal does not interrupt (the runtime
-	// restarts it), so it runs on its own goroutine and the picker races it
-	// against the context. A cancelled menu abandons that goroutine still
-	// blocked in Scan: harmless, wt exits shortly after. It is still printing
-	// the prompt until it gets there, which is the race lockedWriter covers.
-	answer := make(chan []int, 1)
-	go func() { answer <- chooseLabeled(bufio.NewScanner(r), w, header, labels) }()
-	var selected []int
-	select {
-	case selected = <-answer:
-	case <-ctx.Done():
-		fmt.Fprintln(w, "\ncancelled")
+	selected, cancelled := Select(ctx, r, w, header, labels)
+	if cancelled {
 		return true, unknown, loading
 	}
 	if len(selected) == 0 {
@@ -447,6 +438,32 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 	}
 	_ = stopEntries(ctx, w, cfg, d, entries)
 	return true, unknown, loading
+}
+
+// Select is the numbered prompt `wt stop` and the stop picker share: it
+// prints header and labels, reads one line on its own goroutine and races that
+// read against ctx. It returns the chosen indices in list order (see
+// chooseLabeled for what a line may say); nothing chosen is an empty result,
+// and a ctx that ends first prints "cancelled" and reports cancelled=true.
+//
+// The menu read blocks in a syscall a signal does not interrupt (the runtime
+// restarts it), so a cancelled menu abandons that goroutine still blocked in
+// Scan: harmless, wt exits shortly after. It is still printing the prompt
+// until it gets there, which is the race lockedWriter covers: w is wrapped
+// in one unless the caller already did.
+func Select(ctx context.Context, r io.Reader, w io.Writer, header string, labels []string) (selected []int, cancelled bool) {
+	if _, ok := w.(*lockedWriter); !ok {
+		w = &lockedWriter{w: w}
+	}
+	answer := make(chan []int, 1)
+	go func() { answer <- chooseLabeled(bufio.NewScanner(r), w, header, labels) }()
+	select {
+	case selected = <-answer:
+		return selected, false
+	case <-ctx.Done():
+		fmt.Fprintln(w, "\ncancelled")
+		return nil, true
+	}
 }
 
 // ErrStopCancelled is what a stop loop returns when Ctrl+C or SIGTERM ended it
