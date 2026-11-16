@@ -1,0 +1,223 @@
+# wt CLI and TUI style guide
+
+One standard for how every wt tool talks, prompts, exits, prints machine output and draws screens, so the launcher (`wt`, called **wt-session** once the split lands) and the model server (`wt-model`) look and feel like one product, on a laptop, in a VM or on a remote host.
+
+**Status.** Derived from what the shipped code already does, on 2026-11-15. Where the code was split, this guide picks one answer and marks it **[decided]**; the code that still differs is listed in [Divergences and migration](#divergences-and-migration). Where this guide and the code disagree, the code is wrong unless the table says the guide is waiting on a decision.
+
+**Scope.** The Go tools this guide governs: `cmd/wt`, in this module today, and `cmd/wt-model`, the server, on the `wt-model` branch until the split lands (W1 aligns it; `internal/modelapi` arrives with it). The Python tools (`llmbench`, `modeltiers`) are out of scope. Mechanisms live in [internals/](internals/); rules for working in the code live in [../CLAUDE.md](../CLAUDE.md); this page is the contract for what a user sees.
+
+**Rules are the target.** A rule states how every tool should behave, not that every tool already does; the code that still differs is in the migration table, each row named by file. The audit behind this guide checked every claim against the code on 2026-11-15.
+
+**How to use it.** Each rule has an ID (`M3`, `C7`, …) so a review or a commit can cite it. A new command or screen is done when it passes the [checklist](#checklist-for-a-new-command-or-screen). A rule that has to change changes here first, in the same pull request as the code.
+
+---
+
+## 1. Names and vocabulary
+
+| ID | Rule |
+|---|---|
+| N1 | Every line a tool writes to **stderr** (progress, notes, warnings, errors) starts with its binary's name and a colon: `wt: …`, `wt-model: …`. Results on stdout (tables, lists, `added model: …`) carry no prefix. In `wt-session` the binary, the prefix and the shims stay `wt` until a rename is decided. **[decided]** |
+| N2 | Commands and flags are lower-case kebab-case (`cloud-sync`, `--min-age`, `--token-file`). Subcommand verbs are short imperatives (`add edit rm set start stop sync`); a read-only subcommand may be a noun (`list status providers usage candidates served`). `rm` under a noun group (`wt model rm`), `remove` for the top-level cleanup command. **[decided]** |
+| N3 | A model is named by its registry id, `<provider>/<name>`, everywhere: flags, messages, docs, JSON. A slot profile is `profile/<name>`. A discovered local model's id is family-prefixed. A message quotes an id the registry does not know with `%q`. |
+| N4 | Field and state words are fixed: `provider_id`, `model_name`, `family`, `location` (`local`\|`cloud`), `tags`. A model row's **action** is exactly `launch`, `start` or `block`; its **state** is exactly `running`, `loading`, `stopped`, `blocked` or `unknown` (`wt model list`'s frozen `run`/`load` strings are S4's recorded exception). A blocked row carries one reason string that is the whole explanation; never reword it per screen. |
+| N5 | Provider and family ids are lower-case in output (`ollama`, `omlx`, `mtplx`, `rec`, `sushi`). Prose may use the product's own capitalisation (LiteLLM, OpenRouter, Ollama, oMLX). **[decided]** |
+| N6 | Worktree words: the **root** is the primary checkout; a **worktree** is a linked one under `.worktrees/`; the **default branch** is the repository's; its base is `origin/<default>`. Never "main worktree" or "repo" for the root. |
+| N7 | **Session is always qualified.** A *wt session* is one live launch that claims a worktree (`held`, `in use by N wt session(s)`). A *client session* is a registered `wt-model` API client with a heartbeat. User text never says bare "session" where both could be meant, and counts are written `session(s)`. The rule governs text a person reads (messages, help, docs); wire keys, routes and Go identifiers (`sessions`, `/control/v1/sessions`, `sessionreg`) may stay unqualified. **[decided]** |
+| N8 | The one-word cleanup verdicts are `safe`, `check`, `work`, `locked` (and `-` while a row is still being read); the wire words in `--plain`/`--json` are `proven`, `less_sure`, `unique_work`, `in_use`. The display word is a mapping only; it never reads safer than the wire word. |
+
+## 2. Messages (CLI output)
+
+### Streams
+
+| ID | Rule |
+|---|---|
+| M1 | **stdout is for results a caller may parse** (tables, JSON, `added model: …`); **stderr is for everything else**: progress, notes, warnings and every error. A result that cannot be written to stdout falls back to stderr, says so, and exits 2. |
+| M2 | Plain, `--json`, `--plain` and piped output carry no ANSI by construction. A screen is interactive only when stdout is a terminal and neither `--json` nor `--plain` was given. |
+
+### Shape of a line
+
+| ID | Rule |
+|---|---|
+| M3 | **Errors** are one line, `<binary>: <message>`, printed once by `main` through `reportExit`. Error text itself carries no `error:` word and no prefix beyond one optional lower-case **package label** naming the failing subsystem (`wt: slotedit: no profile named "x"`); cobra's `Error:` and usage block are silenced (`SilenceErrors`, `SilenceUsage`): `SilenceErrors` on the root command, so no subcommand can forget the error line; `SilenceUsage` per leaf — a root-level one silences every leaf (cobra), and a command that deliberately shows usage on a usage mistake prints it itself (stop, smoke; W2's open decision). |
+| M4 | **Notes and warnings** carry a severity word after the prefix: `wt: note: …` (something went wrong but the command goes on) and `wt: warning: …` (a choice the user should weigh). Anything else informational is a bare `wt: <sentence>`. A failure is never worded as a note. A long-running server's start and stop are covered by S1. **[decided]** |
+| M5 | **Progress** is `wt: <lower-case sentence>` on stderr, subject and detail separated by an em dash, elapsed time in parentheses rounded to seconds, repeated on a ticker until done: `wt: starting <id> — warming the model (12s)`. Stage wording comes from one shared function (`lifecycle.StageLabel`), never retyped. |
+| M6 | Messages are lower-case sentences with no trailing period, except where they lead with a literal name (an id, a flag, LiteLLM). Say **what failed, then why, then the way out**, joined by ` — `, `; ` or `:`. Name the exact command or flag, with placeholders for values: `rerun with --yes to confirm`, `run 'wt litellm set --url URL --api-key KEY'` (placeholders are upper-case words, not `...`). A usage error lists the allowed set: `--only: no flow named (valid: openrouter, ollama)`. |
+| M7 | A refusal says what is still true: `nothing was removed`, `nothing was created`, `nothing was changed`. A cancellation names it: `cancelled — nothing was stopped`. |
+| M8 | Degraded-but-continuing paths say what was skipped and what proceeds, in parentheses: `(profiles disabled for this launch)`, `(proceeding unprofiled)`. |
+| M9 | Truncation and in-progress use the single character `…`, never `...`. Separators inside one line are ` — ` (cause) and, in titles and status lines only, ` · ` (facts). |
+| M10 | Config errors are worded by `configError` (`config error: <err> (<hint>)`), the hint chosen by `config.LoadFixHint`; never hand-written at a call site (the TUI's status line included). A start failure is worded by `lifecycle.StartErrorMessage` so the TUI and the CLI say the same thing. |
+| M11 | Anything untrusted that goes into a line (a branch, a path, a git error, a model id from outside) passes through `cleanup.OneLine`/`Flatten` first, so it cannot forge lines or repaint the terminal. |
+| M12 | A one-off side effect is announced once, on stderr, with its opt-out: `wt: installed the block-main-commit hook (--no-guard to skip)`. An existing install is silent. |
+| M13 | A multi-step command that reports per step prefixes each line with a lower-case label and colon, padded to align, in place of `wt:`: `openrouter:`, `ollama:`, `routes:`. After its label such a line may carry a severity word (`ollama: error: …`, `routes: warning: …`); an error line says whether anything changed. This is the one place `error:` appears in a line. **[decided]** |
+| M14 | Code that the TUI also calls writes through an `io.Writer` or `out` parameter, never `os.Stderr` directly, so a screen that owns the terminal can capture the lines. Config, agent-launch, litellm-restart and survey code do not yet do this (see the migration table). |
+
+### Prompts and terminals
+
+| ID | Rule |
+|---|---|
+| P1 | A confirmation shows its default as the capital letter. **Anything that stops, removes, replaces or writes registry/config is default-No:** `<question> [y/N] `, where only `y`/`yes` consents and an empty line, anything else and EOF refuse. |
+| P2 | Only **non-destructive** questions are default-Yes (`[Y/n]`): the launch-warning question (`wt: continue? [Y/n]: `, asked only when a warning exists) and the profile-apply prompt. With no terminal they print and proceed. |
+| P3 | A prompt is answered **only from a terminal**, through one shared helper that reads `/dev/tty` via the `openTTY` seam, so piped input can never authorise anything. A prompt carries no `wt:` prefix, except the two default-Yes prompts above, whose wording is frozen. **[decided]** |
+| P4 | **With no terminal a command that needs consent refuses, changes nothing, and names the flag that grants it** — never hangs, never guesses (the one exception is a question whose safe answer is to do nothing: with no terminal and no `--others`, `wt start` keeps other providers' models loaded, warns once, and goes on): `approval missing: pass --yes (there is no terminal to ask); nothing was removed`. The flag is `--yes` for state-changing commands, `--replace` for replacing a running model, `--others=keep\|stop` for other providers' models. Exit **3** (see C9). **[decided]** |
+| P5 | A picker that needs a terminal fails before opening it and says which flag avoids it: `the model picker needs a TTY; pass -M <model> to launch without it (or run wt interactively from a terminal)`. |
+| P6 | Typed-word confirmation (`delete`, `delete origin`) belongs to the TUI cleanup list. The CLI equivalent is an explicit per-purpose flag (C7). |
+
+## 3. Commands, flags and exit codes
+
+### Shape
+
+| ID | Rule |
+|---|---|
+| C1 | `Use` is `name <required> [optional]`, `...` for repeatable. `Short` is one imperative sentence fragment, sentence case, no trailing period, naming the thing acted on; an alias is named in it (`(alias: cleanup)`). `Args` is always set explicitly (`cobra.NoArgs` when there are none). |
+| C2 | A command with approvals, exit codes or JSON has `Long` (what it does, what each flag means, an exit-code paragraph, the schema path under `--json`) and `Example` (two-space indent, one invocation per line, a `--dry-run` first, then the `--yes` form). The `Long` exit paragraph and the doc page's exit table must say the same thing in the same words (today they drift: see the migration table). |
+| C3 | Flags are lower-case kebab-case long flags. Short flags exist only for the launcher's core selectors (`-W -A -M -T -F`) and `-D`. Flag help is a lower-case fragment with no period; the `--json` help is `print one JSON document` plus the schema path when the shape is a contract. **[decided]** |
+| C4 | Test "was this flag given" with `cmd.Flags().Changed(name)`, never by comparing to a zero value that has meaning. Reject contradictory combinations as plain errors naming both flags (`--fetch` with `--no-fetch`). Required flags use `MarkFlagRequired`. |
+| C5 | A hidden, deprecated or ignored flag carries a dated removal note in this guide's table; it is never the only way to do something. A flag kept only to print a migration message says so in its help. **[decided]** |
+
+### Approval and safety flags
+
+| ID | Rule |
+|---|---|
+| C6 | A command that changes state **and asks for approval** has `--dry-run`: it says what would happen and changes nothing, needs no `--yes`, and says which side effects remain (a fetch). Help text: `say what would happen and change nothing`. A command that changes state without asking (`config theme set`, `profile on`) needs none. **[decided]** |
+| C7 | **Each approval flag means one thing and none implies another:** `--yes` skips the prompt for what is proven; `--accept-loss` approves the losses a dry run lists; `--force` also loses uncommitted changes; `-D` deletes an unmerged branch; `--remote` deletes on origin and is granted by no other flag. `--yes` alone never covers anything riskier than "proven"; a riskier tier needs its own named flag or digest (`--approve-removals <digest>`). `--force` overrides one named safety check, and the command's `Long` names it (cloud-sync's `--force` lifts the mass-removal refusal). `--replace` and `--others` are `wt start`'s approvals for displacing models. |
+| C8 | A read says whether it is read-only and what remains: `write no ref, index or working file (apart from the fetch's remote-tracking refs; --no-fetch skips it)`. `--no-fetch` (never `--offline`) skips a fetch, with one help text shared by every command that fetches. |
+
+### Exit codes
+
+| ID | Rule |
+|---|---|
+| C9 | One table for every tool, carried by `exitCodeError{code, err, quiet}` and one shared `reportExit`: **0** done (or, with `--dry-run`, would be done); **1** could not start or any plain error; **2** refused, failed or partly done; **3** approval missing (no `--yes` and no terminal, or the prompt was declined) with nothing changed. A code outside 1–255 collapses to 1. `quiet: true` means the message was delivered another way (the agent's own status, or a `--json` document). A command with extra, documented codes (cloud-sync's 2–5, which say which flow changed nothing) is a named exception and says so in its page. Two codes are also named exceptions to this table, decided 2026-11-15: cloud-sync's **3** keeps meaning `pricing page changed shape` (the `wt-cloud-sync` skill and scripts depend on it; its page documents approval-missing), and `wt smoke` exits **1** on a FAIL row (CI scripts and `wt-smoke.md` depend on it). **[decided]** |
+| C10 | A launched agent's exit status is passed through (a signal kill becomes 255) as a quiet `exitCodeError` returned to `main` after the whole post-exit flow; a failure of the child is never turned into 0. Only `main` calls `os.Exit`, and a TUI never does. |
+| C11 | `wt-model` uses the same exit mapping as `wt`: one implementation in `wt/internal/exitcode`, with an exported constructor for the exit-code error and `Report(prefix, err, w)` (prints `<prefix>: <message>` once to `w` and returns the exit code); `cmd/wt` and `cmd/wt-model` both call it, neither keeps a copy. Its extra codes, if any, are added to the table above, not invented locally. **[decided]** |
+
+## 4. Machine output (`--json`, API bodies)
+
+| ID | Rule |
+|---|---|
+| J1 | A `--json` command prints **one** document, **indented two spaces**, on stdout and nothing else there. For a contract command it is printed on failure too, as an envelope with `error`, with the same exit code and a quiet `exitCodeError`; the stderr error line is suppressed. The `wt-model` API is not a `--json` document: it writes compact JSON with a trailing newline, and J4 to J7 still apply to its bodies. |
+| J2 | Keys are snake_case; enums are lower-case snake_case words (a status is `pass`, not `PASS`); timestamps are RFC 3339 UTC; a duration carries its unit in the key (`duration_ms`, `size_bytes`). Provider status words and similar enums are lower-case snake_case too (J7 names where they come from). |
+| J3 | **A shape another program reads is a contract:** it is pinned by a fixture in `../../docs/contracts/` (a sample and, where it exists, a schema) that a Go test reads. A key added or renamed fails the test until the fixture changes, in the same change. Samples are named for the state they show — the states the fixtures use today are `sample`, `dry-run`, `dry-run.error`, `error`, `partial`, `refused`, `failed`, `held`, `fetch-failed`, `no-origin`, `branch-kept` — and are asserted for their facts. One fixture file may hold many named members (one per endpoint and state) when a command has many endpoints, as the `wt-model` API does; each member is still named for the state it shows and asserted for its facts. |
+| J4 | A contract document starts with `version` (an integer; bump it for a breaking change; the `wt-model` API is versioned by `api_major` in its ping and `schema` in its catalog instead) and carries failures as `"error": {"message": "<text>", "code": "<snake_case>"}`; `code` is optional where no program needs to branch. The error object is **the** error shape for wt-session, wt-model and every API body. **[decided]** |
+| J5 | Two advisory arrays exist and are frozen: `notes` (cleanup-list: caveats on how to read the rows; omitted when empty; the text header prints the same lines) and `warnings` (rescue, restore-root: what the run did or skipped; always present). A new document uses `warnings` for what a run did and `notes` for how to read the data; the docs and `Long` tell the reader to read `notes` before acting on rows. **[decided]** |
+| J6 | **Absent vs null vs empty.** A list that is the document's payload is always present, `[]` when empty (an advisory array follows J5). A fact that does not apply is omitted (`omitempty`). `null` is allowed only for a *scalar that exists but is unknown* (`size_bytes`). When extending an existing document, copy its convention and say so in its schema description. **[decided]** |
+| J7 | Error codes, provider status words and every other enum a client switches on are **constants in the shared wire package** (`internal/modelapi`), never string literals scattered across handlers. Wire words come from three places only: `modelapi` constants (error codes, job states, provider status words), the S4 state words (`running`, `loading`, `stopped`, `blocked`, `unknown`), and N4's action words; a handler or client that needs a new word adds the constant first. |
+
+## 5. TUI layout
+
+| ID | Rule |
+|---|---|
+| L1 | **A view never draws taller or wider than the terminal.** Every screen is drawn through a frame measured by `tuilayout`. Bubbles-list screens (model picker, agent picker, the Models tab) are sized **only in `Update`** (`FitTo`, `fitLists`); `View` never measures. The worktree list is a custom row renderer over `tuilayout.Columns` that fits its table and frame in `View` — a known exception (migration table). A new line goes into the frame, not into `View`. |
+| L2 | A screen has an ordered list of frames, fullest first; the first that leaves the list its floor wins. A short terminal gives things up in this order: blank margin, then lines that repeat the user's last choice (header, path), then the key footer — **never the status line or the table**. (The worktree list gives up its report header, title and detail block first, and drops the status only as a last resort.) |
+| L3 | **The key footer is the bottom of the screen**: the last frame element dropped, anchored to the terminal's last line with blank filler on every screen, including detail and confirm. **[decided]** |
+| L4 | When even the sparest frame is too tall, the loss is fixed and documented: header and status sit at the top, rows and key hints at the bottom, and where lines must be cut we cut them ourselves — keep the footer, cut the body's middle behind `… N lines not shown …`. **[decided]** |
+| L5 | Every free-text line is clipped to the width it was sized for (`tuilayout.Clip`), one line at a time, so a long line cannot widen the frame. **Widths are display cells** (`lipgloss.Width`/runewidth), never rune counts, for padding, columns, wrapping and clipping. **[decided]** |
+| L6 | Choose by the text: `Clip` (silent cut) for decoration and hints; a cut with `…` where a silent cut could mislead (a blocked reason); wrap at spaces (`WrapText`, never inside an id or path) for anything that ends in what to do — status, refusal, note. A value that must not be misread (a price, a PR fact, a tier) is shown whole or not at all. |
+| L7 | A size of 0 (before the first `WindowSizeMsg`) means draw the fullest layout without cutting; every helper treats width or height ≤ 0 as no limit. |
+| L8 | **Tables drop whole columns, never part of one.** Each table has an explicit drop order; a column not in it never drops; no cell is abbreviated to fit. Header and rows share one `tuilayout.Columns`. A dropped column's fact is restated on the highlighted row's detail line where one exists (worktree PR and DIFF/IGN, model COST and TIER), otherwise it is reachable on the detail screen (`i`); whole or not at all — add a column and its restatement together. |
+| L9 | Cells: text is left-aligned and padded to the widest cell (headings included); numbers are right-aligned (the model table's usage counts do not yet follow this); columns are separated by two spaces; trailing spaces are trimmed; headings are UPPER CASE. `-` is "not read yet or unknown", blank is "does not apply", `?` is "tried and could not answer". |
+| L10 | A table is a bubbles list whose title is the header line, styled only by `tuilayout.StyleTableTitle`. Every row starts with a fixed-width **ASCII** prefix so cells never shift: a 2-column count digit, then `> ` or two spaces (`> ` is the cursor in the worktree list and the last-launched marker in the model picker), then in a selecting mode `[x] `, `[ ] ` or `[-] ` (locked). Never use Unicode geometric shapes as markers (ambiguous width on CJK terminals). |
+| L11 | A detail screen is: title `<screen> · row detail` (accent, bold); status lines; the block; an `Actions` section; the dim key footer built from the same action list, ending with `esc`. Labels are lower-case padded to one width (`PR` and `Verdict` are the exceptions); a value wraps at spaces with continuation lines indented under the value; an empty value prints no line; sections are a dim heading with a count in parentheses and items wrapped under a two-space indent, ending `… and N more` when listing is truncated. |
+| L12 | A body longer than its room scrolls and says so with a dim `↑ more above` / `↓ more below` line. Every screen that can be taller than its room does this, not only the list. |
+| L13 | The standing size check is every screen at widths 40/80/120 and heights 12/24/50; at 80×24 the view is ≤ 24 lines, every line ≤ 80 cells, and the highlighted row is visible at every step of moving down the list. A new screen adds itself to the fit test. |
+| L14 | Tests assert on unexported functions or on `ansi.Strip`-ed text, never on raw lipgloss output (forced colour makes it flake). |
+| L15 | Wide characters are not a special case: a CJK or emoji branch, path or subject must not misalign a column. A test feeds one through every table. |
+
+## 6. TUI interaction
+
+| ID | Rule |
+|---|---|
+| T1 | **`ctrl+c` leaves every screen**, including screens that ignore other keys (routing, a draining start, results). Exceptions, each documented on its screen: a removal in flight (keys wait); the confirm screen (cancels back one level); a cancellable start (the first press cancels, the second quits). |
+| T2 | **`esc` steps back exactly one level**, to the screen that opened the current one; it clears a filter query first; it quits only from the top screen (the model picker is one today and quits wt on `esc`; see the migration table). A single-screen picker (the standalone model picker) may treat `esc`, `q` and `ctrl+c` alike as cancel; that is its documented exception. `q` quits a list screen but types a character while a text input is open. |
+| T3 | `enter` is the primary action on the highlighted row (launch, or open the confirm for the ticked rows in a selecting mode; in a typed confirm it submits the word). |
+| T4 | **A row key opens the detail screen unarmed; its second press there acts** (`x` remove, `d` remove plus unmerged branch, `o` origin ref only, `r` rescue, `R` restore root). `i` only reads. Ticks never choose rows for these keys; only `enter`'s batch uses ticks. |
+| T5 | **A key is shown exactly when pressing it would act rather than refuse.** The footer, the detail actions and the handlers read the same predicates; a new key goes in all three together, held by a test. |
+| T6 | **Key legend syntax is `key label · key label`**, dim, one or two lines, each clipped to the width. A hint is shortened before any is dropped (long on one line, long on two balanced lines, short on two lines, tail dropped). Order: move, screen keys, row keys, then `F` and `q`. The model and agent pickers use the same form. **[decided]** |
+| T7 | Navigation: `up/k`, `down/j` one step; `pgup/b`, `pgdown/f` half a page; `home/g`, `end/G` jump. A single step past either end of a **selection list** wraps; paging and jumps stop at the ends. A **scrolling view** (detail, confirm, results) clamps and supports the same keys, vim aliases included. Capital `F` is refresh/fetch because `f` pages. |
+| T8 | `/` opens a filter on list screens: `filter: <q>_  (enter keeps it, esc clears it)`; while typing every printable key goes into the input; `enter` keeps the query, `esc` drops it, `ctrl+c` quits. Hidden rows cannot be acted on. |
+| T9 | **Confirmations have exactly two shapes.** A proven-safe selection asks one key (`y`); anything else cancels with `not confirmed`. Anything not proven requires a typed word and `enter`; wrong text cancels with `typed "x", not "delete"`. Destructive default is No. |
+| T10 | **A status line is one transient message the next key clears.** A refusal sets it and returns; it never opens a dialog. Wording is lower-case and says why and what to do or what did not happen: `cannot be removed: <reason>`, `nothing ticked: space ticks the highlighted row`. It wraps between words, never clips, and sits at the top. An error status carries the `error: ` prefix **and** the error colour, so it survives `NO_COLOR`. A status too tall for the sparest frame gets the screen to itself with the hint last. **[decided]** |
+| T11 | **Paint facts instantly, fill in the background.** Unknown cells show `-`, the verdict reads `-`, rows are pending; stale results drop by generation; the cursor, filter and scroll survive the swap. While filling, every destructive or handing-off key is absent from the footer and refused with a status; launching, filter, `n`, `i`, `F` and `q` keep working. |
+| T12 | **The update goroutine never waits:** no file lock, network, server, git or sleep inside `Update`. Waits and I/O run in a `tea.Cmd`. A screen that is waiting for something that must not be abandoned owns the keyboard (only `ctrl+c` acts) and advertises only keys that act. |
+| T13 | A row or action the user cannot take is **locked in place**, never removed: `[-]`, verdict `locked`. Floors (held, default branch, unknown PR) never lock. |
+| T14 | `F` is the only network key; it says what it is doing (`fetching every remote… (up to 5s)`), records the outcome in the header, and nothing fetches on open unless `--fetch`. |
+| T15 | Every Bubble Tea program is `tea.NewProgram(m, tea.WithAltScreen(), …)` (plus the options it needs, e.g. `WithoutSignalHandler` for the cleanup list), gated on a terminal first (P5). Output printed after the alt screen is gone keeps one fixed order — route notes, hand-off and removal log, summary, then the result error — with route notes, the summary and the result error on stderr, and a hand-off's result and the removal log on stdout: results (M1), printed where the CLI prints them too. Anything an engine prints during the TUI goes into a captured buffer. |
+
+## 7. Look
+
+| ID | Rule |
+|---|---|
+| V1 | **Style only through the nine theme tokens** (`border`, `error`, `header`, `dim`, `accent`, `selected`, `unselected`, `warning`, `success`), read with `theme.Token(name)`. No literal colour in screen code. The active theme is loaded once and passed by value to every screen. |
+| V2 | Colour **never carries meaning alone** (it must survive `NO_COLOR` and plain output): a status is a word (`safe`, `error:`, `locked`), a badge is a short lower-case fact, and a colour may only repeat it. `warning` and `success` are reserved for badges whose text already says the same thing. |
+| V3 | Hierarchy: screen title accent + bold; a group heading between blocks header + bold; a section heading inside a body (`Local-only commits (N)`) dim; selected row accent + bold; normal rows unselected; **dim is the one de-emphasis colour** (headers, footers, locked rows, scroll hints). Emphasis is Bold, Italic (filtered-out item) and Underline (filter match) only; never reverse video or a background colour. |
+| V4 | The row line is styled as one unit; the verdict word is not coloured on its own. Badges trail the row after two spaces and ` · `, lower-case (`dirty`, `unpushed`, `upstream gone`, the root-drift note); a proven row hides risk badges; everything else (`held by session <id>`, the full sentences) lives on the detail screen. |
+| V5 | **Glyphs.** Structure and state are ASCII (`[x] [ ] [-] > + -`). A bounded set of non-ASCII is allowed in prose, hints and rules only: `—`, `·`, `…`, `↑ ↓`, and `─` for a detail rule. Never emoji or check marks (the `wt config` Agents tab's `✓`/`✗` and `←/→` hints are on the migration table). |
+| V6 | Two table renderers, chosen by output kind: the borderless width-aware plain table (no colour, copyable key column) for list-like command output; the bordered table only for small fixed-shape tables. A new command uses the plain one. **[decided]** |
+
+## 8. Documentation conventions
+
+| ID | Rule |
+|---|---|
+| D1 | A user-visible command has a reference page `docs/wt-<command>.md`: H1 is the command in backticks; an opening paragraph; a fenced `bash` block of invocations with aligned `#` comments; `## Flags` as `\| Flag \| Meaning \|`; `## Exit codes` as `\| Code \| Meaning \|` (smoke's `## Exit flow` is about the stop order, not codes, and keeps its name); failure and recovery; a trailing `Guide:`/`Design:` link block. Quoted output is a real message in a `text` block, labelled illustrative when machine-specific. **[decided]** |
+| D2 | The `wt-model` server's reference page is `docs/wt-model-server.md`; `docs/wt-model.md` stays the registry command `wt model`. In prose the binary is written `wt-model` (hyphen) and the registry group `wt model` (space). **[decided]** |
+| D3 | **Change the page and the skill with the behavior.** A skill that quotes messages (`wt-cloud-sync`, `wt-repo-cleanup`) is the page as a procedure: a changed message, flag, key, exit code or JSON shape lands in the code, `docs/wt-*.md`, the skill and the `docs/contracts/` fixture in one change. A renamed function or changed message is `grep`ped across `CLAUDE.md`, `docs/`, `../../docs/contracts/` and test comments before finishing. |
+| D4 | Guides never embed live model or routing state: show the command that reveals it, label captured output `Example (illustrative — your ids will differ)`. Reference pages may quote exact messages, not inventories. |
+| D5 | Links are repo-relative and checked by `bin/check-links`; a page that moves fixes its inbound links in the same commit. Rules live in `CLAUDE.md` as bold imperatives with the issue number in parentheses; mechanisms live in `docs/internals/`. |
+
+## 9. `wt-model` specifics
+
+`wt-model` is a server, so some rules apply differently; none is an exception to the rules above.
+
+| ID | Rule |
+|---|---|
+| S1 | Startup prints one stderr line with stable wording that clients and scripts may parse: `wt-model: listening on <addr> (gateway /v1, control /control/v1)`. `<addr>` is the **bound** address (`ln.Addr()`, so `--listen 127.0.0.1:0` prints the real port), not the requested `--listen` value. The format is a named constant, and a test pins it. A server prints nothing else on stdout. On a clean stop (signal, graceful shutdown) it prints nothing: no `stopped` line; exit 0. A failure prints the one M3 error line and exits non-zero. |
+| S2 | Its errors follow M3/M6 exactly: `wt-model: <message>` once, the message without a prefix, the way out last or in a closing parenthetical (`chmod 600 PATH`, `--token-file PATH`, `wt litellm set --url URL --api-key KEY`). Library code returns errors **without** the binary's prefix. |
+| S3 | Every non-2xx control response is `{"error": {"message": …, "code": …}}` (J4); a failed job carries the same object; the codes are constants in `modelapi` (J7). A message reuses `lifecycle.StartErrorMessage` so a failed start reads the same through the API and the CLI. The gateway (`/v1`) is the exception because agents parse it: `wt-model`'s own errors there (401, 503 `proxy_unavailable`) use the OpenAI-style body `{"error": {"message": …, "type": …, "code": …}}`; everything LiteLLM returns passes through untouched. An unmatched path or method under `/control/v1/` also answers the control error object, never a bare text 404/405. **[decided]** |
+| S4 | The API uses the full state words (`running`, `loading`, `stopped`); `wt model list` keeps its frozen `run`/`load` strings. The mapping is recorded here and in the fixtures, never reworded in a third place. |
+| S5 | Long-running work is a **job** the client polls; a prompt becomes a typed error the client answers by re-posting with the choice (P1 default-No applies to the client's question, not to the API). The server never asks anything. A stop the provider accepted but has not finished (`lifecycle.StillFinishingError`, ollama) is, in the code, a **succeeded** job (`OK: true`) whose step text carries the `still finishing` message; it is not a `still_finishing` error. The spec listed `still_finishing` as a typed job error; decision 9 (decided 2026-11-15) keeps this succeeded-job mapping, and the spec is updated to match on the `wt-model` side. |
+| S6 | `wt-model --version` is implemented like `wt`'s: the same default as `wt` (set where `main.version` is declared) and the same `-ldflags -X` variable, and it prints `<binary> <version>` (`wt-model <version>`). `serve` takes only the flags in its reference page; it has no `--json` (the banner is its only machine-readable startup signal). |
+| S7 | **Auth.** `--token-file` is required on every listen address, loopback included. The file must be non-empty after trimming whitespace and mode `0600` or stricter (a looser mode is refused with `chmod 600 PATH`). The 401 has one wording on both surfaces (control and gateway), held in one shared constant, never retyped. The README and the server page create the file with `umask 077` (`umask 077; head -c 32 /dev/urandom | base64 > PATH`, the command the missing-token message prints). The gateway never forwards the client's credentials: it replaces them with the LiteLLM key from wt's `[litellm]` table. |
+
+---
+
+## Divergences and migration
+
+The code was audited against this guide on 2026-11-15 (`main` plus the `wt-model` branch): **126 departures, grouped into 13 work packages** — the audit's own counts; W11 closed on 2026-11-15, when M3 was amended to allow the package label (decision 5) and its 92 sites became compliant: its row is deleted and its number retired. About 70 are small mechanical edits, 49 need a few hours with tests, 5 are large; 25 would change something a script, skill or client may rely on, and a package marked **breaking** moves its docs, skill quotes, fixtures and tests in the same change (D3). A package is closed by changing the code — or, as W11 was, the rule — and deleting its row. Order is by value: W1 first, because the client phase builds on it.
+
+| # | Package | Rules | Scope (sites) | Effort | Breaking | Decision needed |
+|---|---|---|---|---|---|---|
+| W1 | **`wt-model` alignment** | M3 S2 J4 J7 S3 N7 C11 S6 C2 S1 S7 | **Fixed in PR #600 (wt-model side):** double prefix (n/a: no library prefix left), `reportExit` copy, error object, code constants, 401 wording, N7, `--version`, `Long`/`Example`, banner constant, server page (`docs/wt-model-server.md`). `cmd/wt` now uses the shared `wt/internal/exitcode` (C11), so W1 is complete once #600 merges | S | no | — |
+| W2 | **Stop the double error line** | M3 C1 | cobra prints `Error: …` and then `wt: …` for about 40 commands (confirmed by running the binary): set `SilenceErrors` on the root; `SilenceUsage` literals on 17 leaves; `newApp` failure prints `wt: error:` and `os.Exit`s; `--check-guard` exits from `RunE` | S | no | whether `stop` and `smoke` keep their deliberate dynamic usage-on-mistake |
+| W3 | **Message wording** | M4 M6 M7 M8 M9 M10 M11 N1 | 53 bare `note:`/`warning:` lines (18 plus 16 plus 19 annotation lines); about 16 `...` to `…`; 7 `...` placeholders to `URL`/`KEY`; `canceled`; 10 refusals that do not say what is still true; the TUI hand-words `config error:`; smoke's `[15:04:05] wt smoke:` lines; untrusted text printed raw in 12 places | M | wording (24 doc quotes, tests, the cloud-sync and repo-cleanup skills) | — |
+| W4 | **Approval-missing exits 3** | P4 C9 | `start`, `stop`, `model rm`, the `-M` launch (about 22 sites) return plain errors (exit 1) with `rerun with --yes`; a decline exits 1 or 0 — every decline moves to 3, a launch's default-Yes warning included (decision 6; cloud-sync's and smoke's codes are C9's named exceptions, decisions 1, 2) | M | exit codes, wording, `wt-start-stop.md`, scripts | — |
+| W5 | **Streams** | M1 T15 M5 | the post-agent summary, stats block and stale-pricing notice go to stdout (18 sites); `Stopping X... done` is capitalised, three-dot, stdout (4 sites, 28 test and doc spots, an `llmbench` fixture) | M | scripts that capture stdout | — |
+| W6 | **Command and flag shape** | C2 C3 C4 C5 C6 C8 | `Long`/`Example` missing on 25 commands that have approvals, codes or JSON; 33 flag helps are Capitalised; `--json` help has eight wordings; `--no-fetch` has four texts; five `--dry-run` helps; 6 places compare a flag to its zero value instead of `Changed`; hidden/ignored surface (`-w`, `--new`, two litellm stubs, two traps) has no removal date; the exit paragraphs that do exist drift from their pages' exit tables in wording (C2: rescue's `Long` vs `wt-cleanup.md`) | M | wording | removal dates for the hidden surface |
+| W7 | **Machine output** | J1 J2 J3 J4 J5 J6 | 8 documents are compact one-line JSON (stats, litellm ×4, served, model init); 12 documents have no `version` or error envelope; 6 have no fixture (stats, smoke, model init, served, slots usage, slots candidates); smoke emits `PASS/FAIL/SKIP`; `litellm sync` emits `api_base set`; `null` for not-applicable facts in 14 fields; a failure before the document prints a text error while `--json` is on (11 sites). Decided 2026-11-15 (decision 3): smoke, stats, slots usage and slots candidates freeze as contracts now, and model list already is one | L | json-contract: version bump | — |
+| W8 | **Tables and renderers** | V6 L9 L5 | four renderers in use (bordered, plain, tabwriter, hand-padded); `renderPlainTable` lives in package `main`, so `wt-model` cannot reuse it; model-table usage counts left-aligned | M | `wt stats` / `profile slots` column format | — |
+| W9 | **TUI keys, hints and look** | T1 T2 T5 T6 T7 T8 T9 T10 V1 V2 V3 V5 | `[key] label` footers on 14 screens (also `app.go`, `start_flow.go`); `esc` quits from the model picker; `ctrl+c` ignored on three config-editor screens; four lists never wrap; confirm and results lack vim keys; five filter prompts differ; nine status styles; errors told apart by colour alone on four screens; theme tokens not reaching bubbles' built-in styles (a literal background); `✓ ✗ ← → •` markers in the config editor; three tokens with no consumer and two stale severity-colour comments | M | key hints in two guides | — |
+| W10 | **TUI layout and responsiveness** | L1 L3 L4 L5 L7 L8 L11 L12 L13 T12 | the worktree list and 10 other screens measure or mutate in `View`; the footer is not anchored on 14 screens; seven different over-height behaviours; rune-count widths at 24 sites plus 7 in plain tables; 8 screens print a placeholder at size 0; 5 `Update` handlers do HTTP, git or file I/O on the update goroutine and freeze the screen; the 40/80/120 × 12/24/50 check misses the new-worktree prompt, most config screens and the slot screen | L | no | — |
+| W12 | **Docs and tests** | D1 D2 L14 L15 | flag and exit sections use five different headings across `wt-*.md`; no reference page for `wt litellm`, `wt profile`, `wt-model serve`; `wt-model-server.md` now exists (PR #600); S4's state-word mapping is in no fixture; 33 tests match raw lipgloss output; no test feeds a CJK or emoji name through any table; `cleanup-list` has an error property but no `error` sample | M | docs | — |
+| W13 | **TUI-called code writes to `os.Stderr` directly** | M14 | config, agent-launch, litellm-restart and survey print to `os.Stderr` instead of taking an `io.Writer`/`out` parameter, so a screen that owns the terminal cannot capture their lines; thread the writer through | S | no | — |
+
+Decisions the audit surfaced that change what a package does — all nine decided on 2026-11-15; each answer lives in the rule text or the work-package row:
+
+1. **cloud-sync's code collision** (W4): decided — cloud-sync is C9's named exception; its 3 keeps meaning `pricing page changed shape`, and its page documents approval-missing.
+2. **smoke exit 1 vs 2** (W4): decided — keep 1, C9's named exception (CI scripts and `wt-smoke.md` depend on it).
+3. **Which JSON documents freeze now** (W7): decided — smoke, stats, slots usage and slots candidates freeze as contracts now; model list already is one.
+4. **Session summary stream** (W5): decided — a note on stderr, T15's answer; W5 moves the 18 stdout sites.
+5. **Library error prefixes** (W11): decided — M3 is amended to allow the package label; the 92 sites comply, and W11 is closed and its row deleted.
+6. **A declined default-Yes launch warning** (W4): decided — moves to 3, like every declined prompt; the code's silent 0 is a W4 departure.
+7. **`wt-model`'s two 401 messages** (W1): decided; one wording on both surfaces (S7), fixed in PR #600.
+8. **Scrolling bodies' last resort** (W10): decided — keep L4's middle cut behind `… N lines not shown …`.
+9. **Stop accepted but still finishing** (S5): decided — keep the code's succeeded-job mapping; the spec is updated to match on the `wt-model` side.
+
+## Checklist for a new command or screen
+
+- [ ] Every printed line starts with the binary name; errors go through `reportExit` once (M3); notes and warnings carry their severity word (M4).
+- [ ] Results on stdout, everything else on stderr (M1); nothing writes `os.Stderr` in code a TUI calls (M14).
+- [ ] State-changing prompts are default-No, read from the terminal, and refuse with the flag to add when there is none (P1–P4); exit codes follow C9.
+- [ ] `Short`, `Long`, `Example`, flag help follow C1–C3; approval flags follow C7; `--dry-run` follows C6.
+- [ ] Machine output is one document (J1), snake_case (J2), pinned by a fixture and a test (J3), with `version` and an `error` object if a program reads it (J4); codes are constants (J7).
+- [ ] A screen is drawn through a frame measured in `Update` (L1), anchors its footer (L3), clips by cells (L5), drops whole columns (L8), scrolls with a hint (L12), and passes the 40/80/120 × 12/24/50 check (L13).
+- [ ] Keys follow T1–T8; the footer, the handlers and the detail actions read the same predicates (T5); nothing blocks `Update` (T12).
+- [ ] Style comes only from theme tokens (V1) and no meaning rests on colour (V2).
+- [ ] The reference page exists and matches the `Long` text (D1, C2); the skill and fixtures changed in the same commit (D3); `make lint` passes.

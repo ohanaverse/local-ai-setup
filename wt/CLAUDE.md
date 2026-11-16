@@ -64,7 +64,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 
 ## Docs
 
-`docs/`: `wt-*.md` command references, `wt-agents/` per-agent reference (`README.md`: LiteLLM routes and post-exit order; `profiles.md`, `slot-profiles.md`), `configuration.md`, `internals/` (code-level notes, one page per section below), `superpowers/` (specs and plans). `../CLAUDE.md`: monorepo commands and config ownership (wt is the only writer of `registry.toml`, and owns `~/.config/agent-wt/config.toml`).
+`docs/`: [style-guide.md](docs/style-guide.md) (**the CLI and TUI standard for every wt tool** — message prefixes, prompts, exit codes, JSON, layout, keys, look; read it before adding a command, a message or a screen, and cite rule IDs in review), `wt-*.md` command references, `wt-agents/` per-agent reference (`README.md`: LiteLLM routes and post-exit order; `profiles.md`, `slot-profiles.md`), `configuration.md`, `internals/` (code-level notes, one page per section below), `superpowers/` (specs and plans). `../CLAUDE.md`: monorepo commands and config ownership (wt is the only writer of `registry.toml`, and owns `~/.config/agent-wt/config.toml`).
 
 ## Go tests
 
