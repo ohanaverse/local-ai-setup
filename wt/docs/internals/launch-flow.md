@@ -24,6 +24,17 @@ The root command's `RunE` (`cmd/wt/main.go`) picks one of five entries into `run
 
 Pinned by `cmd/wt/cwd_norepo_test.go` (a real launch with a recording agent, inside and outside a repository, comparing the state files written) and `TestRunLaunchPath`.
 
+## Launch on the model server (remote path)
+
+When `app.endpointConfigured()` (a `[model-server]` url or token_file, or a `WT_MODEL_*` variable), `runLaunchPath` sends every launch that has its directory and its agent to `launchFilteredRemote` (`cmd/wt/launch_remote.go`) before anything else, and skips `sweepRefcounts()`; a launch still headed for a picker (no directory, or no agent) goes to the registry TUI as before (until the picker moves to the server). The remote path reads `app.sessionCfg()` (config.toml only) and never the registry, `config.yaml` or a local provider: no `ollamacheck`, no `ensureRouteBeforeLaunch`, no `refcount` record, no `probeInventory` (`TestLaunchRemoteNeedsNoRegistry`, `TestLaunchRemoteNeverOffersTheStopPickerOrRefcount` make those seams fail if reached). Its order, pinned by `TestLaunchRemoteRegistersBeforeStart`:
+
+1. `resolveModelRemote` (a `-M` pin through `Resolve`; else the catalog's one launchable row). Several and no pin: `rotation.NextFromOrder` over the launchable registered rows in the catalog's registered order (`catalog.RegisteredOrdered`).
+2. A client session is registered with the model (`modelclient.Session.Start`) before any start; a failed register is one `wt: note:` and the launch goes on.
+3. `modelclient.RunStart` only when `catalog.NeedsStart(row)` (a start row, or a local running row whose `routed` is explicitly `false`; R7: an absent `routed` never starts). Questions go to `cliAnswerer` (`cmd/wt/answerer.go`: `--replace`, `--others`, then `/dev/tty` when stdin is a terminal; the others question and warning share `othersQuestion`/`othersWarning` with the registry path, over `[]modelapi.Resident`). Progress is `startProgressRemote`. A failed start re-registers without the model, ends the client session and exits 2 (`; nothing was launched`); Ctrl-C detaches (`*DetachedError`, exit 2).
+4. `agents.BuildLaunchCmdGateway` (seam `buildGatewayCmd`) against the endpoint's origin and token; a native row gets no gateway. `rotation.RecordFor`, then `runLaunch` with `runTail{Remote: true, End: …}`.
+
+`runAgentCmd`'s `runTail` is the one fork in the post-exit flow: `legacyTail()` (the zero value) is the registry path's release → stop picker → price notice; `Remote` calls `End` (the client session's `DELETE`, on a context no Ctrl-C reaches, bounded at 3 s) where the refcount release runs, before the `os.Exit` branch (`TestLaunchRemoteEndsTheSessionBeforeExit`), offers no stop picker, and prints `PriceNote` in place of the registry's notice (none yet: it moves to the catalog's pricing with the rest of the notice). An `End` that fails is a note, never an error, and says nothing after a register the server refused. Heartbeat notes (`modelclient.Session`) are `wt: note:` lines and never stop the agent. Every error goes through `remoteExit` (exit 1 could not start, 2 a started job that did not finish, 3 approval missing or declined).
+
 ## Post-exit flow
 
 After the launched subprocess exits, the TUI and non-TUI paths run the same fixed sequence — order and user-facing behavior are in [docs/wt-agents/README.md#post-exit-order](../wt-agents/README.md#post-exit-order); don't reorder one path without the other. Code notes:

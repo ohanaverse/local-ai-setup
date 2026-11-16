@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -100,12 +101,30 @@ func runLaunchPath(
 	args []string,
 	launchPath, root string,
 ) error {
+	// With a model server configured, a launch that has its directory and its
+	// agent goes through the server (launchFilteredRemote): no refcount, no
+	// registry, no ollama or route check, no local probe. The picker (no
+	// directory or no agent yet) stays on the registry path until it moves to
+	// the server too.
+	remote := a.endpointConfigured()
+	if remote && launchPath != "" && agent != "" {
+		if root != "" {
+			maybeInstallGuard()
+		}
+		holdLaunch(agent, launchPath)
+		defer releaseRootClaim()
+		return printOnce(cmd, launchFilteredRemote(context.Background(), a, agent, launchPath, yolo(cmd), tags, family, pinned, cmd.Flags().Changed("model"), args, string(othersMode), allowReplace, a.profileState()))
+	}
+
 	// Sweep dead-pid entries from the live-session refcount state before
 	// anything else — this is the single funnel every launch goes through
 	// (TUI, non-TUI, -W, --cwd, outside-repo, and shell-wt), and the sweep
 	// must run even for shell-wt (which never builds a model picker) to
-	// keep other concurrent sessions' counts accurate. Best-effort.
-	sweepRefcounts()
+	// keep other concurrent sessions' counts accurate. Best-effort. The
+	// model server's client sessions keep no refcount file: skipped there.
+	if !remote {
+		sweepRefcounts()
+	}
 
 	// applyProfile closes over a's already-loaded profiles.toml state
 	// (newApp() loaded and validated it once) so the TUI launch path

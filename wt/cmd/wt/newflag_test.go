@@ -384,7 +384,7 @@ func TestTailsRunStopPickerThenSummary(t *testing.T) {
 		sum  string // the summary line's stable prefix
 	}{
 		{"single model", func() error {
-			return runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil)
+			return runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil, legacyTail())
 		}, "release,picker,notice", "wt: claude · ollama/qwen3.8 ·"},
 		{"slot profile", func() error {
 			row := catalog.Row{Model: config.Model{ID: "profile/p"}}

@@ -140,13 +140,13 @@ var shellDir = os.Getwd
 // connect it to where wt started the agent. Every plain launch site goes
 // through here so none can run an agent without the notes; slot-profile and
 // TUI launches take other paths and carry their own notes (Ruling R412c).
-func runLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, extraArgs []string) error {
+func runLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, extraArgs []string, tail runTail) error {
 	if wd, err := shellDir(); err == nil {
 		for _, note := range agents.RelativeArgNotes(agent, wd, cmd.Dir, extraArgs) {
 			fmt.Fprintln(osStderr, note)
 		}
 	}
-	return runAgentCmd(cmd, agent, m, cfg, pp)
+	return runAgentCmd(cmd, agent, m, cfg, pp, tail)
 }
 
 // launchFiltered is the wired-up launch path used by main.go for every
@@ -186,7 +186,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		if err != nil {
 			return err
 		}
-		return runLaunch(cmd, agent, config.Model{}, cfg, pp, extraArgs)
+		return runLaunch(cmd, agent, config.Model{}, cfg, pp, extraArgs, legacyTail())
 	}
 
 	// Resolve the model. If the caller precomputed the eligible list, reuse
@@ -276,7 +276,7 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	if rerr := refcount.NewStore().Record(os.Getpid(), m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: refcount state not saved: %v\n", rerr)
 	}
-	return runLaunch(cmd, agent, m, cfg, pp, extraArgs)
+	return runLaunch(cmd, agent, m, cfg, pp, extraArgs, legacyTail())
 }
 
 // launchPassthrough builds and runs the bare-agent command for an
@@ -295,7 +295,7 @@ func launchPassthroughImpl(agent, worktreePath string, yolo bool, extraArgs []st
 	if err != nil {
 		return err
 	}
-	return runLaunch(cmd, agent, config.Model{}, cfg, pp, extraArgs)
+	return runLaunch(cmd, agent, config.Model{}, cfg, pp, extraArgs, legacyTail())
 }
 
 // selfHealAgentConfigContentTarget checks agent's config_content file
@@ -485,6 +485,35 @@ func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfi
 	return contentCleanup, nil
 }
 
+// runTail is what runAgentCmd does after the agent exits that differs
+// between the two launch paths. The zero value (legacyTail) is the registry
+// path: release this process's refcount entry, offer the stop picker, print
+// the stale-pricing notice from the registry. Remote is the model-server path:
+// no refcount, no stop picker (the server's idle grace stops models) and no
+// registry notice; End ends the client session where the refcount release
+// runs (before the os.Exit branch, so the DELETE goes out on every exit) and
+// PriceNote, when set, prints the notice after the summary.
+type runTail struct {
+	Remote    bool
+	End       func()
+	PriceNote func()
+}
+
+// legacyTail is the registry path's tail: today's behavior, unchanged.
+func legacyTail() runTail { return runTail{} }
+
+// release is the tail's first step: the client session's End on the remote
+// path, the refcount release on the legacy one.
+func (t runTail) release() {
+	if !t.Remote {
+		releaseSession()
+		return
+	}
+	if t.End != nil {
+		t.End()
+	}
+}
+
 // runAgentCmd wires stdio through to the agent, runs it, then runs the
 // post-exit flow and propagates the agent's exit code to the caller. Order
 // (issues #115/#116): release this session's refcount entry → survey (skipped
@@ -494,8 +523,9 @@ func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfi
 // not scrolled away by the prompts. The duration is measured when the agent
 // exits, not when the summary prints. The survey call sits before the
 // os.Exit(ExitCode) branch so a non-zero agent exit is still surveyed — a
-// crashed session is exactly a "did it work? no" data point.
-func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles) error {
+// crashed session is exactly a "did it work? no" data point. tail chooses the
+// registry path's steps or the model server's (runTail).
+func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, tail runTail) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -532,7 +562,7 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 		// exactly as on a real exit. Duration is 0 — the subprocess never
 		// started. Survey and the stop picker are deliberately skipped:
 		// there is no session to ask "did it work?" about.
-		releaseSession()
+		tail.release()
 		releaseRootClaim()
 		fmt.Println("\n" + agents.Summary(agent, m, 0))
 		return perr
@@ -546,13 +576,14 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	releaseRootClaim()
 	summary := agents.Summary(agent, m, duration)
 
-	releaseSession()
+	tail.release()
 	stats := survey.PromptRun(os.Stdin, os.Stdout, survey.NewStore(), agent, m)
 	// Command agents (e.g. shell) launch with a zero-value config.Model
 	// (m.ID == "") and native models run no local server, so a session on
 	// either has nothing of its own to stop — offering unrelated idle models
-	// after it would be a surprise.
-	if m.ID != "" && !m.Native {
+	// after it would be a surprise. On the model server's path there is no
+	// picker at all: the server stops idle models after its grace.
+	if !tail.Remote && m.ID != "" && !m.Native {
 		runStopPicker(cfg)
 	}
 
@@ -565,8 +596,14 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 		fmt.Println(stats)
 	}
 	// The reminder is meaningless for command agents (no priced model) —
-	// same convention survey.PromptRun already uses.
-	if m.ID != "" {
+	// same convention survey.PromptRun already uses. The model server's path
+	// never reads the registry's stamps: its notice is tail.PriceNote.
+	switch {
+	case tail.Remote:
+		if tail.PriceNote != nil {
+			tail.PriceNote()
+		}
+	case m.ID != "":
 		emitPriceNotice(cfg)
 	}
 	if err != nil {

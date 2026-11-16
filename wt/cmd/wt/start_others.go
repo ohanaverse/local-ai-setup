@@ -1,15 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"io"
-	"os"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
 // othersFlag is the value of the root --others flag (#412): "" asks about
@@ -60,90 +58,33 @@ func (c othersChoice) String() string {
 // chooseOthers is a test seam over the others prompt on /dev/tty.
 var chooseOthers = promptOthers
 
-// promptOthers asks the others question on the controlling terminal, never
-// on stdin and stdout, for the reason promptReplace gives: a piped answer
-// must never be able to stop a model. question ends in its own [s/k/N] or
-// [k/N]; canStop says whether s is an answer.
-func promptOthers(question string, canStop bool) (othersChoice, error) {
-	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return othersCancel, approvalMissing("--others=keep|stop", "nothing was started")
+// legacyOthers is a lifecycle refusal's others in the form the prompt helpers
+// (answerer.go) take: each resident as the wire carries one (its label and
+// memory figure), and each family wt cannot read named with its address, as
+// the registry path has always worded it.
+func legacyOthers(cfg *config.Config, occ *lifecycle.OccupiedError) ([]modelapi.Resident, []string) {
+	others := make([]modelapi.Resident, len(occ.Others))
+	for i, r := range occ.Others {
+		others[i] = modelapi.Resident{ID: r.Entry.ModelID, Label: r.Label(), Stoppable: r.Stoppable, Figure: r.Figure()}
 	}
-	defer f.Close()
-	if _, err := fmt.Fprintf(f, "%s ", question); err != nil {
-		return othersCancel, err
+	unknown := make([]string, len(occ.OthersUnknown))
+	for i, f := range occ.OthersUnknown {
+		unknown[i] = fmt.Sprintf("%s at %s", f, localmodels.FamilyOrigin(cfg, f))
 	}
-	return askChoice(f, canStop)
+	return others, unknown
 }
 
-// askChoice reads one line from r: s/stop stops (only when canStop), k/keep
-// keeps, and anything else, an empty line and EOF included, cancels. The
-// parse half of promptOthers, split out so tests can drive it.
-func askChoice(r io.Reader, canStop bool) (othersChoice, error) {
-	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && line == "" {
-		return othersCancel, nil
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "s", "stop":
-		if canStop {
-			return othersStop, nil
-		}
-	case "k", "keep":
-		return othersKeep, nil
-	}
-	return othersCancel, nil
-}
-
-// othersQuestion is the others prompt for a start of id: one line per
-// resident with its figure and, when wt sessions use it, how many; one line
-// per family wt cannot read; then the choice, without s when nothing listed
-// can be stopped.
-func othersQuestion(cfg *config.Config, id string, occ *lifecycle.OccupiedError) (string, bool) {
+// legacyOthersCounts is how many wt sessions use each other resident, from
+// the refcount file (the registry path only).
+func legacyOthersCounts(occ *lifecycle.OccupiedError) map[string]int {
 	ids := make([]string, len(occ.Others))
 	for i, r := range occ.Others {
 		ids[i] = r.Entry.ModelID
 	}
-	counts := map[string]int{}
-	if len(ids) > 0 {
-		counts = sessionCounts(ids)
+	if len(ids) == 0 {
+		return map[string]int{}
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "starting %s loads it beside models of other providers:\n", id)
-	for _, r := range occ.Others {
-		line := fmt.Sprintf("%s — %s", r.Label(), r.Figure())
-		fmt.Fprintf(&b, "  %s\n", lifecycle.WithSessions(line, counts[r.Entry.ModelID]))
-	}
-	for _, f := range occ.OthersUnknown {
-		fmt.Fprintf(&b, "  cannot tell whether %s at %s is serving a model\n", f, localmodels.FamilyOrigin(cfg, f))
-	}
-	canStop := len(lifecycle.StoppableIDs(occ.Others)) > 0
-	if canStop {
-		b.WriteString("stop them first, keep them and start, or cancel? [s/k/N]")
-	} else {
-		b.WriteString("keep them and start, or cancel? [k/N]")
-	}
-	return b.String(), canStop
-}
-
-// othersWarning is the one line a start without a TTY and without --others
-// prints when it keeps other providers' models. It offers --others=stop only
-// when something it names can be stopped: with every resident unstoppable (an
-// mlx_lm_server pairing) or unreadable, that flag would stop nothing, and a
-// script told to pass it would believe it had made room.
-func othersWarning(cfg *config.Config, id string, occ *lifecycle.OccupiedError) string {
-	var parts []string
-	for _, r := range occ.Others {
-		parts = append(parts, fmt.Sprintf("%s (%s)", r.Label(), r.Figure()))
-	}
-	for _, f := range occ.OthersUnknown {
-		parts = append(parts, fmt.Sprintf("whatever %s at %s is serving", f, localmodels.FamilyOrigin(cfg, f)))
-	}
-	advice := "pass --others=keep to silence this"
-	if len(lifecycle.StoppableIDs(occ.Others)) > 0 {
-		advice = "pass --others=stop to stop them, --others=keep to silence this"
-	}
-	return fmt.Sprintf("wt: warning: starting %s beside %s; %s\n", id, strings.Join(parts, ", "), advice)
+	return sessionCounts(ids)
 }
 
 // othersCancelled is the error of a declined others question: what is still

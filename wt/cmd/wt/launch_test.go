@@ -228,7 +228,7 @@ func TestRunAgentCmdPrintsSummary(t *testing.T) {
 	}
 	cmd := exec.Command(truePath)
 	out := captureFile(t, &os.Stdout, func() {
-		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil)
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil, legacyTail())
 	})
 	if err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
@@ -256,7 +256,7 @@ func TestRunAgentCmdLeadingNewlineBeforeSummary(t *testing.T) {
 	}
 	cmd := exec.Command(truePath)
 	out := captureFile(t, &os.Stdout, func() {
-		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil)
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil, legacyTail())
 	})
 	if err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
@@ -290,7 +290,7 @@ func TestRunAgentCmdSurveyNoopWithoutTTY(t *testing.T) {
 	}
 	cmd := exec.Command(truePath)
 	out := captureFile(t, &os.Stdout, func() {
-		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil)
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil, legacyTail())
 	})
 	if err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
@@ -804,7 +804,7 @@ func TestRunAgentCmdInvokesPriceNotice(t *testing.T) {
 	}
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil); err != nil {
+	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil, legacyTail()); err != nil {
 		t.Fatalf("runAgentCmd() error: %v", err)
 	}
 	if !called {
@@ -835,7 +835,7 @@ func TestRunAgentCmdNoticePrintedWithSummary(t *testing.T) {
 
 	cmd := exec.Command(truePath)
 	out := captureFile(t, &os.Stdout, func() {
-		err = runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil)
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil, legacyTail())
 	})
 	if err != nil {
 		t.Fatalf("runAgentCmd() error: %v", err)
@@ -868,7 +868,7 @@ func TestRunAgentCmdSkipsPriceNoticeForCommandAgent(t *testing.T) {
 	}
 
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "shell", config.Model{}, &config.Config{}, nil); err != nil {
+	if err := runAgentCmd(cmd, "shell", config.Model{}, &config.Config{}, nil, legacyTail()); err != nil {
 		t.Fatalf("runAgentCmd() error: %v", err)
 	}
 	if called {
@@ -911,7 +911,7 @@ func TestRunAgentCmdPostExitOrder(t *testing.T) {
 	}
 	var runErr error
 	s := captureFile(t, &os.Stdout, func() {
-		runErr = runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil)
+		runErr = runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil, legacyTail())
 	})
 	if runErr != nil {
 		t.Fatalf("runAgentCmd: %v", runErr)
@@ -940,7 +940,7 @@ func TestRunAgentCmdCommandAgentSkipsStopPicker(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	if err := runAgentCmd(exec.Command(truePath), "shell", config.Model{}, &config.Config{}, nil); err != nil {
+	if err := runAgentCmd(exec.Command(truePath), "shell", config.Model{}, &config.Config{}, nil, legacyTail()); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	if called {
@@ -961,7 +961,7 @@ func TestRunAgentCmdNativeModelSkipsStopPicker(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	if err := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "claude/native", Native: true}, &config.Config{}, nil); err != nil {
+	if err := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "claude/native", Native: true}, &config.Config{}, nil, legacyTail()); err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
 	if called {
@@ -990,7 +990,7 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
 	cmd := exec.Command("true")
-	if err := runAgentCmd(cmd, "claude", m, cfg, nil); err != nil {
+	if err := runAgentCmd(cmd, "claude", m, cfg, nil, legacyTail()); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
 	if !slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
@@ -1018,7 +1018,7 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
 	cmd := exec.Command("true")
-	if err := runAgentCmd(cmd, "claude", m, cfg, nil); err != nil {
+	if err := runAgentCmd(cmd, "claude", m, cfg, nil, legacyTail()); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
 	if slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
@@ -1049,7 +1049,7 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
 	cmd := exec.Command("true")
-	if err := runAgentCmd(cmd, "claude", m, cfg, nil); err != nil {
+	if err := runAgentCmd(cmd, "claude", m, cfg, nil, legacyTail()); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
 	if promptCalled {
@@ -1070,13 +1070,13 @@ func TestRunAgentCmdSkipsProfileForCommandAndNativeModels(t *testing.T) {
 	t.Cleanup(func() { confirmProfile = oldConfirm })
 
 	cfg := &config.Config{}
-	if err := runAgentCmd(exec.Command("true"), "shell", config.Model{}, cfg, nil); err != nil {
+	if err := runAgentCmd(exec.Command("true"), "shell", config.Model{}, cfg, nil, legacyTail()); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
 	if promptCalled {
 		t.Error("confirmProfile called for a command agent (m.ID == \"\")")
 	}
-	if err := runAgentCmd(exec.Command("true"), "claude", config.Model{ID: "claude/native", Native: true, ModelName: "native"}, cfg, nil); err != nil {
+	if err := runAgentCmd(exec.Command("true"), "claude", config.Model{ID: "claude/native", Native: true, ModelName: "native"}, cfg, nil, legacyTail()); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
 	if promptCalled {
@@ -1099,7 +1099,7 @@ func TestRunAgentCmdMalformedProfilesTomlDegradesGracefully(t *testing.T) {
 
 	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
-	if err := runAgentCmd(exec.Command("true"), "claude", m, cfg, nil); err != nil {
+	if err := runAgentCmd(exec.Command("true"), "claude", m, cfg, nil, legacyTail()); err != nil {
 		t.Fatalf("runAgentCmd() error = %v, want a normal launch despite the malformed file", err)
 	}
 }
@@ -1136,7 +1136,7 @@ func TestRunAgentCmdProfileApplyErrorReleasesAndPrintsSummary(t *testing.T) {
 
 	var err error
 	out := captureFile(t, &os.Stdout, func() {
-		err = runAgentCmd(cmd, "pi", m, cfg, pp)
+		err = runAgentCmd(cmd, "pi", m, cfg, pp, legacyTail())
 	})
 
 	if err == nil {
@@ -2201,7 +2201,7 @@ func TestZeroDirLaunchClaimsNothing(t *testing.T) {
 	captureFile(t, &os.Stdout, func() {
 		err = runAgentCmd(exec.Command("/bin/sh", "-c",
 			"d=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && cp \"$d/wt-sessions/"+strconv.Itoa(os.Getpid())+"\" '"+claimCopy+"' 2>/dev/null\nexit 0"),
-			"shell", config.Model{}, &config.Config{}, nil)
+			"shell", config.Model{}, &config.Config{}, nil, legacyTail())
 	})
 	if err != nil {
 		t.Fatalf("runAgentCmd: %v", err)

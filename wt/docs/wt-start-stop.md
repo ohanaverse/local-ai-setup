@@ -534,6 +534,62 @@ recently used when a load does not fit.
   `wt litellm sync`; launching a model through wt also writes that model's
   own route if it is missing.
 
+## A launch on the model server (`[model-server]`)
+
+With a model server configured (`[model-server]` in `config.toml`, or
+`WT_MODEL_URL`/`WT_MODEL_TOKEN_FILE`/`WT_MODEL_TOKEN`), a launch that names its
+directory and its agent (`-W`, `--cwd`, `--root` with `-A`) asks the model
+server instead of the registry ([wt-model-server.md](wt-model-server.md)). A
+`-M` pin is resolved by the server; without one the server's one launchable
+model launches, and when several match the next one after the last launch
+rotates in (the picker still runs on the registry until it moves to the
+server). A model is started only for a pin of an idle model, or for a running
+local model the server says the gateway does not list; a running model whose
+route the server could not read launches as it is. Before the start, the launch
+registers a client session with the model so the server's idle grace counts it,
+and ends it when the agent exits (a register the server refuses is one
+`wt: note: the model server did not register this client session (…) — the launch goes on, …`
+line). There is no stop picker after the agent exits: the server stops idle
+models itself.
+
+A start reports on stderr, once per step and every 10 seconds:
+
+```text
+wt: starting <id> — <step> (12s)
+wt: starting <id> — queued behind another start or stop on the model server (12s)
+```
+
+The questions a start can ask, on the terminal (`/dev/tty`), default No:
+
+```text
+starting <id> will stop <ids>; continue? [y/N]
+<server's message>; replace it with <id>? [y/N]
+starting <id> loads it beside models of other providers:
+  <id> — <memory>
+  cannot tell whether <family> is serving a model
+stop them first, keep them and start, or cancel? [s/k/N]
+```
+
+`--replace` answers the first two and `--others=keep|stop` the third. With no
+terminal (stdin is not one) and no `--replace`, the launch exits 3 and nothing
+is started:
+
+```text
+approval missing: starting <id> would stop <ids>; pass --replace to go ahead (there is no terminal to ask); nothing was started
+approval missing: <server's message>; pass --replace to go ahead (there is no terminal to ask); nothing was started
+```
+
+With no terminal and no `--others`, other providers' models are kept and the
+warning above (`wt: warning: starting <id> beside …`) is printed once. A "no"
+at any question exits 3 with `declined — nothing was started`.
+
+Ctrl+C during the start detaches: the job keeps running on the server, the
+client session ends, and wt exits 2 with
+`detached — job <job> keeps running on the model server (watch it with 'wt job <job>', cancel it with 'wt job <job> --cancel'); nothing was launched`.
+A start that fails exits 2 with the server's message and `; nothing was launched`.
+A server that does not answer, refuses the token (`check token_file under [model-server] in config.toml`)
+or does not know the pin exits 1 before anything is registered or started.
+
 ## Selection screens
 
 1. **Model screen** (`wt`, `wt start`, `wt smoke`): the shared model table.

@@ -36,11 +36,52 @@ type fakeModelServer struct {
 	// token); Reqs is "METHOD path?query" per request, in order.
 	Status int
 	Reqs   []string
+
+	// Starts records every POST start body, in order. Outcome, when set,
+	// is the final state of the job the n-th start (from 0) creates; nil
+	// succeeds. A job reads running (with Step) on its first poll and its
+	// outcome on the next; Hang keeps every job running for ever.
+	Starts  []modelapi.StartRequest
+	Outcome func(n int, req modelapi.StartRequest) *modelapi.Problem
+	Step    string
+	Hang    bool
+	// OnPoll runs (unlocked) before each job poll is answered.
+	OnPoll func()
+	// Registers records the model set of every POST sessions; RegisterStatus
+	// and BeatStatus, when not 0, fail those calls with that status.
+	Registers      [][]string
+	RegisterStatus int
+	BeatStatus     int
+	// Log, when set, gets each request line appended as it arrives (a child
+	// process's fake reports to its parent through it).
+	Log string
+
+	polls map[string]int
+	jobs  map[string]*modelapi.Problem
+}
+
+// reqs is a copy of Reqs, taken under the lock.
+func (f *fakeModelServer) reqs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.Reqs...)
+}
+
+// count is how many recorded requests start with prefix.
+func (f *fakeModelServer) count(prefix string) int {
+	n := 0
+	for _, r := range f.reqs() {
+		if strings.HasPrefix(r, prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 func newFakeModelServer(t *testing.T, rows ...modelapi.Row) *fakeModelServer {
 	t.Helper()
-	f := &fakeModelServer{Token: "tok", Rows: rows, APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion}
+	f := &fakeModelServer{Token: "tok", Rows: rows, APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion,
+		polls: map[string]int{}, jobs: map[string]*modelapi.Problem{}}
 	f.Server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.Close)
 	return f
@@ -52,8 +93,15 @@ func (f *fakeModelServer) apiErr(w http.ResponseWriter, code int, c, msg string)
 }
 
 func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
+	line := r.Method + " " + r.URL.RequestURI()
 	f.mu.Lock()
-	f.Reqs = append(f.Reqs, r.Method+" "+r.URL.RequestURI())
+	f.Reqs = append(f.Reqs, line)
+	if f.Log != "" {
+		if lf, err := os.OpenFile(f.Log, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600); err == nil {
+			fmt.Fprintln(lf, line)
+			lf.Close()
+		}
+	}
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	if r.Header.Get("Authorization") != "Bearer "+f.Token || f.Status == http.StatusUnauthorized {
@@ -75,14 +123,73 @@ func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.apiErr(w, 404, modelapi.CodeUnknownModel, fmt.Sprintf("unknown model %q on the server", id))
 	case "/control/v1/jobs":
-		_ = json.NewEncoder(w).Encode([]modelapi.JobStatus{})
-	default:
-		if strings.HasPrefix(r.URL.Path, "/control/v1/sessions") {
-			_ = json.NewEncoder(w).Encode(map[string]any{})
+		_ = json.NewEncoder(w).Encode(modelapi.JobList{Jobs: []modelapi.JobStatus{}})
+	case "/control/v1/start":
+		var req modelapi.StartRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		f.mu.Lock()
+		n := len(f.Starts)
+		f.Starts = append(f.Starts, req)
+		var p *modelapi.Problem
+		if f.Outcome != nil {
+			p = f.Outcome(n, req)
+		}
+		id := fmt.Sprintf("job-%d", n)
+		f.jobs[id] = p
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(modelapi.JobRef{ID: id})
+	case "/control/v1/sessions":
+		var reg modelapi.SessionRegister
+		_ = json.NewDecoder(r.Body).Decode(&reg)
+		f.mu.Lock()
+		f.Registers = append(f.Registers, reg.Models)
+		status := f.RegisterStatus
+		f.mu.Unlock()
+		if status != 0 {
+			f.apiErr(w, status, "failed", "register failed")
 			return
 		}
-		f.apiErr(w, 404, modelapi.CodeNotFound, modelapi.MsgNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	default:
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/control/v1/jobs/"):
+			f.poll(w, strings.TrimPrefix(r.URL.Path, "/control/v1/jobs/"))
+		case strings.HasSuffix(r.URL.Path, "/heartbeat") && f.BeatStatus != 0:
+			f.apiErr(w, f.BeatStatus, "failed", "heartbeat failed")
+		case strings.HasPrefix(r.URL.Path, "/control/v1/sessions/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			f.apiErr(w, 404, modelapi.CodeNotFound, modelapi.MsgNotFound)
+		}
 	}
+}
+
+// poll answers GET jobs/{id}: running with Step on the first poll (and on
+// every poll while Hang), then the job's outcome.
+func (f *fakeModelServer) poll(w http.ResponseWriter, id string) {
+	if f.OnPoll != nil {
+		f.OnPoll()
+	}
+	f.mu.Lock()
+	p, ok := f.jobs[id]
+	f.polls[id]++
+	first := f.polls[id] == 1
+	hang, step := f.Hang, f.Step
+	f.mu.Unlock()
+	if !ok {
+		f.apiErr(w, 404, modelapi.CodeUnknownJob, "unknown job")
+		return
+	}
+	js := modelapi.JobStatus{ID: id, Kind: "start", State: modelapi.JobRunning, Step: step}
+	switch {
+	case first || hang:
+	case p == nil:
+		js.State, js.Result = modelapi.JobSucceeded, &modelapi.JobResult{OK: true}
+	default:
+		js.State, js.Result = modelapi.JobFailed, &modelapi.JobResult{Error: p}
+	}
+	_ = json.NewEncoder(w).Encode(js)
 }
 
 // wireRow is a registered wire row of the given id and action, in order n.
