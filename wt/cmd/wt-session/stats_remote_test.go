@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -301,6 +303,47 @@ func TestRemoteLaunchPrintsThePriceNoticeAfterTheSummary(t *testing.T) {
 			}
 			if tc.want == 1 && !strings.HasSuffix(strings.TrimRight(out, "\n"), "run 'wt cloud-sync'") {
 				t.Errorf("the notice is not last, after the summary:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestCollectUsageNarrowingIsTheSameOnBothPaths pins what --agent, --model and
+// --family do to the usage report on the server path (collectUsageRemote) and
+// the no-server path (collectUsageNoServer) alike: --agent skips spend with
+// spendSkippedReason (the spend log has no agent) and --model/--family mark
+// the report Narrowed. It exists so folding the two collectors' shared tail
+// into one function cannot let the paths drift apart.
+func TestCollectUsageNarrowingIsTheSameOnBothPaths(t *testing.T) {
+	a, f := statsRig(t)
+	f.Spend = modelapi.SpendReport{Rows: []modelapi.SpendRow{{Model: "omlx/q", Requests: 1, Spend: 0.1}}}
+	ms, err := a.openModels(context.Background(), "spend is not shown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asOf := time.Now().UTC()
+	paths := map[string]func(statsFilter) usageReport{
+		"server": func(sf statsFilter) usageReport {
+			return collectUsageRemote(context.Background(), ms, time.Hour, asOf, sf)
+		},
+		"no server": func(sf statsFilter) usageReport {
+			return collectUsageNoServer(errors.New("down"), time.Hour, asOf, sf, nil)
+		},
+	}
+	for name, collect := range paths {
+		t.Run(name, func(t *testing.T) {
+			rep := collect(statsFilter{agent: "claude"})
+			if rep.SpendStatus != spendSkipped || rep.SpendReason != spendSkippedReason || rep.Narrowed {
+				t.Errorf("--agent: status %q reason %q narrowed %v", rep.SpendStatus, rep.SpendReason, rep.Narrowed)
+			}
+			for _, sf := range []statsFilter{{model: "omlx/q"}, {family: "qwen"}} {
+				rep := collect(sf)
+				if !rep.Narrowed || rep.SpendStatus == spendSkipped {
+					t.Errorf("%+v: narrowed %v status %q", sf, rep.Narrowed, rep.SpendStatus)
+				}
+			}
+			if rep := collect(statsFilter{}); rep.Narrowed || rep.SpendStatus == spendSkipped {
+				t.Errorf("no filter: narrowed %v status %q", rep.Narrowed, rep.SpendStatus)
 			}
 		})
 	}
