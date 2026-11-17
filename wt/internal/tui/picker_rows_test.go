@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -277,22 +278,24 @@ func TestPickerEnterOnRemoteOnlyRowUsesOriginForm(t *testing.T) {
 // TestPickerPRFillArrivesAfterFirstPaint pins the asynchronous PR lookup: the
 // list paints from git alone with "?" in its PR# column (no gh call has
 // run), then the filled report swaps in with the PR cells and the cursor
-// stays on the row the user had highlighted.
+// stays on the row the user had highlighted. The PR lookup stub counts its
+// calls with an atomic: cleanup.LookupPRs runs one lookup per branch on its
+// own goroutine, so a plain counter is a data race under -race (#614).
 func TestPickerPRFillArrivesAfterFirstPaint(t *testing.T) {
 	r := newRmRepo(t)
 	r.loose("loose")
 	r.worktree("topic")
-	asked := 0
+	var asked atomic.Int32
 	prs := func(_, branch string) ([]byte, error) {
-		asked++
+		asked.Add(1)
 		if branch == "loose" {
 			return []byte(`[{"number":7,"state":"OPEN","headRefOid":"","baseRefName":"main"}]`), nil
 		}
 		return []byte("[]"), nil
 	}
 	m, cmd := pickerLoad(t, r.dir, prs)
-	if asked != 0 {
-		t.Fatalf("the first paint asked gh %d times, want none", asked)
+	if n := asked.Load(); n != 0 {
+		t.Fatalf("the first paint asked gh %d times, want none", n)
 	}
 	if !m.rows.filling() {
 		t.Fatalf("first paint is not the facts stage:\n%s", m.View())
@@ -322,7 +325,7 @@ func TestPickerPRFillArrivesAfterFirstPaint(t *testing.T) {
 		t.Fatalf("the fill answered %T, want rowPRsLoadedMsg", msg)
 	}
 	m, _ = updateMsg(m, msg)
-	if asked == 0 {
+	if asked.Load() == 0 {
 		t.Error("the PR lookups asked gh nothing")
 	}
 	if row, ok := m.rows.selectedRow(); !ok || row.Name != "loose" {
