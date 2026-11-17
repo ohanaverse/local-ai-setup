@@ -240,8 +240,12 @@ func TestPinnedAgentEmptyListStatusUsesFirstActiveTag(t *testing.T) {
 // TestPinnedAgentErrorRenderedOnList asserts that a pinned --agent whose
 // model catalog is empty surfaces its error on screen (the agent picker the
 // catalog load routes back to) instead of swallowing it: `wt --agent <agent>`
-// with an empty catalog once failed with zero on-screen feedback.
+// with an empty catalog once failed with zero on-screen feedback. The
+// installed probe is stubbed so the pinned path reaches the catalog load on
+// any runner — without it the flow stops at "not installed" wherever the
+// host has no `claude` binary (CI), and the test asserts nothing.
 func TestPinnedAgentErrorRenderedOnList(t *testing.T) {
+	defer stubInstalled("claude")()
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
