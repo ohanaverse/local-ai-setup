@@ -12,7 +12,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
@@ -229,7 +228,7 @@ func buildModelsList(theme themes.Theme, rows []modeladmin.Row) (list.Model, *tu
 			tuilayout.PadRunes(string(r.Status), stW), tuilayout.PadRunes(r.Running, runW), sizes[i],
 		}}
 	}
-	delegate := tui.ThemedListDelegate(theme)
+	delegate := themes.ListDelegate(theme)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
 	// No mark on a filter's matches: bubbles marks the runes it matched in

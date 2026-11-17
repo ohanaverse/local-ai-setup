@@ -80,7 +80,7 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	// rotation state so tests exercise the same marker wiring.
 	lastID, _ := rotation.New().Last()
 	items := buildTable(tableInput{models: models, usage: newUsageStore()}, lastID).items
-	delegate := ThemedListDelegate(themes.Default)
+	delegate := themes.ListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
 	// Cast []*modelItem to []list.Item

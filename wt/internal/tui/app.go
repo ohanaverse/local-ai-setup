@@ -621,7 +621,7 @@ func (m model) View() string {
 		}
 		body := m.newInput.View()
 		if m.newError != "" {
-			body += "\n" + ErrorStyle(m.theme).Render(m.newError)
+			body += "\n" + themes.ErrorStyle(m.theme).Render(m.newError)
 		}
 		body += "\n[enter] create   [esc] cancel"
 		return body
@@ -739,7 +739,7 @@ func (m model) proceedWithPath() (model, tea.Cmd) {
 	// visit doesn't linger on the freshly rendered screen.
 	m.status = ""
 	items := buildAgentList(m.cfg)
-	m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
+	m.agentList = list.New(items, themes.ListDelegate(m.theme), m.width-2, m.height-2)
 	m.agentList.Title = "Pick an agent or command"
 	m.agentList.SetShowStatusBar(false)
 	m.agentList.InfiniteScrolling = true // the cursor wraps at either edge (spec §6)
@@ -800,7 +800,7 @@ func (m model) routeBackToAgent(status string) (model, tea.Cmd) {
 	m.status = status
 	m.pinnedModel = ""
 	items := buildAgentList(m.cfg)
-	m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
+	m.agentList = list.New(items, themes.ListDelegate(m.theme), m.width-2, m.height-2)
 	m.agentList.Title = "Pick an agent or command"
 	m.agentList.SetShowStatusBar(false)
 	m.agentList.InfiniteScrolling = true // the cursor wraps at either edge (spec §6)

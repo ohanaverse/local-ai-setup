@@ -304,7 +304,7 @@ Read [docs/internals/cleanup-and-removal.md](docs/internals/cleanup-and-removal.
 
 ## Import graph ratchet (`internal/depcheck`)
 
-`go test ./internal/depcheck` holds the session library packages (`cleanup`, `agents`, `modelclient`, `smoke`, `profiles`, `catalog`, `survey`, `tui`) off the admin packages (`lifecycle`, `litellm`, `localmodels`, `cloudsync`, `spend`, `modeladmin`, `configeditor`, `candidates`, `hoststop`, and the model server's packages) and `cmd/wt-model` off the session half. The test's allow-list of expected offenders (empty now) **only shrinks**: never add an entry to make a build pass (move the type or function down to a leaf instead), and delete an entry the moment its edge is gone (the test fails until you do). Rules: `docs/internals/packages.md` "Package graph rules".
+`go test ./internal/depcheck` holds the session library packages (`cleanup`, `agents`, `modelclient`, `smoke`, `profiles`, `catalog`, `survey`, `tui`) off the admin packages (`lifecycle`, `litellm`, `localmodels`, `cloudsync`, `spend`, `modeladmin`, `configeditor`, `candidates`, `hoststop`, and the model server's packages), `cmd/wt-model` off the session half, and `configeditor` off `tui` (share styling through `themes`/`tuilayout`). The test's allow-list of expected offenders (empty now) **only shrinks**: never add an entry to make a build pass (move the type or function down to a leaf instead), and delete an entry the moment its edge is gone (the test fails until you do). Rules: `docs/internals/packages.md` "Package graph rules".
 
 ## wt-model (`cmd/wt-model`)
 

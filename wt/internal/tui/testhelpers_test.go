@@ -27,7 +27,7 @@ import (
 
 // compactModelList builds a 78x22 list.Model from buildTable rows for models
 // (no config, inventory or rotation marker; header as the list title via
-// styleTableTitle) with ThemedListDelegate at ShowDescription=false and
+// styleTableTitle) with themes.ListDelegate at ShowDescription=false and
 // Spacing 0 — the production picker layout. Tests use it instead of
 // hand-rolling list.New so filter/wrap/cursor assertions run against it.
 func compactModelList(t *testing.T, models []config.Model) list.Model {
@@ -37,10 +37,10 @@ func compactModelList(t *testing.T, models []config.Model) list.Model {
 }
 
 // tableList is the production picker's list over tbl at the given size:
-// ThemedListDelegate at ShowDescription=false and Spacing 0, the header as the
+// themes.ListDelegate at ShowDescription=false and Spacing 0, the header as the
 // list title via styleTableTitle, and no status bar.
 func tableList(tbl modelTable, width, height int) list.Model {
-	delegate := ThemedListDelegate(themes.Default)
+	delegate := themes.ListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
 	items := make([]list.Item, len(tbl.items))

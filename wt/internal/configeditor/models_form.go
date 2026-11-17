@@ -18,7 +18,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
@@ -586,7 +585,7 @@ func (m *model) modelFormLayout() modelFormLayout {
 	}
 	var l modelFormLayout
 	if f.err != "" {
-		l.errBlock = tui.ErrorStyle(m.theme).Render(wrapText(f.err, width))
+		l.errBlock = themes.ErrorStyle(m.theme).Render(wrapText(f.err, width))
 		l.foot = l.errBlock + "\n"
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
