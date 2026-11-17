@@ -8,6 +8,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeljobs"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionreg"
@@ -26,7 +27,7 @@ func (d Deps) StartJob(req modelapi.StartRequest, sessions *sessionreg.Registry)
 	return guarded(func(ctx context.Context, step func(string)) modelapi.JobResult {
 		cfg := d.Config()
 		snap := d.Inventory(cfg)
-		rows := catalog.Build(catalog.Input{Config: cfg, Models: cfg.Models, Inventory: &snap})
+		rows := localmodels.CatalogRows(localmodels.CatalogInput{Config: cfg, Models: cfg.Models, Inventory: &snap})
 		row, ok := catalog.Find(rows, req.Model)
 		if !ok || row.IsProfile() {
 			return problem(modelapi.CodeUnknownModel, fmt.Sprintf("unknown model %q", req.Model))

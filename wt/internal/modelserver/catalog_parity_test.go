@@ -10,7 +10,7 @@ import (
 )
 
 // TestFromWireParityWithServerBuiltRows pins that the session-side adapter
-// reads what the server wrote: rows from catalog.Build, converted by
+// reads what the server wrote: rows from localmodels.CatalogRows, converted by
 // BuildCatalog and back through catalog.FromWire, answer Action, BlockReason,
 // Ready, Running and Loading as the originals do. It lives here because
 // modelserver imports catalog; a catalog test importing modelserver would be
@@ -34,7 +34,7 @@ func TestFromWireParityWithServerBuiltRows(t *testing.T) {
 		omlxEntry("omlx/run", "run", true), omlxEntry("omlx/idle", "idle", false), load,
 		{ProviderID: "llamacpp", Artifact: "x", ModelID: "llamacpp/x", ModelName: "x", Registered: true, ArtifactKnown: true},
 	}}
-	orig := catalog.Build(catalog.Input{Config: cfg, Models: cfg.Models, Inventory: &snap})
+	orig := localmodels.CatalogRows(localmodels.CatalogInput{Config: cfg, Models: cfg.Models, Inventory: &snap})
 	c := BuildCatalog(cfg, snap, nil, testSessions(), nil, testNow)
 	if len(orig) != 7 || len(c.Rows) != 7 {
 		t.Fatalf("rows: built %d, wire %d, want 7 each", len(orig), len(c.Rows))

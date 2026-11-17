@@ -548,7 +548,7 @@ func TestStopUsesInjectedEnv(t *testing.T) {
 // TestStartableMatchesBackendRegistry verifies Startable is true for exactly
 // the families in backendsByFamily (including the omlx-6bit alias) and false
 // for providers wt has no backend for. catalog no longer delegates here (it
-// reads the provider table; catalog's TestStartableMatchesLifecycle pins the
+// reads the provider table; catalog's TestStartableMatchesLifecycle (pins_test.go) pins the
 // two answers together), so this is the engine-side half of the guard that a
 // new backend cannot be registered yet still render as a wrong row in the
 // pickers.

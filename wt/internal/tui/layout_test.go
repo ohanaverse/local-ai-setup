@@ -770,7 +770,7 @@ func pairingPinReason() string {
 		Fetch: config.ModelArtifact{Repo: "mlx-community/Qwen3.8-27B-4bit"}, Draft: config.ModelArtifact{Repo: "mlx-community/Qwen3.8-4B-4bit"},
 	}}}
 	snap := &localmodels.Snapshot{Entries: []localmodels.Entry{{ProviderID: "mlx_lm_server", ModelID: id, Registered: true}}}
-	return catalog.MissingReason(cfg, snap, id)
+	return localmodels.MissingReason(cfg, snap, id)
 }
 
 // TestRefusedPairingPinShowsItsStartCommand verifies the agent picker shows a
