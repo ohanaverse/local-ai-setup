@@ -7,21 +7,21 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
-// failingStartServer points the config home at a fake model server whose
+// failingStartServer returns the hooks for the app it builds, and points the
+// config home at a fake model server whose
 // one model, omlx/q, is local and stopped, and whose start jobs fail with a
 // multi-line message (a server's log tail), polled without sleeping.
-func failingStartServer(t *testing.T) *fakeModelServer {
+func failingStartServer(t *testing.T) hooks {
 	t.Helper()
 	f := newFakeModelServer(t, localRow("omlx/q", modelapi.StateStopped, modelapi.ActionStart, nil))
 	f.Outcome = func(int, modelapi.StartRequest) *modelapi.Problem {
 		return &modelapi.Problem{Code: modelapi.CodeFailed, Message: "serve process exited during model load"}
 	}
 	pointAtFake(t, f, "")
-	old := newModelClient
-	newModelClient = fastModelClient
-	t.Cleanup(func() { newModelClient = old })
 	captureStderr(t) // the start's progress lines
-	return f
+	h := testHooks()
+	h.newClient = fastModelClient
+	return h
 }
 
 // TestStartCmdLeavesAFailedStartToMainsOnePrint pins #344 for `wt start`, now
@@ -36,8 +36,8 @@ func TestStartCmdLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 		"wt start <id> --replace": {"start", "omlx/q", "--replace"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			failingStartServer(t)
-			out, code := runRoot(t, args...)
+			h := failingStartServer(t)
+			out, code := runRootWith(t, h, args...)
 			if code != 2 || len(wtLines(out)) != 1 || !strings.Contains(out, "serve process exited during model load") {
 				t.Errorf("exit %d, output %q; want 2 and one wt: line carrying the job's message", code, out)
 			}
@@ -55,8 +55,8 @@ func TestStartCmdLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 // would stand alone above main's line for a failure that is not a usage
 // mistake.
 func TestSmokeCmdLeavesAFailedStartToMainsOnePrint(t *testing.T) {
-	failingStartServer(t)
-	out, code := runRoot(t, "smoke", "omlx/q", "--only", "claude")
+	h := failingStartServer(t)
+	out, code := runRootWith(t, h, "smoke", "omlx/q", "--only", "claude")
 	if code == 0 || len(wtLines(out)) != 1 || !strings.Contains(out, "serve process exited during model load") {
 		t.Errorf("exit %d, output %q; want a failure and one wt: line carrying the job's message", code, out)
 	}
@@ -81,11 +81,11 @@ func TestLaunchLeavesAFailedStartToMainsOnePrint(t *testing.T) {
 		"an error that is no start": {"omlx/nope", 1, "omlx/nope"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			failingStartServer(t)
+			h := failingStartServer(t)
 			fakeAgentOnPath(t, "pi")
 			t.Chdir(t.TempDir())
 			stubStdinTTY(t, false)
-			out, code := runRoot(t, "--cwd", "-A", "pi", "-M", tc.pin)
+			out, code := runRootWith(t, h, "--cwd", "-A", "pi", "-M", tc.pin)
 			if code != tc.code || len(wtLines(out)) != 1 || !strings.Contains(out, tc.has) {
 				t.Errorf("exit %d, output %q; want %d and one wt: line naming %q", code, out, tc.code, tc.has)
 			}

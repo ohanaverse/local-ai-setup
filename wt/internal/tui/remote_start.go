@@ -38,7 +38,7 @@ import (
 // value copies.
 type launchHooks struct {
 	// gateway replaces agents.BuildLaunchCmdGateway, the agent command against
-	// the model server's gateway (cmd/wt-session's buildGatewayCmd on the
+	// the model server's gateway (cmd/wt-session's `hooks.build` on the
 	// non-TUI path).
 	gateway gatewayBuildFunc
 	// slot replaces agents.BuildSlotLaunchCmdGateway, the slot-profile build

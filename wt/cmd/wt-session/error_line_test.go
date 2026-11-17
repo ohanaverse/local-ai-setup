@@ -15,7 +15,14 @@ import (
 // one buffer, in the order a terminal would show them.
 func runRoot(t *testing.T, args ...string) (out string, code int) {
 	t.Helper()
-	root := rootCmd()
+	return runRootWith(t, testHooks(), args...)
+}
+
+// runRootWith is runRoot over a command tree whose app carries h (start from
+// testHooks so the client stays loopback-only).
+func runRootWith(t *testing.T, h hooks, args ...string) (out string, code int) {
+	t.Helper()
+	root := rootCmdWith(h)
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
@@ -100,7 +107,7 @@ func TestEveryRunnableCommandSilencesUsage(t *testing.T) {
 			walk(sub)
 		}
 	}
-	root := rootCmd()
+	root := rootCmdWith(testHooks())
 	if !root.SilenceErrors {
 		t.Error("the root does not silence cobra's Error: line")
 	}

@@ -21,11 +21,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 )
 
-// buildSlotGatewayCmd is the slot build on the launch path
-// (launchSlotProfileRemote): against the model-server gateway. Tests wrap it
-// to see when the agent's command is built.
-var buildSlotGatewayCmd = agents.BuildSlotLaunchCmdGateway
-
 // slotUnknownKeyNote is what wt says about a key of slot-profiles.toml the
 // schema does not name: a launch prints it after "wt: ", and
 // `wt profile list` after "warning: ".
@@ -291,7 +286,7 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 	// Step 5: the command against the gateway, the applier, the record, the
 	// run. A failure before the agent runs ends the client session first.
 	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token}
-	cmd, err := buildSlotGatewayCmd(p.Launch(), worktreePath, yolo, gw, extraArgs)
+	cmd, err := a.hooks.buildSlot(p.Launch(), worktreePath, yolo, gw, extraArgs)
 	if err != nil {
 		end()
 		return remoteExit(modelclient.Still(err, launchStill))

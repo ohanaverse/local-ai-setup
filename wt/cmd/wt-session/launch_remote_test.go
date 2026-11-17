@@ -59,20 +59,17 @@ func newRemoteRig(t *testing.T, rows ...modelapi.Row) *remoteRig {
 	stubStdinTTY(t, false)
 
 	built := &[]*exec.Cmd{}
-	oldBuild := buildGatewayCmd
-	buildGatewayCmd = func(agent string, m config.Model, wt string, yolo bool, gw agents.Gateway, models []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	a.hooks.buildGateway = func(agent string, m config.Model, wt string, yolo bool, gw agents.Gateway, models []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		f.mu.Lock()
 		f.Reqs = append(f.Reqs, "BUILD")
 		f.mu.Unlock()
-		cmd, info, err := oldBuild(agent, m, wt, yolo, gw, models, extra)
+		cmd, info, err := agents.BuildLaunchCmdGateway(agent, m, wt, yolo, gw, models, extra)
 		if cmd != nil {
 			*built = append(*built, cmd)
 		}
 		return cmd, info, err
 	}
-	oldClient := newModelClient
-	newModelClient = fastModelClient
-	t.Cleanup(func() { buildGatewayCmd, newModelClient = oldBuild, oldClient })
+	a.hooks.newClient = fastModelClient
 	return &remoteRig{f: f, a: a, built: built, stderr: captureStderr(t)}
 }
 
@@ -316,9 +313,7 @@ func TestLaunchRemoteReachesNoHostSeam(t *testing.T) {
 func TestLaunchRemoteHeartbeatFailureDoesNotKillTheAgent(t *testing.T) {
 	r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
 	r.f.BeatStatus = 500
-	old := remoteBeatInterval
-	remoteBeatInterval = 20 * time.Millisecond
-	t.Cleanup(func() { remoteBeatInterval = old })
+	r.a.hooks.beatInterval = 20 * time.Millisecond
 	mark := filepath.Join(t.TempDir(), "done")
 	t.Setenv("WT_FAKE_SLEEP", "0.4")
 	t.Setenv("WT_FAKE_MARK", mark)

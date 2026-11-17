@@ -389,7 +389,7 @@ func pointAtFake(t *testing.T, f *fakeModelServer, extra string) *app {
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return &app{hostSet: true, hostCfg: &config.Config{DefaultTag: "code"}}
+	return &app{hooks: testHooks(), hostSet: true, hostCfg: &config.Config{DefaultTag: "code"}}
 }
 
 // nameServerInConfigHome writes config.toml in the current XDG_CONFIG_HOME
@@ -644,7 +644,13 @@ func TestAgentDriverNamesSkipsCommands(t *testing.T) {
 	}
 }
 
-// loopbackOnlyModelClient is TestMain's newModelClient: a client whose
+// testHooks is the hooks a test's app starts from: the model-server client's
+// transport refuses to dial any address that is not loopback, so the httptest
+// fake (fakeModelServer) is the one network a test reaches. A test that needs
+// more sets the field on this value.
+func testHooks() hooks { return hooks{newClient: loopbackOnlyModelClient} }
+
+// loopbackOnlyModelClient is testHooks' newClient: a client whose
 // transport refuses to dial any address that is not loopback.
 func loopbackOnlyModelClient(ep modelclient.Endpoint) *modelclient.Client {
 	d := &net.Dialer{}
@@ -658,10 +664,10 @@ func loopbackOnlyModelClient(ep modelclient.Endpoint) *modelclient.Client {
 	return modelclient.New(ep, modelclient.WithHTTPClient(&http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}))
 }
 
-// TestModelClientSeamRefusesNonLoopback pins TestMain's guard: the client a
-// test gets cannot dial an address off this machine.
+// TestModelClientSeamRefusesNonLoopback pins testHooks' guard: the client a
+// test's app builds cannot dial an address off this machine.
 func TestModelClientSeamRefusesNonLoopback(t *testing.T) {
-	c := newModelClient(modelclient.Endpoint{URL: "http://192.0.2.1:9", Token: "t"})
+	c := testHooks().client(modelclient.Endpoint{URL: "http://192.0.2.1:9", Token: "t"})
 	_, err := c.Ping(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "loopback only") {
 		t.Errorf("err = %v, want the loopback refusal", err)

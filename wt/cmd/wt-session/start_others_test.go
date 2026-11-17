@@ -112,7 +112,7 @@ func TestAskChoiceParsesTheOthersAnswer(t *testing.T) {
 func TestOthersFlagReachesEveryStartingCommand(t *testing.T) {
 	stubOthersMode(t, "")
 	for _, args := range [][]string{{"start", "--others=stop"}, {"smoke", "--others=stop"}, {"--others=stop"}} {
-		root := rootCmd()
+		root := rootCmdWith(testHooks())
 		cmd, rest, err := root.Find(args)
 		if err != nil {
 			t.Fatalf("%v: find: %v", args, err)

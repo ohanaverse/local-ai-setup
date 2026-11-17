@@ -29,9 +29,7 @@ func newJobRig(t *testing.T, jobs ...modelapi.JobStatus) *jobRig {
 	for _, j := range jobs {
 		r.f.Fixed[j.ID] = j
 	}
-	old := jobSleep
-	jobSleep = func(context.Context, time.Duration) error { return nil }
-	t.Cleanup(func() { jobSleep = old })
+	r.a.hooks.jobSleep = func(context.Context, time.Duration) error { return nil }
 	return &jobRig{r}
 }
 

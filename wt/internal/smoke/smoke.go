@@ -1,7 +1,7 @@
 // Package smoke implements wt smoke's testable core: given a model, find
 // every currently eligible agent and run a one-shot prompt through each,
-// classifying the result. Process execution goes through the gatewayRun
-// seam (SetGatewayRunForTest) so tests can verify classification logic (PASS/FAIL/SKIP, sentinel
+// classifying the result. Process execution goes through RowOptions.Run
+// (a per-call value) so tests can verify classification logic (PASS/FAIL/SKIP, sentinel
 // matching, timeouts) without executing real agent binaries.
 package smoke
 
@@ -53,7 +53,7 @@ type Candidate struct {
 	Agents []string
 }
 
-// execOutcome is what the gatewayRun seam reports for one row.
+// execOutcome is what the agent run (RowOptions.Run) reports for one row.
 type execOutcome struct {
 	Command  string
 	Output   string
@@ -142,7 +142,7 @@ func (b *boundedWriter) String() string {
 	return string(b.tail)
 }
 
-// StubOutcome constructs an execOutcome for tests that stub gatewayRun
+// StubOutcome constructs an execOutcome for tests that stub RowOptions.Run
 // and need to return a canned result (e.g. exit code 0 with some output).
 func StubOutcome(output string, exitCode int) execOutcome {
 	return execOutcome{Output: output, ExitCode: exitCode}

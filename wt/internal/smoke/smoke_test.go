@@ -1,5 +1,5 @@
 // Tests for internal/smoke's eligibility computation and row classification.
-// Process execution is stubbed via the gatewayRun seam throughout — no
+// Process execution is stubbed via RowOptions.Run throughout — no
 // real subprocess is ever exec'd here.
 package smoke
 
@@ -81,8 +81,8 @@ func TestRunRowStatus(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			withStubBuildAndRun(t, c.outcome)
-			res := runRowForTest(context.Background(), "claude", config.Model{ID: "ollama/x"}, c.prompt, c.sentinel, time.Second, FixedDir("."), nil)
+			opts := stubRun(c.outcome)
+			res := runRowForTest(context.Background(), "claude", config.Model{ID: "ollama/x"}, c.prompt, c.sentinel, time.Second, FixedDir("."), nil, opts)
 			if res.Status != c.want {
 				t.Fatalf("Status = %v (err=%v), want %v%s", res.Status, res.Err, c.want, c.note)
 			}
@@ -93,8 +93,8 @@ func TestRunRowStatus(t *testing.T) {
 // TestRunRowFailTimeout asserts a timed-out row classifies FAIL with a
 // timeout-specific error, and never blocks on a hung process.
 func TestRunRowFailTimeout(t *testing.T) {
-	withStubBuildAndRun(t, execOutcome{TimedOut: true})
-	res := runRowForTest(context.Background(), "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
+	opts := stubRun(execOutcome{TimedOut: true})
+	res := runRowForTest(context.Background(), "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil, opts)
 	if res.Status != StatusFail || res.Err == nil || !strings.Contains(res.Err.Error(), "timed out") {
 		t.Fatalf("Status = %v, Err = %v, want FAIL with a timeout error", res.Status, res.Err)
 	}
@@ -105,7 +105,7 @@ func TestRunRowFailTimeout(t *testing.T) {
 // to this harmless script rather than a real codex/agy/etc binary that
 // might happen to be installed on the machine running the test — a
 // realGatewayRun test actually calls cmd.Start(), unlike every other test
-// in this file (which stubs gatewayRun and never execs anything).
+// in this file (which stubs RowOptions.Run and never execs anything).
 func writeFakeAgentBinary(t *testing.T, name string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -118,7 +118,7 @@ func writeFakeAgentBinary(t *testing.T, name string) {
 
 // TestRealGatewayRunOneShotArgsNilApplier locks realGatewayRun's own
 // "profileApplier == nil" branch. Every other test in this file exercises
-// RunRow through the gatewayRun stub and never runs realGatewayRun's own
+// RunRow through the RowOptions.Run stub and never runs realGatewayRun's own
 // oneShotArgs branching (code review finding, 2026-09-25) — without this, a
 // regression that silently dropped oneShotArgs when no profile applies
 // (the common case: most agent/model pairs have no profile configured)
@@ -250,8 +250,8 @@ func TestRealGatewayRunRevertsAndReappendsOneShotArgsOnApplierError(t *testing.T
 // local model, #179 Phase B host acceptance).
 func TestRunRowFailModelFallback(t *testing.T) {
 	const warn = `pi: model "ollama/x" not configured for pi, using default model`
-	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "WT-SMOKE-pi-run-1", ModelFallback: warn})
-	res := runRowForTest(context.Background(), "pi", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-pi-run-1", time.Second, FixedDir("."), nil)
+	opts := stubRun(execOutcome{ExitCode: 0, Output: "WT-SMOKE-pi-run-1", ModelFallback: warn})
+	res := runRowForTest(context.Background(), "pi", config.Model{ID: "ollama/x"}, "prompt", "WT-SMOKE-pi-run-1", time.Second, FixedDir("."), nil, opts)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL for a model fallback", res.Status)
 	}
@@ -309,7 +309,7 @@ func TestRealGatewayRunReportsModelFallback(t *testing.T) {
 	if outcome.Command != "" || outcome.StartErr != nil {
 		t.Fatalf("Command = %q, StartErr = %v, want the agent never started", outcome.Command, outcome.StartErr)
 	}
-	if res := runRowForTest(context.Background(), "pi", smokeDiscoveredOllama(), "the prompt", "", time.Second, FixedDir(t.TempDir()), nil); res.Status != StatusFail {
+	if res := runRowForTest(context.Background(), "pi", smokeDiscoveredOllama(), "the prompt", "", time.Second, FixedDir(t.TempDir()), nil, RowOptions{}); res.Status != StatusFail {
 		t.Fatalf("RunRow Status = %v, want FAIL (err=%v)", res.Status, res.Err)
 	}
 }
@@ -329,7 +329,7 @@ func TestRealGatewayRunDiscoveredModelNoFallback(t *testing.T) {
 	if !strings.HasSuffix(outcome.Command, "--model litellm/ollama/llama3.2:1b -p the prompt") {
 		t.Fatalf("Command = %q, want it to end with \"--model litellm/ollama/llama3.2:1b -p the prompt\"", outcome.Command)
 	}
-	if res := runRowForTest(context.Background(), "pi", smokeDiscoveredOllama(), "the prompt", "", 10*time.Second, FixedDir(t.TempDir()), nil); res.Status != StatusPass {
+	if res := runRowForTest(context.Background(), "pi", smokeDiscoveredOllama(), "the prompt", "", 10*time.Second, FixedDir(t.TempDir()), nil, RowOptions{}); res.Status != StatusPass {
 		t.Fatalf("RunRow Status = %v, want PASS (err=%v)", res.Status, res.Err)
 	}
 }
@@ -359,7 +359,7 @@ func TestRealGatewayRunModelFallbackWithoutWarnStillFails(t *testing.T) {
 	if outcome.ModelFallback == "" || outcome.Command != "" {
 		t.Fatalf("ModelFallback = %q, Command = %q, want a non-empty fallback reason and the agent never started", outcome.ModelFallback, outcome.Command)
 	}
-	if res := runRowForTest(context.Background(), "silent-fallback", config.Model{Native: true}, "the prompt", "", time.Second, FixedDir(t.TempDir()), nil); res.Status != StatusFail {
+	if res := runRowForTest(context.Background(), "silent-fallback", config.Model{Native: true}, "the prompt", "", time.Second, FixedDir(t.TempDir()), nil, RowOptions{}); res.Status != StatusFail {
 		t.Fatalf("RunRow Status = %v, want FAIL (err=%v)", res.Status, res.Err)
 	}
 }
@@ -471,8 +471,8 @@ func TestDefaultPrompt(t *testing.T) {
 // junk or absent — must FAIL the default-prompt check.
 func TestRunRowFailsOnPromptEcho(t *testing.T) {
 	prompt, sentinel := DefaultPrompt("codex", "run-abcd1234")
-	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "user\n" + prompt + "\ncodex\n{\"malformed\": tool call\n"})
-	res := runRowForTest(context.Background(), "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, FixedDir("."), nil)
+	opts := stubRun(execOutcome{ExitCode: 0, Output: "user\n" + prompt + "\ncodex\n{\"malformed\": tool call\n"})
+	res := runRowForTest(context.Background(), "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, FixedDir("."), nil, opts)
 	if res.Status != StatusFail {
 		t.Fatalf("Status = %v, want FAIL: the output holds only the echoed prompt", res.Status)
 	}
@@ -482,8 +482,8 @@ func TestRunRowFailsOnPromptEcho(t *testing.T) {
 // the model's upper-case reply passes.
 func TestRunRowPassesOnTheConvertedReply(t *testing.T) {
 	prompt, sentinel := DefaultPrompt("codex", "run-abcd1234")
-	withStubBuildAndRun(t, execOutcome{ExitCode: 0, Output: "user\n" + prompt + "\ncodex\n" + sentinel + "\n"})
-	res := runRowForTest(context.Background(), "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, FixedDir("."), nil)
+	opts := stubRun(execOutcome{ExitCode: 0, Output: "user\n" + prompt + "\ncodex\n" + sentinel + "\n"})
+	res := runRowForTest(context.Background(), "codex", config.Model{ID: "ollama/x"}, prompt, sentinel, time.Second, FixedDir("."), nil, opts)
 	if res.Status != StatusPass {
 		t.Fatalf("Status = %v (%v), want PASS", res.Status, res.Err)
 	}
@@ -598,8 +598,8 @@ func TestSweepRowDirsReportsWhatItCannotRemove(t *testing.T) {
 // TestRunRowFailInterrupted asserts a row whose agent was killed by a
 // cancelled run classifies FAIL with an interrupt-specific error.
 func TestRunRowFailInterrupted(t *testing.T) {
-	withStubBuildAndRun(t, execOutcome{Interrupted: true})
-	res := runRowForTest(context.Background(), "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil)
+	opts := stubRun(execOutcome{Interrupted: true})
+	res := runRowForTest(context.Background(), "claude", config.Model{ID: "ollama/x"}, "prompt", "sentinel", time.Second, FixedDir("."), nil, opts)
 	if res.Status != StatusFail || res.Err == nil || !strings.Contains(res.Err.Error(), "interrupted") {
 		t.Fatalf("Status = %v, Err = %v, want FAIL with an interrupted error", res.Status, res.Err)
 	}
@@ -937,8 +937,8 @@ func TestToolPromptNonceIsOnlyInTheLastFile(t *testing.T) {
 // matters because an empty reply after a tool call is a distinct failure
 // from a wrong reply, and the report should say which one happened.
 func TestRunRowEmptyResponseIsNamed(t *testing.T) {
-	withStubBuildAndRun(t, execOutcome{Output: " \n"})
-	r := runRowForTest(context.Background(), "claude", config.Model{ID: "p/m"}, "p", "SENTINEL", time.Second, FixedDir(t.TempDir()), nil)
+	opts := stubRun(execOutcome{Output: " \n"})
+	r := runRowForTest(context.Background(), "claude", config.Model{ID: "p/m"}, "p", "SENTINEL", time.Second, FixedDir(t.TempDir()), nil, opts)
 	if r.Status != StatusFail || r.Err == nil || !strings.Contains(r.Err.Error(), "empty response") {
 		t.Fatalf("status=%v err=%v; want FAIL with an empty-response error", r.Status, r.Err)
 	}
@@ -980,18 +980,15 @@ func gatewayRunForTest(ctx context.Context, agentName string, m config.Model, pr
 
 // runRowForTest is RunRowGateway against testGateway with a gateway that is
 // always ready.
-func runRowForTest(ctx context.Context, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, rowDir RowDir, profileApplier ProfileApplier) RowResult {
-	return RunRowGateway(ctx, testGateway, nil, agentName, m, prompt, sentinel, timeout, rowDir, profileApplier, func(context.Context) error { return nil })
+func runRowForTest(ctx context.Context, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, rowDir RowDir, profileApplier ProfileApplier, opts RowOptions) RowResult {
+	return RunRowGateway(ctx, testGateway, nil, agentName, m, prompt, sentinel, timeout, rowDir, profileApplier, func(context.Context) error { return nil }, opts)
 }
 
-// withStubBuildAndRun replaces the agent-run seam (gatewayRun) with one that
-// reports out for the duration of a test, restoring the original on cleanup.
-func withStubBuildAndRun(t *testing.T, out execOutcome) {
-	t.Helper()
-	old := gatewayRun
-	gatewayRun = func(_ context.Context, _ agents.Gateway, _ []config.Model, _ string, _ config.Model, _ string, _ RowDir, _ time.Duration, _ ProfileApplier, cleanup *func() error) execOutcome {
+// stubRun is the RowOptions whose agent run reports out without running
+// anything.
+func stubRun(out execOutcome) RowOptions {
+	return RowOptions{Run: func(_ agents.Gateway, _ []config.Model, _ string, _ config.Model, _, _ string, _ time.Duration, _ ProfileApplier, cleanup *func() error) ExecOutcome {
 		*cleanup = func() error { return nil }
 		return out
-	}
-	t.Cleanup(func() { gatewayRun = old })
+	}}
 }

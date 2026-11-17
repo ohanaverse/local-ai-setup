@@ -78,6 +78,7 @@ type gatewayRig struct {
 	probeAuth  string
 	runs       int
 	readyCalls int
+	opts       RowOptions
 }
 
 func newGatewayRig(t *testing.T, probeStatus int, outcomes ...ExecOutcome) *gatewayRig {
@@ -92,14 +93,14 @@ func newGatewayRig(t *testing.T, probeStatus int, outcomes ...ExecOutcome) *gate
 	}))
 	t.Cleanup(srv.Close)
 	r.gw = agents.Gateway{Origin: srv.URL, Token: "gw-token"}
-	t.Cleanup(SetGatewayRunForTest(func(_ agents.Gateway, _ []config.Model, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ ProfileApplier, cleanup *func() error) ExecOutcome {
+	r.opts = RowOptions{Run: func(_ agents.Gateway, _ []config.Model, _ string, _ config.Model, _ string, _ string, _ time.Duration, _ ProfileApplier, cleanup *func() error) ExecOutcome {
 		*cleanup = func() error { return nil }
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		i := min(r.runs, len(outcomes)-1)
 		r.runs++
 		return outcomes[i]
-	}))
+	}}
 	return r
 }
 
@@ -116,7 +117,7 @@ func (r *gatewayRig) run(m config.Model, readyErrs ...error) RowResult {
 		}
 		return nil
 	}
-	return RunRowGateway(context.Background(), r.gw, nil, "claude", m, "prompt", "SENTINEL", time.Second, FixedDir("."), nil, ready)
+	return RunRowGateway(context.Background(), r.gw, nil, "claude", m, "prompt", "SENTINEL", time.Second, FixedDir("."), nil, ready, r.opts)
 }
 
 var gatewayModel = config.Model{ID: "openrouter/a", GatewayID: "openrouter/a", ProviderID: "openrouter", Location: config.LocationCloud}

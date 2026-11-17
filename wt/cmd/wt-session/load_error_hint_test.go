@@ -163,7 +163,7 @@ func TestLitellmLoadErrorNamesTheRepairThatWorks(t *testing.T) {
 		for _, args := range [][]string{{"litellm", "sync"}, {"litellm", "status"}, {"litellm", "set", "--url", "http://x"}} {
 			t.Run(c.name+"/"+strings.Join(args, " "), func(t *testing.T) {
 				registry, _ := brokenHome(t, c)
-				root := rootCmd()
+				root := rootCmdWith(testHooks())
 				var out, errOut bytes.Buffer
 				root.SetOut(&out)
 				root.SetErr(&errOut)
@@ -336,7 +336,7 @@ func TestRegistryRowErrorNamesTheRegistry(t *testing.T) {
 				if err := os.WriteFile(registry, []byte(c.body), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				root := rootCmd()
+				root := rootCmdWith(testHooks())
 				var out, errOut bytes.Buffer
 				root.SetOut(&out)
 				root.SetErr(&errOut)

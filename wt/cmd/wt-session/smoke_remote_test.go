@@ -41,13 +41,13 @@ func smokeOnFake(t *testing.T, r *remoteRig, args ...string) smokeRemoteRun {
 // the requests can be read).
 func stubGatewayRows(t *testing.T, r *remoteRig, fn func(gw agents.Gateway, agentName string) smoke.ExecOutcome) {
 	t.Helper()
-	t.Cleanup(smoke.SetGatewayRunForTest(func(gw agents.Gateway, _ []config.Model, agentName string, _ config.Model, _ string, _ string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+	r.a.hooks.smokeRun = smoke.RowOptions{Run: func(gw agents.Gateway, _ []config.Model, agentName string, _ config.Model, _ string, _ string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
 		r.f.mu.Lock()
 		r.f.Reqs = append(r.f.Reqs, "ROW")
 		r.f.mu.Unlock()
 		*cleanup = func() error { return nil }
 		return fn(gw, agentName)
-	}))
+	}}
 }
 
 func passRows(agents.Gateway, string) smoke.ExecOutcome { return smoke.StubOutcome("ok", 0) }

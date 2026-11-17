@@ -14,17 +14,12 @@ import (
 )
 
 // modelSession is the client session's handle on the model server: the client
-// and the endpoint it was built for.
+// and the endpoint it was built for, and the hooks of the app that built it
+// (the code that holds only a session reads them from here).
 type modelSession struct {
 	client *modelclient.Client
 	ep     modelclient.Endpoint
-}
-
-// newModelClient builds the client for ep. It is a test seam: cmd/wt-session's
-// TestMain swaps in a client whose transport dials loopback only, so the
-// fake model server is the one network a test may reach.
-var newModelClient = func(ep modelclient.Endpoint) *modelclient.Client {
-	return modelclient.New(ep)
+	hooks  hooks
 }
 
 // agentDriverNames is the agent drivers a session synthesizes an agent for:
@@ -118,7 +113,7 @@ func (a *app) resolveModels() (*modelSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelSession{client: newModelClient(ep), ep: ep}, nil
+	return &modelSession{client: a.hooks.client(ep), ep: ep, hooks: a.hooks}, nil
 }
 
 // remoteExit is the one mapping from a model-server error to an exit status:

@@ -24,9 +24,7 @@ func statsRig(t *testing.T) (*app, *fakeModelServer) {
 	f := newFakeModelServer(t, localRow("omlx/q", "running", "launch", nil))
 	f.Rows[0].Family = "qwen"
 	a := pointAtFake(t, f, "")
-	old := newModelClient
-	newModelClient = fastModelClient
-	t.Cleanup(func() { newModelClient = old })
+	a.hooks.newClient = fastModelClient
 	return a, f
 }
 
@@ -244,9 +242,7 @@ func TestRotateListsCatalogRowsByOrder(t *testing.T) {
 		mk("omlx/c", 3, "code", true), mk("omlx/a", 1, "code", true), mk("omlx/x", 2, "other", true),
 		mk("omlx/b", 2, "code", true), mk("omlx/found", 0, "code", false))
 	a := pointAtFake(t, f, "")
-	old := newModelClient
-	newModelClient = fastModelClient
-	t.Cleanup(func() { newModelClient = old })
+	a.hooks.newClient = fastModelClient
 	next := func(tag string) string {
 		var err error
 		out := captureFile(t, &os.Stdout, func() {

@@ -106,8 +106,14 @@ func sp(s string) *string { return &s }
 // runWT runs the wt command line in-process and returns stdout+stderr.
 func runWT(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	return runWTWith(t, testHooks(), args...)
+}
+
+// runWTWith is runWT over an app carrying h (start from testHooks).
+func runWTWith(t *testing.T, h hooks, args ...string) (string, error) {
+	t.Helper()
 	var buf bytes.Buffer
-	root := rootCmd()
+	root := rootCmdWith(h)
 	root.SetOut(&buf)
 	root.SetErr(&buf)
 	if args == nil {

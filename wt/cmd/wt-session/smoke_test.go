@@ -356,7 +356,7 @@ func TestSmokeCmdCwdAtRootWarnsAndProceeds(t *testing.T) {
 // no parent, so on their own they would still pass if the root command lost
 // the flag — and `wt smoke --cwd` would then be an unknown-flag error.
 func TestSmokeInheritsTheRootCwdFlag(t *testing.T) {
-	sc, _, err := rootCmd().Find([]string{"smoke"})
+	sc, _, err := rootCmdWith(testHooks()).Find([]string{"smoke"})
 	if err != nil || sc.Name() != "smoke" {
 		t.Fatalf("no smoke command under the root command (err = %v)", err)
 	}
@@ -379,10 +379,10 @@ func TestSmokeInheritsTheRootCwdFlag(t *testing.T) {
 func smokeRig(t *testing.T, fn func(agentName, prompt, cwd string, cleanup *func() error) smoke.ExecOutcome) *remoteRig {
 	t.Helper()
 	r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
-	t.Cleanup(smoke.SetGatewayRunForTest(func(_ agents.Gateway, _ []config.Model, agentName string, _ config.Model, prompt, cwd string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+	r.a.hooks.smokeRun = smoke.RowOptions{Run: func(_ agents.Gateway, _ []config.Model, agentName string, _ config.Model, prompt, cwd string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
 		*cleanup = func() error { return nil }
 		return fn(agentName, prompt, cwd, cleanup)
-	}))
+	}}
 	oldExit := smokeExit
 	t.Cleanup(func() { smokeExit = oldExit })
 	smokeExit = func(int) {}
@@ -470,14 +470,14 @@ func TestSmokeCmdAppliesLocalModelProfile(t *testing.T) {
 	}
 	var rows []string
 	appliers := 0
-	t.Cleanup(smoke.SetGatewayRunForTest(func(_ agents.Gateway, _ []config.Model, agentName string, _ config.Model, _, _ string, _ time.Duration, pa smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+	r.a.hooks.smokeRun = smoke.RowOptions{Run: func(_ agents.Gateway, _ []config.Model, agentName string, _ config.Model, _, _ string, _ time.Duration, pa smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
 		rows = append(rows, agentName)
 		if pa != nil {
 			appliers++
 		}
 		*cleanup = func() error { return nil }
 		return smoke.StubOutcome("ok", 0)
-	}))
+	}}
 	run := smokeOnFake(t, r, "openrouter/a", "--only", "claude")
 	if run.err != nil {
 		t.Fatalf("smoke executed with error: %v\n%s", run.err, run.stderr)

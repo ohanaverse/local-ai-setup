@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
@@ -16,15 +15,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 )
 
-// buildGatewayCmd is a test seam over agents.BuildLaunchCmdGateway: tests
-// wrap it to see when, and with what, the agent command is built. Like
-// remoteBeatInterval below it is a package-variable seam still to migrate onto
-// app (wt/CLAUDE.md): several launch paths and tests share both.
-var buildGatewayCmd = agents.BuildLaunchCmdGateway
-
 // launchCommand is a command agent's launch (shell): no model layer, so no
 // model server and no registry. It is a package-variable seam
-// like buildGatewayCmd: the dispatch tests swap it to see which command a
+// (not yet per-app): the dispatch tests swap it to see which command a
 // launch reached and with what arguments, without running it.
 var launchCommand = launchCommandImpl
 
@@ -34,9 +27,9 @@ var launchCommand = launchCommandImpl
 // the one native note, registers no client session and records no rotation or
 // usage (there is no model id). Everything else a launch does (the worktree,
 // the guard, claims, --yolo, passthrough args, the summary) is unchanged.
-func launchNative(agent, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string, pp *precomputedProfiles) error {
+func launchNative(a *app, agent, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string, pp *precomputedProfiles) error {
 	m := agents.NativeModel()
-	cmd, _, err := buildGatewayCmd(agent, m, worktreePath, yolo, agents.Gateway{}, nil, extraArgs)
+	cmd, _, err := a.hooks.build(agent, m, worktreePath, yolo, agents.Gateway{}, nil, extraArgs)
 	if err != nil {
 		return remoteExit(modelclient.Still(err, launchStill))
 	}
@@ -54,10 +47,6 @@ func launchCommandImpl(agent, worktreePath string, cfg *config.Config, yolo, pin
 	}
 	return runLaunch(cmd, agent, config.Model{}, cfg, pp, extraArgs, runTail{})
 }
-
-// remoteBeatInterval is the client session's heartbeat interval; 0 is
-// modelclient's default (20 s). Tests shorten it.
-var remoteBeatInterval time.Duration
 
 // errRemoteNeedsPicker is launchFilteredRemote's answer for a launch the
 // picker must decide (several launchable models, no -M, a terminal):
@@ -107,7 +96,7 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	}
 	// No model server configured at all and no model asked for: native (#615).
 	if _, berr := a.buildModels(launchStill); berr != nil && nativeFallback(berr, pinned, pinnedSupplied, tags, family) {
-		return launchNative(agent, worktreePath, cfg, yolo, extraArgs, pp)
+		return launchNative(a, agent, worktreePath, cfg, yolo, extraArgs, pp)
 	}
 	// A -M pin of a slot profile is its own launch unit, as on the registry
 	// path: the server knows no profile id, so the pin never goes to its
@@ -177,7 +166,7 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 			return remoteExit(modelclient.Still(err, launchStill))
 		}
 	}
-	cmd, _, err := buildGatewayCmd(agent, m, worktreePath, yolo, gw, models, extraArgs)
+	cmd, _, err := a.hooks.build(agent, m, worktreePath, yolo, gw, models, extraArgs)
 	if err != nil {
 		end()
 		return remoteExit(modelclient.Still(err, launchStill))
