@@ -18,7 +18,8 @@ import (
 
 // startChild starts a harmless child of this test in its own session, as wt
 // spawns mtplx, and returns its pid and a channel closed once it has been
-// reaped. It is the only process the tests in this file ever signal.
+// reaped. It and the processes in the group it leads are the only things the
+// tests in this file ever signal.
 func startChild(t *testing.T, name string, args ...string) (int, <-chan struct{}) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
@@ -131,7 +132,14 @@ func TestRealProcessTableDescribesAChild(t *testing.T) {
 		t.Errorf("describe(reaped child) = found %v err %v, want not found", found, err)
 	}
 
-	spaced, _ := startChild(t, "/bin/sh", "-c", "sleep 60", "an arg with spaces")
+	// The trailing `& wait` pins the shell's own argv for the read. A bare
+	// `sleep 60` is the shell's last command, so the shell replaces its image
+	// with sleep and the argv becomes [sleep 60]: the describe then races that
+	// replacement and loses whenever the test goroutine runs late (it did on a
+	// loaded one-P CI runner). `wait` is a builtin and is never exec'd, so the
+	// four tokens this asserts on live as long as the child does; the sleep
+	// shares the child's process group, so startChild's cleanup kills both.
+	spaced, _ := startChild(t, "/bin/sh", "-c", "sleep 60 & wait", "an arg with spaces")
 	info, found, err = realDescribeProc(spaced)
 	if err != nil || !found || len(info.argv) != 4 || info.argv[3] != "an arg with spaces" {
 		t.Errorf("argv = %q (found %v err %v), want four tokens, the last with its spaces", info.argv, found, err)
