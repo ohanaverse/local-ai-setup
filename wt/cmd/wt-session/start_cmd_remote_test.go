@@ -228,8 +228,6 @@ func TestStartRemoteRegisterFailureIsOneNoteAndTheStartGoesOn(t *testing.T) {
 // the server's picker.
 func TestStartAndStopCommandsDispatchOnTheEndpoint(t *testing.T) {
 	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
-	// Set before any command opens the model session: a session carries the
-	// app's hooks as they were when it was built.
 	r.a.hooks.stopIn = func() io.Reader { return strings.NewReader("1\n") }
 	run := func(cmd interface {
 		SetArgs([]string)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -653,24 +652,41 @@ func testHooks() hooks { return hooks{newClient: loopbackOnlyModelClient} }
 // loopbackOnlyModelClient is testHooks' newClient: a client whose
 // transport refuses to dial any address that is not loopback.
 func loopbackOnlyModelClient(ep modelclient.Endpoint) *modelclient.Client {
-	d := &net.Dialer{}
-	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, _, err := net.SplitHostPort(addr)
-		if err != nil || (host != "localhost" && !net.ParseIP(host).IsLoopback()) {
-			return nil, fmt.Errorf("cmd/wt-session tests dial loopback only, not %q", addr)
-		}
-		return d.DialContext(ctx, network, addr)
-	}}
-	return modelclient.New(ep, modelclient.WithHTTPClient(&http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}))
+	return loopbackOnlyClient(ep)
 }
 
-// TestModelClientSeamRefusesNonLoopback pins testHooks' guard: the client a
-// test's app builds cannot dial an address off this machine.
+// TestModelClientSeamRefusesNonLoopback pins the dial guard every test app
+// has: the zero-value hooks (what newApp and a bare &app{} carry) build a
+// client that cannot dial an address off this machine, and the same holds for
+// the client a bare app builds from a config naming such an address. Why: a
+// fixture typo must fail the test, not dial out from a developer machine or CI.
+// The address is a documentation one (RFC 5737) and is never connected to.
 func TestModelClientSeamRefusesNonLoopback(t *testing.T) {
-	c := testHooks().client(modelclient.Endpoint{URL: "http://192.0.2.1:9", Token: "t"})
-	_, err := c.Ping(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "loopback only") {
-		t.Errorf("err = %v, want the loopback refusal", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c := hooks{}.client(modelclient.Endpoint{URL: "http://203.0.113.1:1", Token: "t"})
+	if _, err := c.Ping(ctx); err == nil || !strings.Contains(err.Error(), "loopback only") {
+		t.Errorf("zero hooks: err = %v, want the loopback refusal", err)
+	}
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	tok := filepath.Join(home, "token")
+	if err := os.WriteFile(tok, []byte("t\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("[model-server]\nurl = %q\ntoken_file = %q\n", "http://203.0.113.1:1", tok)
+	if err := os.WriteFile(filepath.Join(home, "agent-wt", "config.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := (&app{}).buildModels("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ms.client.Ping(ctx); err == nil || !strings.Contains(err.Error(), "loopback only") {
+		t.Errorf("bare app: err = %v, want the loopback refusal", err)
 	}
 }
 

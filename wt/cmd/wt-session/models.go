@@ -15,11 +15,13 @@ import (
 
 // modelSession is the client session's handle on the model server: the client
 // and the endpoint it was built for, and the hooks of the app that built it
-// (the code that holds only a session reads them from here).
+// (the code that holds only a session reads them from here). hooks points at
+// the app's own field (an app is always used by pointer), so a hook set on the
+// app after the session is open is seen too.
 type modelSession struct {
 	client *modelclient.Client
 	ep     modelclient.Endpoint
-	hooks  hooks
+	hooks  *hooks
 }
 
 // agentDriverNames is the agent drivers a session synthesizes an agent for:
@@ -113,7 +115,7 @@ func (a *app) resolveModels() (*modelSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelSession{client: a.hooks.client(ep), ep: ep, hooks: a.hooks}, nil
+	return &modelSession{client: a.hooks.client(ep), ep: ep, hooks: &a.hooks}, nil
 }
 
 // remoteExit is the one mapping from a model-server error to an exit status:

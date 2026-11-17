@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -56,7 +59,7 @@ func warnIgnoredLitellmKeys(w io.Writer, cfg *config.Config) {
 // real: build and start an agent, dial a model server, read the terminal,
 // wait between polls. The zero value is the real behavior and is what
 // newApp (so production) builds; a test sets a field on the app it runs. A
-// *modelSession carries the app's hooks it was built with, so the code that
+// *modelSession points at the app's hooks, so the code that
 // holds only a session (openClientSession, the stop picker, a cancel poll)
 // reaches them without the app.
 type hooks struct {
@@ -65,7 +68,8 @@ type hooks struct {
 	buildGateway func(agent string, m config.Model, worktreePath string, yolo bool, gw agents.Gateway, models []config.Model, extraArgs []string) (*exec.Cmd, agents.LaunchInfo, error)
 	// buildSlotGateway is the slot build; nil is agents.BuildSlotLaunchCmdGateway.
 	buildSlotGateway func(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw agents.Gateway, extraArgs []string) (*exec.Cmd, error)
-	// newClient builds the client for an endpoint; nil is modelclient.New.
+	// newClient builds the client for an endpoint; nil is modelclient.New (in a
+	// test binary, a client that dials loopback only).
 	newClient func(ep modelclient.Endpoint) *modelclient.Client
 	// beatInterval is the client session's heartbeat interval; 0 is
 	// modelclient's default (20 s).
@@ -99,7 +103,26 @@ func (h hooks) client(ep modelclient.Endpoint) *modelclient.Client {
 	if h.newClient != nil {
 		return h.newClient(ep)
 	}
+	if testing.Testing() {
+		return loopbackOnlyClient(ep)
+	}
 	return modelclient.New(ep)
+}
+
+// loopbackOnlyClient is the client a test binary gets when no hook names one:
+// its transport refuses to dial any address that is not loopback, so the
+// httptest fake is the one network a test reaches. Never used by a production
+// binary (testing.Testing() is false there).
+func loopbackOnlyClient(ep modelclient.Endpoint) *modelclient.Client {
+	d := &net.Dialer{}
+	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil || (host != "localhost" && !net.ParseIP(host).IsLoopback()) {
+			return nil, fmt.Errorf("cmd/wt-session tests dial loopback only, not %q", addr)
+		}
+		return d.DialContext(ctx, network, addr)
+	}}
+	return modelclient.New(ep, modelclient.WithHTTPClient(&http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}))
 }
 
 // stopReader is where the stop picker reads from.

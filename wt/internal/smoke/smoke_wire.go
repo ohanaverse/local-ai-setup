@@ -121,7 +121,7 @@ func gatewayIs503(ctx context.Context, gw agents.Gateway) bool {
 	return err == nil && status == http.StatusServiceUnavailable
 }
 
-// RunRowGateway (opts: RowOptions{} outside tests) runs one agent's one-shot row over the gateway: the one-shot run and the
+// RunRowGateway runs one agent's one-shot row over the gateway: the one-shot run and the
 // same classification, with the launch built by agents.BuildLaunchCmdGateway
 // (the endpoint origin and token, never a provider's). ready is
 // modelclient.Client.WaitGatewayReady: it is called before the row, and once
@@ -132,6 +132,7 @@ func gatewayIs503(ctx context.Context, gw agents.Gateway) bool {
 // GatewayDownReason, never FAIL (R12). wt retries only what it drives: an
 // agent that fails on a 503 inside its own run owns its own retries. A native
 // model never goes to the gateway, so it neither waits for it nor is probed.
+// opts replaces the agent run for a test; production passes RowOptions{}.
 func RunRowGateway(ctx context.Context, gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, rowDir RowDir, profileApplier ProfileApplier, ready func(context.Context) error, opts RowOptions) RowResult {
 	start := time.Now()
 	skip := func() RowResult {
