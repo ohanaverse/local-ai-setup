@@ -686,8 +686,9 @@ func TestNNotHijackedWhileFiltering(t *testing.T) {
 // the same commit-point Ensure, and an abandoned one must never run it for a
 // later pick.
 func TestRePickClearsAnAbandonedCreation(t *testing.T) {
-	stubShellLaunch(t)
+	hooks, _ := stubShellLaunch()
 	m := model{
+		hooks:        hooks,
 		cfg:          &config.Config{},
 		phase:        phaseList,
 		width:        80,
@@ -1319,11 +1320,9 @@ func TestSessionRegisteredBeforeStartAndEndedOnExit(t *testing.T) {
 		t.Errorf("status = %q, want the start's failure", m.status)
 	}
 
-	old := buildGatewayLaunch
-	buildGatewayLaunch = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	m.hooks.gateway = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		return nil, agents.LaunchInfo{}, errors.New("no agent here")
 	}
-	t.Cleanup(func() { buildGatewayLaunch = old })
 	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
 	if len(f.history()) != 3 || cmd == nil {
 		t.Fatalf("Enter on a launch row: calls %v, cmd nil %v: want no call from Update and a run command", f.history(), cmd == nil)
@@ -1368,14 +1367,12 @@ func TestRemoteLaunchRunsTheAgentOnTheGateway(t *testing.T) {
 	f := &fakeModels{cat: startRowCatalog()}
 	m := remoteTable(t, f)
 	var built config.Model
-	old := buildGatewayLaunch
-	buildGatewayLaunch = func(agent string, mdl config.Model, path string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	m.hooks.gateway = func(agent string, mdl config.Model, path string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		built = mdl
 		cmd := exec.Command("true")
 		cmd.Dir = path
 		return cmd, agents.LaunchInfo{}, nil
 	}
-	t.Cleanup(func() { buildGatewayLaunch = old })
 	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
 	if m.phase != phaseLaunching || cmd == nil {
 		t.Fatalf("phase %v, cmd nil %v: want the launching screen and its prep", m.phase, cmd == nil)
@@ -1399,17 +1396,15 @@ func TestRemoteLaunchRunsTheAgentOnTheGateway(t *testing.T) {
 	}
 }
 
-// stubGatewayBuild replaces the agent builder with one that builds a no-op
+// stubGatewayBuild returns m with an agent builder that builds a no-op
 // command, for the tests that drive a launch prep by hand.
-func stubGatewayBuild(t *testing.T) {
-	t.Helper()
-	old := buildGatewayLaunch
-	buildGatewayLaunch = func(_ string, _ config.Model, path string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
+func stubGatewayBuild(m model) model {
+	m.hooks.gateway = func(_ string, _ config.Model, path string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		cmd := exec.Command("true")
 		cmd.Dir = path
 		return cmd, agents.LaunchInfo{}, nil
 	}
-	t.Cleanup(func() { buildGatewayLaunch = old })
+	return m
 }
 
 // TestLateEscDropsThePreparedModel pins that a prep finished before the esc
@@ -1419,7 +1414,7 @@ func stubGatewayBuild(t *testing.T) {
 func TestLateEscDropsThePreparedModel(t *testing.T) {
 	f := &fakeModels{cat: startRowCatalog()}
 	m := remoteTable(t, f)
-	stubGatewayBuild(t)
+	m = stubGatewayBuild(m)
 	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
 	msg := cmd() // the prep ran to its end, holding the model
 	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
@@ -1445,7 +1440,7 @@ func TestLateEscDropsThePreparedModel(t *testing.T) {
 func TestEscThenReEnterKeepsTheModelForTheNewLaunch(t *testing.T) {
 	f := &fakeModels{cat: startRowCatalog()}
 	m := remoteTable(t, f)
-	stubGatewayBuild(t)
+	m = stubGatewayBuild(m)
 	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
 	stale := cmd()
 	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
@@ -1478,12 +1473,10 @@ func TestEscThenReEnterKeepsTheModelForTheNewLaunch(t *testing.T) {
 func TestCtrlCDuringLaunchPrepLeavesWithoutAnAgent(t *testing.T) {
 	f := &fakeModels{cat: startRowCatalog(), registerBlock: make(chan struct{})}
 	m := remoteTable(t, f)
-	old := buildGatewayLaunch
-	buildGatewayLaunch = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	m.hooks.gateway = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		t.Error("the agent was built after ctrl+c")
 		return exec.Command("true"), agents.LaunchInfo{}, nil
 	}
-	t.Cleanup(func() { buildGatewayLaunch = old })
 	m, cmd := enterRemote(t, m, "openrouter/glm-5.3")
 	if m.phase != phaseLaunching || cmd == nil || m.committed {
 		t.Fatalf("phase %v, cmd nil %v, committed %v: want the launching screen, a prep command and nothing committed", m.phase, cmd == nil, m.committed)

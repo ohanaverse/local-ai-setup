@@ -29,6 +29,7 @@ func nativeModelFor() model {
 // to the launch gate (said once it passes), and leaves no status. Without it the picker stopped on
 // "no model server is configured" for every agent.
 func TestPickerLaunchesAChosenAgentNativelyWithNoServer(t *testing.T) {
+	m := nativeModelFor()
 	var got struct {
 		agent string
 		m     config.Model
@@ -36,18 +37,15 @@ func TestPickerLaunchesAChosenAgentNativelyWithNoServer(t *testing.T) {
 		gw    agents.Gateway
 		args  []string
 	}
-	old := buildGatewayLaunch
-	buildGatewayLaunch = func(agent string, mdl config.Model, path string, _ bool, gw agents.Gateway, _ []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	m.hooks.gateway = func(agent string, mdl config.Model, path string, _ bool, gw agents.Gateway, _ []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		got.agent, got.m, got.dir, got.gw, got.args = agent, mdl, path, gw, extra
 		cmd := exec.Command("true")
 		cmd.Dir = path
 		return cmd, agents.LaunchInfo{}, nil
 	}
-	t.Cleanup(func() { buildGatewayLaunch = old })
 	pendingRouteNotes = ""
 	t.Cleanup(func() { pendingRouteNotes = "" })
 
-	m := nativeModelFor()
 	m.agent = "claude"
 	next, cmd := m.enterModelPhaseForAgent()
 	if cmd == nil || !next.committed || next.status != "" {
@@ -86,20 +84,18 @@ func TestNativeNoteIsSaidOnlyAfterTheGateLetsTheLaunchGo(t *testing.T) {
 // and the native flag, commits a native launch and leaves no pending note (the
 // note is the gate wrapper's, said after the gate).
 func TestPickerEnterOnAnAgentLaunchesNatively(t *testing.T) {
-	old := buildGatewayLaunch
+	m := nativeModelFor()
 	built := 0
-	buildGatewayLaunch = func(agent string, mdl config.Model, path string, _ bool, gw agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	m.hooks.gateway = func(agent string, mdl config.Model, path string, _ bool, gw agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		built++
 		if !mdl.Native || gw != (agents.Gateway{}) {
 			t.Errorf("built %+v with gateway %+v, want the native model and a zero Gateway", mdl, gw)
 		}
 		return exec.Command("true"), agents.LaunchInfo{}, nil
 	}
-	t.Cleanup(func() { buildGatewayLaunch = old })
 	pendingRouteNotes = ""
 	t.Cleanup(func() { pendingRouteNotes = "" })
 
-	m := nativeModelFor()
 	m.agent = ""
 	m.phase = phaseAgent
 	m.agentList = list.New([]list.Item{agentItem{name: "claude"}}, ThemedListDelegate(m.theme), 80, 20)
@@ -113,16 +109,14 @@ func TestPickerEnterOnAnAgentLaunchesNatively(t *testing.T) {
 // TestPickerPinnedAgentLaunchesNatively is the same through the pinned-agent
 // entry (proceedWithPath with an initial agent).
 func TestPickerPinnedAgentLaunchesNatively(t *testing.T) {
-	old := buildGatewayLaunch
+	m := nativeModelFor()
 	built := 0
-	buildGatewayLaunch = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	m.hooks.gateway = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		built++
 		return exec.Command("true"), agents.LaunchInfo{}, nil
 	}
-	t.Cleanup(func() { buildGatewayLaunch = old })
 	defer func(p func(string) bool) { installed = p }(installed)
 	installed = func(string) bool { return true }
-	m := nativeModelFor()
 	m.initialAgent = "claude"
 	next, cmd := m.proceedWithPath()
 	if cmd == nil || !next.committed || built != 1 {

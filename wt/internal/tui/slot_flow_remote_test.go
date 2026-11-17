@@ -58,12 +58,10 @@ func slotRemoteTable(t *testing.T, slots map[string]string) (model, *fakeModels)
 	f.mu.Lock()
 	f.logCatalog = true
 	f.mu.Unlock()
-	old := buildSlotGatewayLaunch
-	buildSlotGatewayLaunch = func(profiles.SlotLaunch, string, bool, agents.Gateway, []string) (*exec.Cmd, error) {
+	m.hooks.slot = func(profiles.SlotLaunch, string, bool, agents.Gateway, []string) (*exec.Cmd, error) {
 		f.record("BUILD")
 		return exec.Command("true"), nil
 	}
-	t.Cleanup(func() { buildSlotGatewayLaunch = old })
 	return m, f
 }
 

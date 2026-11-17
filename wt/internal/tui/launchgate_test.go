@@ -475,7 +475,7 @@ func TestDeclinedSlotGateKeepsTheStopTail(t *testing.T) {
 // should decide.
 func TestPickRowTargetCarriesPRAndUpstream(t *testing.T) {
 	t.Cleanup(releaseRootClaim)
-	stubShellLaunch(t)
+	hooks, _ := stubShellLaunch()
 	root := rootRepo(t)
 	linked := linkedWorktree(t, root)
 	row := cleanup.Row{
@@ -488,7 +488,7 @@ func TestPickRowTargetCarriesPRAndUpstream(t *testing.T) {
 		Upstream: &cleanup.Upstream{Ref: "refs/remotes/origin/feature", Remote: "origin", Name: "feature", Gone: true},
 		Losses:   cleanup.Losses{Dirty: true},
 	}
-	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode"}
+	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode", hooks: hooks}
 	m, cmd := updateMsg(m, rowChosenMsg{Row: row}) // the row list's Enter
 	if cmd == nil {
 		t.Fatal("enter on a picker row emitted no selection")
@@ -522,7 +522,7 @@ func TestPickRowTargetCarriesPRAndUpstream(t *testing.T) {
 // warns before it does.
 func TestPickRemoteRowCarriesPRIntoTheCreationTarget(t *testing.T) {
 	t.Cleanup(releaseRootClaim)
-	stubShellLaunch(t)
+	hooks, _ := stubShellLaunch()
 	root := rootRepo(t)
 	if out, err := exec.Command("git", "-C", root, "remote", "add", "origin", "https://example.invalid/origin.git").CombinedOutput(); err != nil {
 		t.Fatalf("git remote add: %v\n%s", err, out)
@@ -538,7 +538,7 @@ func TestPickRemoteRowCarriesPRIntoTheCreationTarget(t *testing.T) {
 		Ref:    "refs/remotes/origin/qa",
 		PRTag:  &cleanup.PRInfo{Number: 5, State: "MERGED"},
 	}
-	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode", repoRoot: root}
+	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode", repoRoot: root, hooks: hooks}
 	m, cmd := updateMsg(m, rowChosenMsg{Row: row}) // the row list's Enter
 	if cmd == nil {
 		t.Fatal("enter on a picker row emitted no selection")

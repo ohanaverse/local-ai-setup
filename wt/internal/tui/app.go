@@ -36,6 +36,8 @@ const (
 
 // model holds the entire UI state.
 type model struct {
+	// hooks are the launch-build test seams; the zero value is the real builds.
+	hooks  launchHooks
 	status string
 	width  int
 	height int
@@ -670,7 +672,7 @@ func (m model) View() string {
 // used (a command's zero model needs no gateway), so a future command driver
 // launches by its own name rather than being hardcoded to "shell".
 func (m model) launchCommand(name string) (model, tea.Cmd) {
-	cmd, _, err := buildGatewayLaunch(name, config.Model{}, m.selectedPath, false, agents.Gateway{}, nil, m.extraArgs)
+	cmd, _, err := m.hooks.buildLaunch()(name, config.Model{}, m.selectedPath, false, agents.Gateway{}, nil, m.extraArgs)
 	if err == nil {
 		queueLaunchNotes(name, cmd, m.extraArgs)
 	}
@@ -767,7 +769,7 @@ func (m model) enterModelPhaseForAgent() (model, tea.Cmd) {
 // or recorded: there is no server and no model id.
 func (m model) launchNative() (model, tea.Cmd) {
 	mdl := agents.NativeModel()
-	cmd, _, err := buildGatewayLaunch(m.agent, mdl, m.selectedPath, m.yolo, agents.Gateway{}, nil, m.extraArgs)
+	cmd, _, err := m.hooks.buildLaunch()(m.agent, mdl, m.selectedPath, m.yolo, agents.Gateway{}, nil, m.extraArgs)
 	if err != nil {
 		m.status = "launch failed: " + err.Error()
 		return m, nil

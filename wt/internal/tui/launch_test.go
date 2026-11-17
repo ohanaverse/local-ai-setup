@@ -461,7 +461,7 @@ var nativeModel = config.Model{ID: "claude/native", ProviderID: "claude", ModelN
 // buildNativeLaunch builds the native claude launch in dir with args the way
 // the picker does (the launch build, then the queued pre-launch notes).
 func buildNativeLaunch(dir string, args []string) (*exec.Cmd, error) {
-	cmd, _, err := buildGatewayLaunch("claude", nativeModel, dir, false, agents.Gateway{}, nil, args)
+	cmd, _, err := launchHooks{}.buildLaunch()("claude", nativeModel, dir, false, agents.Gateway{}, nil, args)
 	if err == nil {
 		queueLaunchNotes("claude", cmd, args)
 	}

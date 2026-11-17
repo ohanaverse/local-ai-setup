@@ -529,13 +529,11 @@ func TestCancelThatLosesTheRaceDoesNotLaunch(t *testing.T) {
 					return detached("j7")
 				}
 			}
-			old := buildGatewayLaunch
-			buildGatewayLaunch = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+			m := remoteTable(t, f)
+			m.hooks.gateway = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 				t.Error("an agent was built after the user cancelled")
 				return nil, agents.LaunchInfo{}, errors.New("no")
 			}
-			t.Cleanup(func() { buildGatewayLaunch = old })
-			m := remoteTable(t, f)
 			m, _ = enterRemote(t, m, "omlx/qwen3.8")
 			m, _ = updateMsg(m, recvStart(t, m))
 			m, cmd := updateMsg(m, keyRune('c'))
