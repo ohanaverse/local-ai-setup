@@ -126,7 +126,7 @@ One shared bearer token over plain HTTP. The token grants: read the catalog, sta
 0. **Style guide.** Write the CLI and TUI standards for all wt tools (`docs/`; output shapes, key footers, table and detail-screen conventions, exit codes, wording of warnings and errors, theme use), derived from what the shipped screens already do, and agree it before the split moves screens between binaries.
 1. Define the API types and contract fixtures first; build `wt-model serve` (control API, jobs, sessions, auto-stop, gateway) around existing packages with no behavior change on the server side.
 2. Add the API client in `wt-session`; make the picker, `-M` resolution, start/stop, `smoke` and launch routes consume it. Remove the direct-route path, pi's direct `models.json` rewrite, and `[litellm] enabled`; replace `refcount` and the stop picker with sessions.
-3. Untangle `internal/tui` into model-admin screens (`wt-model`) and session screens (`wt-session`) along the same line, both following the style guide.
+3. Untangle the import graph along the same line: a package-graph change, not a screen move (`internal/tui` holds no admin screens; the edges from the session library packages into the admin packages are cut behind a `go list -deps` ratchet test, `internal/depcheck`).
 4. Move the model-admin commands and the Models-tab TUI to `wt-model`; leave pointers in `wt-session`; update the `wt-cloud-sync` skill.
 5. Guides and the CLAUDE.md files (`wt`, root) are updated in the same change sets; `docs/guides/` gets a deployment guide for the three use cases (commands only, no live state).
 

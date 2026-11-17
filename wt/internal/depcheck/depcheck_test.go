@@ -32,7 +32,6 @@ var sessionBanned = []string{
 // when an entry here is no longer linked, so a fixed edge has to be deleted.
 // Never add an entry to make a failing build pass; remove the edge instead.
 var allowList = map[string][]string{
-	"internal/cleanup": {"internal/localmodels"},
 	"internal/smoke":   {"internal/localmodels"},
 	"internal/catalog": {"internal/localmodels"},
 	"internal/survey":  {"internal/lifecycle", "internal/litellm", "internal/localmodels"},

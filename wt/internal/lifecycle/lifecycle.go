@@ -12,6 +12,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
 // Target names the model to start by its provider-side name — exactly
@@ -119,7 +120,7 @@ func (r Resident) Label() string {
 }
 
 // Figure is the memory the resident holds as wt knows it: what its server
-// says (Entry.LoadedSize, printed with localmodels.FormatSize), else "memory
+// says (Entry.LoadedSize, printed with tuilayout.FormatSize), else "memory
 // use unknown", never 0 and never a guess; with "; wt cannot stop it" when
 // it is not Stoppable (a clause, not a parenthesis: the warning line puts the
 // whole figure in parentheses).
@@ -128,9 +129,9 @@ func (r Resident) Figure() string {
 	if r.Entry.LoadedSize > 0 {
 		switch localmodels.Family(r.Entry.ProviderID) {
 		case "omlx":
-			fig = localmodels.FormatSize(r.Entry.LoadedSize) + " resident (omlx estimate)"
+			fig = tuilayout.FormatSize(r.Entry.LoadedSize) + " resident (omlx estimate)"
 		default:
-			fig = localmodels.FormatSize(r.Entry.LoadedSize) + " loaded"
+			fig = tuilayout.FormatSize(r.Entry.LoadedSize) + " loaded"
 		}
 	}
 	if !r.Stoppable {

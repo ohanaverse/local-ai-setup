@@ -50,6 +50,10 @@ make check                           # shellcheck + shfmt check + go-format-chec
 From the monorepo root, `make test-all` runs the CI-equivalent sweep (root lint + llmbench + wt build/vet/test).
 
 
+## The import-graph ratchet
+
+`internal/depcheck/depcheck_test.go` shells out to `go list -deps -f '{{.ImportPath}}'` (non-test dependencies, exact import paths) for each session library package and `cmd/wt-model`, and skips with a message when `go` is not on PATH. It needs no network and touches no config home. It fails when a session library package links the admin set outside its allow-list entry, and also when an allow-listed edge is no longer linked ("remove it from the allow-list"), so the boundary only tightens. The rules are in [packages.md](packages.md#package-graph-rules); `cmd/wt-session/boundary_test.go` is the complementary AST scan of host calls.
+
 ## Detail moved from wt/CLAUDE.md
 
 The full text of rules that [CLAUDE.md](../../CLAUDE.md) now keeps as one-line summaries.

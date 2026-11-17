@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
 // This file is the words of `wt cleanup`: the group order and headings, the
@@ -314,7 +314,7 @@ func LossLines(r Row) []string {
 	if n := l.IgnoredEntries; n > 0 {
 		s := fmt.Sprintf("%d ignored %s", n, plural(n, "entry", "entries"))
 		if l.IgnoredBytes > 0 {
-			s += ", " + localmodels.FormatSize(l.IgnoredBytes)
+			s += ", " + tuilayout.FormatSize(l.IgnoredBytes)
 		}
 		out = append(out, s+" will be deleted")
 	}

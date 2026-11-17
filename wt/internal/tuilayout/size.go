@@ -1,12 +1,14 @@
-package localmodels
+package tuilayout
 
 import "fmt"
 
 // FormatSize renders a byte count the way `ollama list` does: decimal units,
 // one decimal place from a gigabyte up. 0 (not known) is "-". A unit starts
 // where the one below it would round to 1000, so no size prints as "1000 MB".
-// `wt model list`, the Models tab of `wt config` and the start engine's
-// figures for other providers' models all print sizes through it.
+// `wt model list`, the Models tab of `wt config`, the start engine's figures
+// for other providers' models and `wt worktrees` all print sizes through it.
+// It lives in this dependency-free leaf so a session screen can print a size
+// without linking localmodels.
 func FormatSize(n int64) string {
 	switch {
 	case n <= 0:
