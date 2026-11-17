@@ -52,8 +52,10 @@ const OllamaBaseURL = provider.OllamaOrigin
 
 // LitellmState is the `[litellm]` table of wt's config.toml: the LiteLLM
 // proxy's url and api key, host state that `wt-model serve` (its gateway) and
-// `wt litellm set|status|restart` read (R4); a session never reads it. wt
-// reads it from config.toml and nowhere else.
+// `wt litellm set|status|restart` read (R4); a session never reads it. The
+// table is read from config.toml and nowhere else; the runtime pair resolves
+// home-first since the wt-model config home (applyProxyState), with this
+// table the read-only fallback.
 //
 // Enabled is retired (2026-11-15): every session routes through the model
 // server, so nothing decides on it any more. It is still parsed and
@@ -109,6 +111,11 @@ func (c *Config) LitellmBaseURL() string { return strings.TrimRight(c.litellm.UR
 
 // LitellmAPIKey returns the proxy API key.
 func (c *Config) LitellmAPIKey() string { return c.litellm.APIKey }
+
+// ProxySource reports where the runtime proxy pair came from: the wt-model
+// home's [litellm] table (ProxySourceHome), the legacy table of config.toml
+// (ProxySourceLegacy, the read-only fallback) or nothing (ProxySourceNone).
+func (c *Config) ProxySource() ProxySource { return c.proxySource }
 
 // SetLitellmForTest overrides the [litellm] routing state.
 // Production wiring goes through finalizeCfg (config.toml); tests in
@@ -725,7 +732,8 @@ type Config struct {
 	Agents     []Agent    `toml:"agents"`
 	// LitellmTable is the wt-owned persisted [litellm] routing state.
 	LitellmTable *LitellmState `toml:"litellm,omitempty"`
-	litellm      LitellmState  `toml:"-"` // runtime copy of LitellmTable
+	litellm      LitellmState  `toml:"-"` // runtime pair, resolved at load by applyProxyState (home → legacy)
+	proxySource  ProxySource   `toml:"-"` // where litellm's pair came from
 	// LaunchTable is the hand-edited [launch] table (exit_prompt), a legacy
 	// key wt tolerates and ignores (R305a): it round-trips through every save
 	// and wt never sets it, but no value is read or validated —
@@ -841,15 +849,15 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 }
 
 // finalizeCfg joins registry providers/models into cfg, derives native-ness
-// from provider auth types, and copies config.toml's [litellm] table, when it
-// has one, into the runtime routing state. With no table, routing is off.
+// from provider auth types, and resolves the LiteLLM proxy pair into the
+// runtime routing state (applyProxyState: the wt-model home's [litellm] table
+// first, config.toml's legacy table as the read-only fallback). With no
+// table anywhere, routing is off.
 func finalizeCfg(cfg *Config, providers []Provider, models []Model) *Config {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
 	deriveSushiAgents(cfg)
-	if cfg.LitellmTable != nil {
-		cfg.litellm = *cfg.LitellmTable
-	}
+	applyProxyState(cfg)
 	return cfg
 }
 

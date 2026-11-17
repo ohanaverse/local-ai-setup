@@ -59,8 +59,6 @@ func LoadSession(driverNames ...string) (*Config, error) {
 		}
 		cfg.Agents = append(cfg.Agents, Agent{Name: name, AllProviders: true})
 	}
-	if cfg.LitellmTable != nil {
-		cfg.litellm = *cfg.LitellmTable
-	}
+	applyProxyState(cfg)
 	return cfg, nil
 }
