@@ -13,7 +13,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -549,10 +548,10 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 					case othersKeepChoice:
 						// #412: keep other providers' models; AllowReplace
 						// only for same-family occupants the dialog showed.
-						return m.retryStart(m.replace.item, m.replace.allow, othersPlan{answer: lifecycle.OthersAnswer{Decided: true}})
+						return m.retryStart(m.replace.item, m.replace.allow, othersPlan{answer: modelapi.OthersDecision{Decided: true}})
 					case othersStopChoice:
 						// Stop exactly the stoppable models the dialog showed.
-						return m.retryStart(m.replace.item, m.replace.allow, othersPlan{answer: lifecycle.OthersAnswer{Decided: true, Stop: m.replace.stop}})
+						return m.retryStart(m.replace.item, m.replace.allow, othersPlan{answer: modelapi.OthersDecision{Decided: true, Stop: m.replace.stop}})
 					}
 				}
 			case phaseNewWorktree:

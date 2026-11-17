@@ -10,6 +10,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
@@ -78,11 +79,10 @@ type Options struct {
 // asked. Decided with an empty Stop keeps them all and starts. Stop lists the
 // model ids (Resident.Entry.ModelID) the user saw and approved stopping; the
 // start stops each of them that is still loaded and stoppable before it does
-// anything else, and keeps every other. Cancel is the caller not retrying.
-type OthersAnswer struct {
-	Decided bool
-	Stop    []string
-}
+// anything else, and keeps every other. Cancel is the caller not retrying. It
+// is an alias of modelapi.OthersDecision so the session screens can build one
+// without linking this package.
+type OthersAnswer = modelapi.OthersDecision
 
 // Resident is a model of another provider family that is loaded while a
 // start runs: it holds memory the target will share. Stoppable is false when

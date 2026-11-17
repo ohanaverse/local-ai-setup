@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
@@ -200,7 +200,7 @@ func startTick(id int) tea.Cmd {
 type othersPlan struct {
 	// answer is what the engine is given (Options.Others); its zero value
 	// asks, so the engine refuses with what is loaded and the dialog asks.
-	answer lifecycle.OthersAnswer
+	answer modelapi.OthersDecision
 	// stopAll is --others=stop for the pinned row: the engine's refusal is
 	// answered, without the dialog, by stopping every resident it listed
 	// that wt can stop, as the non-TUI start does (decideOthers).
@@ -216,7 +216,7 @@ func (m model) othersFor(pinned bool) othersPlan {
 	}
 	switch m.othersMode {
 	case "keep":
-		return othersPlan{answer: lifecycle.OthersAnswer{Decided: true}}
+		return othersPlan{answer: modelapi.OthersDecision{Decided: true}}
 	case "stop":
 		return othersPlan{stopAll: true}
 	}

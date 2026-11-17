@@ -110,6 +110,19 @@ type OthersAnswer struct {
 	Stop []string `json:"stop"`
 }
 
+// OthersDecision is the caller's decision about the other resident models a
+// start would share memory with, as the start engine reads it
+// (lifecycle.OthersAnswer is an alias of it). It is not a wire type and has no
+// JSON form: the request carries OthersAnswer. It lives here, a leaf both the
+// session screens and the engine import, so the screens need not link the
+// engine for three fields. Decided false is the question not yet asked;
+// decided with an empty Stop keeps them all and starts; Stop lists the model
+// ids the user saw and approved stopping.
+type OthersDecision struct {
+	Decided bool
+	Stop    []string
+}
+
 // StartRequest asks the server to start a model.
 type StartRequest struct {
 	Model        string        `json:"model"`
