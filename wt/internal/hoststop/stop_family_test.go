@@ -1,4 +1,4 @@
-package survey
+package hoststop
 
 import (
 	"os"

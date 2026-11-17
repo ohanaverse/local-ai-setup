@@ -15,19 +15,19 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/hoststop"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
 // Tests for `wt stop` on an mtplx that is still loading (#308): its port
 // refuses, and the stop state carries what wt's pidfile said about it
-// (survey.FamilyState.Loading). The stop itself is stubbed (stubStopLoading);
+// (hoststop.FamilyState.Loading). The stop itself is stubbed (stubStopLoading);
 // internal/lifecycle tests what it signals.
 
 // loadingFS is mtplx behind a refused port with a verified server, pid 4242.
-func loadingFS(sessions int, users ...string) survey.FamilyState {
-	return survey.FamilyState{Untrusted: true, Down: true, Sessions: sessions, Users: users, Loading: lifecycle.Loading{PID: 4242}}
+func loadingFS(sessions int, users ...string) hoststop.FamilyState {
+	return hoststop.FamilyState{Untrusted: true, Down: true, Sessions: sessions, Users: users, Loading: lifecycle.Loading{PID: 4242}}
 }
 
 // stubStopLoading records each stop of a loading server as "<provider>:<pid>"
@@ -83,10 +83,10 @@ func TestStopEndsAnMtplxThatIsStillLoading(t *testing.T) {
 // skips it — for `wt stop mtplx` and, beside the other providers' sessions,
 // `wt stop --all`. The session waiting on that load is the one that loses it.
 func TestStopAsksBeforeEndingALoadingMtplxInUse(t *testing.T) {
-	st := survey.StopState{
-		Candidates: []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 2)},
-		Families: map[string]survey.FamilyState{
-			"mtplx": func() survey.FamilyState { fs := loadingFS(1, "mtplx/big"); fs.Probed = true; return fs }(),
+	st := hoststop.StopState{
+		Candidates: []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 2)},
+		Families: map[string]hoststop.FamilyState{
+			"mtplx": func() hoststop.FamilyState { fs := loadingFS(1, "mtplx/big"); fs.Probed = true; return fs }(),
 			"omlx":  {Probed: true, Untrusted: true, Down: true},
 		},
 	}
@@ -185,7 +185,7 @@ func TestStopOfALoadingMtplxThatFailsExitsNonZero(t *testing.T) {
 	t.Cleanup(func() { stopLoading = old })
 	out.Reset()
 	err = runStop(&out, mtplxOnlyCfg(), "mtplx", false)
-	if !errors.Is(err, survey.ErrStopCancelled) || !strings.Contains(err.Error(), "mtplx was not stopped") || !strings.HasSuffix(out.String(), "... cancelled\n") {
+	if !errors.Is(err, hoststop.ErrStopCancelled) || !strings.Contains(err.Error(), "mtplx was not stopped") || !strings.HasSuffix(out.String(), "... cancelled\n") {
 		t.Errorf("Ctrl+C: err = %v out = %q, want a cancellation naming mtplx", err, out.String())
 	}
 
@@ -196,18 +196,18 @@ func TestStopOfALoadingMtplxThatFailsExitsNonZero(t *testing.T) {
 	const signalled = `cancelled — mtplx (pid 4242) was sent SIGTERM and wt did not wait for it to exit; run "wt stop mtplx" again to confirm`
 	out.Reset()
 	err = runStop(&out, mtplxOnlyCfg(), "mtplx", false)
-	if !errors.Is(err, survey.ErrStopCancelled) || err.Error() != signalled || out.String() != "Stopping mtplx (still loading, pid 4242)... cancelled\n" {
+	if !errors.Is(err, hoststop.ErrStopCancelled) || err.Error() != signalled || out.String() != "Stopping mtplx (still loading, pid 4242)... cancelled\n" {
 		t.Errorf("Ctrl+C after the signal: err = %v out = %q\nwant %s", err, out.String(), signalled)
 	}
 	st := families("mtplx", loadingFS(0))
-	st.Families["omlx"] = survey.FamilyState{Probed: true}
+	st.Families["omlx"] = hoststop.FamilyState{Probed: true}
 	stubStopState(t, st)
 	halted := stubHalt(t)
 	ctx, cancel = context.WithCancel(context.Background()) // the one above is spent
 	defer cancel()
 	out.Reset()
 	err = runStopAll(&out, stopCfg(), false)
-	if !errors.Is(err, survey.ErrStopCancelled) || err.Error() != signalled+"\ncancelled — omlx was not stopped" {
+	if !errors.Is(err, hoststop.ErrStopCancelled) || err.Error() != signalled+"\ncancelled — omlx was not stopped" {
 		t.Errorf("--all, Ctrl+C after the signal: err = %v\nwant %s, then omlx named as not stopped", err, signalled)
 	}
 	if len(*halted) != 0 {
@@ -225,7 +225,7 @@ func TestStopOfALoadingMtplxThatFailsExitsNonZero(t *testing.T) {
 func TestStopLeavesAloneWhatItCannotVerifyAsMtplx(t *testing.T) {
 	const stray = "the mtplx pidfile names pid 77, which is not an mtplx server on port 8003 — left alone"
 	t.Run("a live process that is not mtplx", func(t *testing.T) {
-		stubStopState(t, families("mtplx", survey.FamilyState{Untrusted: true, Down: true, Sessions: 1, Users: []string{"mtplx/big"}, Loading: lifecycle.Loading{Stray: stray}}))
+		stubStopState(t, families("mtplx", hoststop.FamilyState{Untrusted: true, Down: true, Sessions: 1, Users: []string{"mtplx/big"}, Loading: lifecycle.Loading{Stray: stray}}))
 		halted := stubHalt(t)
 		loading := stubStopLoading(t, nil)
 		asked := stubStopConfirm(t, false)
@@ -246,7 +246,7 @@ func TestStopLeavesAloneWhatItCannotVerifyAsMtplx(t *testing.T) {
 	})
 	t.Run("a process table wt could not read", func(t *testing.T) {
 		cannot := errors.New("the mtplx pidfile names pid 77 and wt could not inspect it: boom")
-		stubStopState(t, families("mtplx", survey.FamilyState{Untrusted: true, Down: true, Loading: lifecycle.Loading{Err: cannot}}))
+		stubStopState(t, families("mtplx", hoststop.FamilyState{Untrusted: true, Down: true, Loading: lifecycle.Loading{Err: cannot}}))
 		halted := stubHalt(t)
 		loading := stubStopLoading(t, nil)
 		for name, run := range map[string]func(io.Writer) error{
@@ -271,9 +271,9 @@ func TestStopLeavesAloneWhatItCannotVerifyAsMtplx(t *testing.T) {
 		if err := runStop(io.Discard, mtplxOnlyCfg(), "mtplx", false); err == nil || !strings.HasSuffix(err.Error(), "boom — nothing was stopped") {
 			t.Errorf("wt stop mtplx: err = %v, want it to end in \"nothing was stopped\"", err)
 		}
-		st := families("mtplx", survey.FamilyState{Untrusted: true, Down: true, Loading: lifecycle.Loading{Err: cannot}})
-		st.Candidates = []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)}
-		st.Families["omlx"] = survey.FamilyState{Probed: true}
+		st := families("mtplx", hoststop.FamilyState{Untrusted: true, Down: true, Loading: lifecycle.Loading{Err: cannot}})
+		st.Candidates = []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)}
+		st.Families["omlx"] = hoststop.FamilyState{Probed: true}
 		stopped := stubStopState(t, st)
 		oldWait := waitPendingRoutes
 		waitPendingRoutes = func() {}

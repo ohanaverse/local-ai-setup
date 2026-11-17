@@ -13,9 +13,9 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/hoststop"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -37,8 +37,8 @@ func modelCmdConfig() *config.Config {
 	return cfg
 }
 
-func cand(provider, id, name string, sessions int) survey.Candidate {
-	return survey.Candidate{
+func cand(provider, id, name string, sessions int) hoststop.Candidate {
+	return hoststop.Candidate{
 		Entry:    localmodels.Entry{ProviderID: provider, ModelID: id, ModelName: name, Running: true},
 		Sessions: sessions,
 	}
@@ -48,9 +48,9 @@ func cand(provider, id, name string, sessions int) survey.Candidate {
 // under trusted probes, and the returned slice records every entry passed to
 // the stop loop. The family-wide session counts are the candidates' own, as
 // the real read gives for a pool whose sessions are all on running models.
-func stubStop(t *testing.T, cands []survey.Candidate) *[]localmodels.Entry {
+func stubStop(t *testing.T, cands []hoststop.Candidate) *[]localmodels.Entry {
 	t.Helper()
-	fams := map[string]survey.FamilyState{}
+	fams := map[string]hoststop.FamilyState{}
 	for _, c := range cands {
 		if c.Sessions == 0 || lifecycle.TenancyOf(c.Entry.ProviderID) != lifecycle.Pool {
 			continue
@@ -61,16 +61,16 @@ func stubStop(t *testing.T, cands []survey.Candidate) *[]localmodels.Entry {
 		fs.Users = append(fs.Users, c.Entry.ModelID)
 		fams[fam] = fs
 	}
-	return stubStopState(t, survey.StopState{Candidates: cands, Families: fams})
+	return stubStopState(t, hoststop.StopState{Candidates: cands, Families: fams})
 }
 
 // stubStopState is stubStop for a test that sets the provider families' own
 // state: an untrusted or refused probe, or sessions no candidate carries.
-func stubStopState(t *testing.T, st survey.StopState) *[]localmodels.Entry {
+func stubStopState(t *testing.T, st hoststop.StopState) *[]localmodels.Entry {
 	t.Helper()
 	var stopped []localmodels.Entry
 	oldState, oldEntries := stopState, stopEntries
-	stopState = func(*config.Config) survey.StopState { return st }
+	stopState = func(*config.Config) hoststop.StopState { return st }
 	stopEntries = func(_ io.Writer, _ *config.Config, es []localmodels.Entry) error {
 		stopped = append(stopped, es...)
 		return nil
@@ -83,7 +83,7 @@ func stubStopState(t *testing.T, st survey.StopState) *[]localmodels.Entry {
 // running model of that provider and leaves other providers alone; this is the
 // "stop everything on ollama" shortcut.
 func TestStopProviderStopsAllItsModels(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0), cand("ollama", "ollama/b:1", "b:1", 0), cand("omlx", "omlx/c", "c", 0)})
+	stopped := stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 0), cand("ollama", "ollama/b:1", "b:1", 0), cand("omlx", "omlx/c", "c", 0)})
 	if err := runStop(io.Discard, modelCmdConfig(), "ollama", false); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestStopProviderStopsAllItsModels(t *testing.T) {
 // typo must never silently succeed. (A model id is the model server's: wt
 // stop <model> never reaches runStop.)
 func TestStopInvalidArgErrors(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
+	stopped := stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
 	cases := map[string]string{
 		"bogus":         "unknown provider",
 		"mlx_lm_server": "unknown provider", // real provider id, but wt has no stop backend
@@ -131,7 +131,7 @@ func TestStopProviderNothingRunningIsNotAnError(t *testing.T) {
 // --yes) stops it.
 // This is the safety net for stopping another session's model out from under it.
 func TestStopInUseConfirms(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 2)})
+	stopped := stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 2)})
 	old := confirmStop
 	t.Cleanup(func() { confirmStop = old })
 
@@ -159,7 +159,7 @@ func TestStopInUseConfirms(t *testing.T) {
 // TestStopFailurePropagates verifies a failed stop makes the command fail, so
 // scripts can rely on the exit code.
 func TestStopFailurePropagates(t *testing.T) {
-	stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
+	stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
 	old := stopEntries
 	t.Cleanup(func() { stopEntries = old })
 	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error { return errors.New("1 of 1 stops failed") }
@@ -186,7 +186,7 @@ func TestStopUnknownProviderErrorsBeforeProbe(t *testing.T) {
 	old := stopState
 	t.Cleanup(func() { stopState = old })
 	called := false
-	stopState = func(*config.Config) survey.StopState { called = true; return survey.StopState{} }
+	stopState = func(*config.Config) hoststop.StopState { called = true; return hoststop.StopState{} }
 	if err := runStop(io.Discard, &config.Config{}, "bogus", false); err == nil || !strings.Contains(err.Error(), "unknown provider") {
 		t.Fatalf("err = %v, want unknown provider", err)
 	}
@@ -207,7 +207,7 @@ func TestStopInUseCountIsTotalAcrossModels(t *testing.T) {
 	var asked string
 	confirmStop = func(q string) (bool, error) { asked = q; return false, nil }
 
-	stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 1), cand("ollama", "ollama/b:1", "b:1", 3)})
+	stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 1), cand("ollama", "ollama/b:1", "b:1", 3)})
 	_ = runStop(io.Discard, modelCmdConfig(), "ollama", false)
 	if !strings.Contains(asked, "4 live") || !strings.Contains(asked, "ollama/a:1") || !strings.Contains(asked, "ollama/b:1") {
 		t.Errorf("ollama prompt = %q, want 4 sessions and both models named", asked)
@@ -215,13 +215,13 @@ func TestStopInUseCountIsTotalAcrossModels(t *testing.T) {
 
 	cfg := modelCmdConfig()
 	cfg.Providers = append(cfg.Providers, config.Provider{ID: "mtplx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}})
-	stubStop(t, []survey.Candidate{cand("mtplx", "mtplx/c", "c", 2), cand("mtplx", "mtplx/d", "d", 2)})
+	stubStop(t, []hoststop.Candidate{cand("mtplx", "mtplx/c", "c", 2), cand("mtplx", "mtplx/d", "d", 2)})
 	_ = runStop(io.Discard, cfg, "mtplx", false)
 	if !strings.Contains(asked, "2 live") {
 		t.Errorf("mtplx prompt = %q, want the family total (2) counted once, not 4", asked)
 	}
 
-	stubStop(t, []survey.Candidate{cand("omlx", "omlx/c", "c", 1), cand("omlx", "omlx/d", "d", 2)})
+	stubStop(t, []hoststop.Candidate{cand("omlx", "omlx/c", "c", 1), cand("omlx", "omlx/d", "d", 2)})
 	_ = runStop(io.Discard, modelCmdConfig(), "omlx", false)
 	if !strings.Contains(asked, "3 live") || !strings.Contains(asked, "omlx/c") || !strings.Contains(asked, "omlx/d") {
 		t.Errorf("omlx prompt = %q, want 3 sessions (each pool model carries its own count) and both models named", asked)
@@ -453,7 +453,7 @@ func runStopCmd(cfg *config.Config, args ...string) (string, error) {
 // user frees the machine with one command; unloading omlx's models would
 // leave the server and its memory in place.
 func TestStopAllStopsEveryModelThenHaltsThePool(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0), cand("omlx", "omlx/c", "c", 0)})
+	stopped := stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 0), cand("omlx", "omlx/c", "c", 0)})
 	halted := stubHalt(t)
 	var out bytes.Buffer
 	if err := runStopAll(&out, modelCmdConfig(), false); err != nil {
@@ -509,7 +509,7 @@ func TestStopAllWithNothingToStop(t *testing.T) {
 // stops nothing at all, and --yes skips the question. Without the question a
 // cleanup in one terminal kills the agent running in another.
 func TestStopAllInUseConfirms(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 2), cand("omlx", "omlx/c", "c", 1)})
+	stopped := stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 2), cand("omlx", "omlx/c", "c", 1)})
 	halted := stubHalt(t)
 	old := confirmStop
 	t.Cleanup(func() { confirmStop = old })
@@ -541,7 +541,7 @@ func TestStopAllInUseConfirms(t *testing.T) {
 // still exits non-zero naming what failed. "Stop everything" that gives up at
 // the first failure leaves the largest server running.
 func TestStopAllKeepsGoingAfterAFailure(t *testing.T) {
-	stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
+	stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
 	old := stopEntries
 	t.Cleanup(func() { stopEntries = old })
 	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error { return errors.New("1 of 1 stops failed") }
@@ -562,14 +562,14 @@ func TestStopAllKeepsGoingAfterAFailure(t *testing.T) {
 // stepped over and the command went on to halt the largest server the user
 // had just asked it to leave alone.
 func TestStopAllCancelledModelLoopLeavesThePoolUp(t *testing.T) {
-	stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
+	stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
 	old := stopEntries
 	t.Cleanup(func() { stopEntries = old })
-	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error { return survey.ErrStopCancelled }
+	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error { return hoststop.ErrStopCancelled }
 	halted := stubHalt(t)
 	var out bytes.Buffer
 	err := runStopAll(&out, modelCmdConfig(), false)
-	if !errors.Is(err, survey.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
+	if !errors.Is(err, hoststop.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
 		t.Fatalf("err = %v, want a cancellation naming omlx as not stopped", err)
 	}
 	if len(*halted) != 0 || strings.Contains(out.String(), "Stopping omlx") {
@@ -594,7 +594,7 @@ func TestStopAllCancelledHaltReportsCancelled(t *testing.T) {
 	}
 	var out bytes.Buffer
 	err := runStopAll(&out, modelCmdConfig(), false)
-	if !errors.Is(err, survey.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
+	if !errors.Is(err, hoststop.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
 		t.Fatalf("err = %v, want a cancellation naming omlx as not stopped", err)
 	}
 	if got := out.String(); !strings.Contains(got, "Stopping omlx... cancelled") || strings.Contains(got, "failed") {
@@ -623,8 +623,8 @@ func TestStopAllSettlesTheModelLoopsRestartBeforeAHalt(t *testing.T) {
 	}
 	waitPendingRoutes = func() { events = append(events, "wait") }
 
-	stopState = func(*config.Config) survey.StopState {
-		return survey.StopState{Candidates: []survey.Candidate{cand("mtplx", "mtplx/c", "c", 0)}}
+	stopState = func(*config.Config) hoststop.StopState {
+		return hoststop.StopState{Candidates: []hoststop.Candidate{cand("mtplx", "mtplx/c", "c", 0)}}
 	}
 	if err := runStopAll(io.Discard, modelCmdConfig(), false); err != nil {
 		t.Fatal(err)
@@ -634,7 +634,7 @@ func TestStopAllSettlesTheModelLoopsRestartBeforeAHalt(t *testing.T) {
 	}
 
 	events = nil
-	stopState = func(*config.Config) survey.StopState { return survey.StopState{} }
+	stopState = func(*config.Config) hoststop.StopState { return hoststop.StopState{} }
 	if err := runStopAll(io.Discard, modelCmdConfig(), false); err != nil {
 		t.Fatal(err)
 	}
@@ -649,7 +649,7 @@ func TestStopAllSettlesTheModelLoopsRestartBeforeAHalt(t *testing.T) {
 // hand; if the command stopped passing --yes, a cleanup script would block on
 // a prompt (or fail with no terminal) and no test would say so.
 func TestStopAllYesFlagSkipsTheQuestion(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 2), cand("omlx", "omlx/c", "c", 1)})
+	stopped := stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 2), cand("omlx", "omlx/c", "c", 1)})
 	halted := stubHalt(t)
 	asked := stubStopConfirm(t, false)
 
@@ -677,7 +677,7 @@ func TestStopAllYesFlagSkipsTheQuestion(t *testing.T) {
 // before anything is probed or stopped: a user who meant one provider must
 // not have every model stopped instead.
 func TestStopAllTakesNoArgument(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
+	stopped := stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
 	halted := stubHalt(t)
 	_, err := runStopCmd(modelCmdConfig(), "--all", "ollama")
 	if err == nil || !strings.Contains(err.Error(), "takes no model or provider") {
@@ -695,7 +695,7 @@ func TestStopAllTakesNoArgument(t *testing.T) {
 // one spanning the whole command that Ctrl+C is lost and the command goes on
 // to halt the service the user had just asked it to leave alone.
 func TestStopAllCtrlCAsTheLastModelStopCompletesLeavesThePoolUp(t *testing.T) {
-	stubStop(t, []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
+	stubStop(t, []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)})
 	oldCtx, oldEntries := startSignalCtx, stopEntries
 	t.Cleanup(func() { startSignalCtx, stopEntries = oldCtx, oldEntries })
 	// A signal reaches the contexts installed when it arrives and no later
@@ -716,7 +716,7 @@ func TestStopAllCtrlCAsTheLastModelStopCompletesLeavesThePoolUp(t *testing.T) {
 	halted := stubHalt(t)
 	var out bytes.Buffer
 	err := runStopAll(&out, modelCmdConfig(), false)
-	if !errors.Is(err, survey.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
+	if !errors.Is(err, hoststop.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
 		t.Fatalf("err = %v, want a cancellation naming omlx as not stopped", err)
 	}
 	if len(*halted) != 0 || strings.Contains(out.String(), "Stopping omlx") {
@@ -742,7 +742,7 @@ func TestStopBareOmlxCancelledReportsCancelled(t *testing.T) {
 	}
 	var out bytes.Buffer
 	err := runStop(&out, modelCmdConfig(), "omlx", true)
-	if !errors.Is(err, survey.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
+	if !errors.Is(err, hoststop.ErrStopCancelled) || !strings.Contains(err.Error(), "omlx was not stopped") {
 		t.Fatalf("err = %v, want a cancellation naming omlx as not stopped", err)
 	}
 	if got := out.String(); !strings.Contains(got, "Stopping omlx... cancelled") || strings.Contains(got, "failed") {
@@ -844,9 +844,9 @@ func TestStopReachesAMachineInstanceTheRegistryPortDoesNotShow(t *testing.T) {
 	// Only rec: `--all` halts an omlx service whatever the state says.
 	cfg := &config.Config{Providers: []config.Provider{{ID: "rec", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}}}
 	found := cand("rec", config.DiscoveredModelID("rec", "flint"), "flint", 0)
-	state := survey.StopState{
-		Candidates: []survey.Candidate{found},
-		Families:   map[string]survey.FamilyState{"rec": {Probed: true}},
+	state := hoststop.StopState{
+		Candidates: []hoststop.Candidate{found},
+		Families:   map[string]hoststop.FamilyState{"rec": {Probed: true}},
 	}
 	for name, run := range map[string]func() error{
 		"stop rec":   func() error { return runStop(io.Discard, cfg, "rec", false) },

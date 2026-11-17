@@ -339,7 +339,7 @@ func SameModel(family, a, b string) bool {
 // provider or model for it, so an absent key means nothing is being started
 // into that family — and hand-built snapshots in tests carry no status map.
 //
-// Exported because `wt stop` (internal/survey's StopState) filters its
+// Exported because `wt stop` (internal/hoststop's StopState) filters its
 // candidates by this same rule: it must not offer a model whose running state
 // no probe confirmed, or on a single-model provider it would stop whatever is
 // actually loaded rather than the row the user ticked. Keeping one
