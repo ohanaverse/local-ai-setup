@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -100,29 +99,30 @@ func seedProxyHome(t *testing.T, url, key string, keyMode os.FileMode) {
 }
 
 // serveUntilListening runs `wt-model serve` on an ephemeral port over the real
-// command tree with a fake deps factory and returns a reader of its captured
-// stderr (stdout discarded) once the announce line has landed, plus a stop
-// function that cancels the run and returns the command's error. A test that
-// parses the startup lines stops the run first, so no later line can interleave.
-func serveUntilListening(t *testing.T) (read func() string, stop func() error) {
+// command tree with a fake deps factory and returns readers of its captured
+// stderr and stdout once the announce line has landed, plus a stop function
+// that cancels the run and returns the command's error. A test that parses the
+// startup lines stops the run first, so no later line can interleave.
+func serveUntilListening(t *testing.T) (readStderr, readStdout func() string, stop func() error) {
 	t.Helper()
 	cmd := rootCmd(fakeDeps)
-	read, pw := newLockedBuffer()
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(pw)
+	readErr, pwErr := newLockedBuffer()
+	readOut, pwOut := newLockedBuffer()
+	cmd.SetOut(pwOut)
+	cmd.SetErr(pwErr)
 	cmd.SetArgs([]string{"serve", "--listen", "127.0.0.1:0", "--token-file", writeToken(t, 0o600)})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- cmd.ExecuteContext(ctx) }()
 	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(read(), "listening on ") {
+	for !strings.Contains(readErr(), "listening on ") {
 		if time.Now().After(deadline) {
 			cancel()
-			t.Fatalf("no listening line; output %q", read())
+			t.Fatalf("no listening line; output %q", readErr())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return read, func() error {
+	return readErr, readOut, func() error {
 		cancel()
 		select {
 		case err := <-done:
@@ -130,6 +130,19 @@ func serveUntilListening(t *testing.T) (read func() string, stop func() error) {
 		case <-time.After(15 * time.Second):
 			t.Fatal("serve did not return after cancel")
 			return nil
+		}
+	}
+}
+
+// requireNoNoteOnStdout fails the case when the fallback note reached stdout:
+// ruling 7 binds it to "once per process, on stderr", so a note line on stdout
+// is a two-stream firing. It runs before the stderr checks so a leak fails
+// naming the leak.
+func requireNoNoteOnStdout(t *testing.T, stdout string) {
+	t.Helper()
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(line, "wt-model: note: ") {
+			t.Fatalf("the fallback note reached stdout: %q", line)
 		}
 	}
 }
@@ -219,17 +232,19 @@ func TestServeRefusesALooseKeyFile(t *testing.T) {
 // TestServeNotesTheLegacyFallback pins the startup note (ruling 7): a pair the
 // legacy [litellm] table supplies starts the server with exactly one
 // `wt-model: note: …` fallback line on stderr before the announce line (M4,
-// N1), and a pair from the wt-model home produces none — the note fires only
-// where the read-only fallback supplied the pair.
+// N1) and never on stdout — once per process, on stderr — and a pair from the
+// wt-model home produces none: the note fires only where the read-only
+// fallback supplied the pair.
 func TestServeNotesTheLegacyFallback(t *testing.T) {
 	asWTModel(t)
 	t.Run("legacy pair notes once", func(t *testing.T) {
 		seedConfig(t, true)
 		note := config.ProxyFallbackNote()
-		read, stop := serveUntilListening(t)
+		read, readOut, stop := serveUntilListening(t)
 		if err := stop(); err != nil {
 			t.Fatalf("serve returned %v, want nil", err)
 		}
+		requireNoNoteOnStdout(t, readOut())
 		lines := strings.Split(read(), "\n")
 		noteAt, announceAt := -1, -1
 		for i, line := range lines {
@@ -256,10 +271,11 @@ func TestServeNotesTheLegacyFallback(t *testing.T) {
 	})
 	t.Run("home pair is silent", func(t *testing.T) {
 		seedProxyHome(t, "http://127.0.0.1:4000", "sk-test", 0o600)
-		read, stop := serveUntilListening(t)
+		read, readOut, stop := serveUntilListening(t)
 		if err := stop(); err != nil {
 			t.Fatalf("serve returned %v, want nil", err)
 		}
+		requireNoNoteOnStdout(t, readOut())
 		for _, line := range strings.Split(read(), "\n") {
 			if strings.HasPrefix(line, "wt-model: note: ") {
 				t.Errorf("a home pair printed the fallback note: %q", line)
