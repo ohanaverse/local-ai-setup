@@ -102,8 +102,9 @@ func wtLines(out string) []string {
 }
 
 // TestLaunchWithoutEndpointRefusesWithBothSettings pins the flip's refusal
-// (Task 18): with no [model-server] and no WT_MODEL_* a launch of a
-// model-driven agent stops before anything runs, with exactly one line naming
+// (Task 18) for a launch that asks for a model: with no [model-server] and no
+// WT_MODEL_* a `-M` launch of a model-driven agent (a plain one runs natively
+// since #615) stops before anything runs, with exactly one line naming
 // both settings and saying nothing was launched, exit 1. A registry that the
 // pre-flip path would have launched from is present and is not used: no
 // provider probe, no route check, no refcount sweep, no agent process, and
@@ -118,7 +119,7 @@ func TestLaunchWithoutEndpointRefusesWithBothSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, code := runRoot(t, "--cwd", "-A", "claude")
+	out, code := runRoot(t, "--cwd", "-A", "claude", "-M", "openrouter/x/y")
 	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) {
 		t.Errorf("config.toml changed: the registry's loader ran\n%s", after)
 	}
@@ -140,7 +141,10 @@ func TestLaunchWithoutEndpointRefusesWithBothSettings(t *testing.T) {
 }
 
 // TestEachModelNeedingPathRefuses walks every path that needs a model from
-// the server (Task 18's list) with no endpoint configured: each refuses with
+// the server (Task 18's list) with no endpoint configured: a launch that asks
+// for a model (-M, -T, -F, a slot profile pin; a plain launch or picker runs
+// the agent natively since #615, see native_test.go) and every server command
+// each refuses with
 // NotConfiguredError's text and its own clause saying what did not happen
 // (a launch's "nothing was launched"), exit 1, and spawns no agent. One path that fell back to the registry instead would be a
 // session reading host state the split exists to keep away from it.
@@ -151,9 +155,11 @@ func TestEachModelNeedingPathRefuses(t *testing.T) {
 		tty   bool
 		still string
 	}{
-		{"launch", []string{"--cwd", "-A", "claude"}, false, launchStill},
 		{"-M", []string{"--cwd", "-A", "claude", "-M", "openrouter/x/y"}, false, launchStill},
-		{"picker", []string{"--cwd"}, true, launchStill},
+		{"-M profile/NAME", []string{"--cwd", "-A", "claude", "-M", "profile/base"}, false, launchStill},
+		{"-T", []string{"--cwd", "-A", "claude", "-T", "code"}, false, launchStill},
+		{"-F", []string{"--cwd", "-A", "claude", "-F", "qwen"}, false, launchStill},
+		{"picker with -T", []string{"--cwd", "-T", "code"}, true, launchStill},
 		{"start", []string{"start", "openrouter/x/y"}, false, "nothing was started"},
 		{"stop MODEL", []string{"stop", "omlx/q"}, false, "nothing was stopped"},
 		{"job", []string{"job", "job-1"}, false, "the job was not read"},
@@ -311,7 +317,8 @@ func inTestRepo(t *testing.T, _ string) []string {
 }
 
 // TestModelLaunchRefusesBeforeAnyGitWork pins the refusal's place in a
-// repository: with no model server configured, a model-driven launch with
+// repository: with no model server configured, a launch that asks for a model
+// (-M or -T; a plain one runs natively since #615) with
 // -W (a new name), --root, or from the worktree picker refuses with the one
 // not-configured line, exit 1, before RunE does anything — no worktree or
 // branch is created, the main guard is not installed. The plan says a
@@ -324,10 +331,10 @@ func TestModelLaunchRefusesBeforeAnyGitWork(t *testing.T) {
 		args []string
 		tty  bool
 	}{
-		{"-W a new name", []string{"-W", "feat-x", "-A", "claude"}, false},
-		{"--root", []string{"--root", "-A", "claude"}, false},
-		{"the worktree picker, agent pinned", []string{"-A", "claude"}, true},
-		{"the worktree picker, no agent", nil, true},
+		{"-W a new name", []string{"-W", "feat-x", "-A", "claude", "-M", "openrouter/x/y"}, false},
+		{"--root", []string{"--root", "-A", "claude", "-M", "openrouter/x/y"}, false},
+		{"the worktree picker, agent pinned", []string{"-A", "claude", "-M", "openrouter/x/y"}, true},
+		{"the worktree picker, no agent", []string{"-T", "code"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, marker := noServerHome(t)

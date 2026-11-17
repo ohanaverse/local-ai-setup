@@ -51,7 +51,9 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	// claude/native launches bare. Anything else routes through the
 	// ollama anthropic-compatible gateway.
 	if m.Native {
-		lc.ClearEnv = []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}
+		if !isNativeLaunch(m) {
+			lc.ClearEnv = []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}
+		}
 		if m.ModelName != "native" {
 			lc.Args = append(lc.Args, "--model", m.ModelName)
 		}

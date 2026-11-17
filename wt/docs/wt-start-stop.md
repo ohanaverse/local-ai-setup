@@ -525,10 +525,14 @@ recently used when a load does not fit.
 
 ## A launch on the model server (`[model-server]`)
 
-Every model-driven launch needs a model server (`[model-server]` in
-`config.toml`, or `WT_MODEL_URL`/`WT_MODEL_TOKEN_FILE`/`WT_MODEL_TOKEN`; with
-none configured it refuses before anything starts, exit 1) and reads no
-registry ([wt-model-server.md](wt-model-server.md)). The picker lists the
+A model-driven launch that asks for a model needs a model server
+(`[model-server]` in `config.toml`, or
+`WT_MODEL_URL`/`WT_MODEL_TOKEN_FILE`/`WT_MODEL_TOKEN`; with none configured it
+refuses before anything starts, exit 1) and reads no registry. The one
+exception is a plain launch (no `-M`, `-T` or `-F`) with *no* server
+configured at all (neither url nor token): it runs the agent natively with its
+own configuration ([wt-session.md](wt-session.md), "Native launch"); a
+half-configured server still refuses. A launch on a server reads no registry ([wt-model-server.md](wt-model-server.md)). The picker lists the
 server's catalog. A launch that names its directory and its agent (`-W`,
 `--cwd`, `--root` with `-A`) skips the picker: a `-M` pin is resolved by the
 server; without one the server's one launchable model launches, and when

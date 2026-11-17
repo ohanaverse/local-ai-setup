@@ -158,7 +158,7 @@ func runStatsDirect(t *testing.T, a *app, args ...string) (stdout, stderr string
 	}
 	f := statsFake.f
 	// The app read config.toml before stubSpend named the server in it.
-	a.sessCfgSet, a.models = false, nil
+	a.sessCfgSet, a.models, a.builtSet = false, nil, false
 	f.mu.Lock()
 	f.Rows = statsHostRows(a)
 	f.mu.Unlock()

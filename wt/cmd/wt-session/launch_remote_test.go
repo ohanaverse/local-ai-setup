@@ -523,9 +523,10 @@ func TestUnreachableServerFailsFastWithAddress(t *testing.T) {
 // TestPickerGetsTheModelServerOnlyWhenOneIsConfigured proves the one tui.Run
 // caller hands the picker its model-server client when an endpoint is
 // configured (and the session config with it, never the host's), and, since
-// the flip, that with none configured a picker that may need a model refuses
-// before the TUI opens (exit 1, nothing was launched) while a pinned command
-// agent's worktree picker still opens, with no client. The picker's fetch
+// the flip, that with none configured the picker opens natively (no client,
+// a nil client; #615) unless the launch asks for a model (-T), which
+// refuses before the TUI opens (exit 1, nothing was launched), while a pinned
+// command agent's worktree picker still opens, with no client too. The picker's fetch
 // itself runs inside the TUI; nothing here reaches the fake server.
 func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 	r := newRemoteRig(t)
@@ -554,19 +555,25 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 		t.Errorf("the launch path asked the server %v before the picker opened", r.f.Reqs)
 	}
 
-	// No endpoint: the picker refuses before it opens.
+	// No endpoint: the picker opens natively (#615), with no client,
+	// unless the launch asks for a model, which refuses before the
+	// picker opens.
 	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN"} {
 		t.Setenv(k, "")
 	}
 	a := &app{}
 	a.sessCfgSet, a.sessCfg = true, &config.Config{}
 	called, gotModels = false, nil
-	err := runLaunchPath(cmd, a, "", "", "", "", nil, "", "")
+	if err := runLaunchPath(cmd, a, "", "", "", "", nil, "", ""); err != nil || !called || gotModels != nil {
+		t.Errorf("no endpoint: err = %v, called = %v, models = %v; want a native picker with no client", err, called, gotModels)
+	}
+	called = false
+	err := runLaunchPath(cmd, a, "", "", "code", "", nil, "", "")
 	if want := notConfiguredText(launchStill); err == nil || err.Error() != want || exitcode.Of(err) != 1 {
-		t.Errorf("no endpoint: err = %v (exit %d), want %q, exit 1", err, exitcode.Of(err), want)
+		t.Errorf("no endpoint, -T: err = %v (exit %d), want %q, exit 1", err, exitcode.Of(err), want)
 	}
 	if called {
-		t.Error("no endpoint: the TUI opened")
+		t.Error("no endpoint, -T: the TUI opened")
 	}
 
 	// No endpoint, a pinned command: its worktree picker needs no model.
@@ -575,7 +582,7 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 		t.Fatalf("shell runLaunchPath: %v", err)
 	}
 	if !called || gotModels != nil {
-		t.Errorf("shell: called = %v, models = %v, want a call with nil", called, gotModels)
+		t.Errorf("shell: called = %v, models = %v, want a call with a nil client", called, gotModels)
 	}
 }
 

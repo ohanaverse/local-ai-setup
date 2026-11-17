@@ -748,14 +748,48 @@ func (m model) proceedWithPath() (model, tea.Cmd) {
 
 // enterModelPhaseForAgent loads the model server's catalog for m.agent under
 // the active filters (-T/-F) and builds the picker from it
-// (beginCatalogLoad). Without a model server (only a pinned command agent
-// opens the picker with none, and it never asks for a model) it says so.
+// (beginCatalogLoad). With no model server configured at all and no -M/-T/-F
+// (a nil client, #615) it launches the agent natively instead.
 func (m model) enterModelPhaseForAgent() (model, tea.Cmd) {
 	if m.client == nil {
-		m.status = "no model server is configured: set url and token_file under [model-server] in config.toml"
-		return m, nil
+		// Only a model-driven agent reaches this phase, and wt-session opens
+		// the picker with no client only when no model server is configured
+		// and no model is asked for (it refuses every other launch first).
+		return m.launchNative()
 	}
 	return m.beginCatalogLoad()
+}
+
+// launchNative is the launch of m.agent with no model server configured
+// (#615): the native model through the same builder as every launch, a zero
+// Gateway, and the one native note printed once the launch gate is past (a
+// declined gate launches nothing, so it says nothing). Nothing is registered
+// or recorded: there is no server and no model id.
+func (m model) launchNative() (model, tea.Cmd) {
+	mdl := agents.NativeModel()
+	cmd, _, err := buildGatewayLaunch(m.agent, mdl, m.selectedPath, m.yolo, agents.Gateway{}, nil, m.extraArgs)
+	if err != nil {
+		m.status = "launch failed: " + err.Error()
+		return m, nil
+	}
+	queueLaunchNotes(m.agent, cmd, m.extraArgs)
+	gate := m.gateFor()
+	agent := m.agent
+	return m.commitLaunch(runAndWaitCmd(cmd, agent, mdl, sayAfterGate(gate, os.Stderr, agents.NativeNote(agent))))
+}
+
+// sayAfterGate wraps a launch gate so line is written to w only once the gate
+// lets the launch go on: the terminal is the user's again at the gate
+// (runRecordAndWaitWith released it first), and a declined gate launches
+// nothing, so it must not have announced a launch.
+func sayAfterGate(gate func() (bool, error), w io.Writer, line string) func() (bool, error) {
+	return func() (bool, error) {
+		ok, err := gate()
+		if ok {
+			fmt.Fprintln(w, line)
+		}
+		return ok, err
+	}
 }
 
 // routeBackToAgent leaves the model phase for the agent picker with status as

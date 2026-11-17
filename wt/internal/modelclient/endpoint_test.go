@@ -169,3 +169,27 @@ func TestStillKeepsTheCause(t *testing.T) {
 		t.Error("errors.As lost *NotConfiguredError")
 	}
 }
+
+// TestNoServerConfigured pins the one condition a native launch hangs on:
+// only an endpoint with BOTH the url and the token missing (even wrapped by
+// Still) is "no server configured". One missing is a half-configured server,
+// and any other error is not about configuration at all; both must keep
+// refusing, or a typo in config.toml would silently launch without the server.
+func TestNoServerConfigured(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"both missing", &NotConfiguredError{MissingURL: true, MissingToken: true}, true},
+		{"both missing, wrapped", Still(&NotConfiguredError{MissingURL: true, MissingToken: true}, "nothing was launched"), true},
+		{"url only missing", &NotConfiguredError{MissingURL: true}, false},
+		{"token only missing", Still(&NotConfiguredError{MissingToken: true}, "x"), false},
+		{"another error", errors.New("boom"), false},
+		{"nil", nil, false},
+	} {
+		if got := NoServerConfigured(tc.err); got != tc.want {
+			t.Errorf("%s: NoServerConfigured = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

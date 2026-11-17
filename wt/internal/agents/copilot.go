@@ -27,6 +27,9 @@ func (copilotDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	// vars so the subscription wins. Anything else routes through the
 	// ollama OpenAI-compatible gateway via COPILOT_PROVIDER_* env vars.
 	if m.Native {
+		if isNativeLaunch(m) {
+			return lc
+		}
 		lc.ClearEnv = []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_PROVIDER_WIRE_API", "COPILOT_MODEL"}
 		return lc
 	}

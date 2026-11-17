@@ -509,9 +509,12 @@ func TestRunLaunchPathWarnsAboutSlotProfilesOncePerRun(t *testing.T) {
 				return nil
 			}
 			t.Cleanup(func() { launchCommand = oldLaunch })
-			// No model server: a model-driven agent's launch is refused,
-			// and no agent's is the picker's terminal refusal; the
-			// warnings are printed before either.
+			// A configured but unreachable server: a model-driven agent's
+			// launch fails at the server after the warnings are printed (a
+			// server-less launch is native, #615, and says nothing about
+			// slot profiles: TestNativeLaunchSaysNothingAboutSlotProfiles).
+			t.Setenv("WT_MODEL_URL", "http://127.0.0.1:9")
+			t.Setenv("WT_MODEL_TOKEN", "tok")
 			a := &app{slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")}
 
 			stderr := captureFile(t, &os.Stderr, func() {

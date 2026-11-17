@@ -28,6 +28,22 @@ var buildGatewayCmd = agents.BuildLaunchCmdGateway
 // launch reached and with what arguments, without running it.
 var launchCommand = launchCommandImpl
 
+// launchNative launches a model-driven agent with no model server configured
+// (#615): the native model and a zero Gateway, so the agent's own
+// configuration decides the model and no gateway token reaches it. It prints
+// the one native note, registers no client session and records no rotation or
+// usage (there is no model id). Everything else a launch does (the worktree,
+// the guard, claims, --yolo, passthrough args, the summary) is unchanged.
+func launchNative(agent, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string, pp *precomputedProfiles) error {
+	m := agents.NativeModel()
+	cmd, _, err := buildGatewayCmd(agent, m, worktreePath, yolo, agents.Gateway{}, nil, extraArgs)
+	if err != nil {
+		return remoteExit(modelclient.Still(err, launchStill))
+	}
+	fmt.Fprintln(osStderr, agents.NativeNote(agent))
+	return runLaunch(cmd, agent, m, cfg, pp, extraArgs, runTail{})
+}
+
 func launchCommandImpl(agent, worktreePath string, cfg *config.Config, yolo, pinnedSupplied bool, extraArgs []string, pp *precomputedProfiles) error {
 	if pinnedSupplied {
 		fmt.Fprintf(os.Stderr, "wt: -M ignored for command %q\n", agent)
@@ -88,6 +104,10 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	ag, err := cfg.AgentByName(agent)
 	if err != nil {
 		return remoteExit(modelclient.Still(err, launchStill))
+	}
+	// No model server configured at all and no model asked for: native (#615).
+	if _, berr := a.buildModels(launchStill); berr != nil && nativeFallback(berr, pinned, pinnedSupplied, tags, family) {
+		return launchNative(agent, worktreePath, cfg, yolo, extraArgs, pp)
 	}
 	// A -M pin of a slot profile is its own launch unit, as on the registry
 	// path: the server knows no profile id, so the pin never goes to its

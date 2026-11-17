@@ -10,7 +10,8 @@ reads the LiteLLM key.
 
 wt never starts a model server, never guesses an address and never falls
 back to anything local. With none configured, a command that needs a model
-refuses before anything starts. ("Client session" is the server's record of
+refuses before anything starts; a launch that asks for no model runs the agent
+natively instead (see "Native launch" below). ("Client session" is the server's record of
 one wt run; a "wt session" is a launch that claims a worktree.)
 
 ## Configuration: `[model-server]`
@@ -60,7 +61,7 @@ wt: no model server is configured; [litellm] is no longer used by wt — set url
 With one of them set, the line starts `the model server url is not
 configured` or `the model server token is not configured` instead, and goes
 on the same way. The last clause says what did not happen, per command:
-`nothing was launched` (a launch, `-M`, the pickers), `nothing was started`
+`nothing was launched` (a launch that asks for a model: `-M`, `-T`, `-F`), `nothing was started`
 (`wt start`), `nothing was stopped` (`wt stop MODEL`), `the job was not read`
 or `nothing was cancelled` (`wt job`), `nothing was run` (`wt smoke`),
 `nothing was printed` (`wt rotate TAG`), `nothing was listed` (`wt model
@@ -104,8 +105,10 @@ of a failed or cancelled job (or a cancel sent whose outcome is unknown).
 These refuse, as above, when none is configured, before anything starts:
 
 - a launch of a model-driven agent (`claude`, `codex`, `copilot`, `pi`,
-  `agy`, `opencode`), with or without `-M` (`-M profile/NAME` included);
-- the pickers (`wt` with no `-A`, or an agent with no `-M` on a terminal);
+  `agy`, `opencode`) that asks for a model: `-M` (`-M profile/NAME`
+  included), `-T` or `-F`;
+- the model picker (an agent with no `-M` on a terminal when a server is
+  configured is the only case that shows one);
 - `wt start`, `wt stop MODEL` (and `wt stop` with no argument), `wt job`;
 - `wt smoke`, `wt rotate TAG`, `wt model list --server`;
 - `wt profile slots add|set|candidates` and `wt profile show -M ...`.
@@ -113,8 +116,39 @@ These refuse, as above, when none is configured, before anything starts:
 A model-driven agent with no `[[agents]]` entry in `config.toml` is not an
 exception: on a session every driver has an agent, eligible for every row
 the server lists except another agent's native row, and an entry only
-narrows that (`supported_providers`). There is no bare launch without a
-model any more.
+narrows that (`supported_providers`).
+
+## Native launch: no server configured at all
+
+With **neither** `url` nor a token set (not in `config.toml`, not in
+`WT_MODEL_URL`, `WT_MODEL_TOKEN_FILE` or `WT_MODEL_TOKEN`), `wt -A <agent>`
+and the agent picker launch a model-driven agent **natively** (#615): no model
+prompt, no catalog, no client session; the agent's own configuration decides
+the model (for example org-managed settings that supply the gateway and
+credentials). `-W`, `--root`, `--cwd`, the launch warnings and the guard, the
+worktree claim, `--yolo`, arguments after `--` and the summary line work as
+for any launch. It prints one line on stderr, so the fallback is never
+silent:
+
+```
+wt: no model server is configured — launching claude natively, with its own configuration; to choose models through wt-model, set url and token_file under [model-server] in config.toml
+```
+
+The agent gets no gateway origin or token (the zero route), no rotation or
+usage record is written (there is no model id), and `profiles.toml` overlays
+do not apply to a native launch; slot profiles cannot apply either, so a
+problem in `slot-profiles.toml` is not reported on one. In the picker the line
+is printed once the launch gate is past, so declining the launch says nothing.
+
+The fallback is narrow on purpose. A **half-configured** server (url without
+a token, or the reverse) still refuses and names the missing setting, an
+unreachable server or a refused token still fails fast, and a launch that asks
+for a model (`-M`, `-T`, `-F`, a slot profile) still refuses with nothing
+launched. A configured server is never bypassed. `wt start`, `stop`, `job`,
+`smoke`, `rotate`, `model list --server` and the slot-profile commands that
+need a server refuse as before. This is not the local fallback the design
+rules out: a native launch uses no wt-model route and no server at all. A
+bare `wt` still needs a terminal for its picker.
 
 ## What does not
 
@@ -122,6 +156,7 @@ These run with no model server configured:
 
 - a command agent's launch (`-A shell`, `shell-wt`), the worktree picker for
   it included;
+- a model-driven agent's launch that asks for no model, natively (above);
 - `wt --init`, `--check-guard`, `--no-guard`, `--version`;
 - `wt worktrees` (`wt cleanup`), `wt remove`, `wt rescue`, `wt restore-root`;
 - `wt config` (and `wt config theme|path`);
