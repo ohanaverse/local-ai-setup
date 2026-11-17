@@ -244,3 +244,49 @@ func TestLitellmSetHelpNamesTheSetupCommand(t *testing.T) {
 		t.Errorf("`wt-model litellm set --help` does not show %q contiguous:\n%s", want, stdout)
 	}
 }
+
+// TestLitellmStatusRefusesAnUnstatableKeyFile pins fix round 2, Finding 1 on
+// the command the review reproduced it on: a key file the OS cannot stat (its
+// key_file traverses a regular file — ENOTDIR) must fail `status` loud with
+// the stat reason, never exit 0 displaying `api_key: (unset)` over a key it
+// could not inspect. The spec makes only a missing or empty key file "no key".
+func TestLitellmStatusRefusesAnUnstatableKeyFile(t *testing.T) {
+	home := proxyEnv(t)
+	dir := filepath.Join(home, "wt-model")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "regular-file"), []byte("a regular file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "[litellm]\nurl = \"http://localhost:4000\"\nkey_file = \"regular-file/key\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err := execLitellm(t, "status")
+	if err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("status over an unstatable key file: stdout %q err %v; want the stat error", stdout, err)
+	}
+	if strings.Contains(stdout, "(unset)") {
+		t.Errorf("status printed %q over a key it could not inspect; want no status document", stdout)
+	}
+}
+
+// TestLitellmSetFreshClearWritesTheEmptyKeyFile pins fix round 2, Finding 2
+// at the command the review reproduced it on: a fresh `wt-model litellm set`
+// with a url and an explicitly empty key must create the key file the spec
+// requires (empty, 0600, never deleted and never left absent) — before the
+// fix it printed `litellm: updated`, created config.toml and left
+// litellm.key missing.
+func TestLitellmSetFreshClearWritesTheEmptyKeyFile(t *testing.T) {
+	home := proxyEnv(t)
+	setPair(t, "--url", "http://localhost:4000", "--api-key", "")
+	keyPath := filepath.Join(home, "wt-model", "litellm.key")
+	st, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("key file after a fresh explicit clear: %v; want the empty 0600 file the spec requires, never absence", err)
+	}
+	if st.Mode().Perm() != 0o600 || st.Size() != 0 {
+		t.Errorf("key file: mode %v size %d, want 0600 and empty", st.Mode().Perm(), st.Size())
+	}
+}

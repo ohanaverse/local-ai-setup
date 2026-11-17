@@ -935,3 +935,160 @@ api_key = "sk-legacy"
 		t.Error("LoadSession returned a config beside the error; want nil so no caller can serve the legacy pair")
 	}
 }
+
+// writeUnstatableKeyFixture makes the home's key file unstatable the
+// deterministic way fix round 2, Finding 1 needs: the home config.toml names
+// key_file "regular-file/key", which traverses a regular file as though it
+// were a directory, so every stat of the key path fails with ENOTDIR ("not a
+// directory") — a non-ENOENT KindStat failure, the branch the mode-0000 case
+// (KindRead) never exercises. It returns the unstatable key path.
+func writeUnstatableKeyFixture(t *testing.T, home string) string {
+	t.Helper()
+	dir := filepath.Join(home, "wt-model")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	filler := filepath.Join(dir, "regular-file")
+	if err := os.WriteFile(filler, []byte("a regular file, not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeProxyHome(t, home, "[litellm]\nurl = \"http://localhost:4011\"\nkey_file = \"regular-file/key\"\n")
+	return filepath.Join(filler, "key")
+}
+
+// TestKeyTokenTreatsOnlyAMissingFileAsNoKey pins fix round 2, Finding 1 on
+// the one key-file reading both directions share: only a missing or empty key
+// file is "no key"; any other stat failure is the error it is. Before the fix
+// keyToken swallowed every KindStat — tokenfile.Load assigns that Kind to
+// every os.Stat failure — so an ENOTDIR key_file read as "" in ResolveProxy's
+// resolve and in SetProxy's no-op comparison alike: `status` printed
+// `api_key: (unset)` and a matching `set` computed "unchanged" and returned
+// silent success over a key nobody could read.
+func TestKeyTokenTreatsOnlyAMissingFileAsNoKey(t *testing.T) {
+	dir := t.TempDir()
+	if key, err := keyToken(filepath.Join(dir, "missing")); err != nil || key != "" {
+		t.Fatalf("a missing key file = %q, %v; want \"\" and nil — the preserved no-key reading", key, err)
+	}
+	filler := filepath.Join(dir, "regular-file")
+	if err := os.WriteFile(filler, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, err := keyToken(filepath.Join(filler, "key")) // ENOTDIR
+	if err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("an unstatable key file = %q, %v; want the ENOTDIR stat error, never \"no key\"", key, err)
+	}
+}
+
+// TestResolveProxyRefusesAnUnstatableKeyFile pins fix round 2, Finding 1 at
+// the resolver every reader goes through: a key file the OS cannot even stat
+// (the key_file traverses a regular file — ENOTDIR) is the resolution's error
+// and the zero pair, exactly like the loose and unparseable cases — the spec
+// makes only a missing or empty key file mean "no key". The second sub-case
+// pins that preserved reading: a fresh home with only a url and no key file
+// at all resolves the home pair with an empty key and no error. The review
+// reproduced the old behavior on `wt-model litellm status`, which exited 0
+// over a key it had failed to inspect and displayed `api_key: (unset)`.
+func TestResolveProxyRefusesAnUnstatableKeyFile(t *testing.T) {
+	t.Run("an unstatable key file is the error", func(t *testing.T) {
+		home := proxyEnv(t, "")
+		writeUnstatableKeyFixture(t, home)
+		pair, err := ResolveProxy()
+		if err == nil {
+			t.Fatalf("ResolveProxy() over an ENOTDIR key_file = %+v, nil; want the stat error — an uninspectable key must never read as no key", pair)
+		}
+		if !strings.Contains(err.Error(), "not a directory") {
+			t.Errorf("err = %v, want the OS reason \"not a directory\"", err)
+		}
+		if pair != (ProxyPair{}) {
+			t.Errorf("ResolveProxy() returned %+v beside the error, want the zero pair", pair)
+		}
+	})
+	t.Run("a missing key file is still no key", func(t *testing.T) {
+		home := proxyEnv(t, "")
+		writeProxyHome(t, home, "[litellm]\nurl = \"http://localhost:4011\"\n")
+		pair, err := ResolveProxy()
+		if err != nil {
+			t.Fatalf("a fresh home with only a url: %v, want no error", err)
+		}
+		if want := (ProxyPair{URL: "http://localhost:4011", Source: ProxySourceHome}); pair != want {
+			t.Errorf("ResolveProxy() = %+v, want %+v (the missing key file reads as no key)", pair, want)
+		}
+	})
+}
+
+// TestSetProxyRefusesAnUnstatableKeyFile pins fix round 2, Finding 1 on the
+// write side: the set's no-op comparison reads the key through the shared
+// keyToken, and a key file the OS cannot stat is not "no key" — the set fails
+// loud and writes nothing, the same contract as the loose-key refusal. The
+// swallowed stat error is exactly what a silent success hides: "" over ""
+// computed "unchanged" and a clear over a key nobody could read returned
+// `litellm: updated`.
+func TestSetProxyRefusesAnUnstatableKeyFile(t *testing.T) {
+	home := proxyEnv(t, "")
+	keyPath := writeUnstatableKeyFixture(t, home)
+	cfgBefore, err := os.ReadFile(ProxyHomePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The clear is the case the swallowed error turned into a silent success.
+	if err := SetProxy(nil, ptr("")); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("SetProxy clear over an unstatable key file = %v, want the stat error", err)
+	}
+	if err := SetProxy(nil, ptr("sk-new")); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("SetProxy over an unstatable key file = %v, want the stat error", err)
+	}
+	cfgAfter, err := os.ReadFile(ProxyHomePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cfgBefore, cfgAfter) {
+		t.Errorf("config.toml changed on a refusal:\nbefore: %s\nafter:  %s", cfgBefore, cfgAfter)
+	}
+	if _, err := os.Stat(keyPath); err == nil {
+		t.Error("the unstatable key path became statable: something was written there on a refusal")
+	}
+}
+
+// TestSetProxyFreshExplicitClearWritesTheEmptyKeyFile pins fix round 2,
+// Finding 2 (the spec's key-file rule: `set --api-key ""` writes a 0600 empty
+// file and wt never deletes a key file): a first-ever set with an explicitly
+// empty key writes the empty 0600 key file. Absent and empty both read ""
+// before the fix, so the no-op comparison skipped the write and a fresh
+// `wt-model litellm set --url URL --api-key ""` printed `litellm: updated`
+// and left config.toml without any litellm.key beside it.
+func TestSetProxyFreshExplicitClearWritesTheEmptyKeyFile(t *testing.T) {
+	home := proxyEnv(t, "")
+	if err := SetProxy(ptr("http://localhost:4010"), ptr("")); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(home, "wt-model", defaultProxyKeyFile)
+	st, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("key file after a fresh explicit clear: %v; want the empty 0600 file the spec requires, never absence", err)
+	}
+	if st.Mode().Perm() != 0o600 || st.Size() != 0 {
+		t.Errorf("key file: mode %v size %d, want 0600 and empty", st.Mode().Perm(), st.Size())
+	}
+}
+
+// TestResolveProxyResolvesNothingWithNoConfigHome pins fix round 2, Finding 3
+// and ProxyHomePath's contract ("nothing resolves or writes"): with no config
+// home at all — HOME and XDG_CONFIG_HOME both empty — the unconfigured pair is
+// the answer even when the process's working directory holds an
+// agent-wt/config.toml with a legacy [litellm] pair. Without the fix the
+// legacy read opened that relative path, so a decoy file under the CWD
+// supplied the pair despite the spec's "empty home → nothing resolves" rule.
+func TestResolveProxyResolvesNothingWithNoConfigHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	cwd := t.TempDir()
+	must(t, filepath.Join(cwd, "agent-wt", "config.toml"), "default_tag = \"code\"\n\n[litellm]\nurl = \"http://decoy:4000\"\napi_key = \"sk-decoy\"\n")
+	t.Chdir(cwd)
+	pair, err := ResolveProxy()
+	if err != nil {
+		t.Fatalf("ResolveProxy() with no config home: %v, want no error", err)
+	}
+	if pair != (ProxyPair{}) {
+		t.Errorf("ResolveProxy() with no config home = %+v, want the unconfigured pair — the working directory's agent-wt/config.toml must never supply the legacy pair", pair)
+	}
+}

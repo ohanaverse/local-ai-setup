@@ -103,19 +103,24 @@ func ProxyHomePath() string {
 // (SetProxy publishes the TOML last), and the legacy read below is one file's
 // one parse.
 func ResolveProxy() (ProxyPair, error) {
-	if home := ProxyHomePath(); home != "" {
-		switch _, serr := os.Stat(home); {
-		case serr == nil:
-			pair, found, err := resolveProxyHome(home)
-			if err != nil {
-				return ProxyPair{}, err
-			}
-			if found {
-				return pair, nil
-			}
-		case !os.IsNotExist(serr):
-			return ProxyPair{}, serr
+	home := ProxyHomePath()
+	if home == "" {
+		// No config home at all: nothing resolves (ProxyHomePath's contract)
+		// — the legacy read below would open the relative agent-wt/config.toml
+		// under the process's working directory (fix round 2, Finding 3).
+		return ProxyPair{Source: ProxySourceNone}, nil
+	}
+	switch _, serr := os.Stat(home); {
+	case serr == nil:
+		pair, found, err := resolveProxyHome(home)
+		if err != nil {
+			return ProxyPair{}, err
 		}
+		if found {
+			return pair, nil
+		}
+	case !os.IsNotExist(serr):
+		return ProxyPair{}, serr
 	}
 	cfg, _, err := readConfigFile()
 	if err != nil {
@@ -221,19 +226,36 @@ func readProxyKey(lit proxyHomeLitellm) (string, error) {
 // its chmod 600 sentence (a secret others can read must not be used
 // silently) and the key is whitespace-trimmed — with a missing or empty file
 // mapped to "no key" (""), the consumer's existing not-configured path
-// reporting it. Both readers go through here: ResolveProxy's resolve and
-// SetProxy's no-op comparison, so "what the key is" is defined once and a
-// loose or unreadable file errors in both directions.
+// reporting it. Only those two mean "no key": any other stat failure (EACCES,
+// ENOTDIR, …) is the error it is (fix round 2, Finding 1) — a key file wt
+// cannot even inspect must never read as unset. Both readers go through here:
+// ResolveProxy's resolve and SetProxy's no-op comparison, so "what the key
+// is" is defined once and a loose or unreadable file errors in both
+// directions.
 func keyToken(path string) (string, error) {
-	key, err := tokenfile.Load(path)
+	key, _, err := keyTokenState(path)
+	return key, err
+}
+
+// keyTokenState is keyToken plus presence: a missing file (present false, key
+// "") is distinct from an existing empty one (present true, key ""), because
+// the spec requires a fresh `set --api-key ""` to write the empty 0600 file —
+// absence is not "unchanged" (fix round 2, Finding 2).
+func keyTokenState(path string) (key string, present bool, err error) {
+	key, err = tokenfile.Load(path)
 	if err == nil {
-		return key, nil
+		return key, true, nil
 	}
 	var te *tokenfile.Error
-	if errors.As(err, &te) && (te.Kind == tokenfile.KindStat || te.Kind == tokenfile.KindEmpty) {
-		return "", nil
+	if errors.As(err, &te) {
+		switch {
+		case te.Kind == tokenfile.KindEmpty:
+			return "", true, nil
+		case te.Kind == tokenfile.KindStat && errors.Is(err, os.ErrNotExist):
+			return "", false, nil
+		}
 	}
-	return "", err
+	return "", false, err
 }
 
 // SetProxy is the one writer of the wt-model home: it sets the proxy pair's
@@ -293,17 +315,19 @@ func SetProxy(url, key *string) error {
 				return err
 			}
 			// The comparison is the key's identity as every reader sees it
-			// — keyToken (tokenfile.Load) on both sides, one definition of
-			// "what the key is": a file that merely differs in whitespace is
-			// unchanged and its bytes are preserved as written, and a loose
+			// — keyTokenState (tokenfile.Load) on both sides, one definition
+			// of "what the key is": a file that merely differs in whitespace
+			// is unchanged and its bytes are preserved as written, and a loose
 			// or unreadable file errors out of the set too (fix round 1,
 			// Finding 2) — never a silent success over a key every read
-			// refuses.
-			current, err := keyToken(keyTarget)
+			// refuses. An absent file always writes (fix round 2, Finding 2):
+			// a fresh explicit clear must create the empty 0600 file the spec
+			// requires, not skip because "" against absence reads unchanged.
+			current, present, err := keyTokenState(keyTarget)
 			if err != nil {
 				return err
 			}
-			keyChanged = current != strings.TrimSpace(*key)
+			keyChanged = !present || current != strings.TrimSpace(*key)
 		}
 
 		// Key first, document last: the TOML is the pointer at the key, so a
@@ -340,8 +364,8 @@ func SetProxy(url, key *string) error {
 // source won (nothing reads it; saves still round-trip it). A resolution
 // error is hard (fix round 1, Findings 1/3): it becomes the load's error and
 // nothing falls back — an unparseable home config.toml or a loose/unreadable
-// key file must never silently serve the legacy values (`status` and `set`
-// call ResolveProxy and fail loud there too).
+// key file must never silently serve the legacy values (`status` fails loud
+// through ResolveProxy; `set` through SetProxy's own decode and key reads).
 func applyProxyState(c *Config) error {
 	pair, err := ResolveProxy()
 	if err != nil {

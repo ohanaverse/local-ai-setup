@@ -90,12 +90,12 @@ Exit codes:
 			}
 			// A pair the legacy [litellm] fallback supplied prints the one
 			// fallback note before anything listens (ruling 7): the fallback
-			// is read-only now, and the note names the writer.
-			pair, err := config.ResolveProxy()
-			if err != nil {
-				return err
-			}
-			if pair.Source == config.ProxySourceLegacy {
+			// is read-only now, and the note names the writer. The source is
+			// the one from the load above (cfg.ProxySource) — the pair being
+			// forwarded and the pair judged for the note are the same
+			// resolution, never two that could disagree (fix round 2,
+			// Finding 4).
+			if cfg.ProxySource() == config.ProxySourceLegacy {
 				fmt.Fprintln(cmd.ErrOrStderr(), config.ProxyFallbackNote())
 			}
 			srv, err := modelserver.NewServer(modelserver.Options{

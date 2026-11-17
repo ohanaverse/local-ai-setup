@@ -22,12 +22,19 @@ const (
 
 // Error is a token file failure. Only a KindLoose error carries a complete
 // sentence with its way out; the other kinds carry the path and the OS
-// reason, and each caller adds its own way out.
+// reason, and each caller adds its own way out. Err keeps the underlying OS
+// error, so errors.Is can tell a genuinely missing file (os.ErrNotExist —
+// which every reader maps to "no key") from any other failure to inspect the
+// file (EACCES, ENOTDIR, …), which must never read as absence.
 type Error struct {
 	Path   string
 	Kind   Kind
 	Detail string // the OS reason, or the mode for KindLoose
+	Err    error  // the underlying OS error, when the failure came from one
 }
+
+// Unwrap exposes Err to errors.Is/errors.As.
+func (e *Error) Unwrap() error { return e.Err }
 
 func (e *Error) Error() string {
 	switch e.Kind {
@@ -55,14 +62,14 @@ func reason(err error) string {
 func Load(path string) (string, error) {
 	st, err := os.Stat(path)
 	if err != nil {
-		return "", &Error{Path: path, Kind: KindStat, Detail: reason(err)}
+		return "", &Error{Path: path, Kind: KindStat, Detail: reason(err), Err: err}
 	}
 	if st.Mode().Perm()&0o077 != 0 {
 		return "", &Error{Path: path, Kind: KindLoose, Detail: fmt.Sprintf("%04o", st.Mode().Perm())}
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", &Error{Path: path, Kind: KindRead, Detail: reason(err)}
+		return "", &Error{Path: path, Kind: KindRead, Detail: reason(err), Err: err}
 	}
 	tok := strings.TrimSpace(string(raw))
 	if tok == "" {
