@@ -104,9 +104,10 @@ All `wt config` settings live in `~/.config/agent-wt/` (or
 > **The model server and LiteLLM are not `wt config` settings.** Every
 > session reaches its models through the model server named by the
 > hand-edited `[model-server]` table in `config.toml` (`url`, `token_file`;
-> [`wt-session.md`](wt-session.md)). The `[litellm]` table holds the proxy's
-> url and key, which the model server reads; `wt litellm status` / `set`
-> show and change them. Its `enabled` key is retired and ignored (one note
+> [`wt-session.md`](wt-session.md)). The proxy's url and key live in the
+> `wt-model` config home (`~/.config/wt-model/`), which the model server
+> reads; `wt-model litellm status` / `wt-model litellm set` show and change
+> them (the `[litellm]` table here is their read-only fallback). Its `enabled` key is retired and ignored (one note
 > per process when it is `true`) and `wt litellm on` / `off` are retired
 > stubs that exit 1. The editor saves only the agents and `default_tag`, and
 > keeps both tables as they are.

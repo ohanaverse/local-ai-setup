@@ -150,17 +150,18 @@ func (c loadErrorCase) check(t *testing.T, got, prefix, hintFmt, suffix, registr
 	}
 }
 
-// TestLitellmLoadErrorNamesTheRepairThatWorks runs `wt litellm sync` and
-// `wt litellm status` (the cfgGuard path `set` shares) in a
-// home broken each way wt's configuration can fail to load, and pins the
-// repair the refusal names. Both used to end every such refusal with "run
-// `wt config` to repair": for a missing registry that contradicted the
-// `wt model init` the same line already named, and for a registry link that
-// leads nowhere it sent the user to an editor that cannot touch the link
-// (#291). Only a config.toml problem is `wt config`'s to repair.
+// TestLitellmLoadErrorNamesTheRepairThatWorks runs `wt litellm sync` — the
+// remaining load-gated litellm command (`status`/`set` reach only the proxy
+// pair and fail, if at all, on their own config files) — in a home broken
+// each way wt's configuration can fail to load, and pins the repair the
+// refusal names. Such refusals used to end with "run `wt config` to repair":
+// for a missing registry that contradicted the `wt model init` the same line
+// already named, and for a registry link that leads nowhere it sent the user
+// to an editor that cannot touch the link (#291). Only a config.toml problem
+// is `wt config`'s to repair.
 func TestLitellmLoadErrorNamesTheRepairThatWorks(t *testing.T) {
 	for _, c := range loadErrorCases() {
-		for _, args := range [][]string{{"litellm", "sync"}, {"litellm", "status"}, {"litellm", "set", "--url", "http://x"}} {
+		for _, args := range [][]string{{"litellm", "sync"}} {
 			t.Run(c.name+"/"+strings.Join(args, " "), func(t *testing.T) {
 				registry, _ := brokenHome(t, c)
 				root := rootCmdWith(testHooks())

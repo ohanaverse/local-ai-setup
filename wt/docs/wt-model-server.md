@@ -3,9 +3,11 @@
 The model server: a second binary, built beside `wt`, that holds the model
 side of wt (the registry, the live inventory of local models, start and stop,
 the LiteLLM routes) and serves it over HTTP, so an agent session that runs
-somewhere else needs no registry of its own. It has one command, `wt-model
-serve`. (This page is the server. `wt model`, with a space, is the registry
-command: [wt-model.md](wt-model.md).)
+somewhere else needs no registry of its own. It has `wt-model serve` and
+`wt-model litellm set|status`, the commands for the proxy pair the gateway
+forwards with ([Proxy url and key](#proxy-url-and-key)). (This page is the
+server. `wt model`, with a space, is the registry command:
+[wt-model.md](wt-model.md).)
 
 ```bash
 wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/agent-wt/model-server.token   # loopback, same machine
@@ -19,7 +21,7 @@ One port carries two surfaces:
 - the control API under `/control/v1/`, which lists the models and starts and
   stops local ones for a client;
 - the gateway under `/v1/`, a streaming reverse proxy to the LiteLLM proxy
-  that `wt litellm set --url URL --api-key KEY` configured. It swaps the
+  that `wt-model litellm set --url URL --api-key KEY` configured. It swaps the
   client's token for the LiteLLM key, so that key and every provider key stay
   on the host, and it serves only the inference paths (see
   [Endpoints](#endpoints)).
@@ -58,8 +60,8 @@ or reach it through a tunnel.
 
 A failure prints one line on stderr, `wt-model: <message>`, with the way out
 last, for example `wt-model: token file PATH is accessible by group or other
-(mode 0644); run 'chmod 600 PATH'`. An unconfigured proxy names `wt litellm
-set --url URL --api-key KEY`.
+(mode 0644); run 'chmod 600 PATH'`. An unconfigured proxy names
+`wt-model litellm set --url URL --api-key KEY`.
 
 ## The token file
 
@@ -87,6 +89,53 @@ A client sends the token as `Authorization: Bearer TOKEN`. The gateway also
 accepts it as `x-api-key: TOKEN`; when an `Authorization: Bearer` header is
 present it is the only credential checked, so a wrong one is refused even
 beside a correct `x-api-key`.
+
+## Proxy url and key
+
+The pair the gateway forwards to LiteLLM with lives in the `wt-model` config
+home: `~/.config/wt-model/config.toml` holds the url and a `key_file`
+pointer under `[litellm]`, and the api key itself is in the 0600 file that
+names (`litellm.key` when `key_file` is absent). The setup command is
+`wt-model litellm set --url URL --api-key KEY` (its `wt litellm set` twin
+writes the same home), and `wt-model litellm status` shows the pair as every
+reader resolves it — the key is never printed, only masked.
+
+- The key file's mode must be `0600` or stricter (no group or other bits).
+  A looser mode is refused with `chmod 600 PATH`.
+- A home that cannot be read (a loose or unreadable key file, a `config.toml`
+  that does not parse, a dangling link) is never replaced by the legacy pair.
+  Only what uses the pair refuses on it: `wt-model serve` at startup,
+  `litellm status|set`, and `wt litellm restart` and the slot-profile proxy
+  checks. Every other command, and every session, runs as usual.
+- The key is the file's content with surrounding whitespace trimmed. A
+  missing or empty key file is no key at all, and `--api-key ""` clears the
+  value without deleting the file. wt never deletes the file.
+- Create one that nobody else can read (the hand way, beside the setup
+  command):
+
+  ```bash
+  mkdir -p ~/.config/wt-model
+  umask 077; printf %s "$LITELLM_KEY" > ~/.config/wt-model/litellm.key
+  ```
+- The pair is read once, at startup: a running server keeps the pair it
+  started with; restart it after `wt-model litellm set`.
+- A home `config.toml` with no `[litellm]` table falls back to the legacy
+  `[litellm]` table of wt's `~/.config/agent-wt/config.toml` — read-only,
+  nothing writes it again. A `wt-model` run that resolves the pair there
+  (`wt-model serve` or `wt-model litellm status`) prints one note on
+  stderr (illustrative — the path is machine-specific):
+
+  ```text
+  wt-model: note: config.toml: [litellm] is a read-only fallback — 'wt-model litellm set' writes /Users/keith/.config/wt-model/config.toml now
+  ```
+- While the legacy table holds the pair, the first set (the one that creates
+  the home's `[litellm]` table) needs both `--url` and `--api-key`. Nothing
+  is copied from the legacy table, so a first set with one flag would leave
+  the other unset; it is refused and writes nothing.
+
+Both commands answer `0` done and `1` any failure. A set that wrote the pair
+prints `litellm: updated`; a set with no flag is refused with `nothing to
+set: pass --url and/or --api-key`.
 
 ## Endpoints
 

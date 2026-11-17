@@ -1,5 +1,5 @@
 {
-  "_comment": "Fixture for the shapes `wt litellm ... --json` prints. Read by wt/cmd/wt-session/litellm_test.go.",
+  "_comment": "Fixture for the shapes `wt litellm ... --json` prints. Read by wt/cmd/wt-session/litellm_test.go and wt/cmd/wt-model/litellm_test.go.",
   "list": {
     "routed": ["ollama/gemma:9b", "openrouter/x/y"],
     "rows": [

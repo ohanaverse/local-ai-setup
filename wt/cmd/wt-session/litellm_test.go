@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -341,17 +343,17 @@ func TestLitellmSyncNoWarningForUnprobedProvider(t *testing.T) {
 }
 
 // TestLitellmStatusAndSet pins the proxy url/key functions the host keeps:
-// `set` updates url/key, and status never prints the key (only api_key_set)
-// nor the retired enabled.
+// `set` updates url/key in the wt-model home, and status never prints the key
+// (only api_key_set) nor the retired enabled.
 func TestLitellmStatusAndSet(t *testing.T) {
-	cfg, _ := litellmStateEnv(t)
-	var out bytes.Buffer
+	litellmStateEnv(t)
+	var out, errOut bytes.Buffer
 	u, k := "http://localhost:4000", "sk-123456"
-	if err := runLitellmSet(&out, cfg, &u, &k); err != nil {
+	if err := runLitellmSet(&out, &u, &k); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := runLitellmStatus(&out, cfg, true); err != nil {
+	if err := runLitellmStatus(&out, &errOut, true); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "sk-123456") {
@@ -366,36 +368,48 @@ func TestLitellmStatusAndSet(t *testing.T) {
 	}
 }
 
-// litellmStateEnv returns a loaded config in a fresh temp XDG dir (empty
-// registry) plus the path of the config.toml that UpdateLitellm writes.
-func litellmStateEnv(t *testing.T) (*config.Config, string) {
+// litellmStateEnv is a scratch config home (empty registry) for the
+// proxy-pair commands, and returns the legacy config.toml path — the
+// read-only [litellm] fallback. The commands under test read and write the
+// proxy pair alone (the wt-model home), so nothing here loads wt's own
+// config.
+func litellmStateEnv(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
 	writeEmptyRegistry(t, home)
-	cfg, err := config.Load()
+	return filepath.Join(home, ".config", "agent-wt", "config.toml")
+}
+
+// resolveProxy is the proxy pair as every reader resolves it (ResolveProxy),
+// so these tests assert persistence the way production sees it.
+func resolveProxy(t *testing.T) config.ProxyPair {
+	t.Helper()
+	pair, err := config.ResolveProxy()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return cfg, filepath.Join(home, ".config", "agent-wt", "config.toml")
+	return pair
 }
 
 // TestLitellmStatusTextMasksKey pins that text-mode status shows only
 // `***last4` for a normal key and NEVER reveals a key of 4 or fewer chars
-// (last-4 of a short key would print the whole secret).
-// The short-key case is RED against the brief's implementation; the long-key
-// case is existing behavior.
+// (last-4 of a short key would print the whole secret), and that a home pair
+// prints nothing on stderr (the fallback note is only for a legacy pair).
 func TestLitellmStatusTextMasksKey(t *testing.T) {
-	cfg, _ := litellmStateEnv(t)
+	litellmStateEnv(t)
 	u := "http://localhost:4000"
 	for _, tc := range []struct{ key, want string }{{"sk-abcdef1234", "***1234"}, {"abcd", "***"}, {"ab", "***"}} {
 		k := tc.key
-		if err := runLitellmSet(&bytes.Buffer{}, cfg, &u, &k); err != nil {
+		if err := runLitellmSet(&bytes.Buffer{}, &u, &k); err != nil {
 			t.Fatal(err)
 		}
-		var out bytes.Buffer
-		if err := runLitellmStatus(&out, cfg, false); err != nil {
+		var out, errOut bytes.Buffer
+		if err := runLitellmStatus(&out, &errOut, false); err != nil {
 			t.Fatal(err)
+		}
+		if errOut.Len() != 0 {
+			t.Errorf("key %q: stderr = %q, want none for a home pair", tc.key, errOut.String())
 		}
 		if !strings.Contains(out.String(), "api_key: "+tc.want+"\n") {
 			t.Errorf("key %q: status = %q, want api_key: %s", tc.key, out.String(), tc.want)
@@ -411,47 +425,102 @@ func TestLitellmStatusTextMasksKey(t *testing.T) {
 	}
 }
 
-// TestLitellmSetIndependentAndClear pins that `set` updates url and key
-// independently (a flag left unset never clobbers the other field), that an
-// explicit empty --api-key clears the key, and that persisting works: the
-// state survives a reload from disk and config.toml is 0600 while a key is
-// stored. Existing behavior; expected to pass immediately.
+// TestLitellmSetIndependentAndClear pins `set`'s Changed semantics (C4) and
+// where the pair lives now: a one-flag first set over a legacy pair is refused
+// (it would drop the other field), then a flag left out never clobbers the other field,
+// --api-key "" clears the key without deleting the key file, and every change
+// lands in the wt-model home — the url in its config.toml (never the key),
+// the key verbatim in the 0600 file its key_file names — where ResolveProxy,
+// and so every reader, sees it. The legacy [litellm] table of config.toml is
+// read-only now and its bytes are never touched.
 func TestLitellmSetIndependentAndClear(t *testing.T) {
-	cfg, path := litellmStateEnv(t)
+	legacyPath := litellmLegacyHome(t, false)
+	legacyBefore, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	u, k := "http://localhost:4000", "sk-secret"
-	if err := runLitellmSet(&bytes.Buffer{}, cfg, &u, nil); err != nil {
+	// While the legacy table holds the pair, a one-flag first set would drop
+	// the other field (sources never mix), so it is refused, writing nothing.
+	if err := runLitellmSet(&bytes.Buffer{}, &u, nil); err == nil || !strings.Contains(err.Error(), "the first set needs both --url and --api-key") {
+		t.Fatalf("url-only first set = %v, want the first-set refusal", err)
+	}
+	if _, err := os.Lstat(config.ProxyHomePath()); !os.IsNotExist(err) {
+		t.Fatalf("home config.toml exists after the refused first set: %v", err)
+	}
+	first := "sk-first"
+	if err := runLitellmSet(&bytes.Buffer{}, &u, &first); err != nil {
 		t.Fatal(err)
 	}
-	if err := runLitellmSet(&bytes.Buffer{}, cfg, nil, &k); err != nil {
+	if pair := resolveProxy(t); pair.URL != u || pair.APIKey != first || pair.Source != config.ProxySourceHome {
+		t.Fatalf("after the first set: %+v, want the home pair", pair)
+	}
+	if err := runLitellmSet(&bytes.Buffer{}, nil, &k); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.LitellmBaseURL() != u || cfg.LitellmAPIKey() != k {
-		t.Fatalf("after url-only then key-only: url=%q key=%q", cfg.LitellmBaseURL(), cfg.LitellmAPIKey())
+	if pair := resolveProxy(t); pair.URL != u || pair.APIKey != k {
+		t.Fatalf("key-only set clobbered the url or the key did not land: %+v", pair)
 	}
 	u2 := "http://other:4000"
-	if err := runLitellmSet(&bytes.Buffer{}, cfg, &u2, nil); err != nil || cfg.LitellmAPIKey() != k {
-		t.Fatalf("url-only changed the key: err=%v key=%q", err, cfg.LitellmAPIKey())
+	if err := runLitellmSet(&bytes.Buffer{}, &u2, nil); err != nil {
+		t.Fatal(err)
 	}
-	fi, err := os.Stat(path)
+	if pair := resolveProxy(t); pair.URL != u2 || pair.APIKey != k {
+		t.Fatalf("url-only set clobbered the key: %+v", pair)
+	}
+
+	// The home's files: the url in its config.toml and the key verbatim in
+	// the 0600 file its key_file names — the key itself never enters a TOML.
+	home := config.ProxyHomePath()
+	raw, err := os.ReadFile(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Litellm struct {
+			URL     string `toml:"url"`
+			KeyFile string `toml:"key_file"`
+		} `toml:"litellm"`
+	}
+	if _, err := toml.Decode(string(raw), &doc); err != nil {
+		t.Fatalf("home config.toml does not parse: %v\n%s", err, raw)
+	}
+	if doc.Litellm.URL != u2 || doc.Litellm.KeyFile != "litellm.key" {
+		t.Errorf("home [litellm] = %+v, want url %q and key_file \"litellm.key\"", doc.Litellm, u2)
+	}
+	if strings.Contains(string(raw), k) {
+		t.Errorf("the api key leaked into config.toml:\n%s", raw)
+	}
+	keyPath := filepath.Join(filepath.Dir(home), "litellm.key")
+	fi, err := os.Stat(keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fi.Mode().Perm() != 0o600 {
-		t.Errorf("config.toml mode = %v, want 0600 with a stored key", fi.Mode().Perm())
+		t.Errorf("litellm.key mode = %v, want 0600", fi.Mode().Perm())
 	}
-	reloaded, err := config.Load()
+	if b, err := os.ReadFile(keyPath); err != nil || string(b) != k {
+		t.Errorf("litellm.key = %q (%v), want the key verbatim", b, err)
+	}
+
+	empty := ""
+	if err := runLitellmSet(&bytes.Buffer{}, nil, &empty); err != nil {
+		t.Fatal(err)
+	}
+	if pair := resolveProxy(t); pair.URL != u2 || pair.APIKey != "" {
+		t.Fatalf("--api-key \"\" did not clear (or clobbered the url): %+v", pair)
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Errorf("clearing the key deleted the key file: %v", err)
+	}
+
+	// The legacy table is never written.
+	legacyAfter, err := os.ReadFile(legacyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.LitellmBaseURL() != u2 || reloaded.LitellmAPIKey() != k {
-		t.Errorf("state did not persist: url=%q key=%q", reloaded.LitellmBaseURL(), reloaded.LitellmAPIKey())
-	}
-	empty := ""
-	if err := runLitellmSet(&bytes.Buffer{}, cfg, nil, &empty); err != nil || cfg.LitellmAPIKey() != "" {
-		t.Fatalf("--api-key \"\" did not clear: err=%v key=%q", err, cfg.LitellmAPIKey())
-	}
-	if cfg.LitellmBaseURL() != u2 {
-		t.Errorf("clearing the key changed the url: %q", cfg.LitellmBaseURL())
+	if !bytes.Equal(legacyAfter, legacyBefore) {
+		t.Errorf("set rewrote the legacy config.toml:\n%s", legacyAfter)
 	}
 }
 
@@ -490,28 +559,95 @@ func TestLitellmRemovedExposeCommandsFailAndPointToSync(t *testing.T) {
 	}
 }
 
-// TestLitellmStateCommandsRefuseOnConfigError pins that status/set/sync
-// refuse when the config failed to LOAD (a.loadErr; a default cfg would
-// overwrite the user's config.toml on Save) and write nothing, and that
-// `set` with no flags is a usage error that changes nothing. Guard existed in
-// the brief's registration; expected to pass immediately.
-func TestLitellmStateCommandsRefuseOnConfigError(t *testing.T) {
-	cfg, path := litellmStateEnv(t)
-	for _, args := range [][]string{{"status"}, {"set", "--url", "http://x"}, {"sync"}} {
-		if err := execLitellm(&app{hostSet: true, hostCfg: cfg, hostCfgErr: errors.New("bad toml"), hostLoadErr: errors.New("bad toml")}, args...); err == nil || !strings.Contains(err.Error(), "config error: bad toml") {
-			t.Fatalf("%v: err = %v, want config error refusal", args, err)
+// TestLitellmStateCommandsFailOnAnUnreadableProxyConfig pins ruling 8: `set`
+// is gateless (the escape hatch when a config file is broken) and `status` is
+// loud, each failing only on the files its own resolution needs. status fails
+// on an unparseable wt-model home always, and on an unparseable legacy
+// config.toml only when the home holds no [litellm] table — behind a home
+// pair the legacy file is never read. set writes the home over a broken
+// legacy file and refuses only when the home itself will not parse (never
+// merging onto a document wt cannot read). `set` with no flags stays the one
+// usage error and writes nothing. Every failure is one `wt:` line and exit 1
+// (M3/C9); `sync`'s load-error refusal is pinned by
+// TestLitellmLoadErrorNamesTheRepairThatWorks.
+func TestLitellmStateCommandsFailOnAnUnreadableProxyConfig(t *testing.T) {
+	const garbage = "this is [not toml\n"
+	// newHome is a scratch home (empty registry) plus the two paths the
+	// resolution reads: the legacy config.toml and the wt-model home's
+	// config.toml.
+	newHome := func(t *testing.T) (legacyPath, homePath string) {
+		t.Helper()
+		dir := t.TempDir()
+		writeEmptyRegistry(t, dir)
+		return filepath.Join(dir, ".config", "agent-wt", "config.toml"), config.ProxyHomePath()
+	}
+	write := func(t *testing.T, path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if _, err := os.Stat(path); err == nil {
-		t.Error("refused commands wrote config.toml")
-	}
-	// No-flag `set` on a healthy config is an error and leaves state alone.
-	if err := execLitellm(&app{hostSet: true, hostCfg: cfg}, "set"); err == nil || !strings.Contains(err.Error(), "nothing to set") {
-		t.Fatalf("set with no flags: err = %v", err)
-	}
-	if _, err := os.Stat(path); err == nil {
-		t.Error("no-flag set wrote config.toml")
-	}
+	t.Run("status fails on an unparseable home", func(t *testing.T) {
+		_, homePath := newHome(t)
+		write(t, homePath, garbage)
+		out, code := runRoot(t, "litellm", "status")
+		if code != 1 || len(wtLines(out)) != 1 || !strings.Contains(out, homePath) {
+			t.Errorf("exit %d, output %q; want 1 and one error line naming %s", code, out, homePath)
+		}
+	})
+	t.Run("status fails on an unparseable legacy without a home table", func(t *testing.T) {
+		legacyPath, _ := newHome(t)
+		write(t, legacyPath, garbage)
+		out, code := runRoot(t, "litellm", "status")
+		if code != 1 || len(wtLines(out)) != 1 || !strings.Contains(out, "parse") {
+			t.Errorf("exit %d, output %q; want 1 and one parse-error line", code, out)
+		}
+	})
+	t.Run("status reads the home pair past an unparseable legacy", func(t *testing.T) {
+		legacyPath, homePath := newHome(t)
+		write(t, legacyPath, garbage)
+		write(t, homePath, "[litellm]\nurl = \"http://localhost:4000\"\nkey_file = \"litellm.key\"\n")
+		write(t, filepath.Join(filepath.Dir(homePath), "litellm.key"), "sk-home1234")
+		out, code := runRoot(t, "litellm", "status")
+		if code != 0 || !strings.Contains(out, "url: http://localhost:4000") || !strings.Contains(out, "api_key: ***1234") {
+			t.Errorf("exit %d, output %q; want 0 and the home pair's status block", code, out)
+		}
+	})
+	t.Run("set writes the home over an unparseable legacy", func(t *testing.T) {
+		legacyPath, _ := newHome(t)
+		write(t, legacyPath, garbage)
+		out, code := runRoot(t, "litellm", "set", "--url", "http://x:4000", "--api-key", "sk-new1234")
+		if code != 0 || strings.TrimSpace(out) != "litellm: updated" {
+			t.Errorf("exit %d, output %q; want 0 and the one success line", code, out)
+		}
+		if pair := resolveProxy(t); pair.URL != "http://x:4000" || pair.APIKey != "sk-new1234" || pair.Source != config.ProxySourceHome {
+			t.Fatalf("set did not leave the home pair: %+v", pair)
+		}
+	})
+	t.Run("set fails on an unparseable home and writes nothing", func(t *testing.T) {
+		_, homePath := newHome(t)
+		write(t, homePath, garbage)
+		out, code := runRoot(t, "litellm", "set", "--url", "http://x:4000")
+		if code != 1 || len(wtLines(out)) != 1 {
+			t.Errorf("exit %d, output %q; want 1 and one error line", code, out)
+		}
+		if b, _ := os.ReadFile(homePath); string(b) != garbage {
+			t.Errorf("set rewrote a home it could not parse:\n%s", b)
+		}
+	})
+	t.Run("set with no flags writes nothing", func(t *testing.T) {
+		_, homePath := newHome(t)
+		out, code := runRoot(t, "litellm", "set")
+		if code != 1 || !strings.Contains(out, "nothing to set: pass --url and/or --api-key") {
+			t.Errorf("exit %d, output %q; want 1 and the nothing-to-set message", code, out)
+		}
+		if _, err := os.Stat(filepath.Dir(homePath)); !os.IsNotExist(err) {
+			t.Errorf("no-flag set wrote the config home (%v)", err)
+		}
+	})
 }
 
 // validationOnlyApp builds an app via newApp() in a temp XDG dir whose registry
@@ -533,15 +669,15 @@ func validationOnlyApp(t *testing.T) (*app, string) {
 	return a, filepath.Join(filepath.Dir(filepath.Dir(registry)), "agent-wt", "config.toml")
 }
 
-// TestLitellmRoutingCommandsWorkOnValidationOnlyError pins that
-// status/set depend only on wt's own [litellm] state, not on registry
+// TestLitellmRoutingCommandsWorkOnValidationOnlyError pins that status/set
+// depend only on the proxy pair (the wt-model home), not on registry
 // validity: a model referencing an unknown provider (cfgErr set, loadErr nil)
 // must not lock the user out of the only routing control surface, and the
-// change must persist. (sync is covered by
-// TestLitellmSyncWorksOnValidationOnlyError.)
+// change must persist where every reader resolves it (ResolveProxy). (sync is
+// covered by TestLitellmSyncWorksOnValidationOnlyError.)
 func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 	litellmEnv(t, "model_list: []\n")
-	a, path := validationOnlyApp(t)
+	a, _ := validationOnlyApp(t)
 	if a.hostConfigErr() == nil || hostLoadErrOf(a) != nil {
 		t.Fatalf("fixture: cfgErr=%v loadErr=%v, want validation-only error", a.hostConfigErr(), hostLoadErrOf(a))
 	}
@@ -550,11 +686,8 @@ func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 			t.Fatalf("%v refused on validation-only error: %v", args, err)
 		}
 	}
-	if hostCfgOf(a).LitellmAPIKey() != "sk-abcdef" {
-		t.Fatalf("state not applied: %+v", hostCfgOf(a).LitellmTable)
-	}
-	if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), "sk-abcdef") {
-		t.Fatalf("state not persisted (err %v):\n%s", err, b)
+	if pair := resolveProxy(t); pair.URL != "http://localhost:4000" || pair.APIKey != "sk-abcdef" || pair.Source != config.ProxySourceHome {
+		t.Fatalf("state not persisted where every reader resolves it: %+v", pair)
 	}
 }
 
@@ -2047,15 +2180,12 @@ func TestLitellmOnOffAreRetired(t *testing.T) {
 // its JSON is exactly {url, api_key_set} (the fixture's status member, which
 // lost enabled), the text names no on/off mode, and the key itself is never
 // printed. enabled no longer decides anything, so reporting it would tell a
-// script that routing could be switched off.
+// script that routing could be switched off. A pair the legacy [litellm]
+// fallback supplies prints the one note on stderr (ruling 7), never on stdout.
 func TestLitellmStatusHasNoEnabledKey(t *testing.T) {
 	litellmLegacyHome(t, true)
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	if err := runLitellmStatus(&out, cfg, true); err != nil {
+	var out, errOut bytes.Buffer
+	if err := runLitellmStatus(&out, &errOut, true); err != nil {
 		t.Fatal(err)
 	}
 	var got map[string]any
@@ -2077,11 +2207,15 @@ func TestLitellmStatusHasNoEnabledKey(t *testing.T) {
 		t.Errorf("status keys = %v, fixture = %v", gotKeys, wantKeys)
 	}
 	out.Reset()
-	if err := runLitellmStatus(&out, cfg, false); err != nil {
+	errOut.Reset()
+	if err := runLitellmStatus(&out, &errOut, false); err != nil {
 		t.Fatal(err)
 	}
 	if s := out.String(); strings.Contains(s, "litellm: on") || strings.Contains(s, "litellm: off") || strings.Contains(s, "sk-host1234") || !strings.Contains(s, "url: http://localhost:4000") {
 		t.Errorf("status text = %q, want the url, no mode and no key", s)
+	}
+	if want := config.ProxyFallbackNote() + "\n"; errOut.String() != want {
+		t.Errorf("stderr = %q, want the one fallback note %q", errOut.String(), want)
 	}
 }
 

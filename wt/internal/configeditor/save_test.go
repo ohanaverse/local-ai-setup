@@ -167,11 +167,11 @@ func TestSave_ConcurrentRequests_Deduplicated(t *testing.T) {
 }
 
 // TestSave_PreservesConcurrentLitellmChange reproduces issue #143: the
-// editor loads a Config with no [litellm], a concurrent `wt litellm set`
-// changes it on disk, and then the editor saves its own (agent) edit. A
-// whole-file save of the editor's stale snapshot would revert the
-// concurrent [litellm] change; this pins that the editor's save preserves
-// it instead.
+// editor loads a Config with no [litellm], a concurrent writer changes it on
+// disk, and then the editor saves its own (agent) edit. A whole-file save of
+// the editor's stale snapshot would revert the concurrent [litellm] change;
+// this pins that the editor's save preserves it instead — the table is host
+// state (`wt-model serve` reads it) no session save path may drop.
 func TestSave_PreservesConcurrentLitellmChange(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
@@ -204,13 +204,14 @@ models = []
 	m.cfg.Agents = append(m.cfg.Agents, config.Agent{Name: "claude", SupportedProviders: []string{"ollama"}})
 	m.dirty = true
 
-	// Concurrently, `wt litellm set` persists a change from its own load.
+	// Concurrently a host-side write updates the [litellm] table from its own
+	// load (the table is host state wt's save paths leave alone).
 	writerCfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writerCfg.UpdateLitellm(func(s *config.LitellmState) {
-		s.Enabled, s.URL, s.APIKey = true, "http://localhost:4000", "sk-concurrent"
+	if err := writerCfg.PatchSave(func(fresh *config.Config) {
+		fresh.LitellmTable = &config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-concurrent"}
 	}); err != nil {
 		t.Fatal(err)
 	}

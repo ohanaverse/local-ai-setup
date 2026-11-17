@@ -497,7 +497,7 @@ directory is gone; that is expected. Each thing it did:
 | `benchmark …`, `provider …` | `uv run --directory llmbench llmbench …`, `… llmbench provider …` |
 | `migrate`, `delete-family`, TUI `r` (download, delete), `l`, `s` | dropped — download with the provider's own tool (guide 02 Step 5); `wt start` and `wt stop` cover `l` and `s` (`wt litellm on\|off`, which covered routing, are retired stubs since 2026-11-15: every session routes through the model server) |
 
-**Where each command runs.** The table's registry commands are host commands: `wt model …`, `wt cloud-sync`, `wt litellm …`, `wt served`/`wt warm`, `wt stop <provider>`/`wt stop --all` and the Models tab of `wt config` read and write `registry.toml`, LiteLLM's `config.yaml` and `slot-profiles.toml` on the machine they run on — run them where `wt-model serve` runs ([13-deployment-use-cases](13-deployment-use-cases.md)). Everything else is a session command and runs anywhere a model server is configured under `[model-server]`: a launch, `wt start`/`wt stop <model>`, `wt job`, `wt smoke`, `wt model list --server`, `wt stats` and the cleanup commands ([wt-session.md](../../wt/docs/wt-session.md), "Host commands"). Interim limit: until the admin commands move to `wt-model` (the split's Phase 4) they still run in this same `wt` binary and the `[litellm]` url/key stays in the `config.toml` the session also reads (as a table it leaves alone) — recorded in [wt-session.md](../../wt/docs/wt-session.md) "Interim limits".
+**Where each command runs.** The table's registry commands are host commands: `wt model …`, `wt cloud-sync`, `wt litellm …`, `wt served`/`wt warm`, `wt stop <provider>`/`wt stop --all` and the Models tab of `wt config` read and write `registry.toml`, LiteLLM's `config.yaml` and `slot-profiles.toml` on the machine they run on — run them where `wt-model serve` runs ([13-deployment-use-cases](13-deployment-use-cases.md)). Everything else is a session command and runs anywhere a model server is configured under `[model-server]`: a launch, `wt start`/`wt stop <model>`, `wt job`, `wt smoke`, `wt model list --server`, `wt stats` and the cleanup commands ([wt-session.md](../../wt/docs/wt-session.md), "Host commands"). Interim limit: until the admin commands move to `wt-model` (the split's Phase 4) they still run in this same `wt` binary; the proxy url/key is the `~/.config/wt-model/` home's now (set with `wt-model litellm set --url URL --api-key KEY`), the `[litellm]` table of `config.toml` its read-only fallback — recorded in [wt-session.md](../../wt/docs/wt-session.md) "Interim limits".
 
 llmbench is not installed on `PATH`. Where wt prints a command that starts
 with `llmbench provider …` (the start hint of a stopped pairing, the text of
@@ -548,7 +548,7 @@ Before deleting anything, three checks:
 
 ```bash
 ls ~/.config/local-ai/registry.toml             # the model list wt uses
-wt litellm status                               # routing state wt holds in its own config.toml
+wt litellm status                               # the proxy url/key wt holds (the ~/.config/wt-model/ home)
 ls ~/.config/local-ai/benchmarks/latest.toml    # llmbench's latest-run pointers
 ```
 
@@ -565,18 +565,19 @@ ls ~/.config/local-ai/benchmarks/latest.toml    # llmbench's latest-run pointers
   2026-09-21, with a `config.toml` that had no `[litellm]` table. A machine
   with no `config.toml`, or one where wt has not run since that date, never
   got the copy, and wt no longer reads the old file. Until you restore it,
-  the model server (`wt-model serve`, which reads that table on its machine)
+  the model server (`wt-model serve`, which reads that pair on its machine)
   cannot reach the proxy. Take the URL and key from the `[litellm]` table of
-  `modelman.toml` and run `wt litellm set --url <url> --api-key <key>` on the
-  machine that runs the model server. It writes `config.toml` (mode 0600),
-  creating it if it does not exist; run `wt litellm status` again to see the
+  `modelman.toml` and run `wt-model litellm set --url URL --api-key KEY` on
+  the machine that runs the model server. It writes
+  `~/.config/wt-model/config.toml` and the 0600 `litellm.key` beside it,
+  creating them if they do not exist; run `wt litellm status` again to see the
   url and `api_key: ***` with the key's last four characters. There is no
   routing switch to turn on: every session routes through the model server
   ([wt-session.md](../../wt/docs/wt-session.md)), and `wt litellm on` is a
   retired stub that exits 1. If wt then stops with
   `config error: agent "agy": unknown provider "agy"`, run `wt model init`:
-  the restore created `config.toml`, and that command adds the provider row
-  it needs to `registry.toml`. The key is on the command
+  that command adds the provider row the ensured `agy` agent needs to
+  `registry.toml`. The key is on the command
   line, the only form wt offers, so it lands in your shell history: start
   the line with a space if your shell is set to skip such lines
   (`HISTCONTROL=ignorespace` in bash, `setopt HIST_IGNORE_SPACE` in zsh), or

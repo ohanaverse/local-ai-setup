@@ -432,7 +432,7 @@ func upsertAgent(cfg *Config, name string, providers []string, defaultProvider s
 // agents it changed, in the order given. An agent config.toml does not name
 // is skipped, never created. It is a locked read-modify-write of the file
 // as it is now (lockedApply), written only when something changed, so a
-// concurrent `wt config` or `wt litellm set` is not reverted.
+// concurrent `wt config` save is not reverted.
 //
 // `wt model add` calls it after the provider's registry row exists: an agent
 // naming a provider the registry lacks fails validation on the next Load.

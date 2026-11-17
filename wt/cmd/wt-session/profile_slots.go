@@ -14,23 +14,10 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
-
-// maskKey is how wt shows a secret (the LiteLLM proxy key, a client
-// session's model-server token): "(unset)" when empty, "***"
-// for a key of four characters or fewer (its last four would be the whole
-// secret), "***" plus the last four otherwise.
-func maskKey(key string) string {
-	switch {
-	case key == "":
-		return "(unset)"
-	case len(key) <= 4:
-		return "***"
-	}
-	return "***" + key[len(key)-4:]
-}
 
 // writeSlotProfileList prints the slot-profile section of `wt profile list`:
 // one line per profile of slot-profiles.toml, in file order, with its agent,
@@ -161,7 +148,7 @@ const showStill = "nothing was shown"
 // is resolved against the model server's catalog (one Catalog read,
 // catalog.ResolveSlotProfileWire), exactly as a launch of it would be, and the
 // preview of the command passes the slot build the gateway origin and the
-// client token masked (maskKey). The [litellm] url and key are host state a
+// client token masked (config.MaskKey). The [litellm] url and key are host state a
 // client session never reads (R4), so neither can appear in the output. A
 // server that does not answer fails the command (exit 1).
 func showSlotProfileRemote(ctx context.Context, w io.Writer, a *app, agent, id string) error {
@@ -191,5 +178,5 @@ func showSlotProfileRemote(ctx context.Context, w io.Writer, a *app, agent, id s
 		return errors.New(slotPrefixHeldReason(holder))
 	}
 	row := catalog.ResolveSlotProfileWire(catalog.WireByID(cat.Rows), *check)
-	return writeSlotProfileShow(w, agent, id, row, strings.TrimRight(ms.ep.Origin(), "/"), maskKey(ms.ep.Token))
+	return writeSlotProfileShow(w, agent, id, row, strings.TrimRight(ms.ep.Origin(), "/"), config.MaskKey(ms.ep.Token))
 }

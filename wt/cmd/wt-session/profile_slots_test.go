@@ -15,24 +15,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
-// TestMaskKey verifies the one rule wt shows the proxy key by: nothing of a
-// key of four characters or fewer, the last four of a longer one. `wt litellm
-// status` and `wt profile show` both use it; a second rule in either place
-// could print a short key whole.
-func TestMaskKey(t *testing.T) {
-	for _, tc := range []struct{ key, want string }{
-		{"", "(unset)"},
-		{"ab", "***"},
-		{"abcd", "***"},
-		{"abcde", "***bcde"},
-		{"sk-abcdef1234", "***1234"},
-	} {
-		if got := maskKey(tc.key); got != tc.want {
-			t.Errorf("maskKey(%q) = %q, want %q", tc.key, got, tc.want)
-		}
-	}
-}
-
 // runProfileCmd runs `wt profile <args>` on a and returns its stdout and its
 // error. cobra's own "Error:" line goes nowhere.
 func runProfileCmd(t *testing.T, a *app, args ...string) (string, error) {

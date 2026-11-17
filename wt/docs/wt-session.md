@@ -29,7 +29,7 @@ token_file = "~/.config/agent-wt/model-server.token"
 |---|---|
 | `url` | The server's address, as `wt-model serve`'s banner prints it. |
 | `token_file` | A file holding the server's bearer token, mode `0600` (a file group or other can read is refused). `~` is expanded. |
-| `token` | Not read. `config.toml` is not private, so a token here is a problem the session reports instead of using. |
+| `token` | Never used for auth. Its presence is not inert: while it is set a save writes `config.toml` 0600 (and never loosens an existing stricter mode), and a command that needs a model refuses with the inline-token problem (below) until the token moves into a `token_file`. |
 
 Make a token file once and give the server the same file
 (`--token-file`):
@@ -72,9 +72,7 @@ shown` (`wt profile show -M ...`).
 The other refusals of a configuration that cannot be used, each exit 1 with
 the same last clause:
 
-- An inline token: `[model-server] token is not read from config.toml, which
-  is not private — put the token in a file with mode 0600 and set
-  token_file`.
+- An inline token: `[model-server] token is not used for auth — while it is set wt writes config.toml 0600, and no save loosens an existing stricter mode — put the token in a file with mode 0600 and set token_file`.
 - A token file group or other can read: `token file PATH is accessible by
   group or other (mode MODE); run 'chmod 600 PATH'`, then `check token_file
   under [model-server] in config.toml` (or `check the file
@@ -178,10 +176,20 @@ default path there is nothing to protect.
 
 ## `[litellm]` on a session
 
-The `[litellm]` table in `config.toml` holds the proxy's `url` and
-`api_key`: host state `wt-model serve` reads to reach LiteLLM and `wt
-litellm set|status` manage. A session never reads them, and every save of
-`config.toml` keeps them as they are.
+The proxy's `url` and `api_key` live in the `wt-model` config home
+(`~/.config/wt-model/config.toml` and the 0600 file its `key_file` names):
+host state `wt-model serve` reads to reach LiteLLM, written by
+`wt-model litellm set --url URL --api-key KEY` and shown by
+`wt-model litellm status` (the `wt litellm set|status` twins read and write
+the same home). The `[litellm]` table in `config.toml` is a read-only
+fallback: consulted only when the home holds no `[litellm]` table, and never
+written again. A session never reads the pair, and every save of
+`config.toml` keeps the table as it is. A `wt litellm status` run that resolved the pair from the fallback prints
+one note (illustrative — the path is machine-specific):
+
+```
+wt: note: config.toml: [litellm] is a read-only fallback — 'wt litellm set' writes /Users/keith/.config/wt-model/config.toml now
+```
 
 Its `enabled` key is retired: every session routes through the model
 server, so nothing reads it. A `config.toml` with `enabled = true` prints,
@@ -206,8 +214,9 @@ start a server.
 - **Host commands still run here.** Until the admin commands move to
   `wt-model` (Phase 4), this binary still runs the host commands above,
   reading and writing `registry.toml` and `config.yaml` on whatever machine
-  runs them, and the `[litellm]` url and key stay in the `config.toml` the
-  session also reads (as a table it leaves alone). On a session-only machine
+  runs them, and the proxy url and key live in the `wt-model` config home of
+  whichever machine runs them (above; the `[litellm]` table of `config.toml`
+  is its read-only fallback). On a session-only machine
   they read that machine's files, not the server's.
 - **A killed wt cannot end its client session.** wt does not trap `SIGHUP`
   or `SIGTERM` sent to itself, so a terminal closed under a running agent, or

@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - **wt installed on every machine that needs it** — `make install` from the repo root (or `make -C wt install`): it builds `wt-session`, `wt` (the same binary under two names) and `wt-model`, and copies them and the `*-wt` shims to `~/.local/bin/`. The machine that runs the models needs all of them; a session machine needs `wt` / `wt-session` and the shims only.
-- **The LiteLLM proxy configured on the model host** — `wt litellm set --url <url> --api-key <key>` there ([04-litellm-config](04-litellm-config.md)). `wt-model serve` reads that pair and refuses to start without it. A session never reads it.
+- **The LiteLLM proxy configured on the model host** — `wt-model litellm set --url URL --api-key KEY` there ([04-litellm-config](04-litellm-config.md)). `wt-model serve` reads that pair and refuses to start without it. A session never reads it.
 
 ## TL;DR — both on one machine
 
@@ -74,7 +74,7 @@ url = "http://<host>:8787"
 token_file = "~/.config/agent-wt/model-server.token"
 ```
 
-The host keeps its own `[model-server]` (use case 1) or none: a host command (`wt model add`, `wt cloud-sync`, `wt litellm …`) needs no server.
+The host keeps its own `[model-server]` (use case 1) or none: a host command (`wt model add`, `wt cloud-sync`, `wt litellm …`, `wt-model litellm set|status`) needs no server.
 
 ### 4. Use case 3 — two machines
 

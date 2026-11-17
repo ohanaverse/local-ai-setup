@@ -134,9 +134,10 @@ const proxyProbeTimeout = 5 * time.Second
 // attempt (lastRestart), nil included: a restart that worked clears an
 // earlier failure, and one that failed fails the next ProbeProxy.
 //
-// An empty [litellm] url is an error wrapping errProxyUnconfigured,
-// returned before anything is restarted: there is no address to wait for.
-// That is no restart attempt, so it is not remembered.
+// An empty [litellm] url is an error wrapping errProxyUnconfigured, and a
+// pair the load could not resolve (cfg.ProxyErr) an error wrapping that,
+// both returned before anything is restarted: there is no address to wait
+// for. That is no restart attempt, so it is not remembered.
 func RestartProxy(ctx context.Context, cfg *config.Config) error {
 	return RestartProxyTo(ctx, nil, cfg)
 }
@@ -149,6 +150,9 @@ func RestartProxy(ctx context.Context, cfg *config.Config) error {
 // the request was cut off at that bound. Neither is an error: the second
 // reports a restart that was made, and the readiness wait still follows it.
 func RestartProxyTo(ctx context.Context, out io.Writer, cfg *config.Config) (err error) {
+	if perr := cfg.ProxyErr(); perr != nil {
+		return fmt.Errorf("the LiteLLM proxy was not restarted: %w", perr)
+	}
 	url := cfg.LitellmBaseURL()
 	if url == "" {
 		return fmt.Errorf("the LiteLLM proxy was not restarted: %w", errProxyUnconfigured)
@@ -202,6 +206,7 @@ func restartFailure(warnings []string) error {
 // ProbeProxy is the last check before a slot-profile launch hands the proxy
 // to an agent. It fails in three ways:
 //
+//   - A pair the load could not resolve (cfg.ProxyErr): an error wrapping it.
 //   - An empty [litellm] url: an error wrapping errProxyUnconfigured.
 //   - The most recent proxy restart this process attempted failed (its
 //     command failed, or the proxy did not answer afterwards), whether it was
@@ -221,6 +226,9 @@ func restartFailure(warnings []string) error {
 // It does not wait for a restart still in flight, whose outcome is not
 // recorded until it finishes: the caller calls WaitPendingRoutes first.
 func ProbeProxy(ctx context.Context, cfg *config.Config) error {
+	if perr := cfg.ProxyErr(); perr != nil {
+		return fmt.Errorf("the LiteLLM proxy cannot be probed: %w", perr)
+	}
 	url := cfg.LitellmBaseURL()
 	if url == "" {
 		return fmt.Errorf("the LiteLLM proxy cannot be probed: %w", errProxyUnconfigured)

@@ -179,11 +179,11 @@ token_file = "/t"
 	}
 }
 
-// TestInlineTokenIsAProblem proves an inline token is reported (it is never
-// read) and a clean table reports none.
+// TestInlineTokenIsAProblem proves an inline token is reported (it is not
+// used for auth) and a clean table reports none.
 func TestInlineTokenIsAProblem(t *testing.T) {
 	got := ModelServerState{URL: "u", TokenFile: "f", Token: "secret"}.Problems()
-	want := "[model-server] token is not read from config.toml, which is not private — put the token in a file with mode 0600 and set token_file"
+	want := "[model-server] token is not used for auth — while it is set wt writes config.toml 0600, and no save loosens an existing stricter mode — put the token in a file with mode 0600 and set token_file"
 	if len(got) != 1 || got[0] != want {
 		t.Errorf("problems = %q", got)
 	}
@@ -209,13 +209,13 @@ func TestIgnoredLitellmKeys(t *testing.T) {
 }
 
 // TestLegacyLitellmKeysSurviveASave pins R4 across the flip: the [litellm]
-// table is host state (`wt-model serve` reads its url and api_key, `wt
-// litellm set` writes them) that the session leaves alone, so every save path
-// a session or host command takes (an unrelated PatchSave of a LoadSession
-// config, a whole-file Save, an UpdateLitellm that sets only the url) keeps
-// url, api_key and the retired enabled key exactly as written. A save that
-// dropped them would cut the model server off from LiteLLM, and one that
-// dropped enabled would rewrite a file wt only promised to ignore.
+// table is host state (`wt-model serve` reads its url and api_key as the
+// read-only fallback of the wt-model home) that the session leaves alone, so
+// every save path a session or host command takes (an unrelated PatchSave of
+// a LoadSession config, a whole-file Save) keeps url, api_key and the retired
+// enabled key exactly as written. A save that dropped them would cut the
+// model server off from LiteLLM, and one that dropped enabled would rewrite a
+// file wt only promised to ignore.
 func TestLegacyLitellmKeysSurviveASave(t *testing.T) {
 	const body = `default_tag = "code"
 
@@ -256,13 +256,4 @@ token_file = "/t"
 		t.Fatal(err)
 	}
 	check(t, "Save")
-	cfg, err = LoadSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cfg.UpdateLitellm(func(s *LitellmState) { s.URL = "http://127.0.0.1:4001" }); err != nil {
-		t.Fatal(err)
-	}
-	want.URL = "http://127.0.0.1:4001"
-	check(t, "UpdateLitellm")
 }

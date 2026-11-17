@@ -9,7 +9,9 @@ Per-agent reference docs for the agents launched by `wt` (via the `*-wt` shims i
 session never dials LiteLLM or a provider itself: every non-native model an
 agent uses goes through the model server's gateway (`wt-model serve`,
 [wt-session.md](../wt-session.md)), which forwards to LiteLLM with the
-`[litellm]` key. There are no direct routes and no routing switch. Every configured cloud and native model is in the
+host's LiteLLM key (the `~/.config/wt-model/` home's key file; the
+`[litellm]` key of wt's `config.toml` is its read-only fallback). There are
+no direct routes and no routing switch. Every configured cloud and native model is in the
 picker (#179; see the root `CLAUDE.md`'s *Routing is derived, not stored*);
 local models are listed from live
 provider probes — with or without a registry entry (an unregistered model is
@@ -18,9 +20,10 @@ are added and removed automatically by
 `wt start` / `wt stop` (and the TUI start flow and `wt smoke`).
 
 ```bash
-wt litellm status                 # url + api_key_set
-wt litellm sync [--dry-run]       # route every registry cloud model + every running (or pulled ollama) local model
-wt litellm list                   # routed ids in config.yaml (hand-written rows marked)
+wt-model litellm set --url URL --api-key KEY   # the proxy pair the gateway forwards with (the ~/.config/wt-model/ home)
+wt litellm status                              # url + api_key_set
+wt litellm sync [--dry-run]                    # route every registry cloud model + every running (or pulled ollama) local model
+wt litellm list                                # routed ids in config.yaml (hand-written rows marked)
 ```
 
 Native models (`claude/native`, `copilot/native`) are always shown and do not
@@ -35,10 +38,13 @@ gateway, which forwards to the LiteLLM proxy at `:4000`. The proxy loads its mod
 restarted; until then it serves a stale model list and returns
 `400 Invalid model name passed in model=…` for any newly added model.
 
-**There is no routing switch.** The `[litellm]` table of wt's own
-`~/.config/agent-wt/config.toml` holds the proxy's `url` and `api_key`
-(`wt litellm set`, shown by `wt litellm status`), which `wt-model serve`
-reads; a session reads neither. Its `enabled` key is retired (2026-11-15):
+**There is no routing switch.** The proxy's `url` and `api_key` live in the
+`wt-model` config home — `~/.config/wt-model/config.toml` and the 0600 file
+its `key_file` names — set with `wt-model litellm set --url URL --api-key KEY`
+and shown by `wt-model litellm status`, which `wt-model serve` reads; a
+session reads neither. The `[litellm]` table of wt's own
+`~/.config/agent-wt/config.toml` is a read-only fallback (used only when the
+home holds no `[litellm]` table, never written). Its `enabled` key is retired (2026-11-15):
 still parsed and kept on save, read by nothing, and a true value prints one
 note per process. `wt litellm on` / `wt litellm off` are hidden stubs that
 exit 1.

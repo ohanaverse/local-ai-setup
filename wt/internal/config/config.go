@@ -20,6 +20,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tokenfile"
 )
 
 // Location says whether a model is hosted locally or in the cloud.
@@ -51,9 +52,13 @@ const OllamaBaseURL = provider.OllamaOrigin
 // ── LiteLLM routing state (wt-owned) ─────────────────────
 
 // LitellmState is the `[litellm]` table of wt's config.toml: the LiteLLM
-// proxy's url and api key, host state that `wt-model serve` (its gateway) and
-// `wt litellm set|status|restart` read (R4); a session never reads it. wt
-// reads it from config.toml and nowhere else.
+// proxy's url and api key, host state `wt-model serve` (its gateway),
+// `wt-model litellm status` and `wt litellm status|restart` read (R4); a
+// session never reads it. Nothing writes this table any more: `wt-model
+// litellm set` and `wt litellm set` write only the wt-model config home, and
+// this table is the read-only fallback — read from config.toml and nowhere
+// else, consulted only when the home holds no [litellm] table (the runtime
+// pair resolves home-first in applyProxyState).
 //
 // Enabled is retired (2026-11-15): every session routes through the model
 // server, so nothing decides on it any more. It is still parsed and
@@ -66,40 +71,6 @@ type LitellmState struct {
 	APIKey  string `toml:"api_key"`
 }
 
-// UpdateLitellm applies mutate to the LiteLLM routing state and persists it to
-// wt's config.toml. wt owns this state.
-//
-// It persists through PatchSave rather than a whole-file Save of c: c may be
-// a long-lived process's stale in-memory snapshot (issue #143 — a `wt
-// litellm` run against a Config loaded before a concurrent `wt config`
-// editor session saved its own Agents/DefaultTag change). PatchSave re-reads
-// config.toml fresh under the lock and touches only LitellmTable, so that
-// concurrent change survives.
-func (c *Config) UpdateLitellm(mutate func(*LitellmState)) error {
-	prev, prevTable := c.litellm, c.LitellmTable
-	var result LitellmState
-	err := c.PatchSave(func(fresh *Config) {
-		s := LitellmState{}
-		if fresh.LitellmTable != nil {
-			s = *fresh.LitellmTable
-		}
-		mutate(&s)
-		fresh.LitellmTable = &s
-		result = s
-	})
-	if err != nil {
-		// Nothing persisted: keep memory in step with disk so later routing
-		// in this process does not act on a state that was never saved.
-		c.litellm, c.LitellmTable = prev, prevTable
-		return err
-	}
-	c.litellm, c.LitellmTable = result, &result
-	return nil
-}
-
-// LitellmConfigured reports whether both the proxy URL and API key are set.
-func (c *Config) LitellmConfigured() bool { return c.litellm.URL != "" && c.litellm.APIKey != "" }
-
 // LitellmBaseURL returns the proxy URL with any trailing
 // slashes removed. Drivers append their own protocol suffix (/v1, /v1/),
 // so a user URL like "http://localhost:4000/" must not produce a double
@@ -109,6 +80,19 @@ func (c *Config) LitellmBaseURL() string { return strings.TrimRight(c.litellm.UR
 
 // LitellmAPIKey returns the proxy API key.
 func (c *Config) LitellmAPIKey() string { return c.litellm.APIKey }
+
+// ProxySource reports where the runtime proxy pair came from: the wt-model
+// home's [litellm] table (ProxySourceHome), the legacy table of config.toml
+// (ProxySourceLegacy, the read-only fallback) or nothing (ProxySourceNone).
+func (c *Config) ProxySource() ProxySource { return c.proxySource }
+
+// ProxyErr is why Load could not resolve the proxy pair (a *ProxyHomeError: an
+// unparseable home config.toml, a dangling link, a loose or unreadable key
+// file), nil when it resolved. The pair is then empty — never the legacy
+// values (fail closed) — and only the commands that use the pair fail on it
+// (`wt-model serve`, a proxy restart or probe); every other host command
+// loads normally, so a loose key file never blocks `wt model list`.
+func (c *Config) ProxyErr() error { return c.proxyErr }
 
 // SetLitellmForTest overrides the [litellm] routing state.
 // Production wiring goes through finalizeCfg (config.toml); tests in
@@ -725,7 +709,9 @@ type Config struct {
 	Agents     []Agent    `toml:"agents"`
 	// LitellmTable is the wt-owned persisted [litellm] routing state.
 	LitellmTable *LitellmState `toml:"litellm,omitempty"`
-	litellm      LitellmState  `toml:"-"` // runtime copy of LitellmTable
+	litellm      LitellmState  `toml:"-"` // runtime pair, resolved at load by applyProxyState (home → legacy)
+	proxySource  ProxySource   `toml:"-"` // where litellm's pair came from
+	proxyErr     error         `toml:"-"` // why the pair did not resolve (ProxyErr); the pair is then empty
 	// LaunchTable is the hand-edited [launch] table (exit_prompt), a legacy
 	// key wt tolerates and ignores (R305a): it round-trips through every save
 	// and wt never sets it, but no value is read or validated —
@@ -781,7 +767,9 @@ func Path() string {
 // error, but the returned Config is not nil: it carries whatever config.toml
 // already parsed (Agents/DefaultTag), just with an empty model catalog, so a
 // genuinely configured agent isn't misread as unconfigured by callers like
-// agents.IsConfigured. A malformed config.toml/registry.toml returns nil.
+// agents.IsConfigured. A malformed config.toml/registry.toml, or a proxy
+// pair the resolution cannot resolve (a broken wt-model home or key file),
+// returns nil — never a config serving a silent fall-back.
 func Load() (*Config, error) {
 	if _, err := Migrate(); err != nil {
 		return nil, fmt.Errorf("migration: %w", err)
@@ -804,7 +792,7 @@ func Load() (*Config, error) {
 		return cfgOrNilOnMissingRegistry(cfg, err), err
 	}
 	if !exists {
-		return finalizeCfg(cfg, providers, models), nil
+		return finalizeCfg(cfg, providers, models)
 	}
 
 	// migrateConfigSchema runs against a fresh, lock-protected read (via
@@ -824,7 +812,7 @@ func Load() (*Config, error) {
 	// in memory (schema fixups above only ever see wt-owned config.toml
 	// content). Providers/Models from a pre-Phase-4 config.toml are
 	// overwritten here — registry.toml is the source of truth.
-	return finalizeCfg(fresh, providers, models), nil
+	return finalizeCfg(fresh, providers, models)
 }
 
 // cfgOrNilOnMissingRegistry returns cfg (whatever Load has decoded from
@@ -841,16 +829,19 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 }
 
 // finalizeCfg joins registry providers/models into cfg, derives native-ness
-// from provider auth types, and copies config.toml's [litellm] table, when it
-// has one, into the runtime routing state. With no table, routing is off.
-func finalizeCfg(cfg *Config, providers []Provider, models []Model) *Config {
+// from provider auth types, and resolves the LiteLLM proxy pair into the
+// runtime routing state (applyProxyState: the wt-model home's [litellm] table
+// first, config.toml's legacy table as the read-only fallback). With no
+// table anywhere, routing is off. A proxy pair the resolution cannot resolve
+// — a broken wt-model home or key file — leaves the pair empty (fail closed,
+// never the legacy values) and is recorded for ProxyErr, not returned: only
+// the commands that use the pair fail on it.
+func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
 	deriveSushiAgents(cfg)
-	if cfg.LitellmTable != nil {
-		cfg.litellm = *cfg.LitellmTable
-	}
-	return cfg
+	applyProxyState(cfg)
+	return cfg, nil
 }
 
 // SushiAgents are the agents that can run a Sushi model: claude (through
@@ -1212,6 +1203,16 @@ func LoadFixHint(err error) string {
 	case err == nil, errors.Is(err, ErrRegistryMissing):
 		return ""
 	}
+	// A wt-model home failure is not config.toml's: `wt config` cannot touch
+	// the home. A loose key file's error already carries its chmod sentence.
+	var phe *ProxyHomeError
+	if errors.As(err, &phe) {
+		var te *tokenfile.Error
+		if errors.As(err, &te) && te.Kind == tokenfile.KindLoose {
+			return ""
+		}
+		return "repair the wt-model config home file it names"
+	}
 	if hint := RegistryFixHint(err); hint != "" {
 		return hint
 	}
@@ -1369,11 +1370,11 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 // lockedApply) over Save whenever cfg may be a stale snapshot (loaded
 // earlier, possibly in a different process) — Save writes cfg wholesale and
 // so reverts any field a concurrent writer changed since cfg was loaded.
-// Every production writer (the `wt config` editor, `wt litellm set`,
-// Load's own migrations) now goes through one of those locked-fresh-read
-// paths instead; Save remains as the simple whole-file primitive they build
-// on and for tests/tools that construct and persist a Config in one step
-// with no concurrent-writer risk.
+// Every production writer (the `wt config` editor, Load's own migrations)
+// now goes through one of those locked-fresh-read paths instead; Save
+// remains as the simple whole-file primitive they build on and for
+// tests/tools that construct and persist a Config in one step with no
+// concurrent-writer risk.
 func Save(cfg *Config) error {
 	return WithLock(func() error { return writeConfigFile(cfg) })
 }
@@ -1396,8 +1397,23 @@ func writeConfigFile(cfg *Config) error {
 		return err
 	}
 	mode := os.FileMode(0o644)
-	if cfg.LitellmTable != nil && cfg.LitellmTable.APIKey != "" {
+	// Exactly two fields make a saved config.toml secret-bearing: the
+	// legacy [litellm] api_key and the [model-server] inline token. Both
+	// are bearer secrets, so either one's presence writes 0600 (nothing
+	// else does).
+	if (cfg.LitellmTable != nil && cfg.LitellmTable.APIKey != "") ||
+		(cfg.ModelServerTable != nil && cfg.ModelServerTable.Token != "") {
 		mode = 0o600
+	}
+	// Never loosen an existing stricter mode: a file whose mode grants no
+	// permission bit the computed one would not (0600 over 0644, 0400 over
+	// 0600) keeps it, while a looser file is tightened to the computed
+	// mode. Stat first — the atomic rename below replaces the file, so
+	// this is the one chance to see its mode.
+	if st, err := os.Stat(Path()); err == nil {
+		if existing := st.Mode().Perm(); existing&^mode == 0 {
+			mode = existing
+		}
 	}
 	return WriteFileAtomic(Path(), buf.Bytes(), mode)
 }

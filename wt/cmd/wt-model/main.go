@@ -31,7 +31,7 @@ func rootCmd(mk depsFactory) *cobra.Command {
 		SilenceUsage:  true,
 	}
 	root.SetVersionTemplate("wt-model {{.Version}}\n")
-	root.AddCommand(serveCmd(mk))
+	root.AddCommand(serveCmd(mk), litellmCmd())
 	return root
 }
 

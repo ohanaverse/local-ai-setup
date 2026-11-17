@@ -27,19 +27,27 @@ func announceLine(addr string) string { return fmt.Sprintf(announceFormat, addr)
 type depsFactory func(cfg *config.Config, reload func() (*config.Config, error), upstream *url.URL, upstreamKey string) modelserver.Deps
 
 // loadServeConfig loads the host config and the LiteLLM base URL and key the
-// gateway forwards to, from wt's own [litellm] table.
+// gateway forwards to LiteLLM with, as Load's merge resolves them (the
+// wt-model config home first, config.toml's legacy [litellm] table the
+// read-only fallback).
 func loadServeConfig() (*config.Config, *url.URL, string, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, nil, "", config.ConfigError(err)
 	}
+	// The pair is what serve forwards with: a home Load could not resolve
+	// (a loose key file, an unparseable home) refuses the start here, the one
+	// place it matters, with the load's own wording and hint.
+	if perr := cfg.ProxyErr(); perr != nil {
+		return nil, nil, "", config.ConfigError(perr)
+	}
 	base, key := cfg.LitellmBaseURL(), cfg.LitellmAPIKey()
 	if base == "" || key == "" {
-		return nil, nil, "", errors.New("the LiteLLM proxy is not configured: run 'wt litellm set --url URL --api-key KEY'")
+		return nil, nil, "", errors.New("the LiteLLM proxy is not configured: run 'wt-model litellm set --url URL --api-key KEY'")
 	}
 	u, err := url.Parse(base)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return nil, nil, "", fmt.Errorf("the LiteLLM url %q is not a valid URL: run 'wt litellm set --url URL --api-key KEY'", base)
+		return nil, nil, "", fmt.Errorf("the LiteLLM url %q is not a valid URL: run 'wt-model litellm set --url URL --api-key KEY'", base)
 	}
 	return cfg, u, key, nil
 }
@@ -53,7 +61,8 @@ func serveCmd(mk depsFactory) *cobra.Command {
 		Short: "Run the model server",
 		Long: `Run the model server: the control API under /control/v1 starts and stops
 wt's local models for agent sessions that run elsewhere, and the gateway under
-/v1 forwards model requests to the LiteLLM proxy configured by 'wt litellm set'.
+/v1 forwards model requests to the LiteLLM proxy configured by
+'wt-model litellm set --url URL --api-key KEY'.
 Every request needs the shared bearer token, on every address.
 
 Flags:
@@ -84,6 +93,16 @@ Exit codes:
 			cfg, upstream, key, err := loadServeConfig()
 			if err != nil {
 				return err
+			}
+			// A pair the legacy [litellm] fallback supplied prints the one
+			// fallback note before anything listens (ruling 7): the fallback
+			// is read-only now, and the note names the writer. The source is
+			// the one from the load above (cfg.ProxySource) — the pair being
+			// forwarded and the pair judged for the note are the same
+			// resolution, never two that could disagree (fix round 2,
+			// Finding 4).
+			if cfg.ProxySource() == config.ProxySourceLegacy {
+				fmt.Fprintln(cmd.ErrOrStderr(), config.ProxyFallbackNote())
 			}
 			srv, err := modelserver.NewServer(modelserver.Options{
 				Listen: listen, Token: token, IdleGrace: idle,
