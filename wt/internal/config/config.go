@@ -51,12 +51,13 @@ const OllamaBaseURL = provider.OllamaOrigin
 // ── LiteLLM routing state (wt-owned) ─────────────────────
 
 // LitellmState is the `[litellm]` table of wt's config.toml: the LiteLLM
-// proxy's url and api key, host state that `wt-model serve` (its gateway) and
-// the `wt-model litellm set|status` and `wt litellm set|status|restart`
-// commands read and write (R4); a session never reads it. The table is read
-// from config.toml and nowhere else; the runtime pair resolves home-first
-// since the wt-model config home (applyProxyState), with this table the
-// read-only fallback.
+// proxy's url and api key, host state `wt-model serve` (its gateway),
+// `wt-model litellm status` and `wt litellm status|restart` read (R4); a
+// session never reads it. Nothing writes this table any more: `wt-model
+// litellm set` and `wt litellm set` write only the wt-model config home, and
+// this table is the read-only fallback — read from config.toml and nowhere
+// else, consulted only when the home holds no [litellm] table (the runtime
+// pair resolves home-first in applyProxyState).
 //
 // Enabled is retired (2026-11-15): every session routes through the model
 // server, so nothing decides on it any more. It is still parsed and
