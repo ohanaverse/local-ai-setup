@@ -226,3 +226,21 @@ func TestLitellmStatusNotesTheLegacyFallback(t *testing.T) {
 		t.Errorf("--json stderr = %q, want the one note line %q", stderr, note)
 	}
 }
+
+// TestLitellmSetHelpNamesTheSetupCommand pins M6 on the one help text that
+// names the setup command: `wt-model litellm set --help` must show
+// `wt-model litellm set --url URL --api-key KEY` contiguous on one unwrapped
+// line, so copying the quoted command out of the help runs as-is (a wrap
+// mid-command turns the copy-paste into two shell words and a second
+// command). The fallback note's short `'wt-model litellm set'` wording is
+// separately mandated verbatim and is not this string.
+func TestLitellmSetHelpNamesTheSetupCommand(t *testing.T) {
+	stdout, _, err := execLitellm(t, "set", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "wt-model litellm set --url URL --api-key KEY"
+	if !strings.Contains(stdout, want) {
+		t.Errorf("`wt-model litellm set --help` does not show %q contiguous:\n%s", want, stdout)
+	}
+}

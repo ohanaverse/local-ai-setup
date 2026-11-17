@@ -52,11 +52,14 @@ Exit codes:
 		Use:   "set",
 		Short: "Set the LiteLLM proxy url and/or api key",
 		Long: `Set the LiteLLM proxy pair wt-model forwards to LiteLLM with. This is the
-setup command other messages name: 'wt-model litellm set --url URL
---api-key KEY'. The url is written to ~/.config/wt-model/config.toml and the
-api key to the 0600 file its key_file names (litellm.key by default); the
-legacy [litellm] table of config.toml is never written. A flag left out keeps
-its current value; --api-key "" clears the key without deleting the file.
+setup command other messages name:
+
+	'wt-model litellm set --url URL --api-key KEY'
+
+The url is written to ~/.config/wt-model/config.toml and the api key to the
+0600 file its key_file names (litellm.key by default); the legacy [litellm]
+table of config.toml is never written. A flag left out keeps its current
+value; --api-key "" clears the key without deleting the file.
 
 Flags:
   --url URL        set the proxy base URL
