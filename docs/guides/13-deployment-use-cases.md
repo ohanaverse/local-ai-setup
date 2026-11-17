@@ -113,7 +113,7 @@ A session with no `[model-server]` refuses before anything starts and names both
 
 ## Gotchas
 
-- **wt never starts a server and never guesses an address.** Each layout above runs `wt-model serve` yourself; with none configured a model-needing `wt` refuses (exit 1) instead of falling back to anything local.
+- **wt never starts a server and never guesses an address.** Each layout above runs `wt-model serve` yourself; with none configured, a `wt` that needs a model (`-M`, `-T`, `-F`, `wt start`, `wt smoke`, …) refuses (exit 1) instead of falling back to a local server. A plain `wt -A <agent>` launches the agent natively, with its own configuration and one `wt: note:` line, and never when a server is half-configured (`wt/docs/wt-session.md`, "Native launch").
 - **`wt-model serve` is a foreground process.** Start it in a terminal, under `nohup`, or from your own LaunchAgent — running it at boot is an optional recipe, not something wt builds.
 - **Host commands run on the host.** `wt model add|edit|rm|init`, `wt cloud-sync` and `wt litellm …` read and write `registry.toml` and `config.yaml` on the machine they run on, never the server's ([08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §6).
 
