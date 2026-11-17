@@ -18,7 +18,7 @@ The spec's Migration step 3 says "untangle `internal/tui` into model-admin scree
    - `localmodels.FormatSize` (used by `cleanup/present.go`) moves out of `localmodels` to a leaf formatting home.
    - `catalog` stops calling `litellm.PolicyFor` (a one-line wrapper) and calls `provider.PolicyFor` directly.
    - `catalog.Row.Action` stops calling `lifecycle.Startable` at read time: `Build` stamps the answer on the row (or input) [as built: `Row.Action` derives it from `internal/provider`'s table through `catalog.startable`, which `TestBackendsMatchProviderTable` pins to `lifecycle.Startable`; nothing is stamped, and the answers are the same], so the picker, smoke and modelserver answers stay **identical** (modelserver catalog tests and `catalog_test.go` cover it; the wire path already carries the action from the server).
-   - `catalog.Input` keeps its `localmodels`/`lifecycle` types for now: `catalog` and `smoke` stay on the allow-list and shrink in WP2.
+   - `catalog.Input` keeps its `localmodels` type (`Input.Inventory`; it has no `lifecycle` type left): `catalog` and `smoke` stay on the allow-list and shrink in WP2.
 3. **Docs in the same change:** `wt/docs/internals/packages.md` (package graph rules), `wt/docs/internals/testing.md` (the new test), `wt/CLAUDE.md` (a short rule: the allow-list only shrinks), and the spec's Phase 3 wording (it is a package-graph change, not a screen move).
 
 ## Non-goals (later packages)

@@ -46,6 +46,16 @@ var sessionLibraries = []string{
 	"internal/survey", "internal/tui",
 }
 
+// listError words a `go list` failure with the command's stderr, so a broken
+// package is named instead of a bare "exit status 1".
+func listError(err error) string {
+	msg := err.Error()
+	if ee, ok := err.(*exec.ExitError); ok {
+		msg += ": " + string(ee.Stderr)
+	}
+	return msg
+}
+
 // closure returns the internal packages (module-relative paths) that pkg
 // links, non-test, by asking `go list -deps`. It skips when go is not on PATH.
 func closure(t *testing.T, pkg string) map[string]bool {
@@ -56,11 +66,7 @@ func closure(t *testing.T, pkg string) map[string]bool {
 	}
 	out, err := exec.Command(goBin, "list", "-deps", "-f", "{{.ImportPath}}", "github.com/ohanaverse/local-ai-setup/wt/"+pkg).Output()
 	if err != nil {
-		msg := err.Error()
-		if ee, ok := err.(*exec.ExitError); ok {
-			msg += ": " + string(ee.Stderr)
-		}
-		t.Fatalf("go list -deps %s: %s", pkg, msg)
+		t.Fatalf("go list -deps %s: %s", pkg, listError(err))
 	}
 	got := map[string]bool{}
 	for _, line := range strings.Fields(string(out)) {
@@ -103,8 +109,9 @@ func ratchetProblems(pkg string, set map[string]bool, banned, allowedList []stri
 			problems = append(problems, pkg+" links "+g+", which the session library packages must not; remove the import edge (do not add it to the allow-list)")
 		}
 	}
-	sort.Strings(allowedList)
-	for _, a := range allowedList {
+	entries := append([]string(nil), allowedList...)
+	sort.Strings(entries)
+	for _, a := range entries {
 		if !seen[a] {
 			problems = append(problems, pkg+" no longer links "+a+": remove it from the allow-list in depcheck_test.go (the allow-list only shrinks)")
 		}
@@ -167,7 +174,7 @@ func TestEveryInternalPackageIsClassified(t *testing.T) {
 	}
 	out, err := exec.Command(goBin, "list", modulePath+"internal/...").Output()
 	if err != nil {
-		t.Fatalf("go list internal/...: %v", err)
+		t.Fatalf("go list internal/...: %s", listError(err))
 	}
 	existing := map[string]bool{}
 	for _, line := range strings.Fields(string(out)) {

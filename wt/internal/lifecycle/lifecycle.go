@@ -751,9 +751,11 @@ func stopModel(ctx context.Context, e *env, cfg *config.Config, providerID, mode
 }
 
 // Startable reports whether wt has a lifecycle backend for providerID's family
-// (ollama, omlx/omlx-6bit, mtplx). backendsByFamily is the single source of
-// truth; internal/catalog delegates here so the picker's "can wt start this?"
-// answer cannot drift from the engine's.
+// (ollama, omlx/omlx-6bit, mtplx, rec, sushi). backendsByFamily is the single
+// source of truth; internal/catalog no longer delegates here — it reads the
+// provider table's tenancy (catalog.startable), and catalog's
+// TestStartableMatchesLifecycle pins that answer to this one, so the picker's
+// "can wt start this?" answer cannot drift from the engine's.
 func Startable(providerID string) bool {
 	return backendsByFamily[localmodels.Family(providerID)] != nil
 }
