@@ -413,3 +413,34 @@ func TestALoadingRowIsAStartRow(t *testing.T) {
 		}
 	}
 }
+
+// TestCatalogRowsWithoutInventoryEqualsModelRows pins that CatalogRows with a
+// nil Inventory is exactly catalog.ModelRows: the standalone picker builds its
+// rows with ModelRows (no admin import), every other caller through
+// CatalogRows, and the two must give the same rows for cloud, mapped,
+// unmapped, native and local models alike. A drift would make the picker and
+// `wt smoke` disagree about a model's location or whether it can launch.
+func TestCatalogRowsWithoutInventoryEqualsModelRows(t *testing.T) {
+	cfg := &config.Config{Providers: []config.Provider{
+		{ID: "openrouter", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "api_key"}},
+		{ID: "acme", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "api_key"}},
+		{ID: "omlx", Location: config.LocationLocal},
+	}}
+	models := []config.Model{
+		{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x"},
+		{ID: "acme/m", ProviderID: "acme", ModelName: "m"},
+		{ID: "acme/n", ProviderID: "acme", ModelName: "n", Native: true},
+		{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"},
+	}
+	got := CatalogRows(CatalogInput{Config: cfg, Agent: "claude", Models: models, HideDiscovered: true})
+	want := catalog.ModelRows(cfg, models)
+	if len(got) != len(want) {
+		t.Fatalf("rows = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Model.ID != want[i].Model.ID || got[i].Location != want[i].Location || got[i].Status != want[i].Status ||
+			got[i].Running != want[i].Running || got[i].Unmapped != want[i].Unmapped || got[i].Discovered != want[i].Discovered {
+			t.Errorf("row %d: CatalogRows %+v != ModelRows %+v", i, got[i], want[i])
+		}
+	}
+}

@@ -64,6 +64,39 @@ type Row struct {
 	Wire *modelapi.Row
 }
 
+// ModelRow is the row of one model before any live inventory is read: its
+// location resolved through cfg (the model's own when cfg is nil or cannot
+// resolve it), status ok, not running, and a cloud model whose provider has
+// no LiteLLM mapping marked Unmapped (sync never routes it). It is the whole
+// row for a caller with no probe to ask, and the starting point
+// localmodels.CatalogRows refines from an inventory, so the two cannot
+// disagree about a cloud model or a location.
+func ModelRow(cfg *config.Config, m config.Model) Row {
+	loc := m.Location
+	if cfg != nil {
+		if l, err := cfg.ResolveLocation(m); err == nil {
+			loc = l
+		}
+	}
+	r := Row{Model: m, Location: loc, Status: StatusOK}
+	if _, ok := provider.PolicyFor(m.ProviderID); !ok && !m.Native && loc == config.LocationCloud {
+		r.Unmapped = true
+	}
+	return r
+}
+
+// ModelRows is ModelRow over models, in order: the rows of a picker that
+// reads no inventory (every local row reads as not running, status ok, and
+// startable — the fail-open reading localmodels.CatalogRows gives a nil
+// Inventory). Discovered rows exist only with an inventory, so none appear.
+func ModelRows(cfg *config.Config, models []config.Model) []Row {
+	rows := make([]Row, len(models))
+	for i, m := range models {
+		rows[i] = ModelRow(cfg, m)
+	}
+	return rows
+}
+
 // PairingStartCommand is the command that starts an mlx_lm_server
 // target+draft pairing beside the other local models: wt has no engine for
 // one, llmbench does. --solo is what keeps the other providers running. An

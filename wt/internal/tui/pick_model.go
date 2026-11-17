@@ -53,12 +53,13 @@ func (m *pickModel) fit() {
 // newPickModel builds the picker's list from models (the model server's
 // rows as config.Models, catalog.ToModel) via the same buildTable the agent
 // flow uses. The agent argument is "" since this list isn't scoped to one
-// agent; discovered (unregistered) local models are hidden.
+// agent; the models come from the model server, so no row is a discovered
+// (unregistered) local one.
 // The caller's models may include start-able and blocked rows; blocked rows
 // are shown (with their reason) but Enter on them does not select.
 func newPickModel(models []config.Model, theme themes.Theme) pickModel {
 	tbl := buildTable(tableInput{
-		agent: "", models: models, hideDiscovered: true,
+		agent: "", models: models,
 		usage: newUsageStore(),
 	}, "")
 	items := tbl.items
