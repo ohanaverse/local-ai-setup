@@ -193,7 +193,7 @@ func TestFitToFitsATableInsideItsFrame(t *testing.T) {
 				}})
 			}
 			// A table's rows are drawn whole only by a delegate whose title
-			// styles have no padding (TitleRoom), as tui.ThemedListDelegate's
+			// styles have no padding (TitleRoom), as themes.ListDelegate's
 			// have none. Bubbles' default pads a row by two columns, which
 			// Columns does not count, and would cut the last cell of a table
 			// that fits exactly.

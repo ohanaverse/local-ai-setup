@@ -28,6 +28,12 @@ var sessionBanned = []string{
 	"internal/rootmove", "internal/removal", "internal/modelclient",
 }
 
+// adminScreensBanned is what internal/configeditor (`wt config`: the Agents
+// and Models tabs, the admin screens) must not link: the launcher's session
+// screens. The two programs share styling through internal/themes and sizing
+// through internal/tuilayout, never through each other.
+var adminScreensBanned = []string{"internal/tui"}
+
 // allowList names, per session library package, the banned packages it still
 // links. It only shrinks: TestSessionLibrariesStayOffTheAdminPackages fails
 // when an entry here is no longer linked, so a fixed edge has to be deleted.
@@ -222,5 +228,16 @@ func TestAllowListNamesBannedPackages(t *testing.T) {
 func TestModelServerBinaryStaysOffTheSessionPackages(t *testing.T) {
 	for _, hit := range linked(closure(t, "cmd/wt-model"), sessionBanned) {
 		t.Errorf("cmd/wt-model links %s, which belongs to the session half", hit)
+	}
+}
+
+// TestAdminScreensStayOffTheSessionScreens keeps internal/configeditor from
+// linking internal/tui: the admin screens and the launcher's screens are two
+// programs that must not depend on each other, so a screen can move between
+// binaries (Phase 4) without dragging the other's UI along. It used to link
+// it for two styling helpers, which now live in internal/themes.
+func TestAdminScreensStayOffTheSessionScreens(t *testing.T) {
+	for _, hit := range linked(closure(t, "internal/configeditor"), adminScreensBanned) {
+		t.Errorf("internal/configeditor links %s; share styling through internal/themes or internal/tuilayout instead", hit)
 	}
 }

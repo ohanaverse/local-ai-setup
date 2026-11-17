@@ -61,7 +61,7 @@ type startState struct {
 // frame's header instead (replaceFrames), wrapped; the header takes the lines
 // the title and the item count took, so a short terminal still fits it.
 func newReplaceChoices(theme themes.Theme, width, height int, items []list.Item) list.Model {
-	choices := list.New(items, ThemedListDelegate(theme), width, height)
+	choices := list.New(items, themes.ListDelegate(theme), width, height)
 	choices.SetShowTitle(false)
 	choices.SetShowStatusBar(false)
 	return choices

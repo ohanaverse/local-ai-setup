@@ -63,7 +63,7 @@ func newPickModel(models []config.Model, theme themes.Theme) pickModel {
 		usage: newUsageStore(),
 	}, "")
 	items := tbl.items
-	delegate := ThemedListDelegate(theme)
+	delegate := themes.ListDelegate(theme)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
 	listItems := make([]list.Item, len(items))

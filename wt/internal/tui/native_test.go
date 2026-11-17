@@ -98,7 +98,7 @@ func TestPickerEnterOnAnAgentLaunchesNatively(t *testing.T) {
 
 	m.agent = ""
 	m.phase = phaseAgent
-	m.agentList = list.New([]list.Item{agentItem{name: "claude"}}, ThemedListDelegate(m.theme), 80, 20)
+	m.agentList = list.New([]list.Item{agentItem{name: "claude"}}, themes.ListDelegate(m.theme), 80, 20)
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	nm := next.(model)
 	if cmd == nil || !nm.committed || built != 1 || pendingRouteNotes != "" {

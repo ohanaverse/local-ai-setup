@@ -20,7 +20,7 @@ const ColSep = "  "
 // "…" where the two spaces were cut.
 //
 // The rows need no such room: a delegate whose title styles have no padding
-// (tui.ThemedListDelegate) draws a row whole up to the list's full width.
+// (themes.ListDelegate) draws a row whole up to the list's full width.
 const TitleRoom = 3
 
 // Columns is one table's column layout, shared by its header and every one

@@ -178,7 +178,7 @@ func (m *model) modelFrames() []listFrame {
 			// in that order, like any status; one too tall even for the
 			// sparest layout has the screen to itself (statusAlone).
 			if m.status != "" {
-				body = clip(ErrorStyle(m.theme).Render(tuilayout.WrapText(m.status, inner)), inner) + "\n\n" + body
+				body = clip(themes.ErrorStyle(m.theme).Render(tuilayout.WrapText(m.status, inner)), inner) + "\n\n" + body
 			}
 			return pad.Render(body)
 		}
@@ -247,13 +247,13 @@ func cutLines(s string, width int) string {
 func (m *model) worktreeFrame() listFrame {
 	return func(listView string) string {
 		if m.listError != "" {
-			return clip(ErrorStyle(m.theme).Render("error: "+m.listError), m.width) + "\n" + listView
+			return clip(themes.ErrorStyle(m.theme).Render("error: "+m.listError), m.width) + "\n" + listView
 		}
 		// A pinned --agent that errors (config error, empty model catalog) sets
 		// m.status while staying on the worktree list; render it so the failure
 		// is visible instead of silently swallowed by the list view.
 		if m.status != "" {
-			return clip(ErrorStyle(m.theme).Render(m.status), m.width) + "\n" + listView
+			return clip(themes.ErrorStyle(m.theme).Render(m.status), m.width) + "\n" + listView
 		}
 		return listView
 	}

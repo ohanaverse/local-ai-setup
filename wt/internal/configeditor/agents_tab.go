@@ -9,7 +9,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
 
 // agentItem adapts config.Agent to list.Item. command marks command agents
@@ -86,7 +85,7 @@ func buildAgentsList(theme themes.Theme, width, height int, cfg *config.Config) 
 		return ai.agent.Name < aj.agent.Name
 	})
 
-	l := list.New(items, tui.ThemedListDelegate(theme), width, height)
+	l := list.New(items, themes.ListDelegate(theme), width, height)
 	l.Title = "Agents"
 	l.SetShowStatusBar(false)
 	// q and esc are the list's own quit keys, and its quit goes round the

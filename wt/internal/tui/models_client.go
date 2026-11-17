@@ -402,7 +402,7 @@ func (m model) handleCatalogMsg(msg tea.Msg) (model, tea.Cmd) {
 // newModelList is the picker's list for tbl with the cursor on cursor, else
 // on the first row that is not blocked.
 func (m model) newModelList(tbl modelTable, cursor string) list.Model {
-	delegate := ThemedListDelegate(m.theme)
+	delegate := themes.ListDelegate(m.theme)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
 	items := make([]list.Item, len(tbl.items))
@@ -483,7 +483,7 @@ func (m model) catalogView() string {
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	body := "loading models from the model server…"
 	if m.catalogFailed {
-		errStyle := ErrorStyle(m.theme)
+		errStyle := themes.ErrorStyle(m.theme)
 		lines := strings.Split(tuilayout.WrapText(m.status, m.width), "\n")
 		for i, l := range lines {
 			lines[i] = errStyle.Render(l)
