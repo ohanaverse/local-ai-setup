@@ -304,7 +304,7 @@ func (r Row) Action() Action {
 // startable reports whether wt has a lifecycle backend for providerID's
 // family. It reads internal/provider's table (a family with a tenancy has a
 // backend), which TestBackendsMatchProviderTable pins to lifecycle.Startable,
-// so this package needs not link the lifecycle engine.
+// so this package does not link the lifecycle engine.
 func startable(providerID string) bool {
 	f, ok := provider.FamilyByName(provider.FamilyOf(providerID))
 	return ok && f.Tenancy != provider.NoTenancy

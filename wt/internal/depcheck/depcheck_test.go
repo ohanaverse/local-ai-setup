@@ -68,6 +68,9 @@ func closure(t *testing.T, pkg string) map[string]bool {
 			got[rel] = true
 		}
 	}
+	if !got[pkg] {
+		t.Fatalf("go list -deps %s did not list %s itself; the ratchet would pass vacuously", pkg, pkg)
+	}
 	return got
 }
 
@@ -84,6 +87,31 @@ func linked(set map[string]bool, banned []string) []string {
 	return hit
 }
 
+// ratchetProblems returns the failures for one session library package: each
+// banned package it links that allowed does not name, and each allowed one it
+// no longer links. Pure, so a test can feed it a synthetic closure.
+func ratchetProblems(pkg string, set map[string]bool, banned, allowedList []string) []string {
+	allowed := map[string]bool{}
+	for _, a := range allowedList {
+		allowed[a] = true
+	}
+	var problems []string
+	seen := map[string]bool{}
+	for _, g := range linked(set, banned) {
+		seen[g] = true
+		if !allowed[g] {
+			problems = append(problems, pkg+" links "+g+", which the session library packages must not; remove the import edge (do not add it to the allow-list)")
+		}
+	}
+	sort.Strings(allowedList)
+	for _, a := range allowedList {
+		if !seen[a] {
+			problems = append(problems, pkg+" no longer links "+a+": remove it from the allow-list in depcheck_test.go (the allow-list only shrinks)")
+		}
+	}
+	return problems
+}
+
 // TestSessionLibrariesStayOffTheAdminPackages is the ratchet of the
 // wt-model/wt-session split: no session library package may link the admin
 // packages except the offenders its allowList entry names, and an entry whose
@@ -91,24 +119,75 @@ func linked(set map[string]bool, banned []string) []string {
 func TestSessionLibrariesStayOffTheAdminPackages(t *testing.T) {
 	for _, pkg := range sessionLibraries {
 		t.Run(pkg, func(t *testing.T) {
-			allowed := map[string]bool{}
-			for _, a := range allowList[pkg] {
-				allowed[a] = true
-			}
-			got := linked(closure(t, pkg), adminBanned)
-			seen := map[string]bool{}
-			for _, g := range got {
-				seen[g] = true
-				if !allowed[g] {
-					t.Errorf("%s links %s, which the session library packages must not; remove the import edge (do not add it to the allow-list)", pkg, g)
-				}
-			}
-			for a := range allowed {
-				if !seen[a] {
-					t.Errorf("%s no longer links %s: remove it from the allow-list in depcheck_test.go (the allow-list only shrinks)", pkg, a)
-				}
+			for _, p := range ratchetProblems(pkg, closure(t, pkg), adminBanned, allowList[pkg]) {
+				t.Error(p)
 			}
 		})
+	}
+}
+
+// TestRatchetReportsBothFailureBranches feeds ratchetProblems a synthetic
+// closure: a new edge outside the allow-list fails, a stale allow-list entry
+// fails, and an exact match is clean.
+func TestRatchetReportsBothFailureBranches(t *testing.T) {
+	banned := []string{"internal/lifecycle", "internal/litellm"}
+	set := map[string]bool{"internal/lifecycle": true, "internal/config": true}
+	if got := ratchetProblems("p", set, banned, nil); len(got) != 1 || !strings.Contains(got[0], "p links internal/lifecycle") {
+		t.Errorf("a new banned edge: got %v", got)
+	}
+	if got := ratchetProblems("p", set, banned, []string{"internal/lifecycle", "internal/litellm"}); len(got) != 1 || !strings.Contains(got[0], "no longer links internal/litellm") {
+		t.Errorf("a stale allow-list entry: got %v", got)
+	}
+	if got := ratchetProblems("p", set, banned, []string{"internal/lifecycle"}); len(got) != 0 {
+		t.Errorf("an exact match: got %v", got)
+	}
+}
+
+// otherPackages are the internal packages that are neither a session library
+// nor in either banned set: leaves and shared packages the ratchet leaves
+// alone. TestEveryInternalPackageIsClassified makes a new package pick a side.
+var otherPackages = []string{
+	"internal/config", "internal/depcheck", "internal/dirtsnap",
+	"internal/exitcode", "internal/gitenv", "internal/gittest",
+	"internal/guard", "internal/initseed", "internal/launchwarn",
+	"internal/modelapi", "internal/provider", "internal/rootclaim",
+	"internal/scratchdir", "internal/sessionclaim", "internal/slotedit",
+	"internal/themes", "internal/tiers", "internal/tokenfile",
+	"internal/tomlw", "internal/tuilayout", "internal/usage",
+	"internal/worktree",
+}
+
+// TestEveryInternalPackageIsClassified keeps the ratchet's lists complete:
+// every package under internal/ is a session library, banned (either set) or
+// named in otherPackages, and no list names a package that is gone.
+func TestEveryInternalPackageIsClassified(t *testing.T) {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go is not on PATH; the import-graph ratchet needs `go list`")
+	}
+	out, err := exec.Command(goBin, "list", modulePath+"internal/...").Output()
+	if err != nil {
+		t.Fatalf("go list internal/...: %v", err)
+	}
+	existing := map[string]bool{}
+	for _, line := range strings.Fields(string(out)) {
+		if rel, ok := strings.CutPrefix(line, modulePath); ok {
+			existing[rel] = true
+		}
+	}
+	known := map[string]bool{}
+	for _, list := range [][]string{adminBanned, sessionBanned, sessionLibraries, otherPackages} {
+		for _, p := range list {
+			known[p] = true
+			if !existing[p] {
+				t.Errorf("%s is named in depcheck_test.go but no longer exists (a renamed or deleted package would make the ratchet pass vacuously); update the lists", p)
+			}
+		}
+	}
+	for p := range existing {
+		if !known[p] {
+			t.Errorf("%s is not classified in depcheck_test.go: add it to sessionLibraries, a banned set or otherPackages", p)
+		}
 	}
 }
 
