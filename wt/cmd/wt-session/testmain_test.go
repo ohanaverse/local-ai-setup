@@ -25,8 +25,8 @@ import (
 // TestMain stubs the live seams a cmd/wt-session test would otherwise hit: the
 // local-model inventory probe of the host commands (no test may dial the
 // developer's real ollama/omlx/mtplx servers) and the host `wt stop`'s engine
-// (no test may stop a real model). The model-server client is loopback-only
-// through testHooks, which each test's app starts from.
+// (no test may stop a real model). Every test app's model-server client is
+// loopback-only because hooks.client guards it in a test binary.
 // Tests that need a probe result call stubProbeInventory.
 func TestMain(m *testing.M) {
 	// No test may read or write the developer's real config directory —

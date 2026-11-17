@@ -643,10 +643,12 @@ func TestAgentDriverNamesSkipsCommands(t *testing.T) {
 	}
 }
 
-// testHooks is the hooks a test's app starts from: the model-server client's
-// transport refuses to dial any address that is not loopback, so the httptest
-// fake (fakeModelServer) is the one network a test reaches. A test that needs
-// more sets the field on this value.
+// testHooks is the starting value for a test that overrides other hooks: set
+// the fields on it and pass it to rootCmdWith. It names the dial guard
+// explicitly, but the guard does not depend on it: hooks.client builds the
+// same loopback-only client in any test binary (testing.Testing()), so every
+// test app, a bare &app{} included, can reach only the httptest fake
+// (fakeModelServer).
 func testHooks() hooks { return hooks{newClient: loopbackOnlyModelClient} }
 
 // loopbackOnlyModelClient is testHooks' newClient: a client whose

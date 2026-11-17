@@ -109,7 +109,7 @@ func runWT(t *testing.T, args ...string) (string, error) {
 	return runWTWith(t, testHooks(), args...)
 }
 
-// runWTWith is runWT over an app carrying h (start from testHooks).
+// runWTWith is runWT over an app carrying h (testHooks() is the starting value for a test that overrides other hooks).
 func runWTWith(t *testing.T, h hooks, args ...string) (string, error) {
 	t.Helper()
 	var buf bytes.Buffer

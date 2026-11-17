@@ -18,8 +18,9 @@ func runRoot(t *testing.T, args ...string) (out string, code int) {
 	return runRootWith(t, testHooks(), args...)
 }
 
-// runRootWith is runRoot over a command tree whose app carries h (start from
-// testHooks so the client stays loopback-only).
+// runRootWith is runRoot over a command tree whose app carries h (testHooks() is the
+// starting value for a test that overrides other hooks; the client is
+// loopback-only either way, since hooks.client guards it in a test binary).
 func runRootWith(t *testing.T, h hooks, args ...string) (out string, code int) {
 	t.Helper()
 	root := rootCmdWith(h)
