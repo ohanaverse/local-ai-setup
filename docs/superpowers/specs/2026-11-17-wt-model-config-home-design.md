@@ -88,9 +88,12 @@ key_file = "litellm.key"
   sentence (`… is accessible by group or other (mode %s); run 'chmod 600 %s'`).
   A missing or empty file reads as **no key** (the consumer's existing "not
   configured" path reports it); whitespace is trimmed.
-- **Write:** `config.WriteFileAtomic(path, key+"\n", 0o600)` — umask-independent,
-  temp file cleaned up. `set --api-key ""` writes a 0600 empty file: wt never
-  deletes a key file (it may name a user-managed file).
+- **Write:** `config.WriteFileAtomic(path, []byte(key), 0o600)` — the key's
+  bytes verbatim, no newline appended (amended 2026-11-17, fix round 1: this
+  line earlier read `key+"\n"`, which contradicted the empty-file sentence
+  just below; the implementation writes exactly what it is given) —
+  umask-independent, temp file cleaned up. `set --api-key ""` writes a 0600
+  empty file: wt never deletes a key file (it may name a user-managed file).
 - **Never printed.** `status` shows `api_key_set` (JSON) or `maskKey` (text:
   `(unset)`, `***`, `***`+last 4 — `wt/cmd/wt-session/profile_slots.go:21-33`).
 - A symlinked `config.toml` or key file is written through (links survive), the

@@ -21,7 +21,7 @@ func TestFinalizeCfgDerivesSushiForClaudeAndPi(t *testing.T) {
 	sushi := []Provider{{ID: "sushi"}}
 	model := []Model{{ID: "sushi/p", ProviderID: "sushi", ModelName: "p"}}
 
-	cfg := finalizeCfg(&Config{Agents: agents()}, sushi, model)
+	cfg := mustFinalize(t, &Config{Agents: agents()}, sushi, model)
 	if !cfg.AgentSupportsProvider("claude", "sushi") {
 		t.Error("claude does not support sushi with a sushi model registered")
 	}
@@ -32,18 +32,30 @@ func TestFinalizeCfgDerivesSushiForClaudeAndPi(t *testing.T) {
 		t.Error("codex was given sushi; only claude and pi run it")
 	}
 
-	cfg = finalizeCfg(&Config{Agents: agents()}, sushi, nil)
+	cfg = mustFinalize(t, &Config{Agents: agents()}, sushi, nil)
 	if cfg.AgentSupportsProvider("claude", "sushi") {
 		t.Error("claude supports sushi with no sushi model registered")
 	}
-	cfg = finalizeCfg(&Config{Agents: agents()}, []Provider{{ID: "ollama"}}, model)
+	cfg = mustFinalize(t, &Config{Agents: agents()}, []Provider{{ID: "ollama"}}, model)
 	if cfg.AgentSupportsProvider("claude", "sushi") {
 		t.Error("sushi was listed for an agent though the registry has no sushi provider row")
 	}
-	cfg = finalizeCfg(&Config{Agents: []Agent{{Name: "claude"}}}, sushi, model)
+	cfg = mustFinalize(t, &Config{Agents: []Agent{{Name: "claude"}}}, sushi, model)
 	if len(cfg.Agents[0].SupportedProviders) != 0 {
 		t.Errorf("an agent with no providers was given %v", cfg.Agents[0].SupportedProviders)
 	}
+}
+
+// mustFinalize runs finalizeCfg and fails the test on its error: since the
+// wt-model config home the proxy merge is part of finalize and can fail hard
+// on a broken home (applyProxyState).
+func mustFinalize(t *testing.T, cfg *Config, providers []Provider, models []Model) *Config {
+	t.Helper()
+	out, err := finalizeCfg(cfg, providers, models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func countOf(s []string, v string) int {

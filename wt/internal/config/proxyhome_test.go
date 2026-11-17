@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -221,6 +222,51 @@ func TestResolveProxyRefusesALooseKeyFile(t *testing.T) {
 	if pair.APIKey != "sk-pad" {
 		t.Errorf("APIKey = %q, want the whitespace-trimmed %q", pair.APIKey, "sk-pad")
 	}
+}
+
+// TestResolveProxyRefusesABrokenFile pins the resolution's hard-error half
+// (fix round 1, Finding 7): a file the resolution needs but cannot read is
+// the resolution's error and the zero pair, never a fall-through to another
+// source's values. A regression that turned readProxyHome's parse error into
+// "absent" — or swallowed readConfigFile's — would silently serve legacy
+// values exactly as the constraints forbid and nothing else in the file
+// would notice. The unparseable-home case keeps a valid legacy table present
+// precisely so the forbidden fall-through would be visible.
+func TestResolveProxyRefusesABrokenFile(t *testing.T) {
+	t.Run("an unparseable home config.toml", func(t *testing.T) {
+		home := proxyEnv(t, "default_tag = \"code\"\n\n[litellm]\nurl = \"http://legacy:4000\"\napi_key = \"sk-legacy\"\n")
+		writeProxyHome(t, home, "this is = = not toml\n")
+		pair, err := ResolveProxy()
+		if err == nil {
+			t.Fatalf("ResolveProxy() on an unparseable home = %+v, nil; want an error and never the legacy pair", pair)
+		}
+		if pair != (ProxyPair{}) {
+			t.Errorf("ResolveProxy() returned %+v beside the error, want the zero pair", pair)
+		}
+	})
+	t.Run("an unparseable legacy config.toml", func(t *testing.T) {
+		home := proxyEnv(t, "")
+		must(t, filepath.Join(home, "agent-wt", "config.toml"), "this is = = not toml\n")
+		pair, err := ResolveProxy()
+		if err == nil {
+			t.Fatalf("ResolveProxy() on an unparseable legacy config = %+v, nil; want an error", pair)
+		}
+		if pair != (ProxyPair{}) {
+			t.Errorf("ResolveProxy() returned %+v beside the error, want the zero pair", pair)
+		}
+	})
+	t.Run("an unreadable key file", func(t *testing.T) {
+		home := proxyEnv(t, "")
+		writeProxyHome(t, home, "[litellm]\nurl = \"http://localhost:4001\"\nkey_file = \"litellm.key\"\n")
+		writeProxyKey(t, home, "sk-unreadable", 0o000)
+		pair, err := ResolveProxy()
+		if err == nil {
+			t.Fatalf("ResolveProxy() on a 0000 key file = %+v, nil; want an error, never a silent proceed", pair)
+		}
+		if pair != (ProxyPair{}) {
+			t.Errorf("ResolveProxy() returned %+v beside the error, want the zero pair", pair)
+		}
+	})
 }
 
 // TestResolveProxyLegacyNeedsNoMigrations pins the legacy read's contract:
@@ -444,7 +490,9 @@ func TestSetProxyClearsTheKeyWithoutDeletingTheFile(t *testing.T) {
 // contract, byte for byte): a set that changes nothing writes nothing, so
 // hand comments in config.toml and the key file's exact bytes survive; a
 // write that does change something re-encodes (the hand comments die) and
-// re-prepends the fixed header comment block.
+// re-prepends the fixed header comment block. A key file differing from the
+// set value only in whitespace is "unchanged" too — the key's identity is
+// tokenfile.Load's trimmed token — and its bytes, newline included, survive.
 func TestSetProxyNoOpPreservesBytes(t *testing.T) {
 	home := proxyEnv(t, "")
 	if err := SetProxy(ptr("http://localhost:4003"), ptr("sk-same")); err != nil {
@@ -488,6 +536,96 @@ func TestSetProxyNoOpPreservesBytes(t *testing.T) {
 	if !bytes.Equal(keyBefore, keyAfter) {
 		t.Errorf("a url-only write touched the key file: %q → %q", keyBefore, keyAfter)
 	}
+
+	// The key's identity is what a reader sees — tokenfile.Load's trimmed
+	// token (fix round 1, Finding 2 keeps this raw-byte preservation) — so a
+	// hand-written key file that differs from the set value only in
+	// whitespace is unchanged and its exact bytes, newline included, survive.
+	writeProxyKey(t, home, "sk-newline\n", 0o600)
+	keyBefore, err = os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SetProxy(nil, ptr("sk-newline")); err != nil {
+		t.Fatal(err)
+	}
+	keyAfter, _ = os.ReadFile(keyPath)
+	if !bytes.Equal(keyBefore, keyAfter) {
+		t.Errorf("a whitespace-only difference rewrote the key file: %q → %q", keyBefore, keyAfter)
+	}
+}
+
+// TestSetProxyNeverObservesATornPairUnderConcurrentSets pins fix round 1,
+// Finding 4: ResolveProxy reads the home TOML and its key file under the same
+// flock SetProxy writes with, so an observer always sees one whole generation
+// of the pair — a url and a key from the same writer state — never
+// {old url, new key} across the two-file write (applyProxyState caches a torn
+// pair for the process lifetime, so a tear is exactly the "sources never
+// mix" violation). Writers publish paired url-i/key-i generations while
+// readers resolve concurrently; every observation must be the empty
+// pre-publication pair or one generation's exact pair. Meant to run under
+// -race.
+func TestSetProxyNeverObservesATornPairUnderConcurrentSets(t *testing.T) {
+	proxyEnv(t, "")
+	const writersN, gens, readersN = 4, 12, 4
+	total := writersN * gens
+	check := func(pair ProxyPair) error {
+		if pair == (ProxyPair{}) {
+			return nil // the pre-publication pair: coherent by construction
+		}
+		if pair.Source != ProxySourceHome {
+			return fmt.Errorf("resolved (%q) from source %v, want ProxySourceHome", pair.URL, pair.Source)
+		}
+		u := strings.TrimSuffix(strings.TrimPrefix(pair.URL, "http://gen-"), ":4000")
+		k := strings.TrimPrefix(pair.APIKey, "sk-gen-")
+		ui, uerr := strconv.Atoi(u)
+		ki, kerr := strconv.Atoi(k)
+		if uerr != nil || kerr != nil || ui != ki || ui < 0 || ui >= total {
+			return fmt.Errorf("torn pair: url generation %q and key generation %q (url %q)", u, k, pair.URL)
+		}
+		return nil
+	}
+
+	stop := make(chan struct{})
+	var writers, readers sync.WaitGroup
+	writers.Add(writersN)
+	for w := range writersN {
+		go func(w int) {
+			defer writers.Done()
+			for g := range gens {
+				i := w*gens + g
+				if err := SetProxy(ptr(fmt.Sprintf("http://gen-%d:4000", i)), ptr(fmt.Sprintf("sk-gen-%d", i))); err != nil {
+					t.Errorf("writer %d generation %d: %v", w, i, err)
+					return
+				}
+			}
+		}(w)
+	}
+	readers.Add(readersN)
+	for range readersN {
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				pair, err := ResolveProxy()
+				if err != nil {
+					t.Errorf("ResolveProxy: %v", err)
+					return
+				}
+				if err := check(pair); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	writers.Wait()
+	close(stop)
+	readers.Wait()
 }
 
 // TestSetProxyConcurrentSetsLoseNoField pins the flock plus fresh re-read:
@@ -603,6 +741,45 @@ func TestSetProxyWritesThroughSymlinks(t *testing.T) {
 	}
 }
 
+// TestSetProxyRefusesALooseKeyFile pins fix round 1, Finding 2: the set's
+// no-op comparison reads the key file through tokenfile.Load — the one
+// definition of "what the key is" — so a loose (group or other accessible)
+// key file errors out of the set instead of a matching value computing "no
+// change" and returning silent success while every read refuses it. The file
+// is left exactly as it is — the set never rewrites bytes or "fixes" the mode
+// behind the user's back on a refusal — and no home config.toml appears
+// beside it.
+func TestSetProxyRefusesALooseKeyFile(t *testing.T) {
+	home := proxyEnv(t, "")
+	keyPath := writeProxyKey(t, home, "sk-old", 0o644)
+	before, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The finding's scenario: the set value equals the file's key. Before
+	// the fix this computed "unchanged" and returned nil — a silent success
+	// over a key every read errors on.
+	if err := SetProxy(nil, ptr("sk-old")); err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("SetProxy with a loose key file = %v, want the chmod 600 error (never a silent no-op success)", err)
+	}
+	if err := SetProxy(nil, ptr("sk-new")); err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("SetProxy changing a loose key file = %v, want the chmod 600 error", err)
+	}
+	after, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("loose key file was rewritten on a refusal: %q → %q", before, after)
+	}
+	if st, err := os.Stat(keyPath); err != nil || st.Mode().Perm() != 0o644 {
+		t.Errorf("loose key file mode = %v, %v; want the 0644 left as it was", st, err)
+	}
+	if _, err := os.Lstat(ProxyHomePath()); !os.IsNotExist(err) {
+		t.Errorf("home config.toml appeared despite the refusal: %v", err)
+	}
+}
+
 // TestSetProxyRefusesAnUnparseableHome pins ruling 8's loud half: a home
 // config.toml wt cannot parse fails the set (merging onto a document it
 // cannot read would drop whatever it could not see), the file is left
@@ -689,13 +866,16 @@ api_key = "sk-legacy"
 	})
 }
 
-// TestApplyProxyStateKeepsTheLegacyPairWhenTheHomeIsBroken pins the merge's
-// degradation rule: a resolution error (here a group-readable key file) must
-// not fail every Load — Load is not credential validation, and the status
-// and set commands call ResolveProxy and fail loud there (asserted below).
-// What lands is exactly the pre-merge behavior, the legacy table's copy, and
-// ProxySource says so; the home's half-resolved pair is never mixed in.
-func TestApplyProxyStateKeepsTheLegacyPairWhenTheHomeIsBroken(t *testing.T) {
+// TestApplyProxyStateFailsTheLoadWhenTheHomeIsBroken pins fix round 1's
+// ruling (Findings 1/3, one defect): a resolution error is hard — it becomes
+// Load's and LoadSession's error through applyProxyState, never a silent
+// fall-through to the legacy values. The case is a group-readable key file (a
+// secret others can read): before the fix every Load silently served the
+// stale legacy pair — wt-model's gateway would run against old credentials
+// with no signal. ResolveProxy itself stays loud, and neither load path hands
+// back a config beside the error (nil, Load's malformed-document contract),
+// so no caller can serve the legacy pair either way.
+func TestApplyProxyStateFailsTheLoadWhenTheHomeIsBroken(t *testing.T) {
 	home := litellmStateEnv(t, `default_tag = "code"
 
 [litellm]
@@ -704,17 +884,21 @@ api_key = "sk-legacy"
 `)
 	writeProxyHome(t, home, "[litellm]\nurl = \"http://localhost:4001\"\nkey_file = \"litellm.key\"\n")
 	writeProxyKey(t, home, "sk-loose", 0o644)
-	if _, err := ResolveProxy(); err == nil {
-		t.Fatal("ResolveProxy accepted a 0644 key file, want the chmod 600 error")
+	if _, err := ResolveProxy(); err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("ResolveProxy on a 0644 key file = %v, want the chmod 600 error", err)
 	}
 	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("Load on a broken home returned err %v, want the chmod 600 error — never the legacy pair", err)
 	}
-	if cfg.LitellmBaseURL() != "http://legacy:4000" || cfg.LitellmAPIKey() != "sk-legacy" {
-		t.Errorf("runtime pair = %q/%q, want the legacy pair", cfg.LitellmBaseURL(), cfg.LitellmAPIKey())
+	if cfg != nil {
+		t.Error("Load returned a config beside the error; want nil so no caller can serve the legacy pair")
 	}
-	if cfg.ProxySource() != ProxySourceLegacy {
-		t.Errorf("ProxySource() = %v, want ProxySourceLegacy", cfg.ProxySource())
+	sess, err := LoadSession("claude")
+	if err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("LoadSession on a broken home returned err %v, want the chmod 600 error", err)
+	}
+	if sess != nil {
+		t.Error("LoadSession returned a config beside the error; want nil so no caller can serve the legacy pair")
 	}
 }

@@ -789,7 +789,9 @@ func Path() string {
 // error, but the returned Config is not nil: it carries whatever config.toml
 // already parsed (Agents/DefaultTag), just with an empty model catalog, so a
 // genuinely configured agent isn't misread as unconfigured by callers like
-// agents.IsConfigured. A malformed config.toml/registry.toml returns nil.
+// agents.IsConfigured. A malformed config.toml/registry.toml, or a proxy
+// pair the resolution cannot resolve (a broken wt-model home or key file),
+// returns nil — never a config serving a silent fall-back.
 func Load() (*Config, error) {
 	if _, err := Migrate(); err != nil {
 		return nil, fmt.Errorf("migration: %w", err)
@@ -812,7 +814,7 @@ func Load() (*Config, error) {
 		return cfgOrNilOnMissingRegistry(cfg, err), err
 	}
 	if !exists {
-		return finalizeCfg(cfg, providers, models), nil
+		return finalizeCfg(cfg, providers, models)
 	}
 
 	// migrateConfigSchema runs against a fresh, lock-protected read (via
@@ -832,7 +834,7 @@ func Load() (*Config, error) {
 	// in memory (schema fixups above only ever see wt-owned config.toml
 	// content). Providers/Models from a pre-Phase-4 config.toml are
 	// overwritten here — registry.toml is the source of truth.
-	return finalizeCfg(fresh, providers, models), nil
+	return finalizeCfg(fresh, providers, models)
 }
 
 // cfgOrNilOnMissingRegistry returns cfg (whatever Load has decoded from
@@ -852,13 +854,17 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 // from provider auth types, and resolves the LiteLLM proxy pair into the
 // runtime routing state (applyProxyState: the wt-model home's [litellm] table
 // first, config.toml's legacy table as the read-only fallback). With no
-// table anywhere, routing is off.
-func finalizeCfg(cfg *Config, providers []Provider, models []Model) *Config {
+// table anywhere, routing is off. A proxy pair the resolution cannot resolve
+// — a broken wt-model home or key file — is the error (fail closed), never a
+// silent fall-back to the legacy values.
+func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
 	deriveSushiAgents(cfg)
-	applyProxyState(cfg)
-	return cfg
+	if err := applyProxyState(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // SushiAgents are the agents that can run a Sushi model: claude (through

@@ -93,18 +93,29 @@ func ProxyHomePath() string {
 // the legacy [litellm] table of config.toml (read through readConfigFile —
 // no Load, no migrations, no writes), else the unconfigured pair. Sources
 // never mix: a home table that supplies no key never borrows the legacy one.
-// A parse error in a file the resolution needs is the resolution's error.
+// A parse error in a file the resolution needs is the resolution's error and
+// the zero pair — never another source's values (fix round 1, Findings 1/3).
+//
+// The home's two reads (its TOML and its key file) run under the flock
+// SetProxy writes with, so one resolve sees one writer's whole pair — never a
+// url and a key from different writes. An absent home config.toml takes no
+// lock: it is the writer's pre-publication state, coherent by construction
+// (SetProxy publishes the TOML last), and the legacy read below is one file's
+// one parse.
 func ResolveProxy() (ProxyPair, error) {
-	home, present, err := readProxyHome()
-	if err != nil {
-		return ProxyPair{}, err
-	}
-	if present {
-		key, err := readProxyKey(home)
-		if err != nil {
-			return ProxyPair{}, err
+	if home := ProxyHomePath(); home != "" {
+		switch _, serr := os.Stat(home); {
+		case serr == nil:
+			pair, found, err := resolveProxyHome(home)
+			if err != nil {
+				return ProxyPair{}, err
+			}
+			if found {
+				return pair, nil
+			}
+		case !os.IsNotExist(serr):
+			return ProxyPair{}, serr
 		}
-		return ProxyPair{URL: home.URL, APIKey: key, Source: ProxySourceHome}, nil
 	}
 	cfg, _, err := readConfigFile()
 	if err != nil {
@@ -114,6 +125,30 @@ func ResolveProxy() (ProxyPair, error) {
 		return ProxyPair{URL: cfg.LitellmTable.URL, APIKey: cfg.LitellmTable.APIKey, Source: ProxySourceLegacy}, nil
 	}
 	return ProxyPair{Source: ProxySourceNone}, nil
+}
+
+// resolveProxyHome resolves the home's pair under the writer's flock (see
+// ResolveProxy). found is false when the home's config.toml holds no
+// [litellm] table — the file without the table is the legacy fallback's case,
+// not an empty pair.
+func resolveProxyHome(home string) (pair ProxyPair, found bool, err error) {
+	err = WithFileLock(home+".lock", func() error {
+		lit, present, rerr := readProxyHome()
+		if rerr != nil {
+			return rerr
+		}
+		if !present {
+			return nil
+		}
+		key, rerr := readProxyKey(lit)
+		if rerr != nil {
+			return rerr
+		}
+		pair = ProxyPair{URL: lit.URL, APIKey: key, Source: ProxySourceHome}
+		found = true
+		return nil
+	})
+	return pair, found, err
 }
 
 // readProxyHome reads the home's [litellm] table. present is false when
@@ -171,16 +206,25 @@ func proxyKeyPath(lit proxyHomeLitellm) (string, error) {
 	return expanded, nil
 }
 
-// readProxyKey reads the key file under the internal/tokenfile rules: a file
-// group or other can access is a hard error that keeps its chmod 600
-// sentence (a secret others can read must not be used silently), a missing
-// or empty file is "no key" — the consumer's existing not-configured path
-// reports it — and the key is whitespace-trimmed.
+// readProxyKey reads the key file the table names under the one key-file
+// reading, keyToken.
 func readProxyKey(lit proxyHomeLitellm) (string, error) {
 	path, err := proxyKeyPath(lit)
 	if err != nil {
 		return "", err
 	}
+	return keyToken(path)
+}
+
+// keyToken is the one reading of a key file's key (fix round 1, Finding 2):
+// tokenfile.Load — a file group or other can access is a hard error keeping
+// its chmod 600 sentence (a secret others can read must not be used
+// silently) and the key is whitespace-trimmed — with a missing or empty file
+// mapped to "no key" (""), the consumer's existing not-configured path
+// reporting it. Both readers go through here: ResolveProxy's resolve and
+// SetProxy's no-op comparison, so "what the key is" is defined once and a
+// loose or unreadable file errors in both directions.
+func keyToken(path string) (string, error) {
 	key, err := tokenfile.Load(path)
 	if err == nil {
 		return key, nil
@@ -194,16 +238,16 @@ func readProxyKey(lit proxyHomeLitellm) (string, error) {
 
 // SetProxy is the one writer of the wt-model home: it sets the proxy pair's
 // url and api key, a nil field leaving that one unchanged. Both files are
-// written under one lock, so a reader never sees a url and a key from
-// different writers; the TOML keeps its existing mode (0644 when new) and the
-// key file is 0600 (umask-independent). A set that changes nothing writes
-// nothing — hand comments and the key file's bytes survive — while a real
-// TOML write drops comments and re-prepends the fixed header. A symlinked
-// config.toml or key file is written through (its link survives) and a
-// dangling link refuses the set before anything is touched. Only the new
-// home is written: the legacy config.toml is never opened for writing, so a
-// broken legacy config or registry can never block the one command that
-// fixes the pair.
+// written under one lock and ResolveProxy reads them under the same lock
+// (resolveProxyHome), so no reader ever sees a url and a key from different
+// writes; the TOML keeps its existing mode (0644 when new) and the key file
+// is 0600 (umask-independent). A set that changes nothing writes nothing —
+// hand comments and the key file's bytes survive — while a real TOML write
+// drops comments and re-prepends the fixed header. A symlinked config.toml
+// or key file is written through (its link survives) and a dangling link
+// refuses the set before anything is touched. Only the new home is written:
+// the legacy config.toml is never opened for writing, so a broken legacy
+// config or registry can never block the one command that fixes the pair.
 func SetProxy(url, key *string) error {
 	if url == nil && key == nil {
 		return nil
@@ -248,14 +292,18 @@ func SetProxy(url, key *string) error {
 			if err != nil {
 				return err
 			}
-			raw, err := os.ReadFile(keyTarget)
-			if err != nil && !os.IsNotExist(err) {
+			// The comparison is the key's identity as every reader sees it
+			// — keyToken (tokenfile.Load) on both sides, one definition of
+			// "what the key is": a file that merely differs in whitespace is
+			// unchanged and its bytes are preserved as written, and a loose
+			// or unreadable file errors out of the set too (fix round 1,
+			// Finding 2) — never a silent success over a key every read
+			// refuses.
+			current, err := keyToken(keyTarget)
+			if err != nil {
 				return err
 			}
-			// The key's identity is its trimmed content (that is how every
-			// reader sees it); a file that merely differs in whitespace is
-			// unchanged and its bytes are preserved as written.
-			keyChanged = strings.TrimSpace(string(raw)) != strings.TrimSpace(*key)
+			keyChanged = current != strings.TrimSpace(*key)
 		}
 
 		// Key first, document last: the TOML is the pointer at the key, so a
@@ -289,25 +337,22 @@ func SetProxy(url, key *string) error {
 // successful resolve lands one source's whole pair — url and key both from
 // ResolveProxy's read, never a mix of its read and c's earlier parse — and
 // carries the legacy table's retired enabled key along when the legacy
-// source won (nothing reads it; saves still round-trip it). When the
-// resolution errors, the pre-merge behavior is the whole fallback: the
-// legacy table's copy, and nothing when there is none. A broken home or key
-// file degrades instead of failing every Load (Load is not credential
-// validation; `status` and `set` call ResolveProxy and fail loud there).
-func applyProxyState(c *Config) {
+// source won (nothing reads it; saves still round-trip it). A resolution
+// error is hard (fix round 1, Findings 1/3): it becomes the load's error and
+// nothing falls back — an unparseable home config.toml or a loose/unreadable
+// key file must never silently serve the legacy values (`status` and `set`
+// call ResolveProxy and fail loud there too).
+func applyProxyState(c *Config) error {
 	pair, err := ResolveProxy()
-	if err == nil {
-		c.proxySource = pair.Source
-		c.litellm = LitellmState{URL: pair.URL, APIKey: pair.APIKey}
-		if pair.Source == ProxySourceLegacy && c.LitellmTable != nil {
-			c.litellm.Enabled = c.LitellmTable.Enabled
-		}
-		return
+	if err != nil {
+		return err
 	}
-	if c.LitellmTable != nil {
-		c.litellm = *c.LitellmTable
-		c.proxySource = ProxySourceLegacy
+	c.proxySource = pair.Source
+	c.litellm = LitellmState{URL: pair.URL, APIKey: pair.APIKey}
+	if pair.Source == ProxySourceLegacy && c.LitellmTable != nil {
+		c.litellm.Enabled = c.LitellmTable.Enabled
 	}
+	return nil
 }
 
 // writeTarget resolves path for a write through any symlink — the

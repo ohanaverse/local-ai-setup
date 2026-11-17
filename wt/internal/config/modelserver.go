@@ -59,6 +59,11 @@ func LoadSession(driverNames ...string) (*Config, error) {
 		}
 		cfg.Agents = append(cfg.Agents, Agent{Name: name, AllProviders: true})
 	}
-	applyProxyState(cfg)
+	// A proxy pair the resolution cannot resolve (a broken wt-model home or
+	// key file) is the load's error (fail closed), never a silent fall-back
+	// to the legacy values (fix round 1, Findings 1/3).
+	if err := applyProxyState(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
