@@ -112,8 +112,9 @@ func (h hooks) client(ep modelclient.Endpoint) *modelclient.Client {
 // loopbackOnlyClient is the client a test binary gets when no hook names one:
 // its transport refuses to dial any address that is not loopback, so the
 // httptest fake is the one network a test reaches. Never used by a production
-// binary (testing.Testing() is false there).
-func loopbackOnlyClient(ep modelclient.Endpoint) *modelclient.Client {
+// binary (testing.Testing() is false there). opts are extra client options a
+// test adds (fastModelClient's no-sleep poll).
+func loopbackOnlyClient(ep modelclient.Endpoint, opts ...modelclient.Option) *modelclient.Client {
 	d := &net.Dialer{}
 	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, _, err := net.SplitHostPort(addr)
@@ -122,7 +123,7 @@ func loopbackOnlyClient(ep modelclient.Endpoint) *modelclient.Client {
 		}
 		return d.DialContext(ctx, network, addr)
 	}}
-	return modelclient.New(ep, modelclient.WithHTTPClient(&http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}))
+	return modelclient.New(ep, append([]modelclient.Option{modelclient.WithHTTPClient(&http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }})}, opts...)...)
 }
 
 // stopReader is where the stop picker reads from.

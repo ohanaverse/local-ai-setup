@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,16 +100,7 @@ func boolp(b bool) *bool { return &b }
 // fastModelClient is loopbackOnlyModelClient with no sleep between job polls,
 // so a start job's polls do not slow the test down.
 func fastModelClient(ep modelclient.Endpoint) *modelclient.Client {
-	d := &net.Dialer{}
-	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, _, err := net.SplitHostPort(addr)
-		if err != nil || (host != "localhost" && !net.ParseIP(host).IsLoopback()) {
-			return nil, fmt.Errorf("cmd/wt-session tests dial loopback only, not %q", addr)
-		}
-		return d.DialContext(ctx, network, addr)
-	}}
-	hc := &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return modelclient.New(ep, modelclient.WithHTTPClient(hc), modelclient.WithSleep(func(time.Duration) {}))
+	return loopbackOnlyClient(ep, modelclient.WithSleep(func(time.Duration) {}))
 }
 
 // failOnRegistry makes every registry and local-provider seam fail the test

@@ -295,8 +295,8 @@ func collectUsageRemote(ctx context.Context, ms *modelSession, window time.Durat
 // (the host registry's, when this machine has one that loads); an id it does
 // not name takes its provider prefix.
 func collectUsageNoServer(openErr error, window time.Duration, asOf time.Time, f statsFilter, families map[string]string) usageReport {
-	var nc *modelclient.NotConfiguredError
 	return collectUsage(window, asOf, f, families, func() spendOutcome {
+		var nc *modelclient.NotConfiguredError
 		status := spendUnavailable
 		if errors.As(openErr, &nc) {
 			status = spendNotConfigured

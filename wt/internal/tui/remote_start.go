@@ -46,8 +46,12 @@ type launchHooks struct {
 	slot slotBuildFunc
 }
 
+// gatewayBuildFunc is the gateway agent build (agents.BuildLaunchCmdGateway's
+// shape); a nil hook means the real agents builder.
 type gatewayBuildFunc func(agent string, mdl config.Model, path string, yolo bool, gw agents.Gateway, models []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error)
 
+// slotBuildFunc is the slot-profile agent build (agents.BuildSlotLaunchCmdGateway's
+// shape); a nil hook means the real agents builder.
 type slotBuildFunc func(profiles.SlotLaunch, string, bool, agents.Gateway, []string) (*exec.Cmd, error)
 
 // buildLaunch is the agent build: the hook, or the real one when unset.
