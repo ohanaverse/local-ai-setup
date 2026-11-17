@@ -53,7 +53,7 @@ Since Phase 2 (#616) every launch of a model-driven agent refuses without a `[mo
 | `wt start|stop|job|smoke|stats|model list --server`, profile slots add/set/candidates | refuse as today (they need a server) |
 | `-A shell` and host commands | unchanged |
 
-**Note line.** One line on stderr per launch, M-rule shape, lower-case, naming the agent and the way out: `wt: note: no model server is configured — launching <agent> natively, with its own configuration (see <doc> to use wt-model)`. Exact wording is the builder's, within the style guide.
+**Note line.** One line on stderr per launch, lower-case, naming the agent and the way out. It is informational, not a failure, so style guide M4 makes it a bare `wt: <sentence>` (not `wt: note:`, which is reserved for "something went wrong but the command goes on"): `wt: no model server is configured — launching <agent> natively, with its own configuration; to choose models through wt-model, set url and token_file under [model-server] in config.toml`. (The first draft of this doc said `wt: note:`; the implementation follows M4.)
 
 **Native launch specifics (verified in recon).** claude native: bare `claude` (+ `--dangerously-skip-permissions` with `--yolo`), no `--model`; claude/copilot clear `ANTHROPIC_*`/provider auth env inherited from the shell (org-managed settings are applied by claude itself and are unaffected; to be confirmed on a managed machine); codex, opencode, pi run bare with their own config; agy is already native. `profiles.toml` overlays do not apply to a native launch (existing `applyProfileForLaunch` no-op); say so in the docs. No client session is registered or ended; no rotation/usage record is written (there is no model id).
 

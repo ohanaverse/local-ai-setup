@@ -37,7 +37,8 @@ func TestNativeModelBuildsEveryDriverWithoutAGateway(t *testing.T) {
 }
 
 // TestNativeNoteSaysWhatHappenedAndTheWayOut pins the stderr line a native
-// launch prints: a wt: note naming the agent, that nothing is configured and
+// launch prints: a bare wt: line (informational, style guide M4, not a
+// "note:") naming the agent, that nothing is configured and
 // the agent's own configuration decides the model, and the config key that
 // turns wt-model on. The fallback must never be silent, and a refusal never
 // carries this text.
