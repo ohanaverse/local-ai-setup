@@ -20,6 +20,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tokenfile"
 )
 
 // Location says whether a model is hosted locally or in the cloud.
@@ -84,6 +85,14 @@ func (c *Config) LitellmAPIKey() string { return c.litellm.APIKey }
 // home's [litellm] table (ProxySourceHome), the legacy table of config.toml
 // (ProxySourceLegacy, the read-only fallback) or nothing (ProxySourceNone).
 func (c *Config) ProxySource() ProxySource { return c.proxySource }
+
+// ProxyErr is why Load could not resolve the proxy pair (a *ProxyHomeError: an
+// unparseable home config.toml, a dangling link, a loose or unreadable key
+// file), nil when it resolved. The pair is then empty — never the legacy
+// values (fail closed) — and only the commands that use the pair fail on it
+// (`wt-model serve`, a proxy restart or probe); every other host command
+// loads normally, so a loose key file never blocks `wt model list`.
+func (c *Config) ProxyErr() error { return c.proxyErr }
 
 // SetLitellmForTest overrides the [litellm] routing state.
 // Production wiring goes through finalizeCfg (config.toml); tests in
@@ -702,6 +711,7 @@ type Config struct {
 	LitellmTable *LitellmState `toml:"litellm,omitempty"`
 	litellm      LitellmState  `toml:"-"` // runtime pair, resolved at load by applyProxyState (home → legacy)
 	proxySource  ProxySource   `toml:"-"` // where litellm's pair came from
+	proxyErr     error         `toml:"-"` // why the pair did not resolve (ProxyErr); the pair is then empty
 	// LaunchTable is the hand-edited [launch] table (exit_prompt), a legacy
 	// key wt tolerates and ignores (R305a): it round-trips through every save
 	// and wt never sets it, but no value is read or validated —
@@ -823,15 +833,14 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 // runtime routing state (applyProxyState: the wt-model home's [litellm] table
 // first, config.toml's legacy table as the read-only fallback). With no
 // table anywhere, routing is off. A proxy pair the resolution cannot resolve
-// — a broken wt-model home or key file — is the error (fail closed), never a
-// silent fall-back to the legacy values.
+// — a broken wt-model home or key file — leaves the pair empty (fail closed,
+// never the legacy values) and is recorded for ProxyErr, not returned: only
+// the commands that use the pair fail on it.
 func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
 	cfg.Providers, cfg.Models = providers, models
 	deriveNative(cfg)
 	deriveSushiAgents(cfg)
-	if err := applyProxyState(cfg); err != nil {
-		return nil, err
-	}
+	applyProxyState(cfg)
 	return cfg, nil
 }
 
@@ -1193,6 +1202,16 @@ func LoadFixHint(err error) string {
 	switch {
 	case err == nil, errors.Is(err, ErrRegistryMissing):
 		return ""
+	}
+	// A wt-model home failure is not config.toml's: `wt config` cannot touch
+	// the home. A loose key file's error already carries its chmod sentence.
+	var phe *ProxyHomeError
+	if errors.As(err, &phe) {
+		var te *tokenfile.Error
+		if errors.As(err, &te) && te.Kind == tokenfile.KindLoose {
+			return ""
+		}
+		return "repair the wt-model config home file it names"
 	}
 	if hint := RegistryFixHint(err); hint != "" {
 		return hint

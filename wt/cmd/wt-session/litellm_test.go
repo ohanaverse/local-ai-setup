@@ -426,7 +426,8 @@ func TestLitellmStatusTextMasksKey(t *testing.T) {
 }
 
 // TestLitellmSetIndependentAndClear pins `set`'s Changed semantics (C4) and
-// where the pair lives now: a flag left out never clobbers the other field,
+// where the pair lives now: a one-flag first set over a legacy pair is refused
+// (it would drop the other field), then a flag left out never clobbers the other field,
 // --api-key "" clears the key without deleting the key file, and every change
 // lands in the wt-model home — the url in its config.toml (never the key),
 // the key verbatim in the 0600 file its key_file names — where ResolveProxy,
@@ -439,17 +440,26 @@ func TestLitellmSetIndependentAndClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	u, k := "http://localhost:4000", "sk-secret"
-	if err := runLitellmSet(&bytes.Buffer{}, &u, nil); err != nil {
+	// While the legacy table holds the pair, a one-flag first set would drop
+	// the other field (sources never mix), so it is refused, writing nothing.
+	if err := runLitellmSet(&bytes.Buffer{}, &u, nil); err == nil || !strings.Contains(err.Error(), "the first set needs both --url and --api-key") {
+		t.Fatalf("url-only first set = %v, want the first-set refusal", err)
+	}
+	if _, err := os.Lstat(config.ProxyHomePath()); !os.IsNotExist(err) {
+		t.Fatalf("home config.toml exists after the refused first set: %v", err)
+	}
+	first := "sk-first"
+	if err := runLitellmSet(&bytes.Buffer{}, &u, &first); err != nil {
 		t.Fatal(err)
 	}
-	if pair := resolveProxy(t); pair.URL != u || pair.APIKey != "" || pair.Source != config.ProxySourceHome {
-		t.Fatalf("after url-only: %+v, want the home pair with no key", pair)
+	if pair := resolveProxy(t); pair.URL != u || pair.APIKey != first || pair.Source != config.ProxySourceHome {
+		t.Fatalf("after the first set: %+v, want the home pair", pair)
 	}
 	if err := runLitellmSet(&bytes.Buffer{}, nil, &k); err != nil {
 		t.Fatal(err)
 	}
 	if pair := resolveProxy(t); pair.URL != u || pair.APIKey != k {
-		t.Fatalf("url-only set clobbered or key did not land: %+v", pair)
+		t.Fatalf("key-only set clobbered the url or the key did not land: %+v", pair)
 	}
 	u2 := "http://other:4000"
 	if err := runLitellmSet(&bytes.Buffer{}, &u2, nil); err != nil {

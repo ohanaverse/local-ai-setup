@@ -102,6 +102,11 @@ reader resolves it — the key is never printed, only masked.
 
 - The key file's mode must be `0600` or stricter (no group or other bits).
   A looser mode is refused with `chmod 600 PATH`.
+- A home that cannot be read (a loose or unreadable key file, a `config.toml`
+  that does not parse, a dangling link) is never replaced by the legacy pair.
+  Only what uses the pair refuses on it: `wt-model serve` at startup,
+  `litellm status|set`, and `wt litellm restart` and the slot-profile proxy
+  checks. Every other command, and every session, runs as usual.
 - The key is the file's content with surrounding whitespace trimmed. A
   missing or empty key file is no key at all, and `--api-key ""` clears the
   value without deleting the file. wt never deletes the file.
@@ -123,6 +128,10 @@ reader resolves it — the key is never printed, only masked.
   ```text
   wt-model: note: config.toml: [litellm] is a read-only fallback — 'wt-model litellm set' writes /Users/keith/.config/wt-model/config.toml now
   ```
+- While the legacy table holds the pair, the first set (the one that creates
+  the home's `[litellm]` table) needs both `--url` and `--api-key`. Nothing
+  is copied from the legacy table, so a first set with one flag would leave
+  the other unset; it is refused and writes nothing.
 
 Both commands answer `0` done and `1` any failure. A set that wrote the pair
 prints `litellm: updated`; a set with no flag is refused with `nothing to

@@ -583,25 +583,12 @@ func runLitellmProviders(out io.Writer, asJSON bool) error {
 	return nil
 }
 
-// runLitellmStatus is `wt litellm status`: the LiteLLM proxy pair as every
-// reader resolves it (ResolveProxy: the wt-model home first, the legacy
-// [litellm] table the read-only fallback), never the key itself. There is no
-// on/off any more: every session routes through the model server, which
-// reaches LiteLLM with this url and key (R4), so the retired [litellm] enabled
-// is not reported. A pair the legacy fallback supplied prints the one note on
-// stderr (ruling 7).
+// runLitellmStatus is `wt litellm status`: the shared status body
+// (config.ShowProxyStatus) — the pair as every reader resolves it, never the
+// key itself, with the fallback note on errOut when the legacy table supplied
+// it (ruling 7).
 func runLitellmStatus(out, errOut io.Writer, asJSON bool) error {
-	pair, err := config.ResolveProxy()
-	if err != nil {
-		return err
-	}
-	if err := config.WriteProxyStatus(out, pair, asJSON); err != nil {
-		return err
-	}
-	if pair.Source == config.ProxySourceLegacy {
-		fmt.Fprintln(errOut, config.ProxyFallbackNote())
-	}
-	return nil
+	return config.ShowProxyStatus(out, errOut, asJSON)
 }
 
 // runLitellmSet is `wt litellm set`: the one writer of the wt-model home
@@ -755,6 +742,11 @@ func removedLitellmCmd(name string) *cobra.Command {
 func runLitellmRestart(out io.Writer, cfg *config.Config) error {
 	url := ""
 	if cfg != nil {
+		// A pair the load could not resolve would make the restart skip
+		// its readiness wait as "no url": say why instead.
+		if perr := cfg.ProxyErr(); perr != nil {
+			return config.ConfigError(perr)
+		}
 		url = cfg.LitellmBaseURL()
 	}
 	if warnings := litellm.RestartAndAwait(url); len(warnings) > 0 {

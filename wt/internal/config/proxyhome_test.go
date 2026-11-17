@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -588,6 +589,60 @@ func TestSetProxyNoOpPreservesBytes(t *testing.T) {
 	}
 }
 
+// TestSetProxyRefusesAPartialFirstSet pins the review ruling on #7: the first
+// set creates the authoritative [litellm] table and sources never mix, so a
+// first set with --url alone (or --api-key alone) would silently drop the
+// legacy table's key (or url) — `status` then shows it unset and serve
+// refuses. It is refused instead, writing nothing, and the legacy pair keeps
+// resolving; once the table exists, a one-field set works as before. With no
+// legacy table there is nothing to drop, so a one-field first set works.
+func TestSetProxyRefusesAPartialFirstSet(t *testing.T) {
+	home := litellmStateEnv(t, `default_tag = "code"
+
+[litellm]
+url = "http://legacy:4000"
+api_key = "sk-legacy"
+`)
+	for _, tc := range []struct {
+		name     string
+		url, key *string
+	}{
+		{"url alone", ptr("http://new:4000"), nil},
+		{"api key alone", nil, ptr("sk-new")},
+	} {
+		err := SetProxy(tc.url, tc.key)
+		if err == nil || !strings.Contains(err.Error(), "the first set needs both --url and --api-key") {
+			t.Fatalf("%s: SetProxy = %v, want the first-set refusal", tc.name, err)
+		}
+		if _, err := os.Lstat(filepath.Join(home, "wt-model", "config.toml")); !os.IsNotExist(err) {
+			t.Fatalf("%s: home config.toml exists after the refusal: %v", tc.name, err)
+		}
+		if _, err := os.Lstat(filepath.Join(home, "wt-model", defaultProxyKeyFile)); !os.IsNotExist(err) {
+			t.Fatalf("%s: key file exists after the refusal: %v", tc.name, err)
+		}
+	}
+	pair, err := ResolveProxy()
+	if err != nil || pair.Source != ProxySourceLegacy || pair.APIKey != "sk-legacy" {
+		t.Fatalf("after the refusals ResolveProxy = %+v, %v; want the legacy pair", pair, err)
+	}
+	if err := SetProxy(ptr("http://new:4000"), ptr("sk-new")); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetProxy(ptr("http://newer:4000"), nil); err != nil {
+		t.Fatalf("a url-only set over an existing table = %v, want it to work", err)
+	}
+	if pair, err := ResolveProxy(); err != nil || pair.URL != "http://newer:4000" || pair.APIKey != "sk-new" {
+		t.Errorf("ResolveProxy = %+v, %v; want the newer url and the kept key", pair, err)
+	}
+
+	t.Run("no legacy table", func(t *testing.T) {
+		proxyEnv(t, "")
+		if err := SetProxy(ptr("http://fresh:4000"), nil); err != nil {
+			t.Fatalf("a url-only first set with no legacy table = %v, want it to work", err)
+		}
+	})
+}
+
 // TestSetProxyNeverObservesATornPairUnderConcurrentSets pins fix round 1,
 // Finding 4: ResolveProxy reads the home TOML and its key file under the same
 // flock SetProxy writes with, so an observer always sees one whole generation
@@ -840,13 +895,14 @@ func TestSetProxyRefusesAnUnparseableHome(t *testing.T) {
 }
 
 // TestLoadResolvesTheProxyPairIntoTheRuntimeState pins ruling 1 (the merge
-// at load, not a resolver at each call site): after Load — and LoadSession —
-// the runtime pair behind LitellmBaseURL/LitellmAPIKey is the home's when the
+// at load, not a resolver at each call site): after Load the runtime pair behind LitellmBaseURL/LitellmAPIKey is the home's when the
 // home has a [litellm] table and the legacy table's otherwise, with the
 // trailing-slash trim kept, and ProxySource says which. LitellmTable stays
 // the untouched legacy parse (TestLegacyLitellmKeysSurviveASave's rule), so
 // every existing consumer keeps working with zero call-site changes while the
-// pair itself comes from the new home.
+// pair itself comes from the new home. LoadSession never opens the home (the
+// spec's "No session-behavior change" anti-goal): it keeps the inert copy of
+// the legacy table it always made, with no source.
 func TestLoadResolvesTheProxyPairIntoTheRuntimeState(t *testing.T) {
 	const legacy = `default_tag = "code"
 
@@ -881,7 +937,7 @@ api_key = "sk-legacy"
 		if err != nil {
 			t.Fatal(err)
 		}
-		check(t, sess, "http://localhost:4001", "sk-test", ProxySourceHome)
+		check(t, sess, "http://legacy:4000", "sk-legacy", ProxySourceNone)
 	})
 
 	t.Run("the legacy pair with no home", func(t *testing.T) {
@@ -895,20 +951,19 @@ api_key = "sk-legacy"
 		if err != nil {
 			t.Fatal(err)
 		}
-		check(t, sess, "http://legacy:4000", "sk-legacy", ProxySourceLegacy)
+		check(t, sess, "http://legacy:4000", "sk-legacy", ProxySourceNone)
 	})
 }
 
-// TestApplyProxyStateFailsTheLoadWhenTheHomeIsBroken pins fix round 1's
-// ruling (Findings 1/3, one defect): a resolution error is hard — it becomes
-// Load's and LoadSession's error through applyProxyState, never a silent
-// fall-through to the legacy values. The case is a group-readable key file (a
-// secret others can read): before the fix every Load silently served the
-// stale legacy pair — wt-model's gateway would run against old credentials
-// with no signal. ResolveProxy itself stays loud, and neither load path hands
-// back a config beside the error (nil, Load's malformed-document contract),
-// so no caller can serve the legacy pair either way.
-func TestApplyProxyStateFailsTheLoadWhenTheHomeIsBroken(t *testing.T) {
+// TestABrokenHomeFailsOnlyWhatUsesThePair pins the review ruling on #1/#2:
+// a pair the resolution cannot resolve (here a group-readable key file, a
+// secret others can read) is never served as the legacy values (fix round 1,
+// Findings 1/3) — Load's pair is empty and ProxyErr carries the chmod 600
+// error for the commands that use the pair — but the load itself succeeds, so
+// a loose key file no longer blocks `wt model list`, `wt stop` or the model
+// server's per-request reload. LoadSession never opens the home at all, so a
+// session launch cannot fail on it (the spec's "No session-behavior change").
+func TestABrokenHomeFailsOnlyWhatUsesThePair(t *testing.T) {
 	home := litellmStateEnv(t, `default_tag = "code"
 
 [litellm]
@@ -921,18 +976,23 @@ api_key = "sk-legacy"
 		t.Fatalf("ResolveProxy on a 0644 key file = %v, want the chmod 600 error", err)
 	}
 	cfg, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "chmod 600") {
-		t.Fatalf("Load on a broken home returned err %v, want the chmod 600 error — never the legacy pair", err)
+	if err != nil {
+		t.Fatalf("Load on a broken home = %v, want it to load (only the pair's users fail)", err)
 	}
-	if cfg != nil {
-		t.Error("Load returned a config beside the error; want nil so no caller can serve the legacy pair")
+	var phe *ProxyHomeError
+	if perr := cfg.ProxyErr(); !errors.As(perr, &phe) || !strings.Contains(perr.Error(), "chmod 600") {
+		t.Errorf("ProxyErr() = %v, want a *ProxyHomeError carrying the chmod 600 error", perr)
+	}
+	if cfg.LitellmBaseURL() != "" || cfg.LitellmAPIKey() != "" || cfg.ProxySource() != ProxySourceNone {
+		t.Errorf("pair = %q/%q source %v, want empty — never the legacy pair",
+			cfg.LitellmBaseURL(), cfg.LitellmAPIKey(), cfg.ProxySource())
 	}
 	sess, err := LoadSession("claude")
-	if err == nil || !strings.Contains(err.Error(), "chmod 600") {
-		t.Fatalf("LoadSession on a broken home returned err %v, want the chmod 600 error", err)
+	if err != nil {
+		t.Fatalf("LoadSession on a broken home = %v, want it to load: a session never reads the home", err)
 	}
-	if sess != nil {
-		t.Error("LoadSession returned a config beside the error; want nil so no caller can serve the legacy pair")
+	if sess.ProxyErr() != nil {
+		t.Errorf("LoadSession ProxyErr() = %v, want nil: the home was never opened", sess.ProxyErr())
 	}
 }
 
@@ -1090,5 +1150,67 @@ func TestResolveProxyResolvesNothingWithNoConfigHome(t *testing.T) {
 	}
 	if pair != (ProxyPair{}) {
 		t.Errorf("ResolveProxy() with no config home = %+v, want the unconfigured pair — the working directory's agent-wt/config.toml must never supply the legacy pair", pair)
+	}
+}
+
+// TestResolveProxyRefusesADanglingHomeLink pins that a home config.toml link
+// whose target is missing is an error, never "no home": falling through would
+// silently serve the legacy pair (a dotfiles link to an unmounted volume),
+// the very fall-back the fail-closed rule forbids — and SetProxy already
+// refuses the same link (writeTarget).
+func TestResolveProxyRefusesADanglingHomeLink(t *testing.T) {
+	home := litellmStateEnv(t, "[litellm]\nurl = \"http://legacy:4000\"\napi_key = \"sk-legacy\"\n")
+	link := filepath.Join(home, "wt-model", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "missing", "config.toml"), link); err != nil {
+		t.Fatal(err)
+	}
+	if pair, err := ResolveProxy(); err == nil || !strings.Contains(err.Error(), "dangling symlink") {
+		t.Fatalf("ResolveProxy() = %+v, %v; want the dangling symlink error, never the legacy pair", pair, err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() = %v; want it to load with the error in ProxyErr", err)
+	}
+	if perr := cfg.ProxyErr(); perr == nil || !strings.Contains(perr.Error(), "dangling symlink") {
+		t.Fatalf("ProxyErr() = %v; want the dangling symlink error", perr)
+	}
+	if cfg.ProxySource() != ProxySourceNone || cfg.LitellmBaseURL() != "" {
+		t.Errorf("pair source %v url %q, want empty: never the legacy pair", cfg.ProxySource(), cfg.LitellmBaseURL())
+	}
+}
+
+// TestLoadFixHintNeverSendsAHomeFailureToWtConfig pins that a load's ProxyErr
+// from the wt-model home is not given config.toml's repair: `wt config` cannot
+// touch the home. A loose key file gets no hint (its error carries the chmod
+// sentence); any other home failure names the home.
+func TestLoadFixHintNeverSendsAHomeFailureToWtConfig(t *testing.T) {
+	home := litellmStateEnv(t, `default_tag = "code"`+"\n")
+	writeProxyHome(t, home, "[litellm]\nurl = \"http://localhost:4001\"\n")
+	writeProxyKey(t, home, "sk-loose", 0o644)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = cfg.ProxyErr()
+	if err == nil {
+		t.Fatal("ProxyErr is nil on a loose key file")
+	}
+	if hint := LoadFixHint(err); hint != "" {
+		t.Errorf("LoadFixHint(loose key) = %q, want none (the error carries chmod 600)", hint)
+	}
+	writeProxyHome(t, home, "this is = = not toml")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = cfg.ProxyErr()
+	if err == nil {
+		t.Fatal("ProxyErr is nil on an unparseable home")
+	}
+	if hint := LoadFixHint(err); strings.Contains(hint, "wt config") || !strings.Contains(hint, "wt-model config home") {
+		t.Errorf("LoadFixHint(unparseable home) = %q, want the wt-model home named and not `wt config`", hint)
 	}
 }

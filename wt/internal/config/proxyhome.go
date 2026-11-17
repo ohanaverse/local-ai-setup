@@ -103,6 +103,21 @@ func ProxyHomePath() string {
 // (SetProxy publishes the TOML last), and the legacy read below is one file's
 // one parse.
 func ResolveProxy() (ProxyPair, error) {
+	return resolveProxy(func() (*LitellmState, error) {
+		cfg, _, err := readConfigFile()
+		if err != nil {
+			return nil, err
+		}
+		return cfg.LitellmTable, nil
+	})
+}
+
+// resolveProxy is ResolveProxy with the legacy table supplied by the caller:
+// ResolveProxy reads it fresh (readConfigFile), while a load hands in the table
+// it has already parsed (applyProxyState), so a Load reads config.toml once and
+// the legacy pair and its retired enabled key come from that one parse. legacy
+// runs only when the home holds no [litellm] table.
+func resolveProxy(legacy func() (*LitellmState, error)) (ProxyPair, error) {
 	home := ProxyHomePath()
 	if home == "" {
 		// No config home at all: nothing resolves (ProxyHomePath's contract)
@@ -121,13 +136,26 @@ func ResolveProxy() (ProxyPair, error) {
 		}
 	case !os.IsNotExist(serr):
 		return ProxyPair{}, serr
+	default:
+		// A config.toml link whose target is missing (a dotfiles link to an
+		// unmounted volume) is not "no home": falling through would silently
+		// serve the legacy pair. Loud, like SetProxy's writeTarget.
+		// Re-stat after the Lstat: a first SetProxy may publish the file
+		// between the two calls, and that is the pre-publication state, not
+		// a dangling link.
+		if lst, lerr := os.Lstat(home); lerr == nil && lst.Mode()&os.ModeSymlink != 0 {
+			if _, serr := os.Stat(home); os.IsNotExist(serr) {
+				return ProxyPair{}, fmt.Errorf("%s is a dangling symlink (its target is missing)", home)
+			}
+			return resolveProxy(legacy)
+		}
 	}
-	cfg, _, err := readConfigFile()
+	table, err := legacy()
 	if err != nil {
 		return ProxyPair{}, err
 	}
-	if cfg.LitellmTable != nil {
-		return ProxyPair{URL: cfg.LitellmTable.URL, APIKey: cfg.LitellmTable.APIKey, Source: ProxySourceLegacy}, nil
+	if table != nil {
+		return ProxyPair{URL: table.URL, APIKey: table.APIKey, Source: ProxySourceLegacy}, nil
 	}
 	return ProxyPair{Source: ProxySourceNone}, nil
 }
@@ -138,7 +166,7 @@ func ResolveProxy() (ProxyPair, error) {
 // not an empty pair.
 func resolveProxyHome(home string) (pair ProxyPair, found bool, err error) {
 	err = WithFileLock(home+".lock", func() error {
-		lit, present, rerr := readProxyHome()
+		lit, present, rerr := readProxyHome(home)
 		if rerr != nil {
 			return rerr
 		}
@@ -156,15 +184,11 @@ func resolveProxyHome(home string) (pair ProxyPair, found bool, err error) {
 	return pair, found, err
 }
 
-// readProxyHome reads the home's [litellm] table. present is false when
-// there is no home, no config.toml or no [litellm] table in it — each of
-// those falls back to the legacy table. A file that exists but does not
-// parse is an error, loud.
-func readProxyHome() (lit proxyHomeLitellm, present bool, err error) {
-	path := ProxyHomePath()
-	if path == "" {
-		return lit, false, nil
-	}
+// readProxyHome reads the [litellm] table of the home config.toml at path.
+// present is false when there is no config.toml or no [litellm] table in it —
+// each of those falls back to the legacy table. A file that exists but does
+// not parse is an error, loud.
+func readProxyHome(path string) (lit proxyHomeLitellm, present bool, err error) {
 	doc, _, err := decodeProxyHome(path)
 	if err != nil {
 		return lit, false, err
@@ -270,6 +294,8 @@ func keyTokenState(path string) (key string, present bool, err error) {
 // refuses the set before anything is touched. Only the new home is written:
 // the legacy config.toml is never opened for writing, so a broken legacy
 // config or registry can never block the one command that fixes the pair.
+// A set that would create the home's [litellm] table and leaves out a field
+// the legacy table holds is refused, writing nothing (refusePartialFirstSet).
 func SetProxy(url, key *string) error {
 	if url == nil && key == nil {
 		return nil
@@ -288,6 +314,16 @@ func SetProxy(url, key *string) error {
 			return err
 		}
 		hadTable := doc.Litellm != nil
+		// The first set creates the authoritative table, and sources never
+		// mix (ruling 4): a field it leaves out would read empty from then
+		// on, silently dropping what the legacy table supplied. So a first
+		// set that leaves out a field the legacy table holds is refused —
+		// nothing is copied from it.
+		if !hadTable {
+			if err := refusePartialFirstSet(cfgTarget, url, key); err != nil {
+				return err
+			}
+		}
 		oldLit := proxyHomeLitellm{}
 		if hadTable {
 			oldLit = *doc.Litellm
@@ -354,30 +390,67 @@ func SetProxy(url, key *string) error {
 	})
 }
 
-// applyProxyState resolves the proxy pair into c's runtime state — ruling 1:
-// the merge happens here, at load, so no consumer can forget it (the pair
-// lands where finalizeCfg and LoadSession already copied the table, and
-// LitellmBaseURL/LitellmAPIKey keep answering from it unchanged). A
-// successful resolve lands one source's whole pair — url and key both from
-// ResolveProxy's read, never a mix of its read and c's earlier parse — and
-// carries the legacy table's retired enabled key along when the legacy
-// source won (nothing reads it; saves still round-trip it). A resolution
-// error is hard (fix round 1, Findings 1/3): it becomes the load's error and
-// nothing falls back — an unparseable home config.toml or a loose/unreadable
-// key file must never silently serve the legacy values (`status` fails loud
-// through ResolveProxy; `set` through SetProxy's own decode and key reads).
-func applyProxyState(c *Config) error {
-	pair, err := ResolveProxy()
-	if err != nil {
-		return err
+// refusePartialFirstSet refuses a first set (no home [litellm] table yet)
+// that leaves out a field the legacy [litellm] table holds: the new table is
+// authoritative, so that value would silently stop resolving. A legacy
+// config.toml that cannot be read is not a reason to refuse — the set is the
+// command that replaces it (SetProxy's contract), and there is no value wt
+// can see to drop.
+func refusePartialFirstSet(cfgTarget string, url, key *string) error {
+	if url != nil && key != nil {
+		return nil
 	}
-	c.proxySource = pair.Source
-	c.litellm = LitellmState{URL: pair.URL, APIKey: pair.APIKey}
-	if pair.Source == ProxySourceLegacy && c.LitellmTable != nil {
-		c.litellm.Enabled = c.LitellmTable.Enabled
+	cfg, _, err := readConfigFile()
+	if err != nil || cfg.LitellmTable == nil {
+		return nil
+	}
+	if (url == nil && cfg.LitellmTable.URL != "") || (key == nil && cfg.LitellmTable.APIKey != "") {
+		return fmt.Errorf("%s has no [litellm] table yet and the legacy [litellm] table of config.toml holds the pair, so the first set needs both --url and --api-key (nothing is copied from the legacy table)", cfgTarget)
 	}
 	return nil
 }
+
+// applyProxyState resolves the proxy pair into c's runtime state — ruling 1:
+// the merge happens here, at load, so no consumer can forget it (the pair
+// lands where finalizeCfg already copied the table, and
+// LitellmBaseURL/LitellmAPIKey keep answering from it unchanged). A
+// successful resolve lands one source's whole pair — the legacy table is c's
+// own parse (no second read of config.toml), so url, key and the retired
+// enabled key carried along when the legacy source won (nothing reads it;
+// saves still round-trip it) all come from one read. A resolution error
+// leaves the pair empty and is recorded as c.ProxyErr (a *ProxyHomeError):
+// nothing falls back — an unparseable home config.toml or a loose/unreadable
+// key file must never silently serve the legacy values (fix round 1,
+// Findings 1/3) — but the load itself goes on, and only the commands that use
+// the pair fail on it (`wt-model serve`, a proxy restart or probe; `status`
+// fails loud through ResolveProxy, `set` through SetProxy's own reads).
+func applyProxyState(c *Config) {
+	pair, err := resolveProxy(func() (*LitellmState, error) { return c.LitellmTable, nil })
+	if err != nil {
+		c.proxyErr = &ProxyHomeError{Err: err}
+		c.proxySource = ProxySourceNone
+		c.litellm = LitellmState{}
+		return
+	}
+	c.proxyErr = nil
+	c.proxySource = pair.Source
+	c.litellm = LitellmState{URL: pair.URL, APIKey: pair.APIKey}
+	if pair.Source == ProxySourceLegacy {
+		c.litellm.Enabled = c.LitellmTable.Enabled
+	}
+}
+
+// ProxyHomeError is a load's failure to resolve the proxy pair from the
+// wt-model config home (an unparseable home config.toml, a dangling link, a
+// loose or unreadable key file), what (*Config).ProxyErr returns. It is its
+// own type so LoadFixHint does not send the user to `wt config`, which cannot
+// touch the home.
+type ProxyHomeError struct{ Err error }
+
+func (e *ProxyHomeError) Error() string { return e.Err.Error() }
+
+// Unwrap exposes Err to errors.Is/errors.As.
+func (e *ProxyHomeError) Unwrap() error { return e.Err }
 
 // writeTarget resolves path for a write through any symlink — the
 // internal/litellm Save precedent: a dotfiles link survives, its target is
@@ -444,4 +517,22 @@ func WriteProxyStatus(w io.Writer, pair ProxyPair, asJSON bool) error {
 func ProxyFallbackNote() string {
 	return fmt.Sprintf("%s: note: config.toml: [litellm] is a read-only fallback — '%s litellm set' writes %s now",
 		BinaryName, BinaryName, ProxyHomePath())
+}
+
+// ShowProxyStatus is both binaries' `litellm status`: the pair as every
+// reader resolves it (ResolveProxy), printed through WriteProxyStatus, and the
+// fallback note on errOut when the legacy table supplied it (ruling 7) — one
+// body, so the twins cannot diverge.
+func ShowProxyStatus(out, errOut io.Writer, asJSON bool) error {
+	pair, err := ResolveProxy()
+	if err != nil {
+		return err
+	}
+	if err := WriteProxyStatus(out, pair, asJSON); err != nil {
+		return err
+	}
+	if pair.Source == ProxySourceLegacy {
+		fmt.Fprintln(errOut, ProxyFallbackNote())
+	}
+	return nil
 }

@@ -61,11 +61,12 @@ func LoadSession(driverNames ...string) (*Config, error) {
 		}
 		cfg.Agents = append(cfg.Agents, Agent{Name: name, AllProviders: true})
 	}
-	// A proxy pair the resolution cannot resolve (a broken wt-model home or
-	// key file) is the load's error (fail closed), never a silent fall-back
-	// to the legacy values (fix round 1, Findings 1/3).
-	if err := applyProxyState(cfg); err != nil {
-		return nil, err
+	// The proxy pair is host state a session never reads (the spec's
+	// "No session-behavior change" anti-goal): no wt-model home is opened
+	// here, so a broken home or key file can never block a launch. The
+	// legacy table is copied as it always was, inert.
+	if cfg.LitellmTable != nil {
+		cfg.litellm = *cfg.LitellmTable
 	}
 	return cfg, nil
 }

@@ -90,23 +90,12 @@ Exit codes:
 	return c
 }
 
-// runLitellmStatus is `wt-model litellm status`: the proxy pair as every
-// reader resolves it (ResolveProxy), printed through the shared status
-// document (WriteProxyStatus). A pair the legacy [litellm] table supplied
-// prints the one fallback note on stderr — the pair is this command's
-// subject, and the fallback is read-only now (ruling 7).
+// runLitellmStatus is `wt-model litellm status`: the shared status body
+// (config.ShowProxyStatus) — the pair as every reader resolves it, never the
+// key itself, with the fallback note on errOut when the legacy table supplied
+// it (ruling 7).
 func runLitellmStatus(out, errOut io.Writer, asJSON bool) error {
-	pair, err := config.ResolveProxy()
-	if err != nil {
-		return err
-	}
-	if err := config.WriteProxyStatus(out, pair, asJSON); err != nil {
-		return err
-	}
-	if pair.Source == config.ProxySourceLegacy {
-		fmt.Fprintln(errOut, config.ProxyFallbackNote())
-	}
-	return nil
+	return config.ShowProxyStatus(out, errOut, asJSON)
 }
 
 // runLitellmSet is `wt-model litellm set`: the one writer of the wt-model

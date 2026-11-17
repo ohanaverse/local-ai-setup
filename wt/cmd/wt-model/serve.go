@@ -35,6 +35,12 @@ func loadServeConfig() (*config.Config, *url.URL, string, error) {
 	if err != nil {
 		return nil, nil, "", config.ConfigError(err)
 	}
+	// The pair is what serve forwards with: a home Load could not resolve
+	// (a loose key file, an unparseable home) refuses the start here, the one
+	// place it matters, with the load's own wording and hint.
+	if perr := cfg.ProxyErr(); perr != nil {
+		return nil, nil, "", config.ConfigError(perr)
+	}
 	base, key := cfg.LitellmBaseURL(), cfg.LitellmAPIKey()
 	if base == "" || key == "" {
 		return nil, nil, "", errors.New("the LiteLLM proxy is not configured: run 'wt-model litellm set --url URL --api-key KEY'")
