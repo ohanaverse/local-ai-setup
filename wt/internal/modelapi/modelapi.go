@@ -13,8 +13,10 @@ const (
 	// APIMajor is the wire API's major version; a client refuses a server
 	// whose Ping reports a different one.
 	APIMajor = 1
-	// SchemaVersion is the catalog document's schema version.
-	SchemaVersion = 1
+	// SchemaVersion is the catalog document's schema version. A client refuses
+	// a server older than it (the new fields and endpoints it relies on are
+	// absent there) as well as one newer.
+	SchemaVersion = 2
 )
 
 // Ping is the reply to the server's liveness/version probe.
@@ -243,6 +245,18 @@ type Resident struct {
 	Stoppable bool   `json:"stoppable"`
 	// Figure is the memory the resident holds, as wt words it.
 	Figure string `json:"figure,omitempty"`
+}
+
+// StoppableIDs is the ids of the residents the server can stop: what a stop
+// answer approves.
+func StoppableIDs(rs []Resident) []string {
+	var ids []string
+	for _, r := range rs {
+		if r.Stoppable {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
 }
 
 // SessionRegister announces a session and the models it uses.

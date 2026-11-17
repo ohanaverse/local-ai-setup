@@ -89,7 +89,7 @@ func (s *Session) Start(ctx context.Context) error {
 		return nil
 	}
 	err := s.c.Register(ctx, s.id, s.models)
-	if permanent(err) {
+	if IsPermanent(err) {
 		return err
 	}
 	lctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -98,12 +98,16 @@ func (s *Session) Start(ctx context.Context) error {
 	return err
 }
 
-// permanent reports whether err is one no retry can heal.
-func permanent(err error) bool {
+// IsPermanent reports whether err is one no retry can heal: a refused token, an
+// API skew or another program at the address. Start stops its heartbeat for
+// these, and a caller reads one as "the server never took the register", so
+// the DELETE at the end is refused too.
+func IsPermanent(err error) bool {
 	var ua *UnauthorizedError
 	var sk *SkewError
 	var nm *NotModelServerError
-	return errors.As(err, &ua) || errors.As(err, &sk) || errors.As(err, &nm)
+	var sc *SchemaError
+	return errors.As(err, &ua) || errors.As(err, &sk) || errors.As(err, &nm) || errors.As(err, &sc)
 }
 
 // Add puts ids into the set and re-registers the full set (register

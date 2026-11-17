@@ -132,18 +132,7 @@ func runStartRemote(ctx context.Context, out io.Writer, ms *modelSession, theme 
 		s.setModel(id)
 	}
 
-	note := func(s string) { fmt.Fprintf(osStderr, "wt: note: %s\n", s) }
-	sess := ms.client.NewSession([]string{id}, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
-	registered := true
-	if rerr := sess.Start(ctx); rerr != nil {
-		registered = !registerRefused(rerr)
-		note(fmt.Sprintf("the model server did not register this client session (%s) — the model starts, but the server may stop %s once it is idle", rerr, id))
-	}
-	end := func() {
-		if eerr := sess.End(context.WithoutCancel(ctx)); eerr != nil && registered {
-			note(fmt.Sprintf("could not end the client session on the model server (%s) — it forgets it within a minute", eerr))
-		}
-	}
+	_, note, end := openClientSession(ctx, ms, []string{id}, fmt.Sprintf("the model starts, but the server may stop %s once it is idle", id))
 
 	sctx, stop := interruptCtx(ctx)
 	defer stop()

@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -105,9 +104,9 @@ const GatewayDownReason = "gateway unavailable (503) — the model server may be
 // probeBound caps the one status probe after a failed row.
 const probeBound = 5 * time.Second
 
-// The probe is a bare request here, not a modelclient.Client method:
-// RunRowGateway's signature is fixed and its ready is a bare func. It refuses
-// redirects on purpose (a 3xx would replay the bearer token elsewhere).
+// The probe goes through a modelclient.Client built from gw (RunRowGateway's
+// signature is fixed and its ready is a bare func), so it has the client's
+// dial timeout, redirect refusal and proxy policy.
 //
 // gatewayIs503 asks the gateway's model list once and reports whether it
 // answers 503. Any other answer, and any failure to ask, is false: only a
@@ -115,18 +114,8 @@ const probeBound = 5 * time.Second
 func gatewayIs503(ctx context.Context, gw agents.Gateway) bool {
 	pctx, cancel := context.WithTimeout(ctx, probeBound)
 	defer cancel()
-	req, err := http.NewRequestWithContext(pctx, http.MethodGet, strings.TrimRight(gw.Origin, "/")+"/v1/models", nil)
-	if err != nil {
-		return false
-	}
-	req.Header.Set("Authorization", "Bearer "+gw.Token)
-	hc := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusServiceUnavailable
+	status, err := modelclient.New(modelclient.Endpoint{URL: gw.Origin, Token: gw.Token}).GatewayStatus(pctx)
+	return err == nil && status == http.StatusServiceUnavailable
 }
 
 // RunRowGateway runs one agent's one-shot row over the gateway: the one-shot run and the

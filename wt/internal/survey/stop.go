@@ -55,16 +55,25 @@ type stopBatch interface {
 	Accepted() []localmodels.Entry
 }
 
-// defaultStopDeps reads no sessions: the local refcount store was deleted
-// with Task 19, and a client session's use of a model is the model server's
-// to know (its sessions endpoint), not the host's. So the host `wt stop`
-// counts no sessions and never asks about one; counts and live stay seams
-// for the tests that pin how a count would be worded.
-func defaultStopDeps() stopDeps {
+// defaultStopDeps reads sessions from the map it is given: the local refcount
+// store was deleted with Task 19, and a client session's use of a model is the
+// model server's to know (the catalog's per-row session count), so the caller
+// reads it there and passes it in, by model id (nil: none known, nothing
+// asked about). counts and live stay seams for the tests that pin how a count
+// would be worded.
+func defaultStopDeps(sessions map[string]int) stopDeps {
 	return stopDeps{
 		inventory: localmodels.Inventory,
-		counts:    func([]string) map[string]int { return map[string]int{} },
-		live:      func() map[string]int { return nil },
+		counts: func(ids []string) map[string]int {
+			out := map[string]int{}
+			for _, id := range ids {
+				if n := sessions[id]; n > 0 {
+					out[id] = n
+				}
+			}
+			return out
+		},
+		live: func() map[string]int { return sessions },
 		begin: func(ctx context.Context, cfg *config.Config, entries []localmodels.Entry) stopBatch {
 			return lifecycle.BeginStops(ctx, cfg, entries)
 		},
@@ -152,7 +161,14 @@ func (s StopState) Loading() map[string]lifecycle.Loading {
 // ReadStopState takes one live inventory snapshot and one read of the live
 // sessions and returns what `wt stop` needs from them.
 func ReadStopState(cfg *config.Config) StopState {
-	return stopState(cfg, defaultStopDeps())
+	return ReadStopStateSessions(cfg, nil)
+}
+
+// ReadStopStateSessions is ReadStopState with the live client sessions the
+// caller read from the model server: the count of sessions using each model
+// id. A model one uses is asked about before a stop takes it down.
+func ReadStopStateSessions(cfg *config.Config, sessions map[string]int) StopState {
+	return stopState(cfg, defaultStopDeps(sessions))
 }
 
 func stopState(cfg *config.Config, d stopDeps) StopState {
@@ -451,7 +467,7 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 func StopEntries(w io.Writer, cfg *config.Config, entries []localmodels.Entry) error {
 	ctx, cancel := stopSignalCtx()
 	defer cancel()
-	return stopEntries(ctx, w, cfg, defaultStopDeps(), entries)
+	return stopEntries(ctx, w, cfg, defaultStopDeps(nil), entries)
 }
 
 // lockedWriter serializes writes to one writer from Select's two

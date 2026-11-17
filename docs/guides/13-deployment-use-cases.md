@@ -105,7 +105,7 @@ Several session machines (and several `wt` runs on each) can use one server at o
 ```bash
 wt-model --version                       # wt-model <version>
 curl -s -H "Authorization: Bearer $(cat ~/.config/agent-wt/model-server.token)" \
-  http://127.0.0.1:8787/control/v1/ping   # {"api_major":1,"schema":N,"server":"…"}
+  http://127.0.0.1:8787/control/v1/ping   # {"api_major":1,"schema":N,"server":"…"} — wt refuses a server whose schema differs: restart wt-model after updating wt
 wt model list --server                   # from a session machine: the server's catalog
 ```
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "schema": 1,
+  "schema": 2,
   "generated": "2026-11-16T10:00:00Z",
   "providers": {
     "ollama": "unreachable",

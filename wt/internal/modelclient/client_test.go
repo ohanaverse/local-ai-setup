@@ -81,7 +81,7 @@ func TestPingRefusesDifferentMajorAndSaysWhichSide(t *testing.T) {
 		{modelapi.APIMajor + 1, "speaks API major 2, this wt speaks 1 — upgrade wt"},
 		{modelapi.APIMajor - 1, "speaks API major 0, this wt speaks 1 — upgrade wt-model"},
 	} {
-		c := pingServer(t, `{"api_major":`+strconv.Itoa(tc.major)+`,"schema":1,"server":"wt-model"}`)
+		c := pingServer(t, `{"api_major":`+strconv.Itoa(tc.major)+`,"schema":2,"server":"wt-model"}`)
 		_, err := c.Ping(ctx())
 		var se *SkewError
 		if !errors.As(err, &se) {
@@ -110,26 +110,75 @@ func TestPingRefusesAnotherServer(t *testing.T) {
 	}
 }
 
-// TestCatalogNewerSchemaIsRefused pins that a catalog schema newer than this
-// client reads is refused with the exact text, and an older one is accepted.
-func TestCatalogNewerSchemaIsRefused(t *testing.T) {
-	f := newFixture(t)
-	schema := modelapi.SchemaVersion + 1
-	f.mux.HandleFunc("GET /control/v1/catalog", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSONBody(w, 200, modelapi.Catalog{Schema: schema})
+// TestCatalogSchemaMismatchIsRefused pins that a catalog schema this client
+// does not read is refused with the exact text either way: a newer server
+// needs a newer wt, an older one is a wt-model that was not restarted.
+func TestCatalogSchemaMismatchIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		schema int
+		want   string
+	}{
+		{"newer", modelapi.SchemaVersion + 1, "sends catalog schema 3, this wt reads up to 2 — upgrade wt"},
+		{"older", modelapi.SchemaVersion - 1, "speaks catalog schema 1, this wt needs 2 — restart wt-model (it is older than this wt)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.mux.HandleFunc("GET /control/v1/catalog", func(w http.ResponseWriter, _ *http.Request) {
+				writeJSONBody(w, 200, modelapi.Catalog{Schema: tc.schema})
+			})
+			_, err := f.client().Catalog(ctx())
+			var se *SchemaError
+			if !errors.As(err, &se) {
+				t.Fatalf("err = %v, want *SchemaError", err)
+			}
+			if want := "model server at " + addrOf(f) + " " + tc.want; err.Error() != want {
+				t.Errorf("text = %q, want %q", err.Error(), want)
+			}
+		})
+	}
+}
+
+// TestPingOlderSchemaIsRefused pins that a server whose Ping reports an older
+// schema (a wt-model not restarted after wt was updated) is refused at the
+// first call, and that no retry can heal it.
+func TestPingOlderSchemaIsRefused(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /control/v1/ping", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONBody(w, 200, modelapi.Ping{APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion - 1, Server: "wt-model"})
 	})
-	_, err := f.client().Catalog(ctx())
+	s := httptest.NewServer(mux)
+	defer s.Close()
+	_, err := New(Endpoint{URL: s.URL, Token: tok}).Ping(ctx())
 	var se *SchemaError
-	if !errors.As(err, &se) {
-		t.Fatalf("err = %v, want *SchemaError", err)
+	if !errors.As(err, &se) || !strings.Contains(err.Error(), "restart wt-model") {
+		t.Fatalf("err = %v, want *SchemaError naming a restart", err)
 	}
-	want := "model server at " + addrOf(f) + " sends catalog schema 2, this wt reads up to 1 — upgrade wt"
-	if err.Error() != want {
-		t.Errorf("text = %q, want %q", err.Error(), want)
+	if !IsPermanent(err) {
+		t.Error("a schema mismatch is permanent: no retry heals it")
 	}
-	schema = 0
-	if _, err := f.client().Catalog(ctx()); err != nil {
-		t.Errorf("older schema: %v", err)
+}
+
+// TestDefaultTransportIgnoresEnvProxy pins that the bearer token never goes
+// to an HTTP(S)_PROXY from the environment.
+func TestDefaultTransportIgnoresEnvProxy(t *testing.T) {
+	tr, ok := New(Endpoint{URL: "http://127.0.0.1:1", Token: tok}).hc.Transport.(*http.Transport)
+	if !ok || tr.Proxy != nil {
+		t.Fatalf("transport proxy = %v (ok %v), want nil", tr, ok)
+	}
+}
+
+// TestGatewayStatusReturnsTheStatusAsIs pins the one-shot probe: a 503 is a
+// status, not an error, and nothing retries.
+func TestGatewayStatusReturnsTheStatusAsIs(t *testing.T) {
+	var n int
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, _ *http.Request) { n++; w.WriteHeader(503) })
+	s := httptest.NewServer(mux)
+	defer s.Close()
+	st, err := New(Endpoint{URL: s.URL, Token: tok}).GatewayStatus(ctx())
+	if err != nil || st != 503 || n != 1 {
+		t.Fatalf("status %d, err %v, polls %d; want 503, nil, 1", st, err, n)
 	}
 }
 
@@ -206,7 +255,7 @@ func TestEveryCallSendsTheBearerToken(t *testing.T) {
 		mu.Unlock()
 		switch {
 		case r.URL.Path == "/control/v1/ping":
-			writeJSONBody(w, 200, modelapi.Ping{APIMajor: 1, Schema: 1, Server: "wt-model"})
+			writeJSONBody(w, 200, modelapi.Ping{APIMajor: 1, Schema: modelapi.SchemaVersion, Server: "wt-model"})
 		case r.URL.Path == "/control/v1/start" || r.URL.Path == "/control/v1/stop":
 			writeJSONBody(w, 202, modelapi.JobRef{ID: "j"})
 		case r.URL.Path == "/control/v1/jobs":
@@ -218,7 +267,7 @@ func TestEveryCallSendsTheBearerToken(t *testing.T) {
 		case r.URL.Path == "/control/v1/resolve":
 			writeJSONBody(w, 200, modelapi.Row{ID: "m"})
 		case r.URL.Path == "/control/v1/catalog":
-			writeJSONBody(w, 200, modelapi.Catalog{Schema: 1})
+			writeJSONBody(w, 200, modelapi.Catalog{Schema: modelapi.SchemaVersion})
 		case r.URL.Path == "/control/v1/candidates":
 			writeJSONBody(w, 200, modelapi.CandidateList{})
 		case r.URL.Path == "/control/v1/spend":
@@ -316,7 +365,7 @@ func TestHeartbeatGoneIsNotAnError(t *testing.T) {
 func TestUnknownResponseFieldsAreIgnored(t *testing.T) {
 	f := newFixture(t)
 	f.mux.HandleFunc("GET /control/v1/catalog", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"schema":1,"generated":"g","providers":{},"rows":[{"id":"a","future":1}],"extra":{"x":1}}`))
+		_, _ = w.Write([]byte(`{"schema":2,"generated":"g","providers":{},"rows":[{"id":"a","future":1}],"extra":{"x":1}}`))
 	})
 	f.mux.HandleFunc("GET /control/v1/jobs/j1", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"j1","state":"running","new_field":[1,2]}`))
@@ -540,7 +589,7 @@ func TestNowFollowsTheServerDateHeader(t *testing.T) {
 	skew := 5 * time.Minute
 	f.mux.HandleFunc("GET /control/v1/catalog", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Date", time.Now().Add(skew).UTC().Format(http.TimeFormat))
-		writeJSONBody(w, 200, modelapi.Catalog{Schema: 1})
+		writeJSONBody(w, 200, modelapi.Catalog{Schema: modelapi.SchemaVersion})
 	})
 	c := f.client()
 	if d := time.Until(c.Now()); d > time.Second || d < -time.Second {
@@ -559,7 +608,7 @@ func TestNowFollowsTheServerDateHeader(t *testing.T) {
 func TestPingIsCachedPerClient(t *testing.T) {
 	f := newFixture(t)
 	f.mux.HandleFunc("GET /control/v1/catalog", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSONBody(w, 200, modelapi.Catalog{Schema: 1})
+		writeJSONBody(w, 200, modelapi.Catalog{Schema: modelapi.SchemaVersion})
 	})
 	c := f.client()
 	for range 3 {
@@ -596,7 +645,7 @@ func isOneLine(s string) bool {
 func TestServerTextCannotForgeLines(t *testing.T) {
 	f := newFixture(t)
 	f.mux.HandleFunc("GET /control/v1/catalog", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSONBody(w, 200, modelapi.Catalog{Schema: 1, Generated: hostile, Providers: map[string]string{hostile: hostile},
+		writeJSONBody(w, 200, modelapi.Catalog{Schema: modelapi.SchemaVersion, Generated: hostile, Providers: map[string]string{hostile: hostile},
 			Rows: []modelapi.Row{{ID: hostile, BlockReason: hostile, Family: hostile, Tags: []string{hostile}}}})
 	})
 	job := modelapi.JobStatus{ID: "j", Step: hostile, Result: &modelapi.JobResult{Error: &modelapi.Problem{

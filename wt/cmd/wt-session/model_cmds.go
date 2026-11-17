@@ -14,11 +14,15 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/spf13/cobra"
@@ -30,9 +34,15 @@ var (
 	// stopState is one inventory round and one read of the live sessions: the
 	// stop candidates, and per provider family what its probe said and how
 	// many live wt sessions use it.
-	stopState   = survey.ReadStopState
-	stopEntries = survey.StopEntries
-	confirmStop = promptStop
+	stopState = func(cfg *config.Config) survey.StopState {
+		return survey.ReadStopStateSessions(cfg, stopSessions())
+	}
+	// stopSessions is the live client sessions per model id, read from the
+	// model server by `wt stop <provider>|--all` before it runs (nil: none
+	// known). Production sets it in the command; tests leave the default.
+	stopSessions = func() map[string]int { return nil }
+	stopEntries  = survey.StopEntries
+	confirmStop  = promptStop
 	// stopProvider stops a provider's server as a whole (`wt stop omlx`).
 	stopProvider = lifecycle.Stop
 	// stopLoading ends a provider's server that has not opened its port yet
@@ -124,6 +134,7 @@ func stopCmd(a *app) *cobra.Command {
 				cmd.SilenceUsage = true
 				return configError(cerr)
 			}
+			stopSessions = a.hostSessionReader(cmd.Context(), cmd.ErrOrStderr())
 			if all, _ := cmd.Flags().GetBool("all"); all {
 				if arg != "" {
 					return fmt.Errorf("wt stop --all takes no model or provider (got %q)", arg)
@@ -147,6 +158,39 @@ func stopCmd(a *app) *cobra.Command {
 	cmd.Flags().Bool("yes", false, "Answer the model server's question when a model id stopped there is in use by other client sessions (a provider or --all stop on this machine asks nothing)")
 	cmd.Flags().Bool("all", false, "Stop every running local model, then the omlx service and an mtplx wt cannot read or that is still loading")
 	return cmd
+}
+
+// hostSessionReader returns what stopSessions runs: the model server's
+// catalog read for the sessions each model has (Row.Sessions), once. A host
+// stop is local to the machine that runs the server, so a stop with no model
+// server configured simply has no sessions to ask about; a configured server
+// that cannot be read is a note, since the stop then cannot tell whether a
+// client session uses what it is about to take down.
+func (a *app) hostSessionReader(ctx context.Context, w io.Writer) func() map[string]int {
+	var once sync.Once
+	var out map[string]int
+	return func() map[string]int {
+		once.Do(func() {
+			ms, err := a.openModels(ctx, "")
+			if err == nil {
+				var cat modelapi.Catalog
+				if cat, err = ms.client.Catalog(ctx); err == nil {
+					out = map[string]int{}
+					for _, r := range cat.Rows {
+						if r.Sessions > 0 {
+							out[r.ID] = r.Sessions
+						}
+					}
+					return
+				}
+			}
+			var nc *modelclient.NotConfiguredError
+			if !errors.As(err, &nc) {
+				fmt.Fprintf(w, "wt: note: could not read client sessions from the model server (%s) — models they use are stopped without asking\n", cleanup.Flatten(err.Error()))
+			}
+		})
+		return out
+	}
 }
 
 // haltsWhole reports whether stopping providerID with the given number of
@@ -327,7 +371,6 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 			loading += fmt.Sprintf(", and %s is still loading (pid %d)", id, fs.Loading.PID)
 		}
 	}
-	// Unreachable in production since refcount was deleted (defaultStopDeps counts nothing); Phase 3/4 follow-up.
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s)%s%s; stop them all?", inUse, strings.Join(users, ", "), unreadClause(unread, false), loading))
 		if err != nil {
@@ -537,7 +580,6 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 			what = fmt.Sprintf("%s is still loading (pid %d) and is", arg, loadingPID)
 		}
 	}
-	// Unreachable in production since refcount was deleted (defaultStopDeps counts nothing); Phase 3/4 follow-up.
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("%s in use by %d live wt session(s) (%s)%s; stop anyway?", what, inUse, strings.Join(users, ", "), blind))
 		if err != nil {

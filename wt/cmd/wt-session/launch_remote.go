@@ -130,30 +130,12 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	// The client session holds the model from before its start to the
 	// agent's exit. Its notes (a failed or recovered heartbeat) are notes.
 	// The heartbeat goroutine calls note: it captures the stream once.
-	w := osStderr
-	note := func(s string) { fmt.Fprintf(w, "wt: note: %s\n", s) }
-	sess := ms.client.NewSession([]string{row.ID}, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
-	// registered goes false only for a register no retry can heal (a refused
-	// token, an API skew, another program at the address): then the DELETE is
-	// refused too and End says nothing. A transient failure leaves the
-	// heartbeat running to re-register, so a failed End is still news.
-	registered := true
-	if rerr := sess.Start(ctx); rerr != nil {
-		registered = !registerRefused(rerr)
-		msg := fmt.Sprintf("the model server did not register this client session (%s) — the launch goes on", rerr)
-		if row.Location == "local" {
-			// Only a local model is ever stopped for want of a client.
-			msg += fmt.Sprintf(", but the server may stop %s once it is idle", row.ID)
-		}
-		note(msg)
+	whenFailed := "the launch goes on"
+	if row.Location == "local" {
+		// Only a local model is ever stopped for want of a client.
+		whenFailed += fmt.Sprintf(", but the server may stop %s once it is idle", row.ID)
 	}
-	// end runs once, on a context no cancel reaches (modelclient's End), and
-	// never fails the launch.
-	end := func() {
-		if eerr := sess.End(context.WithoutCancel(ctx)); eerr != nil && registered {
-			note(fmt.Sprintf("could not end the client session on the model server (%s) — it forgets it within a minute", eerr))
-		}
-	}
+	sess, _, end := openClientSession(ctx, ms, []string{row.ID}, whenFailed)
 
 	if catalog.NeedsStart(row) {
 		if serr := startRemote(ctx, ms, row, others, allowReplace); serr != nil {
@@ -189,12 +171,7 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 
 // registerRefused reports a register error no retry can heal: the same three
 // kinds modelclient's Session.Start stops its heartbeat for.
-func registerRefused(err error) bool {
-	var ua *modelclient.UnauthorizedError
-	var sk *modelclient.SkewError
-	var nm *modelclient.NotModelServerError
-	return errors.As(err, &ua) || errors.As(err, &sk) || errors.As(err, &nm)
-}
+func registerRefused(err error) bool { return modelclient.IsPermanent(err) }
 
 // gatewayModels is the server's non-native models, which a GatewaySyncer
 // (pi's models.json) lists.

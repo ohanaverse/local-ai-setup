@@ -74,7 +74,7 @@ func (a *cliAnswerer) Replace(ctx context.Context, p modelapi.Problem) (bool, er
 func (a *cliAnswerer) Others(ctx context.Context, p modelapi.Problem) ([]string, bool, error) {
 	switch a.others {
 	case "stop":
-		return stoppable(p.Others), true, nil
+		return modelapi.StoppableIDs(p.Others), true, nil
 	case "keep":
 		return nil, true, nil
 	}
@@ -94,7 +94,7 @@ func (a *cliAnswerer) Others(ctx context.Context, p modelapi.Problem) ([]string,
 	}
 	switch choice {
 	case othersStop:
-		return stoppable(p.Others), true, nil
+		return modelapi.StoppableIDs(p.Others), true, nil
 	case othersKeep:
 		return nil, true, nil
 	}
@@ -148,18 +148,6 @@ func askOnTTY[T any](ctx context.Context, f io.Reader, still string, read func(i
 	}
 }
 
-// stoppable is the ids of the residents the server can stop: what a stop
-// answer approves.
-func stoppable(others []modelapi.Resident) []string {
-	var ids []string
-	for _, r := range others {
-		if r.Stoppable {
-			ids = append(ids, r.ID)
-		}
-	}
-	return ids
-}
-
 // askChoice reads one line from r: s/stop stops (only when canStop), k/keep
 // keeps, and anything else, an empty line and EOF included, cancels. Split
 // out of the others question so tests can drive it.
@@ -195,7 +183,7 @@ func othersQuestion(id string, others []modelapi.Resident, unknown []string, cou
 	for _, f := range unknown {
 		fmt.Fprintf(&b, "  cannot tell whether %s is serving a model\n", f)
 	}
-	canStop := len(stoppable(others)) > 0
+	canStop := len(modelapi.StoppableIDs(others)) > 0
 	if canStop {
 		b.WriteString("stop them first, keep them and start, or cancel? [s/k/N]")
 	} else {
@@ -219,14 +207,11 @@ func othersWarning(id string, others []modelapi.Resident, unknown []string) stri
 		parts = append(parts, fmt.Sprintf("whatever %s is serving", f))
 	}
 	advice := "pass --others=keep to silence this"
-	if len(stoppable(others)) > 0 {
+	if len(modelapi.StoppableIDs(others)) > 0 {
 		advice = "pass --others=stop to stop them, --others=keep to silence this"
 	}
 	return fmt.Sprintf("wt: warning: starting %s beside %s; %s\n", id, strings.Join(parts, ", "), advice)
 }
-
-// startQueued is the progress detail of a job waiting its turn.
-const startQueued = "queued behind another start or stop on the model server"
 
 // startProgressRemote is a start job's progress on out (stderr, M5): one
 // `wt: starting ID — STEP (12s)` line when the step changes and again every
@@ -248,7 +233,7 @@ func jobProgressRemote(out io.Writer, verb, id string) modelclient.Progress {
 		detail := cleanup.Flatten(v.Step)
 		switch {
 		case v.Queued:
-			detail = startQueued
+			detail = modelclient.QueuedDetail
 		case detail == "":
 			detail = "waiting for the model server"
 		}

@@ -37,13 +37,18 @@ func (e *SkewError) Error() string {
 	return fmt.Sprintf("model server at %s speaks API major %d, this wt speaks %d — %s", clean(e.Addr), e.Server, e.Client, fix)
 }
 
-// SchemaError says the catalog is newer than this wt reads.
+// SchemaError says the server's catalog schema is not the one this wt reads:
+// a newer one needs a newer wt, an older one is a wt-model that was not
+// restarted after wt was updated.
 type SchemaError struct {
 	Addr           string
 	Server, Client int
 }
 
 func (e *SchemaError) Error() string {
+	if e.Server < e.Client {
+		return fmt.Sprintf("model server at %s speaks catalog schema %d, this wt needs %d — restart wt-model (it is older than this wt)", clean(e.Addr), e.Server, e.Client)
+	}
 	return fmt.Sprintf("model server at %s sends catalog schema %d, this wt reads up to %d — upgrade wt", clean(e.Addr), e.Server, e.Client)
 }
 
