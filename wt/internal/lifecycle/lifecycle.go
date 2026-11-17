@@ -10,7 +10,9 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
 // Target names the model to start by its provider-side name — exactly
@@ -78,11 +80,10 @@ type Options struct {
 // asked. Decided with an empty Stop keeps them all and starts. Stop lists the
 // model ids (Resident.Entry.ModelID) the user saw and approved stopping; the
 // start stops each of them that is still loaded and stoppable before it does
-// anything else, and keeps every other. Cancel is the caller not retrying.
-type OthersAnswer struct {
-	Decided bool
-	Stop    []string
-}
+// anything else, and keeps every other. Cancel is the caller not retrying. It
+// is an alias of modelapi.OthersDecision so the session screens can build one
+// without linking this package.
+type OthersAnswer = modelapi.OthersDecision
 
 // Resident is a model of another provider family that is loaded while a
 // start runs: it holds memory the target will share. Stoppable is false when
@@ -119,7 +120,7 @@ func (r Resident) Label() string {
 }
 
 // Figure is the memory the resident holds as wt knows it: what its server
-// says (Entry.LoadedSize, printed with localmodels.FormatSize), else "memory
+// says (Entry.LoadedSize, printed with tuilayout.FormatSize), else "memory
 // use unknown", never 0 and never a guess; with "; wt cannot stop it" when
 // it is not Stoppable (a clause, not a parenthesis: the warning line puts the
 // whole figure in parentheses).
@@ -128,9 +129,9 @@ func (r Resident) Figure() string {
 	if r.Entry.LoadedSize > 0 {
 		switch localmodels.Family(r.Entry.ProviderID) {
 		case "omlx":
-			fig = localmodels.FormatSize(r.Entry.LoadedSize) + " resident (omlx estimate)"
+			fig = tuilayout.FormatSize(r.Entry.LoadedSize) + " resident (omlx estimate)"
 		default:
-			fig = localmodels.FormatSize(r.Entry.LoadedSize) + " loaded"
+			fig = tuilayout.FormatSize(r.Entry.LoadedSize) + " loaded"
 		}
 	}
 	if !r.Stoppable {
@@ -750,9 +751,11 @@ func stopModel(ctx context.Context, e *env, cfg *config.Config, providerID, mode
 }
 
 // Startable reports whether wt has a lifecycle backend for providerID's family
-// (ollama, omlx/omlx-6bit, mtplx). backendsByFamily is the single source of
-// truth; internal/catalog delegates here so the picker's "can wt start this?"
-// answer cannot drift from the engine's.
+// (ollama, omlx/omlx-6bit, mtplx, rec, sushi). backendsByFamily is the single
+// source of truth; internal/catalog no longer delegates here — it reads the
+// provider table's tenancy (catalog.startable), and catalog's
+// TestStartableMatchesLifecycle pins that answer to this one, so the picker's
+// "can wt start this?" answer cannot drift from the engine's.
 func Startable(providerID string) bool {
 	return backendsByFamily[localmodels.Family(providerID)] != nil
 }

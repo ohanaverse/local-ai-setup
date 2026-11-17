@@ -302,6 +302,10 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 Read [docs/internals/cleanup-and-removal.md](docs/internals/cleanup-and-removal.md) before changing the classifier, a proof, `internal/removal`, origin removal, `internal/rescue`, `internal/rootmove`, the list's keys or the detail screen: it holds the removal, rescue and restore-root invariants in full, the rulings, the declared losses and the still-to-do list.
 
+## Import graph ratchet (`internal/depcheck`)
+
+`go test ./internal/depcheck` holds the session library packages (`cleanup`, `agents`, `modelclient`, `smoke`, `profiles`, `catalog`, `survey`, `tui`) off the admin packages (`lifecycle`, `litellm`, `localmodels`, `cloudsync`, `spend`, `modeladmin`, `configeditor`, `candidates`, and the model server's packages) and `cmd/wt-model` off the session half. The test's allow-list of expected offenders **only shrinks**: never add an entry to make a build pass (move the type or function down to a leaf instead), and delete an entry the moment its edge is gone (the test fails until you do). Rules: `docs/internals/packages.md` "Package graph rules".
+
 ## wt-model (`cmd/wt-model`)
 
 `wt-model serve` is a second binary: one daemon on one port serving the model side of wt (a JSON control API under `/control/v1/` and a streaming gateway to LiteLLM under `/v1/`) so sessions on other machines need no registry. Reference: [docs/wt-model-server.md](docs/wt-model-server.md) (flags, exit codes, token file, endpoints, error shapes, sessions, auto-stop); design: [../docs/superpowers/specs/2026-11-15-wt-model-session-split-design.md](../docs/superpowers/specs/2026-11-15-wt-model-session-split-design.md); wire types: `internal/modelapi`, fixture [../docs/contracts/model-api.sample.json](../docs/contracts/model-api.sample.json).

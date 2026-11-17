@@ -23,7 +23,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -445,7 +444,7 @@ func (m model) finishRemoteStart(msg startDoneMsg) (model, tea.Cmd) {
 		if othersAsked && st.others.stopAll {
 			// --others=stop answers for the pinned row: every resident the
 			// server can stop, as the non-TUI start does.
-			rs.others = othersPlan{answer: lifecycle.OthersAnswer{Decided: true, Stop: modelapi.StoppableIDs(p.Others)}}
+			rs.others = othersPlan{answer: modelapi.OthersDecision{Decided: true, Stop: modelapi.StoppableIDs(p.Others)}}
 			othersAsked = false
 			if !sameFamily {
 				return m.beginRemoteStart(st.item, st.allow, rs.others)
