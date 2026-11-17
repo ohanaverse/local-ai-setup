@@ -10,10 +10,9 @@ import (
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // Status is a row's presence state.
@@ -132,7 +131,7 @@ func Build(in Input) []Row {
 				r.Status = StatusUnknown
 			}
 		}
-		if _, ok := litellm.PolicyFor(m.ProviderID); !ok && !m.Native && loc == config.LocationCloud {
+		if _, ok := provider.PolicyFor(m.ProviderID); !ok && !m.Native && loc == config.LocationCloud {
 			r.Unmapped = true
 		}
 		rows = append(rows, r)
@@ -279,8 +278,9 @@ func (r Row) Ready() bool {
 }
 
 // Action reports what selecting r does. A local row that is not Ready is
-// startable when its provider has a lifecycle backend (lifecycle.Startable,
-// the single source of truth, so a new backend needs no edit here; a model
+// startable when its provider has a lifecycle backend (startable: the
+// provider table's tenancy, which lifecycle's own Startable is tested to
+// equal, so a new backend needs no edit here; a model
 // missing from disk has no row at all). That includes a model omlx is still
 // loading (#259): starting it joins the load in progress and returns once the
 // model is loaded, where launching it would hand an agent a model that cannot
@@ -295,10 +295,19 @@ func (r Row) Action() Action {
 	if r.Location != config.LocationLocal || r.Ready() {
 		return ActionLaunch
 	}
-	if !lifecycle.Startable(r.Model.ProviderID) {
+	if !startable(r.Model.ProviderID) {
 		return ActionBlock
 	}
 	return ActionStart
+}
+
+// startable reports whether wt has a lifecycle backend for providerID's
+// family. It reads internal/provider's table (a family with a tenancy has a
+// backend), which TestBackendsMatchProviderTable pins to lifecycle.Startable,
+// so this package needs not link the lifecycle engine.
+func startable(providerID string) bool {
+	f, ok := provider.FamilyByName(provider.FamilyOf(providerID))
+	return ok && f.Tenancy != provider.NoTenancy
 }
 
 // BlockReason is the status line for an ActionBlock row ("" otherwise): a

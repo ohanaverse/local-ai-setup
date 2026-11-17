@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 func catalogTestCfg() *config.Config {
@@ -513,6 +515,24 @@ func TestALoadingRowIsAStartRow(t *testing.T) {
 		}
 		if r := got[2]; r.Loading || !r.Ready() || r.Action() != ActionLaunch {
 			t.Errorf("%s: %s Loading=%v Ready=%v action=%v, want a loaded launch row", name, r.Model.ID, r.Loading, r.Ready(), r.Action())
+		}
+	}
+}
+
+// TestStartableMatchesLifecycle pins catalog's table-based answer to the
+// lifecycle engine's own: Row.Action must read ActionStart for exactly the
+// providers lifecycle.Startable accepts, for every family member and for
+// provider ids the table does not know. A drift would hide a model wt can
+// start or offer one it cannot.
+func TestStartableMatchesLifecycle(t *testing.T) {
+	ids := []string{"llamacpp", "nope", "", "omlx-6bit"}
+	for _, f := range provider.Families() {
+		ids = append(ids, f)
+		ids = append(ids, provider.FamilyProviderIDs(f)...)
+	}
+	for _, id := range ids {
+		if got, want := startable(id), lifecycle.Startable(id); got != want {
+			t.Errorf("startable(%q) = %v, lifecycle.Startable = %v", id, got, want)
 		}
 	}
 }

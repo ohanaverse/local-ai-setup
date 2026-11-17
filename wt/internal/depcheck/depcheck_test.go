@@ -33,8 +33,8 @@ var sessionBanned = []string{
 // Never add an entry to make a failing build pass; remove the edge instead.
 var allowList = map[string][]string{
 	"internal/cleanup": {"internal/localmodels"},
-	"internal/smoke":   {"internal/lifecycle", "internal/litellm", "internal/localmodels"},
-	"internal/catalog": {"internal/lifecycle", "internal/litellm", "internal/localmodels"},
+	"internal/smoke":   {"internal/localmodels"},
+	"internal/catalog": {"internal/localmodels"},
 	"internal/survey":  {"internal/lifecycle", "internal/litellm", "internal/localmodels"},
 	"internal/tui":     {"internal/lifecycle", "internal/litellm", "internal/localmodels"},
 }
