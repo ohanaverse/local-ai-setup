@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -73,6 +74,66 @@ func writeToken(t *testing.T, mode os.FileMode) string {
 	return p
 }
 
+// seedProxyHome points the config home at a fresh scratch directory holding a
+// minimal registry and a wt-model home pair — the url in the home's
+// config.toml, the key in a litellm.key with the given mode — the shape
+// `wt-model litellm set` writes (docs/contracts/wt-model-config.sample.toml).
+func seedProxyHome(t *testing.T, url, key string, keyMode os.FileMode) {
+	t.Helper()
+	seedConfig(t, false)
+	home := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "wt-model")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[litellm]\nurl = \"" + url + "\"\nkey_file = \"litellm.key\"\n"
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(home, "litellm.key")
+	if err := os.WriteFile(p, []byte(key), keyMode); err != nil {
+		t.Fatal(err)
+	}
+	// The mode is pinned explicitly: umask must not decide what a test sees.
+	if err := os.Chmod(p, keyMode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// serveUntilListening runs `wt-model serve` on an ephemeral port over the real
+// command tree with a fake deps factory and returns a reader of its captured
+// stderr (stdout discarded) once the announce line has landed, plus a stop
+// function that cancels the run and returns the command's error. A test that
+// parses the startup lines stops the run first, so no later line can interleave.
+func serveUntilListening(t *testing.T) (read func() string, stop func() error) {
+	t.Helper()
+	cmd := rootCmd(fakeDeps)
+	read, pw := newLockedBuffer()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(pw)
+	cmd.SetArgs([]string{"serve", "--listen", "127.0.0.1:0", "--token-file", writeToken(t, 0o600)})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(read(), "listening on ") {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("no listening line; output %q", read())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return read, func() error {
+		cancel()
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(15 * time.Second):
+			t.Fatal("serve did not return after cancel")
+			return nil
+		}
+	}
+}
+
 // fakeDeps is a depsFactory whose Deps reach nothing outside the process.
 func fakeDeps(cfg *config.Config, _ func() (*config.Config, error), _ *url.URL, _ string) modelserver.Deps {
 	return modelserver.Deps{
@@ -138,9 +199,73 @@ func TestServeRejectsNonPositiveIdleGrace(t *testing.T) {
 func TestServeRefusesUnconfiguredLiteLLM(t *testing.T) {
 	seedConfig(t, false)
 	_, err := run(t, "serve", "--listen", "127.0.0.1:0", "--token-file", writeToken(t, 0o600))
-	if err == nil || !strings.Contains(err.Error(), "wt litellm set") {
-		t.Fatalf("err = %v, want a message naming 'wt litellm set'", err)
+	if err == nil || !strings.Contains(err.Error(), "wt-model litellm set") {
+		t.Fatalf("err = %v, want a message naming 'wt-model litellm set'", err)
 	}
+}
+
+// TestServeRefusesALooseKeyFile pins the key file's mode rule at startup
+// (Review Focus): a key file other users can read fails the start with the
+// chmod 600 fix sentence — a secret others can read is never served, and the
+// broken home never falls through to the legacy pair.
+func TestServeRefusesALooseKeyFile(t *testing.T) {
+	seedProxyHome(t, "http://127.0.0.1:4000", "sk-test", 0o644)
+	_, err := run(t, "serve", "--listen", "127.0.0.1:0", "--token-file", writeToken(t, 0o600))
+	if err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("err = %v, want a refusal naming chmod 600", err)
+	}
+}
+
+// TestServeNotesTheLegacyFallback pins the startup note (ruling 7): a pair the
+// legacy [litellm] table supplies starts the server with exactly one
+// `wt-model: note: …` fallback line on stderr before the announce line (M4,
+// N1), and a pair from the wt-model home produces none — the note fires only
+// where the read-only fallback supplied the pair.
+func TestServeNotesTheLegacyFallback(t *testing.T) {
+	asWTModel(t)
+	t.Run("legacy pair notes once", func(t *testing.T) {
+		seedConfig(t, true)
+		note := config.ProxyFallbackNote()
+		read, stop := serveUntilListening(t)
+		if err := stop(); err != nil {
+			t.Fatalf("serve returned %v, want nil", err)
+		}
+		lines := strings.Split(read(), "\n")
+		noteAt, announceAt := -1, -1
+		for i, line := range lines {
+			switch {
+			case strings.HasPrefix(line, "wt-model: note: "):
+				if noteAt >= 0 {
+					t.Errorf("a second note line: %q", line)
+				} else {
+					noteAt = i
+				}
+				if line != note {
+					t.Errorf("note line = %q, want %q", line, note)
+				}
+			case strings.HasPrefix(line, "wt-model: listening on "):
+				announceAt = i
+			}
+		}
+		if noteAt < 0 || announceAt < 0 {
+			t.Fatalf("note at %d, announce at %d; lines %q", noteAt, announceAt, lines)
+		}
+		if noteAt > announceAt {
+			t.Errorf("note line at %d is after the announce line at %d: %q", noteAt, announceAt, lines)
+		}
+	})
+	t.Run("home pair is silent", func(t *testing.T) {
+		seedProxyHome(t, "http://127.0.0.1:4000", "sk-test", 0o600)
+		read, stop := serveUntilListening(t)
+		if err := stop(); err != nil {
+			t.Fatalf("serve returned %v, want nil", err)
+		}
+		for _, line := range strings.Split(read(), "\n") {
+			if strings.HasPrefix(line, "wt-model: note: ") {
+				t.Errorf("a home pair printed the fallback note: %q", line)
+			}
+		}
+	})
 }
 
 // TestServeAnswersPingOnEphemeralPort pins the whole start-up path: the

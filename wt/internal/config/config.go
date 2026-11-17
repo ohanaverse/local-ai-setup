@@ -52,10 +52,11 @@ const OllamaBaseURL = provider.OllamaOrigin
 
 // LitellmState is the `[litellm]` table of wt's config.toml: the LiteLLM
 // proxy's url and api key, host state that `wt-model serve` (its gateway) and
-// `wt litellm set|status|restart` read (R4); a session never reads it. The
-// table is read from config.toml and nowhere else; the runtime pair resolves
-// home-first since the wt-model config home (applyProxyState), with this
-// table the read-only fallback.
+// the `wt-model litellm set|status` and `wt litellm set|status|restart`
+// commands read and write (R4); a session never reads it. The table is read
+// from config.toml and nowhere else; the runtime pair resolves home-first
+// since the wt-model config home (applyProxyState), with this table the
+// read-only fallback.
 //
 // Enabled is retired (2026-11-15): every session routes through the model
 // server, so nothing decides on it any more. It is still parsed and
@@ -1349,11 +1350,11 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 // lockedApply) over Save whenever cfg may be a stale snapshot (loaded
 // earlier, possibly in a different process) — Save writes cfg wholesale and
 // so reverts any field a concurrent writer changed since cfg was loaded.
-// Every production writer (the `wt config` editor, `wt litellm set`,
-// Load's own migrations) now goes through one of those locked-fresh-read
-// paths instead; Save remains as the simple whole-file primitive they build
-// on and for tests/tools that construct and persist a Config in one step
-// with no concurrent-writer risk.
+// Every production writer (the `wt config` editor, Load's own migrations)
+// now goes through one of those locked-fresh-read paths instead; Save
+// remains as the simple whole-file primitive they build on and for
+// tests/tools that construct and persist a Config in one step with no
+// concurrent-writer risk.
 func Save(cfg *Config) error {
 	return WithLock(func() error { return writeConfigFile(cfg) })
 }
