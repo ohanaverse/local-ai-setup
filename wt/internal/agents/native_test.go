@@ -43,7 +43,7 @@ func TestNativeModelBuildsEveryDriverWithoutAGateway(t *testing.T) {
 // carries this text.
 func TestNativeNoteSaysWhatHappenedAndTheWayOut(t *testing.T) {
 	got := NativeNote("claude")
-	for _, want := range []string{"wt: note: ", "no model server is configured", "claude natively", "own configuration", "[model-server]"} {
+	for _, want := range []string{"wt: no model server is configured", "claude natively", "own configuration", "[model-server]"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("NativeNote = %q, missing %q", got, want)
 		}

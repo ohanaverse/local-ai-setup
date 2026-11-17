@@ -140,3 +140,14 @@ func remoteExit(err error) error {
 func nativeFallback(err error, pinned, tags, family string) bool {
 	return pinned == "" && tags == "" && family == "" && modelclient.NoServerConfigured(err)
 }
+
+// wouldLaunchNative reports whether a launch of agent with these filters would
+// run natively (#615): a model-driven agent, or a picker that may need one
+// (agent ""), with no model server configured at all and no model asked for.
+func wouldLaunchNative(a *app, agent, pinned, tags, family string) bool {
+	if agents.IsCommand(agent) {
+		return false
+	}
+	_, err := a.buildModels(launchStill)
+	return err != nil && nativeFallback(err, pinned, tags, family)
+}

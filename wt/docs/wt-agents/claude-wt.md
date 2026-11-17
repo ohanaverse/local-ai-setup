@@ -34,6 +34,7 @@ Claude Code uses OAuth, with state stored in `~/.claude.json`. The internals of 
 
 Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` handles two cases:
 
+- **No model server configured** — a plain `wt -A claude` (no `-M`, `-T` or `-F`) launches Claude Code natively: no model prompt, no `--model` flag and no `ANTHROPIC_*` gateway variables, so its own configuration decides the model, with one `wt:` line saying so ([wt-session.md](../wt-session.md), "Native launch").
 - **`claude/native`** — passes no `--model` flag and clears any inherited `ANTHROPIC_*` env vars, so Claude Code uses its native subscription (the model configured in `~/.claude/settings.json`).
 - **`claude/<alias>`** (`claude/opus`, `claude/opusplan`, …) — the native subscription too, with `--model <alias>`. Add one with `wt model add claude <alias> --family claude`. `claude/opusplan` runs Opus in plan mode and Sonnet otherwise (checked on 2026-10-14, #391), so outside plan mode it works on Sonnet where a bare `claude/native` launch works on your account's default model.
 - **Every other model** — passes `--model <gateway id>` and points Claude Code at the model server's gateway via `ANTHROPIC_*` env vars (see [Through the model server's gateway](#through-the-model-servers-gateway)). It also maps all four of Claude Code's model slots to that model (see [Model slots on a single-model launch](#model-slots-on-a-single-model-launch)).

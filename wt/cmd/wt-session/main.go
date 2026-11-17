@@ -93,7 +93,9 @@ func runLaunchPath(
 	// client session says it without the registry's "profile/" holder,
 	// which it never reads.
 	var slotNotes []string
-	if _, ok := agents.SlotsFor(agent); agent == "" || ok {
+	// A native launch (no model server at all, #615) never uses a slot
+	// profile, so it says nothing about the file either.
+	if _, ok := agents.SlotsFor(agent); (agent == "" || ok) && !wouldLaunchNative(a, agent, pinned, tags, family) {
 		slotNotes = slotWarningsRemote(a)
 	}
 	printSlotNotes := func() {

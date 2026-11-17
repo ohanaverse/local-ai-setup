@@ -54,12 +54,14 @@ func newNativeRig(t *testing.T) *nativeRig {
 	r := &nativeRig{home: home, ran: t.TempDir()}
 	bin := t.TempDir()
 	for _, name := range []string{"claude", "codex", "copilot", "pi", "opencode"} {
-		script := "#!/bin/sh\ntouch '" + filepath.Join(r.ran, name) + "'\nexit 0\n"
+		script := "#!/bin/sh\nenv > '" + filepath.Join(r.ran, name+".env") + "'\ntouch '" + filepath.Join(r.ran, name) + "'\nexit 0\n"
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldBuild, oldTUI := buildGatewayCmd, tuiRun
+	t.Cleanup(func() { buildGatewayCmd, tuiRun = oldBuild, oldTUI })
 	buildGatewayCmd = func(agent string, m config.Model, dir string, yolo bool, gw agents.Gateway, models []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		cmd, info, err := agents.BuildLaunchCmdGateway(agent, m, dir, yolo, gw, models, extra)
 		r.builds = append(r.builds, nativeBuild{agent: agent, model: m, gw: gw, yolo: yolo, dir: dir, args: extra})
@@ -77,8 +79,11 @@ func newNativeRig(t *testing.T) *nativeRig {
 func (r *nativeRig) run(t *testing.T, args ...string) (out string, code int) {
 	t.Helper()
 	notes := captureNotes(t)
-	fileOut := captureFile(t, &os.Stdout, func() { out, code = runRoot(t, args...) })
-	return out + fileOut + notes.String(), code
+	var fileOut, fileErr string
+	fileErr = captureFile(t, &os.Stderr, func() {
+		fileOut = captureFile(t, &os.Stdout, func() { out, code = runRoot(t, args...) })
+	})
+	return out + fileOut + fileErr + notes.String(), code
 }
 
 // TestLaunchWithoutAServerRunsEveryAgentNatively pins #615: with no model
@@ -105,6 +110,15 @@ func TestLaunchWithoutAServerRunsEveryAgentNatively(t *testing.T) {
 			b := r.builds[0]
 			if !b.model.Native || b.model.ID != "" || b.gw != (agents.Gateway{}) || !b.yolo || len(b.args) != 1 || b.args[0] != "--some-flag" {
 				t.Errorf("build = %+v, want the native model, a zero Gateway, --yolo and the passthrough args", b)
+			}
+			env, err := os.ReadFile(filepath.Join(r.ran, name+".env"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, line := range strings.Split(string(env), "\n") {
+				if strings.HasPrefix(line, "WT_MODEL_") || strings.Contains(line, "gateway") {
+					t.Errorf("the agent's environment carries %q, want no model-server or gateway setting", line)
+				}
 			}
 			for _, f := range []string{"rotation.state", "last-picked.state", "usage.jsonl"} {
 				if fileExists(filepath.Join(r.home, ".config", "agent-wt", f)) {
@@ -203,5 +217,68 @@ func TestHalfConfiguredServerStillRefuses(t *testing.T) {
 				t.Errorf("the agent launched natively beside a half-configured server (builds %d)\n%s", len(r.builds), out)
 			}
 		})
+	}
+}
+
+// TestHalfConfiguredServerFromConfigFileStillRefuses covers the config-file
+// forms of a half-configured server: a token_file with no url, and a url with
+// no token, each in config.toml, refuse with nothing launched, also with -W,
+// where nothing may be created either.
+func TestHalfConfiguredServerFromConfigFileStillRefuses(t *testing.T) {
+	for _, tc := range []struct{ name, table, want string }{
+		{"token_file only", "token_file = \"TOK\"\n", "the model server url is not configured"},
+		{"url only", "url = \"http://127.0.0.1:9\"\n", "the model server token is not configured"},
+	} {
+		for _, w := range []bool{false, true} {
+			name := tc.name
+			args := []string{"--cwd", "-A", "claude"}
+			if w {
+				name += " with -W"
+				args = []string{"-W", "feat-half", "-A", "claude"}
+			}
+			t.Run(name, func(t *testing.T) {
+				r := newNativeRig(t)
+				tok := filepath.Join(t.TempDir(), "tok")
+				if err := os.WriteFile(tok, []byte("secret\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cfg := filepath.Join(r.home, ".config", "agent-wt", "config.toml")
+				body, err := os.ReadFile(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(cfg, append(body, []byte("\n[model-server]\n"+strings.ReplaceAll(tc.table, "TOK", tok))...), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				repo := initTestRepo(t)
+				t.Chdir(repo)
+				out, code := r.run(t, args...)
+				if code != 1 || !strings.Contains(out, tc.want) || !strings.Contains(out, launchStill) {
+					t.Errorf("exit %d, output %q; want 1 naming %q and %q", code, out, tc.want, launchStill)
+				}
+				if r.ranAgent("claude") || len(r.builds) != 0 || strings.Contains(out, "natively") {
+					t.Errorf("launched natively beside a half-configured server\n%s", out)
+				}
+				wantNothingCreated(t, repo, "feat-half")
+			})
+		}
+	}
+}
+
+// TestNativeLaunchSaysNothingAboutSlotProfiles pins that a native launch
+// (which can never use a slot profile) prints no slot-profiles.toml warning,
+// though the file has a stray key that warns on a server launch.
+func TestNativeLaunchSaysNothingAboutSlotProfiles(t *testing.T) {
+	r := newNativeRig(t)
+	dir := filepath.Join(r.home, ".config", "agent-wt")
+	if err := os.WriteFile(filepath.Join(dir, "slot-profiles.toml"), []byte("[[profiles]]\nname = \"mixed\"\nagent = \"claude\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := r.run(t, "--cwd", "-A", "claude")
+	if code != 0 || !r.ranAgent("claude") {
+		t.Fatalf("exit %d, ran %v\n%s", code, r.ranAgent("claude"), out)
+	}
+	if strings.Contains(out, "slot-profiles.toml") {
+		t.Errorf("a native launch warned about slot-profiles.toml:\n%s", out)
 	}
 }

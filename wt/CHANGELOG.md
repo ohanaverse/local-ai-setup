@@ -4,7 +4,7 @@
 
 ### Added
 
-- With **no model server configured at all** (neither `url` nor a token), `wt -A <agent>` and the agent picker launch a model-driven agent **natively** (#615): no model prompt, no client session, the agent's own configuration decides the model. One `wt: note:` line says so. `-W`, `--root`, `--cwd`, the guard, `--yolo` and arguments after `--` work as usual; `profiles.toml` overlays do not apply, and no rotation or usage record is written. A half-configured server, an unreachable one, and any launch that asks for a model (`-M`, `-T`, `-F`) still refuse exactly as before. See `docs/wt-session.md`, "Native launch".
+- With **no model server configured at all** (neither `url` nor a token), `wt -A <agent>` and the agent picker launch a model-driven agent **natively** (#615): no model prompt, no client session, the agent's own configuration decides the model. One `wt:` line says so. `-W`, `--root`, `--cwd`, the guard, `--yolo` and arguments after `--` work as usual; `profiles.toml` overlays do not apply, and no rotation or usage record is written. A half-configured server, an unreachable one, and any launch that asks for a model (`-M`, `-T`, `-F`) still refuse exactly as before. See `docs/wt-session.md`, "Native launch".
 
 ### Changed
 

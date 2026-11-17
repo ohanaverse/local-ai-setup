@@ -131,12 +131,14 @@ for any launch. It prints one line on stderr, so the fallback is never
 silent:
 
 ```
-wt: note: no model server is configured — launching claude natively, with its own configuration; to choose models through wt-model, set url and token_file under [model-server] in config.toml
+wt: no model server is configured — launching claude natively, with its own configuration; to choose models through wt-model, set url and token_file under [model-server] in config.toml
 ```
 
 The agent gets no gateway origin or token (the zero route), no rotation or
 usage record is written (there is no model id), and `profiles.toml` overlays
-do not apply to a native launch.
+do not apply to a native launch; slot profiles cannot apply either, so a
+problem in `slot-profiles.toml` is not reported on one. In the picker the line
+is printed once the launch gate is past, so declining the launch says nothing.
 
 The fallback is narrow on purpose. A **half-configured** server (url without
 a token, or the reverse) still refuses and names the missing setting, an

@@ -19,7 +19,8 @@ func NativeModel() config.Model {
 
 // NativeNote is the one stderr line a native launch prints, so the fallback is
 // never silent: what happened, whose configuration decides the model, and the
-// key that turns wt-model on.
+// key that turns wt-model on. It is plain information, so it is a bare
+// `wt: <sentence>` (style guide M4), not a `wt: note:`.
 func NativeNote(agent string) string {
-	return fmt.Sprintf("wt: note: no model server is configured — launching %s natively, with its own configuration; to choose models through wt-model, set url and token_file under [model-server] in config.toml", agent)
+	return fmt.Sprintf("wt: no model server is configured — launching %s natively, with its own configuration; to choose models through wt-model, set url and token_file under [model-server] in config.toml", agent)
 }
