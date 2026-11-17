@@ -184,9 +184,8 @@ host state `wt-model serve` reads to reach LiteLLM, written by
 the same home). The `[litellm]` table in `config.toml` is a read-only
 fallback: consulted only when the home holds no `[litellm]` table, and never
 written again. A session never reads the pair, and every save of
-`config.toml` keeps the table as it is. A `status` run (or a `wt-model
-serve` startup) that resolved the pair from the fallback prints one note
-(illustrative — the path is machine-specific):
+`config.toml` keeps the table as it is. A `wt litellm status` run that resolved the pair from the fallback prints
+one note (illustrative — the path is machine-specific):
 
 ```
 wt: note: config.toml: [litellm] is a read-only fallback — 'wt litellm set' writes /Users/keith/.config/wt-model/config.toml now

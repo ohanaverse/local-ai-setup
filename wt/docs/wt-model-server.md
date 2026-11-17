@@ -116,8 +116,9 @@ reader resolves it — the key is never printed, only masked.
   started with; restart it after `wt-model litellm set`.
 - A home `config.toml` with no `[litellm]` table falls back to the legacy
   `[litellm]` table of wt's `~/.config/agent-wt/config.toml` — read-only,
-  nothing writes it again. A run that resolves the pair there prints one
-  note on stderr (illustrative — the path is machine-specific):
+  nothing writes it again. A `wt-model` run that resolves the pair there
+  (`wt-model serve` or `wt-model litellm status`) prints one note on
+  stderr (illustrative — the path is machine-specific):
 
   ```text
   wt-model: note: config.toml: [litellm] is a read-only fallback — 'wt-model litellm set' writes /Users/keith/.config/wt-model/config.toml now
