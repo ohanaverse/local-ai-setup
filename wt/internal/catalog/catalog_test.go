@@ -111,3 +111,48 @@ func TestFindReportsDiscoveredRows(t *testing.T) {
 		t.Error("Find(omlx/nope) reported a hit, want miss")
 	}
 }
+
+// TestModelRowsReadNoInventory verifies the row a caller with no probe gets:
+// the location resolved through the config (the model's own without one),
+// status ok, not running, no discovered row, and a cloud model whose provider
+// has no LiteLLM mapping marked Unmapped (a native one, and a local one, not).
+// Without it the standalone picker could list a model sync never routes as
+// launchable, or place a model in the wrong location band.
+func TestModelRowsReadNoInventory(t *testing.T) {
+	cfg := &config.Config{Providers: []config.Provider{
+		{ID: "openrouter", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "api_key"}},
+		{ID: "acme", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "api_key"}},
+		{ID: "omlx", Location: config.LocationLocal},
+	}}
+	models := []config.Model{
+		{ID: "openrouter/x", ProviderID: "openrouter", ModelName: "x"},
+		{ID: "acme/m", ProviderID: "acme", ModelName: "m"},
+		{ID: "acme/n", ProviderID: "acme", ModelName: "n", Native: true},
+		{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"},
+	}
+	rows := ModelRows(cfg, models)
+	if len(rows) != len(models) {
+		t.Fatalf("rows = %d, want one per model (%d)", len(rows), len(models))
+	}
+	for i, r := range rows {
+		if r.Model.ID != models[i].ID {
+			t.Fatalf("row %d = %s, want %s (the models' order)", i, r.Model.ID, models[i].ID)
+		}
+	}
+	for i, want := range []struct {
+		loc      config.Location
+		unmapped bool
+	}{{config.LocationCloud, false}, {config.LocationCloud, true}, {config.LocationCloud, false}, {config.LocationLocal, false}} {
+		r := rows[i]
+		if r.Location != want.loc || r.Unmapped != want.unmapped || r.Status != StatusOK || r.Running || r.Discovered {
+			t.Errorf("%s = %+v, want location %s, unmapped %v, status ok, not running", r.Model.ID, r, want.loc, want.unmapped)
+		}
+	}
+	if r := rows[3]; r.Action() != ActionStart {
+		t.Errorf("local row action = %v, want start (fail open without a probe)", r.Action())
+	}
+	// With no config the model's own location stands.
+	if r := ModelRow(nil, config.Model{ID: "omlx/z", ProviderID: "omlx", Location: config.LocationLocal}); r.Location != config.LocationLocal {
+		t.Errorf("ModelRow(nil cfg) location = %s, want the model's own", r.Location)
+	}
+}

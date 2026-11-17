@@ -32,9 +32,7 @@ var sessionBanned = []string{
 // links. It only shrinks: TestSessionLibrariesStayOffTheAdminPackages fails
 // when an entry here is no longer linked, so a fixed edge has to be deleted.
 // Never add an entry to make a failing build pass; remove the edge instead.
-var allowList = map[string][]string{
-	"internal/tui": {"internal/localmodels"},
-}
+var allowList = map[string][]string{}
 
 // sessionLibraries are the packages the session binary shares with the model
 // server's clients; each must stay off adminBanned except through allowList.

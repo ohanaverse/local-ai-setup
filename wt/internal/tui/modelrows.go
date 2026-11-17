@@ -6,7 +6,6 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -98,28 +97,22 @@ func (r tableRow) timePriced() bool {
 // carrying its Location). cfg is nil there; a test may pass one so rows
 // resolve their location from its providers.
 type tableInput struct {
-	cfg            *config.Config
-	agent          string
-	models         []config.Model
-	hideDiscovered bool
-	usage          usage.Store
+	cfg    *config.Config
+	agent  string
+	models []config.Model
+	usage  usage.Store
 	// now is the instant the rows are priced at. The zero time means the
 	// picker's clock (pickerNow), which is what both pickers leave it at.
 	now time.Time
 }
 
 // buildRows builds the shared catalog rows and decorates them with the
-// picker's per-agent usage counts. The row rules
-// themselves live in localmodels.CatalogRows and internal/catalog so the
-// non-TUI launch path and `wt smoke` reach the same verdicts this table
-// displays.
+// picker's per-agent usage counts. The picker reads no inventory (its models
+// come from the model server's catalog), so each row is catalog.ModelRow: the
+// same location and Unmapped rules localmodels.CatalogRows starts from, and
+// the same verdicts `wt smoke` and the non-TUI launch path reach.
 func buildRows(in tableInput) []tableRow {
-	rows := localmodels.CatalogRows(localmodels.CatalogInput{
-		Config:         in.cfg,
-		Agent:          in.agent,
-		Models:         in.models,
-		HideDiscovered: in.hideDiscovered,
-	})
+	rows := catalog.ModelRows(in.cfg, in.models)
 	// One reading of the clock for the whole table: the rows are priced at
 	// one instant, so two rows never show the prices of two sides of a window
 	// boundary and the COST cells agree.

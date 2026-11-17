@@ -11,7 +11,6 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // CatalogInput gathers everything CatalogRows needs. Models is the caller's
@@ -61,13 +60,8 @@ func CatalogRows(in CatalogInput) []catalog.Row {
 	rows := make([]catalog.Row, 0, len(in.Models))
 	seen := map[string]bool{}
 	for _, m := range in.Models {
-		loc := m.Location
-		if in.Config != nil {
-			if l, err := in.Config.ResolveLocation(m); err == nil {
-				loc = l
-			}
-		}
-		r := catalog.Row{Model: m, Location: loc, Status: catalog.StatusOK}
+		r := catalog.ModelRow(in.Config, m)
+		loc := r.Location
 		if de, isDisc := discByID[m.ID]; isDisc && m.Source == config.SourceDiscovered && loc == config.LocationLocal {
 			r.Status, r.Running, r.Loading, r.Discovered = catalog.StatusNew, de.Running, de.Loading, true
 		} else if loc == config.LocationLocal && in.Inventory != nil {
@@ -85,9 +79,6 @@ func CatalogRows(in CatalogInput) []catalog.Row {
 			if !e.Running && !e.ArtifactKnown {
 				r.Status = catalog.StatusUnknown
 			}
-		}
-		if _, ok := provider.PolicyFor(m.ProviderID); !ok && !m.Native && loc == config.LocationCloud {
-			r.Unmapped = true
 		}
 		rows = append(rows, r)
 		seen[m.ID] = true

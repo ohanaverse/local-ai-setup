@@ -132,7 +132,7 @@ Full rules: [docs/internals/config-and-registry.md](docs/internals/config-and-re
 
 ## Local-model resolution
 
-Every model row wt shows or resolves is built by `localmodels.CatalogRows` from the agent's eligible list plus one live `localmodels.Inventory` snapshot (no stored flag); `internal/catalog` owns the `Row` it makes and what a row does. A row's action is **launch** (cloud, or local and running), **start** (local ollama/omlx/omlx-6bit/mtplx/rec/sushi, not running or still loading) or **block**.
+Every model row wt shows or resolves is built by `localmodels.CatalogRows` from the agent's eligible list plus one live `localmodels.Inventory` snapshot (no stored flag), or by `catalog.ModelRows` where no probe is read (the standalone picker); `internal/catalog` owns the `Row` and what a row does. A row's action is **launch** (cloud, or local and running), **start** (local ollama/omlx/omlx-6bit/mtplx/rec/sushi, not running or still loading) or **block**.
 
 - **`config.Provider.Origin` is the one reading of a provider's address** (#348): the probes and the LiteLLM routes use it, and so must any new reader. A test never binds or dials the mtplx default port 8003.
 - **`localmodels.ServedIDs` is the one answer to "what is this server serving"** (#201).
@@ -304,7 +304,7 @@ Read [docs/internals/cleanup-and-removal.md](docs/internals/cleanup-and-removal.
 
 ## Import graph ratchet (`internal/depcheck`)
 
-`go test ./internal/depcheck` holds the session library packages (`cleanup`, `agents`, `modelclient`, `smoke`, `profiles`, `catalog`, `survey`, `tui`) off the admin packages (`lifecycle`, `litellm`, `localmodels`, `cloudsync`, `spend`, `modeladmin`, `configeditor`, `candidates`, `hoststop`, and the model server's packages) and `cmd/wt-model` off the session half. The test's allow-list of expected offenders **only shrinks**: never add an entry to make a build pass (move the type or function down to a leaf instead), and delete an entry the moment its edge is gone (the test fails until you do). Rules: `docs/internals/packages.md` "Package graph rules".
+`go test ./internal/depcheck` holds the session library packages (`cleanup`, `agents`, `modelclient`, `smoke`, `profiles`, `catalog`, `survey`, `tui`) off the admin packages (`lifecycle`, `litellm`, `localmodels`, `cloudsync`, `spend`, `modeladmin`, `configeditor`, `candidates`, `hoststop`, and the model server's packages) and `cmd/wt-model` off the session half. The test's allow-list of expected offenders (empty now) **only shrinks**: never add an entry to make a build pass (move the type or function down to a leaf instead), and delete an entry the moment its edge is gone (the test fails until you do). Rules: `docs/internals/packages.md` "Package graph rules".
 
 ## wt-model (`cmd/wt-model`)
 
