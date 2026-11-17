@@ -108,6 +108,24 @@ def served(provider: str, timeout: float = SERVED_TIMEOUT) -> list[str]:
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
+# wt's not-configured refusal leads (wt/internal/modelclient/endpoint.go),
+# one per missing setting. A model-id stop goes through the model server, so
+# these refusals mean no unload can run until one is configured.
+_NOT_CONFIGURED_REFUSALS = (
+    "no model server is configured",
+    "the model server url is not configured",
+    "the model server token is not configured",
+)
+
+# Appended to stop()'s failure for exactly those refusals: where to configure
+# the model server (wt's own line names the settings but only "config.toml").
+_NOT_CONFIGURED_HINT = (
+    "; stopping a model needs a model server: set url and token_file under "
+    "[model-server] in ~/.config/agent-wt/config.toml (or WT_MODEL_URL and "
+    "WT_MODEL_TOKEN_FILE)"
+)
+
+
 def stop(model_ref: str, timeout: float = STOP_TIMEOUT) -> None:
     """Stop one running local model (`wt stop <provider>/<name>`). On omlx
     that unloads the model and leaves the service and its other models up.
@@ -117,7 +135,15 @@ def stop(model_ref: str, timeout: float = STOP_TIMEOUT) -> None:
     nothing here can answer (stdin is the caller's own terminal, and stdin
     inherited by this subprocess means a stray keystroke could answer it),
     so without the flag the call would block until STOP_TIMEOUT.
+
+    A refusal that is wt's not-configured one carries the model-server
+    settings hint (`_NOT_CONFIGURED_HINT`), because with no model server
+    every model stop is refused and benchmark isolation cannot unload.
     """
     proc = _run(["wt", "stop", model_ref, "--yes"], timeout)
     if proc.returncode != 0:
-        raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))
+        msg = _msg(proc, f"wt exited {proc.returncode}")
+        raw = (proc.stderr or "") + (proc.stdout or "")
+        if any(pinned in raw for pinned in _NOT_CONFIGURED_REFUSALS):
+            msg += _NOT_CONFIGURED_HINT
+        raise WtBridgeError(msg)

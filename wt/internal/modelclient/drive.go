@@ -314,3 +314,7 @@ func (r *run) poll(ctx context.Context, id string, attached bool) (modelapi.JobS
 		}
 	}
 }
+
+// QueuedDetail is the progress detail of a job waiting its turn behind
+// another start or stop; the non-TUI start and the picker word it alike.
+const QueuedDetail = "queued behind another start or stop on the model server"

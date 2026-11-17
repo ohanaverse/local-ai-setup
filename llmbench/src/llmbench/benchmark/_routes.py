@@ -68,8 +68,7 @@ def litellm_credentials(
     api_key = litellm_entry.get("apiKey")
     if not api_key:
         raise BenchmarkError(
-            "no LiteLLM apiKey found in ~/.pi/agent/models.json; launch a wt "
-            "pi session in litellm mode at least once to seed it"
+            "no LiteLLM apiKey found in ~/.pi/agent/models.json; launch a wt pi session first"
         )
     base_url = litellm_entry.get("baseUrl", "http://localhost:4000/v1")
     return base_url, api_key

@@ -100,7 +100,7 @@ start and stop needs all of them.
      (`<family>/<artifact>`, e.g. `sushi/<org>/<pack>`); `--` is the cloud
      spelling.
    - **Every process family's `PidfileEnv` is isolated** for tests by
-     `lifecycle.IsolateProcessesForTest`, called from `cmd/wt`'s `TestMain`;
+     `lifecycle.IsolateProcessesForTest`, called from `cmd/wt-session`'s `TestMain`;
      a new family must keep `TestMainIsolatesEveryProcessPidfile` passing, so
      give it a `PidfileEnv`.
 4. **Tests and docs.** Run `go test ./...` from `wt/` and extend the tests

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -60,7 +61,7 @@ func (a *cliAnswerer) Replace(ctx context.Context, p modelapi.Problem) (bool, er
 	if _, err := fmt.Fprintf(f, "%s [y/N] ", question); err != nil {
 		return false, err
 	}
-	ok, err := askOnTTY(ctx, f, askYesNo)
+	ok, err := askOnTTY(ctx, f, "nothing was started", askYesNo)
 	if ok && err == nil && p.Code == modelapi.CodeOccupied && len(p.Occupants) > 0 {
 		fmt.Fprintf(a.out, "wt: replacing %s\n", occupants)
 	}
@@ -73,7 +74,7 @@ func (a *cliAnswerer) Replace(ctx context.Context, p modelapi.Problem) (bool, er
 func (a *cliAnswerer) Others(ctx context.Context, p modelapi.Problem) ([]string, bool, error) {
 	switch a.others {
 	case "stop":
-		return stoppable(p.Others), true, nil
+		return modelapi.StoppableIDs(p.Others), true, nil
 	case "keep":
 		return nil, true, nil
 	}
@@ -87,13 +88,13 @@ func (a *cliAnswerer) Others(ctx context.Context, p modelapi.Problem) ([]string,
 	if _, err := fmt.Fprintf(f, "%s ", question); err != nil {
 		return nil, false, err
 	}
-	choice, err := askOnTTY(ctx, f, func(r io.Reader) (othersChoice, error) { return askChoice(r, canStop) })
+	choice, err := askOnTTY(ctx, f, "nothing was started", func(r io.Reader) (othersChoice, error) { return askChoice(r, canStop) })
 	if err != nil {
 		return nil, false, err
 	}
 	switch choice {
 	case othersStop:
-		return stoppable(p.Others), true, nil
+		return modelapi.StoppableIDs(p.Others), true, nil
 	case othersKeep:
 		return nil, true, nil
 	}
@@ -112,14 +113,23 @@ func (a *cliAnswerer) ConfirmInUse(ctx context.Context, p modelapi.Problem) (boo
 	if _, err := fmt.Fprintf(f, "%s; stop it anyway? [y/N] ", p.Message); err != nil {
 		return false, err
 	}
-	return askOnTTY(ctx, f, askYesNo)
+	return askOnTTY(ctx, f, "nothing was stopped", askYesNo)
+}
+
+// cancelledQuestion is a prompt Ctrl-C ended: M7 words a cancellation
+// "cancelled — <what is still true>", never "declined" (that stays the
+// answered no's word), with a decline's outcome (C9 exit 3, nothing changed).
+func cancelledQuestion(still string) error {
+	return exitcode.New(exitApprovalMissing, errors.New("cancelled — "+still), false)
 }
 
 // askOnTTY reads an answer with read, raced against ctx: the read on the
 // terminal cannot be interrupted, and Ctrl-C (which the start's signal
-// context swallows) must still end the question. A cancelled question is a
-// decline, so nothing is started. The abandoned read dies with the process.
-func askOnTTY[T any](ctx context.Context, f io.Reader, read func(io.Reader) (T, error)) (T, error) {
+// context swallows) must still end the question. A cancelled question is not
+// a decline: it answers cancelledQuestion(still), with still what the
+// question guarded ("nothing was started", "nothing was stopped"). The
+// abandoned read dies with the process.
+func askOnTTY[T any](ctx context.Context, f io.Reader, still string, read func(io.Reader) (T, error)) (T, error) {
 	type answer struct {
 		v   T
 		err error
@@ -134,20 +144,8 @@ func askOnTTY[T any](ctx context.Context, f io.Reader, read func(io.Reader) (T, 
 		return a.v, a.err
 	case <-ctx.Done():
 		var zero T
-		return zero, nil
+		return zero, cancelledQuestion(still)
 	}
-}
-
-// stoppable is the ids of the residents the server can stop: what a stop
-// answer approves.
-func stoppable(others []modelapi.Resident) []string {
-	var ids []string
-	for _, r := range others {
-		if r.Stoppable {
-			ids = append(ids, r.ID)
-		}
-	}
-	return ids
 }
 
 // askChoice reads one line from r: s/stop stops (only when canStop), k/keep
@@ -185,7 +183,7 @@ func othersQuestion(id string, others []modelapi.Resident, unknown []string, cou
 	for _, f := range unknown {
 		fmt.Fprintf(&b, "  cannot tell whether %s is serving a model\n", f)
 	}
-	canStop := len(stoppable(others)) > 0
+	canStop := len(modelapi.StoppableIDs(others)) > 0
 	if canStop {
 		b.WriteString("stop them first, keep them and start, or cancel? [s/k/N]")
 	} else {
@@ -209,14 +207,11 @@ func othersWarning(id string, others []modelapi.Resident, unknown []string) stri
 		parts = append(parts, fmt.Sprintf("whatever %s is serving", f))
 	}
 	advice := "pass --others=keep to silence this"
-	if len(stoppable(others)) > 0 {
+	if len(modelapi.StoppableIDs(others)) > 0 {
 		advice = "pass --others=stop to stop them, --others=keep to silence this"
 	}
 	return fmt.Sprintf("wt: warning: starting %s beside %s; %s\n", id, strings.Join(parts, ", "), advice)
 }
-
-// startQueued is the progress detail of a job waiting its turn.
-const startQueued = "queued behind another start or stop on the model server"
 
 // startProgressRemote is a start job's progress on out (stderr, M5): one
 // `wt: starting ID — STEP (12s)` line when the step changes and again every
@@ -238,7 +233,7 @@ func jobProgressRemote(out io.Writer, verb, id string) modelclient.Progress {
 		detail := cleanup.Flatten(v.Step)
 		switch {
 		case v.Queued:
-			detail = startQueued
+			detail = modelclient.QueuedDetail
 		case detail == "":
 			detail = "waiting for the model server"
 		}

@@ -20,7 +20,7 @@ type modelSession struct {
 	ep     modelclient.Endpoint
 }
 
-// newModelClient builds the client for ep. It is a test seam: cmd/wt's
+// newModelClient builds the client for ep. It is a test seam: cmd/wt-session's
 // TestMain swaps in a client whose transport dials loopback only, so the
 // fake model server is the one network a test may reach.
 var newModelClient = func(ep modelclient.Endpoint) *modelclient.Client {

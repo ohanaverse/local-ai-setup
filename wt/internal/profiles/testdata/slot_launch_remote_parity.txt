@@ -1,6 +1,6 @@
 # The model-server calls a slot-profile launch makes on a client session's
 # path, one scenario per block. Read by two tests, one per launch path, so
-# the two paths are held to the same list: TestSlotFlowParity in cmd/wt (the
+# the two paths are held to the same list: TestSlotFlowParity in cmd/wt-session (the
 # -M profile/<name> pin, launchSlotProfileRemote) and TestSlotFlowParity in
 # internal/tui (the picker's Enter on a profile row, slot_flow.go). Change
 # both paths together.

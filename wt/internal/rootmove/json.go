@@ -11,7 +11,7 @@ import (
 // EnvelopeVersion is the `version` of the restore-root result document. Bump
 // it for any change a consumer could trip on;
 // docs/contracts/restore-root-result.schema.json and its samples move with it
-// (held by cmd/wt/restore_root_contract_test.go).
+// (held by cmd/wt-session/restore_root_contract_test.go).
 const EnvelopeVersion = 1
 
 // Meta is the run-wide part of the document.

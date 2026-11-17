@@ -212,3 +212,13 @@ func TestErrorSamplesUseConstants(t *testing.T) {
 		t.Errorf("Err() = %q", e)
 	}
 }
+
+func TestStoppableIDs(t *testing.T) {
+	got := StoppableIDs([]Resident{{ID: "a", Stoppable: true}, {ID: "b"}, {ID: "c", Stoppable: true}})
+	if want := []string{"a", "c"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("StoppableIDs = %v, want %v", got, want)
+	}
+	if got := StoppableIDs(nil); got != nil {
+		t.Errorf("StoppableIDs(nil) = %v, want nil", got)
+	}
+}

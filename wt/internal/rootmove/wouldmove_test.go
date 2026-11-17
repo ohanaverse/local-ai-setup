@@ -13,7 +13,7 @@ import (
 // Completed empty but non-nil, no record, no fast-forward), and that the
 // encoded document says outcome would_move. Why: --dry-run prints exactly
 // this, and it must run no git. (Schema validity of the encoded form is held
-// by cmd/wt's TestRestoreRootWouldMoveEncodesSchemaValid.)
+// by cmd/wt-session's TestRestoreRootWouldMoveEncodesSchemaValid.)
 func TestWouldMove(t *testing.T) {
 	t.Parallel()
 	p := Plan{Repo: "/r", Branch: "feat", Default: "main", Head: "abc", DestPath: "/r/.worktrees/feat", DefaultFF: true,

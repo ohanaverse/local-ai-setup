@@ -42,11 +42,16 @@ def test_litellm_credentials_defaults_base_url_when_unspecified(tmp_path):
     assert litellm_credentials(live_path) == ("http://localhost:4000/v1", "sk-x")
 
 
-def test_litellm_credentials_missing_key_raises(tmp_path):
-    # No apiKey means no way to authenticate to the gateway — the shared
-    # error must name the seeding remedy (run a wt pi session in litellm
-    # mode) so users know how to fix it, matching the pre-refactor callers.
+def test_litellm_credentials_message_names_a_wt_pi_session(tmp_path):
+    # No apiKey means no way to authenticate — the shared error must name
+    # the remedy (a wt pi session; `wt litellm on` is retired since the
+    # model-server flip) and end with `launch a wt pi session first`, the
+    # pinned wording every caller shows.
     live_path = tmp_path / "models.json"
     live_path.write_text(json.dumps({"providers": {}}), encoding="utf-8")
-    with pytest.raises(BenchmarkError, match="apiKey"):
+    with pytest.raises(BenchmarkError) as excinfo:
         litellm_credentials(live_path)
+    msg = str(excinfo.value)
+    assert "apiKey" in msg
+    assert "wt pi session" in msg
+    assert msg.endswith("launch a wt pi session first")

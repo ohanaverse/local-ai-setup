@@ -20,7 +20,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Test seams: production asks ollama and the user's terminal; cmd/wt's
+// Test seams: production asks ollama and the user's terminal; cmd/wt-session's
 // TestMain stubs both.
 var (
 	// ollamaCaps is the best-effort capability lookup an add of an ollama

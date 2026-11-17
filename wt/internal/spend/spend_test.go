@@ -198,7 +198,7 @@ var sqlCompare = map[string]func(t, bound time.Time) bool{
 // either side of each. InWindow is what `wt stats`' tests stand in for the
 // database with, so this is the link that stops the two drifting apart: an
 // operator changed in the SQL alone fails here, and without it the edge tests
-// in cmd/wt would go on passing against a rule the database no longer applies.
+// in cmd/wt-session would go on passing against a rule the database no longer applies.
 //
 // The second case gives the window ends that are not whole microseconds, as
 // time.Now() does. The literal drops the fraction below a microsecond, and

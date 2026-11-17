@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -448,7 +447,7 @@ func (a *app) runSmokeRows(ctx context.Context, stderr io.Writer, cfg *config.Co
 
 		// Resolve the profile for this agent×model pair. If one matches,
 		// build a ProfileApplier that applies it via the same
-		// applyResolvedProfile used by a real launch (cmd/wt/launch.go),
+		// applyResolvedProfile used by a real launch (cmd/wt-session/launch.go),
 		// so smoke and a real launch can never drift on apply/rollback
 		// semantics.
 		var pa smoke.ProfileApplier
@@ -563,7 +562,7 @@ func resolveSmokeModelRemote(ctx context.Context, ms *modelSession, cfg *config.
 		return smokeTarget{}, nil, perr
 	}
 	if !ok {
-		return smokeTarget{}, nil, fmt.Errorf("model selection canceled")
+		return smokeTarget{}, nil, fmt.Errorf("model selection cancelled")
 	}
 	if t, ok := target(m.ID); ok {
 		return t, cat.Rows, nil
@@ -633,21 +632,7 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 	// the run. end runs once, on a context no cancel reaches, and never fails
 	// the run; after a register the server refused, its DELETE is refused too,
 	// which is not news.
-	note := func(s string) { fmt.Fprintf(osStderr, "wt: note: %s\n", s) }
-	sess := ms.client.NewSession([]string{m.ID}, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
-	registered := true
-	if rerr := sess.Start(ctx); rerr != nil {
-		registered = !registerRefused(rerr)
-		note(fmt.Sprintf("the model server did not register this client session (%s) — the run goes on, but the server may stop %s once it is idle", rerr, m.ID))
-	}
-	var endOnce sync.Once
-	end := func() {
-		endOnce.Do(func() {
-			if eerr := sess.End(context.WithoutCancel(ctx)); eerr != nil && registered {
-				note(fmt.Sprintf("could not end the client session on the model server (%s) — it forgets it within a minute", eerr))
-			}
-		})
-	}
+	sess, _, end := openClientSession(ctx, ms, []string{m.ID}, fmt.Sprintf("the run goes on, but the server may stop %s once it is idle", m.ID))
 	defer end()
 
 	started := false

@@ -318,7 +318,7 @@ func TestSelectedEntryMsgBareBranchResolveErrorReturnsToList(t *testing.T) {
 // the `d` key handler. The cross-tag switch is no longer a TUI
 // keybinding; tag filtering happens at launch via the -T flag
 // (threaded through tui.Run in Task 4, exercised by
-// TestLaunchFilteredUsesEligibleAndSlot in cmd/wt/launch_test.go) and
+// TestLaunchFilteredUsesEligibleAndSlot in cmd/wt-session/launch_test.go) and
 // the resulting picker list is covered by TestPhaseModelHonorsFilters
 // in agent_picker_test.go.
 

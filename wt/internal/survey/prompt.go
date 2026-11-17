@@ -11,7 +11,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
-// stdinTTY is a test seam wrapping the real TTY check, mirroring cmd/wt's
+// stdinTTY is a test seam wrapping the real TTY check, mirroring cmd/wt-session's
 // isStdinTTY/stdinTTY pattern. PromptRun's r/w are injected for tests, but
 // TTY-ness is a property of the real process's stdin, not of whatever
 // io.Reader a test passes in — so it needs its own seam rather than

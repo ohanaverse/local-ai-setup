@@ -115,7 +115,7 @@ type remoteSlotPreparedMsg struct {
 }
 
 // beginRemoteSlotLaunch is the API path's slot-profile launch, the twin of
-// cmd/wt's launchSlotProfileRemote: change both paths together
+// cmd/wt-session's launchSlotProfileRemote: change both paths together
 // (TestSlotFlowParity holds them to the same server calls). Its prep, in a
 // command behind the launching screen, reads the catalog once, resolves the
 // profile against it (catalog.ResolveSlotProfileWire), refuses a passthrough

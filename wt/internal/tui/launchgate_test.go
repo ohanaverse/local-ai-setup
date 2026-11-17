@@ -54,7 +54,7 @@ func TestLaunchGateRootNoOthersWarnsAndClaims(t *testing.T) {
 // — even while another session holds the root — and claims the picked
 // worktree itself, named in the claim's path (Task 405: every launch claims
 // its own worktree, not only the root). The line is the pick's
-// acknowledgement, cmd/wt confirmLaunch's parity.
+// acknowledgement, cmd/wt-session confirmLaunch's parity.
 func TestLaunchGateLinkedWorktreePrintsInfoAndClaimsItsWorktree(t *testing.T) {
 	t.Cleanup(releaseRootClaim)
 	root := rootRepo(t)
@@ -329,7 +329,7 @@ func TestLinkedLaunchClaimsForTheAgentsRun(t *testing.T) {
 }
 
 // TestNamedRootBranchIsCheckedAndClaimed checks a preset path (the -W root
-// branch cmd/wt hands in) is judged by that directory and claimed for the
+// branch cmd/wt-session hands in) is judged by that directory and claimed for the
 // agent's run — and is asked about at most once per launch: RunE's
 // confirmLaunch already asked, so the gate must never pose its question
 // again, however the picture changed since. Without this a held root on a
@@ -394,7 +394,7 @@ func TestLaunchGateNonTTYWarnsAndProceedsWithoutReading(t *testing.T) {
 // TestEnsureFailureAfterAContinueIsAnErrorNotAQuietDecline checks a creation
 // that fails AFTER the person continued is a failure, not a choice: the error
 // travels out of the gate as the run's error (so wt prints it once at main and
-// exits non-zero, exactly as cmd/wt's -W path does through refuse) instead of
+// exits non-zero, exactly as cmd/wt-session's -W path does through refuse) instead of
 // sharing the decline's quiet exit 0. A quiet exit here hid every git failure
 // at the commit point.
 func TestEnsureFailureAfterAContinueIsAnErrorNotAQuietDecline(t *testing.T) {

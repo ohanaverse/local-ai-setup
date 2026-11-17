@@ -31,7 +31,7 @@ import (
 // (codex does have a target mechanism), but the caller must fail loudly
 // instead of writing anywhere. claude's worktreePath is resolved to an
 // absolute path for the same reason: an outside-a-git-repo launch passes
-// the literal relative path "." (cmd/wt/main.go), and backupKey hashes
+// the literal relative path "." (cmd/wt-session/main.go), and backupKey hashes
 // the STRING this function returns — two such launches from different
 // real directories would otherwise collide on the identical relative
 // string ".claude/settings.local.json" and self-heal/restore over each
@@ -482,7 +482,7 @@ func restoreIfBackedUp(target string) (restored bool, err error) {
 
 // SelfHeal restores target from an orphaned config_content backup, if one
 // exists — the exported entry point for callers outside this package
-// (cmd/wt's applyProfileForLaunch) that want to self-heal a claude/codex
+// (cmd/wt-session's applyProfileForLaunch) that want to self-heal a claude/codex
 // config_content target on EVERY launch of that agent, not only the next
 // launch that happens to resolve a matching profile for that exact target
 // (which is what snapshotAndWrite's own internal self-heal call already

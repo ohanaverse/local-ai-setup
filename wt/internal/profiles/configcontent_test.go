@@ -76,7 +76,7 @@ func TestConfigFileTargetClaudeIsWorktreeScoped(t *testing.T) {
 
 // TestConfigFileTargetClaudeResolvesRelativeWorktreePathToAbsolute is the
 // regression lock for the code-review finding that an outside-a-git-repo
-// claude launch (worktreePath == ".", see cmd/wt/main.go's outside-repo
+// claude launch (worktreePath == ".", see cmd/wt-session/main.go's outside-repo
 // passthrough) always hashed the SAME backup key regardless of which real
 // directory the launch actually ran in: ConfigFileTarget joined "." onto
 // ".claude/settings.local.json" literally, and backupKey (which hashes the
@@ -410,7 +410,7 @@ func TestMergeOpenCodeEnvUsesLastEntryNotFirst(t *testing.T) {
 }
 
 // TestSelfHealRestoresOrphanedBackup verifies the exported SelfHeal
-// wrapper (added for Important finding #4, so cmd/wt's
+// wrapper (added for Important finding #4, so cmd/wt-session's
 // applyProfileForLaunch can self-heal a config_content target from outside
 // this package) delegates correctly to the same restore logic
 // TestApplyConfigContentSelfHealsOrphanedBackup exercises directly: a
@@ -777,7 +777,7 @@ func TestApplyConfigContentRefusesWhenTargetOwnedByLiveSession(t *testing.T) {
 }
 
 // TestSelfHealSkipsBackupOwnedByLiveProcess verifies the exported SelfHeal
-// entry point (used by cmd/wt's applyProfileForLaunch on every launch of an
+// entry point (used by cmd/wt-session's applyProfileForLaunch on every launch of an
 // agent) also respects the live-owner guard: it must never restore a
 // backup a different, still-running wt process still owns.
 func TestSelfHealSkipsBackupOwnedByLiveProcess(t *testing.T) {

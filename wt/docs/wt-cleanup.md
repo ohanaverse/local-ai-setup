@@ -710,7 +710,7 @@ source, so `wt cleanup` does not list the new worktree as preserved by it.
 prints reasons, warnings and steps in full.
 
 When the root is on a non-default branch, the launch warnings' hint is one
-line pointing here, printed by `cmd/wt`'s `confirmLaunch` and the picker's
+line pointing here, printed by `cmd/wt-session`'s `confirmLaunch` and the picker's
 launch gate (hidden when `origin/HEAD` is not set).
 
 Guide: [08 §9](../../docs/guides/08-maintenance-and-troubleshooting.md#9-cleaning-up-worktrees-and-branches).

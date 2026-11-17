@@ -179,6 +179,9 @@ start a server.
   a `kill`, ends wt before it can tell the server. The server forgets the
   client session when its heartbeats stop, after its 60 s TTL; until then
   the session's models count as in use, and the idle grace starts after.
+- **A configured but unreachable server is found only at the launch's ping**,
+  after `-W <name>` has already created its worktree and branch. Known limit:
+  the worktree and branch then need manual cleanup.
 
 ## See also
 

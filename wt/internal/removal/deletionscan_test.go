@@ -31,7 +31,7 @@ type allowedFileOps struct {
 // with the reason still true. A new entry needs the same justification:
 // removing user data belongs in internal/removal.
 var fileOpAllowed = map[string]allowedFileOps{
-	"cmd/wt/cloudsync_catalog.go":           {1, "saveFailedHTML: removes a same-named stale page in TMPDIR before writing a refused pricing page (O_EXCL)"},
+	"cmd/wt-session/cloudsync_catalog.go":   {1, "saveFailedHTML: removes a same-named stale page in TMPDIR before writing a refused pricing page (O_EXCL)"},
 	"internal/config/config.go":             {2, "atomic config write: removes its own temp file, renames it over the target"},
 	"internal/config/fortest.go":            {1, "test helper's scratch config dir (RemoveAll of a temp dir it made)"},
 	"internal/gittest/gittest.go":           {1, "test helper's scratch template dirs (RemoveAll of MkdirTemp dirs it created)"},
@@ -52,16 +52,16 @@ var fileOpAllowed = map[string]allowedFileOps{
 // classifier and its command, the copy-only rescue engine and its command
 // (TestCleanupCmdContainsNoDeletion holds the same line with a substring
 // scan), and `wt restore-root`'s engine and command (internal/rootmove,
-// cmd/wt/restore_root*.go), which only name ReleaseRoot. The one reset of a checkout in the module is
+// cmd/wt-session/restore_root*.go), which only name ReleaseRoot. The one reset of a checkout in the module is
 // internal/removal's ReleaseRoot (TestRootMutationFunctionsAreExactlyTheAllowList,
 // TestHardResetExistsNowhereOutsideRemoval); this scan skips that package.
 func fileOpNever(rel string) bool {
 	return strings.HasPrefix(rel, "internal/cleanup/") ||
 		strings.HasPrefix(rel, "internal/rescue/") ||
 		strings.HasPrefix(rel, "internal/rootmove/") ||
-		(strings.HasPrefix(rel, "cmd/wt/rescue") && !strings.Contains(strings.TrimPrefix(rel, "cmd/wt/"), "/")) ||
-		(strings.HasPrefix(rel, "cmd/wt/restore_root") && !strings.Contains(strings.TrimPrefix(rel, "cmd/wt/"), "/")) ||
-		(strings.HasPrefix(rel, "cmd/wt/cleanup") && !strings.Contains(strings.TrimPrefix(rel, "cmd/wt/"), "/"))
+		(strings.HasPrefix(rel, "cmd/wt-session/rescue") && !strings.Contains(strings.TrimPrefix(rel, "cmd/wt-session/"), "/")) ||
+		(strings.HasPrefix(rel, "cmd/wt-session/restore_root") && !strings.Contains(strings.TrimPrefix(rel, "cmd/wt-session/"), "/")) ||
+		(strings.HasPrefix(rel, "cmd/wt-session/cleanup") && !strings.Contains(strings.TrimPrefix(rel, "cmd/wt-session/"), "/"))
 }
 
 // fileOpPkgs are the packages whose file-deleting or file-replacing functions
@@ -400,7 +400,7 @@ func scanModule(t *testing.T, root string) (gitHits []finding, fileHits map[stri
 //   - a dot-import of os, syscall or golang.org/x/sys/unix;
 //   - os.Remove/RemoveAll/Rename or syscall/unix Unlink/Unlinkat/Rmdir/Rename*
 //     in a file not on fileOpAllowed, ever in internal/cleanup or
-//     cmd/wt/cleanup*.go, or a listed file whose count of them changed;
+//     cmd/wt-session/cleanup*.go, or a listed file whose count of them changed;
 //   - an allow-list entry whose file is gone or no longer uses such a
 //     function (a stale entry would let a later deletion in unseen).
 //
@@ -412,7 +412,7 @@ func scanModule(t *testing.T, root string) (gitHits []finding, fileHits map[stri
 // x/sys/unix, and test files.
 //
 // Carry for later tasks: the command-line check matches every string literal
-// module-wide, so a file outside internal/removal (notably cmd/wt/remove.go,
+// module-wide, so a file outside internal/removal (notably cmd/wt-session/remove.go,
 // Task 9) must word its help text and error messages around phrases like
 // "git branch -d", "git worktree remove" or "push -d"; keep the git argv in
 // internal/removal.
@@ -557,7 +557,7 @@ func TestDeletionScanRefusesDotImports(t *testing.T) {
 }
 
 // TestRescueIsInsideTheDeletionScanAndNeverAllowed checks the copy-only rescue
-// engine (internal/rescue) and its command (cmd/wt/rescue*.go) are files the
+// engine (internal/rescue) and its command (cmd/wt-session/rescue*.go) are files the
 // module scan reads, that no allow-list entry can cover them, and that the scan
 // does flag a deletion written in them. Why: the rescue promises it only
 // creates; a rollback "for tidiness" (os.RemoveAll of a half-built worktree,
@@ -572,7 +572,7 @@ func TestRescueIsInsideTheDeletionScanAndNeverAllowed(t *testing.T) {
 	if err != nil || len(pkg) == 0 {
 		t.Fatalf("no files under internal/rescue (%v): the pin has nothing to pin", err)
 	}
-	for _, rel := range []string{"internal/rescue/execute.go", "cmd/wt/rescue.go", "cmd/wt/rescue_json.go"} {
+	for _, rel := range []string{"internal/rescue/execute.go", "cmd/wt-session/rescue.go", "cmd/wt-session/rescue_json.go"} {
 		if !fileOpNever(rel) {
 			t.Errorf("fileOpNever(%q) is false: an allow-list entry could cover it", rel)
 		}
@@ -594,7 +594,7 @@ func TestRescueIsInsideTheDeletionScanAndNeverAllowed(t *testing.T) {
 }
 
 // TestRootmoveIsInsideTheDeletionScanAndNeverAllowed is the rescue pin's twin
-// for `wt restore-root`: internal/rootmove and cmd/wt/restore_root*.go are
+// for `wt restore-root`: internal/rootmove and cmd/wt-session/restore_root*.go are
 // files the module scan reads, no allow-list entry can cover them, and the
 // scan flags a deletion written in them. Why: rootmove composes the one
 // destructive operation but must only name ReleaseRoot; a "tidy" rollback
@@ -610,13 +610,13 @@ func TestRootmoveIsInsideTheDeletionScanAndNeverAllowed(t *testing.T) {
 	if err != nil || len(pkg) == 0 {
 		t.Fatalf("no files under internal/rootmove (%v): the pin has nothing to pin", err)
 	}
-	for _, rel := range []string{"internal/rootmove/execute.go", "cmd/wt/restore_root.go", "cmd/wt/restore_root_json.go"} {
+	for _, rel := range []string{"internal/rootmove/execute.go", "cmd/wt-session/restore_root.go", "cmd/wt-session/restore_root_json.go"} {
 		if !fileOpNever(rel) {
 			t.Errorf("fileOpNever(%q) is false: an allow-list entry could cover it", rel)
 		}
 	}
-	if fileOpNever("cmd/wt/restore_root/x.go") {
-		t.Errorf("fileOpNever covers a subdirectory of cmd/wt; it pins top-level files only")
+	if fileOpNever("cmd/wt-session/restore_root/x.go") {
+		t.Errorf("fileOpNever covers a subdirectory of cmd/wt-session; it pins top-level files only")
 	}
 	for rel := range fileOpAllowed {
 		if strings.Contains(rel, "rootmove") || strings.Contains(rel, "restore_root") {

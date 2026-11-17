@@ -320,7 +320,7 @@ a saved copy of the page and work from that. Work from `wt/`.
    page, update `TestParsePricingFixture`'s expected count and prices, and
    run `go test ./internal/cloudsync && make check`.
 4. Try it on the page that broke it:
-   `go run ./cmd/wt cloud-sync --only ollama --dry-run --html <saved page>`
+   `go run ./cmd/wt-session cloud-sync --only ollama --dry-run --html <saved page>`
    (it still reads ollama.com/library and runs `ollama list`), then go
    through the steps above from step 1. The first plan after a parser change
    deserves a slower read than usual: check its model count and removals

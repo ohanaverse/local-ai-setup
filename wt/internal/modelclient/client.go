@@ -71,6 +71,9 @@ func New(ep Endpoint, opts ...Option) *Client {
 	}
 	if c.hc == nil {
 		tr := http.DefaultTransport.(*http.Transport).Clone()
+		// No environment proxy: the bearer token and the prompts that pass
+		// through the gateway never go to a third party's HTTP(S)_PROXY.
+		tr.Proxy = nil
 		tr.DialContext = (&net.Dialer{Timeout: dialTimeout}).DialContext
 		// A 3xx is never followed: it would replay the bearer token and the
 		// request body to whatever the Location names.
@@ -250,6 +253,9 @@ func (c *Client) Ping(ctx context.Context) (modelapi.Ping, error) {
 	if p.APIMajor != modelapi.APIMajor {
 		return p, &SkewError{Addr: c.addr(), Server: p.APIMajor, Client: modelapi.APIMajor}
 	}
+	if p.Schema != modelapi.SchemaVersion {
+		return p, &SchemaError{Addr: c.addr(), Server: p.Schema, Client: modelapi.SchemaVersion}
+	}
 	c.mu.Lock()
 	c.pinged, c.ping = true, p
 	c.mu.Unlock()
@@ -262,7 +268,7 @@ func (c *Client) Catalog(ctx context.Context) (modelapi.Catalog, error) {
 	if err := c.checked(ctx, "GET", "/control/v1/catalog", nil, nil, &cat); err != nil {
 		return cat, err
 	}
-	if cat.Schema > modelapi.SchemaVersion {
+	if cat.Schema != modelapi.SchemaVersion {
 		return modelapi.Catalog{}, &SchemaError{Addr: c.addr(), Server: cat.Schema, Client: modelapi.SchemaVersion}
 	}
 	cleanCatalog(&cat)
@@ -439,6 +445,16 @@ func (c *Client) WaitGatewayReady(ctx context.Context) error {
 		}
 		slept += d
 	}
+}
+
+// GatewayStatus asks the gateway's model list once and returns the HTTP
+// status it answered. It waits for nothing and retries nothing.
+func (c *Client) GatewayStatus(ctx context.Context) (int, error) {
+	r, err := c.send(ctx, "GET", c.ep.Origin()+"/v1/models", nil)
+	if err != nil {
+		return 0, err
+	}
+	return r.status, nil
 }
 
 // retryAfter reads a delay-seconds Retry-After; anything else, or a value past

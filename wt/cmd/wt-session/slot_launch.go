@@ -273,19 +273,7 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 	for i, m := range distinct {
 		ids[i] = m.ID
 	}
-	w := osStderr
-	note := func(s string) { fmt.Fprintf(w, "wt: note: %s\n", s) }
-	sess := ms.client.NewSession(ids, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
-	registered := true
-	if rerr := sess.Start(ctx); rerr != nil {
-		registered = !registerRefused(rerr)
-		note(fmt.Sprintf("the model server did not register this client session (%s) — the launch goes on, but the server may stop %s once it is idle", rerr, strings.Join(ids, ", ")))
-	}
-	end := func() {
-		if eerr := sess.End(context.WithoutCancel(ctx)); eerr != nil && registered {
-			note(fmt.Sprintf("could not end the client session on the model server (%s) — it forgets it within a minute", eerr))
-		}
-	}
+	sess, _, end := openClientSession(ctx, ms, ids, fmt.Sprintf("the launch goes on, but the server may stop %s once it is idle", strings.Join(ids, ", ")))
 
 	// Step 4: the one local slot model, started only when it needs it.
 	if p.Local != nil && row.Action() == catalog.ActionStart {

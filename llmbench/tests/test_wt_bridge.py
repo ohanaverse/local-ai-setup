@@ -172,3 +172,53 @@ def test_stop_runs_wt_stop_and_reports_its_failure(monkeypatch, wt_on_path):
     result["cp"] = _cp(returncode=1, stderr="Error: not running\n")
     with pytest.raises(wt_bridge.WtBridgeError, match="^not running$"):
         wt_bridge.stop("omlx/Qwen3.6-35B-A3B-6bit")
+
+
+# The refusal texts stop() may get: wt's three not-configured leads
+# (wt/internal/modelclient/endpoint.go), one per missing setting — the fourth
+# case puts one on stdout alone, since detection reads both streams — plus an
+# unrelated refusal as the negative case.
+_STOP_REFUSAL_CASES = [
+    ("Error: no model server is configured; [litellm] is no longer used by wt\n", "", True),
+    ("Error: the model server url is not configured\n", "", True),
+    ("Error: the model server token is not configured\n", "", True),
+    ("", "wt: the model server token is not configured\n", True),
+    ("Error: not running\n", "", False),
+]
+
+
+@pytest.mark.parametrize(
+    ("stderr", "stdout", "want_hint"),
+    _STOP_REFUSAL_CASES,
+    ids=["both-missing", "url-missing", "token-missing", "stdout-refusal", "other-refusal"],
+)
+def test_stop_not_configured_refusal_hints_at_the_model_server_settings(
+    monkeypatch, wt_on_path, stderr, stdout, want_hint
+):
+    """Since the wt-model split a model-id stop goes through the model
+    server, so with no [model-server] endpoint configured every unload is
+    refused and benchmark isolation fails. When the refusal is wt's
+    not-configured one (its pinned leads, on either output stream),
+    stop()'s failure output must carry the hint that names the settings —
+    [model-server] in ~/.config/agent-wt/config.toml, or WT_MODEL_URL and
+    WT_MODEL_TOKEN_FILE; any other refusal keeps its own message alone."""
+
+    def run(argv, **kwargs):
+        return _cp(stdout=stdout, returncode=1, stderr=stderr)
+
+    monkeypatch.setattr(wt_bridge.subprocess, "run", run)
+    with pytest.raises(wt_bridge.WtBridgeError) as excinfo:
+        wt_bridge.stop("omlx/Qwen3.6-35B-A3B-6bit")
+    msg = str(excinfo.value)
+    line = (stderr or stdout).strip()
+    for prefix in ("Error: ", "wt: "):
+        if line.startswith(prefix):
+            line = line[len(prefix) :]
+    assert line in msg  # wt's own line is kept
+    for name in (
+        "[model-server]",
+        "~/.config/agent-wt/config.toml",
+        "WT_MODEL_URL",
+        "WT_MODEL_TOKEN_FILE",
+    ):
+        assert (name in msg) == want_hint, f"{name} hint presence != {want_hint}"

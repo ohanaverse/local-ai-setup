@@ -4,6 +4,46 @@
 
 ### Changed
 
+- **Breaking:** every `wt` run that needs a model is now a **client session**
+  of a model server (`wt-model serve`): the pickers, `-M`, `wt start`/`wt stop
+  <model>`, `wt job`, `wt smoke`, `wt model list --server` and the spend in
+  `wt stats` all come from one endpoint and one token, named by hand under
+  `[model-server]` (`url`, `token_file`) in `~/.config/agent-wt/config.toml`
+  (or `WT_MODEL_URL`/`WT_MODEL_TOKEN_FILE`). With none configured a
+  model-needing command refuses before anything starts (exit 1), naming both
+  settings and the `wt-model serve` command; wt never starts a server and
+  never guesses an address. Every agent reaches its model through the
+  server's gateway: the direct routes and pi's direct `models.json` rewrite
+  are removed, and pi's file now holds the gateway origin and the client
+  token (written mode 0600), never the LiteLLM key. `[litellm] enabled` is
+  retired (kept as written on save, read by nothing; a `true` value prints
+  one note per process) and `wt litellm on|off` are hidden stubs that change
+  nothing and exit 1. The `[litellm]` `url`/`api_key` stay in `config.toml`
+  as host state `wt-model serve` reads to reach the proxy. Host commands
+  (`wt model …`, `wt cloud-sync`, `wt litellm …`, `wt served`/`warm`, `wt stop
+  <provider>`/`--all`, the Models tab) are unchanged and still read the
+  registry on the machine they run on. See `docs/wt-session.md` and
+  `../docs/guides/13-deployment-use-cases.md`.
+
+- **Breaking:** the post-exit stop picker is gone. A run ends its client
+  session when the agent exits (a killed wt cannot tell the server, and the
+  server's 60 s TTL ends the client
+  session instead), and the model server stops a local model no live client
+  session uses once its idle grace has passed (`--idle-grace`, default 10m).
+  `wt start <model>` registers a client session around its job, so nothing it
+  loads stays up forever, and says so on stderr. `wt smoke` reduces its exit
+  step the same way: with a model server configured there is no stop prompt
+  at all. The pid-based in-use counting (`internal/refcount`) is removed; an
+  existing install may still hold `refcount.jsonl` and `refcount.jsonl.lock`
+  beside the other state files, which nothing reads or writes any more.
+
+- `make build`/`make install` in `wt/` now produce `bin/wt-session` and
+  `bin/wt` (the same binary under two names — `wt` stays what you type, and
+  the stderr prefix and the `wt <version>` word stay `wt`) beside
+  `bin/wt-model`; `cmd/wt` is renamed `cmd/wt-session` and the `*-wt` shims
+  keep `exec wt`. An install that predates the split (only `~/.local/bin/wt`)
+  gains `wt-session` and `wt-model` with one `make -C wt install`.
+
 - A "no" at any question now exits 3 with one line, `wt: approval missing:
   declined; nothing was <started|stopped|removed|launched|created|changed>`,
   like a missing approval: the replace, others, stop and `model rm` questions,
@@ -59,6 +99,16 @@
   unchanged); `remove-result` is unchanged. See `docs/wt-cleanup.md`.
 
 ### Added
+
+- `wt job [ID] [--cancel]` lists the model server's queued and running
+  start/stop jobs (all models, or one model's; oldest first), shows one
+  job's state and steps, or cancels one. `wt model list --server [--json]`
+  is the model server's catalog as a session sees it (state, action, tier,
+  price, client sessions); the plain `wt model list` stays the host registry
+  listing that modeltiers reads. `wt stats`' spend columns now come from the
+  model server (`GET /control/v1/spend`), which reads LiteLLM's spend log on
+  its own machine — `psql` is needed there, not on the session machine.
+  Reference: `docs/wt-job.md`, `docs/wt-model.md`, `docs/wt-stats.md`.
 
 - `wt-model serve --listen ADDR --token-file PATH [--idle-grace DUR]`, a
   second binary built beside `wt`: a control API (`/control/v1/`) that lists,
@@ -549,7 +599,9 @@
   price beside the LiteLLM mode, as `cost~ 0.66/0.022/1.98`, whole or not
   at all: on a terminal too narrow for both (at 40 columns, a price with
   many digits, and nearly every price when LiteLLM is off) the price takes
-  the line and the mode gives way. The COST column itself is dropped on a
+  the line and the mode gives way (the mode is gone since the model-server
+  session entry above; the line now names the model's client sessions and
+  its price, `docs/wt-cloud-sync.md`). The COST column itself is dropped on a
   narrow terminal, as before. Because the sort uses the
   current price, a time-priced model's place in the list, and so the first
   row, can differ from one hour to the next. The price is read when the
@@ -616,8 +668,11 @@
   needs the proxy (codex, always) stops with `litellm routing is required
   for this model but no URL is configured`. Nothing warns about it. To
   restore it, take the URL and key from the `[litellm]` table of the old
-  file and run `wt litellm set --url <url> --api-key <key>`, then
-  `wt litellm on`; both write `config.toml` (0600), creating it if needed.
+  file and run `wt litellm set --url <url> --api-key <key>`; it writes
+  `config.toml` (0600), creating it if needed (the `wt litellm on` this
+  entry first named is retired since the model-server session entry above —
+  there is no routing switch, and the session's `[model-server]` is
+  configured separately, `../docs/guides/13-deployment-use-cases.md`).
   If wt then stops with `config error: agent "agy": unknown provider "agy"`,
   run `wt model init`: the restore created `config.toml`, and that command
   adds the provider row it needs to `registry.toml`.

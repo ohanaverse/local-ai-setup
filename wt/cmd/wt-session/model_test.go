@@ -481,16 +481,16 @@ func TestBareModelOpensTheModelsTab(t *testing.T) {
 	}
 	d := call.opts.Models
 	if d.Probe == nil || d.SeedEnv == nil || d.Capabilities == nil {
-		t.Fatalf("the tab was not given cmd/wt's seams: %+v", d)
+		t.Fatalf("the tab was not given cmd/wt-session's seams: %+v", d)
 	}
 	if snap := d.Probe(&config.Config{}); len(snap.Entries) != 1 || snap.Entries[0].ModelID != "marker/probe" {
-		t.Errorf("the tab's probe is not cmd/wt's probeInventory seam: %+v", snap)
+		t.Errorf("the tab's probe is not cmd/wt-session's probeInventory seam: %+v", snap)
 	}
 	if env := d.SeedEnv(); env.OnPath == nil || !env.OnPath("marker-seed") {
-		t.Error("the tab's seeding environment is not cmd/wt's seedEnv seam")
+		t.Error("the tab's seeding environment is not cmd/wt-session's seedEnv seam")
 	}
 	if info, err := d.Capabilities(nil, "x"); err != nil || info["marker_caps"] != true {
-		t.Errorf("the tab's ollama lookup is not cmd/wt's ollamaCaps seam: %v, %v", info, err)
+		t.Errorf("the tab's ollama lookup is not cmd/wt-session's ollamaCaps seam: %v, %v", info, err)
 	}
 	if *syncs != 0 {
 		t.Errorf("syncs = %d with nothing changed, want 0", *syncs)

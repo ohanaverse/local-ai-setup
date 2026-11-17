@@ -13,7 +13,7 @@ import (
 // EnvelopeVersion is the `version` of the removal result document. Bump it
 // for any change a consumer could trip on (a renamed key, a changed enum
 // string); docs/contracts/remove-result.schema.json and the sample fixtures
-// move with it (held by cmd/wt/remove_contract_test.go).
+// move with it (held by cmd/wt-session/remove_contract_test.go).
 const EnvelopeVersion = 1
 
 // Meta is the run-wide part of the document: the repository and whether

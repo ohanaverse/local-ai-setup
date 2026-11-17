@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// rescueBanned is cmd/wt's rescueBanned (rescue_test.go), copied: a test
+// rescueBanned is cmd/wt-session's rescueBanned (rescue_test.go), copied: a test
 // file of another package cannot be imported. The two lists must agree.
 var rescueBanned = []string{"worktree remove", `"worktree", "remove"`, `"worktree", "prune"`,
 	"update-ref -d", "update-ref --delete", `"update-ref", "-d"`, `"update-ref", "--delete"`,
@@ -37,30 +37,41 @@ func riskyRootmoveSource(name, src string) []string {
 }
 
 // TestRootmoveContainsNoDeletion scans every non-test source of
-// internal/rootmove and cmd/wt/restore_root*.go (none until Task 9) for
-// rootmoveBanned. Why: rootmove composes a destructive operation, but the
-// one reset, file removal and root switch must stay in removal.ReleaseRoot
-// behind its proofs; rootmove only names that function.
+// internal/rootmove and cmd/wt-session/restore_root*.go for rootmoveBanned.
+// Why: rootmove composes a destructive operation, but the one reset, file
+// removal and root switch must stay in removal.ReleaseRoot behind its proofs;
+// rootmove only names that function. Each scan half must find sources of its
+// own: a glob that silently matches nothing (a renamed file) would otherwise
+// shrink the scan to the other half and still pass.
 func TestRootmoveContainsNoDeletion(t *testing.T) {
 	t.Parallel()
 	files, _ := filepath.Glob("*.go")
-	more, _ := filepath.Glob("../../cmd/wt/restore_root*.go")
-	scanned := 0
-	for _, f := range append(files, more...) {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		scanned++
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, m := range riskyRootmoveSource(f, string(b)) {
-			t.Error(m)
-		}
+	more, _ := filepath.Glob("../../cmd/wt-session/restore_root*.go")
+	halves := []struct {
+		name  string
+		files []string
+	}{
+		{"internal/rootmove", files},
+		{"cmd/wt-session/restore_root*.go", more},
 	}
-	if scanned < 3 {
-		t.Errorf("scanned only %d sources", scanned)
+	for _, half := range halves {
+		scanned := 0
+		for _, f := range half.files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			scanned++
+			b, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, m := range riskyRootmoveSource(f, string(b)) {
+				t.Error(m)
+			}
+		}
+		if scanned == 0 {
+			t.Errorf("%s: scanned no non-test sources", half.name)
+		}
 	}
 }
 

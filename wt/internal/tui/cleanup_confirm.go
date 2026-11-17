@@ -36,7 +36,7 @@ import (
 // another item's. Deleting the unmerged branch a worktree item merely
 // offers is a separate toggle on that item (tab), off by default.
 
-// RemoveFuncs is how the list reaches the removal engine (cmd/wt wires
+// RemoveFuncs is how the list reaches the removal engine (cmd/wt-session wires
 // internal/removal in). A zero RemoveFuncs, or one with Off set, removes
 // nothing: enter says why.
 type RemoveFuncs struct {
@@ -107,11 +107,11 @@ type RemoveFuncs struct {
 }
 
 // RemoveFuncsBuilder builds the RemoveFuncs one picker load's rows act
-// through: cmd/wt builds it over cleanupRemoveFuncs — the same helper `wt
+// through: cmd/wt-session builds it over cleanupRemoveFuncs — the same helper `wt
 // cleanup`'s list takes — from each load's snapshot and inputs, so the
 // engine's re-check stands on the rows the picker is showing (the PR fill
 // swaps in the instance its filled snapshot builds). Like ProfileApplier, it
-// is handed in as a closure: internal/tui cannot read the registry (cmd/wt's)
+// is handed in as a closure: internal/tui cannot read the registry (cmd/wt-session's)
 // to build the funcs itself. nil: every row action says it is unavailable,
 // as a picker without removal always did.
 type RemoveFuncsBuilder func(snap cleanup.Snapshot, in cleanup.GatherInputs) RemoveFuncs
@@ -904,7 +904,7 @@ func refetchCmd(refetch func() (cleanup.Report, error), root string) tea.Cmd {
 // then runs next (the fetch and the re-read) unchanged. This is the list
 // half of wt's prune contract and this package's single sessionclaim.Prune
 // call site: the list's refresh (this one key path, the picker's rows reload
-// and the manage list's re-read alike) and cmd/wt's fetch-first `--json` run
+// and the manage list's re-read alike) and cmd/wt-session's fetch-first `--json` run
 // are the only two paths that prune — opening the list, the post-run re-read
 // and `--no-fetch` never drop a claim. All of it is best-effort: no readable
 // common directory, or a prune that fails, leaves the claims as they were

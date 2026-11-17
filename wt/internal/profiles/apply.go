@@ -10,7 +10,7 @@ import (
 // ApplyEnvAndArgs appends rp.Env (last value wins on a duplicate key,
 // matching exec.Cmd.Env's documented behavior) and rp.ExtraArgs (appended
 // after everything cmd.Args already carries) to cmd. It never touches
-// Wrapper: cmd/wt's applyResolvedProfile calls ApplyConfigContent between
+// Wrapper: cmd/wt-session's applyResolvedProfile calls ApplyConfigContent between
 // this and ApplyWrapper, so a codex profile's own declared args land
 // before config_content's "--profile agent-wt-profile" flag, and the
 // wrapper — applied last — still captures everything appended before it in
@@ -57,7 +57,7 @@ func ApplyWrapper(cmd *exec.Cmd, w *WrapperSpec) error {
 
 // RestoreAndReattach resets cmd.Env/cmd.Args to a pre-apply snapshot
 // (origEnv/origArgs, taken before ApplyEnvAndArgs/ApplyConfigContent ran)
-// and reattaches oneShotArgs. Both callers (cmd/wt's applyResolvedProfile,
+// and reattaches oneShotArgs. Both callers (cmd/wt-session's applyResolvedProfile,
 // wt smoke's realBuildAndRun) use this on the same failure shape: a profile
 // application step failed partway through, so the launch must degrade to
 // fully unprofiled — never half-profiled — while still producing a runnable

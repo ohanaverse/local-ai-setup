@@ -32,7 +32,7 @@ import (
 )
 
 // buildGatewayLaunch is a test seam over agents.BuildLaunchCmdGateway, the
-// agent command against the model server's gateway (cmd/wt's buildGatewayCmd
+// agent command against the model server's gateway (cmd/wt-session's buildGatewayCmd
 // on the non-TUI path).
 var buildGatewayLaunch = agents.BuildLaunchCmdGateway
 
@@ -42,10 +42,6 @@ var buildGatewayLaunch = agents.BuildLaunchCmdGateway
 // is printed with the route notes at both emit points (flushRouteNotes) and
 // released to the terminal once the program is over. Reset by Run.
 var clientNotes = &startOutput{what: "client session"}
-
-// startQueued is the start screen's text for a job waiting its turn: the
-// non-TUI start's words (cmd/wt's startQueued).
-const startQueued = "queued behind another start or stop on the model server"
 
 // clientHold is the picker's client session with the model server: created on
 // the first model chosen, it holds every model a start or a launch is for and
@@ -58,7 +54,7 @@ type clientHold struct {
 	sess ClientSession
 	held map[string]bool
 	// registered is true once a register succeeded: an End after only
-	// refused registers is refused too, which is not news (cmd/wt's rule).
+	// refused registers is refused too, which is not news (cmd/wt-session's rule).
 	registered bool
 	ended      bool
 }
@@ -187,17 +183,6 @@ func wireOthers(p othersPlan) *modelapi.OthersAnswer {
 		stop = []string{}
 	}
 	return &modelapi.OthersAnswer{Stop: stop}
-}
-
-// stoppableResidents is the ids of the residents the server can stop.
-func stoppableResidents(rs []modelapi.Resident) []string {
-	var ids []string
-	for _, r := range rs {
-		if r.Stoppable {
-			ids = append(ids, r.ID)
-		}
-	}
-	return ids
 }
 
 // chooseRemote is Enter (or a -M pin) on a row of the API table: a blocked
@@ -426,7 +411,7 @@ func (m model) finishRemoteStart(msg startDoneMsg) (model, tea.Cmd) {
 		if othersAsked && st.others.stopAll {
 			// --others=stop answers for the pinned row: every resident the
 			// server can stop, as the non-TUI start does.
-			rs.others = othersPlan{answer: lifecycle.OthersAnswer{Decided: true, Stop: stoppableResidents(p.Others)}}
+			rs.others = othersPlan{answer: lifecycle.OthersAnswer{Decided: true, Stop: modelapi.StoppableIDs(p.Others)}}
 			othersAsked = false
 			if !sameFamily {
 				return m.beginRemoteStart(st.item, st.allow, rs.others)
@@ -438,7 +423,7 @@ func (m model) finishRemoteStart(msg startDoneMsg) (model, tea.Cmd) {
 		rs.header = problemHeader(id, p, sameFamily, othersAsked, m.clientSessionCounts())
 		if othersAsked {
 			rs.allow = st.allow || sameFamily
-			rs.stop = stoppableResidents(p.Others)
+			rs.stop = modelapi.StoppableIDs(p.Others)
 			rs.id, rs.sameFamily, rs.othersListed = id, sameFamily, len(p.Others) > 0
 			items = buildOthersChoices(rs.id, rs.sameFamily, rs.othersListed, len(rs.stop))
 		}
@@ -703,7 +688,7 @@ func (m model) remoteStartingView() string {
 	if v := st.job; v != nil {
 		switch {
 		case v.Queued:
-			what = startQueued
+			what = modelclient.QueuedDetail
 		case cleanup.Flatten(v.Step) != "":
 			what = cleanup.Flatten(v.Step)
 		case cleanup.Flatten(v.State) != "":

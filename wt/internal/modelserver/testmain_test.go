@@ -11,7 +11,7 @@ import (
 )
 
 // TestMain isolates the developer's config home, git, tiers file and local
-// processes from every test in the package, the same four calls cmd/wt makes.
+// processes from every test in the package, the same four calls cmd/wt-session makes.
 func TestMain(m *testing.M) {
 	_, rmConfigHome := config.IsolateConfigHomeForTest()
 	gitenv.IsolateForTest()

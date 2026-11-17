@@ -208,14 +208,15 @@ dropped (observed via LiteLLM's /v1/responses→ollama_chat bridge with
 `glm-5.3-flash:cloud`). codex speaks responses through the same bridge
 without truncation, so the trigger is the copilot-client×bridge interaction,
 not the bridge alone. wt's fix is driver-side: copilot launches with
-`COPILOT_PROVIDER_WIRE_API=completions` (chat-completions) in both direct
-and litellm modes — see `internal/agents/copilot.go`. This deliberately
+`COPILOT_PROVIDER_WIRE_API=completions` (chat-completions) on every route —
+since the 2026-11 model-server flip there is one, through the gateway —
+see `internal/agents/copilot.go`. This deliberately
 diverges from `ollama launch copilot`, which still sets `responses`.
 
 Verified 2026-09-01 in both routing modes (direct ollama `/v1`, LiteLLM
 `/v1`) with `ollama/glm-5.3-flash:cloud` one-shot prompts answered
 end-to-end (`scripts/agents-smoke.sh --only copilot`). The proxy-side
-`drop_params` above is still required in litellm mode — completions does
+`drop_params` above is still required through the gateway — completions does
 not stop copilot sending `parallel_tool_calls`.
 
 Re-test trigger: LiteLLM's responses bridge fixes
@@ -307,7 +308,7 @@ name it does not expose (400 noise in litellm's log on every run).
 
 ### claude — litellm 1.98.0 `/v1/messages` Responses-API bridge (local `openai/*` backends)
 
-claude needed no changes in litellm mode for `ollama_chat/*` or
+claude needed no changes through the proxy for `ollama_chat/*` or
 `openrouter/*` models (the 2026-08-31 matrix only covered
 `ollama/glm-5.3-flash:cloud`). It breaks for any model registered as
 `openai/<name>` — mtplx, omlx, and mlx_lm_server all use this shape, since

@@ -175,7 +175,7 @@ func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartO
 // the family there is what made sync and the start hook undo each other with
 // two models loaded (#213). It is exported so the id the
 // start hook writes can be pinned against the id `wt litellm sync` desires
-// for the same model (cmd/wt) — if the two derivations drift, every sync
+// for the same model (cmd/wt-session) — if the two derivations drift, every sync
 // after a start removes the hook's route and adds its own.
 func StartRouteChange(cfg *config.Config, t Target) litellm.Change {
 	ch := litellm.Change{Add: []config.Model{routeModel(cfg, t)}}

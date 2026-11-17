@@ -70,6 +70,7 @@ cleanup() {
 }
 
 preflight() {
+    log "prerequisite (not checked): a running wt-model serve, configured as [model-server] in ~/.config/agent-wt/config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE) — the turns launch wt --cwd -A claude, which refuses without one"
     command -v wt > /dev/null && command -v claude > /dev/null || { echo "wt and claude must be on PATH"; exit 1; }
     local busy
     busy=$(wt model list 2> /dev/null | awk 'NR>1 && ($5=="run" || $5=="load") {print $1}')

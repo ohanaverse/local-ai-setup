@@ -538,7 +538,7 @@ def test_run_benchmark_key_less_provider_and_unseeded_litellm_route_send_no_key(
     ]
     stderr = capsys.readouterr().err
     assert "no LiteLLM apiKey" in stderr
-    assert "wt pi session" in stderr  # the seeding remedy, not the credential value
+    assert "launch a wt pi session first" in stderr  # the remedy, not the credential value
     assert "litellm-test-key" not in stderr
 
 

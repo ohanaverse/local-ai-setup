@@ -14,7 +14,7 @@ var shippedEnabled bool
 // drain the developer's real terminal input queue, even when run as a
 // hand-built `go test -c` binary or from an IDE that attaches a tty. Tests
 // that need to observe a flush still assign flushTTY themselves and restore it
-// (the restored value is this no-op). Mirrors internal/tui's and cmd/wt's
+// (the restored value is this no-op). Mirrors internal/tui's and cmd/wt-session's
 // TestMain.
 //
 // The survey itself is switched off in production (Enabled, #136). Its code

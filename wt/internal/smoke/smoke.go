@@ -72,7 +72,7 @@ type execOutcome struct {
 }
 
 // ExecOutcome is the exported alias for execOutcome, used by cross-package
-// test stubs (cmd/wt's smoke tests) that cannot access the unexported type.
+// test stubs (cmd/wt-session's smoke tests) that cannot access the unexported type.
 type ExecOutcome = execOutcome
 
 // RowDir yields the directory a row's agent runs in. It is a func so that the
@@ -166,7 +166,7 @@ func runAgent(ctx context.Context, agentName string, m config.Model, prompt stri
 	// agent driver runs the smoke prompt with permission checks bypassed
 	// in cwd (see docs/wt-smoke.md's "Tool-use permission" note): a
 	// --prompt override therefore runs unsupervised too, not just the
-	// fixed sentinel prompt. That is why cmd/wt hands each row a fresh
+	// fixed sentinel prompt. That is why cmd/wt-session hands each row a fresh
 	// temporary directory (NewRowDir) unless --cwd was passed.
 	yolo := agentName != "codex"
 	cmd, info, err := build(yolo)

@@ -26,7 +26,7 @@ import (
 
 // ModelClient is what the picker needs from the model server: the catalog, one
 // model's row, a start job, the client session and the gateway the agent is
-// launched against. cmd/wt hands in an adapter over *modelclient.Client
+// launched against. cmd/wt-session hands in an adapter over *modelclient.Client
 // (NewModelClient); tests hand in a fake. A nil ModelClient is the legacy
 // registry path, deleted once every caller is on the server.
 type ModelClient interface {
@@ -177,8 +177,9 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 			msg.wire[e.ID] = cleanWireRow(e)
 		}
 		rows := wireTableRows(eligible, at)
+		byID := catalog.WireByID(cat.Rows)
 		for _, pr := range profileRows {
-			rows = append(rows, tableRow{Row: pr, at: at, slotTiers: wireSlotTiers(pr, cat.Rows)})
+			rows = append(rows, tableRow{Row: pr, at: at, slotTiers: wireSlotTiers(pr, byID)})
 		}
 		if store := newUsageStore(); store != nil {
 			ids := make([]string, len(rows))
@@ -259,9 +260,9 @@ func wireProfileRows(rows []modelapi.Row, checks []profiles.SlotCheck, agent, ta
 
 // wireSlotTiers is a profile row's slot line tiers from the server's rows:
 // each slot model's short tier, for the rated ones only (tableRow.rate's
-// rule).
-func wireSlotTiers(pr catalog.Row, rows []modelapi.Row) map[string]string {
-	byID := catalog.WireByID(rows)
+// rule). byID is the catalog's rows by id (catalog.WireByID), built once per
+// fetch rather than once per profile.
+func wireSlotTiers(pr catalog.Row, byID map[string]modelapi.Row) map[string]string {
 	var out map[string]string
 	for slot, m := range pr.Profile.Models {
 		w, ok := byID[m.ID]

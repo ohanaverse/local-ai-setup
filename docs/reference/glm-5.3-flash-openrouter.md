@@ -58,8 +58,9 @@ so a cloud model is routed whenever it is configured, with no toggle to flip
 (#179). `wt litellm list` is the answer to "is it routed?"; there is no
 hand-write command any more (`wt litellm expose`/`unexpose` went with the flag),
 and there is no routing toggle either: every session routes through the model
-server, `wt litellm on|off` are retired hidden stubs (2026-11-15), and
-`[litellm] enabled` is ignored. See guide 04 for the workflow. No TOML to copy here:
+server's gateway ([wt-session.md](../../wt/docs/wt-session.md)). `wt litellm on|off`
+are retired hidden stubs (2026-11-15), and `[litellm] enabled` is ignored.
+See guide 04 for the workflow. No TOML to copy here:
 wt stores no per-model state (`wt model list` shows what is on disk and running).
 
 **3. `~/.config/litellm/config.yaml`** — LiteLLM proxy configuration
@@ -256,11 +257,15 @@ runid="run-$(date +%s | md5 | cut -c1-8)-$RANDOM"  # e.g., run-930c24da-9932
 **Evidence:**
 ```bash
 cd ~/github/ohanaverse/local-ai-setup
-./wt/scripts/agents-smoke.sh --only pi --modes current
+./wt/scripts/agents-smoke.sh --only pi
 # Output:
 # [PASS] pi × ollama/glm-5.3-flash:cloud
 # [PASS] pi × openrouter/z-ai/glm-5.3-flash
 ```
+
+(The run behind this used `--modes current`; the flag is gone since
+2026-11-15 — the script runs one pass through the gateway and needs
+`WT_MODEL_URL` and `WT_MODEL_TOKEN_FILE` for the `wt-model` server.)
 
 **Why this fix works:**
 - Alphanumeric runids (e.g., `run-930c24da-9932`) don't match phone number patterns
@@ -364,7 +369,7 @@ grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
 
 ### Current Status
 
-**Run:** `./wt/scripts/agents-smoke.sh --modes current`  
+**Run:** `./wt/scripts/agents-smoke.sh --modes current` (as run 2026-09-02; `--modes` is gone since 2026-11-15 — the script runs one pass through the gateway and needs `WT_MODEL_URL` + `WT_MODEL_TOKEN_FILE`)  
 **RunID Format:** `run-<hex>-<random>` (alphanumeric to avoid Pi phone redaction)
 
 | Agent | Ollama Variant | OpenRouter (direct) | OpenRouter (litellm) | Notes |
@@ -416,8 +421,8 @@ step 4).
 
 For GLM-5.3-Flash via OpenRouter:
 
-1. **Automated tests:** Use copilot and pi agents in litellm mode (both pass)
-2. **Manual testing:** claude via OpenRouter works in both modes; codex works with its fallback-metadata warning; opencode needs the provider-list fix above first
+1. **Automated tests:** Use copilot and pi agents (both pass; since 2026-11-15 every launch goes through the model server's gateway — the one mode there is)
+2. **Manual testing:** claude via OpenRouter works too; codex works with its fallback-metadata warning; opencode needs the provider-list fix above first
 3. **Document limitations:** Note which agents have compatibility issues
 
 ### Success Criteria

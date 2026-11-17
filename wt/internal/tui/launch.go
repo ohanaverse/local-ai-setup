@@ -20,11 +20,11 @@ import (
 // failure at the commit point (the creation or validation the gate ran), as
 // opposed to the agent's own exit. It wraps the failure with no Unwrap method
 // on purpose: a git failure can carry git's *exec.ExitError (gitError's
-// empty-stderr branch, startPhrase's rev-parse failure), and cmd/wt's
+// empty-stderr branch, startPhrase's rev-parse failure), and cmd/wt-session's
 // agentExitStatus reads any error with an *exec.ExitError anywhere in its
 // chain as the agent's own quiet exit (#412) — printing nothing and exiting
 // with git's status. Held this way the failure stays a plain error: main
-// prints it once as its "wt:" line and exits 1, exactly as cmd/wt's -W path
+// prints it once as its "wt:" line and exits 1, exactly as cmd/wt-session's -W path
 // refuses a creation. The field is exported because the routing seam
 // (agentExitStatus, reportExit) lives in package main and its tests build
 // this type.
@@ -107,11 +107,11 @@ var pendingSurveyState pendingSurvey
 // config_content/wrapper) to cmd before it runs, returning a cleanup func
 // the caller MUST invoke after cmd.Run() returns (success or failure) to
 // restore anything the profile's config_content mechanism rewrote. It
-// mirrors cmd/wt's applyProfileForLaunch signature, minus cfg/pp: this
-// package cannot import cmd/wt (package main — not importable, and it
-// would be a cycle regardless, since cmd/wt already imports internal/tui)
+// mirrors cmd/wt-session's applyProfileForLaunch signature, minus cfg/pp: this
+// package cannot import cmd/wt-session (package main — not importable, and it
+// would be a cycle regardless, since cmd/wt-session already imports internal/tui)
 // or internal/profiles directly (mechanism validation needs an
-// agent-driver lookup that lives with cmd/wt's own app state). Run's
+// agent-driver lookup that lives with cmd/wt-session's own app state). Run's
 // caller builds the real implementation as a closure over its own
 // cfg/precomputedProfiles.
 type ProfileApplier func(cmd *exec.Cmd, agent string, m config.Model) (cleanup func() error, err error)
@@ -125,9 +125,9 @@ type ProfileApplier func(cmd *exec.Cmd, agent string, m config.Model) (cleanup f
 var profileApplier ProfileApplier
 
 // SlotProfileApplier applies a slot profile's args and wrapper to cmd. It
-// fails closed: an error aborts the launch. cmd/wt hands in applySlotProfile.
+// fails closed: an error aborts the launch. cmd/wt-session hands in applySlotProfile.
 // It is a second closure beside ProfileApplier for the same reason that one
-// exists: this package cannot import cmd/wt.
+// exists: this package cannot import cmd/wt-session.
 type SlotProfileApplier func(cmd *exec.Cmd, agent string, row catalog.Row) (cleanup func() error, err error)
 
 // SlotProfiles is what Run needs for slot profiles: the statically validated
@@ -220,7 +220,7 @@ func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record fu
 			var perr error
 			profileCleanup, perr = profileApplier(cmd, agent, m)
 			if perr != nil {
-				// Mirrors cmd/wt's runAgentCmd: a pre-launch profile
+				// Mirrors cmd/wt-session's runAgentCmd: a pre-launch profile
 				// application error (e.g. a wrapper profile naming a
 				// missing binary) is still recorded, and must still
 				// end the client session, and still
@@ -255,7 +255,7 @@ func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record fu
 				// non-nil) is a failure, not a choice: it travels out as the
 				// run's error — as a GateError, so main's exit routing never
 				// reads a git exit status inside it as the agent's own quiet
-				// exit — and main prints it once and exits non-zero, cmd/wt's
+				// exit — and main prints it once and exits non-zero, cmd/wt-session's
 				// -W path through refuse. Either
 				// way the model server may already have started a model for
 				// it; pendingSurveyState keeps the standard tail, which ends

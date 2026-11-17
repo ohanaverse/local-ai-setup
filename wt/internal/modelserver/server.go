@@ -174,6 +174,22 @@ func (s *Server) routed(ctx context.Context) map[string]bool {
 	return ids
 }
 
+// invalidatingRouted wraps a start or stop job so the cached gateway list is
+// dropped when the job ends: the job has just written or removed a route, and
+// a catalog read within routedTTL of it would otherwise report a running model
+// as unrouted (a client reads that as "needs a start") or a stopped one as
+// still routed.
+func (s *Server) invalidatingRouted(run modeljobs.RunFunc) modeljobs.RunFunc {
+	return func(ctx context.Context, step func(string)) modelapi.JobResult {
+		defer func() {
+			s.routedMu.Lock()
+			s.routedAt = time.Time{}
+			s.routedMu.Unlock()
+		}()
+		return run(ctx, step)
+	}
+}
+
 func (s *Server) catalog(w http.ResponseWriter, r *http.Request) {
 	cfg := s.d.Config()
 	snap := s.d.Inventory(cfg)
@@ -211,7 +227,7 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	// job, and so its answers (allow_replace, others): two client sessions
 	// starting one model at once must not queue a second start behind the
 	// first one's route restart.
-	id, _ := s.jobs.SubmitOnce("start", req.Model, s.d.StartJob(req, s.sessions))
+	id, _ := s.jobs.SubmitOnce("start", req.Model, s.invalidatingRouted(s.d.StartJob(req, s.sessions)))
 	writeJSON(w, http.StatusAccepted, modelapi.JobRef{ID: id})
 }
 
@@ -224,7 +240,7 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, modelapi.CodeBadRequest, "model is required")
 		return
 	}
-	id := s.jobs.Submit("stop", req.Model, s.d.StopJob(req, s.sessions))
+	id := s.jobs.Submit("stop", req.Model, s.invalidatingRouted(s.d.StopJob(req, s.sessions)))
 	writeJSON(w, http.StatusAccepted, modelapi.JobRef{ID: id})
 }
 

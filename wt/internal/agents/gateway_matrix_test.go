@@ -36,8 +36,8 @@ import (
 // matrixModels mirrors the four provider shapes a real registry.toml carries.
 // IDs are registry keys; ModelNames are provider-side names. The llamacpp and
 // openrouter ModelNames deliberately contain slashes (real registry data
-// does), so a driver that reconstructs the model reference from ModelName in
-// litellm mode produces a visibly wrong string, not a silently working one.
+// does), so a driver that reconstructs the model reference from ModelName for
+// the gateway produces a visibly wrong string, not a silently working one.
 var matrixModels = []config.Model{
 	{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama", Location: config.LocationLocal},
 	{ID: "llamacpp/ornith-1.5-35b", ModelName: "ornith-ai/Ornith-1.5-35B-A3B-GGUF", ProviderID: "llamacpp", Location: config.LocationLocal},
@@ -262,7 +262,7 @@ func TestGatewayMatrixAgy(t *testing.T) {
 }
 
 // TestGatewayMatrixModelIdentityIsProviderIndependent is the matrix's
-// meta-invariant: in litellm mode the only string that may vary with the
+// meta-invariant: on the gateway path the only string that may vary with the
 // provider fixture is the model identity itself. Building all four provider
 // fixtures and diffing env against the ollama baseline catches any
 // provider-keyed branch a driver grows — the fan-out to llamacpp/omlx/

@@ -99,7 +99,7 @@ const timestampLayout = "2006-01-02 15:04:05.000000"
 //
 // Query itself does not call InWindow — Postgres applies the window. The
 // function is the rule in Go, for whatever stands in for the database (the
-// spend stub in cmd/wt's tests), and TestQuerySQLWindowIsInWindow holds
+// spend stub in cmd/wt-session's tests), and TestQuerySQLWindowIsInWindow holds
 // querySQL's two comparisons to it.
 func InWindow(t, start, end time.Time) bool {
 	return t.After(start) && !t.After(end)

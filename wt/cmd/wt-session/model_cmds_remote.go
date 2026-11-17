@@ -118,7 +118,7 @@ func runStartRemote(ctx context.Context, out io.Writer, ms *modelSession, theme 
 			return exitcode.New(1, perr, false)
 		}
 		if !ok {
-			return exitcode.New(1, errors.New("model selection canceled"), false)
+			return exitcode.New(1, errors.New("model selection cancelled"), false)
 		}
 		id = m.ID
 	}
@@ -132,18 +132,7 @@ func runStartRemote(ctx context.Context, out io.Writer, ms *modelSession, theme 
 		s.setModel(id)
 	}
 
-	note := func(s string) { fmt.Fprintf(osStderr, "wt: note: %s\n", s) }
-	sess := ms.client.NewSession([]string{id}, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
-	registered := true
-	if rerr := sess.Start(ctx); rerr != nil {
-		registered = !registerRefused(rerr)
-		note(fmt.Sprintf("the model server did not register this client session (%s) — the model starts, but the server may stop %s once it is idle", rerr, id))
-	}
-	end := func() {
-		if eerr := sess.End(context.WithoutCancel(ctx)); eerr != nil && registered {
-			note(fmt.Sprintf("could not end the client session on the model server (%s) — it forgets it within a minute", eerr))
-		}
-	}
+	_, note, end := openClientSession(ctx, ms, []string{id}, fmt.Sprintf("the model starts, but the server may stop %s once it is idle", id))
 
 	sctx, stop := interruptCtx(ctx)
 	defer stop()
@@ -196,7 +185,7 @@ func (a *stopAnswerer) ConfirmInUse(ctx context.Context, p modelapi.Problem) (bo
 	if _, err := fmt.Fprintf(f, "%s; stop it anyway? [y/N] ", what); err != nil {
 		return false, err
 	}
-	return askOnTTY(ctx, f, askYesNo)
+	return askOnTTY(ctx, f, "nothing was stopped", askYesNo)
 }
 
 // runStopRemote is `wt stop` on the model server, for a model id only: a
@@ -247,10 +236,13 @@ func runStopRemote(ctx context.Context, out io.Writer, ms *modelSession, arg str
 	// A batch prints each failed model's reason once, as it happens; the one
 	// error at the end counts them and does not repeat a reason. A detach ends
 	// the batch: the models after it were never asked, which is not a failure.
-	failed, declinedN := 0, 0
+	// Exit 3 says nothing changed (C9), so a batch that stopped anything is
+	// partly done and exits 2 even when every failure was a decline.
+	failed, declinedN, stopped := 0, 0, 0
 	for i, id := range ids {
 		err := stopOneRemote(ctx, out, ms, id, yes)
 		if err == nil {
+			stopped++
 			continue
 		}
 		if len(ids) == 1 {
@@ -277,8 +269,8 @@ func runStopRemote(ctx context.Context, out io.Writer, ms *modelSession, arg str
 	}
 	if failed > 0 {
 		code := 2
-		if declinedN == failed {
-			code = exitApprovalMissing // nothing changed: every stop was declined
+		if stopped == 0 && declinedN == failed {
+			code = exitApprovalMissing // nothing changed: nothing stopped, every stop declined
 		}
 		return exitcode.New(code, fmt.Errorf("%d of %d stops failed", failed, len(ids)), false)
 	}

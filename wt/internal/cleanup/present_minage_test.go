@@ -96,7 +96,7 @@ func TestHeaderAppendsNotesOneLine(t *testing.T) {
 }
 
 // TestOneLineIsTheRowSanitiser verifies OneLine is the sanitiser row
-// details use (flat and capped at gitErrMax runes). Why: cmd/wt shows error
+// details use (flat and capped at gitErrMax runes). Why: cmd/wt-session shows error
 // text from the registry load in the header and must not copy the helper.
 func TestOneLineIsTheRowSanitiser(t *testing.T) {
 	long := strings.Repeat("x", gitErrMax+50)

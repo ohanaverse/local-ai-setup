@@ -29,7 +29,7 @@ import (
 //     one decides whether it is raw (and says why next to it) or effective.
 type lossCounts struct{ raw, effective, seal, write, unlabelled int }
 
-// lossSites is every function in cmd/wt and internal/ (non-test files) that
+// lossSites is every function in cmd/wt-session and internal/ (non-test files) that
 // touches a row's losses, keyed "<file relative to the module root>#<func>"
 // with the receiver type for a method. The counts are exact, so a second
 // read added to a listed function fails too. A preserved row's raw losses
@@ -248,7 +248,7 @@ func compareLossSites(got, want map[string]lossCounts) []string {
 	return bad
 }
 
-// TestEveryLossesReadSiteIsLabelled walks every non-test Go file under cmd/wt
+// TestEveryLossesReadSiteIsLabelled walks every non-test Go file under cmd/wt-session
 // and internal/ and checks each use of a row's Losses (and of an item's
 // sealed SawLosses, and each EffectiveLosses call) against lossSites. Why: a
 // rescued original's raw Losses still count the commits its record keeps; a
@@ -261,7 +261,7 @@ func TestEveryLossesReadSiteIsLabelled(t *testing.T) {
 	fset := token.NewFileSet()
 	got := map[string]lossCounts{}
 	scanned := 0
-	for _, dir := range []string{"cmd/wt", "internal"} {
+	for _, dir := range []string{"cmd/wt-session", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, dir), func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err

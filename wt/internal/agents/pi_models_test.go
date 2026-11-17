@@ -53,8 +53,8 @@ func TestIsLaunchableMissingOrCorrupt(t *testing.T) {
 	}
 }
 
-// piDriver.Build in litellm mode must pass the registry id routed through the
-// wt-created provider as --model ("litellm/<registry-id>"). pi splits --model
+// piDriver.Build on the gateway path must pass the registry id routed through
+// the wt-created provider as --model ("litellm/<registry-id>"). pi splits --model
 // on the first slash, so "litellm" must carry the entry while the full id —
 // which itself contains a slash — lands verbatim in the request body that
 // LiteLLM dispatches on. Passing the bare name or a bare "<id>" resolves to
@@ -69,8 +69,8 @@ func TestPiBuildLitellm(t *testing.T) {
 	}
 }
 
-// piDriver.Build in litellm mode must fall back to pi's default model with a
-// warning when the gateway entry is not present/launchable in models.json —
+// piDriver.Build on the gateway path must fall back to pi's default model with
+// a warning when the gateway entry is not present/launchable in models.json —
 // for example before the first sync or when the user disabled the entry.
 func TestPiBuildLitellmNotConfigured(t *testing.T) {
 	writePiModels(t, `{"providers":{"ollama":{"models":[{"_launch":true,"id":"ollama/qwen3.8:27b-mlx"}]}}}`)
@@ -88,7 +88,7 @@ func TestPiBuildLitellmNotConfigured(t *testing.T) {
 // TestPiDriverDeclaresWrapperAndEnvProfileMechanisms verifies pi's
 // ProfileMechanisms is exactly {wrapper, env} — wrapper is the little-coder
 // integration; env is allowed because profile env lands on the launched
-// process (cmd/wt applies env before the wrapper), which with the
+// process (cmd/wt-session applies env before the wrapper), which with the
 // little-coder wrapper is little-coder itself and its LITTLE_CODER_*
 // whitelist gate reads it. Anything else (args/config_file) must still fail
 // Validate rather than silently doing nothing.

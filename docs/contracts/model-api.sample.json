@@ -1,7 +1,7 @@
 {
-  "ping": {"api_major": 1, "schema": 1, "server": "wt-model"},
+  "ping": {"api_major": 1, "schema": 2, "server": "wt-model"},
   "catalog": {
-    "schema": 1,
+    "schema": 2,
     "generated": "2026-11-15T10:00:00Z",
     "providers": {"omlx": "ok", "openrouter": "ok", "mtplx": "ok"},
     "rows": [

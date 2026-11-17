@@ -8,8 +8,8 @@ serve`. (This page is the server. `wt model`, with a space, is the registry
 command: [wt-model.md](wt-model.md).)
 
 ```bash
-wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/wt-model/token   # loopback, same machine
-wt-model serve --listen 0.0.0.0:8787 --token-file ~/.config/wt-model/token     # reachable from another host
+wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/agent-wt/model-server.token   # loopback, same machine
+wt-model serve --listen 0.0.0.0:8787 --token-file ~/.config/agent-wt/model-server.token     # reachable from another host
 wt-model serve --listen 127.0.0.1:0 --token-file TOKEN --idle-grace 30m        # the kernel picks the port; the banner prints it
 wt-model --version                                                              # wt-model <version>
 ```
@@ -75,8 +75,8 @@ LiteLLM key, so neither is ever open.
 - Create one that nobody else can read:
 
   ```bash
-  mkdir -p ~/.config/wt-model
-  umask 077; head -c 32 /dev/urandom | base64 > ~/.config/wt-model/token
+  mkdir -p ~/.config/agent-wt
+  umask 077; head -c 32 /dev/urandom | base64 > ~/.config/agent-wt/model-server.token
   ```
 
 - To rotate, write a new file (the same command), restart `wt-model serve`
@@ -94,7 +94,7 @@ All control paths are under `/control/v1/` and answer JSON.
 
 | Method and path | Meaning |
 |---|---|
-| `GET /control/v1/ping` | Liveness and version: `api_major`, `schema`, `server`. A client refuses a server whose `api_major` differs from its own. |
+| `GET /control/v1/ping` | Liveness and version: `api_major`, `schema`, `server`. A client refuses a server whose `api_major` or `schema` differs from its own: a newer `schema` needs a newer wt, an older one is a `wt-model` still running from before wt was updated (`bin/update-tools` does not restart it), and the error says `restart wt-model`. |
 | `GET /control/v1/catalog` | Every model: state, action, tier, price, protocols, and how many live client sessions use it. Slot-profile rows are not included. |
 | `GET /control/v1/resolve?model=ID` | One catalog row, or a 404 `unknown_model` naming why. |
 | `GET /control/v1/candidates` | The registry's models ranked for a slot, as `wt profile slots candidates --json` ranks them. Query: `open_only=BOOL`, `provider=a,b`, `near=ID`, `per_provider=N` (needs `near`, else 400 `bad_request`). Answers `{"tiers_generated", "stale_sources", "candidates"}`: `tiers_generated` is the RFC 3339 time of the tiers file and is absent when there is none; `stale_sources` and `candidates` are always present. A candidate carries `id`, `provider`, `location`, `flags` (always a list) and, where they apply, `tier`, `confidence`, `score` (absent when unscored), `rated`, `open_weights`, `context`, `output_per_million`, `subscription`, `subscription_period`. |
@@ -271,10 +271,7 @@ shutdown kills it.
 - **The gateway cannot scope agent traffic per client.** One shared token
   opens every inference path and every model LiteLLM routes. The gateway does
   not tell clients apart or limit which models a client may call.
-- **A host-local `wt` is invisible to auto-stop.** `wt` on the host still
-  counts its own sessions by process id, which the server cannot see, so a
-  model such a `wt` session uses can be auto-stopped once any client session
-  has registered it.
+- **The client uses no environment proxy.** The control and gateway calls ignore `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so the bearer token and the prompts go straight to the `[model-server]` url and never to a third party. A session machine that can reach the server only through a proxy cannot use it.
 - Config is read per request, job and scan, so `wt model` and `wt cloud-sync`
   edits show without a restart.
 

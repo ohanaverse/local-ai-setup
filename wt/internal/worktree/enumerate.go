@@ -244,7 +244,7 @@ func listBranches(dir string) (local, remote []string, trackRemote map[string]st
 // IsRepo reports whether dir is inside a git repository. It uses
 // `rev-parse --git-dir` (not --show-toplevel) so bare repositories and
 // directories inside .git still count, matching the previous behavior of
-// cmd/wt/helpers.go:inGitRepoAt. Returns false for any git error.
+// cmd/wt-session/helpers.go:inGitRepoAt. Returns false for any git error.
 func IsRepo(dir string) bool {
 	_, err := runGit(dir, "rev-parse", "--git-dir")
 	return err == nil
@@ -359,7 +359,7 @@ func PrimaryOf(dir string) (string, error) {
 	for _, line := range strings.Split(first, "\n") {
 		if line == "bare" {
 			// Worded so a caller that wraps this ("no primary checkout: …",
-			// cmd/wt's --root) does not repeat itself.
+			// cmd/wt-session's --root) does not repeat itself.
 			return "", notACheckout(fmt.Errorf("%s is a bare repository; it has no checkout", dir))
 		}
 		if p, found := strings.CutPrefix(line, "worktree "); found {

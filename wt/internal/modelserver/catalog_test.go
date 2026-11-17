@@ -580,6 +580,41 @@ func TestRoutedIDsAreCachedBriefly(t *testing.T) {
 	}
 }
 
+// TestRoutedCacheIsDroppedWhenAJobEnds pins that a start or stop job ends
+// with the cached gateway list dropped: the job has just written or removed a
+// route, so a catalog read inside routedTTL must ask LiteLLM again, or a model
+// that just came up reads as running and unrouted (a client's "needs a
+// start").
+func TestRoutedCacheIsDroppedWhenAJobEnds(t *testing.T) {
+	var calls int
+	f := &fakeLife{snap: serverSnap()}
+	d := f.deps(serverCfg())
+	d.RoutedIDs = func(context.Context) (map[string]bool, error) {
+		calls++
+		return map[string]bool{}, nil
+	}
+	s, err := NewServer(Options{Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.routedTTL = time.Hour
+	s.routed(context.Background())
+	s.routed(context.Background())
+	if calls != 1 {
+		t.Fatalf("calls inside the ttl = %d, want 1", calls)
+	}
+	res := s.invalidatingRouted(func(context.Context, func(string)) modelapi.JobResult {
+		return modelapi.JobResult{OK: true}
+	})(context.Background(), func(string) {})
+	if !res.OK {
+		t.Fatalf("the wrapped job's result = %+v, want it passed through", res)
+	}
+	s.routed(context.Background())
+	if calls != 2 {
+		t.Errorf("calls after the job = %d, want 2 (the cache dropped)", calls)
+	}
+}
+
 // TestCatalogUnratedScoreIsKept pins that an unrated entry's aligned score and
 // source count still reach the wire (they say how it compares) while the tier
 // fields stay rated-only.

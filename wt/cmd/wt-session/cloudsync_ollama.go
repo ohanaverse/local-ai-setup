@@ -16,7 +16,7 @@ import (
 )
 
 // ollamaCLI runs the ollama command against the daemon at origin and returns
-// what it printed. A seam: cmd/wt's TestMain makes it fail, so no test runs
+// what it printed. A seam: cmd/wt-session's TestMain makes it fail, so no test runs
 // the developer's ollama.
 var ollamaCLI = realOllamaCLI
 

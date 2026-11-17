@@ -50,8 +50,10 @@ catalog does not list takes its id's provider prefix). The report's instant
 (`as_of`) is the **server's** clock, read from its response, so a clock on this
 machine that runs behind or ahead cannot cut off the newest requests; the
 window is cut at the same two instants as everywhere else. (`wt stats` never
-stops on a bad setup: a `config.toml` that cannot be read, with no `WT_MODEL_*`
-variable set, counts as no endpoint and the `psql` path below runs.) The survey table and
+stops on a bad setup: with no model server configured and no `WT_MODEL_*`
+variable set, spend is `not_configured` and no query runs; a `config.toml`
+that cannot be read is `unavailable` with its reason. The `psql` path below
+runs on the model server's host, never here.) The survey table and
 the launch counts still come from this machine's files.
 
 Spend is missing in the same ways, with the same statuses and notes, and the
@@ -59,8 +61,9 @@ launch counts print regardless: a server with no LiteLLM database named is
 `not_configured`; a database it could not query, a server that is not
 reachable, or one that refuses the token is `unavailable`, and the note says
 `spend unavailable:` and the reason the server (or the failed connection)
-gave. "Where spend comes from" below describes the server's side only for a
-host that runs `wt stats` without an endpoint.
+gave. "Where spend comes from" below describes the server's side — the
+lookup and the query run on the model server's host. With no endpoint there
+is no server side to describe: spend is `not_configured` and no query runs.
 
 ## Survey table
 

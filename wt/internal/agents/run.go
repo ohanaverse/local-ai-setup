@@ -11,7 +11,7 @@ import (
 // RunAndCleanup runs cmd, then unconditionally calls cleanup (success or
 // failure) before returning cmd.Run()'s own error and the elapsed
 // duration. It is the one piece of the apply-profile -> run -> cleanup
-// sequence that was hand-written identically in both cmd/wt's runAgentCmd
+// sequence that was hand-written identically in both cmd/wt-session's runAgentCmd
 // and internal/tui's runAndWaitCmd; everything before it (applying the
 // profile, wiring stdio) and after it (ending the session, summary, survey) still
 // differs enough between the TUI and non-TUI launch paths — the TUI's
@@ -24,7 +24,7 @@ func RunAndCleanup(cmd *exec.Cmd, cleanup func() error) (time.Duration, error) {
 	start := time.Now()
 	err := cmd.Run()
 	if cerr := cleanup(); cerr != nil {
-		fmt.Fprintf(os.Stderr, "warning: profile cleanup failed: %v\n", cerr)
+		fmt.Fprintf(os.Stderr, "wt: warning: profile cleanup failed: %v\n", cerr)
 	}
 	return time.Since(start), err
 }

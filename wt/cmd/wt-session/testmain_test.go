@@ -22,7 +22,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
-// TestMain stubs the live seams a cmd/wt test would otherwise hit: the
+// TestMain stubs the live seams a cmd/wt-session test would otherwise hit: the
 // local-model inventory probe of the host commands (no test may dial the
 // developer's real ollama/omlx/mtplx servers), the host `wt stop`'s engine (no
 // test may stop a real model) and the model-server client (loopback only).

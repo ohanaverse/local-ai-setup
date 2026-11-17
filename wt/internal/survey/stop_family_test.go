@@ -232,3 +232,21 @@ func TestStopStateAsksTheMachineOnlyWhereItCanHelp(t *testing.T) {
 		t.Errorf("state = %+v, want no candidate and rec still down", st)
 	}
 }
+
+// TestDefaultStopDepsReadTheGivenSessions pins that the host stop's session
+// counts are the ones the caller read from the model server: counts answers
+// for the ids asked, live for every id, and nil means no session anywhere.
+func TestDefaultStopDepsReadTheGivenSessions(t *testing.T) {
+	d := defaultStopDeps(map[string]int{"omlx/a": 2, "omlx/b": 1})
+	got := d.counts([]string{"omlx/a", "omlx/zzz"})
+	if len(got) != 1 || got["omlx/a"] != 2 {
+		t.Errorf("counts = %v, want only omlx/a:2", got)
+	}
+	if live := d.live(); live["omlx/b"] != 1 || len(live) != 2 {
+		t.Errorf("live = %v", live)
+	}
+	none := defaultStopDeps(nil)
+	if n := len(none.counts([]string{"omlx/a"})); n != 0 || len(none.live()) != 0 {
+		t.Errorf("nil sessions: counts %d, live %v", n, none.live())
+	}
+}

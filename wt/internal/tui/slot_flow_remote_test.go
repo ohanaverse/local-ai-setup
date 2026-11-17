@@ -107,7 +107,7 @@ func tuiSlotCalls(f *fakeModels) []string {
 // picker on the model server: Enter on a profile row, the prep (one catalog
 // read, the client session's register with every slot model), the start
 // flow when the local slot needs one, and the build against the gateway.
-// cmd/wt's TestSlotFlowParity runs the same table through the -M
+// cmd/wt-session's TestSlotFlowParity runs the same table through the -M
 // profile/<name> pin, so the two client paths make the same server calls in
 // the same order; a register after the start or a second catalog read on one
 // path would otherwise pass that path's own test.
@@ -154,7 +154,7 @@ type remoteSlotScenario struct {
 }
 
 // readRemoteSlotParity parses the shared table: blocks of "key: value" lines
-// separated by blank lines, "#" lines ignored. cmd/wt keeps a copy of this
+// separated by blank lines, "#" lines ignored. cmd/wt-session keeps a copy of this
 // parser; the file, not the parser, is what is shared.
 func readRemoteSlotParity(t *testing.T) []remoteSlotScenario {
 	t.Helper()

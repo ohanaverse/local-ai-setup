@@ -31,6 +31,11 @@ On exit, normal or not, it clears the `serve_args` it set and stops mtplx. It st
 the very first turn fails (the setup is probably wrong), and refuses to start while any other
 local model is loaded. Every command is echoed with a `+` before it runs.
 
+Prerequisite (not checked): a running `wt-model serve`, configured as `[model-server]` in
+`~/.config/agent-wt/config.toml` (or `WT_MODEL_URL` and `WT_MODEL_TOKEN_FILE`) — the turns
+launch `wt --cwd -A claude`, which refuses without one. The script prints this note at the
+start of a run and adds no check of its own; the refusal is the error.
+
 ## Usage
 
 ```bash

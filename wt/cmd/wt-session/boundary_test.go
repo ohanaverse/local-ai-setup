@@ -16,8 +16,8 @@ import (
 const modulePath = "github.com/ohanaverse/local-ai-setup/wt"
 
 // boundarySessionFiles are the session files TestSessionPathsNeverTouchTheRegistryOrLifecycle
-// scans, relative to cmd/wt: the launch, resolve, smoke and profile paths of
-// cmd/wt (main.go's root command and runLaunchPath, the model-server
+// scans, relative to cmd/wt-session: the launch, resolve, smoke and profile paths of
+// cmd/wt-session (main.go's root command and runLaunchPath, the model-server
 // start/stop/job commands of model_cmds_remote.go, commands.go's rotate and
 // the shared helpers.go included) and every non-test file of internal/tui
 // (except the host Models tab, models_tab*), internal/agents, internal/smoke,

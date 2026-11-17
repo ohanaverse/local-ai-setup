@@ -10,10 +10,10 @@
 - **`wt` built and on PATH** (`/Users/keith/.local/bin/wt`):
 
   ```bash
-  cd /Users/keith/github/ohanaverse/local-ai-setup/wt && go build -o /Users/keith/.local/bin/wt ./cmd/wt
+  make -C /Users/keith/github/ohanaverse/local-ai-setup/wt install
   ```
 
-  **Check the binary:** if `wt --help` lacks a flag or command this guide names (`--root`, `--new`, `wt cleanup`, `wt rescue`), the `wt` on PATH is older than the guide. The rebuild command above is the fix: it builds over the PATH copy at `~/.local/bin/wt`; a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4).
+  **Check the binary:** if `wt --help` lacks a flag or command this guide names (`--root`, `--new`, `wt cleanup`, `wt rescue`), the `wt` on PATH is older than the guide. The rebuild command above is the fix: `make -C wt install` builds `wt-session`, `wt` (the same binary under two names) and `wt-model`, re-seals each and installs them and the shims over the PATH copies in `~/.local/bin/` (a bare `go build` would refresh only one of them); a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4).
 - **Shims on PATH** (`claude-wt` … `shell-wt` in `/Users/keith/.local/bin/`). Missing? `make install` from `/Users/keith/github/ohanaverse/local-ai-setup/wt` — verified real (copies `bin/*-wt` to `/Users/keith/.local/bin/` and re-signs on macOS to dodge AMFI `SIGKILL`/exit 137). All 7 shims present here:
 
   ```
@@ -87,7 +87,7 @@ Run a bare `wt` (from any git repo; shims pin the agent up front, skipping the a
 
 ### 3. Model selection
 
-Non-interactive pinning and filtering (all verified against live `wt --help` and `cmd/wt/main.go`):
+Non-interactive pinning and filtering (all verified against live `wt --help` and `cmd/wt-session/main.go`):
 
 | Flag | Effect |
 |---|---|
@@ -96,7 +96,7 @@ Non-interactive pinning and filtering (all verified against live `wt --help` and
 | `-T, --tags a,b` | Keep only models with ANY of these tags (OR within the flag) |
 | `-F, --family f1,f2` | Keep only models whose family matches any listed (OR within the flag) |
 
-Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define the *eligible list*, and the pin must be inside it — otherwise the launch errors ("model \"…\" is not in the eligible list for agent \"…\"") instead of silently ignoring the filters. So `wt -W x -T design -M <some only-code-tagged model>` fails, while a pin that satisfies the filters wins. With no `-M`: one launchable model → that model; several → the rotation cursor decides (§5). Launchable = the model server's catalog rows it marks `launch`: cloud rows plus local rows its live probe reports running — a non-running local model is a **start** row, never auto-selected; if models matched but none is launchable, the error names the fix ("no cloud or running local model for agent … — start one with `wt -M <id>`"). This is all in `cmd/wt/resolve_remote.go` (`resolveModelRemote`, over the server's catalog) and `cmd/wt/launch_remote.go` (source-verified). The `-T` precedence case only shows up once your models' tags actually differ — compare `grep -c '^tags = \[\]' ~/.config/local-ai/registry.toml` (untagged models) vs `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` (all models).
+Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define the *eligible list*, and the pin must be inside it — otherwise the launch errors ("model \"…\" is not in the eligible list for agent \"…\"") instead of silently ignoring the filters. So `wt -W x -T design -M <some only-code-tagged model>` fails, while a pin that satisfies the filters wins. With no `-M`: one launchable model → that model; several → the rotation cursor decides (§5). Launchable = the model server's catalog rows it marks `launch`: cloud rows plus local rows its live probe reports running — a non-running local model is a **start** row, never auto-selected; if models matched but none is launchable, the error names the fix ("no cloud or running local model for agent … — start one with `wt -M <id>`"). This is all in `cmd/wt-session/resolve_remote.go` (`resolveModelRemote`, over the server's catalog) and `cmd/wt-session/launch_remote.go` (source-verified). The `-T` precedence case only shows up once your models' tags actually differ — compare `grep -c '^tags = \[\]' ~/.config/local-ai/registry.toml` (untagged models) vs `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` (all models).
 
 **Where the models come from:** `~/.config/local-ai/registry.toml` (`wt model init` creates it and adds provider rows; `wt model add|edit|rm` and the Models tab of `wt config` manage its models) and `~/.config/agent-wt/config.toml` (wt-owned) are joined in memory by `internal/config/config.go` `Load()`. Registry providers/models are loaded **last and overwrite anything pre-existing in config.toml — registry.toml is the source of truth**, and wt never writes them back into `config.toml` (see §6). Local rows are then built from the live inventory: a registry local model appears only when it is on disk or running, and an on-disk model with no entry appears under its discovered id `<family>/<artifact>`. To see what wt will load: `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` prints the model count, and `grep -c '^tags = \[\]' ~/.config/local-ai/registry.toml` how many of those are untagged.
 
@@ -199,11 +199,11 @@ Start the model first (`wt start sushi/…`) or let the smoke run do it; either 
   ```
 
   Observed: `wt: main guard is installed in this repo.`
-- `--yolo` — exists in 0.1.0, verified in `wt --help` and `cmd/wt/main.go`; prepends the agent's skip-permissions flag (claude: `--dangerously-skip-permissions`). Source-verified caveat: pi has no such flag, so `--yolo` is a no-op there (`internal/agents/agents_test.go`: "Pi has no yolo flag").
+- `--yolo` — exists in 0.1.0, verified in `wt --help` and `cmd/wt-session/main.go`; prepends the agent's skip-permissions flag (claude: `--dangerously-skip-permissions`). Source-verified caveat: pi has no such flag, so `--yolo` is a no-op there (`internal/agents/agents_test.go`: "Pi has no yolo flag").
 - `--cwd` — launch in the current directory, inside a git repository or not, with no pickers (the one launch that stays where you typed it; `-W` and the picker start at a worktree's root). The agent starts in that directory, so its own continue flag after `--` (`claude-wt --cwd -- --continue`) finds the sessions of that directory; wt itself never resumes one. Run from a repository's root, `--cwd` warns and proceeds (a terminal with any warning is asked one default-yes question first; a nested launch under an agent that already holds the root carries that consent, so the root warning is not shown — though root drift and any other warning still ask). `-W <name>` naming the root's checked-out branch launches in the root with the root warning.
 - `--root` — launch in the repository's primary checkout from anywhere; the flag consents to the root warning alone, so a root another session holds (or any other warning) is still asked the one question. Exclusive with `--cwd` and `-W`; an error outside a repository.
 - `--debug-worktrees` — test helper printing worktrees/branches; not for daily use, one line, moving on.
-- Removed subcommands now fail loudly instead of passing the word to the agent as its first argument: `wt models` → error "wt models is removed; use wt config to view models", same shape for `wt agents` (source-verified guard in `cmd/wt/main.go`). A word after `--` is a passthrough command and is not refused: `wt -A shell -- models` runs a command named `models`.
+- Removed subcommands now fail loudly instead of passing the word to the agent as its first argument: `wt models` → error "wt models is removed; use wt config to view models", same shape for `wt agents` (source-verified guard in `cmd/wt-session/main.go`). A word after `--` is a passthrough command and is not refused: `wt -A shell -- models` runs a command named `models`.
 
 ### 8. Launch records
 
@@ -233,7 +233,7 @@ command -v little-coder   # must resolve — see below
 
 **The wrapper binary must be on PATH — a missing wrapper is the one *fatal* profile error.** Every other profile problem degrades to an unprofiled launch with a stderr warning; this one aborts the launch.
 
-No `~/.config/little-coder/models.json` override is needed for wt launches: wt's pi driver syncs `~/.pi/agent/models.json` (a wt-owned `litellm` provider block in LiteLLM mode) and passes `--model litellm/<registry-id>`; little-coder forwards unrecognized args to pi and does not inject its own default model when one is supplied.
+No `~/.config/little-coder/models.json` override is needed for wt launches: wt's pi driver syncs `~/.pi/agent/models.json` (a wt-owned `litellm` provider block pointing at the model server's gateway — its origin and the client token, never the LiteLLM key) and passes `--model litellm/<gateway id>` (the gateway id is the registry id unless the row names a `gateway_id`); little-coder forwards unrecognized args to pi and does not inject its own default model when one is supplied.
 
 **Setup step 2 — write the profile.** The verified pi snippet from `wt/docs/wt-agents/profiles.md`:
 
@@ -250,7 +250,7 @@ env = { LITTLE_CODER_PERMISSION_MODE = "accept-all" }
 
 (`wrapper` swaps the launched binary — wt's own `--model …` argv is spliced into `{{args}}`; `env` lands on the wrapper process, so `LITTLE_CODER_PERMISSION_MODE=accept-all` is little-coder's lever — it skips its shell whitelist, a deliberate spec-approved trade-off for local launches. Use `manual` to keep the gate. `--pi-args` is not a little-coder flag — `args_template = ["{{args}}"]` is correct.)
 
-**Inspect/toggle** (`cmd/wt/profile.go`):
+**Inspect/toggle** (`cmd/wt-session/profile.go`):
 
 ```bash
 wt profile list                       # every defined profile
@@ -259,7 +259,7 @@ wt profile status                     # on/off
 wt profile on / wt profile off        # global kill switch
 ```
 
-An interactive launch that resolves a non-empty profile **asks before applying** (default yes on Enter); non-interactive launches apply automatically. `wt smoke` applies profiles too (`cmd/wt/smoke.go` resolves per agent × model and uses the same `applyResolvedProfile` as a real launch) — so with this profile on, `wt smoke -A pi -M <local-id>` runs `little-coder`, and the row fails if `little-coder` isn't on PATH.
+An interactive launch that resolves a non-empty profile **asks before applying** (default yes on Enter); non-interactive launches apply automatically. `wt smoke` applies profiles too (`cmd/wt-session/smoke.go` resolves per agent × model and uses the same `applyResolvedProfile` as a real launch) — so with this profile on, `wt smoke -A pi -M <local-id>` runs `little-coder`, and the row fails if `little-coder` isn't on PATH.
 
 Full reference — all four agents' mechanisms, file-safety/self-heal rules, claude/codex/opencode working entries: `wt/docs/wt-agents/profiles.md`.
 

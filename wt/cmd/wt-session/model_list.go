@@ -17,7 +17,7 @@ import (
 
 // probeInventory is a test seam for the host commands (model list, served,
 // litellm sync, the config editor's Models tab, model rm): production probes
-// the live local-model inventory. cmd/wt's TestMain stubs it to
+// the live local-model inventory. cmd/wt-session's TestMain stubs it to
 // localmodels.OnDiskSnapshotForTest so no test dials the developer's real
 // ollama/omlx/mtplx servers, and tests that need a verdict stub it with their
 // own snapshot. No session path reads it (the boundary test).
