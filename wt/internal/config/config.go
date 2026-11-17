@@ -1377,8 +1377,23 @@ func writeConfigFile(cfg *Config) error {
 		return err
 	}
 	mode := os.FileMode(0o644)
-	if cfg.LitellmTable != nil && cfg.LitellmTable.APIKey != "" {
+	// Exactly two fields make a saved config.toml secret-bearing: the
+	// legacy [litellm] api_key and the [model-server] inline token. Both
+	// are bearer secrets, so either one's presence writes 0600 (nothing
+	// else does).
+	if (cfg.LitellmTable != nil && cfg.LitellmTable.APIKey != "") ||
+		(cfg.ModelServerTable != nil && cfg.ModelServerTable.Token != "") {
 		mode = 0o600
+	}
+	// Never loosen an existing stricter mode: a file whose mode grants no
+	// permission bit the computed one would not (0600 over 0644, 0400 over
+	// 0600) keeps it, while a looser file is tightened to the computed
+	// mode. Stat first — the atomic rename below replaces the file, so
+	// this is the one chance to see its mode.
+	if st, err := os.Stat(Path()); err == nil {
+		if existing := st.Mode().Perm(); existing&^mode == 0 {
+			mode = existing
+		}
 	}
 	return WriteFileAtomic(Path(), buf.Bytes(), mode)
 }

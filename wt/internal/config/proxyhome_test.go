@@ -129,6 +129,38 @@ func TestProxyHomePathIsUnderTheScratchHome(t *testing.T) {
 	}
 }
 
+// TestProxyHomeFollowsTheConfigHome pins the home's resolution against the
+// real isolation helper (a Review Focus regression pin): after
+// IsolateConfigHomeForTest the home is exactly the scratch config home's
+// wt-model/config.toml, never anything under the real ~/.config — a
+// regression that dropped the XDG handling would resolve, and then write,
+// the developer's own wt-model home. The exact-path assertion is the
+// load-bearing one (a suffix-only check would still pass a resolve into the
+// real ~/.config), and a path query writes nothing anywhere: no wt-model
+// directory appears even under the scratch home.
+func TestProxyHomeFollowsTheConfigHome(t *testing.T) {
+	realConfigHome := ""
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		realConfigHome = filepath.Join(home, ".config")
+	}
+	// t.Setenv restores the helper's os.Setenv after the test — the pattern
+	// TestIsolateConfigHomeForTestClearsBothRegistryNames relies on.
+	t.Setenv("XDG_CONFIG_HOME", "/somewhere/else")
+	scratch, cleanup := IsolateConfigHomeForTest()
+	defer cleanup()
+
+	got := ProxyHomePath()
+	if want := filepath.Join(scratch, "wt-model", "config.toml"); got != want {
+		t.Fatalf("ProxyHomePath() = %q, want the scratch config home's %q", got, want)
+	}
+	if realConfigHome != "" && strings.HasPrefix(got, realConfigHome+string(filepath.Separator)) {
+		t.Errorf("ProxyHomePath() = %q falls under the real %q; the real home must stay untouched", got, realConfigHome)
+	}
+	if st, err := os.Lstat(filepath.Join(scratch, "wt-model")); !os.IsNotExist(err) {
+		t.Errorf("wt-model under the scratch home after the query: %v, %v; want no directory at all", st, err)
+	}
+}
+
 // TestResolveProxyPrefersTheHomeTable pins rule 1 of the merge: a home
 // [litellm] table is authoritative and complete — its url and its key file's
 // content win over a differently-valued legacy [litellm] table. The home is
