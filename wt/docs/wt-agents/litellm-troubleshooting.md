@@ -7,7 +7,8 @@ list in `~/.config/litellm/config.yaml`). Each real launch went through `wt`
 and had to answer a one-shot prompt on stdout. Today every session reaches
 LiteLLM through the model server's gateway (`wt-model serve`,
 [wt-session.md](../wt-session.md)), which forwards the same requests with
-the `[litellm]` key, so the per-driver lessons below still hold; there is no
+the host's LiteLLM key (the `~/.config/wt-model/` home's key file), so the
+per-driver lessons below still hold; there is no
 routing switch and no direct route any more, and the old forced-LiteLLM
 stderr notice is gone with them.
 
@@ -399,8 +400,11 @@ wt.
   `nohup litellm --config ~/.config/litellm/config.yaml --port 4000
   >> ~/.litellm.log 2>> ~/.litellm.err.log &`. `wt litellm sync` restarts the proxy for you (`WT_LITELLM_RESTART_CMD`, else launchctl kickstart) — see
   [README · LiteLLM proxy lifecycle](README.md#litellm-proxy-lifecycle)).
-- The litellm key for probes lives in `[litellm].api_key`
-  (wt's `~/.config/agent-wt/config.toml`; `wt litellm status --json` shows only `api_key_set`) and is also in pi's models.json.
+- The litellm key for probes lives in the `wt-model` home's key file
+  (`~/.config/wt-model/litellm.key`; the `[litellm].api_key` of wt's
+  `~/.config/agent-wt/config.toml` is its read-only fallback, and
+  `wt litellm status --json` shows only `api_key_set`). pi's models.json
+  carries the gateway origin and the model-server token, not that key.
 - Direct-mode ollama keeps working as before: the `ollama` provider block in
   pi's models.json must stay on `http://localhost:11434/v1` (wt reverts it if
   a stale litellm redirect is present); codex has no direct branch at all

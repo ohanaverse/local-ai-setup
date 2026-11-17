@@ -351,8 +351,8 @@ Process environment:
 
 | Variable | Value |
 |---|---|
-| `ANTHROPIC_BASE_URL` | The `[litellm]` url |
-| `ANTHROPIC_AUTH_TOKEN` | The `[litellm]` api key |
+| `ANTHROPIC_BASE_URL` | The model server's gateway origin |
+| `ANTHROPIC_AUTH_TOKEN` | The model server's bearer token |
 | `ANTHROPIC_API_KEY` | Empty |
 
 Removed from the inherited environment: every `ANTHROPIC_DEFAULT_*`

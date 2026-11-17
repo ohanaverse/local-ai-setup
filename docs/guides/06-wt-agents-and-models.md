@@ -109,12 +109,13 @@ Every session reaches its non-native models through the model server
 `~/.config/agent-wt/config.toml`; see [wt/docs/wt-session.md](../../wt/docs/wt-session.md)),
 whose gateway forwards to the LiteLLM proxy (`localhost:4000`). There is no
 routing switch and no direct route: a launch never dials a provider or the
-proxy itself. The `[litellm]` table in wt's `config.toml` holds only the
-proxy's URL and key, which the model server reads:
+proxy itself. The proxy's URL and key live in the `wt-model` config home
+(`~/.config/wt-model/`), which the model server reads; the `[litellm]` table
+in wt's `config.toml` is its read-only fallback:
 
 ```bash
-wt litellm status   # url + api_key_set (key never printed)
-wt litellm set --url http://localhost:4000 --api-key sk-…   # proxy URL/key the model server uses
+wt-model litellm set --url URL --api-key KEY   # the proxy URL/key the model server uses (the ~/.config/wt-model/ home)
+wt-model litellm status                        # url + api_key_set (key never printed)
 ```
 
 Its `enabled` key is retired: kept on save, read by nothing, and a true
