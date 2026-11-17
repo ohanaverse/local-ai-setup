@@ -95,7 +95,7 @@ func runLaunchPath(
 	var slotNotes []string
 	// A native launch (no model server at all, #615) never uses a slot
 	// profile, so it says nothing about the file either.
-	if _, ok := agents.SlotsFor(agent); (agent == "" || ok) && !wouldLaunchNative(a, agent, pinned, tags, family) {
+	if _, ok := agents.SlotsFor(agent); (agent == "" || ok) && !wouldLaunchNative(a, agent, pinned, cmd.Flags().Changed("model"), tags, family) {
 		slotNotes = slotWarningsRemote(a)
 	}
 	printSlotNotes := func() {
@@ -133,7 +133,6 @@ func runLaunchPath(
 	// refusal. A pinned command agent's picker only picks a worktree, and
 	// opens without a server.
 	var models tui.ModelClient
-	native := false
 	scfg, serr := a.sessionCfg()
 	ms, merr := a.buildModels(launchStill)
 	switch {
@@ -141,10 +140,9 @@ func runLaunchPath(
 		models = tui.NewModelClient(ms.client, ms.ep)
 	case agents.IsCommand(agent):
 		// A command needs no model; nothing below asks for one.
-	case nativeFallback(merr, pinned, tags, family):
+	case nativeFallback(merr, pinned, cmd.Flags().Changed("model"), tags, family):
 		// No model server at all and no model asked for (#615): the picker
 		// opens with no client and launches a chosen agent natively.
-		native = true
 	default:
 		return remoteExit(merr) // buildModels' errors carry the still clause
 	}
@@ -204,7 +202,7 @@ func runLaunchPath(
 	// for as long as a picker is up, so a launch that went through the TUI
 	// says it again once the TUI has returned and the terminal is the
 	// user's.
-	err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, models, native, scfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
+	err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, models, scfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
 	printSlotNotes()
 	// tui.Run returns the agent's run error after its post-exit flow; a
 	// non-zero exit becomes wt's own status, as on the non-TUI path, and
@@ -477,7 +475,7 @@ func rootCmd() *cobra.Command {
 			// branch, which this check does not change). A command agent
 			// needs none.
 			if (agent != "" && !agents.IsCommand(agent)) || (agent == "" && stdinTTY()) {
-				if _, err := a.buildModels(launchStill); err != nil && !nativeFallback(err, pinned, tags, family) {
+				if _, err := a.buildModels(launchStill); err != nil && !nativeFallback(err, pinned, cmd.Flags().Changed("model"), tags, family) {
 					return remoteExit(err) // buildModels' errors carry the still clause
 				}
 			}

@@ -53,3 +53,27 @@ func TestNativeNoteSaysWhatHappenedAndTheWayOut(t *testing.T) {
 		t.Errorf("NativeNote = %q, want one line", got)
 	}
 }
+
+// TestNativeLaunchClearsNoEnvironment proves the zero-ID native launch (no
+// model server configured) leaves the user's own ANTHROPIC_* and COPILOT_*
+// variables alone, since they are the "own configuration" the native note
+// promises, while a registered native model (claude/native) still clears the
+// gateway variables so the subscription wins.
+func TestNativeLaunchClearsNoEnvironment(t *testing.T) {
+	builds := map[string]LaunchCmd{
+		"claude":  claudeDriver{}.Build(NativeModel(), false, Route{}),
+		"copilot": copilotDriver{}.Build(NativeModel(), false, Route{}),
+	}
+	for name, cmd := range builds {
+		if len(cmd.ClearEnv) != 0 || len(cmd.Env) != 0 {
+			t.Errorf("native %s launch touches the environment: clear=%v env=%v", name, cmd.ClearEnv, cmd.Env)
+		}
+	}
+	t.Run("registered native model still clears", func(t *testing.T) {
+		m := NativeModel()
+		m.ID, m.ProviderID = "claude/native", "claude"
+		if lc := (claudeDriver{}).Build(m, false, Route{}); len(lc.ClearEnv) == 0 {
+			t.Error("a registered native model must clear the gateway variables")
+		}
+	})
+}

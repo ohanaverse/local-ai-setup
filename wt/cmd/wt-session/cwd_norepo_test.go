@@ -70,7 +70,7 @@ func runPinnedLaunch(t *testing.T, dir string, where []string, extra ...string) 
 
 	res := cwdLaunch{stateDir: cfgDir}
 	oldTUI, oldGuard := tuiRun, maybeInstallGuard
-	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, bool, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
+	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
 		t.Error("tuiRun was called: a launch with -A and -M pinned went to the TUI")
 		return nil
 	}
@@ -272,7 +272,7 @@ func TestCwdOutsideARepoReachesThePickers(t *testing.T) {
 			var called bool
 			var gotAgent, gotPath string
 			oldTUI, oldGuard := tuiRun, maybeInstallGuard
-			tuiRun = func(yolo, allowReplace bool, _ string, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, _ tui.ModelClient, _ bool, cfg *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
+			tuiRun = func(yolo, allowReplace bool, _ string, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, _ tui.ModelClient, cfg *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
 				called, gotAgent, gotPath = true, agent, prePath
 				return nil
 			}

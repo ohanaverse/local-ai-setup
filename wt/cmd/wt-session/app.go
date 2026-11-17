@@ -88,6 +88,11 @@ type app struct {
 	sessCfgErr error
 	sessCfgSet bool
 	models     *modelSession
+	// built, builtErr and builtSet cache buildModels' one read of the
+	// model-server settings (a failure included).
+	built    *modelSession
+	builtErr error
+	builtSet bool
 
 	// The host's config (hostConfig): config.toml and registry.toml through
 	// config.Load, read on first use by a host command and cached. hostCfg is

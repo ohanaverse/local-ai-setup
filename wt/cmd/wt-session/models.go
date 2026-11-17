@@ -81,24 +81,42 @@ func (a *app) openModels(ctx context.Context, still string) (*modelSession, erro
 // server anything. The picker uses it directly: its first request pings, so an
 // unreachable server shows as a failed fetch the user can retry with F instead
 // of ending wt before the screen opens.
+//
+// The outcome, a failure included, is read once per app and cached (main
+// goroutine only): one launch asks several times whether a server is
+// configured (the native decision, the slot-profile notes, the launch itself)
+// and each ask must not re-read the config and the token file.
 func (a *app) buildModels(still string) (*modelSession, error) {
+	if !a.builtSet {
+		a.built, a.builtErr = a.resolveModels()
+		a.builtSet = true
+	}
+	if a.builtErr != nil {
+		return nil, modelclient.Still(a.builtErr, still)
+	}
+	return a.built, nil
+}
+
+// resolveModels is buildModels' one uncached read: the endpoint from
+// [model-server] and the environment, and the client built from it.
+func (a *app) resolveModels() (*modelSession, error) {
 	cfg, err := a.sessionCfg()
 	if err != nil {
-		return nil, modelclient.Still(err, still)
+		return nil, err
 	}
 	ms := cfg.ModelServer()
 	if p := ms.Problems(); len(p) > 0 {
-		return nil, modelclient.Still(errors.New(strings.Join(p, "; ")), still)
+		return nil, errors.New(strings.Join(p, "; "))
 	}
 	tokenFile := ms.TokenFile
 	if tokenFile != "" {
 		if tokenFile, err = config.ExpandHome(tokenFile); err != nil {
-			return nil, modelclient.Still(err, still)
+			return nil, err
 		}
 	}
 	ep, err := modelclient.ResolveEndpoint(ms.URL, tokenFile, os.Getenv)
 	if err != nil {
-		return nil, modelclient.Still(err, still)
+		return nil, err
 	}
 	return &modelSession{client: newModelClient(ep), ep: ep}, nil
 }
@@ -137,17 +155,19 @@ func remoteExit(err error) error {
 // configured at all (neither url nor token; one missing is a half-configured
 // server and refuses) and the launch asks for no model (-M, -T, -F pick from a
 // catalog that does not exist). A configured server is never bypassed.
-func nativeFallback(err error, pinned, tags, family string) bool {
-	return pinned == "" && tags == "" && family == "" && modelclient.NoServerConfigured(err)
+// pinnedSet is whether -M was given at all: an explicit empty -M still asks
+// for a model, so it refuses like any other.
+func nativeFallback(err error, pinned string, pinnedSet bool, tags, family string) bool {
+	return pinned == "" && !pinnedSet && tags == "" && family == "" && modelclient.NoServerConfigured(err)
 }
 
 // wouldLaunchNative reports whether a launch of agent with these filters would
 // run natively (#615): a model-driven agent, or a picker that may need one
 // (agent ""), with no model server configured at all and no model asked for.
-func wouldLaunchNative(a *app, agent, pinned, tags, family string) bool {
+func wouldLaunchNative(a *app, agent, pinned string, pinnedSet bool, tags, family string) bool {
 	if agents.IsCommand(agent) {
 		return false
 	}
 	_, err := a.buildModels(launchStill)
-	return err != nil && nativeFallback(err, pinned, tags, family)
+	return err != nil && nativeFallback(err, pinned, pinnedSet, tags, family)
 }

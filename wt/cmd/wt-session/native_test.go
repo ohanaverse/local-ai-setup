@@ -38,7 +38,6 @@ type nativeTUICall struct {
 	agent  string
 	pinned string
 	models tui.ModelClient
-	native bool
 }
 
 // ranAgent reports whether the fake binary of name ran.
@@ -67,8 +66,8 @@ func newNativeRig(t *testing.T) *nativeRig {
 		r.builds = append(r.builds, nativeBuild{agent: agent, model: m, gw: gw, yolo: yolo, dir: dir, args: extra})
 		return cmd, info, err
 	}
-	tuiRun = func(_, _ bool, _ string, agent, pinned, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, native bool, _ *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
-		r.tui = append(r.tui, nativeTUICall{agent: agent, pinned: pinned, models: models, native: native})
+	tuiRun = func(_, _ bool, _ string, agent, pinned, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, _ *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
+		r.tui = append(r.tui, nativeTUICall{agent: agent, pinned: pinned, models: models})
 		return nil
 	}
 	return r
@@ -167,7 +166,7 @@ func evalPath(t *testing.T, p string) string {
 
 // TestNativePickerOpensWithoutAModelClient pins the interactive half: with no
 // server a terminal launch opens the picker with no model client and the
-// native flag set (the picker then launches a chosen agent natively and never
+// no client (the picker then launches a chosen agent natively and never
 // shows a model screen), both for a bare `wt` and for `-A claude` outside
 // -W/--root/--cwd. The refusal used to stop both before the screen opened.
 func TestNativePickerOpensWithoutAModelClient(t *testing.T) {
@@ -188,7 +187,7 @@ func TestNativePickerOpensWithoutAModelClient(t *testing.T) {
 			if code != 0 || len(r.tui) != 1 {
 				t.Fatalf("exit %d, tuiRun calls %d; want 0 and one\n%s", code, len(r.tui), out)
 			}
-			if c := r.tui[0]; c.models != nil || !c.native || c.agent != tc.agent {
+			if c := r.tui[0]; c.models != nil || c.agent != tc.agent {
 				t.Errorf("tuiRun got %+v, want no client, native, agent %q", c, tc.agent)
 			}
 		})
@@ -280,5 +279,17 @@ func TestNativeLaunchSaysNothingAboutSlotProfiles(t *testing.T) {
 	}
 	if strings.Contains(out, "slot-profiles.toml") {
 		t.Errorf("a native launch warned about slot-profiles.toml:\n%s", out)
+	}
+}
+
+// TestEmptyModelFlagStillRefusesWithoutAServer pins that an explicit empty -M
+// (a script's unset variable) asks for a model like any other -M: with no
+// server it refuses instead of launching natively, where only a launch with no
+// -M at all falls back.
+func TestEmptyModelFlagStillRefusesWithoutAServer(t *testing.T) {
+	r := newNativeRig(t)
+	out, code := r.run(t, "--cwd", "-A", "claude", "-M", "")
+	if code != 1 || r.ranAgent("claude") || len(r.builds) != 0 || strings.Contains(out, "natively") {
+		t.Errorf("exit %d, ran %v, builds %d; want a refusal and no launch\n%s", code, r.ranAgent("claude"), len(r.builds), out)
 	}
 }

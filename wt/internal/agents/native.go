@@ -24,3 +24,13 @@ func NativeModel() config.Model {
 func NativeNote(agent string) string {
 	return fmt.Sprintf("wt: no model server is configured — launching %s natively, with its own configuration; to choose models through wt-model, set url and token_file under [model-server] in config.toml", agent)
 }
+
+// isNativeLaunch reports whether m is the model of a native launch (see
+// NativeModel): the zero-ID sentinel. Unlike a registered native model
+// (claude/native), which clears the gateway variables so the subscription
+// wins, a native launch leaves the user's own environment alone: their
+// ANTHROPIC_* or COPILOT_* variables are the "own configuration" the note
+// promises.
+func isNativeLaunch(m config.Model) bool {
+	return m.Native && m.ID == "" && m.ProviderID == ""
+}

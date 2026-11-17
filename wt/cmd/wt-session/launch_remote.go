@@ -106,7 +106,7 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 		return remoteExit(modelclient.Still(err, launchStill))
 	}
 	// No model server configured at all and no model asked for: native (#615).
-	if _, berr := a.buildModels(launchStill); berr != nil && nativeFallback(berr, pinned, tags, family) {
+	if _, berr := a.buildModels(launchStill); berr != nil && nativeFallback(berr, pinned, pinnedSupplied, tags, family) {
 		return launchNative(agent, worktreePath, cfg, yolo, extraArgs, pp)
 	}
 	// A -M pin of a slot profile is its own launch unit, as on the registry

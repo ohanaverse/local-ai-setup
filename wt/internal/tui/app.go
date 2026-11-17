@@ -70,9 +70,6 @@ type model struct {
 	// client is the model server the picker reads its table from; nil only
 	// for a pinned command agent (shell), whose picker never reaches a model.
 	client ModelClient
-	// native: no model server is configured and a model-driven agent launches
-	// with its own configuration (see enterModelPhaseForAgent).
-	native bool
 	// catPricing is the pricing member of the latest catalog the picker
 	// loaded and catSeen says there was one: the stale-pricing notice after a
 	// launch reads them, and fetches once only when no catalog was loaded.
@@ -752,15 +749,13 @@ func (m model) proceedWithPath() (model, tea.Cmd) {
 // enterModelPhaseForAgent loads the model server's catalog for m.agent under
 // the active filters (-T/-F) and builds the picker from it
 // (beginCatalogLoad). With no model server configured at all and no -M/-T/-F
-// (m.native, #615) it launches the agent natively instead; otherwise it says
-// no server is configured and loads nothing.
+// (a nil client, #615) it launches the agent natively instead.
 func (m model) enterModelPhaseForAgent() (model, tea.Cmd) {
-	if m.client == nil && m.native {
-		return m.launchNative()
-	}
 	if m.client == nil {
-		m.status = "no model server is configured: set url and token_file under [model-server] in config.toml"
-		return m, nil
+		// Only a model-driven agent reaches this phase, and wt-session opens
+		// the picker with no client only when no model server is configured
+		// and no model is asked for (it refuses every other launch first).
+		return m.launchNative()
 	}
 	return m.beginCatalogLoad()
 }
@@ -890,9 +885,8 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // When the launched agent's run failed, Run returns that error (an
 // *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
 // cmd/wt-session exits with the agent's status (#412).
-func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, native bool, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
+func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
 	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, models, cfg, removeFuncs), slots)
-	initial.native = native
 	p := tea.NewProgram(initial, tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.
