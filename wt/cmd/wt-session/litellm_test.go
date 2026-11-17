@@ -1374,7 +1374,7 @@ litellm_settings:
 
 // TestStartHookAndSyncAgreeOnDiscoveredRoute pins, end to end, that the
 // start hook and `wt litellm sync` name a discovered model's route the same
-// way. The picker row is built by catalog.Build from the snapshot's
+// way. The picker row is built by localmodels.CatalogRows from the snapshot's
 // discovered omlx entry; the start paths hand the hook
 // Target{row.Model.ProviderID, row.Model.ModelName, row.Model.ID}; the hook's change
 // (lifecycle.StartRouteChange — the derivation routeAfterStart writes) goes
@@ -1395,7 +1395,7 @@ func TestStartHookAndSyncAgreeOnDiscoveredRoute(t *testing.T) {
 			{ProviderID: "omlx", ModelID: config.DiscoveredModelID("omlx", "org/New-Model-4bit"), ModelName: "org/New-Model-4bit", Artifact: "org/New-Model-4bit", ArtifactKnown: true, Running: true},
 		},
 	}
-	rows := catalog.Build(catalog.Input{Config: cfg, Inventory: &snap})
+	rows := localmodels.CatalogRows(localmodels.CatalogInput{Config: cfg, Inventory: &snap})
 	row, ok := catalog.Find(rows, "omlx/org/New-Model-4bit")
 	if !ok || !row.Discovered {
 		t.Fatalf("no discovered row for the omlx entry in %+v", rows)

@@ -1,4 +1,4 @@
-package catalog
+package localmodels
 
 import (
 	"net/http"
@@ -10,7 +10,6 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // TestRegistryFixtureLocalOverlays pins the shared contract fixture's #179
@@ -66,8 +65,8 @@ func TestRegistryFixtureLocalOverlays(t *testing.T) {
 			local = append(local, m)
 		}
 	}
-	snap := localmodels.Inventory(cfg)
-	rows := Build(Input{Config: cfg, Models: local, Inventory: &snap})
+	snap := Inventory(cfg)
+	rows := CatalogRows(CatalogInput{Config: cfg, Models: local, Inventory: &snap})
 	want := []string{"ollama/contract-fixture:local", "mtplx/org--contract-fixture-dashed"}
 	if got := rowIDs(rows); !slices.Equal(got, want) {
 		t.Fatalf("rows = %v, want %v (the absent overlay and the stopped pairing get none)", got, want)

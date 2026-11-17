@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelgateway"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeljobs"
@@ -207,7 +207,7 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	msg := catalog.MissingReason(cfg, &snap, id)
+	msg := localmodels.MissingReason(cfg, &snap, id)
 	if msg == "" {
 		msg = fmt.Sprintf("unknown model %q", id)
 	}

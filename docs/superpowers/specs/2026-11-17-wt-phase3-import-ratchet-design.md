@@ -18,7 +18,7 @@ The spec's Migration step 3 says "untangle `internal/tui` into model-admin scree
    - `localmodels.FormatSize` (used by `cleanup/present.go`) moves out of `localmodels` to a leaf formatting home.
    - `catalog` stops calling `litellm.PolicyFor` (a one-line wrapper) and calls `provider.PolicyFor` directly.
    - `catalog.Row.Action` stops calling `lifecycle.Startable` at read time: `Build` stamps the answer on the row (or input) [as built: `Row.Action` derives it from `internal/provider`'s table through `catalog.startable`, which `TestBackendsMatchProviderTable` pins to `lifecycle.Startable`; nothing is stamped, and the answers are the same], so the picker, smoke and modelserver answers stay **identical** (modelserver catalog tests and `catalog_test.go` cover it; the wire path already carries the action from the server).
-   - `catalog.Input` keeps its `localmodels` type (`Input.Inventory`; it has no `lifecycle` type left): `catalog` and `smoke` stay on the allow-list and shrink in WP2.
+   - `catalog.Input` keeps its `localmodels` type (`Input.Inventory`; it has no `lifecycle` type left): `catalog` and `smoke` stay on the allow-list and shrink in WP2 [done in WP2: see "WP2 as built"].
 3. **Docs in the same change:** `wt/docs/internals/packages.md` (package graph rules), `wt/docs/internals/testing.md` (the new test), `wt/CLAUDE.md` (a short rule: the allow-list only shrinks), and the spec's Phase 3 wording (it is a package-graph change, not a screen move).
 
 ## Non-goals (later packages)
@@ -32,3 +32,12 @@ No behavior change; no wire change (`docs/contracts/` fixtures untouched); every
 ## Builder's calls
 
 The exact home of `OthersAnswer` and `FormatSize`; how `Build` stamps `Startable` (a `Row` field, an `Input` flag, or a function value on `Input`); the test's package and name; which packages beyond the listed ones to include if they already pass.
+
+## WP2 as built
+
+`catalog`'s host half moved to `internal/localmodels` (`catalog.go`): `catalog.Build` is `localmodels.CatalogRows`, `catalog.Input` is `localmodels.CatalogInput`, `catalog.MissingReason` is `localmodels.MissingReason`, and `listed` went with them. `localmodels` imports `catalog` for `Row`, which is cycle-free because `catalog`, `provider`, `config` and `modelapi` reach no `localmodels` path. Callers re-qualified: `modelserver` (three sites) and `tui/modelrows.go`.
+
+- `catalog.NotRunning` is exported and stays in `catalog`: `Row.BlockReason` (session) and `localmodels.MissingReason` (host) say the identical wording, and `localmodels` -> `catalog` is the allowed direction. `PairingStartCommand` stays too (`cmd/wt-session/model_write.go` uses it).
+- `catalog` no longer calls `localmodels.RunningOnly`: it reads `provider`'s table through its own `runningOnly` (the same pattern as `startable`), pinned to `localmodels.RunningOnly` by `TestRunningOnlyMatchesLocalmodels`.
+- Allow-list: `internal/catalog` and `internal/smoke` deleted (smoke's edge was transitive through `catalog`). `internal/survey` and `internal/tui` are unchanged (their `localmodels` edge is `survey/stop.go`, WP3).
+- Tests: the `Build`/`MissingReason` tests moved with the code as `TestCatalogRows*` (`TestMissingReason` and `TestALoadingRowIsAStartRow` keep their names in the moved file, `catalog_rows_test.go`), with the two old inventory-round tests renamed `TestCatalogRowsListsStoppedRecAsStartRow` and `TestCatalogRowsHidesStoppedMlxLmServer`; `TestStartableMatchesLifecycle` and the new running-only pin moved to the external test package `catalog_test` (`pins_test.go`), because `lifecycle` and `localmodels` now import `catalog`.

@@ -6,6 +6,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -109,10 +110,11 @@ type tableInput struct {
 
 // buildRows builds the shared catalog rows and decorates them with the
 // picker's per-agent usage counts. The row rules
-// themselves live in internal/catalog so the non-TUI launch path and
-// `wt smoke` reach the same verdicts this table displays.
+// themselves live in localmodels.CatalogRows and internal/catalog so the
+// non-TUI launch path and `wt smoke` reach the same verdicts this table
+// displays.
 func buildRows(in tableInput) []tableRow {
-	rows := catalog.Build(catalog.Input{
+	rows := localmodels.CatalogRows(localmodels.CatalogInput{
 		Config:         in.cfg,
 		Agent:          in.agent,
 		Models:         in.models,

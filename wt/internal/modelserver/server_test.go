@@ -161,7 +161,7 @@ func TestCatalogEndpointShowsSessionCounts(t *testing.T) {
 
 // TestResolveUnknownCarriesMissingReason pins that resolve returns the row for
 // a known id, and for an unknown one a 404 unknown_model whose text is
-// catalog.MissingReason when the snapshot can explain it (a model not on
+// localmodels.MissingReason when the snapshot can explain it (a model not on
 // disk) and a generic message otherwise.
 func TestResolveUnknownCarriesMissingReason(t *testing.T) {
 	f := &fakeLife{snap: serverSnap("omlx/a")}

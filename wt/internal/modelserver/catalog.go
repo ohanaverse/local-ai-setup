@@ -23,7 +23,7 @@ import (
 // of ids the gateway lists: nil means LiteLLM could not be asked and leaves
 // every Row.Routed nil, a non-nil map (even empty) sets every row's.
 func BuildCatalog(cfg *config.Config, snap localmodels.Snapshot, ix tiers.Index, sessions *sessionreg.Registry, routed map[string]bool, now time.Time) modelapi.Catalog {
-	rows := catalog.Build(catalog.Input{Config: cfg, Models: cfg.Models, Inventory: &snap})
+	rows := localmodels.CatalogRows(localmodels.CatalogInput{Config: cfg, Models: cfg.Models, Inventory: &snap})
 	out := modelapi.Catalog{
 		Schema:    modelapi.SchemaVersion,
 		Generated: now.UTC().Format(time.RFC3339),

@@ -132,11 +132,11 @@ Full rules: [docs/internals/config-and-registry.md](docs/internals/config-and-re
 
 ## Local-model resolution
 
-Every model row wt shows or resolves is built by `internal/catalog` from the agent's eligible list plus one live `localmodels.Inventory` snapshot (no stored flag). A row's action is **launch** (cloud, or local and running), **start** (local ollama/omlx/omlx-6bit/mtplx/rec/sushi, not running or still loading) or **block**.
+Every model row wt shows or resolves is built by `localmodels.CatalogRows` from the agent's eligible list plus one live `localmodels.Inventory` snapshot (no stored flag); `internal/catalog` owns the `Row` it makes and what a row does. A row's action is **launch** (cloud, or local and running), **start** (local ollama/omlx/omlx-6bit/mtplx/rec/sushi, not running or still loading) or **block**.
 
 - **`config.Provider.Origin` is the one reading of a provider's address** (#348): the probes and the LiteLLM routes use it, and so must any new reader. A test never binds or dials the mtplx default port 8003.
 - **`localmodels.ServedIDs` is the one answer to "what is this server serving"** (#201).
-- A `-M` pin is looked up among all rows (`catalog.Find`, else `catalog.MissingReason`, on the model server); without `-M`, the non-TUI path picks only launch rows of the server's catalog — only a pin may start a model.
+- A `-M` pin is looked up among all rows (`catalog.Find`, else `localmodels.MissingReason`, on the model server); without `-M`, the non-TUI path picks only launch rows of the server's catalog — only a pin may start a model.
 - **A slot-profile row is not a model row** (`Model` holds only `profile/<name>`, `Row.Profile` the rest): test `r.Profile != nil` before reading any other `Model` field, or launching/starting `Model`. A session resolves profiles against the model server's catalog only (`catalog.ResolveSlotProfileWire`).
 
 Read [docs/internals/local-models.md](docs/internals/local-models.md) before changing row policy, the inventory probes, omlx loaded-state detection, pin resolution, rotation, or `wt start`/`wt stop`.
