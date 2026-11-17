@@ -11,11 +11,11 @@ import (
 )
 
 // Select is the numbered prompt of a client session's `wt stop` picker
-// (cmd/wt-session's model_cmds_remote.go): it
-// prints header and labels, reads one line on its own goroutine and races that
-// read against ctx. It returns the chosen indices in list order (see
-// chooseLabeled for what a line may say); nothing chosen is an empty result,
-// and a ctx that ends first prints "cancelled" and reports cancelled=true.
+// (cmd/wt-session's model_cmds_remote.go): it prints header and labels, reads
+// one line on its own goroutine and races that read against ctx. It returns
+// the chosen indices in list order (see chooseLabeled for what a line may
+// say); nothing chosen is an empty result, and a ctx that ends first prints
+// "cancelled" and reports cancelled=true.
 //
 // The menu read blocks in a syscall a signal does not interrupt (the runtime
 // restarts it), so a cancelled menu abandons that goroutine still blocked in
