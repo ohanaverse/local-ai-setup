@@ -603,7 +603,7 @@ func TestCleanupListRemovalOffWithoutRegistry(t *testing.T) {
 // root subcommand and `wt cleanup` the same command object under an alias.
 func TestWorktreesCmdRegisteredWithCleanupAlias(t *testing.T) {
 	newTestApp(t)
-	root := rootCmd()
+	root := rootCmdWith(testHooks())
 	w, _, err := root.Find([]string{"worktrees"})
 	if err != nil || w == nil || w.Name() != "worktrees" {
 		t.Fatalf("Find(worktrees) = %v, %v", w, err)
@@ -630,7 +630,7 @@ func TestWorktreesCmdTTYHandsOffToManageList(t *testing.T) {
 	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
 	for _, name := range []string{"worktrees", "cleanup"} {
 		calls = 0
-		root := rootCmd()
+		root := rootCmdWith(testHooks())
 		var out bytes.Buffer
 		root.SetOut(&out)
 		root.SetErr(&bytes.Buffer{})
@@ -691,7 +691,7 @@ func TestWorktreesCmdJSONSameUnderBothNames(t *testing.T) {
 	// which the comparison below normalizes.
 	t.Chdir(dir)
 	run := func(name string) string {
-		root := rootCmd()
+		root := rootCmdWith(testHooks())
 		var out bytes.Buffer
 		root.SetOut(&out)
 		root.SetErr(&bytes.Buffer{})

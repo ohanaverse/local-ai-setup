@@ -26,15 +26,49 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
-// buildGatewayLaunch is a test seam over agents.BuildLaunchCmdGateway, the
-// agent command against the model server's gateway (cmd/wt-session's buildGatewayCmd
-// on the non-TUI path).
-var buildGatewayLaunch = agents.BuildLaunchCmdGateway
+// launchHooks are the per-model test seams over the launch builds. The zero
+// value is the real builds, so production never sets one; a test sets a hook
+// on the model it constructs, and it travels with the model through bubbletea's
+// value copies.
+type launchHooks struct {
+	// gateway replaces agents.BuildLaunchCmdGateway, the agent command against
+	// the model server's gateway (cmd/wt-session's `hooks.build` on the
+	// non-TUI path).
+	gateway gatewayBuildFunc
+	// slot replaces agents.BuildSlotLaunchCmdGateway, the slot-profile build
+	// (launchRemoteSlot).
+	slot slotBuildFunc
+}
+
+// gatewayBuildFunc is the gateway agent build (agents.BuildLaunchCmdGateway's
+// shape); a nil hook means the real agents builder.
+type gatewayBuildFunc func(agent string, mdl config.Model, path string, yolo bool, gw agents.Gateway, models []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error)
+
+// slotBuildFunc is the slot-profile agent build (agents.BuildSlotLaunchCmdGateway's
+// shape); a nil hook means the real agents builder.
+type slotBuildFunc func(profiles.SlotLaunch, string, bool, agents.Gateway, []string) (*exec.Cmd, error)
+
+// buildLaunch is the agent build: the hook, or the real one when unset.
+func (h launchHooks) buildLaunch() gatewayBuildFunc {
+	if h.gateway != nil {
+		return h.gateway
+	}
+	return agents.BuildLaunchCmdGateway
+}
+
+// buildSlotLaunch is the slot build: the hook, or the real one when unset.
+func (h launchHooks) buildSlotLaunch() slotBuildFunc {
+	if h.slot != nil {
+		return h.slot
+	}
+	return agents.BuildSlotLaunchCmdGateway
+}
 
 // clientNotes collects what the API path has to say while the alt screen is
 // up and stderr is not the user's: a register that failed for a launch row,
@@ -540,6 +574,7 @@ func (m model) launchRemote(it *modelItem) (model, tea.Cmd) {
 	return m, prepRemoteLaunchCmd(ctx, prepInput{
 		id: m.prepRun, client: m.client, hold: m.hold, agent: m.agent, model: mdl,
 		path: m.selectedPath, yolo: m.yolo, extraArgs: m.extraArgs,
+		build: m.hooks.buildLaunch(),
 	})
 }
 
@@ -553,6 +588,7 @@ type prepInput struct {
 	path      string
 	yolo      bool
 	extraArgs []string
+	build     gatewayBuildFunc
 }
 
 // prepRemoteLaunchCmd does the launch's server work. Holding the model
@@ -590,7 +626,7 @@ func prepRemoteLaunchCmd(ctx context.Context, in prepInput) tea.Cmd {
 		if ctx.Err() != nil {
 			return fail(ctx.Err())
 		}
-		cmd, _, err := buildGatewayLaunch(in.agent, in.model, in.path, in.yolo, in.client.Gateway(), models, in.extraArgs)
+		cmd, _, err := in.build(in.agent, in.model, in.path, in.yolo, in.client.Gateway(), models, in.extraArgs)
 		if err != nil {
 			return fail(err)
 		}

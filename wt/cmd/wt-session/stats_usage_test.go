@@ -63,14 +63,9 @@ func stubSpend(t *testing.T, res spend.Result, err error) *spendCall {
 		}
 	}
 	nameServerInConfigHome(t, f)
-	old := newModelClient
-	newModelClient = fastModelClient
 	call := &spendCall{}
 	statsFake.f, statsFake.call = f, call
-	t.Cleanup(func() {
-		newModelClient = old
-		statsFake.f, statsFake.call = nil, nil
-	})
+	t.Cleanup(func() { statsFake.f, statsFake.call = nil, nil })
 	return call
 }
 
@@ -159,6 +154,7 @@ func runStatsDirect(t *testing.T, a *app, args ...string) (stdout, stderr string
 	f := statsFake.f
 	// The app read config.toml before stubSpend named the server in it.
 	a.sessCfgSet, a.models, a.builtSet = false, nil, false
+	a.hooks.newClient = fastModelClient
 	f.mu.Lock()
 	f.Rows = statsHostRows(a)
 	f.mu.Unlock()
@@ -633,7 +629,7 @@ func TestStatsFamilyShadowsTheRootFlag(t *testing.T) {
 	_, tmp := newTestApp(t) // rootCmd builds its own app from this throwaway home
 	seedLaunches(t, tmp, launch{"ollama/a", "claude", time.Hour}, launch{"omlx/b", "claude", time.Hour})
 	run := func(args ...string) (string, error) {
-		root := rootCmd()
+		root := rootCmdWith(testHooks())
 		var out, errOut bytes.Buffer
 		root.SetOut(&out)
 		root.SetErr(&errOut)

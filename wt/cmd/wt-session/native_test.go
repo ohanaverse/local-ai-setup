@@ -31,6 +31,7 @@ type nativeRig struct {
 	ran    string // directory holding one marker per agent that ran
 	builds []nativeBuild
 	tui    []nativeTUICall
+	hooks  hooks // the app's hooks: the recording gateway build
 }
 
 // nativeTUICall is one tuiRun the picker path made.
@@ -49,8 +50,8 @@ func (r *nativeRig) ranAgent(name string) bool { return fileExists(filepath.Join
 // command.
 func newNativeRig(t *testing.T) *nativeRig {
 	t.Helper()
-	home, _ := noServerHome(t)
-	r := &nativeRig{home: home, ran: t.TempDir()}
+	home, _, h := noServerHome(t)
+	r := &nativeRig{home: home, ran: t.TempDir(), hooks: h}
 	bin := t.TempDir()
 	for _, name := range []string{"claude", "codex", "copilot", "pi", "opencode"} {
 		script := "#!/bin/sh\nenv > '" + filepath.Join(r.ran, name+".env") + "'\ntouch '" + filepath.Join(r.ran, name) + "'\nexit 0\n"
@@ -59,9 +60,9 @@ func newNativeRig(t *testing.T) *nativeRig {
 		}
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	oldBuild, oldTUI := buildGatewayCmd, tuiRun
-	t.Cleanup(func() { buildGatewayCmd, tuiRun = oldBuild, oldTUI })
-	buildGatewayCmd = func(agent string, m config.Model, dir string, yolo bool, gw agents.Gateway, models []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	oldTUI := tuiRun
+	t.Cleanup(func() { tuiRun = oldTUI })
+	r.hooks.buildGateway = func(agent string, m config.Model, dir string, yolo bool, gw agents.Gateway, models []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		cmd, info, err := agents.BuildLaunchCmdGateway(agent, m, dir, yolo, gw, models, extra)
 		r.builds = append(r.builds, nativeBuild{agent: agent, model: m, gw: gw, yolo: yolo, dir: dir, args: extra})
 		return cmd, info, err
@@ -80,7 +81,7 @@ func (r *nativeRig) run(t *testing.T, args ...string) (out string, code int) {
 	notes := captureNotes(t)
 	var fileOut, fileErr string
 	fileErr = captureFile(t, &os.Stderr, func() {
-		fileOut = captureFile(t, &os.Stdout, func() { out, code = runRoot(t, args...) })
+		fileOut = captureFile(t, &os.Stdout, func() { out, code = runRootWith(t, r.hooks, args...) })
 	})
 	return out + fileOut + fileErr + notes.String(), code
 }

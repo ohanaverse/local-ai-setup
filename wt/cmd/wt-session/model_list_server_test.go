@@ -44,9 +44,7 @@ func serverListRig(t *testing.T) (*app, *fakeModelServer) {
 	f.Generated = "2026-11-16T10:00:00Z"
 	f.Providers = map[string]string{"omlx": "ok", "openrouter": "ok", "ollama": "unreachable"}
 	a := pointAtFake(t, f, "")
-	old := newModelClient
-	newModelClient = fastModelClient
-	t.Cleanup(func() { newModelClient = old })
+	a.hooks.newClient = fastModelClient
 	return a, f
 }
 

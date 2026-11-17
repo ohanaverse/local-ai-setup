@@ -68,26 +68,29 @@ func walkWire(rows []modelapi.Row, ags []config.Agent, includeStart bool) []Cand
 	return out
 }
 
-// gatewayRun builds and runs one agent's one-shot launch command against the
-// gateway: a package var so tests can stub it with canned outcomes, as
-// it is the only agent-run seam.
-var gatewayRun = realGatewayRun
+// RowOptions is the per-call knobs of RunRowGateway. The zero value is the
+// real behavior: production passes RowOptions{}.
+type RowOptions struct {
+	// Run, when set, replaces the agent run: it reports a row's output and
+	// exit code (a non-zero code makes the row FAIL) for the row's working
+	// directory cwd, and sets *cleanup. Tests pass it to classify canned
+	// outcomes without running an agent.
+	Run func(gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) ExecOutcome
+}
 
-// SetGatewayRunForTest replaces the gateway agent-run seam with fn, which
-// reports a row's output and exit code (a non-zero code makes the row FAIL),
-// and returns the func restoring the real seam. It exists for cmd/wt-session's tests,
-// which cannot assign this package's unexported gatewayRun. Tests only.
-func SetGatewayRunForTest(fn func(gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) ExecOutcome) (restore func()) {
-	old := gatewayRun
-	gatewayRun = func(_ context.Context, gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+// gatewayRun is the agent-run function o selects: the real one by default.
+func (o RowOptions) gatewayRun() func(ctx context.Context, gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
+	if o.Run == nil {
+		return realGatewayRun
+	}
+	return func(_ context.Context, gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
 		cwd, err := rowDir()
 		if err != nil {
 			*cleanup = func() error { return nil }
 			return execOutcome{StartErr: err}
 		}
-		return fn(gw, models, agentName, m, prompt, cwd, timeout, profileApplier, cleanup)
+		return o.Run(gw, models, agentName, m, prompt, cwd, timeout, profileApplier, cleanup)
 	}
-	return func() { gatewayRun = old }
 }
 
 func realGatewayRun(ctx context.Context, gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt string, rowDir RowDir, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) execOutcome {
@@ -129,7 +132,8 @@ func gatewayIs503(ctx context.Context, gw agents.Gateway) bool {
 // GatewayDownReason, never FAIL (R12). wt retries only what it drives: an
 // agent that fails on a 503 inside its own run owns its own retries. A native
 // model never goes to the gateway, so it neither waits for it nor is probed.
-func RunRowGateway(ctx context.Context, gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, rowDir RowDir, profileApplier ProfileApplier, ready func(context.Context) error) RowResult {
+// opts replaces the agent run for a test; production passes RowOptions{}.
+func RunRowGateway(ctx context.Context, gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, rowDir RowDir, profileApplier ProfileApplier, ready func(context.Context) error, opts RowOptions) RowResult {
 	start := time.Now()
 	skip := func() RowResult {
 		return RowResult{Agent: agentName, Model: m.ID, Status: StatusSkip, Duration: time.Since(start), Err: errors.New(GatewayDownReason)}
@@ -144,7 +148,7 @@ func RunRowGateway(ctx context.Context, gw agents.Gateway, models []config.Model
 			return RowResult{Agent: agentName, Model: m.ID, Status: StatusFail, Duration: time.Since(start), Err: readyFailure(ctx, err)}
 		}
 	}
-	res, out := runGatewayOnce(ctx, gw, models, agentName, m, prompt, sentinel, timeout, rowDir, profileApplier)
+	res, out := runGatewayOnce(ctx, gw, models, agentName, m, prompt, sentinel, timeout, rowDir, profileApplier, opts)
 	if res.Status != StatusFail || !viaGateway || ctx.Err() != nil || out.Interrupted || out.ModelFallback != "" || !gatewayIs503(ctx, gw) {
 		return res
 	}
@@ -155,7 +159,7 @@ func RunRowGateway(ctx context.Context, gw agents.Gateway, models []config.Model
 		}
 		return res
 	}
-	res, _ = runGatewayOnce(ctx, gw, models, agentName, m, prompt, sentinel, timeout, rowDir, profileApplier)
+	res, _ = runGatewayOnce(ctx, gw, models, agentName, m, prompt, sentinel, timeout, rowDir, profileApplier, opts)
 	res.Duration = time.Since(start)
 	return res
 }
@@ -171,10 +175,10 @@ func readyFailure(ctx context.Context, err error) error {
 }
 
 // runGatewayOnce runs the agent once and classifies it.
-func runGatewayOnce(ctx context.Context, gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, rowDir RowDir, profileApplier ProfileApplier) (RowResult, execOutcome) {
+func runGatewayOnce(ctx context.Context, gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt, sentinel string, timeout time.Duration, rowDir RowDir, profileApplier ProfileApplier, opts RowOptions) (RowResult, execOutcome) {
 	start := time.Now()
 	var cleanup func() error
-	out := gatewayRun(ctx, gw, models, agentName, m, prompt, rowDir, timeout, profileApplier, &cleanup)
+	out := opts.gatewayRun()(ctx, gw, models, agentName, m, prompt, rowDir, timeout, profileApplier, &cleanup)
 	defer func() {
 		if cerr := cleanup(); cerr != nil {
 			fmt.Fprintf(os.Stderr, "wt: warning: profile cleanup failed: %v\n", cerr)

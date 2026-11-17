@@ -16,10 +16,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 )
 
-// buildSlotGatewayLaunch is the slot build (launchRemoteSlot): against the
-// model-server gateway. A test seam: tests wrap it to see the build.
-var buildSlotGatewayLaunch = agents.BuildSlotLaunchCmdGateway
-
 // slotAbortMsg: the applier failed after the terminal was released. ids are
 // the profile's slot models the client session holds, which nothing will use
 // now and Update takes out of it.
@@ -269,7 +265,7 @@ func (m model) launchRemoteSlot() (model, tea.Cmd) {
 	m.rslot = nil
 	m.phase = phaseModel
 	row := st.row
-	cmd, err := buildSlotGatewayLaunch(row.Profile.Launch(), m.selectedPath, m.yolo, m.client.Gateway(), m.extraArgs)
+	cmd, err := m.hooks.buildSlotLaunch()(row.Profile.Launch(), m.selectedPath, m.yolo, m.client.Gateway(), m.extraArgs)
 	if err != nil {
 		note := m.startNote
 		m.startNote = ""

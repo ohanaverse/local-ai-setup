@@ -21,10 +21,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
-// stopSelectIn is where the stop picker reads its answer: stdin, a seam for
-// tests.
-var stopSelectIn = func() io.Reader { return os.Stdin }
-
 // interruptCtx is ctx that Ctrl-C or SIGTERM cancels once: after the first,
 // the default handler is back, so a second Ctrl-C kills wt. The returned stop
 // releases the handler.
@@ -224,7 +220,7 @@ func runStopRemote(ctx context.Context, out io.Writer, ms *modelSession, arg str
 		}
 		sctx, stop := interruptCtx(ctx)
 		defer stop()
-		picked, cancelled := survey.Select(sctx, stopSelectIn(), out, "Stop running local models? (client session(s) = other clients using it)", labels)
+		picked, cancelled := survey.Select(sctx, ms.hooks.stopReader(), out, "Stop running local models? (client session(s) = other clients using it)", labels)
 		if cancelled || len(picked) == 0 {
 			return nil
 		}

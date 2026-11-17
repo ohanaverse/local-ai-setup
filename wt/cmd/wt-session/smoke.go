@@ -679,7 +679,7 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 			if gwDown {
 				return smoke.RowResult{Agent: agentName, Model: m.ID, Status: smoke.StatusSkip, Err: errors.New(smoke.GatewayDownReason)}
 			}
-			r := smoke.RunRowGateway(ctx, gw, gwModels, agentName, m, prompt, sentinel, timeout, rowDir, pa, ready)
+			r := smoke.RunRowGateway(ctx, gw, gwModels, agentName, m, prompt, sentinel, timeout, rowDir, pa, ready, a.hooks.smokeRun)
 			if r.Status == smoke.StatusSkip && r.Err != nil && r.Err.Error() == smoke.GatewayDownReason {
 				gwDown = true
 			}

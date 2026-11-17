@@ -22,7 +22,7 @@ import (
 // too), and notes a failed End otherwise.
 func openClientSession(ctx context.Context, ms *modelSession, ids []string, whenFailed string) (sess *modelclient.Session, note func(string), end func()) {
 	note = func(s string) { fmt.Fprintf(osStderr, "wt: note: %s\n", s) }
-	sess = ms.client.NewSession(ids, modelclient.SessionOptions{Interval: remoteBeatInterval, Note: note})
+	sess = ms.client.NewSession(ids, modelclient.SessionOptions{Interval: ms.hooks.beatInterval, Note: note})
 	registered := true
 	if rerr := sess.Start(ctx); rerr != nil {
 		registered = !registerRefused(rerr)

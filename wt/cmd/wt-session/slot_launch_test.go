@@ -391,14 +391,12 @@ func TestSlotLaunchWritesClaim(t *testing.T) {
 	r, _ := slotRig(t, map[string]string{"sonnet": "openrouter/a"})
 	root := sharedRootRepo(t)
 	claimCopy := filepath.Join(t.TempDir(), "claim")
-	old := buildSlotGatewayCmd
-	buildSlotGatewayCmd = func(_ profiles.SlotLaunch, wt string, _ bool, _ agents.Gateway, _ []string) (*exec.Cmd, error) {
+	r.a.hooks.buildSlotGateway = func(_ profiles.SlotLaunch, wt string, _ bool, _ agents.Gateway, _ []string) (*exec.Cmd, error) {
 		cmd := exec.Command("/bin/sh", "-c",
 			"d=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && cp \"$d/wt-sessions/"+strconv.Itoa(os.Getpid())+"\" '"+claimCopy+"' 2>/dev/null\nexit 0")
 		cmd.Dir = wt
 		return cmd, nil
 	}
-	t.Cleanup(func() { buildSlotGatewayCmd = old })
 
 	var err error
 	captureFile(t, &os.Stdout, func() {
@@ -545,8 +543,8 @@ func TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stubStdinTTY(t, true)
-			oldTUI, oldBuild := tuiRun, buildGatewayCmd
-			buildGatewayCmd = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+			oldTUI := tuiRun
+			noBuild := func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 				t.Error("the launch went past the picker")
 				return nil, agents.LaunchInfo{}, errors.New("no launch")
 			}
@@ -554,11 +552,12 @@ func TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI(t *testing.T) {
 				fmt.Fprintln(os.Stderr, "<the TUI ran>")
 				return errors.New("the TUI's own error")
 			}
-			t.Cleanup(func() { tuiRun, buildGatewayCmd = oldTUI, oldBuild })
+			t.Cleanup(func() { tuiRun = oldTUI })
 			// Two launchable models on the model server: with no -M the
 			// model picker decides.
 			f := newFakeModelServer(t, wireRow("openrouter/a", "launch", 1), wireRow("openrouter/b", "launch", 2))
 			a := pointAtFake(t, f, "")
+			a.hooks.buildGateway = noBuild
 			a.slotUnknown = []string{"top"}
 			a.slotLoadErr = errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")
 

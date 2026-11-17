@@ -1,13 +1,22 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
 	"sync/atomic"
+	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -46,8 +55,105 @@ func warnIgnoredLitellmKeys(w io.Writer, cfg *config.Config) {
 	}
 }
 
+// hooks are the per-app replacements for the work a test must not do for
+// real: build and start an agent, dial a model server, read the terminal,
+// wait between polls. The zero value is the real behavior and is what
+// newApp (so production) builds; a test sets a field on the app it runs. A
+// *modelSession points at the app's hooks, so the code that
+// holds only a session (openClientSession, the stop picker, a cancel poll)
+// reaches them without the app.
+type hooks struct {
+	// buildGateway builds a launch against the gateway; nil is
+	// agents.BuildLaunchCmdGateway.
+	buildGateway func(agent string, m config.Model, worktreePath string, yolo bool, gw agents.Gateway, models []config.Model, extraArgs []string) (*exec.Cmd, agents.LaunchInfo, error)
+	// buildSlotGateway is the slot build; nil is agents.BuildSlotLaunchCmdGateway.
+	buildSlotGateway func(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw agents.Gateway, extraArgs []string) (*exec.Cmd, error)
+	// newClient builds the client for an endpoint; nil is modelclient.New (in a
+	// test binary, a client that dials loopback only).
+	newClient func(ep modelclient.Endpoint) *modelclient.Client
+	// beatInterval is the client session's heartbeat interval; 0 is
+	// modelclient's default (20 s).
+	beatInterval time.Duration
+	// stopIn is where the stop picker reads its answer; nil is os.Stdin.
+	stopIn func() io.Reader
+	// jobSleep waits between the polls of a cancel; nil waits on a timer.
+	jobSleep func(ctx context.Context, d time.Duration) error
+	// smokeRun replaces the agent run of a smoke row; the zero value runs it.
+	smokeRun smoke.RowOptions
+}
+
+// build is the gateway launch builder.
+func (h hooks) build(agent string, m config.Model, worktreePath string, yolo bool, gw agents.Gateway, models []config.Model, extraArgs []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	if h.buildGateway != nil {
+		return h.buildGateway(agent, m, worktreePath, yolo, gw, models, extraArgs)
+	}
+	return agents.BuildLaunchCmdGateway(agent, m, worktreePath, yolo, gw, models, extraArgs)
+}
+
+// buildSlot is the slot launch builder.
+func (h hooks) buildSlot(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw agents.Gateway, extraArgs []string) (*exec.Cmd, error) {
+	if h.buildSlotGateway != nil {
+		return h.buildSlotGateway(sl, worktreePath, yolo, gw, extraArgs)
+	}
+	return agents.BuildSlotLaunchCmdGateway(sl, worktreePath, yolo, gw, extraArgs)
+}
+
+// client builds the model-server client for ep.
+func (h hooks) client(ep modelclient.Endpoint) *modelclient.Client {
+	if h.newClient != nil {
+		return h.newClient(ep)
+	}
+	if testing.Testing() {
+		return loopbackOnlyClient(ep)
+	}
+	return modelclient.New(ep)
+}
+
+// loopbackOnlyClient is the client a test binary gets when no hook names one:
+// its transport refuses to dial any address that is not loopback, so the
+// httptest fake is the one network a test reaches. Never used by a production
+// binary (testing.Testing() is false there). opts are extra client options a
+// test adds (fastModelClient's no-sleep poll).
+func loopbackOnlyClient(ep modelclient.Endpoint, opts ...modelclient.Option) *modelclient.Client {
+	d := &net.Dialer{}
+	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil || (host != "localhost" && !net.ParseIP(host).IsLoopback()) {
+			return nil, fmt.Errorf("cmd/wt-session tests dial loopback only, not %q", addr)
+		}
+		return d.DialContext(ctx, network, addr)
+	}}
+	return modelclient.New(ep, append([]modelclient.Option{modelclient.WithHTTPClient(&http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }})}, opts...)...)
+}
+
+// stopReader is where the stop picker reads from.
+func (h hooks) stopReader() io.Reader {
+	if h.stopIn != nil {
+		return h.stopIn()
+	}
+	return os.Stdin
+}
+
+// sleep waits d between the polls of a cancel, or until ctx ends.
+func (h hooks) sleep(ctx context.Context, d time.Duration) error {
+	if h.jobSleep != nil {
+		return h.jobSleep(ctx, d)
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // app holds shared dependencies loaded once at startup.
 type app struct {
+	// hooks replace the work a test must not do for real; the zero value is
+	// the real behavior.
+	hooks    hooks
 	theme    themes.Theme // active theme; populated by newApp()
 	profiles profiles.Store
 	// profilesLoadErr is set ONLY when profiles.Load() itself fails (a

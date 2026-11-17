@@ -16,16 +16,14 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
-// noModelClient makes building a model-server client fail the test: a
-// command that must work offline never builds one.
-func noModelClient(t *testing.T) {
+// noModelClient is hooks that make building a model-server client fail the
+// test: a command that must work offline never builds one.
+func noModelClient(t *testing.T) hooks {
 	t.Helper()
-	old := newModelClient
-	newModelClient = func(modelclient.Endpoint) *modelclient.Client {
+	return hooks{newClient: func(modelclient.Endpoint) *modelclient.Client {
 		t.Error("a model-server client was built")
-		return old(modelclient.Endpoint{})
-	}
-	t.Cleanup(func() { newModelClient = old })
+		return loopbackOnlyModelClient(modelclient.Endpoint{})
+	}}
 }
 
 // writeSlotFile writes slot-profiles.toml in the current config home.
@@ -100,9 +98,8 @@ func TestSlotsAddTakesModelIDsFromTheCatalog(t *testing.T) {
 // still be able to tidy it.
 func TestSlotsRmAndUsageWorkOffline(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	noModelClient(t)
 	writeSlotFile(t, slotsBase)
-	a := &app{}
+	a := &app{hooks: noModelClient(t)}
 	if out, err := runProfileCmd(t, a, "slots", "usage", "--json"); err != nil || !strings.Contains(out, `"name": "base"`) {
 		t.Fatalf("usage: %v\n%s", err, out)
 	}

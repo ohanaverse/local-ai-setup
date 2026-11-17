@@ -228,6 +228,7 @@ func TestStartRemoteRegisterFailureIsOneNoteAndTheStartGoesOn(t *testing.T) {
 // the server's picker.
 func TestStartAndStopCommandsDispatchOnTheEndpoint(t *testing.T) {
 	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
+	r.a.hooks.stopIn = func() io.Reader { return strings.NewReader("1\n") }
 	run := func(cmd interface {
 		SetArgs([]string)
 		SetOut(io.Writer)
@@ -248,9 +249,6 @@ func TestStartAndStopCommandsDispatchOnTheEndpoint(t *testing.T) {
 		t.Errorf("stop: err = %v (exit %d)", err, exitcode.Of(err))
 	}
 	stubStdinTTY(t, true)
-	old := stopSelectIn
-	stopSelectIn = func() io.Reader { return strings.NewReader("1\n") }
-	t.Cleanup(func() { stopSelectIn = old })
 	captureFile(t, &os.Stdout, func() {
 		if err := run(stopCmd(r.a)); err != nil {
 			t.Errorf("stop with a terminal: %v", err)

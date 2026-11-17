@@ -1074,9 +1074,7 @@ func agentSessionFixture(t *testing.T) (launch string, a *app, args func() []str
 
 	f := newFakeModelServer(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
 	a = pointAtFake(t, f, "")
-	oldClient := newModelClient
-	newModelClient = fastModelClient
-	t.Cleanup(func() { newModelClient = oldClient })
+	a.hooks.newClient = fastModelClient
 	return launch, a, func() []string {
 		t.Helper()
 		b, err := os.ReadFile(argv)
@@ -1438,9 +1436,7 @@ func launchOnFake(t *testing.T) *app {
 	f := newFakeModelServer(t, modelapi.Row{ID: "claude/opus", GatewayID: "claude/opus", ProviderID: "claude", ModelName: "opus", Native: true,
 		Location: "cloud", Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 1})
 	a := pointAtFake(t, f, "")
-	oldClient := newModelClient
-	newModelClient = fastModelClient
-	t.Cleanup(func() { newModelClient = oldClient })
+	a.hooks.newClient = fastModelClient
 	return a
 }
 

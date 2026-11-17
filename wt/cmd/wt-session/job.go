@@ -14,18 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// jobSleep waits between the polls of a cancel, a seam for tests.
-var jobSleep = func(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
-}
-
 const (
 	// jobCancelPoll and jobCancelPolls bound how long --cancel waits for the
 	// job to end: 60 polls half a second apart.
@@ -204,7 +192,7 @@ func cancelJob(ctx context.Context, ms *modelSession, id string) (modelapi.JobSt
 			last = p
 			fmt.Fprintf(osStderr, "wt: cancelling job %s — %s\n", js.ID, p)
 		}
-		if err := jobSleep(ctx, jobCancelPoll); err != nil {
+		if err := ms.hooks.sleep(ctx, jobCancelPoll); err != nil {
 			break
 		}
 	}

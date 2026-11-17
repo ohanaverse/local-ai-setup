@@ -34,7 +34,7 @@ auth = { type = "native" }
 // default path, a scratch config.yaml, and a fake claude on PATH that touches
 // the returned marker if it ever runs. Every registry and local-provider seam
 // fails the test if it is reached, and so does the gateway build.
-func noServerHome(t *testing.T) (home, marker string) {
+func noServerHome(t *testing.T) (home, marker string, h hooks) {
 	t.Helper()
 	home = t.TempDir()
 	withCleanConfigEnv(t, home)
@@ -63,12 +63,13 @@ func noServerHome(t *testing.T) (home, marker string) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubStdinTTY(t, false)
 
-	oldProbe, oldBuild, oldTUI := probeInventory, buildGatewayCmd, tuiRun
+	oldProbe, oldTUI := probeInventory, tuiRun
 	probeInventory = func(*config.Config) localmodels.Snapshot {
 		t.Error("a local provider was probed")
 		return localmodels.Snapshot{}
 	}
-	buildGatewayCmd = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	h = testHooks()
+	h.buildGateway = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		t.Error("an agent was built against a gateway")
 		return nil, agents.LaunchInfo{}, os.ErrInvalid
 	}
@@ -77,10 +78,10 @@ func noServerHome(t *testing.T) (home, marker string) {
 		return nil
 	}
 	t.Cleanup(func() {
-		probeInventory, buildGatewayCmd, tuiRun = oldProbe, oldBuild, oldTUI
+		probeInventory, tuiRun = oldProbe, oldTUI
 	})
 	t.Chdir(t.TempDir())
-	return home, marker
+	return home, marker, h
 }
 
 // notConfiguredText is the refusal of a model-needing path when neither the
@@ -113,13 +114,13 @@ func wtLines(out string) []string {
 // Without the refusal a session machine would silently fall back to a local
 // registry and route the user's agent past the model server.
 func TestLaunchWithoutEndpointRefusesWithBothSettings(t *testing.T) {
-	home, marker := noServerHome(t)
+	home, marker, h := noServerHome(t)
 	cfgPath := filepath.Join(home, ".config", "agent-wt", "config.toml")
 	before, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, code := runRoot(t, "--cwd", "-A", "claude", "-M", "openrouter/x/y")
+	out, code := runRootWith(t, h, "--cwd", "-A", "claude", "-M", "openrouter/x/y")
 	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) {
 		t.Errorf("config.toml changed: the registry's loader ran\n%s", after)
 	}
@@ -174,14 +175,14 @@ func TestEachModelNeedingPathRefuses(t *testing.T) {
 		{"stop with no argument", []string{"stop"}, false, "nothing was stopped"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			home, marker := noServerHome(t)
+			home, marker, h := noServerHome(t)
 			// A slot profile the slot commands and show can name.
 			slotFile := filepath.Join(home, ".config", "agent-wt", "slot-profiles.toml")
 			if err := os.WriteFile(slotFile, []byte(slotsBase), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			stubStdinTTY(t, tc.tty)
-			out, code := runRoot(t, tc.args...)
+			out, code := runRootWith(t, h, tc.args...)
 			if code != 1 {
 				t.Errorf("exit = %d, want 1\n%s", code, out)
 			}
@@ -271,14 +272,14 @@ func TestPathsThatNeedNoServerStillRun(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			home, _ := noServerHome(t)
+			home, _, h := noServerHome(t)
 			args := tc.args
 			if tc.setup != nil {
 				args = append(args, tc.setup(t, home)...)
 			}
 			var out string
 			var code int
-			captureFile(t, &os.Stdout, func() { out, code = runRoot(t, args...) })
+			captureFile(t, &os.Stdout, func() { out, code = runRootWith(t, h, args...) })
 			if code != 0 {
 				t.Errorf("exit = %d, want 0\n%s", code, out)
 			}
@@ -337,12 +338,12 @@ func TestModelLaunchRefusesBeforeAnyGitWork(t *testing.T) {
 		{"the worktree picker, no agent", []string{"-T", "code"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, marker := noServerHome(t)
+			_, marker, h := noServerHome(t)
 			repo := initTestRepo(t)
 			t.Chdir(repo)
 			stubStdinTTY(t, tc.tty)
 			before := gitState(t, repo)
-			out, code := runRoot(t, tc.args...)
+			out, code := runRootWith(t, h, tc.args...)
 			if want := "wt: " + notConfiguredText(launchStill); code != 1 || len(wtLines(out)) != 1 || wtLines(out)[0] != want {
 				t.Errorf("exit %d, output %q; want 1 and exactly %q", code, out, want)
 			}

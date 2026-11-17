@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,20 +57,17 @@ func newRemoteRig(t *testing.T, rows ...modelapi.Row) *remoteRig {
 	stubStdinTTY(t, false)
 
 	built := &[]*exec.Cmd{}
-	oldBuild := buildGatewayCmd
-	buildGatewayCmd = func(agent string, m config.Model, wt string, yolo bool, gw agents.Gateway, models []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	a.hooks.buildGateway = func(agent string, m config.Model, wt string, yolo bool, gw agents.Gateway, models []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		f.mu.Lock()
 		f.Reqs = append(f.Reqs, "BUILD")
 		f.mu.Unlock()
-		cmd, info, err := oldBuild(agent, m, wt, yolo, gw, models, extra)
+		cmd, info, err := agents.BuildLaunchCmdGateway(agent, m, wt, yolo, gw, models, extra)
 		if cmd != nil {
 			*built = append(*built, cmd)
 		}
 		return cmd, info, err
 	}
-	oldClient := newModelClient
-	newModelClient = fastModelClient
-	t.Cleanup(func() { buildGatewayCmd, newModelClient = oldBuild, oldClient })
+	a.hooks.newClient = fastModelClient
 	return &remoteRig{f: f, a: a, built: built, stderr: captureStderr(t)}
 }
 
@@ -105,16 +100,7 @@ func boolp(b bool) *bool { return &b }
 // fastModelClient is loopbackOnlyModelClient with no sleep between job polls,
 // so a start job's polls do not slow the test down.
 func fastModelClient(ep modelclient.Endpoint) *modelclient.Client {
-	d := &net.Dialer{}
-	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, _, err := net.SplitHostPort(addr)
-		if err != nil || (host != "localhost" && !net.ParseIP(host).IsLoopback()) {
-			return nil, fmt.Errorf("cmd/wt-session tests dial loopback only, not %q", addr)
-		}
-		return d.DialContext(ctx, network, addr)
-	}}
-	hc := &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return modelclient.New(ep, modelclient.WithHTTPClient(hc), modelclient.WithSleep(func(time.Duration) {}))
+	return loopbackOnlyClient(ep, modelclient.WithSleep(func(time.Duration) {}))
 }
 
 // failOnRegistry makes every registry and local-provider seam fail the test
@@ -316,9 +302,7 @@ func TestLaunchRemoteReachesNoHostSeam(t *testing.T) {
 func TestLaunchRemoteHeartbeatFailureDoesNotKillTheAgent(t *testing.T) {
 	r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
 	r.f.BeatStatus = 500
-	old := remoteBeatInterval
-	remoteBeatInterval = 20 * time.Millisecond
-	t.Cleanup(func() { remoteBeatInterval = old })
+	r.a.hooks.beatInterval = 20 * time.Millisecond
 	mark := filepath.Join(t.TempDir(), "done")
 	t.Setenv("WT_FAKE_SLEEP", "0.4")
 	t.Setenv("WT_FAKE_MARK", mark)

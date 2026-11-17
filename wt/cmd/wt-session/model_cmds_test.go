@@ -811,7 +811,7 @@ func TestNoHelpTextNamesModelman(t *testing.T) {
 			walk(sub)
 		}
 	}
-	walk(rootCmd())
+	walk(rootCmdWith(testHooks()))
 	if seen < 20 {
 		t.Fatalf("walked %d commands, want the whole tree (wt has more than 20)", seen)
 	}
@@ -822,7 +822,7 @@ func TestNoHelpTextNamesModelman(t *testing.T) {
 // and `wt stop`): each must name sushi. Without it a built-in provider added
 // later is silently missing from the help the way sushi was.
 func TestHelpNamesSushiWhereItListsProviders(t *testing.T) {
-	root := rootCmd()
+	root := rootCmdWith(testHooks())
 	for _, path := range [][]string{{"model", "init"}, {"model", "add"}, {"stop"}} {
 		c, _, err := root.Find(path)
 		if err != nil || c == nil || c.Name() != path[len(path)-1] {

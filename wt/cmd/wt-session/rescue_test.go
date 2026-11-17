@@ -366,7 +366,7 @@ func TestRescueCmdUsageErrorsExit1(t *testing.T) {
 // root command. Why: the file defines the command; only main wires it.
 func TestRescueCmdRegisteredOnRoot(t *testing.T) {
 	newTestApp(t)
-	c, _, err := rootCmd().Find([]string{"rescue"})
+	c, _, err := rootCmdWith(testHooks()).Find([]string{"rescue"})
 	if err != nil || c.Name() != "rescue" {
 		t.Fatalf("Find(rescue) = %v, %v", c, err)
 	}

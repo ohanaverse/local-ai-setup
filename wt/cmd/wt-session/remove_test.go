@@ -843,7 +843,7 @@ func TestRemoveCmdPartialReportExits2(t *testing.T) {
 // TestRemoveCmdRegisteredOnRoot verifies `wt remove` is a root subcommand.
 func TestRemoveCmdRegisteredOnRoot(t *testing.T) {
 	newTestApp(t)
-	c, _, err := rootCmd().Find([]string{"remove"})
+	c, _, err := rootCmdWith(testHooks()).Find([]string{"remove"})
 	if err != nil || c == nil || c.Name() != "remove" {
 		t.Errorf("Find(remove) = %v, %v", c, err)
 	}

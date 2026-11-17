@@ -652,15 +652,14 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 	pointAtFake(t, newFakeModelServer(t, wireRow("openrouter/only", "launch", 1)), "")
 
 	var built []string
-	oldBuild := buildGatewayCmd
-	buildGatewayCmd = func(agent string, m config.Model, _ string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	h := testHooks()
+	h.buildGateway = func(agent string, m config.Model, _ string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		built = append(built, agent+" "+m.ID)
 		return exec.Command("true"), agents.LaunchInfo{}, nil
 	}
-	t.Cleanup(func() { buildGatewayCmd = oldBuild })
 
 	captureFile(t, &os.Stdout, func() {
-		if _, err := runWT(t, "--root", "-A", "claude"); err != nil {
+		if _, err := runWTWith(t, h, "--root", "-A", "claude"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -1061,9 +1060,9 @@ func TestRootHelpListsModelSubcommands(t *testing.T) {
 // removedCmdAnnotation (a removed command that only says what replaced it,
 // e.g. `wt litellm expose` after #179) — those must stay out of help.
 func TestNoWtCommandIsHidden(t *testing.T) {
-	root := rootCmd()
+	root := rootCmdWith(testHooks())
 	if len(root.Commands()) == 0 {
-		t.Fatal("rootCmd() has no subcommands; the hidden-command walk would pass vacuously")
+		t.Fatal("rootCmdWith(testHooks()) has no subcommands; the hidden-command walk would pass vacuously")
 	}
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
@@ -1226,7 +1225,7 @@ func TestCwdFlagLaunchesInTheCurrentDirectory(t *testing.T) {
 	maybeInstallGuard = func() { guarded = true }
 	t.Cleanup(func() { launchCommand, maybeInstallGuard = oldLaunchFiltered, oldGuard })
 
-	root := rootCmd()
+	root := rootCmdWith(testHooks())
 	root.SetOut(io.Discard)
 	root.SetErr(io.Discard)
 	root.SetArgs([]string{"--cwd", "--agent", "shell"})

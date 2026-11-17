@@ -45,18 +45,16 @@ func slotRig(t *testing.T, slots map[string]string) (*remoteRig, *[]*exec.Cmd) {
 	store := profiles.SlotStore{Profiles: []profiles.SlotProfile{{Name: "mix", Agent: "claude", Default: "sonnet", Slots: slots}}}
 	r.a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
 	built := &[]*exec.Cmd{}
-	old := buildSlotGatewayCmd
-	buildSlotGatewayCmd = func(sl profiles.SlotLaunch, wt string, yolo bool, gw agents.Gateway, extra []string) (*exec.Cmd, error) {
+	r.a.hooks.buildSlotGateway = func(sl profiles.SlotLaunch, wt string, yolo bool, gw agents.Gateway, extra []string) (*exec.Cmd, error) {
 		r.f.mu.Lock()
 		r.f.Reqs = append(r.f.Reqs, "BUILD")
 		r.f.mu.Unlock()
-		cmd, err := old(sl, wt, yolo, gw, extra)
+		cmd, err := agents.BuildSlotLaunchCmdGateway(sl, wt, yolo, gw, extra)
 		if cmd != nil {
 			*built = append(*built, cmd)
 		}
 		return cmd, err
 	}
-	t.Cleanup(func() { buildSlotGatewayCmd = old })
 	return r, built
 }
 

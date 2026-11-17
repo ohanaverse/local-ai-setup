@@ -24,8 +24,9 @@ import (
 
 // TestMain stubs the live seams a cmd/wt-session test would otherwise hit: the
 // local-model inventory probe of the host commands (no test may dial the
-// developer's real ollama/omlx/mtplx servers), the host `wt stop`'s engine (no
-// test may stop a real model) and the model-server client (loopback only).
+// developer's real ollama/omlx/mtplx servers) and the host `wt stop`'s engine
+// (no test may stop a real model). Every test app's model-server client is
+// loopback-only because hooks.client guards it in a test binary.
 // Tests that need a probe result call stubProbeInventory.
 func TestMain(m *testing.M) {
 	// No test may read or write the developer's real config directory —
@@ -52,12 +53,10 @@ func TestMain(m *testing.M) {
 	tiers.IsolateForTest()
 	probeInventory = localmodels.OnDiskSnapshotForTest
 	// The model-server client path fails closed: no WT_MODEL_* from the
-	// developer's shell reaches a test, and the client dials loopback only, so
-	// the httptest fake (fakeModelServer) is the one network a test reaches.
+	// developer's shell reaches a test.
 	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN"} {
 		os.Unsetenv(k)
 	}
-	newModelClient = loopbackOnlyModelClient
 	// wt remove's live-process finder runs lsof over the whole machine: no
 	// test scans it. Tests that need processes stub a finder of their own.
 	// The real default is kept for TestRemoveDefaultProcFinderIsLsof.

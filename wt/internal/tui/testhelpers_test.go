@@ -220,27 +220,24 @@ func myClaim(root string) string {
 // claimExists reports whether this process's claim is on root right now.
 func claimExists(root string) bool { _, err := os.Stat(myClaim(root)); return err == nil }
 
-// stubShellLaunch swaps the launch build for one that records the directory
-// it was built for and runs nothing, so a test sees whether, and where, the
-// command launch happened.
-func stubShellLaunch(t *testing.T) *[]string {
-	t.Helper()
+// stubShellLaunch is a launch-build hook that records the directory it was
+// built for and runs nothing, so a test sees whether, and where, the command
+// launch happened. Set it on the model the test builds (hooks: h).
+func stubShellLaunch() (launchHooks, *[]string) {
 	var dirs []string
-	old := buildGatewayLaunch
-	buildGatewayLaunch = func(_ string, _ config.Model, worktreePath string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
+	h := launchHooks{gateway: func(_ string, _ config.Model, worktreePath string, _ bool, _ agents.Gateway, _ []config.Model, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		dirs = append(dirs, worktreePath)
 		return exec.Command("true"), agents.LaunchInfo{}, nil
-	}
-	t.Cleanup(func() { buildGatewayLaunch = old })
-	return &dirs
+	}}
+	return h, &dirs
 }
 
 // pickRow is the picker after Enter on a row at path, with the shell command
 // pinned so a launch is one launch build (stubShellLaunch).
 func pickRow(t *testing.T, path string) (model, tea.Cmd, *[]string) {
 	t.Helper()
-	launched := stubShellLaunch(t)
-	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "shell"}
+	hooks, launched := stubShellLaunch()
+	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "shell", hooks: hooks}
 	m, cmd := updateMsg(m, selectedEntryMsg{entry: worktree.Entry{Type: worktree.TypeCurrent, Branch: "main", Path: path}})
 	return m, cmd, launched
 }

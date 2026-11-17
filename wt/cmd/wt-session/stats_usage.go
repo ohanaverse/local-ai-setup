@@ -271,27 +271,21 @@ func collectUsageRemote(ctx context.Context, ms *modelSession, window time.Durat
 			}
 		}
 	}
-	rep := usageReport{SpendStatus: spendOK, Narrowed: f.model != "" || f.family != ""}
-	var sp *spend.Result
-	if f.agent != "" {
-		rep.SpendStatus = spendSkipped
-		rep.SpendReason = spendSkippedReason
-	} else if res, err := ms.client.Spend(ctx, asOf.Add(-window), asOf); err != nil {
-		rep.SpendStatus = spendUnavailable
-		if modelclient.IsCode(err, modelapi.CodeSpendNotConfigured) {
-			rep.SpendStatus = spendNotConfigured
+	return collectUsage(window, asOf, f, families, func() spendOutcome {
+		res, err := ms.client.Spend(ctx, asOf.Add(-window), asOf)
+		if err != nil {
+			out := spendOutcome{status: spendUnavailable, reason: "spend unavailable: " + err.Error()}
+			if modelclient.IsCode(err, modelapi.CodeSpendNotConfigured) {
+				out.status = spendNotConfigured
+			}
+			return out
 		}
-		rep.SpendReason = "spend unavailable: " + err.Error()
-	} else {
 		r := spend.Result{Unattributed: res.Unattributed}
 		for _, s := range res.Rows {
 			r.Rows = append(r.Rows, spend.Row{Model: s.Model, Requests: s.Requests, PromptTokens: s.PromptTokens, CompletionTokens: s.CompletionTokens, Spend: s.Spend})
 		}
-		sp = &r
-		rep.Unattributed = r.Unattributed
-	}
-	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, sp, families, f)
-	return rep
+		return spendOutcome{status: spendOK, result: &r}
+	})
 }
 
 // collectUsageNoServer is collectUsageRemote's answer when the model server
@@ -301,23 +295,46 @@ func collectUsageRemote(ctx context.Context, ms *modelSession, window time.Durat
 // (the host registry's, when this machine has one that loads); an id it does
 // not name takes its provider prefix.
 func collectUsageNoServer(openErr error, window time.Duration, asOf time.Time, f statsFilter, families map[string]string) usageReport {
+	return collectUsage(window, asOf, f, families, func() spendOutcome {
+		var nc *modelclient.NotConfiguredError
+		status := spendUnavailable
+		if errors.As(openErr, &nc) {
+			status = spendNotConfigured
+		}
+		return spendOutcome{status: status, reason: "spend unavailable: " + openErr.Error()}
+	})
+}
+
+// spendOutcome is what a spend source answered: the status and reason a
+// report carries, and the spend rows when status is spendOK.
+type spendOutcome struct {
+	status string
+	reason string
+	result *spend.Result // nil unless status is spendOK
+}
+
+// collectUsage is the tail both collectors share, so how --agent, --model and
+// --family narrow a report is defined once: Narrowed for --model/--family;
+// --agent skips spend (spendSkipped, spendSkippedReason; the spend log has no
+// agent, so getSpend is not called); otherwise getSpend answers. The rows are
+// the launch counts joined to the spend, each id's family from families (nil
+// reads as none: every id takes its provider prefix).
+func collectUsage(window time.Duration, asOf time.Time, f statsFilter, families map[string]string, getSpend func() spendOutcome) usageReport {
 	rep := usageReport{Narrowed: f.model != "" || f.family != ""}
-	var nc *modelclient.NotConfiguredError
-	switch {
-	case f.agent != "":
-		rep.SpendStatus = spendSkipped
-		rep.SpendReason = spendSkippedReason
-	case errors.As(openErr, &nc):
-		rep.SpendStatus = spendNotConfigured
-		rep.SpendReason = "spend unavailable: " + openErr.Error()
-	default:
-		rep.SpendStatus = spendUnavailable
-		rep.SpendReason = "spend unavailable: " + openErr.Error()
+	var sp *spend.Result
+	if f.agent != "" {
+		rep.SpendStatus, rep.SpendReason = spendSkipped, spendSkippedReason
+	} else {
+		out := getSpend()
+		rep.SpendStatus, rep.SpendReason, sp = out.status, out.reason, out.result
+		if sp != nil {
+			rep.Unattributed = sp.Unattributed
+		}
 	}
 	if families == nil {
 		families = map[string]string{}
 	}
-	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, nil, families, f)
+	rep.Rows = buildUsageRows(usage.NewStore().AllCounts(f.agent, asOf), window, sp, families, f)
 	return rep
 }
 

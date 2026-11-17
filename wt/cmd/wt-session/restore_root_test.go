@@ -237,7 +237,7 @@ func rootBranch(t *testing.T, repo string) string {
 // main wires it.
 func TestRestoreRootCmdRegisteredOnRoot(t *testing.T) {
 	newTestApp(t)
-	c, _, err := rootCmd().Find([]string{"restore-root"})
+	c, _, err := rootCmdWith(testHooks()).Find([]string{"restore-root"})
 	if err != nil || c == nil || c.Name() != "restore-root" {
 		t.Fatalf("Find(restore-root) = %v, %v", c, err)
 	}

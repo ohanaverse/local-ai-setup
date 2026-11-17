@@ -242,11 +242,16 @@ func refuseCwdValue(agent, word string) error {
 	return fmt.Errorf("--cwd takes no value: %q is a directory; cd into it and run --cwd there, or pass it to the agent after --", word)
 }
 
-func rootCmd() *cobra.Command {
+func rootCmd() *cobra.Command { return rootCmdWith(hooks{}) }
+
+// rootCmdWith is rootCmd over an app whose hooks are h: production passes
+// the zero value (rootCmd), a test the replacements it needs.
+func rootCmdWith(h hooks) *cobra.Command {
 	a, err := newApp()
 	if err != nil {
 		return failedRoot(err)
 	}
+	a.hooks = h
 
 	var showVersion bool
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.

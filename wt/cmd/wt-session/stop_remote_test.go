@@ -104,9 +104,7 @@ func TestStopRemotePickerMarksClientSessions(t *testing.T) {
 	down := localRow("omlx/down", modelapi.StateStopped, modelapi.ActionStart, nil)
 	r, ms := startRig(t, busy, idle, down, wireRow("openrouter/c", modelapi.ActionLaunch, 3))
 	stubStdinTTY(t, true)
-	old := stopSelectIn
-	stopSelectIn = func() io.Reader { return strings.NewReader("2\n") }
-	t.Cleanup(func() { stopSelectIn = old })
+	ms.hooks.stopIn = func() io.Reader { return strings.NewReader("2\n") }
 	var out bytes.Buffer
 	if err := runStopRemote(context.Background(), &out, ms, "", false); err != nil {
 		t.Fatalf("err = %v", err)
@@ -170,9 +168,7 @@ func TestStopProviderStaysOnTheHostPath(t *testing.T) {
 func pickAll(t *testing.T, ms *modelSession, yes bool) error {
 	t.Helper()
 	stubStdinTTY(t, true)
-	old := stopSelectIn
-	stopSelectIn = func() io.Reader { return strings.NewReader("a\n") }
-	t.Cleanup(func() { stopSelectIn = old })
+	ms.hooks.stopIn = func() io.Reader { return strings.NewReader("a\n") }
 	return runStopRemote(context.Background(), &bytes.Buffer{}, ms, "", yes)
 }
 
@@ -245,9 +241,7 @@ func TestStopRemotePickerPartlyDoneExits2(t *testing.T) {
 	}
 	answerNoTTY(t)
 	stubStdinTTY(t, true)
-	old := stopSelectIn
-	stopSelectIn = func() io.Reader { return strings.NewReader("a\n") }
-	t.Cleanup(func() { stopSelectIn = old })
+	ms.hooks.stopIn = func() io.Reader { return strings.NewReader("a\n") }
 	var out bytes.Buffer
 	err := runStopRemote(context.Background(), &out, ms, "", false)
 	if err == nil || exitcode.Of(err) != 2 || err.Error() != "1 of 2 stops failed" {
@@ -271,9 +265,7 @@ func TestStopRemotePickerDetachStopsTheBatch(t *testing.T) {
 	r.f.Hang = true
 	r.f.OnPoll = cancel
 	stubStdinTTY(t, true)
-	old := stopSelectIn
-	stopSelectIn = func() io.Reader { return strings.NewReader("a\n") }
-	t.Cleanup(func() { stopSelectIn = old })
+	ms.hooks.stopIn = func() io.Reader { return strings.NewReader("a\n") }
 	err := runStopRemote(ctx, &bytes.Buffer{}, ms, "", false)
 	if err == nil || exitcode.Of(err) != 2 || err.Error() != "1 of 2 stops failed; 1 was not stopped" {
 		t.Fatalf("err = %v (exit %d)", err, exitcode.Of(err))
@@ -305,9 +297,7 @@ func TestStopAllStaysOnTheHostPathWithAnEndpoint(t *testing.T) {
 	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
 	r.a.hostCfg, r.a.hostSet = &config.Config{}, true
 	stubStdinTTY(t, true)
-	old := stopSelectIn
-	stopSelectIn = func() io.Reader { return strings.NewReader("1\n") }
-	t.Cleanup(func() { stopSelectIn = old })
+	r.a.hooks.stopIn = func() io.Reader { return strings.NewReader("1\n") }
 	cmd := stopCmd(r.a)
 	cmd.SetArgs([]string{"--all", "--yes"})
 	cmd.SetOut(io.Discard)
@@ -336,9 +326,7 @@ func TestStopRemotePickerDetachPluralWording(t *testing.T) {
 	defer cancel()
 	r.f.Hang, r.f.OnPoll = true, cancel
 	stubStdinTTY(t, true)
-	old := stopSelectIn
-	stopSelectIn = func() io.Reader { return strings.NewReader("a\n") }
-	t.Cleanup(func() { stopSelectIn = old })
+	ms.hooks.stopIn = func() io.Reader { return strings.NewReader("a\n") }
 	err := runStopRemote(ctx, &bytes.Buffer{}, ms, "", false)
 	if err == nil || err.Error() != "1 of 3 stops failed; 2 were not stopped" {
 		t.Errorf("err = %v", err)

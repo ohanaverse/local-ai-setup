@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
 
 // statsRig points an app at a fake model server whose catalog holds one
@@ -22,9 +25,7 @@ func statsRig(t *testing.T) (*app, *fakeModelServer) {
 	f := newFakeModelServer(t, localRow("omlx/q", "running", "launch", nil))
 	f.Rows[0].Family = "qwen"
 	a := pointAtFake(t, f, "")
-	old := newModelClient
-	newModelClient = fastModelClient
-	t.Cleanup(func() { newModelClient = old })
+	a.hooks.newClient = fastModelClient
 	return a, f
 }
 
@@ -242,9 +243,7 @@ func TestRotateListsCatalogRowsByOrder(t *testing.T) {
 		mk("omlx/c", 3, "code", true), mk("omlx/a", 1, "code", true), mk("omlx/x", 2, "other", true),
 		mk("omlx/b", 2, "code", true), mk("omlx/found", 0, "code", false))
 	a := pointAtFake(t, f, "")
-	old := newModelClient
-	newModelClient = fastModelClient
-	t.Cleanup(func() { newModelClient = old })
+	a.hooks.newClient = fastModelClient
 	next := func(tag string) string {
 		var err error
 		out := captureFile(t, &os.Stdout, func() {
@@ -301,6 +300,100 @@ func TestRemoteLaunchPrintsThePriceNoticeAfterTheSummary(t *testing.T) {
 			}
 			if tc.want == 1 && !strings.HasSuffix(strings.TrimRight(out, "\n"), "run 'wt cloud-sync'") {
 				t.Errorf("the notice is not last, after the summary:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestCollectUsageNarrowingIsTheSameOnBothPaths pins what --agent, --model and
+// --family do to the usage report on the server path (collectUsageRemote) and
+// the no-server path (collectUsageNoServer) alike: --agent skips spend with
+// spendSkippedReason (the spend log has no agent) and --model/--family mark
+// the report Narrowed and keep only the rows of that model or family. Two
+// models are launched and logged in spend, so a filter that never reached
+// buildUsageRows leaves two rows and fails; on the server path the spend
+// answer's Unattributed must be carried to the report. It exists so folding
+// the two collectors' shared tail into one function cannot let the paths
+// drift apart.
+func TestCollectUsageNarrowingIsTheSameOnBothPaths(t *testing.T) {
+	a, f := statsRig(t)
+	other := localRow("omlx/z", "running", "launch", nil)
+	other.Family = "other"
+	f.Rows = append(f.Rows, other)
+	f.Spend = modelapi.SpendReport{Unattributed: 4, Rows: []modelapi.SpendRow{
+		{Model: "omlx/q", Requests: 1, Spend: 0.1}, {Model: "omlx/z", Requests: 2, Spend: 0.2}}}
+	seedLaunchesHome(t, "omlx/q", "omlx/z")
+	ms, err := a.openModels(context.Background(), "spend is not shown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asOf := time.Now().UTC()
+	families := map[string]string{"omlx/q": "qwen", "omlx/z": "other"}
+	paths := map[string]func(statsFilter) usageReport{
+		"server": func(sf statsFilter) usageReport {
+			return collectUsageRemote(context.Background(), ms, time.Hour, asOf, sf)
+		},
+		"no server": func(sf statsFilter) usageReport {
+			return collectUsageNoServer(errors.New("down"), time.Hour, asOf, sf, families)
+		},
+	}
+	models := func(rep usageReport) []string {
+		var ids []string
+		for _, r := range rep.Rows {
+			ids = append(ids, r.Model)
+		}
+		return ids
+	}
+	for name, collect := range paths {
+		t.Run(name, func(t *testing.T) {
+			rep := collect(statsFilter{agent: "claude"})
+			if rep.SpendStatus != spendSkipped || rep.SpendReason != spendSkippedReason || rep.Narrowed {
+				t.Errorf("--agent: status %q reason %q narrowed %v", rep.SpendStatus, rep.SpendReason, rep.Narrowed)
+			}
+			for _, sf := range []statsFilter{{model: "omlx/q"}, {family: "qwen"}} {
+				rep := collect(sf)
+				if !rep.Narrowed || rep.SpendStatus == spendSkipped {
+					t.Errorf("%+v: narrowed %v status %q", sf, rep.Narrowed, rep.SpendStatus)
+				}
+				if got := models(rep); len(got) != 1 || got[0] != "omlx/q" {
+					t.Errorf("%+v: rows %v, want only omlx/q", sf, got)
+				}
+				if name == "server" {
+					if rep.SpendStatus != spendOK || rep.Unattributed != 4 {
+						t.Errorf("%+v: status %q unattributed %d, want %q and 4", sf, rep.SpendStatus, rep.Unattributed, spendOK)
+					}
+				}
+			}
+			rep = collect(statsFilter{})
+			if rep.Narrowed || rep.SpendStatus == spendSkipped {
+				t.Errorf("no filter: narrowed %v status %q", rep.Narrowed, rep.SpendStatus)
+			}
+			if got := models(rep); len(got) != 2 {
+				t.Errorf("no filter: rows %v, want both models", got)
+			}
+		})
+	}
+}
+
+// TestCollectUsageNoServerMapsTheOpenError pins the no-server spend status:
+// an open error that is (or wraps) a *modelclient.NotConfiguredError reads
+// spendNotConfigured, any other open error spendUnavailable, and both carry
+// the error's text as the reason. Scripts read that status, so a failed
+// server must not pass for an unconfigured one.
+func TestCollectUsageNoServerMapsTheOpenError(t *testing.T) {
+	nc := &modelclient.NotConfiguredError{MissingURL: true}
+	for name, tc := range map[string]struct {
+		err  error
+		want string
+	}{
+		"not configured":         {nc, spendNotConfigured},
+		"wrapped not configured": {modelclient.Still(nc, "x"), spendNotConfigured},
+		"unreachable":            {errors.New("connection refused"), spendUnavailable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rep := collectUsageNoServer(tc.err, time.Hour, time.Now().UTC(), statsFilter{}, nil)
+			if rep.SpendStatus != tc.want || !strings.Contains(rep.SpendReason, tc.err.Error()) {
+				t.Errorf("status %q reason %q, want %q naming %q", rep.SpendStatus, rep.SpendReason, tc.want, tc.err)
 			}
 		})
 	}
