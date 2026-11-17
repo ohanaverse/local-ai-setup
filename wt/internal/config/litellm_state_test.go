@@ -197,6 +197,13 @@ func TestWriteFileAtomicConcurrent(t *testing.T) {
 func TestWriteConfigFileTreatsAnInlineTokenAsSecret(t *testing.T) {
 	litellmStateEnv(t, "")
 	must(t, Path(), "[model-server]\nurl = \"http://localhost:4200\"\ntoken_file = \"server.token\"\ntoken = \"sk-inline-secret\"\n")
+	// Force the fixture's mode: os.WriteFile's perm is umask-masked. Without
+	// this a restrictive umask lands the fixture at 0600 and the never-loosen
+	// rule keeps it there even when the inline-token rule regresses away —
+	// the pin would pass with or without the behavior it exists to prove.
+	if err := os.Chmod(Path(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cfg, _, err := readConfigFile()
 	if err != nil {
 		t.Fatal(err)

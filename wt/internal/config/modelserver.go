@@ -9,8 +9,10 @@ import (
 type ModelServerState struct {
 	URL       string `toml:"url"`
 	TokenFile string `toml:"token_file"`
-	// Token is never read: config.toml is not private. A value here is only
-	// reported as a problem so the user moves it into a 0600 file.
+	// Token is never used for auth, but its presence is not inert: a save
+	// writes config.toml 0600 when it is set, and no save loosens an
+	// existing stricter mode. A value here is also reported as a problem so
+	// the user moves it into a 0600 token_file.
 	Token string `toml:"token"`
 }
 
@@ -26,7 +28,7 @@ func (c *Config) ModelServer() ModelServerState {
 func (s ModelServerState) Problems() []string {
 	var out []string
 	if s.Token != "" {
-		out = append(out, "[model-server] token is not read from config.toml, which is not private — put the token in a file with mode 0600 and set token_file")
+		out = append(out, "[model-server] token is not used for auth — while it is set wt writes config.toml 0600, and no save loosens an existing stricter mode — put the token in a file with mode 0600 and set token_file")
 	}
 	return out
 }

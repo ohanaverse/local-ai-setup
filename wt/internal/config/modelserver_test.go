@@ -179,11 +179,11 @@ token_file = "/t"
 	}
 }
 
-// TestInlineTokenIsAProblem proves an inline token is reported (it is never
-// read) and a clean table reports none.
+// TestInlineTokenIsAProblem proves an inline token is reported (it is not
+// used for auth) and a clean table reports none.
 func TestInlineTokenIsAProblem(t *testing.T) {
 	got := ModelServerState{URL: "u", TokenFile: "f", Token: "secret"}.Problems()
-	want := "[model-server] token is not read from config.toml, which is not private — put the token in a file with mode 0600 and set token_file"
+	want := "[model-server] token is not used for auth — while it is set wt writes config.toml 0600, and no save loosens an existing stricter mode — put the token in a file with mode 0600 and set token_file"
 	if len(got) != 1 || got[0] != want {
 		t.Errorf("problems = %q", got)
 	}
