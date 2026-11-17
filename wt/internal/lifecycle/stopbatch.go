@@ -53,7 +53,7 @@ func keyOf(en localmodels.Entry) stopKey {
 	return stopKey{localmodels.Family(en.ProviderID), en.ModelName}
 }
 
-// StopBatch is a batch of model stops (the stop loop's, internal/survey)
+// StopBatch is a batch of model stops (the stop loop's, internal/hoststop)
 // that costs one wait however many ollama models it stops (#379).
 // BeginStops sends `ollama stop` for every ollama model of the batch at once;
 // each Stop then waits for its own model under one bound the whole batch

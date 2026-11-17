@@ -169,7 +169,7 @@ func roundWait(d time.Duration) string {
 // out within wt's wait: ollama keeps a model with a request in flight loaded
 // until that request ends, then unloads it by itself. It is an error, so a
 // caller that needs the model gone before it goes on fails on it as on any
-// other; the stop loop (internal/survey) reports it as its own outcome, not a
+// other; the stop loop (internal/hoststop) reports it as its own outcome, not a
 // failed stop. Waited is the sleeping total the wait sat out.
 type StillFinishingError struct {
 	Provider string

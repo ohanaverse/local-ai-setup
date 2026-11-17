@@ -1,7 +1,7 @@
 // wt start / wt stop — direct control of local models without launching an
 // agent. `wt start` and `wt stop <model>` (and bare `wt stop`) go through the
 // model server (model_cmds_remote.go); `wt stop <provider>|--all` stay on the
-// host (R3) and reuse the survey package's stop loop. wt served reports what
+// host (R3) and reuse the hoststop package's stop loop. wt served reports what
 // a provider's server is serving, the probe the host stop acts on.
 package main
 
@@ -19,12 +19,12 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/hoststop"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/spf13/cobra"
 )
 
@@ -34,14 +34,14 @@ var (
 	// stopState is one inventory round and one read of the live sessions: the
 	// stop candidates, and per provider family what its probe said and how
 	// many live wt sessions use it.
-	stopState = func(cfg *config.Config) survey.StopState {
-		return survey.ReadStopStateSessions(cfg, stopSessions())
+	stopState = func(cfg *config.Config) hoststop.StopState {
+		return hoststop.ReadStopStateSessions(cfg, stopSessions())
 	}
 	// stopSessions is the live client sessions per model id, read from the
 	// model server by `wt stop <provider>|--all` before it runs (nil: none
 	// known). Production sets it in the command; tests leave the default.
 	stopSessions = func() map[string]int { return nil }
-	stopEntries  = survey.StopEntries
+	stopEntries  = hoststop.StopEntries
 	confirmStop  = promptStop
 	// stopProvider stops a provider's server as a whole (`wt stop omlx`).
 	stopProvider = lifecycle.Stop
@@ -206,7 +206,7 @@ func (a *app) hostSessionReader(ctx context.Context, w io.Writer) func() map[str
 // probed (FamilyState.Probed) is nothing to stop either: "did not refuse" is
 // an answer only when wt asked. A Shared provider (ollama) never is: wt
 // leaves its daemon up.
-func haltsWhole(st survey.StopState, providerID string, candidates int) bool {
+func haltsWhole(st hoststop.StopState, providerID string, candidates int) bool {
 	switch lifecycle.TenancyOf(providerID) {
 	case lifecycle.Pool:
 		return true
@@ -220,7 +220,7 @@ func haltsWhole(st survey.StopState, providerID string, candidates int) bool {
 // haltProviders lists, in id order, one configured provider id per server
 // `wt stop --all` halts as a whole (haltsWhole): "omlx" and "omlx-6bit" are
 // one service, and it is halted once.
-func haltProviders(cfg *config.Config, st survey.StopState) []string {
+func haltProviders(cfg *config.Config, st hoststop.StopState) []string {
 	perFamily := map[string]int{}
 	for _, c := range st.Candidates {
 		perFamily[localmodels.Family(c.Entry.ProviderID)]++
@@ -241,7 +241,7 @@ func haltProviders(cfg *config.Config, st survey.StopState) []string {
 // unreadShared lists, in id order, the configured Shared families (ollama)
 // whose probe was neither trusted nor refused. wt stops their models one by
 // one and so can stop nothing there, and may not report them as idle.
-func unreadShared(cfg *config.Config, st survey.StopState) []string {
+func unreadShared(cfg *config.Config, st hoststop.StopState) []string {
 	var fams []string
 	for _, id := range stoppableProviders(cfg) {
 		fam := localmodels.Family(id)
@@ -259,7 +259,7 @@ func unreadShared(cfg *config.Config, st survey.StopState) []string {
 // — unless it is still loading (FamilyState.Loading): the sessions on its
 // family are then waiting for that load, and wt is not asking blind, since it
 // knows what is there.
-func haltImpact(fs survey.FamilyState) (sessions int, users []string, blind bool) {
+func haltImpact(fs hoststop.FamilyState) (sessions int, users []string, blind bool) {
 	if fs.Down {
 		if fs.Loading.PID > 0 {
 			return fs.Sessions, fs.Users, false
@@ -279,7 +279,7 @@ func errLoadingUnknown(provider string, err error, hint string) error {
 }
 
 // pidfileFindings is what the pidfiles behind refused ports name
-// (survey.StopState.Loading), one entry per family in provider order: an
+// (hoststop.StopState.Loading), one entry per family in provider order: an
 // error for a process table wt could not read (ending in hint) and a note for
 // a live process that is not the server (left alone). A verified server still
 // loading gets nothing here: `wt stop --all`, the one caller, stops it.
@@ -334,7 +334,7 @@ func unreadClause(names []string, it bool) string {
 // exits non-zero.
 //
 // The in-use question covers the halts with each halted family's own session
-// count (survey.FamilyState), which no candidate has to carry (#307).
+// count (hoststop.FamilyState), which no candidate has to carry (#307).
 //
 // Ctrl+C is not a failure to step over: it ends the command where it is. A
 // model loop that was cancelled leaves the halts alone, and a cancelled halt
@@ -349,7 +349,7 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	// A halted family's models go down with its server; the rest are stopped
 	// one by one.
 	var entries []localmodels.Entry
-	var oneByOne []survey.Candidate
+	var oneByOne []hoststop.Candidate
 	for _, c := range st.Candidates {
 		if !halted[localmodels.Family(c.Entry.ProviderID)] {
 			entries = append(entries, c.Entry)
@@ -400,7 +400,7 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 		return errors.Join(failures...)
 	}
 	// One signal context for the whole command, installed before the model
-	// loop. The loop runs under a context of its own (survey.StopEntries) and
+	// loop. The loop runs under a context of its own (hoststop.StopEntries) and
 	// releases its handler when it returns, so with none installed here a
 	// Ctrl+C that lands as the last model stop completes is seen by nobody —
 	// the loop returns nil and the command goes on to halt the pool — and one
@@ -411,7 +411,7 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	defer cancel()
 	if len(entries) > 0 {
 		if err := stopEntries(out, cfg, entries); err != nil {
-			if errors.Is(err, survey.ErrStopCancelled) {
+			if errors.Is(err, hoststop.ErrStopCancelled) {
 				return notHalted(halts)
 			}
 			failures = append(failures, err)
@@ -475,9 +475,9 @@ func haltProvider(ctx context.Context, out io.Writer, cfg *config.Config, id str
 // "everything else is down".
 func notHalted(ids []string) error {
 	if len(ids) == 0 {
-		return survey.ErrStopCancelled
+		return hoststop.ErrStopCancelled
 	}
-	return fmt.Errorf("%w — %s was not stopped", survey.ErrStopCancelled, strings.Join(ids, ", "))
+	return fmt.Errorf("%w — %s was not stopped", hoststop.ErrStopCancelled, strings.Join(ids, ", "))
 }
 
 // haltCancelled is the error of a halt of ids[0] that Ctrl+C ended (err is
@@ -493,7 +493,7 @@ func haltCancelled(err error, ids []string) error {
 		return notHalted(ids)
 	}
 	id := ids[0]
-	signalled := fmt.Errorf("%w — %s (pid %d) was sent %s and wt did not wait for it to exit; run \"wt stop %s\" again to confirm", survey.ErrStopCancelled, id, sent.PID, sent.Signal, id)
+	signalled := fmt.Errorf("%w — %s (pid %d) was sent %s and wt did not wait for it to exit; run \"wt stop %s\" again to confirm", hoststop.ErrStopCancelled, id, sent.PID, sent.Signal, id)
 	if len(ids) == 1 {
 		return signalled
 	}
@@ -532,7 +532,7 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 	}
 	st := stopState(cfg)
 	cands := st.Candidates
-	var targets []survey.Candidate
+	var targets []hoststop.Candidate
 	pool := lifecycle.TenancyOf(arg) == lifecycle.Pool
 	for _, c := range cands {
 		// A pool's server is stopped as a whole, so every model of the
@@ -609,7 +609,7 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 // sibling variant goes down with the one named. A Pool (omlx) is not widened:
 // stopping one of its models leaves the others loaded. Collateral models are
 // announced on out. Targets keep their order; collateral follows.
-func withFamilyCollateral(out io.Writer, cands, targets []survey.Candidate) []survey.Candidate {
+func withFamilyCollateral(out io.Writer, cands, targets []hoststop.Candidate) []hoststop.Candidate {
 	have := map[string]bool{}
 	fams := map[string]bool{}
 	for _, c := range targets {
@@ -631,7 +631,7 @@ func withFamilyCollateral(out io.Writer, cands, targets []survey.Candidate) []su
 // stopImpact totals the live wt sessions a stop would hit and names the models
 // they use. A single-model provider's candidates each carry the whole family's
 // count, so the family is counted once; other candidates sum.
-func stopImpact(targets []survey.Candidate) (sessions int, users []string) {
+func stopImpact(targets []hoststop.Candidate) (sessions int, users []string) {
 	famSeen := map[string]bool{}
 	for _, c := range targets {
 		if c.Sessions == 0 {

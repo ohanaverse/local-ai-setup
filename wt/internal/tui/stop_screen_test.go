@@ -20,7 +20,7 @@ import (
 // purpose.
 func TestTUIStopsNoModel(t *testing.T) {
 	stopCalls := map[string]bool{
-		"survey.StopEntries":   true,
+		"hoststop.StopEntries": true,
 		"lifecycle.BeginStops": true, "lifecycle.Stop": true,
 	}
 	files, err := filepath.Glob("*.go")

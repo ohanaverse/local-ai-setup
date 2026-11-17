@@ -18,6 +18,7 @@ var adminBanned = []string{
 	"internal/cloudsync", "internal/spend", "internal/modeladmin",
 	"internal/configeditor", "internal/modelserver", "internal/modelgateway",
 	"internal/modeljobs", "internal/sessionreg", "internal/candidates",
+	"internal/hoststop",
 }
 
 // sessionBanned is the set cmd/wt-model must not link: the session half.
@@ -32,8 +33,7 @@ var sessionBanned = []string{
 // when an entry here is no longer linked, so a fixed edge has to be deleted.
 // Never add an entry to make a failing build pass; remove the edge instead.
 var allowList = map[string][]string{
-	"internal/survey": {"internal/lifecycle", "internal/litellm", "internal/localmodels"},
-	"internal/tui":    {"internal/lifecycle", "internal/litellm", "internal/localmodels"},
+	"internal/tui": {"internal/localmodels"},
 }
 
 // sessionLibraries are the packages the session binary shares with the model

@@ -14,11 +14,11 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/hoststop"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
@@ -67,7 +67,7 @@ func TestMain(m *testing.M) {
 	// that need to exercise the not-installed path stub this explicitly.
 	installed = func(string) bool { return true }
 	// `wt stop` seams: no test may probe live servers or stop a real model.
-	stopState = func(*config.Config) survey.StopState { return survey.StopState{} }
+	stopState = func(*config.Config) hoststop.StopState { return hoststop.StopState{} }
 	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error {
 		return errors.New("stopEntries not stubbed in this test")
 	}

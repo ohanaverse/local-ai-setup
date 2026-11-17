@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/hoststop"
 )
 
 // Tests for `wt stop` when a provider's probe gave no trusted answer, or no
@@ -37,9 +37,9 @@ func mtplxOnlyCfg() *config.Config {
 }
 
 // families is the stop state of one probed family and no candidate.
-func families(fam string, fs survey.FamilyState) survey.StopState {
+func families(fam string, fs hoststop.FamilyState) hoststop.StopState {
 	fs.Probed = true
-	return survey.StopState{Families: map[string]survey.FamilyState{fam: fs}}
+	return hoststop.StopState{Families: map[string]hoststop.FamilyState{fam: fs}}
 }
 
 // stubStopConfirm records the questions `wt stop` asks and answers each with ok.
@@ -58,7 +58,7 @@ func stubStopConfirm(t *testing.T, ok bool) *[]string {
 // in time. It used to print "nothing running on mtplx" and
 // exit 0 with a 28GB server still up (#308).
 func TestStopExclusiveProviderIsHaltedWithoutACandidate(t *testing.T) {
-	for name, fs := range map[string]survey.FamilyState{
+	for name, fs := range map[string]hoststop.FamilyState{
 		"answering, nothing loaded": {},
 		"no usable answer":          {Untrusted: true},
 	} {
@@ -89,7 +89,7 @@ func TestStopExclusiveProviderIsHaltedWithoutACandidate(t *testing.T) {
 // it: that is the one untrusted answer known to mean "nothing to stop", so
 // the commands stay idempotent on a machine where mtplx is simply off.
 func TestStopExclusiveProviderWhosePortRefusesIsNotRunning(t *testing.T) {
-	stubStopState(t, families("mtplx", survey.FamilyState{Untrusted: true, Down: true}))
+	stubStopState(t, families("mtplx", hoststop.FamilyState{Untrusted: true, Down: true}))
 	halted := stubHalt(t)
 	var out bytes.Buffer
 	if err := runStop(&out, mtplxOnlyCfg(), "mtplx", false); err != nil {
@@ -113,7 +113,7 @@ func TestStopExclusiveProviderWhosePortRefusesIsNotRunning(t *testing.T) {
 // stop --all`. The commands must never exit 0 over a server they could not
 // stop.
 func TestStopExclusiveProviderHaltFailureExitsNonZero(t *testing.T) {
-	stubStopState(t, families("mtplx", survey.FamilyState{Untrusted: true}))
+	stubStopState(t, families("mtplx", hoststop.FamilyState{Untrusted: true}))
 	halted := stubHalt(t, "mtplx")
 	var out bytes.Buffer
 	err := runStop(&out, stopCfg(), "mtplx", false)
@@ -136,7 +136,7 @@ func TestStopExclusiveProviderHaltFailureExitsNonZero(t *testing.T) {
 // the model loop, as before, and mtplx is not halted a second time — by `wt
 // stop mtplx` or `wt stop --all`.
 func TestStopExclusiveProviderWithACandidateStopsThroughTheModelLoop(t *testing.T) {
-	stopped := stubStop(t, []survey.Candidate{cand("mtplx", "mtplx/big", "big", 0)})
+	stopped := stubStop(t, []hoststop.Candidate{cand("mtplx", "mtplx/big", "big", 0)})
 	halted := stubHalt(t)
 	if err := runStop(io.Discard, stopCfg(), "mtplx", false); err != nil {
 		t.Fatal(err)
@@ -162,7 +162,7 @@ func TestStopExclusiveProviderWithACandidateStopsThroughTheModelLoop(t *testing.
 // models" on a registry with nothing else. "Stop all" left the largest server
 // up and said nothing was running (#308).
 func TestStopAllHaltsAnExclusiveProviderWithoutACandidate(t *testing.T) {
-	stopped := stubStopState(t, families("mtplx", survey.FamilyState{Untrusted: true}))
+	stopped := stubStopState(t, families("mtplx", hoststop.FamilyState{Untrusted: true}))
 	halted := stubHalt(t)
 	var out bytes.Buffer
 	if err := runStopAll(&out, stopCfg(), false); err != nil {
@@ -191,7 +191,7 @@ func TestStopAllHaltsAnExclusiveProviderWithoutACandidate(t *testing.T) {
 // Exclusive provider runs under the command's one signal context, like a
 // pool's.
 func TestStopAllCancelledExclusiveHaltLeavesThePoolUp(t *testing.T) {
-	stubStopState(t, families("mtplx", survey.FamilyState{Untrusted: true}))
+	stubStopState(t, families("mtplx", hoststop.FamilyState{Untrusted: true}))
 	oldCtx, oldStop := startSignalCtx, stopProvider
 	t.Cleanup(func() { startSignalCtx, stopProvider = oldCtx, oldStop })
 	ctx, cancel := context.WithCancel(context.Background())
@@ -205,7 +205,7 @@ func TestStopAllCancelledExclusiveHaltLeavesThePoolUp(t *testing.T) {
 	}
 	var out bytes.Buffer
 	err := runStopAll(&out, stopCfg(), false)
-	if !errors.Is(err, survey.ErrStopCancelled) || !strings.Contains(err.Error(), "mtplx, omlx was not stopped") {
+	if !errors.Is(err, hoststop.ErrStopCancelled) || !strings.Contains(err.Error(), "mtplx, omlx was not stopped") {
 		t.Fatalf("err = %v, want a cancellation naming mtplx and omlx as not stopped", err)
 	}
 	if !slices.Equal(halted, []string{"mtplx"}) || out.String() != "Stopping mtplx... cancelled\n" {
@@ -223,16 +223,16 @@ func TestStopAllCancelledExclusiveHaltLeavesThePoolUp(t *testing.T) {
 func TestStopHaltAsksWhenTheFamilyHasLiveSessions(t *testing.T) {
 	cases := []struct {
 		name, arg string
-		fs        survey.FamilyState
+		fs        hoststop.FamilyState
 		want      string
 	}{
-		{"omlx untrusted", "omlx", survey.FamilyState{Untrusted: true, Sessions: 2, Users: []string{"omlx/Discovered-4bit", "omlx/c"}},
+		{"omlx untrusted", "omlx", hoststop.FamilyState{Untrusted: true, Sessions: 2, Users: []string{"omlx/Discovered-4bit", "omlx/c"}},
 			"omlx is in use by 2 live wt session(s) (omlx/Discovered-4bit, omlx/c), and wt could not tell what it has loaded; stop anyway?"},
-		{"omlx trusted, session on a model not loaded", "omlx", survey.FamilyState{Sessions: 1, Users: []string{"omlx/c"}},
+		{"omlx trusted, session on a model not loaded", "omlx", hoststop.FamilyState{Sessions: 1, Users: []string{"omlx/c"}},
 			"omlx is in use by 1 live wt session(s) (omlx/c); stop anyway?"},
-		{"mtplx untrusted", "mtplx", survey.FamilyState{Untrusted: true, Sessions: 1, Users: []string{"mtplx/big"}},
+		{"mtplx untrusted", "mtplx", hoststop.FamilyState{Untrusted: true, Sessions: 1, Users: []string{"mtplx/big"}},
 			"mtplx is in use by 1 live wt session(s) (mtplx/big), and wt could not tell what it has loaded; stop anyway?"},
-		{"mtplx answering, nothing loaded", "mtplx", survey.FamilyState{Sessions: 1, Users: []string{"mtplx/big"}},
+		{"mtplx answering, nothing loaded", "mtplx", hoststop.FamilyState{Sessions: 1, Users: []string{"mtplx/big"}},
 			"mtplx is in use by 1 live wt session(s) (mtplx/big); stop anyway?"},
 	}
 	for _, tc := range cases {
@@ -271,7 +271,7 @@ func TestStopHaltRefusesWithoutATerminal(t *testing.T) {
 	openTTY = func() (*os.File, error) { return nil, errors.New("open /dev/tty: device not configured") }
 	confirmStop = promptStop
 	t.Cleanup(func() { openTTY, confirmStop = oldTTY, oldConfirm })
-	fs := survey.FamilyState{Untrusted: true, Sessions: 1, Users: []string{"mtplx/big"}}
+	fs := hoststop.FamilyState{Untrusted: true, Sessions: 1, Users: []string{"mtplx/big"}}
 	for _, run := range map[string]func() error{
 		"wt stop mtplx": func() error { return runStop(io.Discard, stopCfg(), "mtplx", false) },
 		"wt stop --all": func() error { return runStopAll(io.Discard, stopCfg(), false) },
@@ -294,9 +294,9 @@ func TestStopHaltRefusesWithoutATerminal(t *testing.T) {
 // read; declining stops and halts nothing. With omlx's probe untrusted the
 // question was skipped and omlx halted under a live session (#307).
 func TestStopAllAsksAboutEveryHaltedFamily(t *testing.T) {
-	st := survey.StopState{
-		Candidates: []survey.Candidate{cand("ollama", "ollama/a:1", "a:1", 2)},
-		Families: map[string]survey.FamilyState{
+	st := hoststop.StopState{
+		Candidates: []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 2)},
+		Families: map[string]hoststop.FamilyState{
 			"omlx":  {Probed: true, Untrusted: true, Sessions: 1, Users: []string{"omlx/c"}},
 			"mtplx": {Probed: true, Untrusted: true, Sessions: 1, Users: []string{"mtplx/big"}},
 		},
@@ -336,7 +336,7 @@ func TestStopAllAsksAboutEveryHaltedFamily(t *testing.T) {
 // it can stop blind; a refused port is still "nothing running", exit 0.
 func TestStopSaysNothingRunningOnlyWhenThatIsKnown(t *testing.T) {
 	ollamaOnly := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
-	stubStopState(t, families("ollama", survey.FamilyState{Untrusted: true}))
+	stubStopState(t, families("ollama", hoststop.FamilyState{Untrusted: true}))
 	halted := stubHalt(t)
 	var out bytes.Buffer
 	err := runStop(&out, ollamaOnly, "ollama", false)
@@ -354,7 +354,7 @@ func TestStopSaysNothingRunningOnlyWhenThatIsKnown(t *testing.T) {
 		t.Errorf("with omlx: err = %v halted = %v out = %q, want omlx halted and the error kept", err, *halted, out.String())
 	}
 
-	stubStopState(t, families("ollama", survey.FamilyState{Untrusted: true, Down: true}))
+	stubStopState(t, families("ollama", hoststop.FamilyState{Untrusted: true, Down: true}))
 	out.Reset()
 	if err := runStop(&out, ollamaOnly, "ollama", false); err != nil || out.String() != "wt: nothing running on ollama\n" {
 		t.Errorf("refused port: err = %v out = %q, want the nothing-running note and exit 0", err, out.String())
@@ -372,9 +372,9 @@ func TestStopSaysNothingRunningOnlyWhenThatIsKnown(t *testing.T) {
 // --all still halts omlx. Read as up, every --all ran `mtplx stop` there and
 // failed with "mtplx binary not found" on a machine without mtplx.
 func TestStopDoesNotHaltAnExclusiveProviderThatWasNotProbed(t *testing.T) {
-	for name, st := range map[string]survey.StopState{
+	for name, st := range map[string]hoststop.StopState{
 		"no family state":     {},
-		"a live session only": {Families: map[string]survey.FamilyState{"mtplx": {Sessions: 1, Users: []string{"mtplx/big"}}}},
+		"a live session only": {Families: map[string]hoststop.FamilyState{"mtplx": {Sessions: 1, Users: []string{"mtplx/big"}}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			stubStopState(t, st)
@@ -405,7 +405,7 @@ func TestStopDoesNotHaltAnExclusiveProviderThatWasNotProbed(t *testing.T) {
 // routine command, and 14 lines of flags between two copies of the message
 // hide the one line that says what happened.
 func TestStopFailurePrintsNoUsage(t *testing.T) {
-	stubStopState(t, families("ollama", survey.FamilyState{Untrusted: true}))
+	stubStopState(t, families("ollama", hoststop.FamilyState{Untrusted: true}))
 	stubHalt(t)
 	got, err := runStopCmd(stopCfg(), "ollama")
 	if err == nil || !strings.Contains(err.Error(), "cannot tell what is running on ollama") || strings.Contains(got, "Usage:") {
@@ -427,7 +427,7 @@ func TestStopFailurePrintsNoUsage(t *testing.T) {
 // asynchronously; with two halts in one command, two restarts at once bounce
 // the proxy under each other.
 func TestStopAllSettlesOneHaltsRestartBeforeTheNext(t *testing.T) {
-	stubStopState(t, families("mtplx", survey.FamilyState{Untrusted: true}))
+	stubStopState(t, families("mtplx", hoststop.FamilyState{Untrusted: true}))
 	var events []string
 	oldHalt, oldWait := stopProvider, waitPendingRoutes
 	t.Cleanup(func() { stopProvider, waitPendingRoutes = oldHalt, oldWait })
@@ -452,7 +452,7 @@ func liveStopState(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	old := stopState
-	stopState = survey.ReadStopState
+	stopState = hoststop.ReadStopState
 	t.Cleanup(func() { stopState = old })
 }
 
@@ -518,7 +518,7 @@ func TestStopHaltsAnMtplxItCannotReadThroughTheRealProbe(t *testing.T) {
 // without --yes must not start failing because an agent is still open on a
 // server that is already down.
 func TestStopHaltOfARefusingPoolAsksNothing(t *testing.T) {
-	stubStopState(t, families("omlx", survey.FamilyState{Untrusted: true, Down: true, Sessions: 1, Users: []string{"omlx/c"}}))
+	stubStopState(t, families("omlx", hoststop.FamilyState{Untrusted: true, Down: true, Sessions: 1, Users: []string{"omlx/c"}}))
 	halted := stubHalt(t)
 	asked := stubStopConfirm(t, false)
 	if err := runStop(io.Discard, modelCmdConfig(), "omlx", false); err != nil {
