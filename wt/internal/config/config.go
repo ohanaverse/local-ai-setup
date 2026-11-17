@@ -68,40 +68,6 @@ type LitellmState struct {
 	APIKey  string `toml:"api_key"`
 }
 
-// UpdateLitellm applies mutate to the LiteLLM routing state and persists it to
-// wt's config.toml. wt owns this state.
-//
-// It persists through PatchSave rather than a whole-file Save of c: c may be
-// a long-lived process's stale in-memory snapshot (issue #143 — a `wt
-// litellm` run against a Config loaded before a concurrent `wt config`
-// editor session saved its own Agents/DefaultTag change). PatchSave re-reads
-// config.toml fresh under the lock and touches only LitellmTable, so that
-// concurrent change survives.
-func (c *Config) UpdateLitellm(mutate func(*LitellmState)) error {
-	prev, prevTable := c.litellm, c.LitellmTable
-	var result LitellmState
-	err := c.PatchSave(func(fresh *Config) {
-		s := LitellmState{}
-		if fresh.LitellmTable != nil {
-			s = *fresh.LitellmTable
-		}
-		mutate(&s)
-		fresh.LitellmTable = &s
-		result = s
-	})
-	if err != nil {
-		// Nothing persisted: keep memory in step with disk so later routing
-		// in this process does not act on a state that was never saved.
-		c.litellm, c.LitellmTable = prev, prevTable
-		return err
-	}
-	c.litellm, c.LitellmTable = result, &result
-	return nil
-}
-
-// LitellmConfigured reports whether both the proxy URL and API key are set.
-func (c *Config) LitellmConfigured() bool { return c.litellm.URL != "" && c.litellm.APIKey != "" }
-
 // LitellmBaseURL returns the proxy URL with any trailing
 // slashes removed. Drivers append their own protocol suffix (/v1, /v1/),
 // so a user URL like "http://localhost:4000/" must not produce a double

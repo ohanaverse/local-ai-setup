@@ -71,40 +71,36 @@ func TestWithLockCleansUpLockFile(t *testing.T) {
 	}
 }
 
-// TestPatchSavePreservesConcurrentLitellmChange reproduces issue #143's
-// editor-vs-litellm race: the `wt config` editor loads a Config, a
-// concurrent `wt litellm set` changes [litellm] on disk, and then the
-// editor saves. With whole-file Save the editor's stale in-memory
-// [litellm] (empty, from before the concurrent change) would overwrite it.
-// PatchSave must instead merge: it writes only the fields apply touches
-// and leaves everything else as it is on disk right now.
-func TestPatchSavePreservesConcurrentLitellmChange(t *testing.T) {
+// TestPatchSavePreservesConcurrentDefaultTagChange reproduces issue #143's
+// editor-vs-writer race with the two fields wt's config.toml still holds for
+// itself: the `wt config` editor loads a Config, a concurrent save changes
+// DefaultTag on disk, and then the editor saves its own Agents edit. With
+// whole-file Save the editor's stale snapshot would overwrite the concurrent
+// change; PatchSave must instead merge: it writes only the fields apply
+// touches and leaves everything else as it is on disk right now.
+func TestPatchSavePreservesConcurrentDefaultTagChange(t *testing.T) {
 	scratchRegistry(t, "providers = []\nmodels = []\n")
 	must(t, Path(), "default_tag = \"code\"\n")
 
-	// The editor "opens" here: it loads a stale snapshot with no [litellm].
+	// The editor "opens" here: it loads a stale snapshot.
 	editorCfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Meanwhile, another process runs `wt litellm set` against a fresh load.
-	writerCfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writerCfg.UpdateLitellm(func(s *LitellmState) {
-		s.Enabled, s.URL, s.APIKey = true, "http://localhost:4000", "sk-concurrent"
+	// Meanwhile, another process saves its own DefaultTag change (PatchSave
+	// re-reads the file fresh itself, so its own snapshot's age is inert).
+	if err := (&Config{}).PatchSave(func(fresh *Config) {
+		fresh.DefaultTag = "design"
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	// The editor now saves its (still stale, no-litellm) snapshot, having
-	// only ever touched Agents/DefaultTag.
+	// The editor now saves its (still stale) snapshot, having only ever
+	// touched Agents.
 	editorCfg.Agents = append(editorCfg.Agents, Agent{Name: "claude", SupportedProviders: nil})
 	if err := editorCfg.PatchSave(func(fresh *Config) {
 		fresh.Agents = editorCfg.Agents
-		fresh.DefaultTag = editorCfg.DefaultTag
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -113,44 +109,43 @@ func TestPatchSavePreservesConcurrentLitellmChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reloaded.litellm.Enabled || reloaded.LitellmAPIKey() != "sk-concurrent" {
-		t.Fatalf("editor save clobbered concurrent litellm change: %+v", reloaded.litellm)
+	if reloaded.DefaultTag != "design" {
+		t.Fatalf("editor save clobbered the concurrent DefaultTag change: %q", reloaded.DefaultTag)
 	}
 	if !hasAgent(reloaded.Agents, "claude") {
 		t.Fatalf("editor's own agent change was lost: %+v", reloaded.Agents)
 	}
 }
 
-// TestUpdateLitellmPreservesConcurrentAgentChange is the reverse of
-// TestPatchSavePreservesConcurrentLitellmChange: a `wt litellm on` run
-// against a config loaded before a concurrent editor session added an
-// agent must not revert that agent when it persists its own change.
-func TestUpdateLitellmPreservesConcurrentAgentChange(t *testing.T) {
+// TestEditorSavePreservesConcurrentLockedApplyChange is the reverse of
+// TestLockedApplyPreservesConcurrentEditorChange: an editor save against a
+// snapshot taken before a concurrent Load migration write must not revert
+// that write's agy-agent fixup when it persists its own change. (The
+// editor-vs-`wt litellm set` pair this test used to pin disappears with the
+// wt-model config home: `set` no longer touches config.toml at all.)
+func TestEditorSavePreservesConcurrentLockedApplyChange(t *testing.T) {
 	scratchRegistry(t, "providers = []\nmodels = []\n")
 	must(t, Path(), "default_tag = \"code\"\n")
 
-	// The `wt litellm on` process loads its config first...
-	litellmCfg, err := Load()
+	// The editor opens its snapshot first — readConfigFile, not Load, so the
+	// migration below still has something to persist.
+	stale, _, err := readConfigFile()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// ...then the editor loads its own copy and saves a new agent.
-	editorCfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	editorCfg.Agents = append(editorCfg.Agents, Agent{Name: "claude", SupportedProviders: nil})
-	if err := editorCfg.PatchSave(func(fresh *Config) {
-		fresh.Agents = editorCfg.Agents
-		fresh.DefaultTag = editorCfg.DefaultTag
+	// ...then Load's schema-migration write runs (the config.toml fixture has
+	// no "agy" agent, so migrateConfigSchema always reports a change).
+	if _, changed, err := lockedApply(func(fresh *Config) (bool, error) {
+		return migrateConfigSchema(fresh)
 	}); err != nil {
 		t.Fatal(err)
+	} else if !changed {
+		t.Fatal("expected the agy-agent fixup to report a change")
 	}
 
-	// Now the litellm process persists its change from its (agent-less)
-	// stale snapshot.
-	if err := litellmCfg.UpdateLitellm(func(s *LitellmState) { s.Enabled = true }); err != nil {
+	// Now the editor persists its own change from its stale snapshot.
+	if err := stale.PatchSave(func(fresh *Config) { fresh.DefaultTag = "design" }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,42 +153,40 @@ func TestUpdateLitellmPreservesConcurrentAgentChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reloaded.litellm.Enabled {
-		t.Fatal("litellm process's own change was lost")
+	if reloaded.DefaultTag != "design" {
+		t.Fatal("editor's own change was lost")
 	}
-	if !hasAgent(reloaded.Agents, "claude") {
-		t.Fatalf("concurrent editor's agent was clobbered: %+v", reloaded.Agents)
+	if !hasAgent(reloaded.Agents, "agy") {
+		t.Fatalf("concurrent migration fixup was clobbered: %+v", reloaded.Agents)
 	}
 }
 
-// TestLockedApplyPreservesConcurrentLitellmChange reproduces the same class
+// TestLockedApplyPreservesConcurrentEditorChange reproduces the same class
 // of race PatchSave closes (issue #143), but for Load's self-persisting
 // schema-migration write: lockedApply must re-read config.toml fresh at
 // write time rather than trust whatever a caller decided from an earlier,
 // now-stale read. Without this, Load's migration write (Save(cfg) on the
-// original unlocked read) would silently clobber a concurrent `wt litellm
-// set` that lands in the window between Load's initial read and its
-// eventual save — reopening the exact lost-update race PatchSave closed for
-// the editor/UpdateLitellm pair, just for this third writer.
-func TestLockedApplyPreservesConcurrentLitellmChange(t *testing.T) {
+// original unlocked read) would silently clobber a concurrent editor save
+// that lands in the window between Load's initial read and its eventual
+// save — reopening the exact lost-update race PatchSave closes, just for
+// this third writer.
+func TestLockedApplyPreservesConcurrentEditorChange(t *testing.T) {
 	scratchRegistry(t, "providers = []\nmodels = []\n")
 	must(t, Path(), "default_tag = \"code\"\n")
 
-	// `wt litellm set` runs to completion (a locked read-modify-write) before
-	// lockedApply below ever takes the lock. UpdateLitellm/PatchSave only
-	// need a *Config to call the method on — they re-read config.toml fresh
-	// themselves — so this deliberately does not go through Load(), which
-	// would perform (and persist) the schema migration itself and leave
-	// nothing left for lockedApply below to change.
-	if err := (&Config{}).UpdateLitellm(func(s *LitellmState) {
-		s.Enabled, s.URL, s.APIKey = true, "http://localhost:4000", "sk-concurrent"
-	}); err != nil {
+	// An editor save runs to completion (a locked read-modify-write) before
+	// lockedApply below ever takes the lock. PatchSave only needs a *Config
+	// to call the method on — it re-reads config.toml fresh itself — so this
+	// deliberately does not go through Load(), which would perform (and
+	// persist) the schema migration itself and leave nothing left for
+	// lockedApply below to change.
+	if err := (&Config{}).PatchSave(func(fresh *Config) { fresh.DefaultTag = "design" }); err != nil {
 		t.Fatal(err)
 	}
 
 	// Load's schema-migration write now runs. The config.toml fixture has no
 	// "agy" agent, so migrateConfigSchema always reports a change here,
-	// independent of the concurrent litellm write above.
+	// independent of the concurrent editor write above.
 	fresh, changed, err := lockedApply(func(fresh *Config) (bool, error) {
 		return migrateConfigSchema(fresh)
 	})
@@ -203,16 +196,16 @@ func TestLockedApplyPreservesConcurrentLitellmChange(t *testing.T) {
 	if !changed {
 		t.Fatal("expected the agy-agent fixup to report a change")
 	}
-	if fresh.LitellmTable == nil || fresh.LitellmTable.APIKey != "sk-concurrent" {
-		t.Fatalf("lockedApply clobbered the concurrent litellm change: %+v", fresh.LitellmTable)
+	if fresh.DefaultTag != "design" {
+		t.Fatalf("lockedApply clobbered the concurrent editor change: %q", fresh.DefaultTag)
 	}
 
 	reloaded, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.LitellmAPIKey() != "sk-concurrent" {
-		t.Fatalf("concurrent litellm change lost on disk: %+v", reloaded.litellm)
+	if reloaded.DefaultTag != "design" {
+		t.Fatalf("concurrent editor change lost on disk: %q", reloaded.DefaultTag)
 	}
 	if !hasAgent(reloaded.Agents, "agy") {
 		t.Fatalf("schema migration's own agy fixup was lost: %+v", reloaded.Agents)

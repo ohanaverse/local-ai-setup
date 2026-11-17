@@ -66,29 +66,6 @@ func TestLoadNeverReadsModelmanToml(t *testing.T) {
 	}
 }
 
-// TestUpdateLitellmPersists pins the setter used by `wt litellm on/off/set`:
-// it updates memory and config.toml, and writes the file 0600 when it holds an
-// api_key (the LiteLLM master key must not be world-readable).
-func TestUpdateLitellmPersists(t *testing.T) {
-	home := litellmStateEnv(t, "default_tag = \"code\"\n")
-	cfg, _ := Load()
-	if err := cfg.UpdateLitellm(func(s *LitellmState) { s.Enabled, s.URL, s.APIKey = true, "http://x:4000/", "sk-new" }); err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.litellm.Enabled || cfg.LitellmBaseURL() != "http://x:4000" {
-		t.Fatalf("in-memory not updated: %+v", cfg.litellm)
-	}
-	p := filepath.Join(home, "agent-wt", "config.toml")
-	st, _ := os.Stat(p)
-	if st.Mode().Perm() != 0o600 {
-		t.Fatalf("config.toml mode = %v, want 0600 when it holds an api_key", st.Mode().Perm())
-	}
-	cfg2, _ := Load()
-	if cfg2.LitellmAPIKey() != "sk-new" {
-		t.Fatal("state did not round-trip through config.toml")
-	}
-}
-
 // TestLitellmOwnEmptyTableIsATableNotAbsence pins that a config.toml with its
 // own zero-valued [litellm] (the user turned routing off in wt), or a bare
 // [litellm] header, decodes to a non-nil table with routing off. The pointer
@@ -209,27 +186,5 @@ func TestWriteFileAtomicConcurrent(t *testing.T) {
 	}
 	if m, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(m) != 0 {
 		t.Fatalf("leftover temp files: %v", m)
-	}
-}
-
-// TestUpdateLitellmRollsBackOnSaveFailure pins that a failed persist leaves the
-// in-memory state untouched. Otherwise `wt litellm on` reports an error while
-// this process keeps routing through LiteLLM on a state that was never saved.
-func TestUpdateLitellmRollsBackOnSaveFailure(t *testing.T) {
-	home := litellmStateEnv(t, "default_tag = \"code\"\n")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(home, "agent-wt")
-	if err := os.Chmod(dir, 0o500); err != nil { // read-only: atomic write cannot create its temp file
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(dir, 0o700) })
-	if err := cfg.UpdateLitellm(func(s *LitellmState) { s.Enabled = true }); err == nil {
-		t.Skip("directory permissions did not block the write (running as root?)")
-	}
-	if cfg.litellm.Enabled || cfg.LitellmTable != nil {
-		t.Fatalf("state changed despite the failed save: enabled=%v table=%v", cfg.litellm.Enabled, cfg.LitellmTable)
 	}
 }

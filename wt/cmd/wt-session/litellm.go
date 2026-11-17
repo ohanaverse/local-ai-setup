@@ -583,34 +583,32 @@ func runLitellmProviders(out io.Writer, asJSON bool) error {
 	return nil
 }
 
-// runLitellmStatus is `wt litellm status`: the host's LiteLLM url and whether
-// a key is set (never the key). There is no on/off any more: every session
-// routes through the model server, which reaches LiteLLM with this url and
-// key (R4), so the retired [litellm] enabled is not reported.
-func runLitellmStatus(out io.Writer, cfg *config.Config, asJSON bool) error {
-	if asJSON {
-		return json.NewEncoder(out).Encode(map[string]any{
-			"url": cfg.LitellmBaseURL(), "api_key_set": cfg.LitellmAPIKey() != "",
-		})
+// runLitellmStatus is `wt litellm status`: the LiteLLM proxy pair as every
+// reader resolves it (ResolveProxy: the wt-model home first, the legacy
+// [litellm] table the read-only fallback), never the key itself. There is no
+// on/off any more: every session routes through the model server, which
+// reaches LiteLLM with this url and key (R4), so the retired [litellm] enabled
+// is not reported. A pair the legacy fallback supplied prints the one note on
+// stderr (ruling 7).
+func runLitellmStatus(out, errOut io.Writer, asJSON bool) error {
+	pair, err := config.ResolveProxy()
+	if err != nil {
+		return err
 	}
-	key := maskKey(cfg.LitellmAPIKey())
-	url := cfg.LitellmBaseURL()
-	if url == "" {
-		url = "(unset)"
+	if err := config.WriteProxyStatus(out, pair, asJSON); err != nil {
+		return err
 	}
-	fmt.Fprintf(out, "litellm:\n  url: %s\n  api_key: %s\n", url, key)
+	if pair.Source == config.ProxySourceLegacy {
+		fmt.Fprintln(errOut, config.ProxyFallbackNote())
+	}
 	return nil
 }
 
-func runLitellmSet(out io.Writer, cfg *config.Config, url, key *string) error {
-	if err := cfg.UpdateLitellm(func(s *config.LitellmState) {
-		if url != nil {
-			s.URL = *url
-		}
-		if key != nil {
-			s.APIKey = *key
-		}
-	}); err != nil {
+// runLitellmSet is `wt litellm set`: the one writer of the wt-model home
+// (SetProxy), a nil field leaving that field unchanged. No note here: after a
+// set the home is authoritative.
+func runLitellmSet(out io.Writer, url, key *string) error {
+	if err := config.SetProxy(url, key); err != nil {
 		return err
 	}
 	fmt.Fprintln(out, "litellm: updated")
@@ -645,31 +643,23 @@ func litellmCmd(a *app) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error { return runLitellmProviders(cmd.OutOrStdout(), provJSON) },
 	}
 	provC.Flags().BoolVar(&provJSON, "json", false, "machine-readable output")
-	cfgGuard := func(run func(cmd *cobra.Command, cfg *config.Config) error) func(*cobra.Command, []string) error {
-		return func(cmd *cobra.Command, _ []string) error {
-			// Gate on the LOAD error only: these commands touch just wt's own
-			// [litellm] state, so a registry validation gap must not lock the
-			// user out. A genuine load failure leaves a default cfg that Save
-			// would write over config.toml.
-			cfg, loadErr := a.hostConfig()
-			if loadErr != nil {
-				return configError(loadErr)
-			}
-			return run(cmd, cfg)
-		}
-	}
+	// status and set carry no config gate (ruling 8): they reach only the
+	// proxy pair — the wt-model home and its legacy fallback — so a broken
+	// registry or config.toml cannot lock the user out of the one surface
+	// that repairs the pair. `set` is the escape hatch (gateless); `status`
+	// fails loud on exactly the files its resolution needs (ResolveProxy).
 	var statusJSON bool
 	statusC := &cobra.Command{
 		Use: "status", Short: "Show the LiteLLM proxy url and whether its api key is set (the key is never printed)", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: cfgGuard(func(cmd *cobra.Command, cfg *config.Config) error {
-			return runLitellmStatus(cmd.OutOrStdout(), cfg, statusJSON)
-		}),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runLitellmStatus(cmd.OutOrStdout(), cmd.ErrOrStderr(), statusJSON)
+		},
 	}
 	statusC.Flags().BoolVar(&statusJSON, "json", false, "machine-readable output")
 	var setURL, setKey string
 	setC := &cobra.Command{
 		Use: "set", Short: "Set the LiteLLM proxy url and/or api key", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: cfgGuard(func(cmd *cobra.Command, cfg *config.Config) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			var u, k *string
 			if cmd.Flags().Changed("url") {
 				u = &setURL
@@ -680,8 +670,8 @@ func litellmCmd(a *app) *cobra.Command {
 			if u == nil && k == nil {
 				return errors.New("nothing to set: pass --url and/or --api-key")
 			}
-			return runLitellmSet(cmd.OutOrStdout(), cfg, u, k)
-		}),
+			return runLitellmSet(cmd.OutOrStdout(), u, k)
+		},
 	}
 	setC.Flags().StringVar(&setURL, "url", "", "LiteLLM proxy base URL")
 	setC.Flags().StringVar(&setKey, "api-key", "", "LiteLLM proxy API key")

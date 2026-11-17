@@ -209,13 +209,13 @@ func TestIgnoredLitellmKeys(t *testing.T) {
 }
 
 // TestLegacyLitellmKeysSurviveASave pins R4 across the flip: the [litellm]
-// table is host state (`wt-model serve` reads its url and api_key, `wt
-// litellm set` writes them) that the session leaves alone, so every save path
-// a session or host command takes (an unrelated PatchSave of a LoadSession
-// config, a whole-file Save, an UpdateLitellm that sets only the url) keeps
-// url, api_key and the retired enabled key exactly as written. A save that
-// dropped them would cut the model server off from LiteLLM, and one that
-// dropped enabled would rewrite a file wt only promised to ignore.
+// table is host state (`wt-model serve` reads its url and api_key as the
+// read-only fallback of the wt-model home) that the session leaves alone, so
+// every save path a session or host command takes (an unrelated PatchSave of
+// a LoadSession config, a whole-file Save) keeps url, api_key and the retired
+// enabled key exactly as written. A save that dropped them would cut the
+// model server off from LiteLLM, and one that dropped enabled would rewrite a
+// file wt only promised to ignore.
 func TestLegacyLitellmKeysSurviveASave(t *testing.T) {
 	const body = `default_tag = "code"
 
@@ -256,13 +256,4 @@ token_file = "/t"
 		t.Fatal(err)
 	}
 	check(t, "Save")
-	cfg, err = LoadSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cfg.UpdateLitellm(func(s *LitellmState) { s.URL = "http://127.0.0.1:4001" }); err != nil {
-		t.Fatal(err)
-	}
-	want.URL = "http://127.0.0.1:4001"
-	check(t, "UpdateLitellm")
 }

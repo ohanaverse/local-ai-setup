@@ -315,6 +315,7 @@ func TestMaskKey(t *testing.T) {
 		{"", "(unset)"},
 		{"ab", "***"},
 		{"abcd", "***"},
+		{"abcde", "***bcde"},
 		{"sk-12345678", "***5678"},
 	} {
 		if got := MaskKey(tc.key); got != tc.want {
