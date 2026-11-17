@@ -131,3 +131,12 @@ func remoteExit(err error) error {
 	}
 	return exitcode.New(1, err, false)
 }
+
+// nativeFallback reports whether a launch whose model setup failed with err
+// runs the agent natively instead (#615): only when no model server is
+// configured at all (neither url nor token; one missing is a half-configured
+// server and refuses) and the launch asks for no model (-M, -T, -F pick from a
+// catalog that does not exist). A configured server is never bypassed.
+func nativeFallback(err error, pinned, tags, family string) bool {
+	return pinned == "" && tags == "" && family == "" && modelclient.NoServerConfigured(err)
+}

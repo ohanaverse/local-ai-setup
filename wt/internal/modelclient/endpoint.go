@@ -99,3 +99,13 @@ func ResolveEndpoint(url, tokenFile string, env func(string) string) (Endpoint, 
 	}
 	return Endpoint{URL: url, Token: tok}, nil
 }
+
+// NoServerConfigured reports whether err says no model server is configured at
+// all: neither the url nor the token is set (anywhere, wrapped or not). A
+// session launches a model-driven agent natively only for this; one setting
+// missing is a half-configured server and stays a refusal, and any other
+// error, an unreachable or refusing server included, is never bypassed.
+func NoServerConfigured(err error) bool {
+	var nc *NotConfiguredError
+	return errors.As(err, &nc) && nc.MissingURL && nc.MissingToken
+}

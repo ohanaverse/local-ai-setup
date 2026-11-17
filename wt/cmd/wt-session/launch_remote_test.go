@@ -523,9 +523,10 @@ func TestUnreachableServerFailsFastWithAddress(t *testing.T) {
 // TestPickerGetsTheModelServerOnlyWhenOneIsConfigured proves the one tui.Run
 // caller hands the picker its model-server client when an endpoint is
 // configured (and the session config with it, never the host's), and, since
-// the flip, that with none configured a picker that may need a model refuses
-// before the TUI opens (exit 1, nothing was launched) while a pinned command
-// agent's worktree picker still opens, with no client. The picker's fetch
+// the flip, that with none configured the picker opens natively (no client,
+// the native flag; #615) unless the launch asks for a model (-T), which
+// refuses before the TUI opens (exit 1, nothing was launched), while a pinned
+// command agent's worktree picker still opens, with no client and no flag. The picker's fetch
 // itself runs inside the TUI; nothing here reaches the fake server.
 func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 	r := newRemoteRig(t)
@@ -533,9 +534,9 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 	t.Cleanup(func() { tuiRun, maybeInstallGuard = oldTUI, oldGuard })
 	var gotModels tui.ModelClient
 	var gotCfg *config.Config
-	var called bool
-	tuiRun = func(_, _ bool, _ string, _, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, cfg *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
-		called, gotModels, gotCfg = true, models, cfg
+	var called, gotNative bool
+	tuiRun = func(_, _ bool, _ string, _, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, native bool, cfg *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
+		called, gotModels, gotCfg, gotNative = true, models, cfg, native
 		return nil
 	}
 	cmd := &cobra.Command{}
@@ -554,19 +555,25 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 		t.Errorf("the launch path asked the server %v before the picker opened", r.f.Reqs)
 	}
 
-	// No endpoint: the picker refuses before it opens.
+	// No endpoint: the picker opens natively (#615), with no client and the
+	// native flag, unless the launch asks for a model, which refuses before the
+	// picker opens.
 	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN"} {
 		t.Setenv(k, "")
 	}
 	a := &app{}
 	a.sessCfgSet, a.sessCfg = true, &config.Config{}
-	called, gotModels = false, nil
-	err := runLaunchPath(cmd, a, "", "", "", "", nil, "", "")
+	called, gotModels, gotNative = false, nil, false
+	if err := runLaunchPath(cmd, a, "", "", "", "", nil, "", ""); err != nil || !called || gotModels != nil || !gotNative {
+		t.Errorf("no endpoint: err = %v, called = %v, models = %v, native = %v; want a native picker with no client", err, called, gotModels, gotNative)
+	}
+	called = false
+	err := runLaunchPath(cmd, a, "", "", "code", "", nil, "", "")
 	if want := notConfiguredText(launchStill); err == nil || err.Error() != want || exitcode.Of(err) != 1 {
-		t.Errorf("no endpoint: err = %v (exit %d), want %q, exit 1", err, exitcode.Of(err), want)
+		t.Errorf("no endpoint, -T: err = %v (exit %d), want %q, exit 1", err, exitcode.Of(err), want)
 	}
 	if called {
-		t.Error("no endpoint: the TUI opened")
+		t.Error("no endpoint, -T: the TUI opened")
 	}
 
 	// No endpoint, a pinned command: its worktree picker needs no model.
@@ -574,8 +581,8 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 	if err := runLaunchPath(cmd, a, "shell", "", "", "", nil, "", ""); err != nil {
 		t.Fatalf("shell runLaunchPath: %v", err)
 	}
-	if !called || gotModels != nil {
-		t.Errorf("shell: called = %v, models = %v, want a call with nil", called, gotModels)
+	if !called || gotModels != nil || gotNative {
+		t.Errorf("shell: called = %v, models = %v, native = %v, want a call with nil and no native flag", called, gotModels, gotNative)
 	}
 }
 
@@ -596,7 +603,7 @@ func TestSeveralMatchesOpenThePickerOnTheServer(t *testing.T) {
 	var gotModels tui.ModelClient
 	var gotAgent string
 	called := false
-	tuiRun = func(_, _ bool, _ string, agent, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, _ *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
+	tuiRun = func(_, _ bool, _ string, agent, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, _ bool, _ *config.Config, _ tui.ProfileApplier, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
 		called, gotModels, gotAgent = true, models, agent
 		return nil
 	}

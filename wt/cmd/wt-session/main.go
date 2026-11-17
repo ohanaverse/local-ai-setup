@@ -131,6 +131,7 @@ func runLaunchPath(
 	// refusal. A pinned command agent's picker only picks a worktree, and
 	// opens without a server.
 	var models tui.ModelClient
+	native := false
 	scfg, serr := a.sessionCfg()
 	ms, merr := a.buildModels(launchStill)
 	switch {
@@ -138,6 +139,10 @@ func runLaunchPath(
 		models = tui.NewModelClient(ms.client, ms.ep)
 	case agents.IsCommand(agent):
 		// A command needs no model; nothing below asks for one.
+	case nativeFallback(merr, pinned, tags, family):
+		// No model server at all and no model asked for (#615): the picker
+		// opens with no client and launches a chosen agent natively.
+		native = true
 	default:
 		return remoteExit(merr) // buildModels' errors carry the still clause
 	}
@@ -197,7 +202,7 @@ func runLaunchPath(
 	// for as long as a picker is up, so a launch that went through the TUI
 	// says it again once the TUI has returned and the terminal is the
 	// user's.
-	err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, models, scfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
+	err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, models, native, scfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
 	printSlotNotes()
 	// tui.Run returns the agent's run error after its post-exit flow; a
 	// non-zero exit becomes wt's own status, as on the non-TUI path, and
@@ -461,14 +466,16 @@ func rootCmd() *cobra.Command {
 			// before the launch question, a worktree or branch, the guard or
 			// any other git work, rather than after (the same refusal
 			// launchFilteredRemote and the picker give, decided without a
-			// network call). A model-driven agent always needs one; with no
+			// network call). A model-driven agent always needs one, unless no
+			// server is configured at all and no model is asked for (-M, -T,
+			// -F): then it launches natively (nativeFallback, #615); with no
 			// agent the picker does (without a terminal the picker's own
 			// refusal, below, comes first, as before; for `-W <new>` that
 			// is only after plan.Ensure has created the worktree and
 			// branch, which this check does not change). A command agent
 			// needs none.
 			if (agent != "" && !agents.IsCommand(agent)) || (agent == "" && stdinTTY()) {
-				if _, err := a.buildModels(launchStill); err != nil {
+				if _, err := a.buildModels(launchStill); err != nil && !nativeFallback(err, pinned, tags, family) {
 					return remoteExit(err) // buildModels' errors carry the still clause
 				}
 			}

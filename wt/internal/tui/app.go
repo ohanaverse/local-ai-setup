@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -70,6 +71,9 @@ type model struct {
 	// client is the model server the picker reads its table from; nil only
 	// for a pinned command agent (shell), whose picker never reaches a model.
 	client ModelClient
+	// native: no model server is configured and a model-driven agent launches
+	// with its own configuration (see enterModelPhaseForAgent).
+	native bool
 	// catPricing is the pricing member of the latest catalog the picker
 	// loaded and catSeen says there was one: the stale-pricing notice after a
 	// launch reads them, and fetches once only when no catalog was loaded.
@@ -751,11 +755,32 @@ func (m model) proceedWithPath() (model, tea.Cmd) {
 // (beginCatalogLoad). Without a model server (only a pinned command agent
 // opens the picker with none, and it never asks for a model) it says so.
 func (m model) enterModelPhaseForAgent() (model, tea.Cmd) {
+	if m.client == nil && m.native {
+		return m.launchNative()
+	}
 	if m.client == nil {
 		m.status = "no model server is configured: set url and token_file under [model-server] in config.toml"
 		return m, nil
 	}
 	return m.beginCatalogLoad()
+}
+
+// launchNative is the launch of m.agent with no model server configured
+// (#615): the native model through the same builder as every launch, a zero
+// Gateway, and the one native note queued for the terminal the user gets back.
+// Nothing is registered or recorded: there is no server and no model id.
+func (m model) launchNative() (model, tea.Cmd) {
+	mdl := agents.NativeModel()
+	cmd, _, err := buildGatewayLaunch(m.agent, mdl, m.selectedPath, m.yolo, agents.Gateway{}, nil, m.extraArgs)
+	if err != nil {
+		m.status = "launch failed: " + err.Error()
+		return m, nil
+	}
+	queueLaunchNotes(m.agent, cmd, m.extraArgs)
+	if line := agents.NativeNote(m.agent) + "\n"; !strings.Contains(pendingRouteNotes, line) {
+		pendingRouteNotes += line
+	}
+	return m.commitLaunch(runAndWaitCmd(cmd, m.agent, mdl, m.gateFor()))
 }
 
 // routeBackToAgent leaves the model phase for the agent picker with status as
@@ -851,8 +876,9 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // When the launched agent's run failed, Run returns that error (an
 // *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
 // cmd/wt-session exits with the agent's status (#412).
-func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
+func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, native bool, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
 	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, models, cfg, removeFuncs), slots)
+	initial.native = native
 	p := tea.NewProgram(initial, tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.

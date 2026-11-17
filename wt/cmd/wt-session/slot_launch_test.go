@@ -509,9 +509,15 @@ func TestRunLaunchPathWarnsAboutSlotProfilesOncePerRun(t *testing.T) {
 				return nil
 			}
 			t.Cleanup(func() { launchCommand = oldLaunch })
-			// No model server: a model-driven agent's launch is refused,
+			// No model server: a model-driven agent's launch is native
+			// (#615; its build is stubbed to fail so no real agent runs)
 			// and no agent's is the picker's terminal refusal; the
 			// warnings are printed before either.
+			oldBuild := buildGatewayCmd
+			buildGatewayCmd = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+				return nil, agents.LaunchInfo{}, errors.New("no agent in this test")
+			}
+			t.Cleanup(func() { buildGatewayCmd = oldBuild })
 			a := &app{slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")}
 
 			stderr := captureFile(t, &os.Stderr, func() {
@@ -547,7 +553,7 @@ func TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI(t *testing.T) {
 				t.Error("the launch went past the picker")
 				return nil, agents.LaunchInfo{}, errors.New("no launch")
 			}
-			tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
+			tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, bool, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
 				fmt.Fprintln(os.Stderr, "<the TUI ran>")
 				return errors.New("the TUI's own error")
 			}
