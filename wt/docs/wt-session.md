@@ -47,14 +47,18 @@ same table pointing at `http://<listen>` with the token file
 `~/.config/wt-model/server.token` that the `wt-model` LaunchAgent
 (`local.wt-model.serve`) also uses, and the LaunchAgent itself; for
 `native`, `mode = "native"` with no url or token. Doing it by hand, make a
-token file once and give the server the same file (`--token-file`):
+token file once. On one machine running both sides, the server
+(`--token-file`) and the session (`token_file`) name the same file,
+`~/.config/wt-model/server.token`:
 
 ```bash
-umask 077; head -c 32 /dev/urandom | base64 > ~/.config/agent-wt/remote-model-server.token
+mkdir -p ~/.config/wt-model; umask 077; head -c 32 /dev/urandom | base64 > ~/.config/wt-model/server.token
 ```
 
-The server side keeps its own copy at `~/.config/wt-model/server.token`; the
-split is explained in
+On a machine that only runs sessions, the session's copy of the server's
+token is `~/.config/agent-wt/remote-model-server.token` (same content, mode
+0600), and `wt-model serve` on the server machine keeps reading its own
+`~/.config/wt-model/server.token`; the layouts are in
 [../../docs/guides/13-deployment-use-cases.md](../../docs/guides/13-deployment-use-cases.md).
 
 ### Environment overrides
@@ -93,7 +97,10 @@ on the Model server tab, once per run and before anything is created; when
 you quit with a mode chosen the launch goes on, and with none still chosen it
 ends with `no model-server mode chosen — nothing was launched` (exit 1). The
 gate never opens for a stored or environment mode, even an invalid one, and
-never without a terminal: a script gets the refusal above.
+never without a terminal: a script gets the refusal above. A command agent
+needs no mode: `wt -A shell` never opens the gate, while a bare `wt` on a
+terminal opens it before the agent picker, even when you meant to pick
+`shell`.
 
 In native mode it is `wt: no model server is configured — native mode has no
 model server; change the mode in wt config; …`. In local or remote mode (or

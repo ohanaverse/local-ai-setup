@@ -39,7 +39,7 @@ The same command in every layout (a fresh 32-byte token, nobody else can read th
 mkdir -p ~/.config/wt-model; umask 077; head -c 32 /dev/urandom | base64 > ~/.config/wt-model/server.token
 ```
 
-On a machine that only runs sessions (use cases 2 and 3), put the copy at `~/.config/agent-wt/remote-model-server.token`. `wt-model serve` takes it as `--token-file PATH`, and each session names the same file as `token_file` under `[model-server]` (or `WT_MODEL_TOKEN_FILE`). A file a group or other can read is refused by both sides (`chmod 600 PATH` is the fix). To rotate: write a new file with the command above, restart `wt-model serve`, and give every session machine the new token.
+`wt-model serve` takes the server's file as `--token-file PATH`; on the same machine a session names that file as `token_file` under `[model-server]` (or `WT_MODEL_TOKEN_FILE`). On a machine that only runs sessions (use cases 2 and 3), put a copy of the server's token at `~/.config/agent-wt/remote-model-server.token` and name that file as the session's `token_file`. A file a group or other can read is refused by both sides (`chmod 600 PATH` is the fix). To rotate: write a new file with the command above, restart `wt-model serve`, and give every session machine the new token.
 
 ### 2. Use case 1 — both on one machine
 

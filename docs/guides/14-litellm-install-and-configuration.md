@@ -252,12 +252,14 @@ The `wt config` Model server tab (design: [the model-server configuration spec](
 
 **Rotating the master key** (`k`, generate a new key) runs these steps in order, stopping at the first failure:
 
-1. back up the plist beside it as `<plist>.bak-<date>-<time>` (a second backup in the same second gets `-2`, `-3`, ...; an earlier backup is never replaced), at the plist's mode without group or other bits; the backup holds the old key;
+1. check the plist as it is now (the key edit is tried without writing, and the `DATABASE_URL`-without-salt rule is checked again), then back it up to `~/.config/wt-model/backups/local.litellm.proxy.plist.bak-<date>-<time>` (a second backup in the same second gets `-2`, `-3`, ...; an earlier backup is never replaced), at the plist's mode without group or other bits; the backup holds the old key. The directory is created 0700 (a looser one is set to 0700, and the result says so); it is outside `~/Library/LaunchAgents` on purpose, since a copy there carries the same label and launchd could load it;
 2. replace `LITELLM_MASTER_KEY` in the plist with a new generated key, keeping every other byte, written without group or other bits;
 3. `chmod 0600` the plist when it was looser;
 4. update wt-model's pair to the same key;
 5. restart LiteLLM (`launchctl kickstart -k`) and wait until it answers and accepts the new key;
 6. restart wt-model so it reads the new pair.
+
+Both restarts are `kickstart -k`: a request in flight through LiteLLM or wt-model is cut at once (unlike `wt litellm restart`, which lets it finish), and the plan says so. Rotate when no agent is mid-request. To restore the old plist by hand: `cp -p <backup> ~/Library/LaunchAgents/local.litellm.proxy.plist && chmod 600 ~/Library/LaunchAgents/local.litellm.proxy.plist` (the result names the backup).
 
 Anything else that holds the old master key stops working once LiteLLM restarts: other clients and scripts that send it, a `[litellm]` `api_key` in `~/.config/agent-wt/config.toml` if one is set there, and copies of the plist (the backup keeps the old key; remove it once the new key works). Rotation never touches the salt key, `DATABASE_URL`, provider keys or the UI login.
 
@@ -268,10 +270,10 @@ Anything else that holds the old master key stops working once LiteLLM restarts:
 | a plist already exists (create) | wt creates a plist only when none exists; use the plist's key or generate a new one |
 | no `litellm` binary, or no `config.yaml` (create) | wt never installs LiteLLM nor writes a first config; install it as sections 1 and 4 describe |
 | something listens on port 4000 (create) | names the pid; stop it, or keep it and enter its master key instead |
-| a plist wt will not edit, found only when applying (rotate): the key appears twice, or sits in a comment, CDATA, the wrong dict or a non-string value | the plan is offered, then refused at apply after the backup was written; nothing else changed, and the backup is not needed (remove it). Fix the plist by hand |
+| a plist wt will not edit, found only when applying (rotate): the key appears twice, or sits in a comment, CDATA, the wrong dict or a non-string value | the plan is offered, then refused at apply before the backup; nothing was changed and no backup was made. Fix the plist by hand |
 | a binary property list (rotate) | run `plutil -convert xml1 <plist>`, then check again |
 | an unreadable plist, or no `LITELLM_MASTER_KEY` (rotate) | fix the plist as sections 5 and 6 describe |
-| `DATABASE_URL` but no `LITELLM_SALT_KEY` (rotate) | set `LITELLM_SALT_KEY` to the current master key's value first, or confirm the database holds no stored credentials (section 6) |
+| `DATABASE_URL` but no `LITELLM_SALT_KEY` (rotate; checked when planning and again when applying, before the backup) | set `LITELLM_SALT_KEY` to the current master key's value first, or confirm the database holds no stored credentials (section 6) |
 
 When a step fails, or an apply stops with a service out of step, a result screen shows the commands to run by hand (to put the plist, wt-model's pair or a service right) first, then the notes (the backup's path), then the result's own text; up and down scroll it, esc leaves it. A quit asked for during such an apply is held back until the notes can be read. Secrets never appear on it.
 
