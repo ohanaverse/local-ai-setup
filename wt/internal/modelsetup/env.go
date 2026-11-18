@@ -40,6 +40,9 @@ const (
 type FS interface {
 	ReadFile(path string) ([]byte, error)
 	Stat(path string) (fs.FileInfo, error)
+	// Lstat is Stat without following a final symlink: a dangling link is
+	// there for Lstat and absent for Stat.
+	Lstat(path string) (fs.FileInfo, error)
 	WriteAtomic(path string, data []byte, perm os.FileMode) error
 	Chmod(path string, perm os.FileMode) error
 	Remove(path string) error
@@ -165,13 +168,35 @@ func guardUnderTest(paths ...string) error {
 	return nil
 }
 
-type realFS struct{}
+type realFS struct {
+	// resolve resolves a path's symlinks: filepath.EvalSymlinks when nil. A
+	// test sets it to check the guard on a resolved path outside the temp
+	// directory without making a link that leaves it.
+	resolve func(string) (string, error)
+}
 
-func (realFS) ReadFile(p string) ([]byte, error)  { return os.ReadFile(p) }
-func (realFS) Stat(p string) (fs.FileInfo, error) { return os.Stat(p) }
-func (realFS) Chmod(p string, m os.FileMode) error {
+func (x realFS) evalSymlinks(p string) (string, error) {
+	if x.resolve != nil {
+		return x.resolve(p)
+	}
+	return filepath.EvalSymlinks(p)
+}
+
+func (realFS) ReadFile(p string) ([]byte, error)   { return os.ReadFile(p) }
+func (realFS) Stat(p string) (fs.FileInfo, error)  { return os.Stat(p) }
+func (realFS) Lstat(p string) (fs.FileInfo, error) { return os.Lstat(p) }
+func (x realFS) Chmod(p string, m os.FileMode) error {
 	if err := guardUnderTest(p); err != nil {
 		return err
+	}
+	// Chmod follows a link, so in a test binary the path it resolves to is
+	// guarded too (one that does not resolve fails os.Chmod on its own).
+	if testing.Testing() {
+		if real, err := x.evalSymlinks(p); err == nil {
+			if err := guardUnderTest(real); err != nil {
+				return err
+			}
+		}
 	}
 	return os.Chmod(p, m)
 }
@@ -181,16 +206,24 @@ func (realFS) Remove(p string) error {
 	}
 	return os.Remove(p)
 }
-func (realFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
+func (x realFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
 	if err := guardUnderTest(p); err != nil {
 		return err
 	}
 	// A rename over a symlink would replace the link with a regular file, so
-	// a plist a dotfiles tool links into place is written where it points.
+	// a plist a dotfiles tool links into place is written where it points. A
+	// link that does not resolve (dangling, a loop, an unreadable parent) is
+	// refused: replacing it would put the content where the user did not mean
+	// it to go. The resolved path is guarded again in a test binary.
 	if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		if real, err := filepath.EvalSymlinks(p); err == nil {
-			p = real
+		real, err := x.evalSymlinks(p)
+		if err != nil {
+			return fmt.Errorf("%s is a symlink that does not resolve; nothing was written", p)
 		}
+		if err := guardUnderTest(real); err != nil {
+			return err
+		}
+		p = real
 	}
 	return config.WriteFileAtomic(p, d, m)
 }

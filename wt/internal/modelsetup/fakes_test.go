@@ -26,10 +26,13 @@ type fakeEnv struct {
 	calls []string
 
 	// FS: files and their modes.
-	files     map[string][]byte
-	modTimes  map[string]time.Time // Stat's ModTime by path
-	modes     map[string]os.FileMode
-	writeErr  map[string]error // WriteAtomic of this path fails, writing nothing
+	files    map[string][]byte
+	modTimes map[string]time.Time // Stat's ModTime by path
+	modes    map[string]os.FileMode
+	writeErr map[string]error // WriteAtomic of this path fails, writing nothing
+	// dangling holds paths that are a symlink whose target does not exist:
+	// Lstat sees them, Stat and ReadFile report them absent.
+	dangling  map[string]bool
 	backupErr error
 
 	// Launchd.
@@ -186,6 +189,18 @@ func (x fakeFS) Stat(p string) (fs.FileInfo, error) {
 	d, ok := x.f.files[p]
 	if !ok {
 		return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
+	}
+	return fakeInfo{p, len(d), x.f.modes[p], x.f.modTimes[p]}, nil
+}
+
+func (x fakeFS) Lstat(p string) (fs.FileInfo, error) {
+	x.f.rec("FS.Lstat %s", p)
+	if x.f.dangling[p] {
+		return fakeInfo{p, 0, os.ModeSymlink | 0o777, x.f.modTimes[p]}, nil
+	}
+	d, ok := x.f.files[p]
+	if !ok {
+		return nil, &fs.PathError{Op: "lstat", Path: p, Err: fs.ErrNotExist}
 	}
 	return fakeInfo{p, len(d), x.f.modes[p], x.f.modTimes[p]}, nil
 }

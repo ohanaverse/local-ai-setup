@@ -1110,3 +1110,27 @@ func TestNoPlanOrResultTextContainsAKey(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyCreateCountsADanglingSymlinkAsPresent pins that create's "no
+// plist exists" check does not follow a final symlink: a dangling link at the
+// LiteLLM plist path (a dotfiles tool's link to a file not there yet) is a
+// plist that exists, so create refuses before generating a key, writes
+// nothing and leaves the pair alone, instead of renaming a regular file over
+// the link with new keys in it.
+func TestApplyCreateCountsADanglingSymlinkAsPresent(t *testing.T) {
+	p := mustPlan(t, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	f := apEnv(t)
+	liteLLMUp(f, 77)
+	f.dangling = map[string]bool{plLiteLLM: true}
+	r, lines := apply(t, f, p)
+	if r.Failed == nil || r.Failed.Kind != StepLiteLLMPlist {
+		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
+	}
+	if !strings.Contains(r.Err.Error(), plLiteLLM+" exists now") {
+		t.Errorf("Err = %v", r.Err)
+	}
+	if f.called("FS.WriteAtomic "+plLiteLLM) || f.called("Config.SetPair") || f.called("Launchd.Bootstrap "+plLiteLLM) {
+		t.Errorf("wrote through a dangling link: %q", f.mutations())
+	}
+	noSecrets(t, f, lines, r)
+}

@@ -487,7 +487,9 @@ func applyLiteLLMPlist(ctx context.Context, env Env, p Plan, s Step, run *applyR
 	if err := checkLiteLLMSpec(spec); err != nil {
 		return fmt.Errorf("%w (nothing was written)", err)
 	}
-	if _, err := env.FS.Stat(s.Path); err == nil {
+	// Lstat: a dangling symlink at the path is a plist that exists, never
+	// one to rename a new file over.
+	if _, err := env.FS.Lstat(s.Path); err == nil {
 		return fmt.Errorf("%s exists now, and wt never replaces a LiteLLM plist; nothing was written: check again", s.Path)
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("look for %s: %w", s.Path, err)

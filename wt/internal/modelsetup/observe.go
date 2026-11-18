@@ -383,8 +383,16 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	if info, err := env.LiteLLM.ReadPlist(lp); err != nil {
 		st.LiteLLMPlist.Present = !errors.Is(err, fs.ErrNotExist)
 		var se *xml.SyntaxError
+		if !st.LiteLLMPlist.Present {
+			// A symlink there that does not resolve is a plist that exists
+			// (a create must not replace the link), but one wt cannot read.
+			if fi, lerr := env.FS.Lstat(lp); lerr == nil && fi.Mode()&fs.ModeSymlink != 0 {
+				st.LiteLLMPlist.Present = true
+				st.LiteLLMPlist.Err = lp + " is a symlink that does not resolve"
+			}
+		}
 		switch {
-		case !st.LiteLLMPlist.Present:
+		case !st.LiteLLMPlist.Present, st.LiteLLMPlist.Err != "":
 		case errors.Is(err, litellm.ErrBinaryPlist):
 			st.LiteLLMPlist.Binary, st.LiteLLMPlist.Err = true, err.Error()
 		case errors.As(err, &se):

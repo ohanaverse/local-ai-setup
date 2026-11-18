@@ -519,3 +519,25 @@ func TestObserveLiteLLMJobAndProbeGate(t *testing.T) {
 		t.Errorf("skipped probe: %+v", got)
 	}
 }
+
+// TestObserveCountsADanglingLiteLLMPlistLinkAsPresent pins that a LiteLLM
+// plist path holding a symlink that does not resolve reads as present (with
+// an error naming it), not absent, so a create plan refuses it instead of
+// offering to write a new plist over the link.
+func TestObserveCountsADanglingLiteLLMPlistLinkAsPresent(t *testing.T) {
+	f := newFakeEnv(t)
+	f.litellmBin = plLiteLLMBin
+	f.files[f.configPath] = []byte("model_list: []\n")
+	f.plistErr = &fs.PathError{Op: "open", Path: f.plistPath, Err: fs.ErrNotExist}
+	f.dangling = map[string]bool{f.plistPath: true}
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	lp := st.LiteLLMPlist
+	if !lp.Present || !strings.Contains(lp.Err, f.plistPath+" is a symlink that does not resolve") {
+		t.Fatalf("dangling plist link: %+v", lp)
+	}
+	st.Host.ConfigHome = "/Users/user_name/.config"
+	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	if err == nil || !strings.Contains(err.Error(), "already exists") || len(p.Steps) != 0 {
+		t.Errorf("create over a dangling link: err %v, steps %d", err, len(p.Steps))
+	}
+}
