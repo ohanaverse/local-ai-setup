@@ -17,8 +17,13 @@ import (
 
 // ObserveOptions tunes Observe. ListenPort is the port to look for a
 // listener on; zero means the port of the LaunchAgent's listen address, else
-// of DefaultListen.
-type ObserveOptions struct{ ListenPort int }
+// of DefaultListen. TokenPaths are extra token files to describe in
+// State.TokenFiles (a path the user typed for remote, say), so BuildPlan can
+// judge them without reading the disk itself.
+type ObserveOptions struct {
+	ListenPort int
+	TokenPaths []string
+}
 
 // Platform says whether the local mode can be set up here: macOS with launchd.
 type Platform struct {
@@ -36,10 +41,12 @@ type ConfigState struct {
 }
 
 // TokenState describes the token file; the token itself is never held.
+// Empty is true when the file exists, is not loose and holds nothing but
+// white space (a loose file is never read, so its content is unknown).
 type TokenState struct {
-	Path          string
-	Exists, Loose bool
-	Err           string
+	Path                 string
+	Exists, Loose, Empty bool
+	Err                  string
 }
 
 // PairState describes the LiteLLM proxy pair; the key is only a flag.
@@ -56,7 +63,10 @@ type AgentState struct {
 	Job              LaunchdJob
 	Listen, Binary   string
 	TokenFile        string
-	Err              string
+	// Content is the plist file as read (it holds no secret: the token is a
+	// path), so a plan can tell whether a rewrite would change it.
+	Content []byte
+	Err     string
 }
 
 // ListenerState is whatever listens on the model server's port. Ours is true
@@ -93,9 +103,12 @@ type ServerState struct {
 
 // HostState is what a plan needs from the host so BuildPlan stays pure: the
 // wt-model binary (beside the running wt, else on PATH, written as found), the
-// captured PATH, the home directory and the uid.
+// captured PATH, the home directory, the base config directory
+// ($XDG_CONFIG_HOME, else ~/.config; the parent of agent-wt and wt-model) and
+// the uid.
 type HostState struct {
 	Binary, BinaryErr, Path, Home string
+	ConfigHome                    string
 	UID                           int
 }
 
@@ -134,11 +147,17 @@ type LiteLLMState struct {
 
 // State is everything Observe saw. It never holds a secret.
 type State struct {
-	Platform     Platform
-	Resolution   modelclient.Resolution
-	EnvOverride  string
-	Config       ConfigState
-	Token        TokenState
+	Platform    Platform
+	Resolution  modelclient.Resolution
+	EnvOverride string
+	Config      ConfigState
+	// Token is the token file a session would use (see Observe).
+	Token TokenState
+	// TokenFiles describes the other token files a plan may choose: the
+	// local default (DefaultLocalTokenPath), the fixed remote path
+	// (RemoteTokenPath), the agent's own token file and
+	// ObserveOptions.TokenPaths, each once, in that order.
+	TokenFiles   []TokenState
 	Pair         PairState
 	Agent        AgentState
 	Listener     ListenerState
@@ -206,12 +225,14 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		st.Host.Home = home
 	}
 	st.Host.Binary, st.Host.BinaryErr = findModelBinary(env)
+	st.Host.ConfigHome = configHome(getenv("XDG_CONFIG_HOME"), home, herr)
 
 	// Agent.
 	if herr == nil {
 		st.Agent.PlistPath = filepath.Join(home, "Library", "LaunchAgents", AgentLabel+".plist")
 		if data, err := env.FS.ReadFile(st.Agent.PlistPath); err == nil {
 			st.Agent.Present = true
+			st.Agent.Content = data
 			if p, perr := ParseAgentPlist(data); perr != nil {
 				st.Agent.Err = perr.Error()
 			} else {
@@ -256,6 +277,30 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	case st.Resolution.Mode == modelclient.ModeLocal && st.Agent.TokenFile != "":
 		st.Token.Path = st.Agent.TokenFile
 		token = readToken(env, &st.Token)
+	}
+
+	// The other token files a plan may choose, each described once.
+	seen := map[string]bool{st.Token.Path: st.Token.Path != ""}
+	var extra []string
+	if st.Host.ConfigHome != "" {
+		extra = append(extra, DefaultLocalTokenPath(st.Host.ConfigHome), RemoteTokenPath(st.Host.ConfigHome))
+	}
+	extra = append(extra, st.Agent.TokenFile)
+	extra = append(extra, opts.TokenPaths...)
+	for _, p := range extra {
+		if p == "" {
+			continue
+		}
+		if x, err := expandHome(p, home, herr); err == nil {
+			p = x
+		}
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		ts := TokenState{Path: p}
+		_ = readToken(env, &ts) // only the description is kept
+		st.TokenFiles = append(st.TokenFiles, ts)
 	}
 
 	// Pair.
@@ -338,6 +383,33 @@ func expandHome(path, home string, herr error) (string, error) {
 	return filepath.Join(home, path[2:]), nil
 }
 
+// DefaultLocalTokenPath is where the local plan creates the model server's
+// token: <config home>/wt-model/server.token.
+func DefaultLocalTokenPath(configHome string) string {
+	return filepath.Join(configHome, "wt-model", "server.token")
+}
+
+// RemoteTokenPath is the one file a pasted remote token is written to:
+// <config home>/agent-wt/remote-model-server.token.
+func RemoteTokenPath(configHome string) string {
+	return filepath.Join(configHome, "agent-wt", "remote-model-server.token")
+}
+
+// configHome is config's baseConfigHome over the Host seam: XDG_CONFIG_HOME
+// (a leading ~ expanded), else ~/.config; "" when neither can be known.
+func configHome(xdg, home string, herr error) string {
+	if xdg != "" {
+		if p, err := expandHome(xdg, home, herr); err == nil {
+			return p
+		}
+		return xdg
+	}
+	if herr != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".config")
+}
+
 // readToken fills ts from the token file and returns the token, or "" when it
 // is missing, empty, unreadable or loose (a loose file is never read).
 func readToken(env Env, ts *TokenState) string {
@@ -360,6 +432,7 @@ func readToken(env Env, ts *TokenState) string {
 	}
 	tok := strings.TrimSpace(string(raw))
 	if tok == "" {
+		ts.Empty = true
 		ts.Err = "token file is empty"
 	}
 	return tok

@@ -313,3 +313,36 @@ func TestObserveTokenChoiceMirrorsTheSession(t *testing.T) {
 		t.Errorf("literal token: %+v calls %q", st.Server, f.calls)
 	}
 }
+
+// TestObserveDescribesTheTokenFilesAPlanMayChoose pins the additions BuildPlan
+// reads instead of the disk: the config home, the default local and fixed
+// remote token files plus any asked-for path (each once), an empty file
+// flagged Empty, and the agent plist's bytes.
+func TestObserveDescribesTheTokenFilesAPlanMayChoose(t *testing.T) {
+	f := obsConfigured(t)
+	f.env["XDG_CONFIG_HOME"] = "~/xdg"
+	f.files["/Users/user_name/xdg/wt-model/server.token"] = []byte(" \n")
+	f.modes["/Users/user_name/xdg/wt-model/server.token"] = 0o600
+	f.files["/srv/tok"] = []byte(obsFakeToken)
+	f.modes["/srv/tok"] = 0o644
+	plist := RenderAgentPlist(AgentSpec{Binary: "/b/wt-model", Listen: DefaultListen, TokenFile: obsTokenPath, Path: "/bin", Home: "/h"})
+	f.files[obsAgentPath] = plist
+	st := Observe(context.Background(), f.Env(), ObserveOptions{TokenPaths: []string{"/srv/tok", obsTokenPath}})
+	if st.Host.ConfigHome != "/Users/user_name/xdg" {
+		t.Errorf("ConfigHome = %q", st.Host.ConfigHome)
+	}
+	want := []TokenState{
+		{Path: "/Users/user_name/xdg/wt-model/server.token", Exists: true, Empty: true, Err: "token file is empty"},
+		{Path: "/Users/user_name/xdg/agent-wt/remote-model-server.token"},
+		{Path: "/srv/tok", Exists: true, Loose: true},
+	}
+	if fmt.Sprint(st.TokenFiles) != fmt.Sprint(want) {
+		t.Errorf("TokenFiles = %+v, want %+v", st.TokenFiles, want)
+	}
+	if string(st.Agent.Content) != string(plist) {
+		t.Errorf("Agent.Content not kept")
+	}
+	if strings.Contains(fmt.Sprintf("%+v", st), obsFakeToken) {
+		t.Errorf("State holds a token")
+	}
+}
