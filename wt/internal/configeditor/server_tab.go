@@ -654,12 +654,12 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "c":
 		// Observe runs every check, the ping of the entered url included,
 		// and writes nothing.
-		st.status, st.pending = "checking the model server", true
+		st.status, st.pending = m.cancelServerPlan()+"checking the model server", true
 		return m, m.observeServerCmd()
 	case "r":
 		// The same read; the one before it, if still out, is dropped. This is
 		// how a config.toml repaired by hand is read again.
-		st.status, st.pending = "re-reading the model server's state", true
+		st.status, st.pending = m.cancelServerPlan()+"re-reading the model server's state", true
 		return m, m.observeServerCmd()
 	case "left", "right", " ", "down", "enter":
 		// The form is inert while anything is out (busy): a read, a plan,
@@ -682,6 +682,20 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	// ctrl+s is the Agents tab's save and does nothing here.
 	return m, nil
+}
+
+// cancelServerPlan drops a plan whose read c or r has just replaced: the
+// older read is dropped when it lands, so the plan would silently never
+// come. The snapshot, secrets included, goes now; the result is the words
+// to put before the new status ("planning cancelled; "), empty if no plan
+// was waiting.
+func (m *model) cancelServerPlan() string {
+	st := &m.server
+	if st.planGen == 0 {
+		return ""
+	}
+	st.planGen, st.queue, st.planWant = 0, nil, modelsetup.Desired{}
+	return "planning cancelled; "
 }
 
 // updateServerForm moves the mode choice (left, right, space) or goes into

@@ -102,6 +102,11 @@ var userinfoRE = regexp.MustCompile(`://[^/\s]*@`)
 // scrub takes any url userinfo out of text the tab draws: Observe already
 // strips it from what it stores, but a message a dep composed may still
 // carry one, and nothing the tab shows may hold a credential.
+//
+// Deliberately greedy: an @ anywhere before the first / or space ends the
+// userinfo, so "https://h:1?x=a@b" loses its host too. That errs on the safe
+// side (a credential is never shown); TestScrubTakesTheHostWithAnAtInTheQuery
+// pins it.
 func scrub(s string) string { return userinfoRE.ReplaceAllString(s, "://") }
 
 // homePath writes a path under home with ~ for the home.
@@ -251,11 +256,28 @@ func serverCheckLine(st modelsetup.State) serverLine {
 	case !s.Checked && s.Message != "":
 		return serverLine{"server", "not checked: " + scrub(s.Message), toneDim}
 	case !s.Checked:
-		return serverLine{"server", "not checked: no url or no token", toneDim}
+		return serverLine{"server", "not checked: " + missingForCheck(st), toneDim}
 	case s.OK:
 		return serverLine{"server", fmt.Sprintf("ok: wt-model answers at %s (api %d, schema %d)", scrub(s.URL), s.API, s.Schema), toneNone}
 	}
 	return serverLine{"server", "problem: " + serverKindWord(s.Kind) + ": " + scrub(s.Message), toneBad}
+}
+
+// missingForCheck says what a check of the server lacked: the url, the token
+// or both. A local server's url is the agent's listen address, never missing.
+func missingForCheck(st modelsetup.State) string {
+	noURL := st.Resolution.Mode != modelclient.ModeLocal && st.Config.Table.URL == "" && st.Server.URL == "" && !hasEnv(st, "WT_MODEL_URL")
+	t := st.Token
+	noToken := !(t.Path != "" && t.Exists && t.Err == "") && !hasEnv(st, "WT_MODEL_TOKEN")
+	switch {
+	case noURL && noToken:
+		return "no url and no token"
+	case noURL:
+		return "no url"
+	case noToken:
+		return "no token"
+	}
+	return "no url or no token"
 }
 
 // checkWord is a LiteLLM check's status as a word, and its tone.
@@ -313,6 +335,9 @@ func serverStatusLines(st modelsetup.State) []serverLine {
 	switch {
 	case r.Mode != "":
 		lines = append(lines, serverLine{"mode", string(r.Mode) + " (" + modeSource(r) + ")", toneNone})
+	case st.Config.ParseErr != "":
+		// The banner above says why, once.
+		lines = append(lines, serverLine{"mode", "unknown: config.toml is not readable", toneWarn})
 	case r.Problem != "":
 		lines = append(lines, serverLine{"mode", "problem: " + scrub(r.Problem), toneBad})
 	default:
@@ -323,7 +348,11 @@ func serverStatusLines(st modelsetup.State) []serverLine {
 		url = "none set"
 	}
 	lines = append(lines, serverLine{"url", scrub(url), toneNone})
-	lines = append(lines, tokenLine(st), pairLine(st.Pair))
+	pair := pairLine(st.Pair)
+	if st.Config.ParseErr != "" {
+		pair = serverLine{"pair", "not read", toneDim}
+	}
+	lines = append(lines, tokenLine(st), pair)
 	lines = append(lines, agentLines(st)...)
 	lines = append(lines, serverCheckLine(st))
 	lines = append(lines, litellmLines(st)...)
@@ -371,7 +400,7 @@ func renderServerLine(l serverLine, width int) []string {
 
 // modeChoice is the mode choice: (x) on the chosen one, (-) on local where
 // it cannot be set up.
-func (m *model) modeChoice() []string {
+func (m *model) modeChoice() (radios []string, notes [][]string) {
 	st := &m.server
 	var opts []string
 	for _, mode := range serverModes {
@@ -404,13 +433,13 @@ func (m *model) modeChoice() []string {
 		if st.state.Platform.Reason != "" {
 			why += ": " + st.state.Platform.Reason
 		}
-		lines = append(lines, renderServerLine(serverLine{text: why}, m.width)...)
+		notes = append(notes, renderServerLine(serverLine{text: why}, m.width))
 		if st.want.Mode == modelclient.ModeLocal {
 			// No option is marked: say why rather than leave the choice blank.
-			lines = append(lines, renderServerLine(serverLine{text: "local is set but cannot run here; choose native or remote"}, m.width)...)
+			notes = append(notes, renderServerLine(serverLine{text: "local is set but cannot run here; choose native or remote"}, m.width))
 		}
 	}
-	return lines
+	return lines, notes
 }
 
 // serverFieldLines are the chosen mode's fields, one line each: the label
@@ -433,55 +462,185 @@ func (m *model) serverFieldLines() []string {
 	return lines
 }
 
-// serverBody is the tab's body under the tab bar: a status line, the parse
-// error, the status block (when withStatus) and the mode choice, styled. The
-// mode choice is last, so a body cut from its middle (MessageAlone) keeps it.
-func (m *model) serverBody(withStatus bool) string {
+// breakPath splits a path into lines no wider than width, breaking only
+// after a "/"; a segment wider than the width on its own is cut at the width.
+func breakPath(path string, width int) []string {
+	if width <= 0 || len(path) <= width {
+		return []string{path}
+	}
+	var segs []string
+	for rest := path; rest != ""; {
+		i := strings.IndexByte(rest, '/')
+		if i < 0 {
+			segs, rest = append(segs, rest), ""
+			continue
+		}
+		segs, rest = append(segs, rest[:i+1]), rest[i+1:]
+	}
+	var out []string
+	cur := ""
+	for _, seg := range segs {
+		for len(seg) > width {
+			if cur != "" {
+				out, cur = append(out, cur), ""
+			}
+			out, seg = append(out, seg[:width]), seg[width:]
+		}
+		if len(cur)+len(seg) > width {
+			out, cur = append(out, cur), ""
+		}
+		cur += seg
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
+}
+
+// statusDropOrder is the order a terminal too short gives up status rows:
+// first entry first. The mode and the server are the last to go.
+var statusDropOrder = []string{"litellm", "agent", "env", "pair", "token", "url", "problems", "server", "mode"}
+
+// statusGroup is one status row with its continuation lines, rendered: the
+// unit that is kept or dropped whole.
+type statusGroup struct {
+	label string
+	lines []string
+}
+
+// serverStatusGroups lays the status block out as one group per labelled
+// row (an entry without a label belongs to the row before it).
+func serverStatusGroups(st modelsetup.State, width int, styles map[tone]lipgloss.Style) []statusGroup {
+	var groups []statusGroup
+	for _, l := range serverStatusLines(st) {
+		if l.label != "" || len(groups) == 0 {
+			groups = append(groups, statusGroup{label: l.label})
+		}
+		g := &groups[len(groups)-1]
+		for _, line := range renderServerLine(l, width) {
+			g.lines = append(g.lines, styles[l.tone].Render(line))
+		}
+	}
+	return groups
+}
+
+// serverBody is the tab's body under the tab bar, in at most room lines: a
+// status line, the parse error, the status block and the mode choice, styled.
+// The mode choice (with the fields) and the status text are kept whole; when
+// the rest does not fit, status rows go whole, lowest priority first
+// (statusDropOrder), and one marker at the end of the block counts them.
+// If that is still too tall the blank lines go, then the middle of the
+// banner and status text.
+func (m *model) serverBody(room int) string {
 	styles := map[tone]lipgloss.Style{
 		toneNone: lipgloss.NewStyle(),
 		toneDim:  lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim)),
 		toneWarn: lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenWarning)),
 		toneBad:  themes.ErrorStyle(m.theme),
 	}
-	var out []string
+	var head []string
 	if s := m.server.status; s != "" {
-		out = append(out, wrapText(s, m.width), "")
+		head = append(head, strings.Split(wrapText(s, m.width), "\n")...)
 	}
 	if m.quitPending && m.server.writing {
-		out = append(out, wrapText("wt config quits once this has finished", m.width), "")
+		head = append(head, strings.Split(wrapText("wt config quits once this has finished", m.width), "\n")...)
 	}
 	if !m.server.loaded {
-		return strings.Join(append(out, wrapText("reading the model server's state", m.width)), "\n")
+		return strings.Join(append(head, "", wrapText("reading the model server's state", m.width)), "\n")
 	}
 	st := m.server.state
 	if st.Config.ParseErr != "" {
-		// The path on a line of its own, so wrapping never breaks it.
-		msg := "config.toml does not parse:\n" + st.Config.Path + "\n" + scrub(st.Config.ParseErr) + "\nfix the file, then press r"
-		out = append(out, styles[toneBad].Render(wrapText(msg, m.width)), "")
+		// The path breaks only after a slash, so wrapping never splits a name.
+		lines := []string{"config.toml does not parse:"}
+		lines = append(lines, breakPath(homePath(st.Config.Path, st.Host.Home), m.width)...)
+		lines = append(lines, strings.Split(wrapText(scrub(st.Config.ParseErr), m.width), "\n")...)
+		lines = append(lines, "fix the file, then press r")
+		for _, l := range lines {
+			head = append(head, styles[toneBad].Render(l))
+		}
 	}
-	if withStatus {
-		for _, l := range serverStatusLines(st) {
-			for _, line := range renderServerLine(l, m.width) {
-				out = append(out, styles[l.tone].Render(line))
+	groups := serverStatusGroups(st, m.width, styles)
+	radios, notes := m.modeChoice()
+	var fieldLines []string
+	if fields := m.serverFieldLines(); len(fields) > 0 {
+		fieldLines = append([]string{""}, fields...)
+	}
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+
+	dropped := map[string]bool{}
+	keepNotes := len(notes)
+	build := func(seps bool) []string {
+		var out []string
+		sep := func() {
+			if seps {
+				out = append(out, "")
 			}
 		}
-		out = append(out, "")
+		out = append(out, head...)
+		if len(head) > 0 {
+			sep()
+		}
+		kept := 0
+		for _, g := range groups {
+			if !dropped[g.label] {
+				out = append(out, g.lines...)
+				kept++
+			}
+		}
+		if n := len(groups) - kept; n > 0 {
+			word := "rows"
+			if n == 1 {
+				word = "row"
+			}
+			out = append(out, dim.Render(fmt.Sprintf("... %d status %s not shown ...", n, word)))
+		}
+		if len(groups) > 0 {
+			sep()
+		}
+		out = append(out, radios...)
+		for _, n := range notes[:keepNotes] {
+			out = append(out, n...)
+		}
+		return append(out, fieldLines...)
 	}
-	out = append(out, m.modeChoice()...)
-	if fields := m.serverFieldLines(); len(fields) > 0 {
-		out = append(out, "")
-		out = append(out, fields...)
+	out := build(true)
+	for _, label := range statusDropOrder {
+		if len(out) <= room {
+			break
+		}
+		for _, g := range groups {
+			if g.label == label {
+				dropped[label] = true
+			}
+		}
+		out = build(true)
+	}
+	// The notes under the mode choice explain it; they go, whole and last
+	// first, only once every status row has.
+	for len(out) > room && keepNotes > 0 {
+		keepNotes--
+		out = build(true)
+	}
+	if len(out) > room {
+		out = build(false)
+	}
+	if over := len(out) - room; over > 0 && len(head) > 2 {
+		// Last resort: the middle of the banner or status text, keeping its
+		// first line and the line that says what to do. The mode choice is
+		// never touched.
+		cut := min(over+1, len(head)-2)
+		head = append(append(append([]string{}, head[:1]...), dim.Render(fmt.Sprintf("... %d lines not shown ...", cut))), head[len(head)-(len(head)-1-cut):]...)
+		out = build(false)
 	}
 	return strings.Join(out, "\n")
 }
 
 // serverTabView renders the Model server tab: the tab bar, a blank line, the
 // body and the hint line on the terminal's last line (L3). A body too tall
-// for the terminal loses lines from its middle behind a marker that counts
-// them (L4), keeping the status at the top and the mode choice and the hints
-// at the bottom. A config.toml that does not parse is the one thing to read
-// then: when the whole body does not fit, the status block gives way to it.
-// Before the first WindowSizeMsg it is the tab bar alone.
+// for the terminal gives up status rows, whole and lowest priority first,
+// behind a marker at the end of the block that counts them (see serverBody);
+// the mode choice and the hints always stay. Before the first WindowSizeMsg it
+// is the tab bar alone.
 func (m *model) serverTabView() string {
 	bar := tabBar(m.theme, TabServer)
 	if m.width <= 0 || m.height <= 0 {
@@ -491,13 +650,8 @@ func (m *model) serverTabView() string {
 	if m.server.phase == serverConfirm {
 		return m.serverPromptView(bar, dim)
 	}
-	body := "\n" + m.serverBody(true)
-	// A parse error, or the fields being edited, is the thing to read: when
-	// the whole body does not fit, the status block gives way to it.
-	giveWay := m.server.state.Config.ParseErr != "" || m.server.phase == serverEdit
-	if giveWay && lipgloss.Height(bar)+lipgloss.Height(body)+1 > m.height {
-		body = "\n" + m.serverBody(false)
-	}
+	// The bar, the blank line under it and the hint line are not the body's.
+	body := "\n" + m.serverBody(m.height-lipgloss.Height(bar)-2)
 	// Blank filler pins the hints to the last line when the body fits.
 	if fill := m.height - lipgloss.Height(bar) - lipgloss.Height(body) - 1; fill > 0 {
 		body += strings.Repeat("\n", fill)

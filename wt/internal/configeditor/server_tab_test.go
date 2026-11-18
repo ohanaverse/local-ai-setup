@@ -320,7 +320,7 @@ func TestServerTabShowsAParseErrorWithThePath(t *testing.T) {
 	sm := &serverMachine{states: []modelsetup.State{parseErrState(), fullState()}}
 	m := serverEditor(t, sm, 80, 24)
 	v := flat(plain(m))
-	for _, want := range []string{"/Users/dev/.config/agent-wt/config.toml", "line3", "fixthefile,thenpressr"} {
+	for _, want := range []string{"~/.config/agent-wt/config.toml", "line3", "fixthefile,thenpressr"} {
 		if !strings.Contains(v, flat(want)) {
 			t.Errorf("view lacks %q:\n%s", want, plain(m))
 		}
@@ -329,7 +329,7 @@ func TestServerTabShowsAParseErrorWithThePath(t *testing.T) {
 	// out do.
 	for _, size := range tabSizes {
 		v := flat(plain(serverEditor(t, &serverMachine{states: []modelsetup.State{parseErrState()}}, size[0], size[1])))
-		if !strings.Contains(v, "/Users/dev/.config/agent-wt/config.toml") || !strings.Contains(v, "fixthefile,thenpressr") {
+		if !strings.Contains(v, "~/.config/agent-wt/config.toml") || !strings.Contains(v, "fixthefile,thenpressr") {
 			t.Errorf("at %dx%d the parse error lacks the path or the way out: %s", size[0], size[1], v)
 		}
 	}
@@ -1108,6 +1108,14 @@ func TestServerTabFitsTheTerminalInEveryPhase(t *testing.T) {
 			sm := &serverMachine{states: []modelsetup.State{fullState()}, plan: long, result: result, progress: progress}
 			return keys(t, serverEditor(t, sm, w, h), "a", "y")
 		},
+		"parse error": func(t *testing.T, w, h int) *model {
+			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{parseErrState()}}, w, h), "a")
+		},
+		"off macOS local": func(t *testing.T, w, h int) *model {
+			st := offMacState()
+			st.Resolution = modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored}
+			return serverEditor(t, &serverMachine{states: []modelsetup.State{st}}, w, h)
+		},
 	}
 	// reached says the phase was really reached, so a fit is not measured on
 	// the wrong screen.
@@ -1120,6 +1128,12 @@ func TestServerTabFitsTheTerminalInEveryPhase(t *testing.T) {
 		"save anyway":   func(m *model) bool { return m.server.phase == serverConfirm && m.server.prompt == promptSaveAnyway },
 		"applying":      func(m *model) bool { return m.server.phase == serverApplying && m.server.writing && m.quitPending },
 		"result":        func(m *model) bool { return strings.Contains(m.server.status, "did not answer") },
+		"parse error": func(m *model) bool {
+			return m.server.state.Config.ParseErr != "" && strings.Contains(m.server.status, "nothing was changed")
+		},
+		"off macOS local": func(m *model) bool {
+			return !m.server.state.Platform.OK && m.server.want.Mode == modelclient.ModeLocal
+		},
 	}
 	for name, open := range phases {
 		for _, size := range tabSizes {

@@ -26,13 +26,13 @@ func TestDesiredIDsMatchWhatSyncWrites(t *testing.T) {
 	local := localFor(cfg, "mtplx/Youssofal--Q")
 
 	before, _ := Open(p)
-	beforeBytes := before.RoutedIDs()
+	beforeIDs := before.RoutedIDs()
 
 	got, err := DesiredIDs(cfg, local, o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after, _ := Open(p); !slices.Equal(after.RoutedIDs(), beforeBytes) {
+	if after, _ := Open(p); !slices.Equal(after.RoutedIDs(), beforeIDs) {
 		t.Fatal("DesiredIDs changed config.yaml")
 	}
 	if _, err := Sync(cfg, local, o); err != nil {
