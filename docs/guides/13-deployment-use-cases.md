@@ -39,7 +39,7 @@ The same command in every layout (a fresh 32-byte token, nobody else can read th
 mkdir -p ~/.config/wt-model; umask 077; head -c 32 /dev/urandom | base64 > ~/.config/wt-model/server.token
 ```
 
-On a machine that only runs sessions (use cases 2 and 3), put the copy at `~/.config/agent-wt/remote-model-server.token`. `wt-model serve` takes it as `--token-file PATH`, and each session names the same file as `token_file` under `[model-server]` (or `WT_MODEL_TOKEN_FILE`). A file a group or other can read is refused by both sides (`chmod 600 PATH` is the fix). To rotate: write a new file with the command above, restart `wt-model serve`, and give every session machine the new token.
+`wt-model serve` takes the server's file as `--token-file PATH`; on the same machine a session names that file as `token_file` under `[model-server]` (or `WT_MODEL_TOKEN_FILE`). On a machine that only runs sessions (use cases 2 and 3), put a copy of the server's token at `~/.config/agent-wt/remote-model-server.token` and name that file as the session's `token_file`. A file a group or other can read is refused by both sides (`chmod 600 PATH` is the fix). To rotate: write a new file with the command above, restart `wt-model serve`, and give every session machine the new token.
 
 ### 2. Use case 1 — both on one machine
 
@@ -119,7 +119,7 @@ A session with no `[model-server]` that asks for a model (`-M`, `-T`, `-F`, `wt 
 
 ## Gotchas
 
-- **wt never starts a server and never guesses an address.** Each layout above runs `wt-model serve` yourself; with none configured, a `wt` that needs a model (`-M`, `-T`, `-F`, `wt start`, `wt smoke`, …) refuses (exit 1) instead of falling back to a local server. A plain `wt -A <agent>` launches the agent natively, with its own configuration and one `wt:` line saying so, only in native mode (`mode = "native"` under `[model-server]`, or `WT_MODEL_MODE=native`), never with no mode chosen and never when a server is half-configured (`wt/docs/wt-session.md`, "Native launch").
+- **A session never starts a server and never guesses an address.** Each layout above runs `wt-model serve` yourself (or, on the same machine, `local` mode on the Model server tab of `wt config` sets up a LaunchAgent that does); with none configured, a `wt` that needs a model (`-M`, `-T`, `-F`, `wt start`, `wt smoke`, …) refuses (exit 1) instead of falling back to a local server. A plain `wt -A <agent>` launches the agent natively, with its own configuration and one `wt:` line saying so, only in native mode (`mode = "native"` under `[model-server]`, or `WT_MODEL_MODE=native`), never with no mode chosen and never when a server is half-configured (`wt/docs/wt-session.md`, "Native launch").
 - **`wt-model serve` is a foreground process.** Start it in a terminal, under `nohup`, or from your own LaunchAgent — running it at boot is an optional recipe, not something wt builds.
 - **Host commands run on the host.** `wt model add|edit|rm|init`, `wt cloud-sync` and `wt litellm …` read and write `registry.toml` and `config.yaml` on the machine they run on, never the server's ([08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §6).
 

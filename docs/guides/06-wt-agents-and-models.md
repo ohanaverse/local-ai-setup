@@ -109,8 +109,12 @@ Every session reaches its non-native models through the model server
 `~/.config/agent-wt/config.toml`; see [wt/docs/wt-session.md](../../wt/docs/wt-session.md)),
 whose gateway forwards to the LiteLLM proxy (`localhost:4000`). Choose how a
 machine reaches the server (`native`, `local` or `remote`) on the Model server
-tab of `wt config`, which writes that table; with no mode chosen a launch that
-needs a model refuses, or on a terminal opens that tab first. There is no
+tab of `wt config`, which writes that table (for `local` it also sets up the
+`local.wt-model.serve` LaunchAgent and a token file; every change is a plan
+you confirm first); with no mode chosen a launch that needs a model refuses,
+or on a terminal opens that tab first, once, before anything is created.
+`WT_MODEL_MODE` overrides the stored mode for one run. Editing the table by
+hand and starting `wt-model serve` yourself still work. There is no
 routing switch and no direct route: a launch never dials a provider or the
 proxy itself. The proxy's URL and key live in the `wt-model` config home
 (`~/.config/wt-model/`), which the model server reads; the `[litellm]` table

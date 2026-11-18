@@ -148,6 +148,18 @@ func TestLooseModePlistWarns(t *testing.T) {
 	}
 }
 
+// TestTighterModePlistIsOK pins that a 0400 plist is not flagged: only
+// group/other bits are a problem, so a tighter-than-0600 plist reads OK and
+// the text names its mode (it is never loosened to 0600).
+func TestTighterModePlistIsOK(t *testing.T) {
+	f, pair := llGood(t)
+	f.plistInfo.Mode = 0o400
+	st := CheckLiteLLM(context.Background(), f.Env(), pair)
+	if st.PlistMode.Status != CheckOK || !strings.Contains(st.PlistMode.Detail, "mode 0400") {
+		t.Errorf("PlistMode = %+v", st.PlistMode)
+	}
+}
+
 // TestUnreachableSkipsTheAuthenticatedChecks pins that a proxy that does not
 // answer fails Reachable, skips the checks that need it, and sends no key.
 func TestUnreachableSkipsTheAuthenticatedChecks(t *testing.T) {

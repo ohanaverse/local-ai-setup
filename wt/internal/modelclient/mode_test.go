@@ -67,7 +67,7 @@ func TestErrorsAreRecognisedThroughWrapping(t *testing.T) {
 
 // TestNoServerCoversUnsetNativeAndLegacy checks NoServer is true for the two
 // new "no server" modes and the legacy NoServerConfigured, and false for
-// anything else, so existing native fallbacks keep working.
+// anything else, so callers that treat no server softly keep working.
 func TestNoServerCoversUnsetNativeAndLegacy(t *testing.T) {
 	if !NoServer(&ModeUnsetError{}) || !NoServer(&NativeModeError{}) {
 		t.Fatal("unset and native must count as no server")

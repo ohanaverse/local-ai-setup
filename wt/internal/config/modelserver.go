@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strconv"
@@ -9,7 +11,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// ModelServerState is the hand-edited [model-server] table of config.toml:
+// ModelServerState is the [model-server] table of config.toml (written by the
+// Model server tab, and still hand-editable):
 // where the wt-model server is and which file holds its bearer token.
 type ModelServerState struct {
 	// Mode is native, local or remote (empty is unset: a launch refuses, or on a
@@ -86,9 +89,9 @@ func LoadSession(driverNames ...string) (*Config, error) {
 
 // ModelServerFile is a tolerant read of config.toml's [model-server] table.
 // Path is always set; ParseErr is a syntax error (nothing else is read);
-// TableErr is a decode error inside the table itself; RestErr one elsewhere
-// in the file, which never hides the table but fails a write (the writer
-// re-encodes the whole file).
+// TableErr is a decode error inside the table itself; RestErr is a decode
+// error anywhere else in the file (a wrong-typed agent key), which every
+// writer of config.toml (UpdateModelServer included) refuses on.
 type ModelServerFile struct {
 	Path     string
 	Exists   bool
@@ -114,21 +117,59 @@ func ReadModelServerFile() ModelServerFile {
 	f.Exists = true
 	var generic map[string]any
 	if _, err := toml.Decode(string(data), &generic); err != nil {
-		f.ParseErr = err
+		f.ParseErr = secretSafe(err, data)
 		return f
 	}
 	var only struct {
 		ModelServer *ModelServerState `toml:"model-server"`
 	}
 	if _, err := toml.Decode(string(data), &only); err != nil {
-		f.TableErr = err
+		f.TableErr = secretSafe(err, data)
 		return f
 	}
 	f.Table = only.ModelServer
-	if _, err := toml.Decode(string(data), &Config{DefaultTag: "code"}); err != nil {
-		f.RestErr = err
+	// What every writer of the file (UpdateModelServer included) decodes.
+	var whole Config
+	if _, err := toml.Decode(string(data), &whole); err != nil {
+		f.RestErr = secretSafe(err, data)
 	}
 	return f
+}
+
+// secretSafe keeps a TOML error from quoting a secret: when the error sits on
+// a line whose key is a token or a key (token, api_key, *_token, *_key), or
+// the last key parsed is one, the parser's message (which can quote the
+// value, say a base64 token typed without quotes) is replaced by the line
+// number and the key name. Any other error is returned as it is.
+func secretSafe(err error, data []byte) error {
+	var pe toml.ParseError
+	if !errors.As(err, &pe) {
+		return err
+	}
+	line := pe.Position.Line
+	if line == 0 {
+		line = pe.Line
+	}
+	key := ""
+	if lines := strings.Split(string(data), "\n"); line >= 1 && line <= len(lines) {
+		if k, _, ok := strings.Cut(lines[line-1], "="); ok {
+			key = strings.Trim(strings.TrimSpace(k), `"'`)
+		}
+	}
+	for _, k := range []string{key, pe.LastKey} {
+		parts := strings.Split(k, ".")
+		name := strings.Trim(strings.TrimSpace(parts[len(parts)-1]), `"'`)
+		if secretKeyName(name) {
+			return fmt.Errorf("toml: line %d: the value of %s does not parse (not shown: it may hold a secret)", line, name)
+		}
+	}
+	return err
+}
+
+// secretKeyName reports whether a config key's value is a secret.
+func secretKeyName(k string) bool {
+	k = strings.ToLower(k)
+	return k == "token" || k == "api_key" || strings.HasSuffix(k, "_token") || strings.HasSuffix(k, "_key")
 }
 
 // UpdateModelServer rewrites the [model-server] table under the config lock.

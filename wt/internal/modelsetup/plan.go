@@ -3,12 +3,15 @@ package modelsetup
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
 
@@ -46,13 +49,38 @@ func (s Secret) Reveal() string { return string(s) }
 // Desired is what the user asked for. PastedToken (remote) and MasterKey
 // (local, used only when the pair is unset and the LiteLLM plist has no key)
 // are Secrets: BuildPlan keeps each only in its own mode's Plan.Want, for
-// Apply, and no step, note, Format text or refusal holds them.
+// Apply, and no step, note, Format text or refusal holds them. LiteLLM is
+// what a local plan does to the LiteLLM LaunchAgent (nothing by default).
 type Desired struct {
 	Mode                       modelclient.Mode
 	URL, TokenFile, Listen     string
 	PastedToken, MasterKey     Secret
 	SaveUnchecked, RemoveAgent bool
+	LiteLLM                    LiteLLMAction
 }
+
+// LiteLLMAction is what a local plan does to the LiteLLM LaunchAgent. wt never
+// installs LiteLLM: it creates a minimal plist only when none exists and
+// LiteLLM is installed, and otherwise changes only LITELLM_MASTER_KEY.
+type LiteLLMAction string
+
+const (
+	// LiteLLMNone leaves the LiteLLM plist alone; it plans exactly as
+	// LiteLLMUseExistingKey.
+	LiteLLMNone LiteLLMAction = ""
+	// LiteLLMUseExistingKey reads the plist's master key into wt-model's pair
+	// when the pair is unset; the plist is never edited.
+	LiteLLMUseExistingKey LiteLLMAction = "use-existing-key"
+	// LiteLLMCreate writes a minimal LiteLLM plist with new master and salt
+	// keys, loads it and pairs wt-model with the new master key.
+	LiteLLMCreate LiteLLMAction = "create"
+	// LiteLLMRotateKey replaces LITELLM_MASTER_KEY in the existing plist
+	// (after a backup), pairs wt-model with it and restarts both.
+	LiteLLMRotateKey LiteLLMAction = "rotate-key"
+	// LiteLLMTighten changes only the LiteLLM plist's mode, to 0600, and
+	// only when it is looser; the plan is that one chmod step.
+	LiteLLMTighten LiteLLMAction = "tighten"
+)
 
 // StepKind is what one step does.
 type StepKind string
@@ -69,6 +97,16 @@ const (
 	StepWait        StepKind = "wait"
 	StepConfig      StepKind = "config"
 	StepRemovePlist StepKind = "remove-plist"
+
+	// The LiteLLM steps of a create or rotate plan. A create plan writes the
+	// plist (StepLiteLLMPlist) and loads it with StepBootstrap and StepWait
+	// (ActionWaitLiteLLM); a rotation backs it up, edits the key, tightens
+	// the mode and restarts LiteLLM.
+	StepLiteLLMPlist     StepKind = "litellm-plist"
+	StepBackup           StepKind = "backup"
+	StepMasterKey        StepKind = "master-key"
+	StepChmod            StepKind = "chmod"
+	StepKickstartLiteLLM StepKind = "kickstart-litellm"
 )
 
 // StepAction says how a token or pair step gets its value, so Apply does
@@ -91,6 +129,13 @@ const (
 	ActionPairKeyFromPlist StepAction = "pair-key-from-litellm-plist"
 	// ActionPairKeyEntered uses Plan.Want.MasterKey.
 	ActionPairKeyEntered StepAction = "pair-key-entered"
+	// ActionPairKeyNew uses the master key an earlier step of the same Apply
+	// generated and wrote to the LiteLLM plist (create or rotate); the key is
+	// held by that Apply alone, never by the plan.
+	ActionPairKeyNew StepAction = "pair-key-new"
+	// ActionWaitLiteLLM marks a wait step that waits for LiteLLM (its
+	// /health/liveliness under Step.Value) rather than wt-model.
+	ActionWaitLiteLLM StepAction = "wait-litellm"
 )
 
 // Step is one change. Path is the file or plist the step acts on; Value is
@@ -107,12 +152,16 @@ type Step struct {
 // Plan is what BuildPlan decided. Want is the request with every default
 // filled in (Mode, URL, TokenFile and Listen as they will be written); Notes
 // say what is left alone and anything else worth knowing; Agent is what a
-// local plan's plist step renders (nil for native and remote).
+// local plan's plist step renders (nil for native and remote). LiteLLM is
+// what a create plan's StepLiteLLMPlist renders, without its keys: Apply
+// generates them when it writes the file, so no plan ever holds one (nil for
+// any plan that does not create).
 type Plan struct {
-	Want  Desired
-	Steps []Step
-	Notes []string
-	Agent *AgentSpec
+	Want    Desired
+	Steps   []Step
+	Notes   []string
+	Agent   *AgentSpec
+	LiteLLM *LiteLLMSpec
 }
 
 // RefusalError is a plan that cannot be made. Each reason says what is still
@@ -130,8 +179,8 @@ func reason(fact, wayOut string) string {
 // guide14 is the LiteLLM guide a missing master key points at.
 const guide14 = "docs/guides/14-litellm-install-and-configuration.md"
 
-// defaultLiteLLMPort is the proxy's port when its plist names none.
-const defaultLiteLLMPort = 4000
+// DefaultLiteLLMPort is the proxy's port when its plist names none.
+const DefaultLiteLLMPort = 4000
 
 // BuildPlan decides the steps that take the machine from st to want. It is
 // pure: everything it needs is in st, and it reads no clock and no file.
@@ -149,12 +198,6 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 			"[model-server] in "+st.Config.Path+" cannot be read ("+st.Config.TableErr+") and is never overwritten",
 			"fix it by hand, then re-read")}}
 	}
-	if st.Config.RestErr != "" {
-		// Same failure as above, from a key outside [model-server].
-		return Plan{}, &RefusalError{Reasons: []string{reason(
-			st.Config.Path+" has a key that cannot be read ("+st.Config.RestErr+") and is never overwritten",
-			"fix it by hand, then re-read")}}
-	}
 	mode, ok := modelclient.ParseMode(string(want.Mode))
 	if !ok {
 		return Plan{}, &RefusalError{Reasons: []string{reason(
@@ -168,15 +211,65 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 	}
 	if mode != modelclient.ModeLocal {
 		want.MasterKey = ""
+		want.LiteLLM = LiteLLMNone
 	}
+	var p Plan
+	var err error
 	switch mode {
 	case modelclient.ModeLocal:
-		return planLocal(st, want)
+		if want.LiteLLM == LiteLLMTighten {
+			return planTightenLiteLLM(st, want)
+		}
+		p, err = planLocal(st, want)
 	case modelclient.ModeRemote:
-		return planRemote(st, want)
+		p, err = planRemote(st, want)
 	default:
-		return planNative(st, want)
+		p, err = planNative(st, want)
 	}
+	if err != nil {
+		return Plan{}, err
+	}
+	// Same failure as TableErr above, from a key outside [model-server]
+	// (RestErr): the config step is last, so a file its writer cannot decode
+	// would fail it only after every machine change before it. A plan that
+	// leaves config.toml alone (a key rotation) does not reach that writer.
+	if _, writes := findStep(p, StepConfig); writes && st.Config.RestErr != "" {
+		return Plan{}, &RefusalError{Reasons: []string{reason(
+			"config.toml at "+st.Config.Path+" has a key that cannot be read ("+st.Config.RestErr+") and is never overwritten",
+			"fix it by hand, then re-read")}}
+	}
+	p.restartNote()
+	return p, nil
+}
+
+// findStep finds the first step of kind k.
+func findStep(p Plan, k StepKind) (Step, bool) {
+	for _, s := range p.Steps {
+		if s.Kind == k {
+			return s, true
+		}
+	}
+	return Step{}, false
+}
+
+// restartNote says, once, that a step that restarts or unloads a running job
+// ends its requests in flight at once (launchctl kickstart -k, bootout):
+// unlike `wt litellm restart`, nothing waits for them to finish.
+func (p *Plan) restartNote() {
+	for _, s := range p.Steps {
+		if s.Kind == StepKickstart || s.Kind == StepKickstartLiteLLM || s.Kind == StepBootout {
+			p.Notes = append(p.Notes, "a restart or unload here (launchctl kickstart -k, bootout) ends the requests in flight at once; unlike `wt litellm restart`, nothing waits for them to finish")
+			return
+		}
+	}
+}
+
+// credentialsReason refuses a url (or listen address) holding an '@'
+// anywhere, read as a user:password whatever else it holds: config.toml is
+// not a secret file, so wt never stores one there. The text is fixed: it
+// echoes no part of what was typed (no host, no user, nothing derived).
+func credentialsReason(what string) string {
+	return reason(what+" contains an @ (read as a user:password); wt does not store credentials in config.toml", "use a token file")
 }
 
 // planNative stores only the mode, plus the optional agent removal.
@@ -195,10 +288,12 @@ func planNative(st State, want Desired) (Plan, error) {
 func planRemote(st State, want Desired) (Plan, error) {
 	var reasons []string
 	want.URL = strings.TrimSpace(want.URL)
+	if hasUserinfo(want.URL) {
+		// Alone: every other reason may quote the url.
+		return Plan{}, &RefusalError{Reasons: []string{credentialsReason("the url")}}
+	}
 	if want.URL == "" {
 		reasons = append(reasons, reason("remote mode has no url", "enter the model server's url"))
-	} else if strings.Contains(want.URL, "@") {
-		reasons = append(reasons, reason("the url carries credentials, which config.toml would store in plain text", "remove the user:password part and give the token as a token file or paste it"))
 	}
 	var tokenStep *Step
 	switch {
@@ -296,6 +391,8 @@ func planLocal(st State, want Desired) (Plan, error) {
 	host, portText, err := net.SplitHostPort(listen)
 	port, perr := strconv.Atoi(portText)
 	switch {
+	case strings.Contains(listen, "@"):
+		reasons = append(reasons, credentialsReason("the listen address"))
 	case err != nil || perr != nil || port < 1 || port > 65535:
 		reasons = append(reasons, reason("listen address "+strconv.Quote(listen)+" is not host:port", "enter one like "+DefaultListen))
 	case host != "127.0.0.1" && host != "localhost" && host != "::1":
@@ -348,21 +445,44 @@ func planLocal(st State, want Desired) (Plan, error) {
 		}
 	}
 
+	// LiteLLM: create or rotate decide the pair themselves.
+	var lsteps []Step
+	var lspec *LiteLLMSpec
+	var lnotes []string
+	switch want.LiteLLM {
+	case LiteLLMNone, LiteLLMUseExistingKey:
+	case LiteLLMCreate:
+		var rs []string
+		lspec, lsteps, lnotes, rs = planLiteLLMCreate(st)
+		reasons = append(reasons, rs...)
+	case LiteLLMRotateKey:
+		var rs []string
+		lsteps, lnotes, rs = planLiteLLMRotate(st)
+		reasons = append(reasons, rs...)
+	default:
+		reasons = append(reasons, reason("LiteLLM action "+strconv.Quote(string(want.LiteLLM))+" is not one wt knows",
+			"choose the plist's master key, a new master key, or create the plist"))
+	}
+	newKey := want.LiteLLM == LiteLLMCreate || want.LiteLLM == LiteLLMRotateKey
+	if newKey {
+		want.MasterKey = "" // a generated key replaces any entered one
+	}
+
 	// Pair.
 	var pairStep *Step
 	var pairKept string
-	if st.Pair.URL != "" && st.Pair.KeySet && st.Pair.Err == "" {
+	if newKey {
+		url := liteLLMURL(st, want.LiteLLM)
+		pairStep = &Step{Kind: StepPair, Action: ActionPairKeyNew, Value: url,
+			Detail: "set wt-model's LiteLLM pair" + pairWhere(st) + ": url " + url + ", key the new LITELLM_MASTER_KEY (not shown)"}
+	} else if st.Pair.URL != "" && st.Pair.KeySet && st.Pair.Err == "" &&
+		!(want.LiteLLM == LiteLLMUseExistingKey && st.LiteLLMPlist.HasMasterKey) {
+		// Asking for the plist's key re-sets even a set pair (it may hold a
+		// stale key); every other request keeps it.
 		pairKept = "keep wt-model's LiteLLM pair (" + st.Pair.URL + ")"
 	} else {
-		lport := st.LiteLLMPlist.Port
-		if lport == 0 {
-			lport = defaultLiteLLMPort
-		}
-		url := "http://localhost:" + strconv.Itoa(lport)
-		where := ""
-		if st.Host.ConfigHome != "" {
-			where = " in " + st.Host.ConfigHome + "/wt-model/"
-		}
+		url := liteLLMURL(st, want.LiteLLM)
+		where := pairWhere(st)
 		switch {
 		case st.LiteLLMPlist.HasMasterKey:
 			pairStep = &Step{Kind: StepPair, Path: st.LiteLLMPlist.Path, Action: ActionPairKeyFromPlist, Value: url,
@@ -384,16 +504,31 @@ func planLocal(st State, want Desired) (Plan, error) {
 	want.TokenFile = tokPath
 	want.URL = "http://" + listen
 	spec := AgentSpec{Binary: st.Host.Binary, Listen: listen, TokenFile: tokPath, Path: st.Host.Path, Home: st.Host.Home}
-	p := Plan{Want: want, Agent: &spec}
+	p := Plan{Want: want, Agent: &spec, LiteLLM: lspec}
+	pairChanged := false
 
 	if tokenStep != nil {
 		p.Steps = append(p.Steps, *tokenStep)
 	} else {
 		p.Notes = append(p.Notes, tokenKept)
 	}
+	// The LiteLLM plist changes come before the pair, so the pair is set only
+	// once the plist holds the key it is given (rotate: then LiteLLM restarts
+	// right after the pair, before wt-model).
+	if want.LiteLLM == LiteLLMRotateKey {
+		n := len(lsteps) - 2 // the trailing LiteLLM restart and wait follow the pair
+		p.Steps = append(p.Steps, lsteps[:n]...)
+		p.Steps = append(p.Steps, *pairStep)
+		p.Steps = append(p.Steps, lsteps[n:]...)
+		pairStep = nil
+		pairChanged = true
+	} else {
+		p.Steps = append(p.Steps, lsteps...)
+	}
 	if pairStep != nil {
 		p.Steps = append(p.Steps, *pairStep)
-	} else {
+		pairChanged = true
+	} else if !pairChanged {
 		p.Notes = append(p.Notes, pairKept)
 	}
 
@@ -422,9 +557,9 @@ func planLocal(st State, want Desired) (Plan, error) {
 	case !loaded:
 		p.Steps = append(p.Steps, Step{Kind: StepBootstrap, Path: st.Agent.PlistPath, Detail: "load the LaunchAgent: launchctl bootstrap " + domain + " " + st.Agent.PlistPath})
 		started = true
-	case pairStep != nil || tokenChanged:
+	case pairChanged || tokenChanged:
 		p.Steps = append(p.Steps, Step{Kind: StepKickstart, Path: st.Agent.PlistPath,
-			Detail: "restart the LaunchAgent so it reads the new " + changedWhat(pairStep != nil, tokenChanged) + ": launchctl kickstart -k " + domain + "/" + AgentLabel})
+			Detail: "restart the LaunchAgent so it reads the new " + changedWhat(pairChanged, tokenChanged) + ": launchctl kickstart -k " + domain + "/" + AgentLabel})
 		started = true
 	default:
 		if !st.Agent.Job.Running {
@@ -437,6 +572,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 		p.Steps = append(p.Steps, Step{Kind: StepWait, Value: want.URL, Detail: "wait for wt-model to answer at " + want.URL})
 	}
 	p.config(st)
+	p.Notes = append(p.Notes, lnotes...)
 	p.envNote(st)
 	return p, nil
 }
@@ -644,4 +780,169 @@ func (p Plan) WritesURL() bool {
 		}
 	}
 	return false
+}
+
+// liteLLMURL is the url wt-model's pair names for LiteLLM: the port a create
+// plan writes (DefaultLiteLLMPort), else the plist's --port, else the default.
+func liteLLMURL(st State, a LiteLLMAction) string {
+	port := st.LiteLLMPlist.Port
+	if a == LiteLLMCreate || port == 0 {
+		port = DefaultLiteLLMPort
+	}
+	return "http://localhost:" + strconv.Itoa(port)
+}
+
+// pairWhere says where the pair is written, for a step's text.
+func pairWhere(st State) string {
+	if st.Host.ConfigHome == "" {
+		return ""
+	}
+	return " in " + st.Host.ConfigHome + "/wt-model/"
+}
+
+// planLiteLLMCreate plans a minimal LiteLLM LaunchAgent: only when no plist
+// exists and LiteLLM is installed (a litellm binary and config.yaml), since wt
+// never installs LiteLLM. The spec has no keys: Apply generates them as it
+// writes the file. The steps are the plist, its load and the wait for
+// LiteLLM; the caller puts the pair after them.
+func planLiteLLMCreate(st State) (*LiteLLMSpec, []Step, []string, []string) {
+	lp := st.LiteLLMPlist
+	inst := st.LiteLLMInstall
+	var reasons []string
+	switch {
+	case lp.Path == "":
+		reasons = append(reasons, reason("the LiteLLM plist path is not known", "set HOME"))
+	case lp.Present:
+		reasons = append(reasons, reason(lp.Path+" already exists, and wt creates a LiteLLM plist only when none exists",
+			"use the plist's master key or generate a new one for it instead ("+guide14+")"))
+	}
+	if inst.Binary == "" {
+		reasons = append(reasons, reason("no litellm binary was found (in ~/.local/bin, /opt/homebrew/bin, /usr/local/bin or on PATH), and wt never installs LiteLLM",
+			"install it as "+guide14+" describes, then check again"))
+	}
+	switch {
+	case !inst.ListenerChecked || inst.Port != DefaultLiteLLMPort:
+		reasons = append(reasons, reason(fmt.Sprintf("port %d was not checked for a listener", DefaultLiteLLMPort), "check again before applying"))
+	case inst.ListenerPID != 0:
+		reasons = append(reasons, reason(fmt.Sprintf("port %d is in use by pid %d (a LiteLLM run by hand or under another label?), so a new LaunchAgent could not listen there",
+			DefaultLiteLLMPort, inst.ListenerPID),
+			"stop that process, or keep it and enter its master key instead ("+guide14+")"))
+	}
+	if !inst.ConfigExists {
+		reasons = append(reasons, reason("LiteLLM's config.yaml "+orNone(inst.ConfigPath)+" does not exist, and wt never writes a first one",
+			"create it as "+guide14+" describes, then check again"))
+	}
+	if len(reasons) > 0 {
+		return nil, nil, nil, reasons
+	}
+	spec := LiteLLMSpec{Binary: inst.Binary, ConfigPath: inst.ConfigPath, Path: st.Host.Path, Home: st.Host.Home, Port: DefaultLiteLLMPort}
+	if err := checkLiteLLMSpec(spec); err != nil {
+		var re *RefusalError
+		if errors.As(err, &re) {
+			return nil, nil, nil, re.Reasons
+		}
+		return nil, nil, nil, []string{reason(err.Error(), "fix it, then check again")}
+	}
+	url := liteLLMURL(st, LiteLLMCreate)
+	domain := "gui/" + strconv.Itoa(st.Host.UID)
+	steps := []Step{
+		{Kind: StepLiteLLMPlist, Path: lp.Path,
+			Detail: "create the LiteLLM LaunchAgent plist " + lp.Path + " (mode 0600): " + spec.Binary + " --config " + spec.ConfigPath +
+				" --port " + strconv.Itoa(spec.Port) + ", PATH=" + spec.Path + ", logs " + spec.Home + "/.litellm.log and " + spec.Home +
+				"/.litellm.err.log, started at login and kept alive, with a new generated LITELLM_MASTER_KEY and LITELLM_SALT_KEY (not shown)"},
+		{Kind: StepBootstrap, Path: lp.Path, Detail: "load the LiteLLM LaunchAgent: launchctl bootstrap " + domain + " " + lp.Path},
+		{Kind: StepWait, Action: ActionWaitLiteLLM, Value: url, Detail: "wait for LiteLLM to answer at " + url +
+			"/health/liveliness, then check that the new job is what listens on port " + strconv.Itoa(spec.Port) + " and that it accepts the new master key"},
+	}
+	notes := []string{
+		"the new LiteLLM plist leaves out DATABASE_URL, the UI login and provider keys: add them as " + guide14 +
+			" describes (spend tracking and the admin UI need DATABASE_URL)",
+		"the new LITELLM_SALT_KEY must never change once LiteLLM stores credentials with it: keep a copy of the plist (" + guide14 + ")",
+	}
+	return &spec, steps, notes, nil
+}
+
+// planLiteLLMRotate plans a new master key in the existing XML plist: backup,
+// key edit (written without group or other bits), then (after the pair, which the caller
+// places) a LiteLLM restart, returned last. Nothing else in the file changes.
+func planLiteLLMRotate(st State) ([]Step, []string, []string) {
+	lp := st.LiteLLMPlist
+	path := orNone(lp.Path)
+	var reasons []string
+	switch {
+	case !lp.Present:
+		reasons = append(reasons, reason("there is no LiteLLM plist at "+path+", so there is no master key to replace",
+			"create one, or set up LiteLLM as "+guide14+" describes"))
+	case lp.Binary:
+		reasons = append(reasons, reason(path+" is a binary property list, which wt does not edit",
+			"convert it with `plutil -convert xml1 "+path+"`, then check again ("+guide14+")"))
+	case lp.Err != "":
+		reasons = append(reasons, reason(path+" cannot be read as an XML plist", "fix it as "+guide14+" describes, then check again"))
+	case !lp.HasMasterKey:
+		reasons = append(reasons, reason(path+" has no LITELLM_MASTER_KEY to replace", "add one as "+guide14+" describes"))
+	case lp.JobChecked && !lp.JobLoaded:
+		// The restart is kickstart -k, which cannot start a job that is not
+		// loaded; by then the plist and the pair would hold the new key.
+		reasons = append(reasons, reason("the LiteLLM job "+litellm.ProxyLabel+" is not loaded, so a restart after the new key would fail",
+			"load it with `launchctl bootstrap gui/"+strconv.Itoa(st.Host.UID)+" "+path+"`, then check again"))
+	case lp.HasDatabaseURL && !lp.HasSaltKey:
+		// LiteLLM encrypts stored provider credentials with the master key
+		// when no salt key is set: a new one would leave them undecryptable.
+		reasons = append(reasons, reason(path+" sets DATABASE_URL but no LITELLM_SALT_KEY, and LiteLLM falls back to the master key when no salt key is set (see its documentation), so a new master key could make its stored credentials unreadable",
+			"first set LITELLM_SALT_KEY to the current master key's value, or confirm the database holds no stored credentials; see "+guide14+"#6-generate-the-keys-file-mode"))
+	}
+	if len(reasons) > 0 {
+		return nil, nil, reasons
+	}
+	// planLocal refuses an unknown config home before any step runs.
+	dir := BackupDir(st.Host.ConfigHome)
+	steps := []Step{
+		{Kind: StepBackup, Path: lp.Path, Value: dir, Detail: "check that the key edit applies to " + lp.Path + ", then back it up to " + dir + "/" +
+			filepath.Base(lp.Path) + ".bak-<date>-<time> (a 0700 directory, outside LaunchAgents so launchd never loads the copy; its mode without group or other bits; it keeps the old key)"},
+		{Kind: StepMasterKey, Path: lp.Path, Detail: "replace LITELLM_MASTER_KEY in " + lp.Path + " with a new generated key (not shown), keeping every other byte of the file; " +
+			"it is written without group or other bits"},
+	}
+	url := liteLLMURL(st, LiteLLMRotateKey)
+	steps = append(steps,
+		Step{Kind: StepKickstartLiteLLM, Path: lp.Path,
+			Detail: "restart LiteLLM so it uses the new key: launchctl kickstart -k gui/" + strconv.Itoa(st.Host.UID) + "/" + litellm.ProxyLabel},
+		Step{Kind: StepWait, Action: ActionWaitLiteLLM, Value: url,
+			Detail: "wait for LiteLLM to answer at " + url + "/health/liveliness and accept the new master key"})
+	cfg := ""
+	if st.Config.Path != "" {
+		cfg = " in " + st.Config.Path
+	}
+	notes := []string{
+		"anything else that holds the old master key stops working once LiteLLM restarts: other clients and scripts that send it, a [litellm] api_key" +
+			cfg + " if one is set there, and copies of the plist (the backup keeps the old key; remove it once the new key works)",
+	}
+	if lp.HasSaltKey {
+		notes = append(notes, "never changed in "+lp.Path+": LITELLM_SALT_KEY, DATABASE_URL, provider keys and the UI login")
+	} else {
+		notes = append(notes, "never changed in "+lp.Path+": DATABASE_URL, provider keys and the UI login; LITELLM_SALT_KEY: no salt key set; nothing to preserve")
+	}
+	return steps, notes, nil
+}
+
+// BackupDir is where a rotation keeps its copies of the LiteLLM plist:
+// <config home>/wt-model/backups, a 0700 directory. Never ~/Library/
+// LaunchAgents: a copy there carries the same Label and the old key, and
+// launchd or Background Task Management could pick it up.
+func BackupDir(configHome string) string {
+	return filepath.Join(configHome, "wt-model", "backups")
+}
+
+// planTightenLiteLLM plans one chmod of the LiteLLM plist to 0600, for a
+// plist that exists and is looser; nothing else is planned or touched.
+func planTightenLiteLLM(st State, want Desired) (Plan, error) {
+	lp := st.LiteLLMPlist
+	path := orNone(lp.Path)
+	switch {
+	case !lp.Present:
+		return Plan{}, &RefusalError{Reasons: []string{reason("there is no LiteLLM plist at "+path+" to tighten", "nothing to do")}}
+	case lp.Mode.Perm()&0o077 == 0:
+		return Plan{}, &RefusalError{Reasons: []string{reason(path+" is already mode 0600 or tighter", "nothing to do")}}
+	}
+	return Plan{Want: want, Steps: []Step{{Kind: StepChmod, Path: lp.Path,
+		Detail: fmt.Sprintf("set %s to mode 0600 (it is %04o, readable by others); nothing else changes", lp.Path, lp.Mode.Perm())}}}, nil
 }

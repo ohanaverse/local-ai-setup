@@ -818,7 +818,7 @@ func (m *model) applyModelRemoved(msg modelRemovedMsg) tea.Cmd {
 		mt.status += "; " + msg.note
 	}
 	if m.quitPending {
-		m.quitPending, m.discardHeld = false, false
+		m.quitPending = false // discardHeld stays until the quit happens (leave)
 		if _, cmd := m.quit(); cmd != nil {
 			return cmd
 		}

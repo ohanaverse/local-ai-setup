@@ -54,11 +54,24 @@ and every change is a plan listed first: nothing is written until you answer
 Keys (the footer names the ones that apply): `left`/`right`/`space` choose the
 mode, `down` and `enter` move through its fields, `a` plans and applies, `c`
 checks (reads only), `r` re-reads, `s` / `x` / `R` start, stop or restart the
-local server, `tab` switches tabs and `q` quits. The tab is a form, so the
-text fields take typed keys until `esc`.
+local server, `tab` switches tabs and `q` quits. Two keys act on the LiteLLM
+LaunchAgent, in local mode only, each as a plan you confirm: `k` opens the
+LiteLLM master-key menu (use the key the plist already has, generate a new
+key, which rotates `LITELLM_MASTER_KEY` with a backup under
+`~/.config/wt-model/backups/`, or create the LiteLLM agent when it has no
+plist), and `t` tightens a LiteLLM plist looser than 0600 to 0600 and changes
+nothing else
+([guide 14](../../docs/guides/14-litellm-install-and-configuration.md)). A
+plan that restarts or unloads a running LiteLLM or wt-model (`launchctl
+kickstart -k`, `bootout`) says so: requests in flight are cut at once, unlike
+`wt litellm restart`, which lets them finish. The tab is a form, so the text
+fields take typed keys until `esc`.
 
 When `config.toml` does not parse, the tab says so with the parser's message
-and writes nothing; fix the file and press `r`. It also opens by itself on a
+and writes nothing; fix the file and press `r`. The same holds for a key that
+does not decode, inside `[model-server]` or elsewhere in the file (a
+wrong-typed agent key): the tab lists it and every write key says why nothing
+was written. It also opens by itself on a
 terminal when a launch finds no mode chosen (the first-run gate in
 [`wt-session.md`](wt-session.md)); quitting the editor there goes back to the
 launch.

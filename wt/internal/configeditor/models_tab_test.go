@@ -1603,3 +1603,37 @@ func TestAgentsStatusFollowsTheLastSave(t *testing.T) {
 	}
 	assertFits(t, "agents tab with a status", m.View(), 80, 24)
 }
+
+// TestADiscardHeldForTwoWritesSurvivesTheFirst pins a quit held for two
+// writes at once (a Models removal and a Model server apply): after "q", "n"
+// (discard and quit) the first write to finish re-holds the quit for the
+// other without forgetting that the agent edits were given up only for that
+// quit; when the second one then fails, the quit is called off and the edits
+// are unsaved again, so the next q asks about them instead of exiting.
+func TestADiscardHeldForTwoWritesSurvivesTheFirst(t *testing.T) {
+	tm := newTabMachine(t, tabRegistry)
+	m := keys(t, selectModel(t, modelsEditor(t, tm, 80, 24), "omlx/Gone-4bit"), "d")
+	m.dirty = true
+	next, write := m.Update(keyMsg("y"))
+	if write == nil {
+		t.Fatal("y should hand the removal to a command")
+	}
+	m = next.(*model)
+	m.server.writing = true // a Model server apply is out too
+	m = keys(t, m, "q", "n")
+	if !m.quitPending || m.dirty {
+		t.Fatalf("q n with two writes out: quitPending = %v dirty = %v, want the quit held and the edits given up", m.quitPending, m.dirty)
+	}
+	next, cmd := m.Update(write())
+	m = next.(*model)
+	if isQuit(cmd) || !m.quitPending {
+		t.Fatalf("the removal landed: quit = %v quitPending = %v, want the quit held for the apply", isQuit(cmd), m.quitPending)
+	}
+	m.finishServerWrite(false) // the apply failed
+	if m.quitPending || !m.dirty {
+		t.Fatalf("the apply failed: quitPending = %v dirty = %v, want the quit off and the edits unsaved again", m.quitPending, m.dirty)
+	}
+	if m = keys(t, m, "q"); m.phase != phaseQuit {
+		t.Errorf("phase = %d, want the unsaved-changes prompt", m.phase)
+	}
+}

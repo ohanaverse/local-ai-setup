@@ -118,11 +118,12 @@ _NOT_CONFIGURED_REFUSALS = (
 )
 
 # Appended to stop()'s failure for exactly those refusals: where to configure
-# the model server (wt's own line names the settings but only "config.toml").
+# the model server. Right for an unset mode and for native mode alike (native
+# ignores a url and token_file stored in config.toml, so the hint names the
+# mode choice, not those keys).
 _NOT_CONFIGURED_HINT = (
-    "; stopping a model needs a model server: set url and token_file under "
-    "[model-server] in ~/.config/agent-wt/config.toml (or WT_MODEL_URL and "
-    "WT_MODEL_TOKEN_FILE)"
+    "; stopping a model needs a model server: choose local or remote in wt "
+    "config (Model server tab), or set WT_MODEL_URL and WT_MODEL_TOKEN_FILE"
 )
 
 

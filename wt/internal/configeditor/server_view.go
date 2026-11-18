@@ -27,6 +27,8 @@ func (m *model) serverHints() []string {
 		return []string{"up/down field · enter next · esc done · ctrl+c quit", "up/down · enter · esc · ctrl+c quit"}
 	case serverApplying:
 		return []string{"tab next · q quit (after this finishes)", "tab · q quit"}
+	case serverMenu:
+		return m.serverMenuHints()
 	case serverConfirm:
 		switch st.prompt {
 		case promptRemoveAgent:
@@ -46,6 +48,12 @@ func (m *model) serverHints() []string {
 	}
 	if m.serverWriteBlocked() == "" {
 		keys = append(keys, hint{"a", "apply"})
+	}
+	if m.serverLiteLLMBlocked() == "" {
+		keys = append(keys, hint{"k", "key"})
+	}
+	if m.serverTightenBlocked() == "" {
+		keys = append(keys, hint{"t", "tighten"})
 	}
 	keys = append(keys, hint{"c", "check"}, hint{"r", "re-read"})
 	if m.serverControlBlocked() == "" {
@@ -99,15 +107,23 @@ type serverLine struct {
 // last @ before the host: a password may hold an @ itself.
 var userinfoRE = regexp.MustCompile(`://[^/\s]*@`)
 
-// scrub takes any url userinfo out of text the tab draws: Observe already
-// strips it from what it stores, but a message a dep composed may still
-// carry one, and nothing the tab shows may hold a credential.
+// keyRE finds a LiteLLM-style key (sk- and a long run of key characters) that
+// does not continue a longer word: group 1 is the character before it (RE2
+// has no lookbehind), kept by the replacement.
+var keyRE = regexp.MustCompile(`(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}`)
+
+// scrub takes any url userinfo and any sk- key out of text the tab draws:
+// Observe already strips them from what it stores, but a message a dep
+// composed may still carry one, and nothing the tab shows may hold a
+// credential.
 //
 // Deliberately greedy: an @ anywhere before the first / or space ends the
 // userinfo, so "https://h:1?x=a@b" loses its host too. That errs on the safe
 // side (a credential is never shown); TestScrubTakesTheHostWithAnAtInTheQuery
 // pins it.
-func scrub(s string) string { return userinfoRE.ReplaceAllString(s, "://") }
+func scrub(s string) string {
+	return keyRE.ReplaceAllString(userinfoRE.ReplaceAllString(s, "://"), "${1}sk-<hidden>")
+}
 
 // homePath writes a path under home with ~ for the home.
 //
@@ -254,7 +270,9 @@ func serverCheckLine(st modelsetup.State) serverLine {
 	case st.Resolution.Mode == modelclient.ModeNative:
 		return serverLine{"server", "none in native mode", toneDim}
 	case !s.Checked && s.Message != "":
-		return serverLine{"server", "not checked: " + scrub(s.Message), toneDim}
+		// A message that already says so (a url with an '@', a cancelled
+		// read) is not prefixed twice.
+		return serverLine{"server", "not checked: " + scrub(strings.TrimPrefix(s.Message, "not checked: ")), toneDim}
 	case !s.Checked:
 		return serverLine{"server", "not checked: " + missingForCheck(st), toneDim}
 	case s.OK:
@@ -356,6 +374,7 @@ func serverStatusLines(st modelsetup.State) []serverLine {
 	lines = append(lines, agentLines(st)...)
 	lines = append(lines, serverCheckLine(st))
 	lines = append(lines, litellmLines(st)...)
+	lines = append(lines, plistModeLines(st)...)
 	if names := envNames(st); len(names) > 0 {
 		lines = append(lines, serverLine{"env", strings.Join(names, ", ") + " set: they override config.toml", toneWarn})
 	}
@@ -650,8 +669,13 @@ func (m *model) serverTabView() string {
 		return bar
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	if m.server.phase == serverConfirm {
+	switch {
+	case m.server.phase == serverConfirm:
 		return m.serverPromptView(bar, dim)
+	case m.server.phase == serverMenu:
+		return m.serverMenuView(bar, dim)
+	case m.server.result != nil && m.server.phase == serverView:
+		return m.serverResultView(bar, dim)
 	}
 	// The bar, the blank line under it and the hint line are not the body's.
 	body := "\n" + m.serverBody(m.height-lipgloss.Height(bar)-2)

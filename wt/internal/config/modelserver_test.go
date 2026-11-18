@@ -456,6 +456,52 @@ func TestUpdateModelServerChangeErrorWritesNothing(t *testing.T) {
 	}
 }
 
+// TestReadModelServerFileNeverQuotesASecretValue proves a syntax error on a
+// token or api_key line (a base64 token typed without quotes) is reported by
+// line and key name only: the parser's own message can quote the value, and
+// the config editor shows ParseErr on screen.
+func TestReadModelServerFileNeverQuotesASecretValue(t *testing.T) {
+	for _, body := range []string{
+		"[model-server]\nmode = \"remote\"\ntoken = abcSECRETxyz+/==\n",
+		"[litellm]\napi_key = sk-SECRET-0123456789\n",
+		"[model-server]\ntoken = \"abcSECRET\nmode = \"remote\"\n",
+	} {
+		sessionHome(t, body)
+		f := ReadModelServerFile()
+		if f.ParseErr == nil {
+			t.Fatalf("no ParseErr for %q", body)
+		}
+		msg := f.ParseErr.Error()
+		if strings.Contains(msg, "SECRET") {
+			t.Errorf("ParseErr quotes the secret: %q", msg)
+		}
+		if !strings.Contains(msg, "line ") || !(strings.Contains(msg, "token") || strings.Contains(msg, "api_key")) {
+			t.Errorf("ParseErr %q does not name the line and the key", msg)
+		}
+	}
+	// Any other syntax error keeps the parser's message.
+	sessionHome(t, "default_tag = \n")
+	if f := ReadModelServerFile(); f.ParseErr == nil || strings.Contains(f.ParseErr.Error(), "not shown") {
+		t.Errorf("ParseErr = %v, want the parser's own message", f.ParseErr)
+	}
+}
+
+// TestReadModelServerFileReportsADecodeErrorElsewhere proves a wrong-typed
+// key outside [model-server] (which every config.toml writer refuses on) is
+// reported as RestErr, so a setup plan can refuse before its first step
+// rather than fail at the last, while the table itself still reads.
+func TestReadModelServerFileReportsADecodeErrorElsewhere(t *testing.T) {
+	sessionHome(t, "[[agents]]\nname = 5\n\n[model-server]\nmode = \"remote\"\n")
+	f := ReadModelServerFile()
+	if f.RestErr == nil || f.TableErr != nil || f.Table == nil {
+		t.Errorf("file = %+v, want RestErr with the table read", f)
+	}
+	sessionHome(t, "[model-server]\nmode = \"remote\"\n")
+	if f := ReadModelServerFile(); f.RestErr != nil {
+		t.Errorf("RestErr = %v for a clean file", f.RestErr)
+	}
+}
+
 // TestReadModelServerFileReportsAKeyElsewhereAsRestErr pins that a
 // wrong-typed key outside [model-server] still leaves the table readable but
 // sets RestErr, which a plan refuses on (the writer re-encodes the whole file).

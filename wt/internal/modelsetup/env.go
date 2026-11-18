@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -42,9 +43,12 @@ type FS interface {
 	WriteAtomic(path string, data []byte, perm os.FileMode) error
 	Chmod(path string, perm os.FileMode) error
 	Remove(path string) error
-	// Backup copies path to a dated file beside it, with the same mode, and
-	// returns the copy's path.
-	Backup(path string) (string, error)
+	// Backup copies path to a dated file in dir (created 0700 when absent,
+	// tightened to 0700 when looser: tightened says so), at path's mode
+	// without group or other bits, and returns the copy's path. It never
+	// replaces an earlier backup: a second one in the same second gets a -2,
+	// -3, ... suffix.
+	Backup(path, dir string) (dst string, tightened bool, err error)
 }
 
 // LaunchdJob is what launchctl reports for one job.
@@ -99,6 +103,7 @@ type LiteLLMFiles interface {
 	ConfigPath() string
 	ReadPlist(path string) (litellm.ProxyPlistInfo, error)
 	PlistVar(path, name string) (value string, ok bool, err error)
+	Binary() (path string, ok bool)
 }
 
 // Env bundles every seam. A zero field is a programming error; build one with
@@ -131,30 +136,136 @@ func DefaultEnv() Env {
 // binary, so no test loads, unloads or inspects the developer's services.
 var errUnderTest = errors.New("the machine's services and process table are not touched from a test binary")
 
+// errOutsideTempUnderTest is what a real file seam returns in a test binary
+// for a path outside os.TempDir(), so no test changes the developer's files.
+var errOutsideTempUnderTest = errors.New("a test binary changes no file outside the temp directory")
+
+// guardUnderTest refuses, in a test binary only, any path that is not inside
+// os.TempDir() (as given, or with its symlinks resolved).
+func guardUnderTest(paths ...string) error {
+	if !testing.Testing() {
+		return nil
+	}
+	roots := []string{filepath.Clean(os.TempDir())}
+	if r, err := filepath.EvalSymlinks(roots[0]); err == nil {
+		roots = append(roots, r)
+	}
+	for _, p := range paths {
+		p = filepath.Clean(p)
+		inside := false
+		for _, r := range roots {
+			if strings.HasPrefix(p, r+string(filepath.Separator)) {
+				inside = true
+			}
+		}
+		if !inside {
+			return fmt.Errorf("%s: %w", p, errOutsideTempUnderTest)
+		}
+	}
+	return nil
+}
+
 type realFS struct{}
 
-func (realFS) ReadFile(p string) ([]byte, error)   { return os.ReadFile(p) }
-func (realFS) Stat(p string) (fs.FileInfo, error)  { return os.Stat(p) }
-func (realFS) Chmod(p string, m os.FileMode) error { return os.Chmod(p, m) }
-func (realFS) Remove(p string) error               { return os.Remove(p) }
+func (realFS) ReadFile(p string) ([]byte, error)  { return os.ReadFile(p) }
+func (realFS) Stat(p string) (fs.FileInfo, error) { return os.Stat(p) }
+func (realFS) Chmod(p string, m os.FileMode) error {
+	if err := guardUnderTest(p); err != nil {
+		return err
+	}
+	return os.Chmod(p, m)
+}
+func (realFS) Remove(p string) error {
+	if err := guardUnderTest(p); err != nil {
+		return err
+	}
+	return os.Remove(p)
+}
 func (realFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
+	if err := guardUnderTest(p); err != nil {
+		return err
+	}
+	// A rename over a symlink would replace the link with a regular file, so
+	// a plist a dotfiles tool links into place is written where it points.
+	if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			p = real
+		}
+	}
 	return config.WriteFileAtomic(p, d, m)
 }
 
-func (realFS) Backup(p string) (string, error) {
+// maxBackupTries bounds the -N suffixes Backup tries within one second.
+const maxBackupTries = 1000
+
+// backupCandidate is the n-th name a backup named after p taken at t may
+// use: the dated name, then the same with -2, -3, ... (p is the target path
+// inside the backup directory: dir/<the file's name>).
+func backupCandidate(p string, t time.Time, n int) string {
+	name := p + ".bak-" + t.Format("20060102-150405")
+	if n > 1 {
+		name += "-" + strconv.Itoa(n)
+	}
+	return name
+}
+
+// Backup copies p into dir under the first free dated name, created with
+// O_EXCL so an earlier backup is never replaced, at p's mode without group
+// or other bits (the copy holds the same secrets). dir is created 0700, or
+// tightened to 0700 when it has group or other bits (tightened is then
+// true); a dir that is not a directory (a symlink included) is refused.
+func (realFS) Backup(p, dir string) (string, bool, error) {
+	if err := guardUnderTest(dir); err != nil {
+		return "", false, err
+	}
 	info, err := os.Stat(p)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	data, err := os.ReadFile(p)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	dst := p + ".bak-" + time.Now().Format("20060102-150405")
-	if err := config.WriteFileAtomic(dst, data, info.Mode().Perm()); err != nil {
-		return "", err
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", false, fmt.Errorf("create the backup directory: %w", err)
 	}
-	return dst, nil
+	di, err := os.Lstat(dir)
+	if err != nil {
+		return "", false, err
+	}
+	if !di.IsDir() {
+		return "", false, fmt.Errorf("the backup directory %s is not a directory; nothing was copied", dir)
+	}
+	tightened := false
+	if di.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return "", false, fmt.Errorf("tighten the backup directory %s to 0700: %w; nothing was copied", dir, err)
+		}
+		tightened = true
+	}
+	// The copy holds the same secrets, so it never has group or other bits.
+	perm := info.Mode().Perm() &^ 0o077
+	now := time.Now()
+	target := filepath.Join(dir, filepath.Base(p))
+	for n := 1; n <= maxBackupTries; n++ {
+		dst := backupCandidate(target, now, n)
+		f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", tightened, err
+		}
+		_, werr := f.Write(data)
+		serr := f.Sync()
+		cerr := f.Close()
+		merr := os.Chmod(dst, perm) // the umask may have narrowed it
+		if err := errors.Join(werr, serr, cerr, merr); err != nil {
+			return "", tightened, fmt.Errorf("the backup %s is incomplete (remove it by hand): %w", dst, err)
+		}
+		return dst, tightened, nil
+	}
+	return "", tightened, fmt.Errorf("no free backup name in %s", dir)
 }
 
 type realLaunchd struct{}
@@ -245,7 +356,7 @@ const maxGetBody = 1 << 20
 func (realNet) Get(ctx context.Context, url, bearer string) (int, []byte, error) {
 	client := &http.Client{
 		Timeout:       10 * time.Second,
-		Transport:     &http.Transport{Proxy: nil},
+		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true}, // a poll builds a client per call: no idle connection is kept
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -324,8 +435,25 @@ func (realNet) ProcessStart(ctx context.Context, pid int) (time.Time, error) {
 
 type realHost struct{}
 
-func (realHost) Getenv(k string) string            { return os.Getenv(k) }
-func (realHost) Home() (string, error)             { return os.UserHomeDir() }
+func (realHost) Getenv(k string) string { return os.Getenv(k) }
+
+// errHomeUnderTest is what the real home seam returns in a test binary
+// whose HOME is not inside os.TempDir().
+var errHomeUnderTest = errors.New("a test binary uses no home directory outside the temp directory (set HOME to a temp dir)")
+
+// Home is the user's home directory. In a test binary it is refused unless
+// HOME was pointed inside os.TempDir(), so a test that reaches DefaultEnv
+// never plans or writes under the developer's home.
+func (realHost) Home() (string, error) {
+	h, err := os.UserHomeDir()
+	if err != nil || !testing.Testing() {
+		return h, err
+	}
+	if guardUnderTest(h) != nil {
+		return "", errHomeUnderTest
+	}
+	return h, nil
+}
 func (realHost) Executable() (string, error)       { return os.Executable() }
 func (realHost) LookPath(n string) (string, error) { return exec.LookPath(n) }
 func (realHost) Now() time.Time                    { return time.Now() }
@@ -351,6 +479,33 @@ func (realLiteLLM) ConfigPath() string { return litellm.DefaultPath() }
 func (realLiteLLM) ReadPlist(p string) (litellm.ProxyPlistInfo, error) {
 	return litellm.ReadProxyPlist(p)
 }
+
+// Binary finds the litellm binary: the install locations guide 14 and
+// Homebrew use, then PATH. It never runs it, and finds nothing in a test
+// binary so no test reads the developer's machine.
+func (realLiteLLM) Binary() (string, bool) {
+	if testing.Testing() {
+		return "", false
+	}
+	var dirs []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
+	}
+	dirs = append(dirs, "/opt/homebrew/bin", "/usr/local/bin")
+	for _, d := range dirs {
+		p := filepath.Join(d, "litellm")
+		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0o111 != 0 {
+			return p, true
+		}
+	}
+	if p, err := exec.LookPath("litellm"); err == nil {
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs, true
+		}
+	}
+	return "", false
+}
+
 func (realLiteLLM) PlistVar(p, n string) (string, bool, error) {
 	return litellm.ReadProxyPlistVar(p, n)
 }

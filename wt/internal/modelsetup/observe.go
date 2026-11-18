@@ -2,17 +2,18 @@ package modelsetup
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io/fs"
 	"net"
-	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
 
@@ -25,13 +26,19 @@ import (
 // CheckURL, when set, is the url the user entered: Observe pings it instead
 // of the configured one, with CheckToken (a pasted token) or else the token
 // read from CheckTokenFile, so a remote plan's check is about the server the
-// user named. Neither the token nor the url's userinfo goes into State.
+// user named. Neither the token nor the url's userinfo goes into State. A
+// url holding an '@' (entered, stored or WT_MODEL_URL) is never pinged: the
+// check reads as not made, with the fixed notCheckedAtURL message.
 type ObserveOptions struct {
 	ListenPort     int
 	TokenPaths     []string
 	CheckURL       string
 	CheckToken     Secret
 	CheckTokenFile string
+	// SkipLiteLLMProbe leaves out the lookups only a local-mode LiteLLM
+	// create plan reads: the binary search and the listener on the default
+	// port. Native and remote choices set it, so a read there pays for none.
+	SkipLiteLLMProbe bool
 }
 
 // Platform says whether the local mode can be set up here: macOS with launchd.
@@ -41,17 +48,18 @@ type Platform struct {
 }
 
 // ConfigState is config.toml's [model-server] table as read.
-// URLHadCredentials is true when the stored url carried a user:password,
-// which Observe took out of Table.URL (Problems says so in words); a plan
-// that writes the url writes it without them.
+// URLHadCredentials is true when the stored url held an '@' (read as a
+// user:password), so Observe replaced Table.URL whole with hiddenURL
+// (Problems says so in words); a plan that writes a url writes a retyped one
+// in its place (hiddenURL itself holds an '@' and is refused), so the
+// credentials are not kept.
 type ConfigState struct {
-	Path               string
-	Exists             bool
-	ParseErr, TableErr string
-	RestErr            string
-	Table              config.ModelServerState
-	Problems           []string
-	URLHadCredentials  bool
+	Path                        string
+	Exists                      bool
+	ParseErr, TableErr, RestErr string
+	Table                       config.ModelServerState
+	Problems                    []string
+	URLHadCredentials           bool
 }
 
 // TokenState describes the token file; the token itself is never held.
@@ -131,13 +139,37 @@ type HostState struct {
 }
 
 // LiteLLMPlistState is the proxy LaunchAgent plist as read; never a secret.
+// Binary is a bplist (it cannot be edited); Err never quotes the XML parser,
+// whose text can echo a fragment of the file.
 type LiteLLMPlistState struct {
 	Path         string
 	Present      bool
 	Port         int
 	Mode         os.FileMode
 	HasMasterKey bool
-	Err          string
+	// HasSaltKey and HasDatabaseURL say whether LITELLM_SALT_KEY and
+	// DATABASE_URL are set (names only, never values).
+	HasSaltKey, HasDatabaseURL bool
+	Binary                     bool
+	Err                        string
+	// JobChecked says launchd was asked about the plist's job (only when a
+	// plist is present and launchd is available); JobLoaded is its answer.
+	// A rotation restarts the job with kickstart, which fails when the job
+	// is not loaded, so the plan refuses first.
+	JobChecked, JobLoaded bool
+}
+
+// LiteLLMInstallState is what a create plan needs to know of an installed
+// LiteLLM: the binary (LiteLLMFiles.Binary, empty when none was found) and
+// whether its config.yaml exists. wt never installs either.
+type LiteLLMInstallState struct {
+	Binary, ConfigPath string
+	ConfigExists       bool
+	// Port is the port a created plist would use; ListenerPID is the
+	// process listening on it (0 for none), ListenerChecked whether it was
+	// looked at (only when no LiteLLM plist exists).
+	Port, ListenerPID int
+	ListenerChecked   bool
 }
 
 // CheckStatus is the outcome of one LiteLLM check.
@@ -175,14 +207,15 @@ type State struct {
 	// local default (DefaultLocalTokenPath), the fixed remote path
 	// (RemoteTokenPath), the agent's own token file and
 	// ObserveOptions.TokenPaths, each once, in that order.
-	TokenFiles   []TokenState
-	Pair         PairState
-	Agent        AgentState
-	Listener     ListenerState
-	Server       ServerState
-	Host         HostState
-	LiteLLMPlist LiteLLMPlistState
-	LiteLLM      LiteLLMState
+	TokenFiles     []TokenState
+	Pair           PairState
+	Agent          AgentState
+	Listener       ListenerState
+	Server         ServerState
+	Host           HostState
+	LiteLLMPlist   LiteLLMPlistState
+	LiteLLMInstall LiteLLMInstallState
+	LiteLLM        LiteLLMState
 }
 
 // envOverrideNames are the variables that override config.toml, in the order
@@ -220,24 +253,24 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		st.Config.RestErr = file.RestErr.Error()
 	}
 	// rawURL is the configured url as written, kept out of State: it may
-	// carry a user:password, which only the ping below uses.
+	// carry a user:password. A url with an @ is never pinged (fail closed);
+	// rawURL only feeds redactCheck, which scrubs it from other check text.
 	var rawURL string
 	if file.Table != nil {
 		t := *file.Table
 		t.Token = "" // a secret never goes into State; Problems reports its presence
 		rawURL = t.URL
-		// Only a url with an @ is rewritten: a parse-and-print round trip
-		// would otherwise re-encode an ordinary url and read as a change.
-		if strings.Contains(t.URL, "@") {
-			t.URL = stripUserinfo(t.URL)
-		}
+		// Only a url with an @ is replaced, whole, by hiddenURL (shownURL
+		// leaves any other exactly as written, so an ordinary url never reads
+		// as a change).
+		t.URL = shownURL(t.URL)
 		st.Config.Table = t
 		if file.Table.Token != "" {
 			st.Config.Problems = append(st.Config.Problems, "token under [model-server] is set; move it into a 0600 token_file")
 		}
 		if t.URL != rawURL {
 			st.Config.URLHadCredentials = true
-			st.Config.Problems = append(st.Config.Problems, "url under [model-server] contains credentials, which wt will not display; move them out of the url")
+			st.Config.Problems = append(st.Config.Problems, "url under [model-server] contains an @ (read as credentials), so wt will not display it; take them out of the url and use a token file")
 		}
 	}
 	tbl := st.Config.Table
@@ -349,14 +382,55 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	st.LiteLLMPlist.Path = lp
 	if info, err := env.LiteLLM.ReadPlist(lp); err != nil {
 		st.LiteLLMPlist.Present = !errors.Is(err, fs.ErrNotExist)
-		if st.LiteLLMPlist.Present {
-			st.LiteLLMPlist.Err = err.Error()
+		var se *xml.SyntaxError
+		switch {
+		case !st.LiteLLMPlist.Present:
+		case errors.Is(err, litellm.ErrBinaryPlist):
+			st.LiteLLMPlist.Binary, st.LiteLLMPlist.Err = true, err.Error()
+		case errors.As(err, &se):
+			st.LiteLLMPlist.Err = lp + " is not a well-formed XML plist"
+		default:
+			st.LiteLLMPlist.Err = PlistReadError(lp, err)
 		}
 	} else {
 		st.LiteLLMPlist.Present, st.LiteLLMPlist.Port, st.LiteLLMPlist.Mode = true, info.Port, info.Mode
 		for _, n := range info.EnvNames {
-			if n == "LITELLM_MASTER_KEY" {
+			switch n {
+			case "LITELLM_MASTER_KEY":
 				st.LiteLLMPlist.HasMasterKey = true
+			case "LITELLM_SALT_KEY":
+				st.LiteLLMPlist.HasSaltKey = true
+			case "DATABASE_URL":
+				st.LiteLLMPlist.HasDatabaseURL = true
+			}
+		}
+	}
+
+	if st.LiteLLMPlist.Present && st.Platform.OK && ctx.Err() == nil {
+		if job, err := env.Launchd.Print(ctx, litellm.ProxyLabel); err == nil {
+			st.LiteLLMPlist.JobChecked, st.LiteLLMPlist.JobLoaded = true, job.Loaded
+		}
+	}
+
+	// LiteLLM install (for a create plan): the binary and config.yaml.
+	if !opts.SkipLiteLLMProbe {
+		st.LiteLLMInstall.Binary, _ = env.LiteLLM.Binary()
+	}
+	st.LiteLLMInstall.ConfigPath = env.LiteLLM.ConfigPath()
+	if st.LiteLLMInstall.ConfigPath != "" {
+		if _, err := env.FS.Stat(st.LiteLLMInstall.ConfigPath); err == nil {
+			st.LiteLLMInstall.ConfigExists = true
+		}
+	}
+
+	// With no LiteLLM plist, whatever listens on the port a created one would
+	// use (a LiteLLM run by hand or under another label) blocks a create.
+	if !st.LiteLLMPlist.Present && !opts.SkipLiteLLMProbe && ctx.Err() == nil {
+		st.LiteLLMInstall.Port = DefaultLiteLLMPort
+		if pid, ok, err := env.Net.ListenerPID(ctx, DefaultLiteLLMPort); err == nil {
+			st.LiteLLMInstall.ListenerChecked = true
+			if ok {
+				st.LiteLLMInstall.ListenerPID = pid
 			}
 		}
 	}
@@ -378,7 +452,8 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 
 	// Server.
-	url := getenv("WT_MODEL_URL")
+	envURL := getenv("WT_MODEL_URL")
+	url := envURL
 	if url == "" {
 		url = rawURL
 	}
@@ -399,14 +474,23 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			token = readToken(env, &ts)
 		}
 		if token == "" {
-			st.Server.Message = "no token entered for " + stripUserinfo(url)
+			st.Server.Message = "no token entered for " + shownURL(url)
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		st.Server.Message = "not checked: " + err.Error()
-	} else if url != "" && token != "" {
+	switch {
+	case hasUserinfo(url):
+		// Never pinged: modelclient's failure quotes the parsed host, which no
+		// redaction of the typed text can find, and quotes a malformed url whole. The plan refuses the url
+		// anyway; the check reads as not made, in words that hold none of it.
+		st.Server = ServerState{URL: hiddenURL, Message: notCheckedAtURL}
+	case ctx.Err() != nil:
+		st.Server.Message = "not checked: " + ctx.Err().Error()
+	case url != "" && token != "":
 		st.Server = pingServer(ctx, env, modelclient.Endpoint{URL: url, Token: token})
-		st.Server.URL = stripUserinfo(url)
+		st.Server.URL = shownURL(url)
+		// Defence in depth: the url pinged holds no '@' here, but the stored
+		// or entered one beside it may.
+		st.Server.Message = redactCheck(st.Server.Message, url, rawURL, envURL, opts.CheckURL)
 	}
 
 	// LiteLLM checks: only where the local model server is in use.
@@ -484,22 +568,6 @@ func readToken(env Env, ts *TokenState) string {
 		ts.Err = "token file is empty"
 	}
 	return tok
-}
-
-// stripUserinfo removes a user:password from a url. A url that does not
-// parse loses everything from just after "://" up to its last "@".
-func stripUserinfo(raw string) string {
-	if u, err := neturl.Parse(raw); err == nil {
-		u.User = nil
-		return u.String()
-	}
-	if i := strings.LastIndex(raw, "@"); i >= 0 {
-		if j := strings.Index(raw, "://"); j >= 0 && j < i {
-			return raw[:j+3] + raw[i+1:]
-		}
-		return raw[i+1:]
-	}
-	return raw
 }
 
 // pingServer pings ep and maps the failure to a ServerKind. An error of no

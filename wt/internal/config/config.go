@@ -717,7 +717,7 @@ type Config struct {
 	// and wt never sets it, but no value is read or validated —
 	// IgnoredLaunchKeys names it so a launch can note it once per process.
 	LaunchTable *LaunchState `toml:"launch,omitempty"`
-	// ModelServerTable is the hand-edited [model-server] table (see
+	// ModelServerTable is the [model-server] table, written by the Model server tab and still hand-editable (see
 	// ModelServerState); it round-trips through every save like LaunchTable.
 	ModelServerTable *ModelServerState `toml:"model-server,omitempty"`
 	// wt decides which local models are running from the live inventory

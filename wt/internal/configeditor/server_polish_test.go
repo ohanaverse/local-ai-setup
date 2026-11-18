@@ -314,3 +314,48 @@ func TestServerTabPromptsStayVisibleAtEverySize(t *testing.T) {
 		}
 	}
 }
+
+// TestScrubHidesKeysWithoutMangling pins that scrub hides a real-shaped
+// sk- key after any separator, and leaves a word that merely contains sk-.
+func TestScrubHidesKeysWithoutMangling(t *testing.T) {
+	key := "sk-" + strings.Repeat("ab12", 16)
+	for _, pre := range []string{"", "=", " ", `"`, ":"} {
+		got := scrub(pre + key + " end")
+		if strings.Contains(got, "ab12") || !strings.HasPrefix(got, pre+"sk-<hidden>") {
+			t.Errorf("prefix %q: key not hidden or prefix lost: %q", pre, got)
+		}
+	}
+	for _, keep := range []string{"mask-rcnn-large-v2-xxxxxxxxxxxxxxxx", "models/task-runner-abcdefghijklmnop"} {
+		if got := scrub(keep); got != keep {
+			t.Errorf("scrub mangled %q into %q", keep, got)
+		}
+	}
+}
+
+// TestServerTabCancelsAPlanInFlightWhenCOrRReadsAgain pins the later twin of
+// TestServerTabCancelsAPlanWhenCOrRReadsAgain: once the read before a plan
+// landed and the plan itself is out, c or r still says planning was
+// cancelled (the plan is dropped by its generation when it lands), and the
+// dropped plan never reaches the confirm screen.
+func TestServerTabCancelsAPlanInFlightWhenCOrRReadsAgain(t *testing.T) {
+	for _, k := range []string{"c", "r"} {
+		sm := &serverMachine{states: []modelsetup.State{fullState()}, plan: okPlan()}
+		m := serverEditor(t, sm, 120, 50)
+		next, read := m.Update(keyMsg("a"))
+		m = next.(*model)
+		next, plan := m.Update(read())
+		m = next.(*model)
+		if plan == nil {
+			t.Fatalf("%s: the read before the plan did not hand the plan to a command", k)
+		}
+		next, _ = m.Update(keyMsg(k))
+		m = next.(*model)
+		if !strings.Contains(m.server.status, "planning cancelled") {
+			t.Errorf("%s: status = %q, want planning cancelled", k, m.server.status)
+		}
+		m = send(t, m, plan())
+		if m.server.phase == serverConfirm {
+			t.Errorf("%s: the cancelled plan reached the confirm screen", k)
+		}
+	}
+}

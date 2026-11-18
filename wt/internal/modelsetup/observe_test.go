@@ -2,12 +2,15 @@ package modelsetup
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
@@ -347,33 +350,35 @@ func TestObserveDescribesTheTokenFilesAPlanMayChoose(t *testing.T) {
 	}
 }
 
-// TestObserveRecordsThePingedURLWithoutUserinfo pins that ServerState names
-// the endpoint it pinged, so a plan can tell whose check it holds, and that
-// a user:password in the url is never stored.
+// TestObserveRecordsThePingedURLWithoutUserinfo pins that a url holding an
+// '@' is never stored in ServerState: it is not pinged at all (the check
+// reads as not made) and is recorded as the fixed hiddenURL, whole (no host
+// kept).
 func TestObserveRecordsThePingedURLWithoutUserinfo(t *testing.T) {
 	f := obsConfigured(t)
 	f.configFile.Table.Mode = "remote"
 	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if !st.Server.Checked || st.Server.URL != "https://gpu.example:8787/" {
-		t.Errorf("Server = %+v", st.Server)
+	if st.Server.Checked || st.Server.URL != hiddenURL || f.called("Net.Ping") {
+		t.Errorf("Server = %+v, calls %q", st.Server, f.calls)
 	}
 	if strings.Contains(fmt.Sprintf("%+v", st.Server), "pw-SECRET") {
 		t.Errorf("ServerState holds the url's password")
 	}
 }
 
-// TestObserveStripsUserinfoFromTheConfiguredURL pins that a user:password in
-// [model-server] url never reaches State.Config.Table (the tab draws that
-// table), that it is reported as a problem the way an inline token is, and
-// that the ping still goes to the url as written.
+// TestObserveStripsUserinfoFromTheConfiguredURL pins that a [model-server]
+// url holding an '@' never reaches State.Config.Table (the tab draws that
+// table): it is replaced whole by hiddenURL, host included; that it is
+// reported as a problem the way an inline token is, and that it is not
+// pinged (a failed ping's text could quote the url, or all of it when malformed).
 func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
 	f := obsConfigured(t)
 	f.configFile.Table.Mode = "remote"
 	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if st.Config.Table.URL != "https://gpu.example:8787/" {
-		t.Errorf("Config.Table.URL = %q, want the url without userinfo", st.Config.Table.URL)
+	if st.Config.Table.URL != hiddenURL {
+		t.Errorf("Config.Table.URL = %q, want %q", st.Config.Table.URL, hiddenURL)
 	}
 	if strings.Contains(fmt.Sprintf("%+v", st), "pw-SECRET") {
 		t.Errorf("State holds the url's password")
@@ -387,8 +392,8 @@ func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
 	if !found {
 		t.Errorf("Problems = %q, want one about the url's credentials", st.Config.Problems)
 	}
-	if !st.Server.Checked || !st.Server.OK {
-		t.Errorf("Server = %+v, want the url pinged as written", st.Server)
+	if st.Server.Checked || f.called("Net.Ping") {
+		t.Errorf("Server = %+v, calls %q, want the url not pinged", st.Server, f.calls)
 	}
 }
 
@@ -397,20 +402,34 @@ func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
 // one) with the token the user entered (pasted, else read from the typed
 // token file), so a remote plan's check gate is about the server the user
 // named. Without an entered token nothing is pinged and the reason is said;
-// no State field holds the entered token or the url's password.
+// no State field holds the entered token. An entered url with an '@' is
+// pinged neither (TestObserveNeverPingsAnAtURL has the full set), nor is the
+// stored one in its place.
 func TestObservePingsTheEnteredEndpoint(t *testing.T) {
 	f := obsConfigured(t)
 	st := Observe(context.Background(), f.Env(), ObserveOptions{
-		CheckURL: "https://me:pw-SECRET@gpu.example:8787", CheckToken: Secret("  tok-ENTERED  "),
+		CheckURL: "https://gpu.example:8787", CheckToken: Secret("  tok-ENTERED  "),
 	})
-	if !f.called("Net.Ping https://me:pw-SECRET@gpu.example:8787") || f.called("Net.Ping http://127.0.0.1:8787") {
+	if !f.called("Net.Ping https://gpu.example:8787") || f.called("Net.Ping http://127.0.0.1:8787") {
 		t.Errorf("calls = %q, want the entered url pinged as typed and not the stored one", f.calls)
 	}
 	if len(f.pingTokens) != 1 || f.pingTokens[0] != "tok-ENTERED" {
 		t.Errorf("ping tokens = %q, want the pasted token, trimmed", f.pingTokens)
 	}
 	if !st.Server.Checked || st.Server.URL != "https://gpu.example:8787" {
-		t.Errorf("Server = %+v, want the entered url, without userinfo", st.Server)
+		t.Errorf("Server = %+v, want the entered url recorded", st.Server)
+	}
+	if s := fmt.Sprintf("%+v", st); strings.Contains(s, "tok-ENTERED") {
+		t.Errorf("State holds the entered token")
+	}
+
+	// An entered url with an '@': nothing is pinged, the stored url included.
+	f = obsConfigured(t)
+	st = Observe(context.Background(), f.Env(), ObserveOptions{
+		CheckURL: "https://me:pw-SECRET@gpu.example:8787", CheckToken: Secret("tok-ENTERED"),
+	})
+	if f.called("Net.Ping") || st.Server.Checked || st.Server.URL != hiddenURL {
+		t.Errorf("calls = %q Server = %+v, want no ping and the url hidden", f.calls, st.Server)
 	}
 	if s := fmt.Sprintf("%+v", st); strings.Contains(s, "tok-ENTERED") || strings.Contains(s, "pw-SECRET") {
 		t.Errorf("State holds the entered token or the url's password")
@@ -430,5 +449,73 @@ func TestObservePingsTheEnteredEndpoint(t *testing.T) {
 	st = Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: "https://gpu.example:8787"})
 	if f.called("Net.Ping") || st.Server.Checked || !strings.Contains(st.Server.Message, "no token") {
 		t.Errorf("calls = %q Server = %+v, want no ping and a message naming the missing token", f.calls, st.Server)
+	}
+}
+
+// TestObserveDescribesTheLiteLLMInstallAndHidesParserText pins what a create
+// or rotate plan reads: the litellm binary through its seam, whether
+// config.yaml exists through FS, a binary plist as Binary, and a parser
+// error reduced to fixed words (it can quote the document).
+func TestObserveDescribesTheLiteLLMInstallAndHidesParserText(t *testing.T) {
+	f := newFakeEnv(t)
+	f.litellmBin = "/Users/user_name/.local/bin/litellm"
+	f.files[f.configPath] = []byte("model_list: []\n")
+	f.plistErr = fmt.Errorf("%s: %w", f.plistPath, &xml.SyntaxError{Msg: "invalid character entity &sk-LEAK-2;", Line: 9})
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	want := LiteLLMInstallState{Binary: f.litellmBin, ConfigPath: f.configPath, ConfigExists: true}
+	if st.LiteLLMInstall != want {
+		t.Errorf("LiteLLMInstall = %+v, want %+v", st.LiteLLMInstall, want)
+	}
+	if !st.LiteLLMPlist.Present || st.LiteLLMPlist.Binary || strings.Contains(st.LiteLLMPlist.Err, "sk-LEAK-2") || st.LiteLLMPlist.Err == "" {
+		t.Errorf("LiteLLMPlist = %+v", st.LiteLLMPlist)
+	}
+
+	// No plist: the LiteLLM port is checked for a listener (create needs it).
+	f = newFakeEnv(t)
+	f.plistErr = &fs.PathError{Op: "open", Path: f.plistPath, Err: fs.ErrNotExist}
+	f.listeners = map[int]int{4000: 4242}
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if got := st.LiteLLMInstall; got.Port != 4000 || got.ListenerPID != 4242 || !got.ListenerChecked {
+		t.Errorf("no plist: LiteLLMInstall = %+v", got)
+	}
+	// A plist: its env names say whether a salt key and DATABASE_URL are set,
+	// and the port is not checked.
+	f = newFakeEnv(t)
+	f.listeners = map[int]int{4000: 4242}
+	f.plistInfo = litellm.ProxyPlistInfo{Port: 4000, EnvNames: []string{"DATABASE_URL", "LITELLM_MASTER_KEY", "LITELLM_SALT_KEY"}}
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if lp := st.LiteLLMPlist; !lp.HasSaltKey || !lp.HasDatabaseURL || !lp.HasMasterKey || st.LiteLLMInstall.ListenerChecked {
+		t.Errorf("plist names: %+v %+v", lp, st.LiteLLMInstall)
+	}
+
+	f = newFakeEnv(t)
+	f.plistErr = fmt.Errorf("%s is a %w; convert it", f.plistPath, litellm.ErrBinaryPlist)
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if !st.LiteLLMPlist.Binary || st.LiteLLMInstall.ConfigExists || st.LiteLLMInstall.Binary != "" {
+		t.Errorf("binary plist: %+v %+v", st.LiteLLMPlist, st.LiteLLMInstall)
+	}
+}
+
+// TestObserveLiteLLMJobAndProbeGate pins that a present LiteLLM plist has its
+// job's loaded state read (JobChecked, JobLoaded), and that SkipLiteLLMProbe
+// leaves out the binary search and the port lookup a create plan alone uses.
+func TestObserveLiteLLMJobAndProbeGate(t *testing.T) {
+	f := newFakeEnv(t)
+	f.plistInfo = litellm.ProxyPlistInfo{Port: 4000, EnvNames: []string{"LITELLM_MASTER_KEY"}}
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if lp := st.LiteLLMPlist; !lp.JobChecked || lp.JobLoaded {
+		t.Errorf("unloaded job: %+v, want checked and not loaded", lp)
+	}
+	f.jobs[litellm.ProxyLabel] = LaunchdJob{Loaded: true}
+	if lp := Observe(context.Background(), f.Env(), ObserveOptions{}).LiteLLMPlist; !lp.JobLoaded {
+		t.Errorf("loaded job: %+v", lp)
+	}
+
+	f = newFakeEnv(t)
+	f.plistErr = &fs.PathError{Op: "open", Path: f.plistPath, Err: fs.ErrNotExist}
+	f.listeners = map[int]int{4000: 4242}
+	st = Observe(context.Background(), f.Env(), ObserveOptions{SkipLiteLLMProbe: true})
+	if got := st.LiteLLMInstall; got.Binary != "" || got.ListenerChecked || got.ListenerPID != 0 {
+		t.Errorf("skipped probe: %+v", got)
 	}
 }

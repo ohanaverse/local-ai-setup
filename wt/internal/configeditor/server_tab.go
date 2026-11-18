@@ -26,6 +26,8 @@ const (
 	serverEdit
 	serverConfirm
 	serverApplying
+	// serverMenu is the LiteLLM key menu k opens.
+	serverMenu
 )
 
 // serverPrompt is the question the confirm phase asks. Each is default-No
@@ -119,14 +121,21 @@ type serverTab struct {
 	// field changed since. It holds the secrets until the plan is
 	// dispatched, then is cleared.
 	planGen  int
-	planning bool // the plan command is out (planGen is already 0)
 	queue    []serverPrompt
 	planWant modelsetup.Desired
+	// planOut is true while serverPlanCmd's plan is out, so c or r can say
+	// they cancelled it (it is dropped by its generation when it lands).
+	planOut bool
 	// prompt is the question the confirm phase asks; plan and planText the
 	// plan it is about and the text shown for it.
 	prompt   serverPrompt
 	plan     modelsetup.Plan
 	planText string
+	// result is the result screen after an apply that left notes or
+	// recovery commands to read; nil when none is showing.
+	result *serverResultScreen
+	// menuAt is the menu option the cursor is on.
+	menuAt int
 }
 
 // serverObservedMsg carries one observation.
@@ -244,6 +253,7 @@ func (st *serverTab) fillServerFields() {
 func (m *model) serverObserveOptions() modelsetup.ObserveOptions {
 	st := &m.server
 	var o modelsetup.ObserveOptions
+	o.SkipLiteLLMProbe = st.want.Mode != modelclient.ModeLocal
 	switch st.want.Mode {
 	case modelclient.ModeLocal:
 		if _, port, err := net.SplitHostPort(st.value(sfListen)); err == nil {
@@ -325,6 +335,7 @@ func (m *model) applyServerObserved(msg serverObservedMsg) tea.Cmd {
 	st.planGen = 0
 	if why := m.serverWriteBlocked(); why != "" {
 		// The fresh read found what blocks a write (a parse error).
+		st.planWant, st.queue = modelsetup.Desired{}, nil
 		st.status = why
 		return nil
 	}
@@ -361,7 +372,7 @@ func (m *model) serverPlanCmd() tea.Cmd {
 	if !needsMasterKey(st.state) {
 		want.MasterKey = ""
 	}
-	st.planWant, st.planning = modelsetup.Desired{}, true
+	st.planWant, st.planOut = modelsetup.Desired{}, true
 	gen, plan, state := st.gen, m.opts.Server.Plan, st.state
 	return func() tea.Msg {
 		p, err := plan(state, want)
@@ -377,7 +388,8 @@ func (m *model) applyServerPlanned(msg serverPlannedMsg) {
 	if msg.gen != st.gen {
 		return
 	}
-	st.busy, st.status, st.pending, st.planning = false, "", false, false
+	st.planOut = false
+	st.busy, st.status, st.pending = false, "", false
 	if msg.err != nil {
 		var ref *modelsetup.RefusalError
 		if errors.As(msg.err, &ref) {
@@ -392,13 +404,14 @@ func (m *model) applyServerPlanned(msg serverPlannedMsg) {
 }
 
 // serverPlanText is the text the user confirms: the plan's Format, and a
-// note when the plan writes a url (Plan.WritesURL) over a stored one whose
-// credentials Observe took out (ConfigState.URLHadCredentials), since what
-// is written is the url without them. Both are data, not wording.
+// note when the plan writes a url (Plan.WritesURL) over a stored one that
+// held an '@' (ConfigState.URLHadCredentials; Observe shows it only as a
+// placeholder), since the url written replaces it and its credentials are
+// gone. Both are data, not wording.
 func serverPlanText(s modelsetup.State, p modelsetup.Plan) string {
 	text := scrub(p.Format())
 	if s.Config.URLHadCredentials && p.WritesURL() {
-		text += "the stored url's credentials are not kept: the url is written without them\n"
+		text += "the stored url's credentials are not kept: it contained an @, and the url above replaces it\n"
 	}
 	return text
 }
@@ -476,6 +489,7 @@ func pluralWord(n int, one, many string) string {
 func (m *model) applyServerApplied(msg serverAppliedMsg) tea.Cmd {
 	st := &m.server
 	st.status = serverResultText(msg.res, msg.progress)
+	st.result = newResultScreen(msg.res, st.status)
 	ok := msg.res.Failed == nil && msg.res.Err == nil
 	if ok {
 		st.fields[sfPaste].SetValue("")
@@ -528,13 +542,19 @@ func (m *model) finishServerWrite(ok bool) tea.Cmd {
 	st := &m.server
 	st.phase, st.busy, st.writing = serverView, false, false
 	if m.quitPending {
-		if !ok {
+		held := st.result != nil
+		if ok && held {
+			// Notes or recovery to read (the backup's path): the quit waits.
+			st.status = "quit held back so the notes can be read; press q to quit"
+			st.result.text += "\n" + st.status
+		}
+		if !ok || held {
 			m.quitPending, m.tab = false, TabServer
 			if m.discardHeld {
 				m.discardHeld, m.dirty = false, true
 			}
 		} else {
-			m.quitPending, m.discardHeld = false, false
+			m.quitPending = false // discardHeld stays until the quit happens (leave)
 			if _, cmd := m.quit(); cmd != nil {
 				return cmd
 			}
@@ -642,12 +662,17 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateServerConfirm(msg)
 	case serverApplying:
 		return m.updateServerApplying(msg)
+	case serverMenu:
+		return m.updateServerMenu(msg)
 	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
 	}
 	st := &m.server
+	if st.result != nil && m.updateServerResult(key.String()) {
+		return m, nil
+	}
 	if !st.busy {
 		st.status = ""
 	}
@@ -678,6 +703,14 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateServerForm(key.String())
 	case "a":
 		return m, m.startServerPlan()
+	case "k":
+		m.openServerMenu()
+	case "t":
+		if why := m.serverTightenBlocked(); why != "" {
+			st.status = why
+			return m, nil
+		}
+		return m, m.startServerPlanWith(modelsetup.LiteLLMTighten)
 	case "s":
 		return m, m.serverControlCmd(modelsetup.ControlStart)
 	case "x":
@@ -690,16 +723,17 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // cancelServerPlan drops a plan whose read c or r has just replaced: the
-// older read is dropped when it lands, so the plan would silently never
-// come. The snapshot, secrets included, goes now; the result is the words
-// to put before the new status ("planning cancelled; "), empty if no plan
-// was waiting.
+// older read, or the plan already out after it (planOut), is dropped by its
+// generation when it lands, so the plan would silently never come. The
+// snapshot, secrets included, goes now; the result is the words to put
+// before the new status ("planning cancelled; "), empty if no plan was
+// waiting.
 func (m *model) cancelServerPlan() string {
 	st := &m.server
-	if st.planGen == 0 && !st.planning {
+	if st.planGen == 0 && !st.planOut {
 		return ""
 	}
-	st.planGen, st.planning, st.queue, st.planWant = 0, false, nil, modelsetup.Desired{}
+	st.planGen, st.queue, st.planWant, st.planOut = 0, nil, modelsetup.Desired{}, false
 	return "planning cancelled; "
 }
 
@@ -728,6 +762,13 @@ func (m *model) updateServerForm(key string) {
 // remote check of another url), and that read goes on to the questions and
 // the plan (applyServerObserved).
 func (m *model) startServerPlan() tea.Cmd {
+	return m.startServerPlanWith(modelsetup.LiteLLMNone)
+}
+
+// startServerPlanWith is a with a LiteLLM action (k's menu, t): the action
+// is part of the snapshot, and no entered master key goes with it, since
+// the action decides the key itself.
+func (m *model) startServerPlanWith(action modelsetup.LiteLLMAction) tea.Cmd {
 	st := &m.server
 	if why := m.serverWriteBlocked(); why != "" {
 		st.status = why
@@ -735,6 +776,9 @@ func (m *model) startServerPlan() tea.Cmd {
 	}
 	// One snapshot of the form for the read and the plan alike.
 	st.planWant, st.queue = m.serverDesired(), nil
+	if action != modelsetup.LiteLLMNone {
+		st.planWant.LiteLLM, st.planWant.MasterKey = action, ""
+	}
 	st.status, st.pending = "reading the machine again before planning…", true
 	cmd := m.observeServerCmdWith(m.serverObserveOptions())
 	st.planGen = st.gen
