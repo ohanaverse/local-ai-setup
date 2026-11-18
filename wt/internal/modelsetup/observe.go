@@ -316,12 +316,12 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			} else {
 				st.Agent.Managed, st.Agent.Listen, st.Agent.Binary, st.Agent.TokenFile = p.Managed, p.Listen, p.Binary, p.TokenFile
 			}
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			st.Agent.Err = err.Error()
 		} else if danglingLink(env, st.Agent.PlistPath) {
 			// A link there that does not resolve is a plist that exists (a
 			// plan must not write over the link), but one wt cannot read.
 			st.Agent.Present, st.Agent.Err = true, st.Agent.PlistPath+" is a symlink that does not resolve"
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			st.Agent.Err = err.Error()
 		}
 	} else {
 		st.Agent.Err = "home directory: " + herr.Error()
@@ -396,18 +396,15 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	lp := env.LiteLLM.PlistPath()
 	st.LiteLLMPlist.Path = lp
 	if info, err := env.LiteLLM.ReadPlist(lp); err != nil {
-		st.LiteLLMPlist.Present = !errors.Is(err, fs.ErrNotExist)
+		// A symlink there that does not resolve is a plist that exists (a
+		// create must not replace the link), but one wt cannot read.
+		dangling := danglingLink(env, lp)
+		st.LiteLLMPlist.Present = dangling || !errors.Is(err, fs.ErrNotExist)
 		var se *xml.SyntaxError
-		if !st.LiteLLMPlist.Present {
-			// A symlink there that does not resolve is a plist that exists
-			// (a create must not replace the link), but one wt cannot read.
-			if danglingLink(env, lp) {
-				st.LiteLLMPlist.Present = true
-				st.LiteLLMPlist.Err = lp + " is a symlink that does not resolve"
-			}
-		}
 		switch {
-		case !st.LiteLLMPlist.Present, st.LiteLLMPlist.Err != "":
+		case dangling:
+			st.LiteLLMPlist.Err = lp + " is a symlink that does not resolve"
+		case !st.LiteLLMPlist.Present:
 		case errors.Is(err, litellm.ErrBinaryPlist):
 			st.LiteLLMPlist.Binary, st.LiteLLMPlist.Err = true, err.Error()
 		case errors.As(err, &se):
@@ -566,11 +563,16 @@ func configHome(xdg, home string, herr error) string {
 	return filepath.Join(home, ".config")
 }
 
-// danglingLink is true when p is a symlink (Lstat sees it) that Stat and
-// ReadFile report absent: a link whose target does not exist.
+// danglingLink is true when p is a symlink (Lstat sees it) that Stat cannot
+// follow: its target does not exist, or the links loop. Whatever the reason,
+// a write there would replace the link, so it reads as present, unreadable.
 func danglingLink(env Env, p string) bool {
 	fi, err := env.FS.Lstat(p)
-	return err == nil && fi.Mode()&fs.ModeSymlink != 0
+	if err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		return false
+	}
+	_, err = env.FS.Stat(p)
+	return err != nil
 }
 
 // readToken fills ts from the token file and returns the token, or "" when it
@@ -580,12 +582,12 @@ func readToken(env Env, ts *TokenState) string {
 	info, err := env.FS.Stat(ts.Path)
 	if err != nil {
 		switch {
-		case !errors.Is(err, fs.ErrNotExist):
-			ts.Err = err.Error()
 		case danglingLink(env, ts.Path):
 			// A token file that is a link to nothing exists, unreadable: a
 			// plan must not make a new token over the link.
 			ts.Exists, ts.Err = true, ts.Path+" is a symlink that does not resolve"
+		case !errors.Is(err, fs.ErrNotExist):
+			ts.Err = err.Error()
 		}
 		return ""
 	}

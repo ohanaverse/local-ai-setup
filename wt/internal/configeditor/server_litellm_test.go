@@ -691,6 +691,44 @@ func TestServerTabReadsTheLiteLLMProbeWhenLocalIsChosen(t *testing.T) {
 	}
 }
 
+// TestServerTabModeKeysPassThroughLocalDuringItsProbeRead pins that going
+// from native to remote, which passes over local, is not stopped halfway by
+// the probe read the stop on local starts: the next mode key is let through
+// while that read is out, and only that read.
+func TestServerTabModeKeysPassThroughLocalDuringItsProbeRead(t *testing.T) {
+	base := installable()
+	base.Resolution = modelclient.Resolution{}
+	base.Config.Table.Mode = ""
+	sm := &serverMachine{}
+	deps := sm.deps()
+	observe := deps.Observe
+	deps.Observe = func(ctx context.Context, o modelsetup.ObserveOptions) modelsetup.State {
+		observe(ctx, o)
+		return base
+	}
+	m := newModel(testTheme(), &config.Config{}, nil)
+	m.opts = Options{StartTab: TabServer, Server: deps, Models: newTabMachine(t, "").deps()}
+	m.tab = TabServer
+	m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
+	m = runCmd(t, m, m.Init())
+	m = keys(t, m, "right")                // native
+	next, cmd := m.Update(keyMsg("right")) // local: the probe read starts
+	m = next.(*model)
+	if !m.server.busy || cmd == nil {
+		t.Fatalf("local: busy %v cmd %v, want a read out", m.server.busy, cmd != nil)
+	}
+	next, _ = m.Update(keyMsg("right")) // remote, while that read is out
+	m = next.(*model)
+	if m.server.want.Mode != modelclient.ModeRemote {
+		t.Fatalf("mode %q, want remote: the key was held back (%q)", m.server.want.Mode, m.server.status)
+	}
+	next, _ = m.Update(keyMsg("enter")) // other keys still wait
+	m = next.(*model)
+	if !strings.Contains(m.server.status, "wait") {
+		t.Errorf("enter during the probe read: status %q, want the wait line", m.server.status)
+	}
+}
+
 // TestServerTabProbesOnFirstOpenOfAStoredLocalConfig pins that opening the
 // tab on a config that already stores mode = "local" runs the LiteLLM probe
 // in its one first read: that read is made before the mode is known, and no
