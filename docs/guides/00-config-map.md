@@ -307,9 +307,9 @@ ls ~/.config/local-ai/registry.toml ~/.config/agent-wt/config.toml ~/.config/lit
 ```
 
 ```text
-/Users/keith/.config/local-ai/registry.toml
-/Users/keith/.config/agent-wt/config.toml
-/Users/keith/.config/litellm/config.yaml
+/Users/user_name/.config/local-ai/registry.toml
+/Users/user_name/.config/agent-wt/config.toml
+/Users/user_name/.config/litellm/config.yaml
 ```
 
 LaunchAgent labels are loaded:
@@ -343,10 +343,10 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 
 ## Going deeper
 
-- Service setup (plists above): `/Users/keith/github/ohanaverse/local-ai-setup/docs/guides/01-initial-setup.md`
-- wt config/registry relationship: `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md`
-- wt config TUI + config dir layout: `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md`
-- Registry data model (wt consumer side): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
-- oMLX backend reference: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/oMLX Download and Run.md`
-- Provider artifacts + llama.cpp re-enable procedure: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md`
+- Service setup (plists above): `~/github/ohanaverse/local-ai-setup/docs/guides/01-initial-setup.md`
+- wt config/registry relationship: `~/github/ohanaverse/local-ai-setup/wt/README.md`
+- wt config TUI + config dir layout: `~/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md`
+- Registry data model (wt consumer side): `~/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
+- oMLX backend reference: `~/github/ohanaverse/local-ai-setup/docs/reference/oMLX Download and Run.md`
+- Provider artifacts + llama.cpp re-enable procedure: `~/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md`
 - Model tiers (`tiers.toml`, its two data files): [12-model-tiers](12-model-tiers.md)

@@ -24,8 +24,8 @@ omlx 0.6.3rc3
 postgresql@16 16.15
 redis 8.10.1
 /opt/homebrew/bin/omlx
-/Users/keith/.local/bin/litellm
-/Users/keith/.local/bin/hf
+/Users/user_name/.local/bin/litellm
+/Users/user_name/.local/bin/hf
 ```
 
 You need:
@@ -360,7 +360,7 @@ No `prisma db push` needed on ≥1.98 — the proxy runs `prisma migrate deploy`
 
 The LiteLLM proxy is a hand-rolled LaunchAgent (the brew services in §4/§6 are already in place by then).
 
-Rebuilding from a backup volume with the same username? Skip building it — every path inside the old plist matches this machine verbatim (`/Users/keith/.local/bin/litellm`, `~/.config/litellm/config.yaml`, `.litellm.log`/`.litellm.err.log`), including the secrets:
+Rebuilding from a backup volume with the same username? Skip building it — every path inside the old plist already matches this machine, so nothing needs editing (`~/.local/bin/litellm`, `~/.config/litellm/config.yaml`, `.litellm.log`/`.litellm.err.log`), including the secrets:
 
 ```bash
 cp "/Volumes/Users Bak/keith/Library/LaunchAgents/local.litellm.proxy.plist" ~/Library/LaunchAgents/

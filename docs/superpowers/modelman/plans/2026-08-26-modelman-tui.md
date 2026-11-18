@@ -82,7 +82,7 @@ asyncio_mode = "auto"
 - [ ] **Step 2: Sync and verify**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv sync
 uv run python -c "import textual; print(textual.__version__)"
 ```
@@ -92,7 +92,7 @@ Expected: a version number prints (e.g. `0.80.0` or higher).
 - [ ] **Step 3: Verify existing tests still pass**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest
 ```
 
@@ -101,7 +101,7 @@ Expected: all existing tests pass (no regressions from new deps).
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add pyproject.toml uv.lock
 git commit -m "chore: add textual + pytest-asyncio deps"
 ```
@@ -142,7 +142,7 @@ def test_model_info_round_trip(tmp_path):
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_manifest.py::test_model_info_round_trip -v
 ```
 
@@ -200,7 +200,7 @@ In `src/modelman/manifest.py`, update `_coerce_variant`:
 - [ ] **Step 5: Run the test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_manifest.py -v
 ```
 
@@ -209,7 +209,7 @@ Expected: PASS for all manifest tests including the new one.
 - [ ] **Step 6: Run mypy**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run mypy src/
 ```
 
@@ -218,7 +218,7 @@ Expected: no new errors. (The `# type: ignore[typeddict-unknown-key]` comments i
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/providers/base.py src/modelman/manifest.py tests/test_manifest.py
 git commit -m "feat(manifest): freeform model_info per variant"
 ```
@@ -261,7 +261,7 @@ def test_provider_size_of_default_is_none():
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_providers/test_base.py::test_provider_size_of_default_is_none -v
 ```
 
@@ -284,7 +284,7 @@ In `src/modelman/providers/base.py`, add to the `Provider` class:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_providers/test_base.py -v
 ```
 
@@ -293,7 +293,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/providers/base.py tests/test_providers/test_base.py
 git commit -m "feat(providers): add size_of with default None"
 ```
@@ -357,7 +357,7 @@ def test_size_of_returns_none_when_not_in_cache(tmp_path, monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_providers/test_llamacpp.py -v -k "size_of"
 ```
 
@@ -388,7 +388,7 @@ Add to `src/modelman/providers/llamacpp.py`, inside `LlamaCppProvider`:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_providers/test_llamacpp.py -v -k "size_of"
 ```
 
@@ -397,7 +397,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/providers/llamacpp.py tests/test_providers/test_llamacpp.py
 git commit -m "feat(llamacpp): size_of stats primary file in HF cache"
 ```
@@ -458,7 +458,7 @@ def test_size_of_returns_none_when_missing(tmp_path):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_providers/test_omlx.py -v -k "size_of"
 ```
 
@@ -486,7 +486,7 @@ Add to `src/modelman/providers/omlx.py`, inside `OMLXProvider`:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_providers/test_omlx.py -v -k "size_of"
 ```
 
@@ -495,7 +495,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/providers/omlx.py tests/test_providers/test_omlx.py
 git commit -m "feat(omlx): size_of sums model dir"
 ```
@@ -554,7 +554,7 @@ def test_size_of_returns_none_when_not_in_list(mock_runner):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_providers/test_ollama.py -v -k "size_of"
 ```
 
@@ -610,7 +610,7 @@ Then add to `OllamaProvider`:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_providers/test_ollama.py -v -k "size_of"
 ```
 
@@ -619,7 +619,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/providers/ollama.py tests/test_providers/test_ollama.py
 git commit -m "feat(ollama): size_of parses ollama list SIZE column"
 ```
@@ -745,7 +745,7 @@ def test_apply_empty_is_noop(tmp_path):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_queue.py -v
 ```
 
@@ -834,7 +834,7 @@ class PendingChanges:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_queue.py -v
 ```
 
@@ -843,7 +843,7 @@ Expected: PASS for all three tests.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/queue.py tests/test_queue.py
 git commit -m "feat(queue): PendingChanges applies deletes before downloads"
 ```
@@ -902,7 +902,7 @@ def test_auto_detect_returns_empty_on_failure(mock_runner):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_ollama_caps.py -v
 ```
 
@@ -970,7 +970,7 @@ def auto_detect_model_info(name: str, runner: _Runner | None = None) -> dict[str
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/test_ollama_caps.py -v
 ```
 
@@ -979,7 +979,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/ollama_caps.py tests/test_ollama_caps.py
 git commit -m "feat(ollama): parse ollama show capabilities into model_info"
 ```
@@ -1034,7 +1034,7 @@ async def test_app_launches_into_family_screen():
 - [ ] **Step 3: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py -v
 ```
 
@@ -1064,7 +1064,7 @@ class ModelmanApp(App[None]):
 - [ ] **Step 5: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py -v
 ```
 
@@ -1073,7 +1073,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/app.py src/modelman/screens/ tests/screens/
 git commit -m "feat(tui): minimal ModelmanApp launching FamilyScreen"
 ```
@@ -1128,7 +1128,7 @@ async def test_family_screen_lists_configured_families(tmp_path, monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_family_screen_lists_configured_families -v
 ```
 
@@ -1263,7 +1263,7 @@ async def test_family_screen_lists_configured_families(tmp_path, monkeypatch):
 - [ ] **Step 5: Run tests to verify they pass**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py -v
 ```
 
@@ -1272,7 +1272,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/families.py tests/screens/test_app_navigation.py
 git commit -m "feat(tui): FamilyScreen lists families with size column"
 ```
@@ -1318,7 +1318,7 @@ async def test_add_family_creates_manifest(tmp_path, monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_add_family_creates_manifest -v
 ```
 
@@ -1404,7 +1404,7 @@ def action_add_family(self) -> None:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_add_family_creates_manifest -v
 ```
 
@@ -1413,7 +1413,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/forms.py src/modelman/screens/families.py tests/screens/test_app_navigation.py
 git commit -m "feat(tui): AddFamilyModal creates a new family manifest"
 ```
@@ -1482,7 +1482,7 @@ async def test_delete_family_blocked_when_downloaded(tmp_path, monkeypatch):
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py -v -k "delete_family"
 ```
 
@@ -1583,7 +1583,7 @@ def _notify_blocked(self, family_name: str) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py -v -k "delete_family"
 ```
 
@@ -1592,7 +1592,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/forms.py src/modelman/screens/families.py tests/screens/test_app_navigation.py
 git commit -m "feat(tui): delete family with downloaded-models guard"
 ```
@@ -1636,7 +1636,7 @@ async def test_enter_opens_model_screen(tmp_path, monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_enter_opens_model_screen -v
 ```
 
@@ -1703,7 +1703,7 @@ And:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_enter_opens_model_screen -v
 ```
 
@@ -1712,7 +1712,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/models.py src/modelman/screens/families.py tests/screens/test_app_navigation.py
 git commit -m "feat(tui): ModelScreen opens from FamilyScreen via Enter"
 ```
@@ -1765,7 +1765,7 @@ async def test_model_screen_two_pane_lists_providers_and_models(tmp_path, monkey
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_model_screen_two_pane_lists_providers_and_models -v
 ```
 
@@ -1883,7 +1883,7 @@ class ModelScreen(Screen[None]):
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_model_screen_two_pane_lists_providers_and_models -v
 ```
 
@@ -1892,7 +1892,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/models.py tests/screens/test_app_navigation.py
 git commit -m "feat(tui): ModelScreen two-pane with providers and models"
 ```
@@ -1942,7 +1942,7 @@ async def test_toggle_download_queues_variant(tmp_path, monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_toggle_download_queues_variant -v
 ```
 
@@ -2016,7 +2016,7 @@ In `on_mount`, after building tables, call `self._refresh_pending_bar()`.
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_toggle_download_queues_variant -v
 ```
 
@@ -2025,7 +2025,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/models.py tests/screens/test_app_navigation.py
 git commit -m "feat(tui): toggle download on exit with pending bar"
 ```
@@ -2089,7 +2089,7 @@ async def test_add_then_delete_model_queues_changes(tmp_path, monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_add_then_delete_model_queues_changes -v
 ```
 
@@ -2289,7 +2289,7 @@ def _on_edit_model(self, updated) -> None:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_add_then_delete_model_queues_changes -v
 ```
 
@@ -2298,7 +2298,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/forms.py src/modelman/screens/models.py tests/screens/test_app_navigation.py
 git commit -m "feat(tui): add/edit/delete model modals with queueing"
 ```
@@ -2373,7 +2373,7 @@ async def test_escape_with_pending_shows_dialog_and_apply(tmp_path, monkeypatch)
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_escape_with_pending_shows_dialog_and_apply -v
 ```
 
@@ -2478,7 +2478,7 @@ from ..queue import PendingChanges
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/screens/test_app_navigation.py::test_escape_with_pending_shows_dialog_and_apply -v
 ```
 
@@ -2487,7 +2487,7 @@ Expected: PASS (download stub called, manifest updated).
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/forms.py src/modelman/screens/models.py tests/screens/test_app_navigation.py
 git commit -m "feat(tui): confirm-on-exit applies pending changes"
 ```
@@ -2550,7 +2550,7 @@ def test_no_args_launches_tui_at_family_list(tmp_path, monkeypatch):
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest tests/commands/test_download.py -v
 ```
 
@@ -2618,7 +2618,7 @@ Delete `src/modelman/commands/download.py` (its logic is replaced by the TUI). K
 - [ ] **Step 5: Run tests to verify they pass**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest -v
 ```
 
@@ -2627,7 +2627,7 @@ Expected: all tests pass.
 - [ ] **Step 6: Run mypy**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run mypy src/
 ```
 
@@ -2636,7 +2636,7 @@ Expected: no errors.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/main.py tests/commands/test_download.py
 git rm src/modelman/commands/download.py
 git commit -m "feat(cli): launch TUI; `download` opens at family model screen"
@@ -2649,7 +2649,7 @@ git commit -m "feat(cli): launch TUI; `download` opens at family model screen"
 - [ ] **Step 1: Run full test suite**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run pytest
 ```
 
@@ -2658,7 +2658,7 @@ Expected: all tests pass, coverage above 80% (`pytest --cov` if configured).
 - [ ] **Step 2: Run mypy**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run mypy src/
 ```
 
@@ -2667,7 +2667,7 @@ Expected: clean.
 - [ ] **Step 3: Manual smoke test**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 uv run modelman
 ```
 
@@ -2676,7 +2676,7 @@ Expected: Textual TUI launches with the family list. Add a family, open it, add 
 - [ ] **Step 4: Final commit (if anything tweaked)**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git status
 git add -u
 git diff --cached --quiet || git commit -m "chore: post-implementation tweaks"

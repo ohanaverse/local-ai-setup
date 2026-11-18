@@ -49,7 +49,7 @@ Files NOT touched: `internal/config/`, `internal/registry/`, `internal/worktree/
 - [ ] **Step 1: Sync main and create the branch**
 
 ```bash
-cd /Users/keith/github/ohanaverse/agent-worktree
+cd /Users/user_name/github/ohanaverse/agent-worktree
 git checkout main
 git pull --ff-only
 git checkout -b feat/rotation-by-launch
@@ -1779,7 +1779,7 @@ The PR body should reference the spec and summarize the user-visible behavior ch
 - [ ] **Step 2: After review and merge, run `/repo-cleanup`**
 
 ```bash
-bash /Users/keith/.agents/plugins/repo-cleanup/bin/repo-cleanup --yes
+bash /Users/user_name/.agents/plugins/repo-cleanup/bin/repo-cleanup --yes
 ```
 
 Expected: clean. The spec branch `docs/rotation-by-launch-spec` will be reported as merged-able; the feature branch `feat/rotation-by-launch` will be deleted automatically once merged.

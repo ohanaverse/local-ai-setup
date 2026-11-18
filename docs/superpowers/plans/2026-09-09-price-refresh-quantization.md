@@ -1510,7 +1510,7 @@ git commit -m "feat(forms): stale-pricing reminder on exit when refresh skipped/
 - [ ] **Step 1: Write the failing check**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup && grep -E '^install:' Makefile
+cd /Users/user_name/github/ohanaverse/local-ai-setup && grep -E '^install:' Makefile
 ```
 
 Expected: no match.
@@ -1531,7 +1531,7 @@ Ensure the lines are indented with a **tab**, not spaces.
 - [ ] **Step 3: Dry-run the target**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup && make -n install
+cd /Users/user_name/github/ohanaverse/local-ai-setup && make -n install
 ```
 
 Expected: prints `cd wt && make install` and `cd modelman && uv sync` without executing.
@@ -1539,7 +1539,7 @@ Expected: prints `cd wt && make install` and `cd modelman && uv sync` without ex
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup && make lint
+cd /Users/user_name/github/ohanaverse/local-ai-setup && make lint
 git add Makefile
 git commit -m "build(make): add install target for wt + modelman"
 ```
@@ -1559,7 +1559,7 @@ Expected: lint, typecheck, and full pytest suite pass.
 - [ ] **Step 2: Run root lint**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup && make lint
+cd /Users/user_name/github/ohanaverse/local-ai-setup && make lint
 ```
 
 Expected: shell lint and link checks pass.
@@ -1567,7 +1567,7 @@ Expected: shell lint and link checks pass.
 - [ ] **Step 3: Run monorepo test-all**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup && make test-all
+cd /Users/user_name/github/ohanaverse/local-ai-setup && make test-all
 ```
 
 Expected: all components pass.

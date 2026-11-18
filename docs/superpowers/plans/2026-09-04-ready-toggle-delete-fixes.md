@@ -17,7 +17,7 @@
 - `make check` (lint + typecheck) must pass; ruff flags unused imports as F401.
 - Every test needs a docstring comment describing what it verifies and why (per user's global test-documentation rule).
 - Commit messages end with `Co-Authored-By: Claude Code <noreply@anthropic.com>`.
-- Work in the worktree at `/Users/keith/github/ohanaverse/local-ai-setup/.worktrees/ready-toggle-delete`; the `modelman` package lives under `modelman/`.
+- Work in the worktree at `/Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/ready-toggle-delete`; the `modelman` package lives under `modelman/`.
 
 ---
 

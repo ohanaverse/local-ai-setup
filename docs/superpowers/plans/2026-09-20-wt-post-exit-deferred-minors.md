@@ -442,7 +442,7 @@ No files change. This is the whole-branch verification the executed plan also ra
 - [ ] **Step 1: Run the full local gate and capture it to a file**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/wt-post-exit
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/wt-post-exit
 mkdir -p .superpowers/sdd/2026-09-20-wt-post-exit-deferred-minors
 {
   echo "HEAD=$(git rev-parse HEAD)"

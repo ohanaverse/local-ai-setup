@@ -31,7 +31,7 @@ Hook structure (must be wrapped in `hooks` array):
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/keith/.claude/hooks/welcome.sh"
+            "command": "/Users/user_name/.claude/hooks/welcome.sh"
           }
         ]
       }
