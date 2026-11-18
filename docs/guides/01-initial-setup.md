@@ -357,7 +357,7 @@ No `prisma db push` needed on ≥1.98 — the proxy runs `prisma migrate deploy`
 
 ### 7. LaunchAgents
 
-The LiteLLM proxy is a hand-rolled LaunchAgent (the brew services in §4/§6 are already in place by then).
+The LiteLLM proxy is a hand-rolled LaunchAgent (the brew services in §4/§6 are already in place by then). You can still author it by hand, as below; alternatively, once LiteLLM and its `config.yaml` are installed and nothing listens on port 4000, the `wt config` Model server tab (`k`) can create a minimal plist for you (no `DATABASE_URL`, UI login or provider keys: add them as [14-litellm-install-and-configuration](14-litellm-install-and-configuration.md) describes). It never installs LiteLLM.
 
 Rebuilding from a backup volume with the same username? Skip the template — every path inside the old plist matches this machine verbatim (`/Users/keith/.local/bin/litellm`, `~/.config/litellm/config.yaml`, `.litellm.log`/`.litellm.err.log`), including the secrets:
 

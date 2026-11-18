@@ -166,6 +166,8 @@ Paste each into the plist. Do not echo them into logs or chat, and do not commit
 
 **The salt key must never change once the database holds encrypted data** (provider keys added through the Admin UI or API). Changing it makes every stored key undecryptable and you must re-enter them. Back the value up in a password manager before first use. The master key can be rotated: edit the plist, restart, then update wt-model (section 10) and any other client.
 
+**A plist with `DATABASE_URL` and no `LITELLM_SALT_KEY` needs care before any key change.** LiteLLM falls back to the master key when no salt key is set (see its documentation), so provider credentials stored in the database are then encrypted with the master key, and adding a fresh random salt key, or rotating the master key, would leave them unreadable. If the database already holds stored credentials, first set `LITELLM_SALT_KEY` to the *current* master key's value and restart; after that the master key can be rotated safely. If you are sure the database holds no stored credentials, or it is a fresh database, generate a random salt key as above. `wt config` refuses to rotate such a plist and points here.
+
 The plist holds secrets, so restrict it, and keep it out of group/other reach:
 
 ```bash
@@ -212,7 +214,7 @@ Details: [08-maintenance-and-troubleshooting.md](08-maintenance-and-troubleshoot
 
 ### 10. Link the master key to wt-model
 
-`wt-model serve` forwards inference to LiteLLM with its own copy of the master key (the "pair"), kept apart from the plist: nothing in wt reads `LITELLM_MASTER_KEY` from the plist, so the two agree only because you keep them in step.
+`wt-model serve` forwards inference to LiteLLM with its own copy of the master key (the "pair"), kept apart from the plist: nothing in wt reads `LITELLM_MASTER_KEY` from the plist, so the two agree only because they are kept in step: the `wt config` Model server tab does it when it links or rotates the key (below); otherwise you do.
 
 ```bash
 wt-model litellm set --url http://localhost:4000 --api-key <master key>
@@ -238,13 +240,41 @@ wt litellm list          # the model ids currently routed (live state: run it, d
 
 ## What the `wt config` Model server tab does for LiteLLM
 
-The `wt config` Model server tab (design: [the model-server configuration spec](../superpowers/specs/2026-11-17-wt-session-model-server-config-design.md); session side: [06-wt-agents-and-models.md](06-wt-agents-and-models.md)) sets up the `wt-model` side. For LiteLLM it will:
+The `wt config` Model server tab (design: [the model-server configuration spec](../superpowers/specs/2026-11-17-wt-session-model-server-config-design.md); session side: [06-wt-agents-and-models.md](06-wt-agents-and-models.md)) sets up the `wt-model` side. For LiteLLM it checks that the proxy is reachable, its database connected, the pair's key accepted and routes in sync, and says what to fix. It also warns when the plist is readable by group or others, and offers two LiteLLM actions in local mode: `k` (the key menu) and `t` (tighten). Both change nothing until you confirm a plan that lists every step.
 
-- check that the proxy is reachable, its database connected, the pair's key accepted and routes in sync, and say what to fix;
-- link wt-model's pair to the plist's master key (default: read it, no plist edit) or generate a new key, which edits only `EnvironmentVariables.LITELLM_MASTER_KEY` (after a dated backup) and restarts;
-- create a minimal plist only when none exists and `litellm` is installed (`DATABASE_URL`, UI login and provider keys are left to this guide).
+`k` opens a menu of up to three options, each offered only when it can work; a line under the menu says why an option is missing:
 
-It never installs LiteLLM, Postgres, Redis or Prisma, never touches the salt key, `DATABASE_URL`, provider keys or the UI login, and never replaces an existing plist. Until that tab ships, this guide's manual steps are the whole procedure.
+- **use the plist's key**: offered when the plist has a `LITELLM_MASTER_KEY`. It reads that key and sets wt-model's pair to it; it never edits the plist. This is the default fix for a pair that was never set or holds a stale key.
+- **generate a new key**: offered when the plist is an XML plist with exactly one `LITELLM_MASTER_KEY`, and not when it has `DATABASE_URL` but no `LITELLM_SALT_KEY` (see section 6: set the salt key to the current master key first).
+- **create the LiteLLM agent**: offered only when no plist exists **and** a `litellm` binary is found (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` or `PATH`) **and** LiteLLM's `config.yaml` exists **and** nothing listens on port 4000. It is port 4000 only. The minimal plist it writes (mode 0600, label `local.litellm.proxy`) holds the program arguments, `RunAtLoad`/`KeepAlive`, the two log paths and `PATH`, `LITELLM_MASTER_KEY` and `LITELLM_SALT_KEY`, both newly generated. It leaves out `DATABASE_URL`, `SoftResourceLimits.NumberOfFiles`, the UI login and provider keys: add them as sections 5 and 6 describe (spend tracking and the Admin UI need `DATABASE_URL`). It then loads the agent, waits for LiteLLM, checks that the new job is what listens on port 4000 and that it accepts the new key, and sets wt-model's pair to the same key. Keep a copy of the plist: the generated salt key must never change once LiteLLM stores credentials with it.
+
+`t` tightens a plist that is looser than 0600 to 0600 with one `chmod`, and changes nothing else; it is offered only when the plist exists and is looser.
+
+**Rotating the master key** (`k`, generate a new key) runs these steps in order, stopping at the first failure:
+
+1. back up the plist beside it as `<plist>.bak-<date>-<time>` (a second backup in the same second gets `-2`, `-3`, ...; an earlier backup is never replaced), at the plist's mode without group or other bits; the backup holds the old key;
+2. replace `LITELLM_MASTER_KEY` in the plist with a new generated key, keeping every other byte, written without group or other bits;
+3. `chmod 0600` the plist when it was looser;
+4. update wt-model's pair to the same key;
+5. restart LiteLLM (`launchctl kickstart -k`) and wait until it answers and accepts the new key;
+6. restart wt-model so it reads the new pair.
+
+Anything else that holds the old master key stops working once LiteLLM restarts: other clients and scripts that send it, a `[litellm]` `api_key` in `~/.config/agent-wt/config.toml` if one is set there, and copies of the plist (the backup keeps the old key; remove it once the new key works). Rotation never touches the salt key, `DATABASE_URL`, provider keys or the UI login.
+
+**Refusals** say why and what to do, and nothing is changed:
+
+| Refusal | What it tells you |
+|---|---|
+| a plist already exists (create) | wt creates a plist only when none exists; use the plist's key or generate a new one |
+| no `litellm` binary, or no `config.yaml` (create) | wt never installs LiteLLM nor writes a first config; install it as sections 1 and 4 describe |
+| something listens on port 4000 (create) | names the pid; stop it, or keep it and enter its master key instead |
+| a binary property list (rotate) | run `plutil -convert xml1 <plist>`, then check again |
+| an unreadable plist, or no `LITELLM_MASTER_KEY` (rotate) | fix the plist as sections 5 and 6 describe |
+| `DATABASE_URL` but no `LITELLM_SALT_KEY` (rotate) | set `LITELLM_SALT_KEY` to the current master key's value first, or confirm the database holds no stored credentials (section 6) |
+
+When a step fails, or an apply stops with a service out of step, a result screen shows the commands to run by hand (to put the plist, wt-model's pair or a service right) first, then the notes (the backup's path), then the result's own text; up and down scroll it, esc leaves it. A quit asked for during such an apply is held back until the notes can be read. Secrets never appear on it.
+
+The tab never installs LiteLLM, Postgres, Redis or Prisma, never touches the salt key, `DATABASE_URL`, provider keys or the UI login of an existing plist, and never replaces an existing plist. The manual steps above remain the whole procedure for anything it does not do.
 
 ### 11. Optional: a wt-model LaunchAgent
 

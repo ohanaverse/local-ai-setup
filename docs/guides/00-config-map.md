@@ -29,7 +29,8 @@ None — this is a reference doc, not a procedure.
 | `~/.config/agent-wt/slot-profiles.toml` | you by hand, or `wt profile slots add\|set\|rm` (backs up, validates) | `wt` | Slot profiles: named sets that map each of Claude Code's model slots to a registry model ([06-wt-agents-and-models](06-wt-agents-and-models.md) §10). Absent by default |
 | `~/.config/agent-wt/profiles.toml` | you by hand; `wt profile on\|off` sets its `enabled` line | `wt` | Local-model launch profiles ([06-wt-agents-and-models](06-wt-agents-and-models.md) §9). Absent by default; `profile-backups/` beside it holds wt's snapshots of the files a profile rewrites |
 | `~/.config/agent-wt/survey.jsonl` | `wt` (the post-session survey, which is switched off) | `wt stats`, the model picker | Recorded survey answers ([07-usage-and-spend](07-usage-and-spend.md)) |
-| `~/Library/LaunchAgents/local.litellm.proxy.plist` | you (setup = `01-initial-setup.md`) | launchd | LiteLLM proxy on :4000 |
+| `~/Library/LaunchAgents/local.litellm.proxy.plist` | you, or wt (created when absent; one key rotated on request) — `wt config` Model server tab, [14-litellm-install-and-configuration](14-litellm-install-and-configuration.md) | launchd | LiteLLM proxy on :4000 |
+| `~/Library/LaunchAgents/local.wt-model.serve.plist` | wt (`wt config` Model server tab, local mode; a plist without wt's `managed by wt` marker is yours and is never overwritten) | launchd | `wt-model serve` at login |
 | `~/Library/LaunchAgents/sh.brew.omlx.plist` | Homebrew (setup = `01-initial-setup.md`) — **optional**: wt's and llmbench's lifecycle backends run `omlx start` on demand; the 2026-09-30 rebuild omits it (`brew services start omlx` restores it) | launchd (when present) | oMLX server on :8000 |
 | `~/Library/LaunchAgents/sh.brew.redis.plist` | Homebrew | launchd | Redis for LiteLLM coordination |
 | `~/Library/LaunchAgents/sh.brew.postgresql@16.plist` | Homebrew | launchd | Postgres for LiteLLM (`localhost:5432/litellm`) |
@@ -293,7 +294,7 @@ Full reference: [wt/docs/wt-agents/slot-profiles.md](../../wt/docs/wt-agents/slo
 
 ### `~/Library/LaunchAgents/` plists
 
-- **Owner:** you (service setup = `01-initial-setup.md`; the `sh.brew.*` ones came from Homebrew installs).
+- **Owner:** you (service setup = `01-initial-setup.md`; the `sh.brew.*` ones came from Homebrew installs), except two the `wt config` Model server tab can write: `local.wt-model.serve.plist` (wt owns it) and `local.litellm.proxy.plist` (wt creates it only when absent and, on request, replaces its one `LITELLM_MASTER_KEY` value after a backup; it never touches the rest of that file).
 - **Consumers:** launchd (`RunAtLoad` + `KeepAlive` on each).
 - **Purpose:** keep the service stack alive: LiteLLM proxy (:4000, reads `~/.config/litellm/config.yaml`), oMLX (:8000), Redis, Postgres. Note: the litellm plist carries secrets as `EnvironmentVariables` (`OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` — the latter may embed the local Postgres password) — redact before sharing.
 
