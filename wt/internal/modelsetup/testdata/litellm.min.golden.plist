@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- managed by wt -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.litellm.proxy</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/user_name/.local/bin/litellm</string>
+		<string>--config</string>
+		<string>/Users/user_name/.config/litellm/config.yaml</string>
+		<string>--port</string>
+		<string>4000</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/Users/user_name/.litellm.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/user_name/.litellm.err.log</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/user_name/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>LITELLM_MASTER_KEY</key>
+		<string>sk-test-master</string>
+		<key>LITELLM_SALT_KEY</key>
+		<string>salt-test</string>
+	</dict>
+</dict>
+</plist>
