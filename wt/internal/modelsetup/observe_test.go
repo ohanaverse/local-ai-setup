@@ -346,3 +346,19 @@ func TestObserveDescribesTheTokenFilesAPlanMayChoose(t *testing.T) {
 		t.Errorf("State holds a token")
 	}
 }
+
+// TestObserveRecordsThePingedURLWithoutUserinfo pins that ServerState names
+// the endpoint it pinged, so a plan can tell whose check it holds, and that
+// a user:password in the url is never stored.
+func TestObserveRecordsThePingedURLWithoutUserinfo(t *testing.T) {
+	f := obsConfigured(t)
+	f.configFile.Table.Mode = "remote"
+	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if !st.Server.Checked || st.Server.URL != "https://gpu.example:8787/" {
+		t.Errorf("Server = %+v", st.Server)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", st.Server), "pw-SECRET") {
+		t.Errorf("ServerState holds the url's password")
+	}
+}

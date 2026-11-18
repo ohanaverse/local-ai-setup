@@ -1,7 +1,9 @@
 package modelsetup
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -48,7 +50,7 @@ func baseState() State {
 			Content: RenderAgentPlist(plSpec()),
 		},
 		Listener:     ListenerState{Port: 8787, PID: 4123, Ours: true},
-		Server:       ServerState{Checked: true, OK: true, API: 1, Schema: 1},
+		Server:       ServerState{Checked: true, OK: true, API: 1, Schema: 1, URL: "http://" + DefaultListen},
 		Host:         HostState{Binary: plBinary, Path: plPATH, Home: plHome, ConfigHome: plConfigHome, UID: 501},
 		LiteLLMPlist: LiteLLMPlistState{Path: plLiteLLM, Present: true, Port: 4000, Mode: 0o600, HasMasterKey: true},
 	}
@@ -133,7 +135,15 @@ func mustPlan(t *testing.T, st State, want Desired) Plan {
 		}
 	}
 	text := p.Format()
+	js, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("json.Marshal(plan): %v", err)
+	}
+	dump := fmt.Sprintf("%v %+v %#v %s", p, p, p, js)
 	for _, secret := range []string{plPasted, plMasterKey} {
+		if strings.Contains(dump, secret) {
+			t.Errorf("printed or marshalled plan holds a secret: %s", dump)
+		}
 		for _, s := range p.Steps {
 			if strings.Contains(s.Detail+s.Path+s.Value, secret) {
 				t.Errorf("step %s holds a secret", s.Kind)
@@ -234,7 +244,7 @@ func TestBuildPlanRefusesAnUnknownMode(t *testing.T) {
 // the user chose to save anyway.
 func TestBuildPlanRemoteRefusesAFailedCheckUnlessSavedUnchecked(t *testing.T) {
 	st := freshState()
-	st.Server = ServerState{Checked: true, Kind: KindUnauthorized, Message: "401 from https://gpu.example:8787"}
+	st.Server = ServerState{Checked: true, Kind: KindUnauthorized, Message: "401 from https://gpu.example:8787", URL: "https://gpu.example:8787/"}
 	want := Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}
 	p, err := BuildPlan(st, want)
 	mustRefuse(t, p, err, "rejected the token", "save anyway")
@@ -536,5 +546,71 @@ func TestFormatIsDeterministic(t *testing.T) {
 		if a, b := p.Format(), p.Format(); a != b {
 			t.Errorf("%s: two calls differ", name)
 		}
+	}
+}
+
+// TestSecretRedactsEveryPrintedForm pins that a Secret never prints or
+// marshals its value, so a stray %v, %#v, log or JSON dump cannot leak the
+// pasted token or master key; only Reveal returns it.
+func TestSecretRedactsEveryPrintedForm(t *testing.T) {
+	s := Secret(plPasted)
+	txt, _ := s.MarshalText()
+	js, _ := json.Marshal(struct{ S Secret }{s})
+	for _, out := range []string{fmt.Sprint(s), fmt.Sprintf("%v %+v %#v %s %q", s, s, s, s, s), string(txt), string(js)} {
+		if strings.Contains(out, plPasted) || !strings.Contains(out, "[redacted]") {
+			t.Errorf("printed form %q", out)
+		}
+	}
+	if s.Reveal() != plPasted {
+		t.Errorf("Reveal = %q", s.Reveal())
+	}
+	if Secret("").String() != "" {
+		t.Errorf("an empty secret should print empty, so absence stays visible")
+	}
+}
+
+// TestBuildPlanKeepsEachSecretToItsMode pins that a plan carries the master
+// key only in local mode and the pasted token only in remote mode, so a
+// secret typed into the other mode's field never rides along.
+func TestBuildPlanKeepsEachSecretToItsMode(t *testing.T) {
+	st := freshState()
+	in := Desired{URL: "https://gpu.example:8787", PastedToken: plPasted, MasterKey: plMasterKey}
+	in.Mode = modelclient.ModeNative
+	if p := mustPlan(t, st, in); p.Want.PastedToken != "" || p.Want.MasterKey != "" {
+		t.Errorf("native keeps a secret")
+	}
+	in.Mode = modelclient.ModeLocal
+	if p := mustPlan(t, st, in); p.Want.PastedToken != "" || p.Want.MasterKey.Reveal() != plMasterKey {
+		t.Errorf("local: pasted kept or key lost")
+	}
+	in.Mode = modelclient.ModeRemote
+	if p := mustPlan(t, st, in); p.Want.MasterKey != "" || p.Want.PastedToken.Reveal() != plPasted {
+		t.Errorf("remote: key kept or pasted lost")
+	}
+}
+
+// TestBuildPlanRemoteCheckOfAnotherURLIsNotAVerification pins that a ping of
+// a different endpoint (the working local server, say) neither passes nor
+// fails the remote gate: it reads as not checked, so the confirm text never
+// implies the new server was verified.
+func TestBuildPlanRemoteCheckOfAnotherURLIsNotAVerification(t *testing.T) {
+	want := Desired{Mode: modelclient.ModeRemote, URL: "https://typo.example:8787", PastedToken: plPasted}
+	p := mustPlan(t, baseState(), want)
+	if !strings.Contains(p.Format(), "was not checked") {
+		t.Errorf("a ping of the local server counted as a check:\n%s", p.Format())
+	}
+	st := baseState()
+	st.Server = ServerState{Checked: true, Kind: KindUnreachable, URL: "http://127.0.0.1:8787"}
+	p = mustPlan(t, st, want)
+	if !strings.Contains(p.Format(), "was not checked") {
+		t.Errorf("a failed ping of another url:\n%s", p.Format())
+	}
+	// The same endpoint, written with a trailing slash or upper-case host, is
+	// the same check.
+	st.Server = ServerState{Checked: true, Kind: KindUnreachable, URL: "https://TYPO.example:8787/"}
+	_, err := BuildPlan(st, want)
+	var re *RefusalError
+	if !errors.As(err, &re) {
+		t.Errorf("a failed check of the same url did not refuse: %v", err)
 	}
 }

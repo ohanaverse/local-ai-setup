@@ -2,22 +2,56 @@ package modelsetup
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
 
+// Secret holds a secret the user typed (a pasted token, a master key). Every
+// printed or marshalled form is the redaction "[redacted]" (empty stays
+// empty, so absence is visible): fmt's %v, %+v, %#v, %s and %q, JSON and
+// text marshalling. Reveal returns the value; Apply and the tab call it only
+// at the point of use, never to log or show it.
+type Secret string
+
+const redacted = "[redacted]"
+
+func (s Secret) redact() string {
+	if s == "" {
+		return ""
+	}
+	return redacted
+}
+
+// String redacts the secret.
+func (s Secret) String() string { return s.redact() }
+
+// GoString redacts the secret for %#v.
+func (s Secret) GoString() string { return strconv.Quote(s.redact()) }
+
+// MarshalJSON redacts the secret.
+func (s Secret) MarshalJSON() ([]byte, error) { return json.Marshal(s.redact()) }
+
+// MarshalText redacts the secret.
+func (s Secret) MarshalText() ([]byte, error) { return []byte(s.redact()), nil }
+
+// Reveal returns the secret itself; call it only where it is used.
+func (s Secret) Reveal() string { return string(s) }
+
 // Desired is what the user asked for. PastedToken (remote) and MasterKey
 // (local, used only when the pair is unset and the LiteLLM plist has no key)
-// are secrets: BuildPlan copies them into Plan.Want for Apply, and no step,
-// note, Format text or refusal ever holds them.
+// are Secrets: BuildPlan keeps each only in its own mode's Plan.Want, for
+// Apply, and no step, note, Format text or refusal holds them.
 type Desired struct {
-	Mode                                           modelclient.Mode
-	URL, TokenFile, Listen, PastedToken, MasterKey string
-	SaveUnchecked, RemoveAgent                     bool
+	Mode                       modelclient.Mode
+	URL, TokenFile, Listen     string
+	PastedToken, MasterKey     Secret
+	SaveUnchecked, RemoveAgent bool
 }
 
 // StepKind is what one step does.
@@ -114,6 +148,13 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 			"choose one of native, local or remote")}}
 	}
 	want.Mode = mode
+	// Each secret stays only in the mode that uses it.
+	if mode != modelclient.ModeRemote {
+		want.PastedToken = ""
+	}
+	if mode != modelclient.ModeLocal {
+		want.MasterKey = ""
+	}
 	switch mode {
 	case modelclient.ModeLocal:
 		return planLocal(st, want)
@@ -145,7 +186,7 @@ func planRemote(st State, want Desired) (Plan, error) {
 	}
 	var tokenStep *Step
 	switch {
-	case strings.TrimSpace(want.PastedToken) != "":
+	case strings.TrimSpace(want.PastedToken.Reveal()) != "":
 		if st.Host.ConfigHome == "" {
 			reasons = append(reasons, reason("the config directory is not known, so the pasted token has nowhere to go", "set HOME or XDG_CONFIG_HOME"))
 			break
@@ -179,8 +220,14 @@ func planRemote(st State, want Desired) (Plan, error) {
 	default:
 		reasons = append(reasons, reason("remote mode has no token", "enter a token file path or paste the token"))
 	}
-	if st.Server.Checked && !st.Server.OK && !want.SaveUnchecked {
-		reasons = append(reasons, reason("the check failed: "+serverFailure(st.Server),
+	// A check of any other endpoint (the local server, an old remote) says
+	// nothing about this one: it reads as not checked.
+	server := st.Server
+	if server.Checked && (want.URL == "" || !sameEndpoint(server.URL, want.URL)) {
+		server = ServerState{}
+	}
+	if server.Checked && !server.OK && !want.SaveUnchecked {
+		reasons = append(reasons, reason("the check of "+want.URL+" failed: "+serverFailure(server),
 			"fix the url or token and check again, or choose save anyway (the server may be off)"))
 	}
 	if len(reasons) > 0 {
@@ -195,10 +242,10 @@ func planRemote(st State, want Desired) (Plan, error) {
 	p.keepLocalSetup(st)
 	p.config(st)
 	switch {
-	case st.Server.Checked && !st.Server.OK:
-		p.Notes = append(p.Notes, "the server did not answer the check ("+serverFailure(st.Server)+"); the config is saved anyway")
-	case !st.Server.Checked:
-		p.Notes = append(p.Notes, "the server was not checked")
+	case server.Checked && !server.OK:
+		p.Notes = append(p.Notes, "the server did not answer the check ("+serverFailure(server)+"); the config is saved anyway")
+	case !server.Checked:
+		p.Notes = append(p.Notes, "the server at "+want.URL+" was not checked")
 	}
 	p.envNote(st)
 	return p, nil
@@ -304,7 +351,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 		case st.LiteLLMPlist.HasMasterKey:
 			pairStep = &Step{Kind: StepPair, Path: st.LiteLLMPlist.Path, Action: ActionPairKeyFromPlist, Value: url,
 				Detail: "set wt-model's LiteLLM pair" + where + ": url " + url + ", key LITELLM_MASTER_KEY read from " + st.LiteLLMPlist.Path + " when applied"}
-		case strings.TrimSpace(want.MasterKey) != "":
+		case strings.TrimSpace(want.MasterKey.Reveal()) != "":
 			pairStep = &Step{Kind: StepPair, Action: ActionPairKeyEntered, Value: url,
 				Detail: "set wt-model's LiteLLM pair" + where + ": url " + url + ", key as entered (not shown)"}
 		default:
@@ -510,6 +557,19 @@ func expandIn(path, home string) string {
 		return p
 	}
 	return path
+}
+
+// sameEndpoint reports whether two urls name the same endpoint: scheme, host
+// and port case-insensitively, path with any trailing slash trimmed. A url
+// that does not parse matches nothing.
+func sameEndpoint(a, b string) bool {
+	ua, ea := url.Parse(strings.TrimSpace(a))
+	ub, eb := url.Parse(strings.TrimSpace(b))
+	if ea != nil || eb != nil || ua.Host == "" || ub.Host == "" {
+		return false
+	}
+	return strings.EqualFold(ua.Scheme, ub.Scheme) && strings.EqualFold(ua.Host, ub.Host) &&
+		strings.TrimRight(ua.Path, "/") == strings.TrimRight(ub.Path, "/")
 }
 
 // serverFailure words a failed ping.
