@@ -245,8 +245,8 @@ func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result, run *app
 		run.litellmRestarted = true
 		return nil
 	case StepConfig:
-		if host, creds := hasUserinfo(p.Want.URL); creds {
-			return errors.New(strings.TrimSuffix(credentialsReason("the url", host), "; nothing was changed") + "; config.toml was not written")
+		if hasUserinfo(p.Want.URL) {
+			return errors.New(strings.TrimSuffix(credentialsReason("the url"), "; nothing was changed") + "; config.toml was not written")
 		}
 		return env.Config.Update(func(t config.ModelServerState) (config.ModelServerState, error) {
 			t.Mode, t.URL, t.TokenFile = string(p.Want.Mode), p.Want.URL, p.Want.TokenFile

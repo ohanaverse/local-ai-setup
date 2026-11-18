@@ -1149,15 +1149,24 @@ func TestServerTabFitsTheTerminalInEveryPhase(t *testing.T) {
 	}
 }
 
-// credURLState is a machine stored in remote mode whose url had a
-// user:password, which Observe took out (URLHadCredentials), with a passed
-// check of that url. No Problems line: the tab must not need its wording.
+// hiddenURLText is modelsetup's placeholder for a url holding an '@'.
+const hiddenURLText = "(hidden: the url contains an @)"
+
+// credURLState is a machine stored in remote mode whose url held an '@',
+// which Observe shows only as the placeholder (URLHadCredentials), with no
+// check (a hidden url is never matched to one). No Problems line: the tab
+// must not need its wording.
 func credURLState() modelsetup.State {
 	st := remoteState()
-	st.Config.Table.URL = "https://gpu.example:8787/"
+	st.Config.Table.URL = hiddenURLText
 	st.Config.URLHadCredentials = true
-	st.Server = modelsetup.ServerState{URL: "https://gpu.example:8787/", Checked: true, OK: true}
 	return st
+}
+
+// retypeURL are the keys that replace the prefilled url with a plain one,
+// then paste tok into the token row and ask for the plan.
+func retypeURL(tok string) []string {
+	return []string{"down", "ctrl+u", "https://gpu.example:8787/", "down", "down", tok, "esc", "a"}
 }
 
 // TestServerTabConfirmSaysTheURLsCredentialsAreNotKept pins carry-forward 1
@@ -1170,14 +1179,14 @@ func credURLState() modelsetup.State {
 func TestServerTabConfirmSaysTheURLsCredentialsAreNotKept(t *testing.T) {
 	const note = "credentialsarenotkept"
 	sm := &serverMachine{states: []modelsetup.State{credURLState()}, build: true}
-	m := keys(t, serverEditor(t, sm, 120, 50), "down", "down", "down", "tok-NEW", "esc", "a")
+	m := keys(t, serverEditor(t, sm, 120, 50), retypeURL("tok-NEW")...)
 	if m.server.phase != serverConfirm || !strings.Contains(flat(plain(m)), note) {
 		t.Errorf("phase %d status %q: a url write over a url with credentials, no note:\n%s", m.server.phase, m.server.status, plain(m))
 	}
 	clean := credURLState()
 	clean.Config.URLHadCredentials = false
 	sm = &serverMachine{states: []modelsetup.State{clean}, build: true}
-	m = keys(t, serverEditor(t, sm, 120, 50), "down", "down", "down", "tok-NEW", "esc", "a")
+	m = keys(t, serverEditor(t, sm, 120, 50), retypeURL("tok-NEW")...)
 	if m.server.phase != serverConfirm || strings.Contains(flat(plain(m)), note) {
 		t.Errorf("phase %d: no credentials, yet the note:\n%s", m.server.phase, plain(m))
 	}
@@ -1190,7 +1199,7 @@ func TestServerTabConfirmSaysTheURLsCredentialsAreNotKept(t *testing.T) {
 // for Apply.
 func TestServerTabRealPlanNeverShowsTheSecrets(t *testing.T) {
 	sm := &serverMachine{states: []modelsetup.State{credURLState()}, build: true}
-	m := keys(t, serverEditor(t, sm, 120, 50), "down", "down", "down", "tok-FAKE-SECRET", "esc", "a")
+	m := keys(t, serverEditor(t, sm, 120, 50), retypeURL("tok-FAKE-SECRET")...)
 	p, err := modelsetup.BuildPlan(sm.planned[0], sm.desired[0])
 	if err != nil || p.Want.PastedToken.Reveal() != "tok-FAKE-SECRET" {
 		t.Fatalf("real remote plan: err %v, or the token did not reach Want", err)
@@ -1408,6 +1417,48 @@ func TestServerTabSourceNeverFormatsAPlanWithV(t *testing.T) {
 		}
 		if loc := verb.FindIndex(src); loc != nil {
 			t.Errorf("%s formats with %q", f, src[loc[0]:loc[1]])
+		}
+	}
+}
+
+// TestServerTabNeverRendersAPieceOfAnAtURL pins the tab's side of the rule
+// "a url with an '@' is never echoed": with a State whose stored url and
+// check are the placeholder and fixed sentence modelsetup gives such a url,
+// and an Apply whose failure is the fixed refusal, no screen (the view, the
+// prefilled remote form's save-anyway question and refusal, the applied
+// result) shows any piece of the hostile url. Free-text Warnings carrying a
+// hostile url raw with a plain user:password are hidden by the tab's own
+// scrub too, which is defence in depth only: it keys on "://" and the first
+// '/', so "ftp://u:p//@h", "http://u:p@PASS/x@h" and a schemeless
+// "user:pa://ss@host" keep a piece (modelsetup never hands the tab such
+// text; the scrub was not widened, since a greedy '@' rule would also eat
+// the placeholder's '@').
+func TestServerTabNeverRendersAPieceOfAnAtURL(t *testing.T) {
+	const checkHiddenText = "the check failed; the url contains an @ so the error text is hidden"
+	refusal := "write [model-server]: the url contains an @ (read as a user:password); wt does not store credentials in config.toml; use a token file; config.toml was not written"
+	st := credURLState()
+	st.Server = modelsetup.ServerState{URL: hiddenURLText, Checked: true, Kind: modelsetup.KindUnreachable, Message: checkHiddenText}
+	sm := &serverMachine{states: []modelsetup.State{st}, build: true}
+	m := serverEditor(t, sm, 120, 50)
+	screens := map[string]string{"view": plain(m)}
+	m = keys(t, m, "a")
+	screens["save anyway"] = plain(m)
+	m = keys(t, m, "y")
+	screens["prefilled plan"] = plain(m) + "\n" + m.server.status
+	if !strings.Contains(m.server.status, "user:password") || m.server.phase == serverConfirm {
+		t.Errorf("the prefilled placeholder was not refused: phase %d status %q", m.server.phase, m.server.status)
+	}
+	failed := modelsetup.Step{Kind: modelsetup.StepConfig}
+	sm2 := &serverMachine{states: []modelsetup.State{fullState()}, plan: okPlan(),
+		result: modelsetup.Result{Failed: &failed, Err: errors.New(refusal),
+			Warnings: []string{"https://USERX:PASSX@gpu.example:8787", "dial http://USERX@gpu.example:8787/x: refused"}}}
+	m = keys(t, serverEditor(t, sm2, 120, 50), "a", "y")
+	screens["applied"] = plain(m)
+	for name, v := range screens {
+		for _, piece := range []string{"USERX", "PASSX"} {
+			if strings.Contains(v, piece) {
+				t.Errorf("%s shows %q:\n%s", name, piece, v)
+			}
 		}
 	}
 }

@@ -261,12 +261,9 @@ func (p *Plan) restartNote() {
 
 // credentialsReason refuses a url (or listen address) holding an '@'
 // anywhere, read as a user:password whatever else it holds: config.toml is
-// not a secret file, so wt never stores one there. It names only the host
-// (hasUserinfo's, which never quotes what precedes the last '@').
-func credentialsReason(what, host string) string {
-	if host != "" {
-		what += " for " + host
-	}
+// not a secret file, so wt never stores one there. The text is fixed: it
+// echoes no part of what was typed (no host, no user, nothing derived).
+func credentialsReason(what string) string {
 	return reason(what+" contains an @ (read as a user:password); wt does not store credentials in config.toml", "use a token file")
 }
 
@@ -286,9 +283,9 @@ func planNative(st State, want Desired) (Plan, error) {
 func planRemote(st State, want Desired) (Plan, error) {
 	var reasons []string
 	want.URL = strings.TrimSpace(want.URL)
-	if host, creds := hasUserinfo(want.URL); creds {
+	if hasUserinfo(want.URL) {
 		// Alone: every other reason may quote the url.
-		return Plan{}, &RefusalError{Reasons: []string{credentialsReason("the url", host)}}
+		return Plan{}, &RefusalError{Reasons: []string{credentialsReason("the url")}}
 	}
 	if want.URL == "" {
 		reasons = append(reasons, reason("remote mode has no url", "enter the model server's url"))
@@ -390,7 +387,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 	port, perr := strconv.Atoi(portText)
 	switch {
 	case strings.Contains(listen, "@"):
-		reasons = append(reasons, credentialsReason("the listen address", ""))
+		reasons = append(reasons, credentialsReason("the listen address"))
 	case err != nil || perr != nil || port < 1 || port > 65535:
 		reasons = append(reasons, reason("listen address "+strconv.Quote(listen)+" is not host:port", "enter one like "+DefaultListen))
 	case host != "127.0.0.1" && host != "localhost" && host != "::1":

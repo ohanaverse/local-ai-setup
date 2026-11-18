@@ -403,13 +403,14 @@ func (m *model) applyServerPlanned(msg serverPlannedMsg) {
 }
 
 // serverPlanText is the text the user confirms: the plan's Format, and a
-// note when the plan writes a url (Plan.WritesURL) over a stored one whose
-// credentials Observe took out (ConfigState.URLHadCredentials), since what
-// is written is the url without them. Both are data, not wording.
+// note when the plan writes a url (Plan.WritesURL) over a stored one that
+// held an '@' (ConfigState.URLHadCredentials; Observe shows it only as a
+// placeholder), since the url written replaces it and its credentials are
+// gone. Both are data, not wording.
 func serverPlanText(s modelsetup.State, p modelsetup.Plan) string {
 	text := scrub(p.Format())
 	if s.Config.URLHadCredentials && p.WritesURL() {
-		text += "the stored url's credentials are not kept: the url is written without them\n"
+		text += "the stored url's credentials are not kept: it contained an @, and the url above replaces it\n"
 	}
 	return text
 }

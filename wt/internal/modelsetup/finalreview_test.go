@@ -17,8 +17,8 @@ const plBackupDir = plConfigHome + "/wt-model/backups"
 
 // TestBuildPlanRemoteRefusesAURLWithCredentials pins that a typed url carrying
 // a user:password is refused (config.toml is 0644, so wt never stores one),
-// that the refusal names only the host (never the user or the password), and
-// that a plain url still plans.
+// that the refusal is fixed text naming nothing of the url (no user, no
+// password, not even the host), and that a plain url still plans.
 func TestBuildPlanRemoteRefusesAURLWithCredentials(t *testing.T) {
 	const user, pass = "alice-USER", "hunter2-PASSWORD"
 	for _, u := range []string{
@@ -28,8 +28,8 @@ func TestBuildPlanRemoteRefusesAURLWithCredentials(t *testing.T) {
 		st := freshState()
 		st.Server = ServerState{Checked: true, OK: true, URL: "https://gpu.example:8787"}
 		p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: u, PastedToken: plPasted})
-		mustRefuse(t, p, err, "user:password", "token file", "gpu.example")
-		if err != nil && (strings.Contains(err.Error(), user) || strings.Contains(err.Error(), pass)) {
+		mustRefuse(t, p, err, "user:password", "token file")
+		if err != nil && (strings.Contains(err.Error(), user) || strings.Contains(err.Error(), pass) || strings.Contains(err.Error(), "gpu.example")) {
 			t.Errorf("refusal quotes the credentials: %q", err.Error())
 		}
 	}

@@ -622,8 +622,8 @@ func TestBuildPlanRemoteCheckOfAnotherURLIsNotAVerification(t *testing.T) {
 // url carrying a user:password is refused whatever its check said (a passed
 // check of the same host, or a failed one): config.toml is not a secret
 // file, so wt never stores the credentials; and that the same url without
-// them still matches a check recorded without userinfo (State.Server.URL is
-// always stripped), so a passed check is not called unchecked.
+// them still matches a check recorded of that plain url, so a passed check
+// is not called unchecked.
 func TestBuildPlanRemoteCheckMatchesATypedURLWithCredentials(t *testing.T) {
 	want := Desired{Mode: modelclient.ModeRemote, URL: "https://u:p@gpu.example:8787", PastedToken: plPasted}
 	st := freshState()
@@ -662,32 +662,27 @@ func TestPlanWritesURLIsData(t *testing.T) {
 // TestObserveAndPlanFlagACredentialedURLThatWillBeRewritten runs the real
 // Observe and the real BuildPlan end to end: a stored url with a
 // user:password sets ConfigState.URLHadCredentials (beside the Problems line
-// a person reads). A remote plan that keeps the url as the State shows it
-// but changes the token rewrites the table, url included, so it writes the
-// url without its credentials (Plan.WritesURL); one that changes nothing
-// keeps the table, and the credentials, as they are. Those facts are what
-// the tab's note reads, so neither may depend on wording.
+// a person reads) and shows as hiddenURL. A remote plan that keeps the url
+// as the State shows it is refused (the placeholder holds an '@'), so the
+// placeholder is never written; one with a retyped url writes that url over
+// the stored one (Plan.WritesURL), so its credentials are not kept. Those
+// facts are what the tab's note reads, so neither may depend on wording.
 func TestObserveAndPlanFlagACredentialedURLThatWillBeRewritten(t *testing.T) {
 	f := obsConfigured(t)
 	f.configFile.Table.Mode = "remote"
 	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if !st.Config.URLHadCredentials {
-		t.Fatalf("URLHadCredentials = false for a url with userinfo")
+	if !st.Config.URLHadCredentials || st.Config.Table.URL != hiddenURL {
+		t.Fatalf("URLHadCredentials = %t, Table.URL = %q for a url with userinfo", st.Config.URLHadCredentials, st.Config.Table.URL)
 	}
 	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, PastedToken: "tok-NEW"})
+	mustRefuse(t, p, err, "user:password", "token file")
+	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787/", PastedToken: "tok-NEW", SaveUnchecked: true})
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
 	if !p.WritesURL() {
-		t.Errorf("a new token rewrites the table, yet WritesURL is false:\n%s", p.Format())
-	}
-	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, TokenFile: obsTokenPath})
-	if err != nil {
-		t.Fatalf("BuildPlan: %v", err)
-	}
-	if p.WritesURL() {
-		t.Errorf("nothing changes, so the stored table (and its credentials) stays, yet WritesURL is true:\n%s", p.Format())
+		t.Errorf("a retyped url rewrites the table, yet WritesURL is false:\n%s", p.Format())
 	}
 	f = obsConfigured(t)
 	if st = Observe(context.Background(), f.Env(), ObserveOptions{}); st.Config.URLHadCredentials {

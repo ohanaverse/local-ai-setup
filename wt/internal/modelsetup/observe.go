@@ -42,9 +42,11 @@ type Platform struct {
 }
 
 // ConfigState is config.toml's [model-server] table as read.
-// URLHadCredentials is true when the stored url carried a user:password,
-// which Observe took out of Table.URL (Problems says so in words); a plan
-// that writes the url writes it without them.
+// URLHadCredentials is true when the stored url held an '@' (read as a
+// user:password), so Observe replaced Table.URL whole with hiddenURL
+// (Problems says so in words); a plan that writes a url writes a retyped one
+// in its place (hiddenURL itself holds an '@' and is refused), so the
+// credentials are not kept.
 type ConfigState struct {
 	Path                          string
 	Exists                        bool
@@ -246,16 +248,17 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		t := *file.Table
 		t.Token = "" // a secret never goes into State; Problems reports its presence
 		rawURL = t.URL
-		// Only a url with an @ is rewritten (stripUserinfo leaves any other
-		// exactly as written, so an ordinary url never reads as a change).
-		t.URL = stripUserinfo(t.URL)
+		// Only a url with an @ is replaced, whole, by hiddenURL (shownURL
+		// leaves any other exactly as written, so an ordinary url never reads
+		// as a change).
+		t.URL = shownURL(t.URL)
 		st.Config.Table = t
 		if file.Table.Token != "" {
 			st.Config.Problems = append(st.Config.Problems, "token under [model-server] is set; move it into a 0600 token_file")
 		}
 		if t.URL != rawURL {
 			st.Config.URLHadCredentials = true
-			st.Config.Problems = append(st.Config.Problems, "url under [model-server] contains credentials, which wt will not display; move them out of the url")
+			st.Config.Problems = append(st.Config.Problems, "url under [model-server] contains an @ (read as credentials), so wt will not display it; take them out of the url and use a token file")
 		}
 	}
 	tbl := st.Config.Table
@@ -429,7 +432,8 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 
 	// Server.
-	url := getenv("WT_MODEL_URL")
+	envURL := getenv("WT_MODEL_URL")
+	url := envURL
 	if url == "" {
 		url = rawURL
 	}
@@ -450,15 +454,15 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			token = readToken(env, &ts)
 		}
 		if token == "" {
-			st.Server.Message = "no token entered for " + stripUserinfo(url)
+			st.Server.Message = "no token entered for " + shownURL(url)
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		st.Server.Message = "not checked: " + err.Error()
 	} else if url != "" && token != "" {
 		st.Server = pingServer(ctx, env, modelclient.Endpoint{URL: url, Token: token})
-		st.Server.URL = stripUserinfo(url)
-		st.Server.Message = redactUserinfo(st.Server.Message, url)
+		st.Server.URL = shownURL(url)
+		st.Server.Message = redactCheck(st.Server.Message, url, rawURL, envURL, opts.CheckURL)
 	}
 
 	// LiteLLM checks: only where the local model server is in use.
