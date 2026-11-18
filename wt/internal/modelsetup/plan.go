@@ -76,6 +76,9 @@ const (
 	// LiteLLMRotateKey replaces LITELLM_MASTER_KEY in the existing plist
 	// (after a backup), pairs wt-model with it and restarts both.
 	LiteLLMRotateKey LiteLLMAction = "rotate-key"
+	// LiteLLMTighten changes only the LiteLLM plist's mode, to 0600, and
+	// only when it is looser; the plan is that one chmod step.
+	LiteLLMTighten LiteLLMAction = "tighten"
 )
 
 // StepKind is what one step does.
@@ -203,6 +206,9 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 	}
 	switch mode {
 	case modelclient.ModeLocal:
+		if want.LiteLLM == LiteLLMTighten {
+			return planTightenLiteLLM(st, want)
+		}
 		return planLocal(st, want)
 	case modelclient.ModeRemote:
 		return planRemote(st, want)
@@ -848,4 +854,19 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 		notes = append(notes, "never changed in "+lp.Path+": DATABASE_URL, provider keys and the UI login; LITELLM_SALT_KEY: no salt key set; nothing to preserve")
 	}
 	return steps, notes, nil
+}
+
+// planTightenLiteLLM plans one chmod of the LiteLLM plist to 0600, for a
+// plist that exists and is looser; nothing else is planned or touched.
+func planTightenLiteLLM(st State, want Desired) (Plan, error) {
+	lp := st.LiteLLMPlist
+	path := orNone(lp.Path)
+	switch {
+	case !lp.Present:
+		return Plan{}, &RefusalError{Reasons: []string{reason("there is no LiteLLM plist at "+path+" to tighten", "nothing to do")}}
+	case lp.Mode.Perm()&0o077 == 0:
+		return Plan{}, &RefusalError{Reasons: []string{reason(path+" is already mode 0600 or tighter", "nothing to do")}}
+	}
+	return Plan{Want: want, Steps: []Step{{Kind: StepChmod, Path: lp.Path,
+		Detail: fmt.Sprintf("set %s to mode 0600 (it is %04o, readable by others); nothing else changes", lp.Path, lp.Mode.Perm())}}}, nil
 }

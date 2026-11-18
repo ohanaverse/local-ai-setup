@@ -939,3 +939,30 @@ func TestBuildPlanRotateGuardsTheSaltFallback(t *testing.T) {
 		t.Errorf("neither set:\n%s", text)
 	}
 }
+
+// TestBuildPlanTightenLiteLLMIsAChmodOnly pins the tighten action: a plist
+// looser than 0600 plans exactly one chmod step and touches nothing else
+// (no token, pair, agent or config step); a 0600 or absent plist refuses,
+// naming the file, and a non-local mode ignores the action.
+func TestBuildPlanTightenLiteLLMIsAChmodOnly(t *testing.T) {
+	st := rotateState() // plist mode 0644
+	p := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMTighten})
+	if !sameKinds(kinds(p), StepChmod) {
+		t.Fatalf("steps = %v, want only chmod", kinds(p))
+	}
+	if s := p.Steps[0]; s.Path != plLiteLLM || !strings.Contains(s.Detail, "0600") || !strings.Contains(s.Detail, "0644") {
+		t.Errorf("chmod step = %+v", s)
+	}
+	tight := rotateState()
+	tight.LiteLLMPlist.Mode = 0o600
+	p, err := BuildPlan(tight, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMTighten})
+	mustRefuse(t, p, err, plLiteLLM, "0600")
+	gone := rotateState()
+	gone.LiteLLMPlist = LiteLLMPlistState{Path: plLiteLLM}
+	p, err = BuildPlan(gone, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMTighten})
+	mustRefuse(t, p, err, plLiteLLM)
+	p = mustPlan(t, freshState(), Desired{Mode: modelclient.ModeNative, LiteLLM: LiteLLMTighten})
+	if p.Want.LiteLLM != LiteLLMNone {
+		t.Errorf("native plan kept the action %q", p.Want.LiteLLM)
+	}
+}
