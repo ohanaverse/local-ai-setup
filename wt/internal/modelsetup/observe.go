@@ -203,12 +203,24 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	if file.TableErr != nil {
 		st.Config.TableErr = file.TableErr.Error()
 	}
+	// rawURL is the configured url as written, kept out of State: it may
+	// carry a user:password, which only the ping below uses.
+	var rawURL string
 	if file.Table != nil {
 		t := *file.Table
 		t.Token = "" // a secret never goes into State; Problems reports its presence
+		rawURL = t.URL
+		// Only a url with an @ is rewritten: a parse-and-print round trip
+		// would otherwise re-encode an ordinary url and read as a change.
+		if strings.Contains(t.URL, "@") {
+			t.URL = stripUserinfo(t.URL)
+		}
 		st.Config.Table = t
 		if file.Table.Token != "" {
 			st.Config.Problems = append(st.Config.Problems, "token under [model-server] is set; move it into a 0600 token_file")
+		}
+		if t.URL != rawURL {
+			st.Config.Problems = append(st.Config.Problems, "url under [model-server] contains credentials, which wt will not display; move them out of the url")
 		}
 	}
 	tbl := st.Config.Table
@@ -351,7 +363,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	// Server.
 	url := getenv("WT_MODEL_URL")
 	if url == "" {
-		url = tbl.URL
+		url = rawURL
 	}
 	if url == "" && st.Resolution.Mode == modelclient.ModeLocal {
 		listen := st.Agent.Listen

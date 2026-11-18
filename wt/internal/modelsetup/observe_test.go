@@ -362,3 +362,32 @@ func TestObserveRecordsThePingedURLWithoutUserinfo(t *testing.T) {
 		t.Errorf("ServerState holds the url's password")
 	}
 }
+
+// TestObserveStripsUserinfoFromTheConfiguredURL pins that a user:password in
+// [model-server] url never reaches State.Config.Table (the tab draws that
+// table), that it is reported as a problem the way an inline token is, and
+// that the ping still goes to the url as written.
+func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
+	f := obsConfigured(t)
+	f.configFile.Table.Mode = "remote"
+	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if st.Config.Table.URL != "https://gpu.example:8787/" {
+		t.Errorf("Config.Table.URL = %q, want the url without userinfo", st.Config.Table.URL)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", st), "pw-SECRET") {
+		t.Errorf("State holds the url's password")
+	}
+	found := false
+	for _, p := range st.Config.Problems {
+		if strings.Contains(p, "credentials") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Problems = %q, want one about the url's credentials", st.Config.Problems)
+	}
+	if !st.Server.Checked || !st.Server.OK {
+		t.Errorf("Server = %+v, want the url pinged as written", st.Server)
+	}
+}
