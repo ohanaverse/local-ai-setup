@@ -267,3 +267,50 @@ func TestServerTabNamesWhatACheckIsMissing(t *testing.T) {
 		}
 	}
 }
+
+// TestServerTabPromptsStayVisibleAtEverySize pins that each of the three
+// default-No questions is on screen at every size, with nothing but the hint
+// after it: a clipped question would leave the user answering blind.
+func TestServerTabPromptsStayVisibleAtEverySize(t *testing.T) {
+	long := modelsetup.Plan{Notes: []string{"the environment sets WT_MODEL_URL, which overrides what is stored here"}}
+	for i := 0; i < 9; i++ {
+		long.Steps = append(long.Steps, modelsetup.Step{Kind: modelsetup.StepPlist,
+			Detail: "write wt's LaunchAgent plist /Users/dev/Library/LaunchAgents/local.wt-model.serve.plist: /Users/dev/.local/bin/wt-model serve --listen 127.0.0.1:8787"})
+	}
+	cases := []struct {
+		prompt string
+		open   func(*testing.T, int, int) *model
+	}{
+		{"Apply this plan? [y/N]", func(t *testing.T, w, h int) *model {
+			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}, plan: long}, w, h), "a")
+		}},
+		{"Save anyway? [y/N]", func(t *testing.T, w, h int) *model {
+			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{failedRemoteState()}}, w, h), "a")
+		}},
+		{"Remove the LaunchAgent? [y/N]", func(t *testing.T, w, h int) *model {
+			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}}, w, h), "left", "a")
+		}},
+	}
+	for _, c := range cases {
+		for _, size := range tabSizes {
+			m := c.open(t, size[0], size[1])
+			assertFits(t, c.prompt, m.View(), size[0], size[1])
+			lines := strings.Split(plain(m), "\n")
+			at := -1
+			for i, l := range lines {
+				if strings.Contains(l, c.prompt) {
+					at = i
+				}
+			}
+			if at < 0 {
+				t.Errorf("%q at %dx%d: the question is not shown:\n%s", c.prompt, size[0], size[1], plain(m))
+				continue
+			}
+			for _, l := range lines[at+1 : len(lines)-1] {
+				if strings.TrimSpace(l) != "" {
+					t.Errorf("%q at %dx%d: %q follows the question", c.prompt, size[0], size[1], l)
+				}
+			}
+		}
+	}
+}
