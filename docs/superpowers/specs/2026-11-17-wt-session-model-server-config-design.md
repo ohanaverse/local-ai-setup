@@ -234,3 +234,38 @@ The new LiteLLM guide and the fixes above; `wt/CLAUDE.md` ("LiteLLM routing stat
 ## Left to the builder
 
 The LaunchAgent log paths; exact wording of the messages and the tab's keys within the style guide; how the port-in-use probe finds the owning process; how `Observe` reads launchd state (`launchctl print` parsing) and its timeouts; whether the masked key entry reuses an existing text-input helper; the bounded wait's duration; `ModelServerDeps` field names; whether the stage 1 package is split into more files; `plutil -replace` versus a plist library for the one-key edit, and bplist handling; the guide's number and exact outline.
+
+## As built
+
+Recorded after the build (2026-11-18), from the execution ledger. Everything above stays as approved; this section lists where the shipped code differs from it and what was decided on the way.
+
+### Deviations from the spec
+
+- **ASCII words, not glyphs.** The tab shows words (style guide V5), not the sketch's glyphs.
+- **The master-key edit is a text edit, not `plutil -replace`.** `ReplaceMasterKey` locates the one `LITELLM_MASTER_KEY` structurally (root dict, `EnvironmentVariables`, the key's following `<string>`) with `encoding/xml` offsets, splices only that value, and verifies the result (parses, carries the new key, every other variable unchanged). The key never appears in argv and the untouched bytes stay identical. A key text in a comment, a CDATA value, a binary plist or a duplicate is refused.
+- **`Apply` returns one `Result`**, with `Notes` (for example the backup path) and `Recovery` (a command that undoes or abandons the step).
+- **Inference to `remote` on any endpoint value**, stored or from the environment, not only a url plus token file, so a half-configured server still refuses as before.
+- **A type error elsewhere in `config.toml` also blocks a write.** `UpdateModelServer` refuses any decode error with the file untouched (re-encoding would drop what it could not decode); `ReadModelServerFile` stays tolerant.
+- **`NativeNote` is reworded**, and an explicit `native` ignores stray `url`/`token_file` values silently; an inline `token` earns one `wt: note:` (never the value) instead of a refusal.
+- **The unset-mode refusal keeps the old lead** that existing tests and llmbench key on; only its tail changed (it names `wt config` and `WT_MODEL_MODE`). Exit code 1 for the no-terminal case.
+- **The #615 reversal.** The no-config launch is no longer native by default: with no mode chosen a launch refuses, or opens the tab. Native is only the explicit value.
+- **The first-run gate** (`ensureMode`) runs once per launch, on a terminal only, before any worktree is created; it applies to model-driven launches, not command agents, and one-shot commands refuse instead of opening a TUI.
+- **Quit held for a failed apply is called off**, not completed after the result lands (a quit would hide the failure); a held quit during a successful apply that has notes is called off too, so the backup path is read.
+
+### Decisions made during the build
+
+- **Secrets.** `Desired.PastedToken` and `Desired.MasterKey` are `modelsetup.Secret` (redacting under `%v`, `%+v`, `%#v` and JSON; `Reveal()` only at the point of use). `Observe` strips userinfo from a stored url in `State` and reports it as a problem.
+- **`ServerState` records the pinged url and token source**, and `BuildPlan` treats a check of any other url as not checked; the tab pings the ENTERED url and token before a remote plan.
+- **Tab safeguards added in review:** a `planWant` snapshot taken at `a` (the apply runs it, not later keystrokes); form keys inert while a plan or apply is in flight; prompts (`[y/N]`, default No) visible at every terminal size; a parse error in `config.toml` disables every write path; the clip drops lower-ranked status rows first and marks them; a held quit.
+- **Tolerant tab on a broken `config.toml`:** `wt config` opens with a syntax-broken file and says so with the path; nothing is repaired or moved aside.
+- **LiteLLM actions** (Create, Rotate, Tighten on the tab's `k` and `t`) gained these safeguards in review: the edit and its backup are written at mode `perm &^ 0o077` (secrets are never group/other readable, backups included); backup names never collide; Create refuses a foreign listener on port 4000 at plan time and, after starting, requires the listener to be the job it started and one authenticated request with the new key to be accepted; Rotate refuses a plist with `DATABASE_URL` and no salt key and points to guide 14 section 6; Rotate waits for LiteLLM after the restart and checks the new key; `bootout` is polled until the job is gone before `bootstrap`; the plan is validated before it is rendered; `LiteLLMTighten` is a chmod-only action; "use the plist's key" re-pairs even over a set pair; the tab shows `Notes` and `Recovery` on a scrollable result screen and scrubs `sk-` keys from anything it draws.
+- **Real `launchd` was not exercised.** The Stage 4 gate ran no live Create or Rotate (a scratch HOME does not isolate the per-user launchd domain, so it would have touched the real `local.litellm.proxy` label); `Apply` is covered by a fake `Launchd` and real-filesystem tests for the backup and mode. One manual live check is still owed.
+
+### Known limitations and follow-ups
+
+- Create's listener check requires the listener pid to equal the job's pid, so a `litellm` that is a shell wrapper or runs several workers can fail a correct Create (safe: the pair is not written, `Recovery` is given). Accepting a listener whose parent is the job pid would fix it.
+- Rotate's key check after the restart is one-shot: an old process finishing its shutdown can answer and then reject, a false failure with consistent state and a correct `Recovery`.
+- A plist holding the master key twice is offered Rotate (the menu checks only that a key exists) and refused at apply by `ReplaceMasterKey`, after the backup was written.
+- Create is port 4000 only and does not boot out another plist's label that is already running.
+- The tab's key scrub is a prefix heuristic (`sk-` followed by a long key run, with a word boundary): a raw hex salt key, a token without that prefix and a hyphen-prefixed key are not caught.
+- Smaller items stay with the ledger and the review notes (for example a 403 from LiteLLM reads as "key rejected", the `--port=4000` argument form is not recognised, and a listener check on a URL with no port is untested).
