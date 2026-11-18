@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -593,11 +594,12 @@ func envOf(t *testing.T, f *fakeEnv, path string) map[string]string {
 	return sc.vars
 }
 
-// backupsOf lists the backups beside path on the fake FS.
+// backupsOf lists the backups of path on the fake FS: in wt-model's backups
+// directory (plBackupDir), never beside the plist.
 func backupsOf(f *fakeEnv, path string) []string {
 	var out []string
 	for _, n := range f.fileNames() {
-		if strings.HasPrefix(n, path+".bak-") {
+		if strings.HasPrefix(n, plBackupDir+"/"+filepath.Base(path)+".bak-") || strings.HasPrefix(n, path+".bak-") {
 			out = append(out, n)
 		}
 	}
@@ -685,10 +687,12 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 		failed StepKind
 	}{
 		"backup fails": {func(f *fakeEnv) { f.backupErr = errors.New("disk full") }, StepBackup},
+		// The key edit is dry-run before the backup, so a plist it refuses
+		// stops the backup step and no copy of the old key is made.
 		"no master key": {func(f *fakeEnv) {
 			f.files[plLiteLLM] = []byte(envPlist("", "\t\t<key>PATH</key>\n\t\t<string>/bin</string>\n"))
-		}, StepMasterKey},
-		"binary plist": {func(f *fakeEnv) { f.files[plLiteLLM] = []byte("bplist00\x00\x01") }, StepMasterKey},
+		}, StepBackup},
+		"binary plist": {func(f *fakeEnv) { f.files[plLiteLLM] = []byte("bplist00\x00\x01") }, StepBackup},
 		"write fails":  {func(f *fakeEnv) { f.writeErr[plLiteLLM] = errors.New("read-only file system") }, StepMasterKey},
 	}
 	for name, c := range cases {
@@ -711,6 +715,9 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 		}
 		if r.Recovery == "" || !strings.Contains(r.Recovery, "unchanged") {
 			t.Errorf("%s: Recovery = %q", name, r.Recovery)
+		}
+		if c.failed == StepBackup && len(backupsOf(f, plLiteLLM)) != 0 {
+			t.Errorf("%s: a backup was left although the rotation stopped at the backup step", name)
 		}
 		noSecrets(t, f, lines, r, apOldMaster, apOldSalt)
 	}

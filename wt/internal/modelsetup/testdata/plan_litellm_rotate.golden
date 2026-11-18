@@ -1,5 +1,5 @@
 set up mode local in 8 steps:
-  1. back up /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist to a dated copy beside it (/Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist.bak-<date>-<time>, its mode without group or other bits; it keeps the old key)
+  1. check that the key edit applies to /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist, then back it up to /Users/user_name/.config/wt-model/backups/local.litellm.proxy.plist.bak-<date>-<time> (a 0700 directory, outside LaunchAgents so launchd never loads the copy; its mode without group or other bits; it keeps the old key)
   2. replace LITELLM_MASTER_KEY in /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist with a new generated key (not shown), keeping every other byte of the file; it is written without group or other bits
   3. set /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist to mode 0600 (it was 0644, readable by others; the edit already dropped those bits)
   4. set wt-model's LiteLLM pair in /Users/user_name/.config/wt-model/: url http://localhost:4000, key the new LITELLM_MASTER_KEY (not shown)
@@ -13,3 +13,4 @@ left alone and notes:
   - keep [model-server] in /Users/user_name/.config/agent-wt/config.toml (already mode = "local")
   - anything else that holds the old master key stops working once LiteLLM restarts: other clients and scripts that send it, a [litellm] api_key in /Users/user_name/.config/agent-wt/config.toml if one is set there, and copies of the plist (the backup keeps the old key; remove it once the new key works)
   - never changed in /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist: LITELLM_SALT_KEY, DATABASE_URL, provider keys and the UI login
+  - a restart or unload here (launchctl kickstart -k, bootout) ends the requests in flight at once; unlike `wt litellm restart`, nothing waits for them to finish

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -196,6 +197,11 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 			"choose one of native, local or remote")}}
 	}
 	want.Mode = mode
+	if st.Config.TableErr != "" {
+		return Plan{}, &RefusalError{Reasons: []string{reason(
+			"config.toml at "+st.Config.Path+" has a [model-server] table wt cannot read ("+st.Config.TableErr+"), and wt never writes over what it cannot read",
+			"fix the table by hand (or delete it), then re-read")}}
+	}
 	// Each secret stays only in the mode that uses it.
 	if mode != modelclient.ModeRemote {
 		want.PastedToken = ""
@@ -204,17 +210,80 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 		want.MasterKey = ""
 		want.LiteLLM = LiteLLMNone
 	}
+	var p Plan
+	var err error
 	switch mode {
 	case modelclient.ModeLocal:
 		if want.LiteLLM == LiteLLMTighten {
 			return planTightenLiteLLM(st, want)
 		}
-		return planLocal(st, want)
+		p, err = planLocal(st, want)
 	case modelclient.ModeRemote:
-		return planRemote(st, want)
+		p, err = planRemote(st, want)
 	default:
-		return planNative(st, want)
+		p, err = planNative(st, want)
 	}
+	if err != nil {
+		return Plan{}, err
+	}
+	// The config step is last, so a file its writer cannot decode would fail
+	// it only after every machine change before it: refuse the plan instead.
+	if _, writes := findStep(p, StepConfig); writes && st.Config.DecodeErr != "" {
+		return Plan{}, &RefusalError{Reasons: []string{reason(
+			"config.toml at "+st.Config.Path+" does not decode ("+st.Config.DecodeErr+"), so the [model-server] table cannot be written",
+			"fix the file by hand (`wt config` names the problem on its Agents tab), then re-read")}}
+	}
+	p.restartNote()
+	return p, nil
+}
+
+// findStep finds the first step of kind k.
+func findStep(p Plan, k StepKind) (Step, bool) {
+	for _, s := range p.Steps {
+		if s.Kind == k {
+			return s, true
+		}
+	}
+	return Step{}, false
+}
+
+// restartNote says, once, that a step that restarts or unloads a running job
+// ends its requests in flight at once (launchctl kickstart -k, bootout):
+// unlike `wt litellm restart`, nothing waits for them to finish.
+func (p *Plan) restartNote() {
+	for _, s := range p.Steps {
+		if s.Kind == StepKickstart || s.Kind == StepKickstartLiteLLM || s.Kind == StepBootout {
+			p.Notes = append(p.Notes, "a restart or unload here (launchctl kickstart -k, bootout) ends the requests in flight at once; unlike `wt litellm restart`, nothing waits for them to finish")
+			return
+		}
+	}
+}
+
+// hasUserinfo reports whether a typed url carries a user (and maybe a
+// password), and its host for a message that must not quote the rest. A url
+// that does not parse but holds an @ before its path counts too, with no host.
+func hasUserinfo(raw string) (host string, ok bool) {
+	u, err := url.Parse(raw)
+	if err == nil {
+		return u.Hostname(), u.User != nil
+	}
+	rest := raw
+	if _, after, found := strings.Cut(rest, "://"); found {
+		rest = after
+	}
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		rest = rest[:i]
+	}
+	return "", strings.Contains(rest, "@")
+}
+
+// credentialsReason refuses a url with a user:password: config.toml is not a
+// secret file, so wt never stores one there. It names only the host.
+func credentialsReason(what, host string) string {
+	if host != "" {
+		what += " for " + host
+	}
+	return reason(what+" carries a user:password; wt does not store credentials in config.toml", "put the credentials in a token file")
 }
 
 // planNative stores only the mode, plus the optional agent removal.
@@ -233,6 +302,10 @@ func planNative(st State, want Desired) (Plan, error) {
 func planRemote(st State, want Desired) (Plan, error) {
 	var reasons []string
 	want.URL = strings.TrimSpace(want.URL)
+	if host, creds := hasUserinfo(want.URL); creds {
+		// Alone: every other reason may quote the url.
+		return Plan{}, &RefusalError{Reasons: []string{credentialsReason("the url", host)}}
+	}
 	if want.URL == "" {
 		reasons = append(reasons, reason("remote mode has no url", "enter the model server's url"))
 	}
@@ -332,6 +405,8 @@ func planLocal(st State, want Desired) (Plan, error) {
 	host, portText, err := net.SplitHostPort(listen)
 	port, perr := strconv.Atoi(portText)
 	switch {
+	case strings.Contains(listen, "@"):
+		reasons = append(reasons, credentialsReason("the listen address", ""))
 	case err != nil || perr != nil || port < 1 || port > 65535:
 		reasons = append(reasons, reason("listen address "+strconv.Quote(listen)+" is not host:port", "enter one like "+DefaultListen))
 	case host != "127.0.0.1" && host != "localhost" && host != "::1":
@@ -828,8 +903,11 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 	if len(reasons) > 0 {
 		return nil, nil, reasons
 	}
+	// planLocal refuses an unknown config home before any step runs.
+	dir := BackupDir(st.Host.ConfigHome)
 	steps := []Step{
-		{Kind: StepBackup, Path: lp.Path, Detail: "back up " + lp.Path + " to a dated copy beside it (" + lp.Path + ".bak-<date>-<time>, its mode without group or other bits; it keeps the old key)"},
+		{Kind: StepBackup, Path: lp.Path, Value: dir, Detail: "check that the key edit applies to " + lp.Path + ", then back it up to " + dir + "/" +
+			filepath.Base(lp.Path) + ".bak-<date>-<time> (a 0700 directory, outside LaunchAgents so launchd never loads the copy; its mode without group or other bits; it keeps the old key)"},
 		{Kind: StepMasterKey, Path: lp.Path, Detail: "replace LITELLM_MASTER_KEY in " + lp.Path + " with a new generated key (not shown), keeping every other byte of the file; " +
 			"it is written without group or other bits"},
 	}
@@ -857,6 +935,14 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 		notes = append(notes, "never changed in "+lp.Path+": DATABASE_URL, provider keys and the UI login; LITELLM_SALT_KEY: no salt key set; nothing to preserve")
 	}
 	return steps, notes, nil
+}
+
+// BackupDir is where a rotation keeps its copies of the LiteLLM plist:
+// <config home>/wt-model/backups, a 0700 directory. Never ~/Library/
+// LaunchAgents: a copy there carries the same Label and the old key, and
+// launchd or Background Task Management could pick it up.
+func BackupDir(configHome string) string {
+	return filepath.Join(configHome, "wt-model", "backups")
 }
 
 // planTightenLiteLLM plans one chmod of the LiteLLM plist to 0600, for a

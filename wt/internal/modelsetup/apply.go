@@ -170,6 +170,9 @@ func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result, run *app
 		if p.Agent == nil || s.Path == "" {
 			return errors.New("the plan has no LaunchAgent to write")
 		}
+		if _, err := agentPlistOurs(env, s.Path); err != nil {
+			return err
+		}
 		return env.FS.WriteAtomic(s.Path, RenderAgentPlist(*p.Agent), 0o644)
 	case StepBootout:
 		w, err := bootout(ctx, env, AgentLabel)
@@ -213,7 +216,18 @@ func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result, run *app
 		return applyLiteLLMPlist(ctx, env, p, s, run)
 	case StepBackup:
 		run.rotating, run.plist = true, s.Path
-		dst, err := env.FS.Backup(s.Path)
+		if s.Value == "" {
+			return errors.New("the backup step names no backup directory; nothing was changed")
+		}
+		// Everything that would refuse the key edit is found before the
+		// backup, so a refused rotation leaves no copy of the old key.
+		if err := rotatable(env, s.Path); err != nil {
+			return err
+		}
+		dst, tightened, err := env.FS.Backup(s.Path, s.Value)
+		if tightened {
+			r.Notes = append(r.Notes, "the backup directory "+s.Value+" was readable by others and was set to mode 0700")
+		}
 		if err != nil {
 			return fmt.Errorf("back up %s: %w", s.Path, err)
 		}
@@ -231,12 +245,23 @@ func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result, run *app
 		run.litellmRestarted = true
 		return nil
 	case StepConfig:
+		if host, creds := hasUserinfo(p.Want.URL); creds {
+			return errors.New(strings.TrimSuffix(credentialsReason("the url", host), "; nothing was changed") + "; config.toml was not written")
+		}
 		return env.Config.Update(func(t config.ModelServerState) (config.ModelServerState, error) {
 			t.Mode, t.URL, t.TokenFile = string(p.Want.Mode), p.Want.URL, p.Want.TokenFile
 			return t, nil
 		})
 	case StepRemovePlist:
-		err := env.FS.Remove(s.Path)
+		present, err := agentPlistOurs(env, s.Path)
+		if err != nil {
+			return err
+		}
+		if !present {
+			r.Warnings = append(r.Warnings, s.Path+" was already gone")
+			return nil
+		}
+		err = env.FS.Remove(s.Path)
 		if errors.Is(err, fs.ErrNotExist) {
 			r.Warnings = append(r.Warnings, s.Path+" was already gone")
 			return nil
@@ -304,7 +329,7 @@ func applyPair(env Env, p Plan, s Step) error {
 	case ActionPairKeyFromPlist:
 		v, ok, err := env.LiteLLM.PlistVar(s.Path, "LITELLM_MASTER_KEY")
 		if err != nil {
-			return fmt.Errorf("read LITELLM_MASTER_KEY from %s: %w", s.Path, err)
+			return fmt.Errorf("read LITELLM_MASTER_KEY from %s: %s", s.Path, PlistReadError(s.Path, err))
 		}
 		if !ok || strings.TrimSpace(v) == "" {
 			return fmt.Errorf("%s has no LITELLM_MASTER_KEY any more; check again, or enter the key", s.Path)
@@ -511,6 +536,10 @@ func applyMasterKey(env Env, s Step, run *applyRun) error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", s.Path, err)
 	}
+	// The file may have changed since the backup step looked at it.
+	if err := saltGuard(s.Path, data); err != nil {
+		return err
+	}
 	key, err := GenerateKey(env.Host.RandRead)
 	if err != nil {
 		return err
@@ -530,6 +559,75 @@ func applyMasterKey(env Env, s Step, run *applyRun) error {
 	}
 	run.newKey = Secret(key)
 	return nil
+}
+
+// rotatable checks, on the LiteLLM plist as it is when applied, everything
+// that would refuse a rotation: the DATABASE_URL-without-salt guard (the
+// plan checked it on an older read) and a dry run of the key edit with a
+// placeholder key. Nothing is written; no error carries a value.
+func rotatable(env Env, path string) error {
+	data, err := env.FS.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w; nothing was changed", path, err)
+	}
+	if err := saltGuard(path, data); err != nil {
+		return err
+	}
+	if _, err := ReplaceMasterKey(data, "sk-"+strings.Repeat("0", 64)); err != nil {
+		return fmt.Errorf("edit %s: %w; nothing was changed", path, err)
+	}
+	return nil
+}
+
+// saltGuard refuses a rotation of a plist that sets DATABASE_URL but no
+// LITELLM_SALT_KEY: LiteLLM then encrypts stored credentials with the master
+// key, which a new one would leave unreadable. A plist that does not parse is
+// left to the key edit's own refusal.
+func saltGuard(path string, data []byte) error {
+	sc, err := scanEnv(data)
+	if err != nil {
+		return nil
+	}
+	_, db := sc.vars["DATABASE_URL"]
+	_, salt := sc.vars["LITELLM_SALT_KEY"]
+	if db && !salt {
+		return fmt.Errorf("%s now sets DATABASE_URL but no LITELLM_SALT_KEY, so a new master key could make LiteLLM's stored credentials unreadable; "+
+			"first set LITELLM_SALT_KEY to the current master key's value (see %s); nothing was changed", path, guide14)
+	}
+	return nil
+}
+
+// agentPlistOurs re-reads wt's LaunchAgent plist when a step writes or
+// removes it: absent (present false) or managed by wt (the marker and the
+// label) is fine; anything else, or a file that cannot be read, fails the
+// step before anything is written or removed.
+func agentPlistOurs(env Env, path string) (present bool, err error) {
+	data, err := env.FS.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return true, fmt.Errorf("read %s: %w; nothing was written or removed", path, err)
+	}
+	if p, perr := ParseAgentPlist(data); perr != nil || !p.Managed {
+		return true, fmt.Errorf("%s is not marked \"managed by wt\" with the label %s (it changed since the plan), so wt neither overwrites nor removes it; nothing was written or removed: check again", path, AgentLabel)
+	}
+	return true, nil
+}
+
+// PlistReadError words an error from reading the LiteLLM plist without its
+// text when that text could quote the file (an XML decoder error can quote a
+// fragment after an &, and the plist holds secrets): a file-system error and
+// the binary-plist error name only paths; anything else is a fixed message.
+func PlistReadError(path string, err error) string {
+	var pe *fs.PathError
+	switch {
+	case errors.Is(err, litellm.ErrBinaryPlist):
+		return err.Error()
+	case errors.As(err, &pe):
+		return pe.Op + " " + pe.Path + ": " + pe.Err.Error()
+	}
+	return path + " is not a well-formed XML plist"
 }
 
 // readBackKey re-reads path and checks it carries key as its one master key.
@@ -659,6 +757,8 @@ func (run *applyRun) recovery(env Env, p Plan) string {
 		msg := run.plistOrNone() + " and wt-model's pair are unchanged"
 		if run.backup != "" {
 			msg += " (the backup " + run.backup + " is not needed)"
+		} else {
+			msg += "; no backup was made: nothing was changed"
 		}
 		return msg
 	case run.edited && !run.pairSet:

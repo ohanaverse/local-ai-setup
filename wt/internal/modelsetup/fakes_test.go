@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -217,20 +218,20 @@ func (x fakeFS) Remove(p string) error {
 	return nil
 }
 
-func (x fakeFS) Backup(p string) (string, error) {
-	x.f.rec("FS.Backup %s", p)
+func (x fakeFS) Backup(p, dir string) (string, bool, error) {
+	x.f.rec("FS.Backup %s %s", p, dir)
 	d, ok := x.f.files[p]
 	if !ok {
-		return "", &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+		return "", false, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
 	}
 	if x.f.backupErr != nil {
-		return "", x.f.backupErr
+		return "", false, x.f.backupErr
 	}
-	// The same naming rule as the real FS: never over an earlier backup.
-	dst := backupName(p, x.f.now, func(c string) bool { _, ok := x.f.files[c]; return ok })
+	// The same naming rule as the real FS: in dir, never over an earlier backup.
+	dst := backupName(filepath.Join(dir, filepath.Base(p)), x.f.now, func(c string) bool { _, ok := x.f.files[c]; return ok })
 	// Like the real FS: the copy never has group or other bits.
 	x.f.files[dst], x.f.modes[dst] = append([]byte(nil), d...), x.f.modes[p]&^0o077
-	return dst, nil
+	return dst, false, nil
 }
 
 // fileNames lists the in-memory files, sorted.

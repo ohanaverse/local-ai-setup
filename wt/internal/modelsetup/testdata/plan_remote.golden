@@ -6,3 +6,4 @@ set up mode remote in 4 steps:
 left alone and notes:
   - keep the local token file /Users/user_name/.config/wt-model/server.token
   - the server at https://gpu.example:8787 was not checked
+  - a restart or unload here (launchctl kickstart -k, bootout) ends the requests in flight at once; unlike `wt litellm restart`, nothing waits for them to finish

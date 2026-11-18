@@ -47,12 +47,12 @@ type Platform struct {
 // which Observe took out of Table.URL (Problems says so in words); a plan
 // that writes the url writes it without them.
 type ConfigState struct {
-	Path               string
-	Exists             bool
-	ParseErr, TableErr string
-	Table              config.ModelServerState
-	Problems           []string
-	URLHadCredentials  bool
+	Path                          string
+	Exists                        bool
+	ParseErr, TableErr, DecodeErr string
+	Table                         config.ModelServerState
+	Problems                      []string
+	URLHadCredentials             bool
 }
 
 // TokenState describes the token file; the token itself is never held.
@@ -237,6 +237,9 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	if file.TableErr != nil {
 		st.Config.TableErr = file.TableErr.Error()
 	}
+	if file.DecodeErr != nil {
+		st.Config.DecodeErr = file.DecodeErr.Error()
+	}
 	// rawURL is the configured url as written, kept out of State: it may
 	// carry a user:password, which only the ping below uses.
 	var rawURL string
@@ -375,7 +378,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		case errors.As(err, &se):
 			st.LiteLLMPlist.Err = lp + " is not a well-formed XML plist"
 		default:
-			st.LiteLLMPlist.Err = err.Error()
+			st.LiteLLMPlist.Err = PlistReadError(lp, err)
 		}
 	} else {
 		st.LiteLLMPlist.Present, st.LiteLLMPlist.Port, st.LiteLLMPlist.Mode = true, info.Port, info.Mode

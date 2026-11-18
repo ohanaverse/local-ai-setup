@@ -35,11 +35,12 @@ func TestDefaultEnvRefusesLaunchdAndListenerLookupsUnderTest(t *testing.T) {
 
 // TestRealBackupNamesNeverCollide pins carry-forward 1 on the real file
 // system (a temp dir): two backups of the same file within one second get
-// distinct names, each a full copy at the source's mode, and the first is
-// never overwritten by the second.
+// distinct names in the backup directory, each a full copy at the source's
+// mode, and the first is never overwritten by the second.
 func TestRealBackupNamesNeverCollide(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "local.litellm.proxy.plist")
+	src := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "backups")
+	p := filepath.Join(src, "local.litellm.proxy.plist")
 	if err := os.WriteFile(p, []byte("one"), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -47,14 +48,14 @@ func TestRealBackupNamesNeverCollide(t *testing.T) {
 		t.Fatal(err)
 	}
 	fsys := realFS{}
-	a, err := fsys.Backup(p)
+	a, _, err := fsys.Backup(p, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(p, []byte("two"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	b, err := fsys.Backup(p)
+	b, _, err := fsys.Backup(p, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +71,7 @@ func TestRealBackupNamesNeverCollide(t *testing.T) {
 			t.Errorf("%s mode = %v (%v), want 0600 (the source's 0640 without group or other bits)", path, st.Mode().Perm(), err)
 		}
 		if filepath.Dir(path) != dir || !strings.HasPrefix(filepath.Base(path), "local.litellm.proxy.plist.bak-") {
-			t.Errorf("backup %s is not beside the file", path)
+			t.Errorf("backup %s is not in the backup directory %s", path, dir)
 		}
 	}
 }
@@ -111,12 +112,46 @@ func TestRealBackupIsNeverLooserThanTheSource(t *testing.T) {
 		if err := os.Chmod(p, c.from); err != nil {
 			t.Fatal(err)
 		}
-		dst, err := realFS{}.Backup(p)
+		dst, _, err := realFS{}.Backup(p, filepath.Join(t.TempDir(), "backups"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if st, err := os.Stat(dst); err != nil || st.Mode().Perm() != c.want {
 			t.Errorf("%04o: backup mode %v (%v), want %04o", c.from, st.Mode().Perm(), err, c.want)
 		}
+	}
+}
+
+// TestRealBackupDirectoryIsMadeAndKept0700 pins the backup directory on the
+// real file system: created 0700 when absent (and not reported tightened),
+// set to 0700 when it was looser (and reported, so the Result can say so),
+// and a symlink in its place is refused with nothing copied.
+func TestRealBackupDirectoryIsMadeAndKept0700(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "local.litellm.proxy.plist")
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "wt-model", "backups")
+	if _, tightened, err := (realFS{}).Backup(p, dir); err != nil || tightened {
+		t.Fatalf("Backup into a new dir: tightened %t, err %v", tightened, err)
+	}
+	if st, err := os.Stat(dir); err != nil || st.Mode().Perm() != 0o700 {
+		t.Errorf("new backup dir mode %v (%v), want 0700", st.Mode().Perm(), err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, tightened, err := (realFS{}).Backup(p, dir); err != nil || !tightened {
+		t.Errorf("Backup into a 0755 dir: tightened %t, err %v", tightened, err)
+	}
+	if st, err := os.Stat(dir); err != nil || st.Mode().Perm() != 0o700 {
+		t.Errorf("loose backup dir mode %v (%v), want 0700", st.Mode().Perm(), err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	if dst, _, err := (realFS{}).Backup(p, link); err == nil {
+		t.Errorf("Backup through a symlinked dir made %s", dst)
 	}
 }

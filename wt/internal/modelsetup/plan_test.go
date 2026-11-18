@@ -618,24 +618,25 @@ func TestBuildPlanRemoteCheckOfAnotherURLIsNotAVerification(t *testing.T) {
 	}
 }
 
-// TestBuildPlanRemoteCheckMatchesATypedURLWithCredentials pins that a check
-// recorded without userinfo (State.Server.URL is always stripped) still
-// counts for a typed url that carries a user:password, both ways: a passed
-// check is not called unchecked, and a failed one is refused. A raw string
-// comparison would read every credentialed url as unchecked.
+// TestBuildPlanRemoteCheckMatchesATypedURLWithCredentials pins that a typed
+// url carrying a user:password is refused whatever its check said (a passed
+// check of the same host, or a failed one): config.toml is not a secret
+// file, so wt never stores the credentials; and that the same url without
+// them still matches a check recorded without userinfo (State.Server.URL is
+// always stripped), so a passed check is not called unchecked.
 func TestBuildPlanRemoteCheckMatchesATypedURLWithCredentials(t *testing.T) {
 	want := Desired{Mode: modelclient.ModeRemote, URL: "https://u:p@gpu.example:8787", PastedToken: plPasted}
 	st := freshState()
 	st.Server = ServerState{Checked: true, OK: true, URL: "https://gpu.example:8787"}
-	p := mustPlan(t, st, want)
-	if strings.Contains(p.Format(), "was not checked") {
-		t.Errorf("a passed check of the same host read as unchecked:\n%s", p.Format())
-	}
+	p, err := BuildPlan(st, want)
+	mustRefuse(t, p, err, "user:password")
 	st.Server = ServerState{Checked: true, Kind: KindUnreachable, URL: "https://gpu.example:8787"}
-	_, err := BuildPlan(st, want)
-	var re *RefusalError
-	if !errors.As(err, &re) {
-		t.Errorf("a failed check of the same host did not refuse: %v", err)
+	p, err = BuildPlan(st, want)
+	mustRefuse(t, p, err, "user:password")
+	want.URL = "https://gpu.example:8787/"
+	st.Server = ServerState{Checked: true, OK: true, URL: "https://gpu.example:8787"}
+	if p := mustPlan(t, st, want); strings.Contains(p.Format(), "was not checked") {
+		t.Errorf("a passed check of the same host read as unchecked:\n%s", p.Format())
 	}
 }
 
