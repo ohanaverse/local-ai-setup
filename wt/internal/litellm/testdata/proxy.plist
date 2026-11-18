@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.litellm.proxy</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/fake/bin/litellm</string>
+		<string>--config</string>
+		<string>/Users/user_name/.config/litellm/config.yaml</string>
+		<string>--port</string>
+		<string>4000</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>LITELLM_MASTER_KEY</key>
+		<string>sk-fake-not-a-real-key</string>
+		<key>FAKE_PROVIDER_KEY</key>
+		<string>fake-value-1</string>
+		<key>DATABASE_URL</key>
+		<string>postgresql://fake@localhost/fake</string>
+	</dict>
+</dict>
+</plist>
