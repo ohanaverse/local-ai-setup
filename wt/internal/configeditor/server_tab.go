@@ -123,6 +123,9 @@ type serverTab struct {
 	planGen  int
 	queue    []serverPrompt
 	planWant modelsetup.Desired
+	// planOut is true while serverPlanCmd's plan is out, so c or r can say
+	// they cancelled it (it is dropped by its generation when it lands).
+	planOut bool
 	// prompt is the question the confirm phase asks; plan and planText the
 	// plan it is about and the text shown for it.
 	prompt   serverPrompt
@@ -368,7 +371,7 @@ func (m *model) serverPlanCmd() tea.Cmd {
 	if !needsMasterKey(st.state) {
 		want.MasterKey = ""
 	}
-	st.planWant = modelsetup.Desired{}
+	st.planWant, st.planOut = modelsetup.Desired{}, true
 	gen, plan, state := st.gen, m.opts.Server.Plan, st.state
 	return func() tea.Msg {
 		p, err := plan(state, want)
@@ -384,6 +387,7 @@ func (m *model) applyServerPlanned(msg serverPlannedMsg) {
 	if msg.gen != st.gen {
 		return
 	}
+	st.planOut = false
 	st.busy, st.status, st.pending = false, "", false
 	if msg.err != nil {
 		var ref *modelsetup.RefusalError
@@ -548,7 +552,7 @@ func (m *model) finishServerWrite(ok bool) tea.Cmd {
 				m.discardHeld, m.dirty = false, true
 			}
 		} else {
-			m.quitPending, m.discardHeld = false, false
+			m.quitPending = false // discardHeld stays until the quit happens (leave)
 			if _, cmd := m.quit(); cmd != nil {
 				return cmd
 			}
@@ -713,16 +717,17 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // cancelServerPlan drops a plan whose read c or r has just replaced: the
-// older read is dropped when it lands, so the plan would silently never
-// come. The snapshot, secrets included, goes now; the result is the words
-// to put before the new status ("planning cancelled; "), empty if no plan
-// was waiting.
+// older read, or the plan already out after it (planOut), is dropped by its
+// generation when it lands, so the plan would silently never come. The
+// snapshot, secrets included, goes now; the result is the words to put
+// before the new status ("planning cancelled; "), empty if no plan was
+// waiting.
 func (m *model) cancelServerPlan() string {
 	st := &m.server
-	if st.planGen == 0 {
+	if st.planGen == 0 && !st.planOut {
 		return ""
 	}
-	st.planGen, st.queue, st.planWant = 0, nil, modelsetup.Desired{}
+	st.planGen, st.queue, st.planWant, st.planOut = 0, nil, modelsetup.Desired{}, false
 	return "planning cancelled; "
 }
 

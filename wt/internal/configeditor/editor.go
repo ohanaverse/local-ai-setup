@@ -47,7 +47,9 @@ type model struct {
 	// on the unsaved-changes prompt: the edits the answer was about are no
 	// longer counted as unsaved (dirty is cleared), so the quit asks again
 	// only about edits made while it waited. A refused write calls the quit
-	// off and puts dirty back.
+	// off and puts dirty back. It is cleared only when the quit happens
+	// (leave returns tea.Quit) or the prompt asks again (quit): a quit
+	// re-held for a second write in flight keeps it.
 	discardHeld bool
 	theme       themes.Theme
 	cfg         *config.Config
@@ -327,6 +329,8 @@ func (m *model) quit() (tea.Model, tea.Cmd) {
 	if !m.dirty {
 		return m.leave()
 	}
+	// The prompt asks about every unsaved edit again, the given-up ones too.
+	m.discardHeld = false
 	m.phase = phaseQuit
 	m.quitting = false
 	return m, nil
@@ -353,6 +357,9 @@ func (m *model) leave() (tea.Model, tea.Cmd) {
 		m.phase, m.tab = phaseList, TabServer
 		return m, nil
 	}
+	// Only now is a discard final: a quit re-held for another write keeps
+	// discardHeld, so that write's failure still puts the edits back.
+	m.discardHeld = false
 	return m, tea.Quit
 }
 

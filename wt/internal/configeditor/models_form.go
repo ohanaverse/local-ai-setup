@@ -477,7 +477,7 @@ func (m *model) applyModelSaved(msg modelSavedMsg) tea.Cmd {
 	mt.phase, mt.form = modelsList, nil
 	m.registryChanged = m.registryChanged || msg.changed
 	if m.quitPending {
-		m.quitPending, m.discardHeld = false, false
+		m.quitPending = false // discardHeld stays until the quit happens (leave)
 		if _, cmd := m.quit(); cmd != nil {
 			return cmd
 		}

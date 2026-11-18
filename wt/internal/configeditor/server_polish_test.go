@@ -331,3 +331,31 @@ func TestScrubHidesKeysWithoutMangling(t *testing.T) {
 		}
 	}
 }
+
+// TestServerTabCancelsAPlanInFlightWhenCOrRReadsAgain pins the later twin of
+// TestServerTabCancelsAPlanWhenCOrRReadsAgain: once the read before a plan
+// landed and the plan itself is out, c or r still says planning was
+// cancelled (the plan is dropped by its generation when it lands), and the
+// dropped plan never reaches the confirm screen.
+func TestServerTabCancelsAPlanInFlightWhenCOrRReadsAgain(t *testing.T) {
+	for _, k := range []string{"c", "r"} {
+		sm := &serverMachine{states: []modelsetup.State{fullState()}, plan: okPlan()}
+		m := serverEditor(t, sm, 120, 50)
+		next, read := m.Update(keyMsg("a"))
+		m = next.(*model)
+		next, plan := m.Update(read())
+		m = next.(*model)
+		if plan == nil {
+			t.Fatalf("%s: the read before the plan did not hand the plan to a command", k)
+		}
+		next, _ = m.Update(keyMsg(k))
+		m = next.(*model)
+		if !strings.Contains(m.server.status, "planning cancelled") {
+			t.Errorf("%s: status = %q, want planning cancelled", k, m.server.status)
+		}
+		m = send(t, m, plan())
+		if m.server.phase == serverConfirm {
+			t.Errorf("%s: the cancelled plan reached the confirm screen", k)
+		}
+	}
+}
