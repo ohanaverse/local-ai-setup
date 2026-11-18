@@ -45,8 +45,12 @@ var allowList = map[string][]string{}
 var sessionLibraries = []string{
 	"internal/cleanup", "internal/agents", "internal/modelclient",
 	"internal/smoke", "internal/profiles", "internal/catalog",
-	"internal/survey", "internal/tui",
+	"internal/survey", "internal/tui", "internal/urlrule",
 }
+
+// modeLeaves are the session-safe leaves cmd/wt-model will link through
+// internal/modelsetup; none may link internal/modelclient (sessionBanned).
+var modeLeaves = []string{"internal/urlrule"}
 
 // listError words a `go list` failure with the command's stderr, so a broken
 // package is named instead of a bare "exit status 1".
@@ -239,5 +243,19 @@ func TestModelServerBinaryStaysOffTheSessionPackages(t *testing.T) {
 func TestAdminScreensStayOffTheSessionScreens(t *testing.T) {
 	for _, hit := range linked(closure(t, "internal/configeditor"), adminScreensBanned) {
 		t.Errorf("internal/configeditor links %s; share styling through internal/themes or internal/tuilayout instead", hit)
+	}
+}
+
+// TestModeLeavesStayOffTheClient walks modeLeaves: each session-safe leaf
+// the model side will link through modelsetup must stay off internal/modelclient
+// (sessionBanned), so shared code moves down into the leaf instead of the
+// session client reaching back up.
+func TestModeLeavesStayOffTheClient(t *testing.T) {
+	for _, pkg := range modeLeaves {
+		t.Run(pkg, func(t *testing.T) {
+			if closure(t, pkg)["internal/modelclient"] {
+				t.Errorf("%s links internal/modelclient; move the shared code down into %s instead", pkg, pkg)
+			}
+		})
 	}
 }

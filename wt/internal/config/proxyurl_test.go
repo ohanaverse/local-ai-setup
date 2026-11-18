@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
 
 // atProxyURLs are LiteLLM pair urls holding an ASCII '@' anywhere (issue
@@ -34,25 +32,31 @@ var plainProxyURLs = []string{
 	"",
 }
 
-// TestProxyURLRuleIsModelclientsRule pins that config's predicate and
-// placeholder for the pair url are modelclient's (HasUserinfo, HiddenURL),
-// the one rule the model-server url follows. config may not import
-// modelclient (cmd/wt-model links config but may not link the session
-// half), so the definition is repeated here and held equal by this test.
-func TestProxyURLRuleIsModelclientsRule(t *testing.T) {
-	if ProxyURLHidden != modelclient.HiddenURL {
-		t.Errorf("ProxyURLHidden = %q, modelclient.HiddenURL = %q", ProxyURLHidden, modelclient.HiddenURL)
+// TestShownProxyURLHidesOnlyAnAtURL pins config's pair-url names as
+// delegations of the one url rule (internal/urlrule): an '@' anywhere hides
+// the whole url and flags it, a plain url passes through untouched, and the
+// placeholder is the rule's fixed text. (The test that held these equal to
+// modelclient's copy is gone with the copy: from PR 1b modelclient imports
+// modelmode, which imports config, so this internal test may not import
+// modelclient — the rule lives once in urlrule instead.)
+func TestShownProxyURLHidesOnlyAnAtURL(t *testing.T) {
+	if ProxyURLHidden != "(hidden: the url contains an @)" {
+		t.Errorf("ProxyURLHidden = %q, want the rule's fixed placeholder", ProxyURLHidden)
 	}
-	for _, raw := range append(append([]string{ProxyURLHidden}, atProxyURLs...), plainProxyURLs...) {
-		if got, want := ProxyURLHasAt(raw), modelclient.HasUserinfo(raw); got != want {
-			t.Errorf("ProxyURLHasAt(%q) = %t, modelclient.HasUserinfo = %t", raw, got, want)
+	for _, raw := range atProxyURLs {
+		if !ProxyURLHasAt(raw) {
+			t.Errorf("ProxyURLHasAt(%q) = false, want true", raw)
 		}
-		want := raw
-		if modelclient.HasUserinfo(raw) {
-			want = modelclient.HiddenURL
+		if got := ShownProxyURL(raw); got != ProxyURLHidden {
+			t.Errorf("ShownProxyURL(%q) = %q, want %q", raw, got, ProxyURLHidden)
 		}
-		if got := ShownProxyURL(raw); got != want {
-			t.Errorf("ShownProxyURL(%q) = %q, want %q", raw, got, want)
+	}
+	for _, raw := range plainProxyURLs {
+		if ProxyURLHasAt(raw) {
+			t.Errorf("ProxyURLHasAt(%q) = true, want false", raw)
+		}
+		if got := ShownProxyURL(raw); got != raw {
+			t.Errorf("ShownProxyURL(%q) = %q, want it unchanged", raw, got)
 		}
 	}
 }
