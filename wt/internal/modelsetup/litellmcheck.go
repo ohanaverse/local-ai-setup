@@ -194,7 +194,7 @@ func checkPlist(env Env, base string) (port, mode Check) {
 	default:
 		port = Check{CheckOK, "port " + strconv.Itoa(want)}
 	}
-	if info.Mode != 0o600 {
+	if info.Mode&0o077 != 0 {
 		mode = Check{CheckWarn, fmt.Sprintf("plist mode %04o, want 0600", info.Mode)}
 	} else {
 		mode = Check{CheckOK, "mode 0600"}

@@ -119,6 +119,7 @@ type serverTab struct {
 	// field changed since. It holds the secrets until the plan is
 	// dispatched, then is cleared.
 	planGen  int
+	planning bool // the plan command is out (planGen is already 0)
 	queue    []serverPrompt
 	planWant modelsetup.Desired
 	// prompt is the question the confirm phase asks; plan and planText the
@@ -360,7 +361,7 @@ func (m *model) serverPlanCmd() tea.Cmd {
 	if !needsMasterKey(st.state) {
 		want.MasterKey = ""
 	}
-	st.planWant = modelsetup.Desired{}
+	st.planWant, st.planning = modelsetup.Desired{}, true
 	gen, plan, state := st.gen, m.opts.Server.Plan, st.state
 	return func() tea.Msg {
 		p, err := plan(state, want)
@@ -376,7 +377,7 @@ func (m *model) applyServerPlanned(msg serverPlannedMsg) {
 	if msg.gen != st.gen {
 		return
 	}
-	st.busy, st.status, st.pending = false, "", false
+	st.busy, st.status, st.pending, st.planning = false, "", false, false
 	if msg.err != nil {
 		var ref *modelsetup.RefusalError
 		if errors.As(msg.err, &ref) {
@@ -595,6 +596,10 @@ func (m *model) serverWriteBlocked() string {
 		return "the model server's state is still being read; nothing was changed"
 	case st.state.Config.ParseErr != "":
 		return "config.toml at " + st.state.Config.Path + " does not parse, so nothing is written; fix it, then press r; nothing was changed"
+	case st.state.Config.TableErr != "":
+		return "[model-server] in " + st.state.Config.Path + " cannot be read, so nothing is written; fix it, then press r; nothing was changed"
+	case st.state.Config.RestErr != "":
+		return "config.toml at " + st.state.Config.Path + " has a key that cannot be read, so nothing is written; fix it, then press r; nothing was changed"
 	case st.busy:
 		return "wait: the last action is still running; nothing was changed"
 	}
@@ -691,10 +696,10 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 // was waiting.
 func (m *model) cancelServerPlan() string {
 	st := &m.server
-	if st.planGen == 0 {
+	if st.planGen == 0 && !st.planning {
 		return ""
 	}
-	st.planGen, st.queue, st.planWant = 0, nil, modelsetup.Desired{}
+	st.planGen, st.planning, st.queue, st.planWant = 0, false, nil, modelsetup.Desired{}
 	return "planning cancelled; "
 }
 
