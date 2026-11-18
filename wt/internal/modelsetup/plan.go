@@ -259,13 +259,15 @@ func (p *Plan) restartNote() {
 	}
 }
 
-// credentialsReason refuses a url with a user:password: config.toml is not a
-// secret file, so wt never stores one there. It names only the host.
+// credentialsReason refuses a url (or listen address) holding an '@'
+// anywhere, read as a user:password whatever else it holds: config.toml is
+// not a secret file, so wt never stores one there. It names only the host
+// (hasUserinfo's, which never quotes what precedes the last '@').
 func credentialsReason(what, host string) string {
 	if host != "" {
 		what += " for " + host
 	}
-	return reason(what+" carries a user:password; wt does not store credentials in config.toml", "put the credentials in a token file")
+	return reason(what+" contains an @ (read as a user:password); wt does not store credentials in config.toml", "use a token file")
 }
 
 // planNative stores only the mode, plus the optional agent removal.

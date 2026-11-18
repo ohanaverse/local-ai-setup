@@ -246,11 +246,9 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		t := *file.Table
 		t.Token = "" // a secret never goes into State; Problems reports its presence
 		rawURL = t.URL
-		// Only a url with an @ is rewritten: a parse-and-print round trip
-		// would otherwise re-encode an ordinary url and read as a change.
-		if strings.Contains(t.URL, "@") {
-			t.URL = stripUserinfo(t.URL)
-		}
+		// Only a url with an @ is rewritten (stripUserinfo leaves any other
+		// exactly as written, so an ordinary url never reads as a change).
+		t.URL = stripUserinfo(t.URL)
 		st.Config.Table = t
 		if file.Table.Token != "" {
 			st.Config.Problems = append(st.Config.Problems, "token under [model-server] is set; move it into a 0600 token_file")

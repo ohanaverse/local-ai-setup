@@ -39,63 +39,83 @@ func parseTyped(raw string) (u *url.URL, schemeless bool, err error) {
 	return u, true, err
 }
 
-// hasUserinfo reports whether a typed url carries a user (and maybe a
-// password), scheme or not, and its host for a message that must not quote
-// the rest. A url that does not parse but holds an @ before its path counts
-// too, with no host.
+// credSpan is the one cut of a typed url's credentials: from just after its
+// first "://" (or after a leading "//", or from its start) through its LAST
+// '@'. ok is false when raw holds no ASCII '@'. Fail closed: a model-server
+// url has no legitimate '@', so whatever precedes the last one is treated as
+// a user:password, however the url parses (a leading "//", a password holding
+// '/', '?' or '#', or a scheme typo all once parsed with no user at all).
+func credSpan(raw string) (start, end int, ok bool) {
+	at := strings.LastIndex(raw, "@")
+	if at < 0 {
+		return 0, 0, false
+	}
+	if i := strings.Index(raw, "://"); i >= 0 && i+3 <= at && !strings.Contains(raw[:i+3], "@") {
+		start = i + 3
+	} else if strings.HasPrefix(raw, "//") {
+		start = 2
+	}
+	return start, at + 1, true
+}
+
+// hasUserinfo reports whether a typed url holds an '@' anywhere: every such
+// url is refused (wt does not store credentials in config.toml). host names
+// the server in the refusal and never quotes what precedes the last '@': the
+// parsed host when the url parses with a user, else the host of what follows
+// the last '@', else "" (the refusal then says "the url").
 func hasUserinfo(raw string) (host string, ok bool) {
-	if u, _, err := parseTyped(raw); err == nil {
-		return u.Hostname(), u.User != nil
-	}
-	rest := raw
-	if hasScheme(raw) {
-		_, rest, _ = strings.Cut(raw, "://")
-	}
-	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
-		rest = rest[:i]
-	}
-	return "", strings.Contains(rest, "@")
-}
-
-// stripUserinfo removes a user:password from a url, scheme or not; a url
-// typed without a scheme stays without one. A url that does not parse loses
-// everything from just after "://" (or its start) up to its last "@".
-func stripUserinfo(raw string) string {
-	if u, schemeless, err := parseTyped(raw); err == nil {
-		u.User = nil
-		if schemeless {
-			return strings.TrimPrefix(u.String(), "//")
-		}
-		return u.String()
-	}
-	if i := strings.LastIndex(raw, "@"); i >= 0 {
-		if j := strings.Index(raw, "://"); j >= 0 && j < i {
-			return raw[:j+3] + raw[i+1:]
-		}
-		return raw[i+1:]
-	}
-	return raw
-}
-
-// redactUserinfo removes raw's user:password from text that may quote raw
-// (a ping error names the url it dialled), as typed and as url-encoded.
-// Text about a url with no user comes back unchanged.
-func redactUserinfo(text, raw string) string {
-	if _, ok := hasUserinfo(raw); !ok {
-		return text
-	}
-	auth := raw
-	if hasScheme(raw) {
-		_, auth, _ = strings.Cut(raw, "://")
-	}
-	if i := strings.IndexAny(auth, "/?#"); i >= 0 {
-		auth = auth[:i]
-	}
-	if i := strings.LastIndex(auth, "@"); i >= 0 {
-		text = strings.ReplaceAll(text, auth[:i+1], "")
+	start, end, ok := credSpan(raw)
+	if !ok {
+		return "", false
 	}
 	if u, _, err := parseTyped(raw); err == nil && u.User != nil {
+		return u.Hostname(), true
+	}
+	rest := raw[:start] + raw[end:]
+	if u, _, err := parseTyped(rest); err == nil && !strings.Contains(u.Hostname(), "@") {
+		return u.Hostname(), true
+	}
+	return "", true
+}
+
+// stripUserinfo is the display form of a typed url: everything credSpan
+// covers is cut, so no user, password or '@' remains whatever characters the
+// password holds. A url with no '@' comes back exactly as typed.
+func stripUserinfo(raw string) string {
+	start, end, ok := credSpan(raw)
+	if !ok {
+		return raw
+	}
+	return raw[:start] + raw[end:]
+}
+
+// credWithheld replaces a check message that still quotes part of a typed
+// url's credentials after redactUserinfo's scrub.
+const credWithheld = "the check failed; its message is not shown because it quoted the url's user:password"
+
+// redactUserinfo removes raw's credentials from text that may quote raw (a
+// ping error names the url it dialled): every occurrence of the span
+// credSpan covers, as typed and as url-encoded, is cut. Fail closed: if a
+// piece of the credentials (two characters or more) still shows after that,
+// the whole message is withheld. Text about a url with no '@' comes back
+// unchanged.
+func redactUserinfo(text, raw string) string {
+	start, end, ok := credSpan(raw)
+	if !ok {
+		return text
+	}
+	cred := raw[start:end]
+	text = strings.ReplaceAll(text, cred, "")
+	if u, _, err := parseTyped(raw); err == nil && u.User != nil {
 		text = strings.ReplaceAll(text, u.User.String()+"@", "")
+	}
+	if strings.Contains(text, "@") {
+		return credWithheld
+	}
+	for _, piece := range strings.FieldsFunc(cred, func(r rune) bool { return strings.ContainsRune(":/?#@\\ \t", r) }) {
+		if len(piece) >= 2 && strings.Contains(text, piece) {
+			return credWithheld
+		}
 	}
 	return text
 }
