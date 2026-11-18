@@ -155,3 +155,37 @@ func TestRealBackupDirectoryIsMadeAndKept0700(t *testing.T) {
 		t.Errorf("Backup through a symlinked dir made %s", dst)
 	}
 }
+
+// backupName is the first candidate exists reports free, so a second backup
+// in the same second never lands on the first (the fake FS uses it; the real
+// one asks the file system with O_EXCL instead, which is also race-free).
+func backupName(p string, t time.Time, exists func(string) bool) string {
+	for n := 1; ; n++ {
+		if c := backupCandidate(p, t, n); !exists(c) || n >= maxBackupTries {
+			return c
+		}
+	}
+}
+
+// TestRealWriteAtomicKeepsASymlink pins that a write through a symlink lands
+// on the link's target and leaves the link in place (a dotfiles-managed
+// plist must stay a link).
+func TestRealWriteAtomicKeepsASymlink(t *testing.T) {
+	dir := t.TempDir()
+	target, link := filepath.Join(dir, "real.plist"), filepath.Join(dir, "link.plist")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := (realFS{}).WriteAtomic(link, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link was replaced: %v %v", fi, err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "new" {
+		t.Errorf("target = %q, want new", b)
+	}
+}

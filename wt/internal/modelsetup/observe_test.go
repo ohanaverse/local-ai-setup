@@ -495,3 +495,27 @@ func TestObserveDescribesTheLiteLLMInstallAndHidesParserText(t *testing.T) {
 		t.Errorf("binary plist: %+v %+v", st.LiteLLMPlist, st.LiteLLMInstall)
 	}
 }
+
+// TestObserveLiteLLMJobAndProbeGate pins that a present LiteLLM plist has its
+// job's loaded state read (JobChecked, JobLoaded), and that SkipLiteLLMProbe
+// leaves out the binary search and the port lookup a create plan alone uses.
+func TestObserveLiteLLMJobAndProbeGate(t *testing.T) {
+	f := newFakeEnv(t)
+	f.plistInfo = litellm.ProxyPlistInfo{Port: 4000, EnvNames: []string{"LITELLM_MASTER_KEY"}}
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if lp := st.LiteLLMPlist; !lp.JobChecked || lp.JobLoaded {
+		t.Errorf("unloaded job: %+v, want checked and not loaded", lp)
+	}
+	f.jobs[litellm.ProxyLabel] = LaunchdJob{Loaded: true}
+	if lp := Observe(context.Background(), f.Env(), ObserveOptions{}).LiteLLMPlist; !lp.JobLoaded {
+		t.Errorf("loaded job: %+v", lp)
+	}
+
+	f = newFakeEnv(t)
+	f.plistErr = &fs.PathError{Op: "open", Path: f.plistPath, Err: fs.ErrNotExist}
+	f.listeners = map[int]int{4000: 4242}
+	st = Observe(context.Background(), f.Env(), ObserveOptions{SkipLiteLLMProbe: true})
+	if got := st.LiteLLMInstall; got.Binary != "" || got.ListenerChecked || got.ListenerPID != 0 {
+		t.Errorf("skipped probe: %+v", got)
+	}
+}

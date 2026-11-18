@@ -794,18 +794,18 @@ func TestBuildPlanCreateOnlyWhenAbsent(t *testing.T) {
 }
 
 // TestBuildPlanRotateOrdersBackupEditPairKickstart pins the rotation order:
-// backup, edit, chmod (only when looser than 0600, and said), pair with the
+// backup, edit (which writes the file without group or other bits), pair with the
 // same new key, then restart LiteLLM and then wt-model. The plan names what
 // else may hold the old key and what it never changes.
 func TestBuildPlanRotateOrdersBackupEditPairKickstart(t *testing.T) {
 	p := mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
-	if !sameKinds(kinds(p), StepBackup, StepMasterKey, StepChmod, StepPair, StepKickstartLiteLLM, StepWait, StepKickstart, StepWait) {
+	if !sameKinds(kinds(p), StepBackup, StepMasterKey, StepPair, StepKickstartLiteLLM, StepWait, StepKickstart, StepWait) {
 		t.Fatalf("steps = %v", kinds(p))
 	}
-	if s := p.Steps[5]; s.Action != ActionWaitLiteLLM || s.Value != "http://localhost:4000" {
+	if s := p.Steps[4]; s.Action != ActionWaitLiteLLM || s.Value != "http://localhost:4000" {
 		t.Errorf("LiteLLM wait after the restart = %+v", s)
 	}
-	for _, k := range []StepKind{StepBackup, StepMasterKey, StepChmod} {
+	for _, k := range []StepKind{StepBackup, StepMasterKey} {
 		if s, _ := stepOf(p, k); s.Path != plLiteLLM {
 			t.Errorf("%s path = %q", k, s.Path)
 		}
@@ -817,7 +817,7 @@ func TestBuildPlanRotateOrdersBackupEditPairKickstart(t *testing.T) {
 		t.Errorf("rotate carries a create spec")
 	}
 	text := p.Format()
-	for _, w := range []string{"0600", "0644", "old key", plCfgPath, "LITELLM_SALT_KEY", "DATABASE_URL", "kickstart -k gui/501/local.litellm.proxy"} {
+	for _, w := range []string{"old key", plCfgPath, "LITELLM_SALT_KEY", "DATABASE_URL", "kickstart -k gui/501/local.litellm.proxy"} {
 		if !strings.Contains(text, w) {
 			t.Errorf("Format does not say %q:\n%s", w, text)
 		}
@@ -843,6 +843,8 @@ func TestBuildPlanRotateRefusesWithoutAReadableXMLPlist(t *testing.T) {
 		"binary":     {LiteLLMPlistState{Path: plLiteLLM, Present: true, Binary: true, Err: "bplist"}, []string{plLiteLLM, "plutil -convert xml1", guide14}},
 		"unreadable": {LiteLLMPlistState{Path: plLiteLLM, Present: true, Err: "XML syntax error on line 3: invalid character entity &sk-LEAK;"}, []string{plLiteLLM, guide14}},
 		"no key":     {LiteLLMPlistState{Path: plLiteLLM, Present: true, Mode: 0o600}, []string{plLiteLLM, "LITELLM_MASTER_KEY", guide14}},
+		// The restart is kickstart -k, which fails on a job that is not loaded.
+		"not loaded": {LiteLLMPlistState{Path: plLiteLLM, Present: true, Mode: 0o600, HasMasterKey: true, JobChecked: true}, []string{"is not loaded", "launchctl bootstrap gui/501 " + plLiteLLM}},
 	}
 	for name, c := range cases {
 		st := rotateState()

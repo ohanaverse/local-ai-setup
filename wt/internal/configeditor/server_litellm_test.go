@@ -139,7 +139,7 @@ func TestServerTabRotateShowsThePlanAndNeverTheKey(t *testing.T) {
 		t.Fatalf("observes %d desired %v, want a fresh read and a rotate plan", sm.observes, sm.desired)
 	}
 	view := flat(plain(m))
-	for _, w := range []string{"backup", "LITELLM_MASTER_KEY", "0600", "0644", "oldkey", "kickstart-k", "Apply this plan? [y/N]"} {
+	for _, w := range []string{"backup", "LITELLM_MASTER_KEY", "oldkey", "kickstart-k", "Apply this plan? [y/N]"} {
 		if !strings.Contains(view, flat(w)) {
 			t.Errorf("the confirm screen lacks %q:\n%s", w, plain(m))
 		}

@@ -67,7 +67,7 @@ func serverLiteLLMMenu(s modelsetup.State) (opts []menuOption, reasons []string)
 	}
 	port := inst.Port
 	if port == 0 {
-		port = 4000
+		port = modelsetup.DefaultLiteLLMPort
 	}
 	switch {
 	case !inst.ListenerChecked:
@@ -286,7 +286,12 @@ func (m *model) updateServerResult(key string) bool {
 		st.result.top = min(st.result.top+1, max(len(lines)-rows, 0))
 	case "esc", "enter":
 		st.result = nil
-	case "q", "ctrl+c", "tab", "c", "r":
+	case "c", "r":
+		// A new read replaces what the screen reports, and its status line
+		// would be hidden behind the screen: leave the screen.
+		st.result = nil
+		return false
+	case "q", "ctrl+c", "tab":
 		return false
 	}
 	return true

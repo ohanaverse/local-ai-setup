@@ -246,7 +246,7 @@ func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result, run *app
 		return nil
 	case StepConfig:
 		if hasUserinfo(p.Want.URL) {
-			return errors.New(strings.TrimSuffix(credentialsReason("the url"), "; nothing was changed") + "; config.toml was not written")
+			return errors.New("the url contains an @ (read as a user:password); wt does not store credentials in config.toml; use a token file; config.toml was not written")
 		}
 		return env.Config.Update(func(t config.ModelServerState) (config.ModelServerState, error) {
 			t.Mode, t.URL, t.TokenFile = string(p.Want.Mode), p.Want.URL, p.Want.TokenFile
@@ -749,7 +749,7 @@ func (run *applyRun) recovery(env Env, p Plan, failed *Step) string {
 	domain := "gui/" + strconv.Itoa(env.Host.UID())
 	url := run.pairURL
 	if url == "" {
-		url = "http://localhost:" + strconv.Itoa(defaultLiteLLMPort)
+		url = "http://localhost:" + strconv.Itoa(DefaultLiteLLMPort)
 	}
 	restartWt := "`launchctl kickstart -k " + domain + "/" + AgentLabel + "`"
 	switch {

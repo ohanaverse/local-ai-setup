@@ -185,6 +185,13 @@ func (realFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
 	if err := guardUnderTest(p); err != nil {
 		return err
 	}
+	// A rename over a symlink would replace the link with a regular file, so
+	// a plist a dotfiles tool links into place is written where it points.
+	if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			p = real
+		}
+	}
 	return config.WriteFileAtomic(p, d, m)
 }
 
@@ -200,17 +207,6 @@ func backupCandidate(p string, t time.Time, n int) string {
 		name += "-" + strconv.Itoa(n)
 	}
 	return name
-}
-
-// backupName is the first candidate exists reports free, so a second backup
-// in the same second never lands on the first (the fake FS uses it; the real
-// one asks the file system with O_EXCL instead, which is also race-free).
-func backupName(p string, t time.Time, exists func(string) bool) string {
-	for n := 1; ; n++ {
-		if c := backupCandidate(p, t, n); !exists(c) || n >= maxBackupTries {
-			return c
-		}
-	}
 }
 
 // Backup copies p into dir under the first free dated name, created with
@@ -360,7 +356,7 @@ const maxGetBody = 1 << 20
 func (realNet) Get(ctx context.Context, url, bearer string) (int, []byte, error) {
 	client := &http.Client{
 		Timeout:       10 * time.Second,
-		Transport:     &http.Transport{Proxy: nil},
+		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true}, // a poll builds a client per call: no idle connection is kept
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

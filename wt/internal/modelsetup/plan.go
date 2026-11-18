@@ -179,8 +179,8 @@ func reason(fact, wayOut string) string {
 // guide14 is the LiteLLM guide a missing master key points at.
 const guide14 = "docs/guides/14-litellm-install-and-configuration.md"
 
-// defaultLiteLLMPort is the proxy's port when its plist names none.
-const defaultLiteLLMPort = 4000
+// DefaultLiteLLMPort is the proxy's port when its plist names none.
+const DefaultLiteLLMPort = 4000
 
 // BuildPlan decides the steps that take the machine from st to want. It is
 // pure: everything it needs is in st, and it reads no clock and no file.
@@ -783,11 +783,11 @@ func (p Plan) WritesURL() bool {
 }
 
 // liteLLMURL is the url wt-model's pair names for LiteLLM: the port a create
-// plan writes (defaultLiteLLMPort), else the plist's --port, else the default.
+// plan writes (DefaultLiteLLMPort), else the plist's --port, else the default.
 func liteLLMURL(st State, a LiteLLMAction) string {
 	port := st.LiteLLMPlist.Port
 	if a == LiteLLMCreate || port == 0 {
-		port = defaultLiteLLMPort
+		port = DefaultLiteLLMPort
 	}
 	return "http://localhost:" + strconv.Itoa(port)
 }
@@ -821,11 +821,11 @@ func planLiteLLMCreate(st State) (*LiteLLMSpec, []Step, []string, []string) {
 			"install it as "+guide14+" describes, then check again"))
 	}
 	switch {
-	case !inst.ListenerChecked || inst.Port != defaultLiteLLMPort:
-		reasons = append(reasons, reason(fmt.Sprintf("port %d was not checked for a listener", defaultLiteLLMPort), "check again before applying"))
+	case !inst.ListenerChecked || inst.Port != DefaultLiteLLMPort:
+		reasons = append(reasons, reason(fmt.Sprintf("port %d was not checked for a listener", DefaultLiteLLMPort), "check again before applying"))
 	case inst.ListenerPID != 0:
 		reasons = append(reasons, reason(fmt.Sprintf("port %d is in use by pid %d (a LiteLLM run by hand or under another label?), so a new LaunchAgent could not listen there",
-			defaultLiteLLMPort, inst.ListenerPID),
+			DefaultLiteLLMPort, inst.ListenerPID),
 			"stop that process, or keep it and enter its master key instead ("+guide14+")"))
 	}
 	if !inst.ConfigExists {
@@ -835,7 +835,7 @@ func planLiteLLMCreate(st State) (*LiteLLMSpec, []Step, []string, []string) {
 	if len(reasons) > 0 {
 		return nil, nil, nil, reasons
 	}
-	spec := LiteLLMSpec{Binary: inst.Binary, ConfigPath: inst.ConfigPath, Path: st.Host.Path, Home: st.Host.Home, Port: defaultLiteLLMPort}
+	spec := LiteLLMSpec{Binary: inst.Binary, ConfigPath: inst.ConfigPath, Path: st.Host.Path, Home: st.Host.Home, Port: DefaultLiteLLMPort}
 	if err := checkLiteLLMSpec(spec); err != nil {
 		var re *RefusalError
 		if errors.As(err, &re) {
@@ -863,7 +863,7 @@ func planLiteLLMCreate(st State) (*LiteLLMSpec, []Step, []string, []string) {
 }
 
 // planLiteLLMRotate plans a new master key in the existing XML plist: backup,
-// key edit, chmod 0600 when looser, then (after the pair, which the caller
+// key edit (written without group or other bits), then (after the pair, which the caller
 // places) a LiteLLM restart, returned last. Nothing else in the file changes.
 func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 	lp := st.LiteLLMPlist
@@ -880,6 +880,11 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 		reasons = append(reasons, reason(path+" cannot be read as an XML plist", "fix it as "+guide14+" describes, then check again"))
 	case !lp.HasMasterKey:
 		reasons = append(reasons, reason(path+" has no LITELLM_MASTER_KEY to replace", "add one as "+guide14+" describes"))
+	case lp.JobChecked && !lp.JobLoaded:
+		// The restart is kickstart -k, which cannot start a job that is not
+		// loaded; by then the plist and the pair would hold the new key.
+		reasons = append(reasons, reason("the LiteLLM job "+litellm.ProxyLabel+" is not loaded, so a restart after the new key would fail",
+			"load it with `launchctl bootstrap gui/"+strconv.Itoa(st.Host.UID)+" "+path+"`, then check again"))
 	case lp.HasDatabaseURL && !lp.HasSaltKey:
 		// LiteLLM encrypts stored provider credentials with the master key
 		// when no salt key is set: a new one would leave them undecryptable.
@@ -896,10 +901,6 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 			filepath.Base(lp.Path) + ".bak-<date>-<time> (a 0700 directory, outside LaunchAgents so launchd never loads the copy; its mode without group or other bits; it keeps the old key)"},
 		{Kind: StepMasterKey, Path: lp.Path, Detail: "replace LITELLM_MASTER_KEY in " + lp.Path + " with a new generated key (not shown), keeping every other byte of the file; " +
 			"it is written without group or other bits"},
-	}
-	if lp.Mode.Perm()&0o077 != 0 {
-		steps = append(steps, Step{Kind: StepChmod, Path: lp.Path,
-			Detail: fmt.Sprintf("set %s to mode 0600 (it was %04o, readable by others; the edit already dropped those bits)", lp.Path, lp.Mode.Perm())})
 	}
 	url := liteLLMURL(st, LiteLLMRotateKey)
 	steps = append(steps,

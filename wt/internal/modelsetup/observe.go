@@ -35,6 +35,10 @@ type ObserveOptions struct {
 	CheckURL       string
 	CheckToken     Secret
 	CheckTokenFile string
+	// SkipLiteLLMProbe leaves out the lookups only a local-mode LiteLLM
+	// create plan reads: the binary search and the listener on the default
+	// port. Native and remote choices set it, so a read there pays for none.
+	SkipLiteLLMProbe bool
 }
 
 // Platform says whether the local mode can be set up here: macOS with launchd.
@@ -148,6 +152,11 @@ type LiteLLMPlistState struct {
 	HasSaltKey, HasDatabaseURL bool
 	Binary                     bool
 	Err                        string
+	// JobChecked says launchd was asked about the plist's job (only when a
+	// plist is present and launchd is available); JobLoaded is its answer.
+	// A rotation restarts the job with kickstart, which fails when the job
+	// is not loaded, so the plan refuses first.
+	JobChecked, JobLoaded bool
 }
 
 // LiteLLMInstallState is what a create plan needs to know of an installed
@@ -397,8 +406,16 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		}
 	}
 
+	if st.LiteLLMPlist.Present && st.Platform.OK && ctx.Err() == nil {
+		if job, err := env.Launchd.Print(ctx, litellm.ProxyLabel); err == nil {
+			st.LiteLLMPlist.JobChecked, st.LiteLLMPlist.JobLoaded = true, job.Loaded
+		}
+	}
+
 	// LiteLLM install (for a create plan): the binary and config.yaml.
-	st.LiteLLMInstall.Binary, _ = env.LiteLLM.Binary()
+	if !opts.SkipLiteLLMProbe {
+		st.LiteLLMInstall.Binary, _ = env.LiteLLM.Binary()
+	}
 	st.LiteLLMInstall.ConfigPath = env.LiteLLM.ConfigPath()
 	if st.LiteLLMInstall.ConfigPath != "" {
 		if _, err := env.FS.Stat(st.LiteLLMInstall.ConfigPath); err == nil {
@@ -408,9 +425,9 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 
 	// With no LiteLLM plist, whatever listens on the port a created one would
 	// use (a LiteLLM run by hand or under another label) blocks a create.
-	if !st.LiteLLMPlist.Present && ctx.Err() == nil {
-		st.LiteLLMInstall.Port = defaultLiteLLMPort
-		if pid, ok, err := env.Net.ListenerPID(ctx, defaultLiteLLMPort); err == nil {
+	if !st.LiteLLMPlist.Present && !opts.SkipLiteLLMProbe && ctx.Err() == nil {
+		st.LiteLLMInstall.Port = DefaultLiteLLMPort
+		if pid, ok, err := env.Net.ListenerPID(ctx, DefaultLiteLLMPort); err == nil {
 			st.LiteLLMInstall.ListenerChecked = true
 			if ok {
 				st.LiteLLMInstall.ListenerPID = pid

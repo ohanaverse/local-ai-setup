@@ -642,7 +642,6 @@ func TestApplyRotateKeepsTheBackupAndTightensTheMode(t *testing.T) {
 	want := []string{
 		"Host.RandRead 32",
 		"FS.WriteAtomic " + plLiteLLM + " 0600",
-		"FS.Chmod " + plLiteLLM + " 0600",
 		"Config.SetPair url=true key=true",
 		"Launchd.Kickstart local.litellm.proxy kill=true",
 		"Net.Get http://localhost:4000/health/liveliness bearer=false",

@@ -253,6 +253,7 @@ func (st *serverTab) fillServerFields() {
 func (m *model) serverObserveOptions() modelsetup.ObserveOptions {
 	st := &m.server
 	var o modelsetup.ObserveOptions
+	o.SkipLiteLLMProbe = st.want.Mode != modelclient.ModeLocal
 	switch st.want.Mode {
 	case modelclient.ModeLocal:
 		if _, port, err := net.SplitHostPort(st.value(sfListen)); err == nil {

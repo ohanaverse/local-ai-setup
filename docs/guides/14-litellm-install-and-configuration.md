@@ -253,11 +253,12 @@ The `wt config` Model server tab (design: [the model-server configuration spec](
 **Rotating the master key** (`k`, generate a new key) runs these steps in order, stopping at the first failure:
 
 1. check the plist as it is now (the key edit is tried without writing, and the `DATABASE_URL`-without-salt rule is checked again), then back it up to `~/.config/wt-model/backups/local.litellm.proxy.plist.bak-<date>-<time>` (a second backup in the same second gets `-2`, `-3`, ...; an earlier backup is never replaced), at the plist's mode without group or other bits; the backup holds the old key. The directory is created 0700 (a looser one is set to 0700, and the result says so); it is outside `~/Library/LaunchAgents` on purpose, since a copy there carries the same label and launchd could load it;
-2. replace `LITELLM_MASTER_KEY` in the plist with a new generated key, keeping every other byte, written without group or other bits;
-3. `chmod 0600` the plist when it was looser;
-4. update wt-model's pair to the same key;
-5. restart LiteLLM (`launchctl kickstart -k`) and wait until it answers and accepts the new key;
-6. restart wt-model so it reads the new pair.
+2. replace `LITELLM_MASTER_KEY` in the plist with a new generated key, keeping every other byte, written without group or other bits (a plist that is a symlink is written where it points, and stays a link);
+3. update wt-model's pair to the same key;
+4. restart LiteLLM (`launchctl kickstart -k`) and wait until it answers and accepts the new key;
+5. restart wt-model so it reads the new pair.
+
+The plan refuses first when the LiteLLM job is not loaded (`kickstart` cannot start one); it names the `launchctl bootstrap` command to load it.
 
 Both restarts are `kickstart -k`: a request in flight through LiteLLM or wt-model is cut at once (unlike `wt litellm restart`, which lets it finish), and the plan says so. Rotate when no agent is mid-request. To restore the old plist by hand: `cp -p <backup> ~/Library/LaunchAgents/local.litellm.proxy.plist && chmod 600 ~/Library/LaunchAgents/local.litellm.proxy.plist` (the result names the backup).
 
