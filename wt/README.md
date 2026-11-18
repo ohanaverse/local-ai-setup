@@ -123,7 +123,7 @@ On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` int
 
 ## User preferences (`wt config`)
 
-Bare `wt config` opens an interactive editor with two tabs: Agents (the agents in `config.toml`) and Models (the models in `registry.toml`; `wt model` opens the editor on this tab). Its subcommands are `wt config path`, which prints the config directory, and `wt config theme` — four built-in color palettes with dark/light variants, stored in `~/.config/agent-wt/themes.toml`.
+Bare `wt config` opens an interactive editor with three tabs: Agents (the agents in `config.toml`), Models (the models in `registry.toml`; `wt model` opens the editor on this tab) and Model server (checks and sets up the `wt-model` server). Its subcommands are `wt config path`, which prints the config directory, and `wt config theme` — four built-in color palettes with dark/light variants, stored in `~/.config/agent-wt/themes.toml`.
 
 ```bash
 wt config theme              # show the active theme + available names

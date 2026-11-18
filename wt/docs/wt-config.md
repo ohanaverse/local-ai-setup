@@ -2,14 +2,14 @@
 
 User-level preferences for the `wt` launcher.
 
-- **`wt config`** (no subcommand) — interactive TUI with two tabs: the agents
-  in `config.toml`, and the models in `registry.toml`
+- **`wt config`** (no subcommand) — interactive TUI with three tabs: the agents
+  in `config.toml`, the models in `registry.toml`, and the model server
 - **`wt config theme`** — color theme management
 - **`wt config path`** — print the config directory
 
 ## Config viewer (`wt config`)
 
-Launching `wt config` with no subcommand opens a full-screen TUI with two
+Launching `wt config` with no subcommand opens a full-screen TUI with three
 tabs, named on its first line; `Tab` switches between them.
 
 - **Agents** — the agents in `config.toml`. Edits are held in memory and
@@ -23,6 +23,8 @@ tabs, named on its first line; `Tab` switches between them.
   it reads and writes this machine's registry and `config.yaml`, not the
   model server's, until it moves to `wt-model` ([`wt-session.md`](wt-session.md),
   "Interim limits").
+- **Model server** — checks the `wt-model` server and its LiteLLM proxy and
+  sets up the server's address, token and proxy key.
 
 `wt config` needs no model server: it opens, and edits `config.toml`, with
 none configured.
