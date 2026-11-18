@@ -87,7 +87,8 @@ func TestApplyRotateKeepsTheBackupOutOfLaunchAgents(t *testing.T) {
 
 // TestApplyRotateRefusalLeavesNoBackup pins that an edit the plist refuses (a
 // repeated master key) is found before the backup, so a refused rotation
-// leaves no stray copy of the old key, and the Result says nothing changed.
+// leaves no stray copy of the old key, and the Recovery says the plist and the
+// pair were not touched and no backup was kept.
 func TestApplyRotateRefusalLeavesNoBackup(t *testing.T) {
 	f := rotEnv(t)
 	f.files[plLiteLLM] = []byte(envPlist("", "\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t<string>"+apOldMaster+"</string>\n"+
@@ -99,7 +100,10 @@ func TestApplyRotateRefusalLeavesNoBackup(t *testing.T) {
 	if f.called("FS.Backup") || len(backupsOf(f, plLiteLLM)) != 0 {
 		t.Errorf("a refused rotation made a backup")
 	}
-	if !strings.Contains(r.Recovery, "nothing was changed") {
+	// An earlier token step of the same plan may have written server.token, so
+	// the Recovery says what was not touched, never "nothing was changed".
+	if !strings.Contains(r.Recovery, "pair were not touched") || !strings.Contains(r.Recovery, "no backup was kept") ||
+		strings.Contains(r.Recovery, "nothing was changed") {
 		t.Errorf("Recovery = %q", r.Recovery)
 	}
 	noSecrets(t, f, lines, r, apOldMaster)

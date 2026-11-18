@@ -713,7 +713,8 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 		if string(f.files[plLiteLLM]) != string(before) {
 			t.Errorf("%s: the plist changed", name)
 		}
-		if r.Recovery == "" || !strings.Contains(r.Recovery, "unchanged") {
+		// "unchanged" after a kept backup, "not touched" when none was made.
+		if r.Recovery == "" || !strings.Contains(r.Recovery, "unchanged") && !strings.Contains(r.Recovery, "not touched") {
 			t.Errorf("%s: Recovery = %q", name, r.Recovery)
 		}
 		if c.failed == StepBackup && len(backupsOf(f, plLiteLLM)) != 0 {

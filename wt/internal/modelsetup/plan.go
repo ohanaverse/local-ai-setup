@@ -259,24 +259,6 @@ func (p *Plan) restartNote() {
 	}
 }
 
-// hasUserinfo reports whether a typed url carries a user (and maybe a
-// password), and its host for a message that must not quote the rest. A url
-// that does not parse but holds an @ before its path counts too, with no host.
-func hasUserinfo(raw string) (host string, ok bool) {
-	u, err := url.Parse(raw)
-	if err == nil {
-		return u.Hostname(), u.User != nil
-	}
-	rest := raw
-	if _, after, found := strings.Cut(rest, "://"); found {
-		rest = after
-	}
-	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
-		rest = rest[:i]
-	}
-	return "", strings.Contains(rest, "@")
-}
-
 // credentialsReason refuses a url with a user:password: config.toml is not a
 // secret file, so wt never stores one there. It names only the host.
 func credentialsReason(what, host string) string {

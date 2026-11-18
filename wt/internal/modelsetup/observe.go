@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
-	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -461,6 +460,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	} else if url != "" && token != "" {
 		st.Server = pingServer(ctx, env, modelclient.Endpoint{URL: url, Token: token})
 		st.Server.URL = stripUserinfo(url)
+		st.Server.Message = redactUserinfo(st.Server.Message, url)
 	}
 
 	// LiteLLM checks: only where the local model server is in use.
@@ -538,22 +538,6 @@ func readToken(env Env, ts *TokenState) string {
 		ts.Err = "token file is empty"
 	}
 	return tok
-}
-
-// stripUserinfo removes a user:password from a url. A url that does not
-// parse loses everything from just after "://" up to its last "@".
-func stripUserinfo(raw string) string {
-	if u, err := neturl.Parse(raw); err == nil {
-		u.User = nil
-		return u.String()
-	}
-	if i := strings.LastIndex(raw, "@"); i >= 0 {
-		if j := strings.Index(raw, "://"); j >= 0 && j < i {
-			return raw[:j+3] + raw[i+1:]
-		}
-		return raw[i+1:]
-	}
-	return raw
 }
 
 // pingServer pings ep and maps the failure to a ServerKind. An error of no

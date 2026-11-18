@@ -754,13 +754,12 @@ func (run *applyRun) recovery(env Env, p Plan) string {
 	restartWt := "`launchctl kickstart -k " + domain + "/" + AgentLabel + "`"
 	switch {
 	case run.rotating && !run.edited:
-		msg := run.plistOrNone() + " and wt-model's pair are unchanged"
 		if run.backup != "" {
-			msg += " (the backup " + run.backup + " is not needed)"
-		} else {
-			msg += "; no backup was made: nothing was changed"
+			return run.plistOrNone() + " and wt-model's pair are unchanged (the backup " + run.backup + " is not needed)"
 		}
-		return msg
+		// Not "nothing was changed": an earlier token step of the same plan
+		// may have written server.token.
+		return run.plistOrNone() + " and wt-model's pair were not touched; no backup was kept"
 	case run.edited && !run.pairSet:
 		return "the plist " + run.plist + " may hold a new master key while wt-model's pair and the running LiteLLM still use the old one: " +
 			"put the old plist back with `cp -p " + run.backup + " " + run.plist + " && chmod 600 " + run.plist + "` (nothing else was changed), then apply again"

@@ -270,7 +270,7 @@ Anything else that holds the old master key stops working once LiteLLM restarts:
 | a plist already exists (create) | wt creates a plist only when none exists; use the plist's key or generate a new one |
 | no `litellm` binary, or no `config.yaml` (create) | wt never installs LiteLLM nor writes a first config; install it as sections 1 and 4 describe |
 | something listens on port 4000 (create) | names the pid; stop it, or keep it and enter its master key instead |
-| a plist wt will not edit, found only when applying (rotate): the key appears twice, or sits in a comment, CDATA, the wrong dict or a non-string value | the plan is offered, then refused at apply before the backup; nothing was changed and no backup was made. Fix the plist by hand |
+| a plist wt will not edit, found only when applying (rotate): the key appears twice, or sits in a comment, CDATA, the wrong dict or a non-string value | the plan is offered, then refused at apply before the backup; the plist and wt-model's pair were not touched and no backup was kept. Fix the plist by hand |
 | a binary property list (rotate) | run `plutil -convert xml1 <plist>`, then check again |
 | an unreadable plist, or no `LITELLM_MASTER_KEY` (rotate) | fix the plist as sections 5 and 6 describe |
 | `DATABASE_URL` but no `LITELLM_SALT_KEY` (rotate; checked when planning and again when applying, before the backup) | set `LITELLM_SALT_KEY` to the current master key's value first, or confirm the database holds no stored credentials (section 6) |
