@@ -372,3 +372,38 @@ func TestLiteLLMSpecNeverPrintsItsKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestReplaceMasterKeyRefusesKeysOutsideTheTopEnvironmentDict pins carry-
+// forward 4b: a master key inside a dict nested within EnvironmentVariables,
+// or inside an EnvironmentVariables dict nested under another key, is not the
+// LaunchAgent's environment, so both refuse as missing.
+func TestReplaceMasterKeyRefusesKeysOutsideTheTopEnvironmentDict(t *testing.T) {
+	nested := envPlist("", "\t\t<key>INNER</key>\n\t\t<dict>\n\t\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t\t<string>old</string>\n\t\t</dict>\n")
+	decoy := "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n" +
+		"\t<key>Other</key>\n\t<dict>\n\t\t<key>EnvironmentVariables</key>\n\t\t<dict>\n" +
+		"\t\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t\t<string>old</string>\n\t\t</dict>\n\t</dict>\n</dict>\n</plist>\n"
+	for name, in := range map[string]string{"nested dict": nested, "decoy EnvironmentVariables": decoy} {
+		out, err := ReplaceMasterKey([]byte(in), "sk-new")
+		if err == nil || out != nil || !strings.Contains(err.Error(), "not in the plist") {
+			t.Errorf("%s: err = %v, want refused as missing", name, err)
+		}
+	}
+}
+
+// TestReplaceMasterKeyNeverEchoesTheParser pins carry-forward 4c: a decoder
+// error can quote a fragment of the document (an entity name, say), so no
+// error from ReplaceMasterKey carries the raw xml.SyntaxError text.
+func TestReplaceMasterKeyNeverEchoesTheParser(t *testing.T) {
+	in := envPlist("", "\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t<string>&sk-LEAK-1;</string>\n")
+	_, err := ReplaceMasterKey([]byte(in), "sk-new")
+	if err == nil {
+		t.Fatal("a malformed plist was edited")
+	}
+	var se *xml.SyntaxError
+	if strings.Contains(err.Error(), "sk-LEAK-1") || errors.As(err, &se) {
+		t.Errorf("err = %q carries the parser's text", err)
+	}
+	if !strings.Contains(err.Error(), "well-formed") {
+		t.Errorf("err = %q, want the fixed wording", err)
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -43,7 +44,8 @@ type FS interface {
 	Chmod(path string, perm os.FileMode) error
 	Remove(path string) error
 	// Backup copies path to a dated file beside it, with the same mode, and
-	// returns the copy's path.
+	// returns the copy's path. It never replaces an earlier backup: a second
+	// one in the same second gets a -2, -3, ... suffix.
 	Backup(path string) (string, error)
 }
 
@@ -99,6 +101,7 @@ type LiteLLMFiles interface {
 	ConfigPath() string
 	ReadPlist(path string) (litellm.ProxyPlistInfo, error)
 	PlistVar(path, name string) (value string, ok bool, err error)
+	Binary() (path string, ok bool)
 }
 
 // Env bundles every seam. A zero field is a programming error; build one with
@@ -141,6 +144,32 @@ func (realFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
 	return config.WriteFileAtomic(p, d, m)
 }
 
+// maxBackupTries bounds the -N suffixes Backup tries within one second.
+const maxBackupTries = 1000
+
+// backupCandidate is the n-th name a backup of p taken at t may use: the
+// dated name, then the same with -2, -3, ...
+func backupCandidate(p string, t time.Time, n int) string {
+	name := p + ".bak-" + t.Format("20060102-150405")
+	if n > 1 {
+		name += "-" + strconv.Itoa(n)
+	}
+	return name
+}
+
+// backupName is the first candidate exists reports free, so a second backup
+// in the same second never lands on the first (the fake FS uses it; the real
+// one asks the file system with O_EXCL instead, which is also race-free).
+func backupName(p string, t time.Time, exists func(string) bool) string {
+	for n := 1; ; n++ {
+		if c := backupCandidate(p, t, n); !exists(c) || n >= maxBackupTries {
+			return c
+		}
+	}
+}
+
+// Backup copies p beside itself under the first free dated name, created
+// with O_EXCL so an earlier backup is never replaced, at p's mode.
 func (realFS) Backup(p string) (string, error) {
 	info, err := os.Stat(p)
 	if err != nil {
@@ -150,11 +179,27 @@ func (realFS) Backup(p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dst := p + ".bak-" + time.Now().Format("20060102-150405")
-	if err := config.WriteFileAtomic(dst, data, info.Mode().Perm()); err != nil {
-		return "", err
+	perm := info.Mode().Perm()
+	now := time.Now()
+	for n := 1; n <= maxBackupTries; n++ {
+		dst := backupCandidate(p, now, n)
+		f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, werr := f.Write(data)
+		serr := f.Sync()
+		cerr := f.Close()
+		merr := os.Chmod(dst, perm) // the umask may have narrowed it
+		if err := errors.Join(werr, serr, cerr, merr); err != nil {
+			return "", fmt.Errorf("the backup %s is incomplete (remove it by hand): %w", dst, err)
+		}
+		return dst, nil
 	}
-	return dst, nil
+	return "", fmt.Errorf("no free backup name beside %s", p)
 }
 
 type realLaunchd struct{}
@@ -351,6 +396,33 @@ func (realLiteLLM) ConfigPath() string { return litellm.DefaultPath() }
 func (realLiteLLM) ReadPlist(p string) (litellm.ProxyPlistInfo, error) {
 	return litellm.ReadProxyPlist(p)
 }
+
+// Binary finds the litellm binary: the install locations guide 14 and
+// Homebrew use, then PATH. It never runs it, and finds nothing in a test
+// binary so no test reads the developer's machine.
+func (realLiteLLM) Binary() (string, bool) {
+	if testing.Testing() {
+		return "", false
+	}
+	var dirs []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
+	}
+	dirs = append(dirs, "/opt/homebrew/bin", "/usr/local/bin")
+	for _, d := range dirs {
+		p := filepath.Join(d, "litellm")
+		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0o111 != 0 {
+			return p, true
+		}
+	}
+	if p, err := exec.LookPath("litellm"); err == nil {
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs, true
+		}
+	}
+	return "", false
+}
+
 func (realLiteLLM) PlistVar(p, n string) (string, bool, error) {
 	return litellm.ReadProxyPlistVar(p, n)
 }

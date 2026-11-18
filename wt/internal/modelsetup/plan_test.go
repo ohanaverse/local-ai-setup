@@ -501,9 +501,11 @@ func goldenPlans(t *testing.T) map[string]Plan {
 	remote.Agent = baseState().Agent
 	remote.TokenFiles = []TokenState{{Path: plLocalTok}, {Path: plRemoteTok, Exists: true}}
 	return map[string]Plan{
-		"plan_local.golden":  mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}),
-		"plan_remote.golden": mustPlan(t, remote, Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, RemoveAgent: true}),
-		"plan_native.golden": mustPlan(t, baseState(), Desired{Mode: modelclient.ModeNative}),
+		"plan_local.golden":          mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}),
+		"plan_remote.golden":         mustPlan(t, remote, Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, RemoveAgent: true}),
+		"plan_native.golden":         mustPlan(t, baseState(), Desired{Mode: modelclient.ModeNative}),
+		"plan_litellm_create.golden": mustPlan(t, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate}),
+		"plan_litellm_rotate.golden": mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}),
 	}
 }
 
@@ -689,5 +691,204 @@ func TestObserveAndPlanFlagACredentialedURLThatWillBeRewritten(t *testing.T) {
 	f = obsConfigured(t)
 	if st = Observe(context.Background(), f.Env(), ObserveOptions{}); st.Config.URLHadCredentials {
 		t.Errorf("URLHadCredentials = true for a plain url")
+	}
+}
+
+const (
+	plLiteLLMBin = plHome + "/.local/bin/litellm"
+	plLiteLLMCfg = plHome + "/.config/litellm/config.yaml"
+)
+
+// createState is a fresh host where LiteLLM is installed (binary and
+// config.yaml) but has no LaunchAgent plist yet, and wt-model's pair is unset.
+func createState() State {
+	st := freshState()
+	st.LiteLLMPlist = LiteLLMPlistState{Path: plLiteLLM}
+	st.LiteLLMInstall = LiteLLMInstallState{Binary: plLiteLLMBin, ConfigPath: plLiteLLMCfg, ConfigExists: true}
+	return st
+}
+
+// rotateState is a fully applied local host whose LiteLLM plist holds a
+// master key and is readable by others (0644).
+func rotateState() State {
+	st := baseState()
+	st.LiteLLMPlist.Mode = 0o644
+	st.LiteLLMInstall = LiteLLMInstallState{Binary: plLiteLLMBin, ConfigPath: plLiteLLMCfg, ConfigExists: true}
+	return st
+}
+
+// TestBuildPlanCreateRefusesWhenLiteLLMIsNotInstalled pins "wt never installs
+// LiteLLM": with no litellm binary, or no config.yaml, a create request is
+// refused naming guide 14 and what is missing, and no step is planned.
+func TestBuildPlanCreateRefusesWhenLiteLLMIsNotInstalled(t *testing.T) {
+	st := createState()
+	st.LiteLLMInstall.Binary = ""
+	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	mustRefuse(t, p, err, "litellm binary", guide14)
+
+	st = createState()
+	st.LiteLLMInstall.ConfigExists = false
+	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	mustRefuse(t, p, err, plLiteLLMCfg, guide14)
+}
+
+// TestBuildPlanCreateOnlyWhenAbsent pins that create never replaces a LiteLLM
+// plist: one that exists (with a key, or unreadable and not wt's) refuses;
+// with none, the plan writes it, loads it, waits for LiteLLM, then sets the
+// pair before the wt-model agent and the config, and says what it omits.
+func TestBuildPlanCreateOnlyWhenAbsent(t *testing.T) {
+	present := createState()
+	present.LiteLLMPlist = LiteLLMPlistState{Path: plLiteLLM, Present: true, Port: 4000, Mode: 0o600, HasMasterKey: true}
+	p, err := BuildPlan(present, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	mustRefuse(t, p, err, plLiteLLM, "already exists", guide14)
+
+	unmanaged := createState()
+	unmanaged.LiteLLMPlist = LiteLLMPlistState{Path: plLiteLLM, Present: true, Err: "cannot parse"}
+	p, err = BuildPlan(unmanaged, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	mustRefuse(t, p, err, plLiteLLM, "already exists")
+
+	p = mustPlan(t, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	if !sameKinds(kinds(p), StepToken, StepLiteLLMPlist, StepBootstrap, StepWait, StepPair, StepPlist, StepBootstrap, StepWait, StepConfig) {
+		t.Fatalf("steps = %v", kinds(p))
+	}
+	if p.LiteLLM == nil {
+		t.Fatalf("Plan.LiteLLM is nil for create")
+	}
+	want := LiteLLMSpec{Binary: plLiteLLMBin, ConfigPath: plLiteLLMCfg, Path: plPATH, Home: plHome, Port: 4000}
+	if *p.LiteLLM != want {
+		t.Errorf("LiteLLM spec = %+v, want %+v (no key at plan time)", *p.LiteLLM, want)
+	}
+	if s := p.Steps[1]; s.Path != plLiteLLM {
+		t.Errorf("plist step = %+v", s)
+	}
+	if s := p.Steps[2]; s.Path != plLiteLLM {
+		t.Errorf("LiteLLM bootstrap = %+v", s)
+	}
+	if s := p.Steps[3]; s.Action != ActionWaitLiteLLM || s.Value != "http://localhost:4000" {
+		t.Errorf("LiteLLM wait = %+v", s)
+	}
+	if s, _ := stepOf(p, StepPair); s.Action != ActionPairKeyNew || s.Value != "http://localhost:4000" {
+		t.Errorf("pair step = %+v", s)
+	}
+	text := p.Format()
+	for _, w := range []string{"DATABASE_URL", "UI login", "provider keys", guide14, "0600"} {
+		if !strings.Contains(text, w) {
+			t.Errorf("Format does not say %q:\n%s", w, text)
+		}
+	}
+	// A plan that does not create carries no spec.
+	if p = mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}); p.LiteLLM != nil {
+		t.Errorf("Plan.LiteLLM set without create")
+	}
+}
+
+// TestBuildPlanRotateOrdersBackupEditPairKickstart pins the rotation order:
+// backup, edit, chmod (only when looser than 0600, and said), pair with the
+// same new key, then restart LiteLLM and then wt-model. The plan names what
+// else may hold the old key and what it never changes.
+func TestBuildPlanRotateOrdersBackupEditPairKickstart(t *testing.T) {
+	p := mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+	if !sameKinds(kinds(p), StepBackup, StepMasterKey, StepChmod, StepPair, StepKickstartLiteLLM, StepKickstart, StepWait) {
+		t.Fatalf("steps = %v", kinds(p))
+	}
+	for _, k := range []StepKind{StepBackup, StepMasterKey, StepChmod} {
+		if s, _ := stepOf(p, k); s.Path != plLiteLLM {
+			t.Errorf("%s path = %q", k, s.Path)
+		}
+	}
+	if s, _ := stepOf(p, StepPair); s.Action != ActionPairKeyNew || s.Value != "http://localhost:4000" {
+		t.Errorf("pair step = %+v", s)
+	}
+	if p.LiteLLM != nil {
+		t.Errorf("rotate carries a create spec")
+	}
+	text := p.Format()
+	for _, w := range []string{"0600", "0644", "old key", plCfgPath, "LITELLM_SALT_KEY", "DATABASE_URL", "kickstart -k gui/501/local.litellm.proxy"} {
+		if !strings.Contains(text, w) {
+			t.Errorf("Format does not say %q:\n%s", w, text)
+		}
+	}
+	st := rotateState()
+	st.LiteLLMPlist.Mode = 0o600
+	p = mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+	if !sameKinds(kinds(p), StepBackup, StepMasterKey, StepPair, StepKickstartLiteLLM, StepKickstart, StepWait) {
+		t.Errorf("0600 plist: steps = %v", kinds(p))
+	}
+}
+
+// TestBuildPlanRotateRefusesWithoutAReadableXMLPlist pins that rotation needs
+// an existing XML plist holding a master key: absent, binary, unreadable or
+// keyless each refuse naming the file and guide 14, and a binary one names
+// the conversion. A raw parser message never reaches the refusal.
+func TestBuildPlanRotateRefusesWithoutAReadableXMLPlist(t *testing.T) {
+	cases := map[string]struct {
+		plist LiteLLMPlistState
+		wants []string
+	}{
+		"absent":     {LiteLLMPlistState{Path: plLiteLLM}, []string{plLiteLLM, guide14}},
+		"binary":     {LiteLLMPlistState{Path: plLiteLLM, Present: true, Binary: true, Err: "bplist"}, []string{plLiteLLM, "plutil -convert xml1", guide14}},
+		"unreadable": {LiteLLMPlistState{Path: plLiteLLM, Present: true, Err: "XML syntax error on line 3: invalid character entity &sk-LEAK;"}, []string{plLiteLLM, guide14}},
+		"no key":     {LiteLLMPlistState{Path: plLiteLLM, Present: true, Mode: 0o600}, []string{plLiteLLM, "LITELLM_MASTER_KEY", guide14}},
+	}
+	for name, c := range cases {
+		st := rotateState()
+		st.LiteLLMPlist = c.plist
+		p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+		mustRefuse(t, p, err, c.wants...)
+		if err != nil && strings.Contains(err.Error(), "sk-LEAK") {
+			t.Errorf("%s: refusal quotes the parser: %v", name, err)
+		}
+	}
+}
+
+// TestBuildPlanUseExistingKeyIsTheDefault pins that LiteLLMUseExistingKey
+// plans byte-identically to the zero value: the key is read from the plist
+// into the pair and the plist is never edited.
+func TestBuildPlanUseExistingKeyIsTheDefault(t *testing.T) {
+	for _, st := range []State{freshState(), baseState(), rotateState()} {
+		a := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
+		b := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey})
+		if a.Format() != b.Format() || fmt.Sprint(kinds(a)) != fmt.Sprint(kinds(b)) {
+			t.Errorf("use-existing differs from the default:\n%s\n---\n%s", a.Format(), b.Format())
+		}
+		for _, s := range b.Steps {
+			if s.Kind == StepMasterKey || s.Kind == StepLiteLLMPlist || s.Kind == StepBackup {
+				t.Errorf("use-existing edits the plist: %v", kinds(b))
+			}
+		}
+	}
+	p, err := BuildPlan(freshState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: "reinstall"})
+	mustRefuse(t, p, err, "reinstall")
+}
+
+// TestBuildPlanCreateValidatesTheSpecBeforeAnyStep pins carry-forward 3: a
+// path or value with a line break or a character XML 1.0 cannot carry, or a
+// port outside 1..65535, refuses with *RefusalError before any step, so
+// RenderLiteLLMPlist never writes a broken or injected plist.
+func TestBuildPlanCreateValidatesTheSpecBeforeAnyStep(t *testing.T) {
+	for name, mut := range map[string]func(*State){
+		"newline in PATH":     func(st *State) { st.Host.Path = "/bin\n<key>X</key>" },
+		"control in home":     func(st *State) { st.Host.Home = plHome + "\x01" },
+		"newline in binary":   func(st *State) { st.LiteLLMInstall.Binary = plLiteLLMBin + "\r" },
+		"bad utf-8 in config": func(st *State) { st.LiteLLMInstall.ConfigPath = "/x/\xffconfig.yaml" },
+	} {
+		st := createState()
+		mut(&st)
+		p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+		var re *RefusalError
+		if !errors.As(err, &re) || len(p.Steps) != 0 {
+			t.Errorf("%s: err = %v, steps %v", name, err, kinds(p))
+		}
+	}
+	for _, port := range []int{0, -1, 65536} {
+		s := LiteLLMSpec{Binary: plLiteLLMBin, ConfigPath: plLiteLLMCfg, Path: plPATH, Home: plHome, Port: port}
+		var re *RefusalError
+		if err := checkLiteLLMSpec(s); !errors.As(err, &re) || !strings.Contains(err.Error(), "port") {
+			t.Errorf("port %d: err = %v", port, err)
+		}
+	}
+	ok := LiteLLMSpec{Binary: plLiteLLMBin, ConfigPath: plLiteLLMCfg, Path: plPATH, Home: plHome, Port: 65535}
+	if err := checkLiteLLMSpec(ok); err != nil {
+		t.Errorf("valid spec refused: %v", err)
 	}
 }

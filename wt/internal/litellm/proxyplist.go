@@ -111,13 +111,17 @@ func ReadProxyPlistVar(path, name string) (value string, ok bool, err error) {
 	return value, ok, nil
 }
 
+// ErrBinaryPlist is what a binary (bplist) property list reads as, wrapped
+// in an error that names the path and the plutil conversion.
+var ErrBinaryPlist = errors.New("binary property list")
+
 func readXMLPlist(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	if bytes.HasPrefix(data, []byte("bplist")) {
-		return nil, fmt.Errorf("%s is a binary property list; convert it with `plutil -convert xml1 %s`", path, path)
+		return nil, fmt.Errorf("%s is a %w; convert it with `plutil -convert xml1 %s`", path, ErrBinaryPlist, path)
 	}
 	return data, nil
 }

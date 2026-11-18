@@ -2,12 +2,14 @@ package modelsetup
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
@@ -430,5 +432,31 @@ func TestObservePingsTheEnteredEndpoint(t *testing.T) {
 	st = Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: "https://gpu.example:8787"})
 	if f.called("Net.Ping") || st.Server.Checked || !strings.Contains(st.Server.Message, "no token") {
 		t.Errorf("calls = %q Server = %+v, want no ping and a message naming the missing token", f.calls, st.Server)
+	}
+}
+
+// TestObserveDescribesTheLiteLLMInstallAndHidesParserText pins what a create
+// or rotate plan reads: the litellm binary through its seam, whether
+// config.yaml exists through FS, a binary plist as Binary, and a parser
+// error reduced to fixed words (it can quote the document).
+func TestObserveDescribesTheLiteLLMInstallAndHidesParserText(t *testing.T) {
+	f := newFakeEnv(t)
+	f.litellmBin = "/Users/user_name/.local/bin/litellm"
+	f.files[f.configPath] = []byte("model_list: []\n")
+	f.plistErr = fmt.Errorf("%s: %w", f.plistPath, &xml.SyntaxError{Msg: "invalid character entity &sk-LEAK-2;", Line: 9})
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	want := LiteLLMInstallState{Binary: f.litellmBin, ConfigPath: f.configPath, ConfigExists: true}
+	if st.LiteLLMInstall != want {
+		t.Errorf("LiteLLMInstall = %+v, want %+v", st.LiteLLMInstall, want)
+	}
+	if !st.LiteLLMPlist.Present || st.LiteLLMPlist.Binary || strings.Contains(st.LiteLLMPlist.Err, "sk-LEAK-2") || st.LiteLLMPlist.Err == "" {
+		t.Errorf("LiteLLMPlist = %+v", st.LiteLLMPlist)
+	}
+
+	f = newFakeEnv(t)
+	f.plistErr = fmt.Errorf("%s is a %w; convert it", f.plistPath, litellm.ErrBinaryPlist)
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if !st.LiteLLMPlist.Binary || st.LiteLLMInstall.ConfigExists || st.LiteLLMInstall.Binary != "" {
+		t.Errorf("binary plist: %+v %+v", st.LiteLLMPlist, st.LiteLLMInstall)
 	}
 }

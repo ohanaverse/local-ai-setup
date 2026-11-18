@@ -25,9 +25,11 @@ type fakeEnv struct {
 	calls []string
 
 	// FS: files and their modes.
-	files    map[string][]byte
-	modTimes map[string]time.Time // Stat's ModTime by path
-	modes    map[string]os.FileMode
+	files     map[string][]byte
+	modTimes  map[string]time.Time // Stat's ModTime by path
+	modes     map[string]os.FileMode
+	writeErr  map[string]error // WriteAtomic of this path fails, writing nothing
+	backupErr error
 
 	// Launchd.
 	launchdUnavailable bool
@@ -38,6 +40,11 @@ type fakeEnv struct {
 	// bootstrapPID, when set, makes Bootstrap load and run the agent job with
 	// this pid and Bootout unload it, so a later Observe sees the change.
 	bootstrapPID int
+	// loadedAfterBootout makes Print report the label still loaded for this
+	// many calls after a successful Bootout (launchd's lag on a real machine).
+	loadedAfterBootout int
+	lingering          map[string]int
+	kickstartErr       map[string]error // by label
 
 	// ConfigStore.
 	configFile config.ModelServerFile
@@ -80,6 +87,7 @@ type fakeEnv struct {
 	plistInfo  litellm.ProxyPlistInfo
 	plistErr   error
 	plistVars  map[string]string
+	litellmBin string // what LiteLLMFiles.Binary finds; "" is none
 
 	routes    []string
 	routesErr error
@@ -90,20 +98,23 @@ type fakeEnv struct {
 func newFakeEnv(t *testing.T) *fakeEnv {
 	t.Helper()
 	return &fakeEnv{
-		t:          t,
-		files:      map[string][]byte{},
-		modes:      map[string]os.FileMode{},
-		jobs:       map[string]LaunchdJob{},
-		env:        map[string]string{},
-		paths:      map[string]string{},
-		plistVars:  map[string]string{},
-		home:       "/Users/user_name",
-		exe:        "/Users/user_name/.local/bin/wt-model",
-		now:        time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC),
-		goos:       "darwin",
-		uid:        501,
-		plistPath:  "/Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist",
-		configPath: "/Users/user_name/.config/litellm/config.yaml",
+		t:            t,
+		files:        map[string][]byte{},
+		modes:        map[string]os.FileMode{},
+		jobs:         map[string]LaunchdJob{},
+		lingering:    map[string]int{},
+		writeErr:     map[string]error{},
+		kickstartErr: map[string]error{},
+		env:          map[string]string{},
+		paths:        map[string]string{},
+		plistVars:    map[string]string{},
+		home:         "/Users/user_name",
+		exe:          "/Users/user_name/.local/bin/wt-model",
+		now:          time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC),
+		goos:         "darwin",
+		uid:          501,
+		plistPath:    "/Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist",
+		configPath:   "/Users/user_name/.config/litellm/config.yaml",
 	}
 }
 
@@ -176,6 +187,9 @@ func (x fakeFS) Stat(p string) (fs.FileInfo, error) {
 
 func (x fakeFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
 	x.f.rec("FS.WriteAtomic %s %04o", p, m)
+	if err := x.f.writeErr[p]; err != nil {
+		return err
+	}
 	x.f.files[p], x.f.modes[p] = append([]byte(nil), d...), m
 	return nil
 }
@@ -205,8 +219,12 @@ func (x fakeFS) Backup(p string) (string, error) {
 	if !ok {
 		return "", &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
 	}
-	dst := p + ".bak-" + x.f.now.Format("20060102-150405")
-	x.f.files[dst], x.f.modes[dst] = d, x.f.modes[p]
+	if x.f.backupErr != nil {
+		return "", x.f.backupErr
+	}
+	// The same naming rule as the real FS: never over an earlier backup.
+	dst := backupName(p, x.f.now, func(c string) bool { _, ok := x.f.files[c]; return ok })
+	x.f.files[dst], x.f.modes[dst] = append([]byte(nil), d...), x.f.modes[p]
 	return dst, nil
 }
 
@@ -226,6 +244,10 @@ func (x fakeLaunchd) Available() bool { x.f.rec("Launchd.Available"); return !x.
 
 func (x fakeLaunchd) Print(_ context.Context, label string) (LaunchdJob, error) {
 	x.f.rec("Launchd.Print %s", label)
+	if x.f.lingering[label] > 0 {
+		x.f.lingering[label]--
+		return LaunchdJob{Loaded: true}, x.f.launchdErr
+	}
 	return x.f.jobs[label], x.f.launchdErr
 }
 
@@ -245,14 +267,20 @@ func (x fakeLaunchd) Bootout(_ context.Context, label string) error {
 	if x.f.bootoutErr != nil {
 		return x.f.bootoutErr
 	}
-	if x.f.launchdErr == nil && x.f.bootstrapPID != 0 {
+	if x.f.launchdErr == nil {
+		// A bootout launchd accepted unloads the job (after the lag
+		// loadedAfterBootout models).
 		delete(x.f.jobs, label)
+		x.f.lingering[label] = x.f.loadedAfterBootout
 	}
 	return x.f.launchdErr
 }
 
 func (x fakeLaunchd) Kickstart(_ context.Context, label string, kill bool) error {
 	x.f.rec("Launchd.Kickstart %s kill=%t", label, kill)
+	if err := x.f.kickstartErr[label]; err != nil {
+		return err
+	}
 	return x.f.launchdErr
 }
 
@@ -378,6 +406,11 @@ type fakeLiteLLM struct{ f *fakeEnv }
 
 func (x fakeLiteLLM) PlistPath() string  { return x.f.plistPath }
 func (x fakeLiteLLM) ConfigPath() string { return x.f.configPath }
+
+func (x fakeLiteLLM) Binary() (string, bool) {
+	x.f.rec("LiteLLM.Binary")
+	return x.f.litellmBin, x.f.litellmBin != ""
+}
 
 func (x fakeLiteLLM) ReadPlist(p string) (litellm.ProxyPlistInfo, error) {
 	x.f.rec("LiteLLM.ReadPlist %s", p)

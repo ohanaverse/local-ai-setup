@@ -115,6 +115,11 @@ type envScan struct {
 	masterErr  error
 }
 
+// errNotWellFormed stands for every XML decoder error: a decoder's text can
+// quote a fragment of the document (an entity name, a tag), and a plist holds
+// secrets, so it never reaches a refusal, a status line or a Result.
+var errNotWellFormed = errors.New("the plist is not well-formed XML")
+
 // scanEnv walks the document with a real XML decoder: root <dict> ->
 // EnvironmentVariables -> its <dict>. Comments and CDATA are never keys, and a
 // key outside that dict does not count. It reads to the end of the document so
@@ -126,7 +131,7 @@ func scanEnv(data []byte) (envScan, error) {
 	for !rootSeen {
 		tok, err := dec.Token()
 		if err != nil {
-			return sc, fmt.Errorf("no root dict: %w", err)
+			return sc, errNotWellFormed
 		}
 		if se, ok := tok.(xml.StartElement); ok && se.Name.Local == "dict" {
 			rootSeen = true
@@ -138,7 +143,7 @@ func scanEnv(data []byte) (envScan, error) {
 		for {
 			tok, err := dec.Token()
 			if err != nil {
-				return "", false, fmt.Errorf("unterminated dict: %w", err)
+				return "", false, errNotWellFormed
 			}
 			switch t := tok.(type) {
 			case xml.EndElement:
@@ -147,7 +152,10 @@ func scanEnv(data []byte) (envScan, error) {
 				if t.Name.Local != "key" {
 					return "", false, errors.New("dict entry does not start with a key")
 				}
-				return key, false, dec.DecodeElement(&key, &t)
+				if err := dec.DecodeElement(&key, &t); err != nil {
+					return "", false, errNotWellFormed
+				}
+				return key, false, nil
 			}
 		}
 	}
@@ -164,7 +172,7 @@ func scanEnv(data []byte) (envScan, error) {
 		for {
 			tok, err := dec.Token()
 			if err != nil {
-				return sc, fmt.Errorf("key without a value: %w", err)
+				return sc, errNotWellFormed
 			}
 			if t, ok := tok.(xml.StartElement); ok {
 				val = t
@@ -173,7 +181,7 @@ func scanEnv(data []byte) (envScan, error) {
 		}
 		if key != "EnvironmentVariables" || val.Name.Local != "dict" {
 			if err := dec.Skip(); err != nil {
-				return sc, err
+				return sc, errNotWellFormed
 			}
 			continue
 		}
@@ -196,7 +204,7 @@ func scanEnv(data []byte) (envScan, error) {
 			for {
 				tok, err := dec.Token()
 				if err != nil {
-					return sc, fmt.Errorf("variable without a value: %w", err)
+					return sc, errNotWellFormed
 				}
 				switch t := tok.(type) {
 				case xml.CharData:
@@ -216,11 +224,11 @@ func scanEnv(data []byte) (envScan, error) {
 			if v.Name.Local == "string" {
 				var text string
 				if err := dec.DecodeElement(&text, &v); err != nil {
-					return sc, err
+					return sc, errNotWellFormed
 				}
 				sc.vars[name] = text
 			} else if err := dec.Skip(); err != nil {
-				return sc, err
+				return sc, errNotWellFormed
 			}
 			if name != masterKeyName {
 				continue
@@ -240,7 +248,7 @@ func scanEnv(data []byte) (envScan, error) {
 			if err == io.EOF {
 				return sc, nil
 			}
-			return sc, fmt.Errorf("parse plist: %w", err)
+			return sc, errNotWellFormed
 		}
 	}
 }
@@ -318,4 +326,36 @@ func validXMLText(s string) bool {
 		}
 	}
 	return true
+}
+
+// checkLiteLLMSpec refuses a spec RenderLiteLLMPlist must not render: a port
+// outside 1..65535, or a path or value that is empty, holds a line break, or
+// holds a character XML 1.0 cannot carry (a plist written from it would not
+// parse, or would carry an injected key). A key is checked without being
+// quoted. The refusal names the field and says nothing was changed.
+func checkLiteLLMSpec(s LiteLLMSpec) error {
+	var reasons []string
+	if s.Port < 1 || s.Port > 65535 {
+		reasons = append(reasons, reason(fmt.Sprintf("the LiteLLM port %d is not in 1..65535", s.Port), "use a port such as 4000"))
+	}
+	for _, f := range []struct{ name, v string }{
+		{"litellm binary path", s.Binary}, {"config.yaml path", s.ConfigPath}, {"PATH", s.Path}, {"home directory", s.Home},
+	} {
+		switch {
+		case f.v == "":
+			reasons = append(reasons, reason("the "+f.name+" for the LiteLLM plist is empty", "set it up as "+guide14+" describes"))
+		case strings.ContainsAny(f.v, "\n\r") || !validXMLText(f.v):
+			reasons = append(reasons, reason("the "+f.name+" "+strconv.QuoteToASCII(f.v)+" holds a line break or a character a plist cannot carry",
+				"fix it, then check again"))
+		}
+	}
+	for _, k := range []struct{ name, v string }{{"LITELLM_MASTER_KEY", s.MasterKey}, {"LITELLM_SALT_KEY", s.SaltKey}} {
+		if strings.ContainsAny(k.v, "\n\r") || !validXMLText(k.v) {
+			reasons = append(reasons, reason("the generated "+k.name+" holds a character a plist cannot carry", "apply again"))
+		}
+	}
+	if len(reasons) > 0 {
+		return &RefusalError{Reasons: reasons}
+	}
+	return nil
 }

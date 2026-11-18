@@ -1,0 +1,13 @@
+set up mode local in 9 steps:
+  1. create the token file /Users/user_name/.config/wt-model/server.token (32 random bytes, base64, mode 0600)
+  2. create the LiteLLM LaunchAgent plist /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist (mode 0600): /Users/user_name/.local/bin/litellm --config /Users/user_name/.config/litellm/config.yaml --port 4000, PATH=/opt/homebrew/bin:/usr/bin:/bin, logs /Users/user_name/.litellm.log and /Users/user_name/.litellm.err.log, started at login and kept alive, with a new generated LITELLM_MASTER_KEY and LITELLM_SALT_KEY (not shown)
+  3. load the LiteLLM LaunchAgent: launchctl bootstrap gui/501 /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist
+  4. wait for LiteLLM to answer at http://localhost:4000/health/liveliness
+  5. set wt-model's LiteLLM pair in /Users/user_name/.config/wt-model/: url http://localhost:4000, key the new LITELLM_MASTER_KEY (not shown)
+  6. write wt's LaunchAgent plist /Users/user_name/Library/LaunchAgents/local.wt-model.serve.plist: /Users/user_name/.local/bin/wt-model serve --listen 127.0.0.1:8787 --token-file /Users/user_name/.config/wt-model/server.token, PATH=/opt/homebrew/bin:/usr/bin:/bin, logs /Users/user_name/.wt-model.log and /Users/user_name/.wt-model.err.log, started at login and kept alive
+  7. load the LaunchAgent: launchctl bootstrap gui/501 /Users/user_name/Library/LaunchAgents/local.wt-model.serve.plist
+  8. wait for wt-model to answer at http://127.0.0.1:8787
+  9. create [model-server] in /Users/user_name/.config/agent-wt/config.toml: mode = "local", url = "http://127.0.0.1:8787", token_file = "/Users/user_name/.config/wt-model/server.token"
+left alone and notes:
+  - the new LiteLLM plist leaves out DATABASE_URL, the UI login and provider keys: add them as docs/guides/14-litellm-install-and-configuration.md describes (spend tracking and the admin UI need DATABASE_URL)
+  - the new LITELLM_SALT_KEY must never change once LiteLLM stores credentials with it: keep a copy of the plist (docs/guides/14-litellm-install-and-configuration.md)

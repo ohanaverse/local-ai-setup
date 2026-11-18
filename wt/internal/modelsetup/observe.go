@@ -2,6 +2,7 @@ package modelsetup
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
 
@@ -130,13 +132,24 @@ type HostState struct {
 }
 
 // LiteLLMPlistState is the proxy LaunchAgent plist as read; never a secret.
+// Binary is a bplist (it cannot be edited); Err never quotes the XML parser,
+// whose text can echo a fragment of the file.
 type LiteLLMPlistState struct {
 	Path         string
 	Present      bool
 	Port         int
 	Mode         os.FileMode
 	HasMasterKey bool
+	Binary       bool
 	Err          string
+}
+
+// LiteLLMInstallState is what a create plan needs to know of an installed
+// LiteLLM: the binary (LiteLLMFiles.Binary, empty when none was found) and
+// whether its config.yaml exists. wt never installs either.
+type LiteLLMInstallState struct {
+	Binary, ConfigPath string
+	ConfigExists       bool
 }
 
 // CheckStatus is the outcome of one LiteLLM check.
@@ -174,14 +187,15 @@ type State struct {
 	// local default (DefaultLocalTokenPath), the fixed remote path
 	// (RemoteTokenPath), the agent's own token file and
 	// ObserveOptions.TokenPaths, each once, in that order.
-	TokenFiles   []TokenState
-	Pair         PairState
-	Agent        AgentState
-	Listener     ListenerState
-	Server       ServerState
-	Host         HostState
-	LiteLLMPlist LiteLLMPlistState
-	LiteLLM      LiteLLMState
+	TokenFiles     []TokenState
+	Pair           PairState
+	Agent          AgentState
+	Listener       ListenerState
+	Server         ServerState
+	Host           HostState
+	LiteLLMPlist   LiteLLMPlistState
+	LiteLLMInstall LiteLLMInstallState
+	LiteLLM        LiteLLMState
 }
 
 // envOverrideNames are the variables that override config.toml, in the order
@@ -345,7 +359,14 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	st.LiteLLMPlist.Path = lp
 	if info, err := env.LiteLLM.ReadPlist(lp); err != nil {
 		st.LiteLLMPlist.Present = !errors.Is(err, fs.ErrNotExist)
-		if st.LiteLLMPlist.Present {
+		var se *xml.SyntaxError
+		switch {
+		case !st.LiteLLMPlist.Present:
+		case errors.Is(err, litellm.ErrBinaryPlist):
+			st.LiteLLMPlist.Binary, st.LiteLLMPlist.Err = true, err.Error()
+		case errors.As(err, &se):
+			st.LiteLLMPlist.Err = lp + " is not a well-formed XML plist"
+		default:
 			st.LiteLLMPlist.Err = err.Error()
 		}
 	} else {
@@ -354,6 +375,15 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			if n == "LITELLM_MASTER_KEY" {
 				st.LiteLLMPlist.HasMasterKey = true
 			}
+		}
+	}
+
+	// LiteLLM install (for a create plan): the binary and config.yaml.
+	st.LiteLLMInstall.Binary, _ = env.LiteLLM.Binary()
+	st.LiteLLMInstall.ConfigPath = env.LiteLLM.ConfigPath()
+	if st.LiteLLMInstall.ConfigPath != "" {
+		if _, err := env.FS.Stat(st.LiteLLMInstall.ConfigPath); err == nil {
+			st.LiteLLMInstall.ConfigExists = true
 		}
 	}
 
