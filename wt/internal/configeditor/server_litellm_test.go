@@ -113,7 +113,7 @@ func TestServerTabMasterKeyMenuOffersOnlyWhatTheStateAllows(t *testing.T) {
 	}
 }
 
-// openLiteLLM opens the menu and picks the option at index i of those
+// pickOption opens the menu and picks the option at index i of those
 // offered, by down and enter.
 func pickOption(t *testing.T, m *model, i int) *model {
 	t.Helper()
@@ -486,6 +486,101 @@ func TestServerTabFitsTheTerminalWithTheMenu(t *testing.T) {
 	for _, o := range []string{optUse, optRotate} {
 		if !strings.Contains(flat(plain(m)), flat(o)) {
 			t.Errorf("40x12: %q is not on the menu:\n%s", o, plain(m))
+		}
+	}
+}
+
+// TestServerTabUseThePlistsKeyRePairsOverASetPair pins that choosing "use the
+// plist's key" while wt-model's pair is already set reaches a confirm screen
+// (the real plan) that says the pair is re-set from the plist, never showing
+// a key.
+func TestServerTabUseThePlistsKeyRePairsOverASetPair(t *testing.T) {
+	st := litellmLocalState(xmlPlist())
+	st.Pair = modelsetup.PairState{URL: "http://localhost:4000", KeySet: true}
+	sm := &serverMachine{states: []modelsetup.State{st}, build: true}
+	m := pickOption(t, serverEditor(t, sm, 120, 50), 0)
+	if m.server.phase != serverConfirm || sm.desired[0].LiteLLM != modelsetup.LiteLLMUseExistingKey {
+		t.Fatalf("phase %d status %q", m.server.phase, m.server.status)
+	}
+	view := flat(plain(m))
+	if !strings.Contains(view, flat("key LITELLM_MASTER_KEY read from "+tlPlist)) || strings.Contains(view, flat("keep wt-model's LiteLLM pair")) {
+		t.Errorf("the confirm does not name re-pairing from the plist:\n%s", plain(m))
+	}
+}
+
+// TestServerTabHoldsAQuitUntilTheNotesAreRead pins that a quit held during a
+// successful apply whose result carries notes is called off when the result
+// lands, so the backup path can be read, and says how to quit.
+func TestServerTabHoldsAQuitUntilTheNotesAreRead(t *testing.T) {
+	ok := failedRotate()
+	ok.Failed, ok.Err, ok.Recovery = nil, nil, ""
+	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: ok}
+	m := pickOption(t, serverEditor(t, sm, 80, 24), 1)
+	next, apply := m.Update(keyMsg("y"))
+	m = next.(*model)
+	next, _ = m.Update(keyMsg("q"))
+	m = next.(*model)
+	if !m.quitPending {
+		t.Fatal("the quit was not held")
+	}
+	next, cmd := m.Update(apply())
+	m = next.(*model)
+	if m.quitPending || m.tab != TabServer || m.server.result == nil {
+		t.Errorf("quitPending %v tab %d result %v, want the quit called off with the notes showing", m.quitPending, m.tab, m.server.result != nil)
+	}
+	if cmd != nil {
+		if _, quit := cmd().(tea.QuitMsg); quit {
+			t.Errorf("the held quit was issued")
+		}
+	}
+	if !strings.Contains(m.server.status, "press q to quit") {
+		t.Errorf("status %q does not say how to quit", m.server.status)
+	}
+}
+
+// TestServerTabMenuAgreesWithBuildPlan pins the menu against the real plan
+// for every state of the menu test: an action the menu offers plans without
+// a refusal, an action it hides is refused. Create is the one exception:
+// the menu does not look at the plist path or at a port other than 4000
+// (BuildPlan refuses those), so those states are not in the table.
+func TestServerTabMenuAgreesWithBuildPlan(t *testing.T) {
+	noBinary := installable()
+	noBinary.LiteLLMInstall.Binary = ""
+	noConfig := installable()
+	noConfig.LiteLLMInstall.ConfigExists = false
+	portBusy := installable()
+	portBusy.LiteLLMInstall.ListenerPID = 777
+	unchecked := installable()
+	unchecked.LiteLLMInstall.ListenerChecked = false
+	noSalt := xmlPlist()
+	noSalt.HasSaltKey = false
+	noKey := xmlPlist()
+	noKey.HasMasterKey = false
+	binary := modelsetup.LiteLLMPlistState{Path: tlPlist, Present: true, Binary: true, Mode: 0o600}
+	unreadable := modelsetup.LiteLLMPlistState{Path: tlPlist, Present: true, Err: "cannot be parsed", Mode: 0o600}
+	for name, st := range map[string]modelsetup.State{
+		"installable": installable(), "no binary": noBinary, "no config": noConfig, "port busy": portBusy, "port unchecked": unchecked,
+		"present": litellmLocalState(xmlPlist()), "no salt": litellmLocalState(noSalt), "no key": litellmLocalState(noKey),
+		"binary": litellmLocalState(binary), "unreadable": litellmLocalState(unreadable),
+	} {
+		opts, _ := serverLiteLLMMenu(st)
+		offered := map[modelsetup.LiteLLMAction]bool{}
+		for _, o := range opts {
+			offered[o.action] = true
+		}
+		for _, a := range []modelsetup.LiteLLMAction{modelsetup.LiteLLMUseExistingKey, modelsetup.LiteLLMRotateKey, modelsetup.LiteLLMCreate} {
+			_, err := modelsetup.BuildPlan(st, modelsetup.Desired{Mode: modelclient.ModeLocal, LiteLLM: a})
+			if a == modelsetup.LiteLLMUseExistingKey {
+				// Use is a no-op plan, not a refusal, when the plist has no key
+				// and the pair is set; it is offered only with a key.
+				continue
+			}
+			if offered[a] && err != nil {
+				t.Errorf("%s: %s is offered but the plan refuses: %v", name, a, err)
+			}
+			if !offered[a] && err == nil {
+				t.Errorf("%s: %s is hidden but the plan accepts it", name, a)
+			}
 		}
 	}
 }

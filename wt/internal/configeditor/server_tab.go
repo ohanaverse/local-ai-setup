@@ -331,6 +331,7 @@ func (m *model) applyServerObserved(msg serverObservedMsg) tea.Cmd {
 	st.planGen = 0
 	if why := m.serverWriteBlocked(); why != "" {
 		// The fresh read found what blocks a write (a parse error).
+		st.planWant, st.queue = modelsetup.Desired{}, nil
 		st.status = why
 		return nil
 	}
@@ -535,7 +536,13 @@ func (m *model) finishServerWrite(ok bool) tea.Cmd {
 	st := &m.server
 	st.phase, st.busy, st.writing = serverView, false, false
 	if m.quitPending {
-		if !ok {
+		held := st.result != nil
+		if ok && held {
+			// Notes or recovery to read (the backup's path): the quit waits.
+			st.status = "quit held back so the notes can be read; press q to quit"
+			st.result.text += "\n" + st.status
+		}
+		if !ok || held {
 			m.quitPending, m.tab = false, TabServer
 			if m.discardHeld {
 				m.discardHeld, m.dirty = false, true
