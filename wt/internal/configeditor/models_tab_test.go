@@ -305,16 +305,18 @@ func keyMsg(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlC}
 	case "backspace":
 		return tea.KeyMsg{Type: tea.KeyBackspace}
+	case "ctrl+u":
+		return tea.KeyMsg{Type: tea.KeyCtrlU}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }
 
-// sendKey delivers one key. Inside the model form only ctrl+s starts a
-// command worth running: the others a text input returns are cursor blinks,
-// each of which sleeps for half a second.
+// sendKey delivers one key. Inside the model form and the Model server
+// tab's fields only ctrl+s starts a command worth running: the others a text
+// input returns are cursor blinks, each of which sleeps for half a second.
 func sendKey(t *testing.T, m *model, msg tea.KeyMsg) *model {
 	t.Helper()
-	if m.models.phase == modelsForm && msg.Type != tea.KeyCtrlS {
+	if (m.models.phase == modelsForm || (m.tab == TabServer && m.server.phase == serverEdit)) && msg.Type != tea.KeyCtrlS {
 		next, _ := m.Update(msg)
 		return next.(*model)
 	}
@@ -427,6 +429,10 @@ func TestTabKeySwitchesTabsAndProbesOnce(t *testing.T) {
 	next, cmd := m.Update(keyMsg("tab"))
 	if m = next.(*model); m.tab != TabServer || cmd == nil || tm.probes != 0 {
 		t.Fatalf("tab while the first probe is out should go on to Model server and observe it; tab = %d", m.tab)
+	}
+	// The command is the observation, not a second probe.
+	if _, ok := cmd().(serverObservedMsg); !ok || tm.probes != 0 {
+		t.Fatalf("the Model server tab's first command should observe, not probe; probes = %d", tm.probes)
 	}
 	m = keys(t, m, "tab")
 	next, cmd = m.Update(keyMsg("tab"))

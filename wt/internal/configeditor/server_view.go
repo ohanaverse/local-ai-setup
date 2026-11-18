@@ -12,12 +12,64 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
-// serverHints are the Model server tab's key hints, fullest first. Only keys
-// that act are named (T5): c and r both read the machine again, c to check
-// after a change elsewhere, r to read a config.toml repaired by hand.
-var serverHints = []string{
-	"left/right mode · c check · r re-read · tab next · q quit",
-	"left/right · c · r · tab · q quit",
+// serverHints are the Model server tab's key hints for the phase showing,
+// fullest first. Only keys that act are named (T5), read from the same
+// predicates the handlers use: the mode keys once an observation is in, down
+// where the chosen mode has fields, a while a write may run
+// (serverWriteBlocked), s/x/R for local (serverControlBlocked). c and r both
+// read the machine again, c to check after a change elsewhere, r to read a
+// config.toml repaired by hand.
+func (m *model) serverHints() []string {
+	st := &m.server
+	switch st.phase {
+	case serverEdit:
+		return []string{"up/down field · enter next · esc done · ctrl+c quit", "up/down · enter · esc · ctrl+c quit"}
+	case serverApplying:
+		return []string{"tab next · q quit (after this finishes)", "tab · q quit"}
+	case serverConfirm:
+		switch st.prompt {
+		case promptRemoveAgent:
+			return []string{"y remove · n keep · esc cancel · ctrl+c quit", "y · n · esc · ctrl+c quit"}
+		case promptSaveAnyway:
+			return []string{"y save anyway · n do not · esc cancel · ctrl+c quit", "y · n · esc · ctrl+c quit"}
+		}
+		return []string{"y apply · n/esc cancel · ctrl+c quit", "y · n/esc · ctrl+c quit"}
+	}
+	type hint struct{ key, label string }
+	var mode, keys []hint
+	if st.loaded {
+		mode = append(mode, hint{"left/right", "mode"})
+		if len(st.visibleFields()) > 0 {
+			mode = append(mode, hint{"down", "fields"})
+		}
+	}
+	if m.serverWriteBlocked() == "" {
+		keys = append(keys, hint{"a", "apply"})
+	}
+	keys = append(keys, hint{"c", "check"}, hint{"r", "re-read"})
+	if m.serverControlBlocked() == "" {
+		keys = append(keys, hint{"s/x/R", "start/stop/restart"})
+	}
+	keys = append(keys, hint{"tab", "next"})
+	join := func(hs []hint, labels bool) []string {
+		var out []string
+		for _, h := range hs {
+			if labels {
+				out = append(out, h.key+" "+h.label)
+			} else {
+				out = append(out, h.key)
+			}
+		}
+		return out
+	}
+	full := append(join(mode, true), join(keys, true)...)
+	short := append(join(mode, false), join(keys, false)...)
+	least := join(keys, false)
+	return []string{
+		strings.Join(append(full, "q quit"), " · "),
+		strings.Join(append(short, "q quit"), " · "),
+		strings.Join(append(least, "q quit"), " · "),
+	}
 }
 
 // serverLabelW is the width of a status line's label column ("problems"
@@ -42,8 +94,9 @@ type serverLine struct {
 	tone        tone
 }
 
-// userinfoRE finds a user:password in a url inside free text.
-var userinfoRE = regexp.MustCompile(`://[^/@\s]*@`)
+// userinfoRE finds a user:password in a url inside free text, through the
+// last @ before the host: a password may hold an @ itself.
+var userinfoRE = regexp.MustCompile(`://[^/\s]*@`)
 
 // scrub takes any url userinfo out of text the tab draws: Observe already
 // strips it from what it stores, but a message a dep composed may still
@@ -260,7 +313,7 @@ func serverStatusLines(st modelsetup.State) []serverLine {
 	case r.Mode != "":
 		lines = append(lines, serverLine{"mode", string(r.Mode) + " (" + modeSource(r) + ")", toneNone})
 	case r.Problem != "":
-		lines = append(lines, serverLine{"mode", "problem: " + r.Problem, toneBad})
+		lines = append(lines, serverLine{"mode", "problem: " + scrub(r.Problem), toneBad})
 	default:
 		lines = append(lines, serverLine{"mode", "unset: choose one below", toneWarn})
 	}
@@ -351,6 +404,30 @@ func (m *model) modeChoice() []string {
 			why += ": " + st.state.Platform.Reason
 		}
 		lines = append(lines, renderServerLine(serverLine{text: why}, m.width)...)
+		if st.want.Mode == modelclient.ModeLocal {
+			// No option is marked: say why rather than leave the choice blank.
+			lines = append(lines, renderServerLine(serverLine{text: "local is set but cannot run here; choose native or remote"}, m.width)...)
+		}
+	}
+	return lines
+}
+
+// serverFieldLines are the chosen mode's fields, one line each: the label
+// (marked "> " while being edited) and the input. The secrets are drawn by
+// their inputs masked; the url is scrubbed like every other url.
+func (m *model) serverFieldLines() []string {
+	st := &m.server
+	var lines []string
+	for _, f := range st.visibleFields() {
+		label := serverFieldLabels[f]
+		if st.phase == serverEdit && st.field == f {
+			label = "> " + label
+		}
+		view := st.fields[f].View()
+		if f == sfURL {
+			view = scrub(view)
+		}
+		lines = append(lines, tuilayout.PadRunes(label, serverLabelW)+view)
 	}
 	return lines
 }
@@ -368,6 +445,9 @@ func (m *model) serverBody(withStatus bool) string {
 	var out []string
 	if s := m.server.status; s != "" {
 		out = append(out, wrapText(s, m.width), "")
+	}
+	if m.quitPending && m.server.writing {
+		out = append(out, wrapText("wt config quits once this has finished", m.width), "")
 	}
 	if !m.server.loaded {
 		return strings.Join(append(out, wrapText("reading the model server's state", m.width)), "\n")
@@ -387,6 +467,10 @@ func (m *model) serverBody(withStatus bool) string {
 		out = append(out, "")
 	}
 	out = append(out, m.modeChoice()...)
+	if fields := m.serverFieldLines(); len(fields) > 0 {
+		out = append(out, "")
+		out = append(out, fields...)
+	}
 	return strings.Join(out, "\n")
 }
 
@@ -403,13 +487,76 @@ func (m *model) serverTabView() string {
 		return bar
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	if m.server.phase == serverConfirm {
+		return m.serverPromptView(bar, dim)
+	}
 	body := "\n" + m.serverBody(true)
-	if m.server.state.Config.ParseErr != "" && lipgloss.Height(bar)+lipgloss.Height(body)+1 > m.height {
+	// A parse error, or the fields being edited, is the thing to read: when
+	// the whole body does not fit, the status block gives way to it.
+	giveWay := m.server.state.Config.ParseErr != "" || m.server.phase == serverEdit
+	if giveWay && lipgloss.Height(bar)+lipgloss.Height(body)+1 > m.height {
 		body = "\n" + m.serverBody(false)
 	}
 	// Blank filler pins the hints to the last line when the body fits.
 	if fill := m.height - lipgloss.Height(bar) - lipgloss.Height(body) - 1; fill > 0 {
 		body += strings.Repeat("\n", fill)
 	}
-	return tuilayout.MessageAlone(bar, body, fitHints(m.width, serverHints), m.width, m.height, dim)
+	return tuilayout.MessageAlone(bar, body, fitHints(m.width, m.serverHints()), m.width, m.height, dim)
+}
+
+// serverPromptView is the confirm phase: what the question is about, then
+// the question on the line above the hints. A text too tall for the terminal
+// loses lines from its middle (L4); the question is last, so it stays.
+func (m *model) serverPromptView(bar string, dim lipgloss.Style) string {
+	st := &m.server
+	var text, question string
+	switch st.prompt {
+	case promptRemoveAgent:
+		a := st.state.Agent
+		where := a.PlistPath
+		if a.Job.Running {
+			where += " (running)"
+		}
+		text = "Leaving local: wt's LaunchAgent " + where + " is installed. n keeps it installed; the token file and the LiteLLM pair are kept either way."
+		question = "Remove the LaunchAgent? [y/N]"
+	case promptSaveAnyway:
+		s := st.state.Server
+		text = "The check of " + scrub(s.URL) + " failed: " + serverKindWord(s.Kind) + ": " + scrub(s.Message) +
+			". The server may be off; y stores the setup unchecked."
+		question = "Save anyway? [y/N]"
+	default:
+		question = "Apply this plan? [y/N]"
+		body := "\n" + wrapIndented(strings.TrimRight(st.planText, "\n"), m.width) + "\n\n" + wrapText(question, m.width)
+		return tuilayout.MessageAlone(bar, body, fitHints(m.width, m.serverHints()), m.width, m.height, dim)
+	}
+	body := "\n" + wrapText(text, m.width) + "\n\n" + wrapText(question, m.width)
+	return tuilayout.MessageAlone(bar, body, fitHints(m.width, m.serverHints()), m.width, m.height, dim)
+}
+
+// wrapIndented wraps each line of a plan's text by itself, keeping its
+// indent and hanging its continuation lines under the text after the step
+// number or the bullet ("  1. ", "  - "), so the steps stay apart. A
+// terminal too narrow for the hang wraps the line plainly.
+func wrapIndented(text string, width int) string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		body := strings.TrimLeft(line, " ")
+		lead := strings.Repeat(" ", len(line)-len(body))
+		hang := lead
+		if mark, _, ok := strings.Cut(body, " "); ok && lead != "" && (mark == "-" || strings.HasSuffix(mark, ".")) {
+			hang += strings.Repeat(" ", len(mark)+1)
+		}
+		if width <= 0 || width-len(hang) < 16 {
+			out = append(out, wrapText(line, width))
+			continue
+		}
+		for i, l := range strings.Split(wrapText(body, width-len(hang)), "\n") {
+			if i == 0 {
+				out = append(out, lead+l)
+			} else {
+				out = append(out, hang+l)
+			}
+		}
+	}
+	return strings.Join(out, "\n")
 }

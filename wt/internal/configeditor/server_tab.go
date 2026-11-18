@@ -2,15 +2,23 @@ package configeditor
 
 import (
 	"context"
+	"errors"
+	"net"
+	"strconv"
+	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
-// serverPhase is what the Model server tab is showing. Only serverView is
-// used so far; the form, the plan's confirm screen and the apply in progress
-// come with planning and applying.
+// serverPhase is what the Model server tab is showing: the status and the
+// mode choice, the same with the form's fields taking keys, a yes/no question
+// (the plan's confirm or one asked before planning), or an apply or a
+// start/stop in flight.
 type serverPhase int
 
 const (
@@ -20,16 +28,61 @@ const (
 	serverApplying
 )
 
+// serverPrompt is the question the confirm phase asks. Each is default-No
+// (P1): only y or Y says yes.
+type serverPrompt int
+
+const (
+	// promptApply is "Apply this plan? [y/N]" under the plan's text.
+	promptApply serverPrompt = iota
+	// promptRemoveAgent is asked before planning when the choice leaves
+	// local with wt's LaunchAgent installed; y sets Desired.RemoveAgent.
+	promptRemoveAgent
+	// promptSaveAnyway is asked before planning after the check of the
+	// entered remote url failed; y sets Desired.SaveUnchecked.
+	promptSaveAnyway
+)
+
+// The form's fields. Each mode shows its own (visibleFields): remote the url,
+// a token file and a pasted token; local the listen address, its token file
+// and, when no key is on record, the LiteLLM master key.
+const (
+	sfURL = iota
+	sfRemoteToken
+	sfPaste
+	sfListen
+	sfLocalToken
+	sfMaster
+	sfCount
+)
+
+// serverFieldLabels name the fields beside their inputs; with the "> " that
+// marks the field being edited they fit the status block's label column.
+var serverFieldLabels = [sfCount]string{"url", "token", "paste", "listen", "token", "master"}
+
+// serverFieldHints are the inputs' placeholders, shown while a field is
+// empty: what goes there, or what an empty field means.
+var serverFieldHints = [sfCount]string{
+	"https://host:8787",
+	"path of a 0600 token file",
+	"or paste the token (hidden)",
+	"empty: " + modelsetup.DefaultListen,
+	"empty: the default token file",
+	"LiteLLM master key (hidden)",
+}
+
 // serverTab is the Model server tab's state. Everything it knows of the
-// machine comes from one observation run in a command (observeServerCmd)
-// through ServerDeps.Observe; nothing here reads a file or dials a server.
+// machine comes from observations run in commands (observeServerCmd), and
+// every plan, apply and start/stop runs in a command too; nothing here reads
+// a file, dials a server or calls a ServerDeps func.
 type serverTab struct {
 	phase serverPhase
 	// state is the latest observation; loaded is true once one is in.
 	state  modelsetup.State
 	loaded bool
-	// want is the setup the user is choosing. Only its Mode is set so far,
-	// and only on screen: nothing is planned or written from it yet.
+	// want holds the mode choice and the answers to the questions asked
+	// before the plan in progress (RemoveAgent, SaveUnchecked). The rest of
+	// a Desired comes from the fields when it is built (serverDesired).
 	want modelsetup.Desired
 	// chosen is true once the user has moved the mode choice; until then a
 	// new observation sets the choice to the effective mode.
@@ -37,14 +90,37 @@ type serverTab struct {
 	// asked is true once the first observation has been dispatched, so the
 	// tab observes on its first visit only (c and r observe again).
 	asked bool
-	// gen numbers the observations: a result that is not the latest's is
-	// dropped, so a slow ping cannot overwrite a later answer.
+	// gen numbers the observations and plans: a result that is not the
+	// latest's is dropped, so a slow ping cannot overwrite a later answer.
 	gen int
-	// busy is true while an observation is out.
-	busy bool
-	// status is what the tab is doing or what the last key said; the next
-	// key clears it when nothing is out.
-	status string
+	// busy is true while an observation, a plan, an apply or a start/stop is
+	// out. writing is true for an apply or a start/stop alone: a quit waits
+	// for it (leave), so its result is always read.
+	busy    bool
+	writing bool
+	// status is what the tab is doing or what the last action said; pending
+	// is true when it says what is running, and goes when that is done. The
+	// next key clears it when nothing is out.
+	status  string
+	pending bool
+	// fields are the form's inputs, made with the first observation
+	// (inputs); field is the one being edited. Until the user edits one
+	// (edited), each observation fills the fields from what is stored. The
+	// pasted token and the master key are never filled; they are cleared
+	// after a successful apply.
+	fields [sfCount]textinput.Model
+	inputs bool
+	field  int
+	edited bool
+	// planGen is the observation a leads to a plan from (0: none wanted);
+	// queue the questions still to ask before planning.
+	planGen int
+	queue   []serverPrompt
+	// prompt is the question the confirm phase asks; plan and planText the
+	// plan it is about and the text shown for it.
+	prompt   serverPrompt
+	plan     modelsetup.Plan
+	planText string
 }
 
 // serverObservedMsg carries one observation.
@@ -53,11 +129,154 @@ type serverObservedMsg struct {
 	st  modelsetup.State
 }
 
-// serverObserveOptions are the options an observation is made with. The
-// form that edits the url, token path and listen address comes later; until
-// then they are Observe's defaults.
+// serverPlannedMsg carries one plan, or why there is none.
+type serverPlannedMsg struct {
+	gen  int
+	plan modelsetup.Plan
+	err  error
+}
+
+// serverAppliedMsg carries an apply's result and the progress lines Apply
+// reported, collected inside the command.
+type serverAppliedMsg struct {
+	res      modelsetup.Result
+	progress []string
+}
+
+// serverControlledMsg carries a start, stop or restart's outcome.
+type serverControlledMsg struct {
+	action modelsetup.ControlAction
+	err    error
+}
+
+// needsMasterKey is true when no LiteLLM master key is on record: neither
+// wt-model's pair nor the LiteLLM plist holds one.
+func needsMasterKey(s modelsetup.State) bool {
+	return !s.Pair.KeySet && !s.LiteLLMPlist.HasMasterKey
+}
+
+// visibleFields are the fields the chosen mode shows, in order.
+func (st *serverTab) visibleFields() []int {
+	switch st.want.Mode {
+	case modelclient.ModeRemote:
+		return []int{sfURL, sfRemoteToken, sfPaste}
+	case modelclient.ModeLocal:
+		if needsMasterKey(st.state) {
+			return []int{sfListen, sfLocalToken, sfMaster}
+		}
+		return []int{sfListen, sfLocalToken}
+	}
+	return nil
+}
+
+// value is a field's text with the spaces round it taken off.
+func (st *serverTab) value(f int) string { return strings.TrimSpace(st.fields[f].Value()) }
+
+// ensureServerInputs makes the fields once. The secrets are masked
+// (EchoPassword); no "> " prompt, the label is beside each.
+func (m *model) ensureServerInputs() {
+	st := &m.server
+	if st.inputs {
+		return
+	}
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	for f := range st.fields {
+		in := newTextInput("", serverFieldHints[f])
+		in.Prompt = ""
+		in.PlaceholderStyle = dim
+		if f == sfPaste || f == sfMaster {
+			in.EchoMode = textinput.EchoPassword
+		}
+		st.fields[f] = in
+	}
+	st.inputs = true
+	m.resizeServerInputs()
+}
+
+// resizeServerInputs fits the inputs to the columns beside the label column,
+// less one for the cursor.
+func (m *model) resizeServerInputs() {
+	st := &m.server
+	if !st.inputs {
+		return
+	}
+	for f := range st.fields {
+		st.fields[f].Width = max(m.width-serverLabelW-1, 3)
+	}
+}
+
+// fillServerFields sets the non-secret fields from what is stored, unless
+// the user has edited one: remote's url and token file from [model-server];
+// local's listen address and token file from wt's LaunchAgent, else the
+// stored token file. An empty field is a plan's default.
+func (st *serverTab) fillServerFields() {
+	if st.edited {
+		return
+	}
+	s := st.state
+	t := s.Config.Table
+	stored, _ := modelclient.ParseMode(t.Mode)
+	var url, rtok, listen, ltok string
+	if stored == modelclient.ModeRemote {
+		url, rtok = t.URL, t.TokenFile
+	}
+	if s.Agent.Managed {
+		listen, ltok = s.Agent.Listen, s.Agent.TokenFile
+	}
+	if ltok == "" && stored == modelclient.ModeLocal {
+		ltok = t.TokenFile
+	}
+	for f, v := range map[int]string{sfURL: url, sfRemoteToken: rtok, sfListen: listen, sfLocalToken: ltok} {
+		st.fields[f].SetValue(v)
+	}
+}
+
+// serverObserveOptions are the options an observation is made with: the
+// fields of the chosen mode. Local looks for a listener on the edited port
+// and describes a typed token file; remote describes a typed token file and
+// pings the url entered with the token entered (pasted, else the typed file).
 func (m *model) serverObserveOptions() modelsetup.ObserveOptions {
-	return modelsetup.ObserveOptions{}
+	st := &m.server
+	var o modelsetup.ObserveOptions
+	switch st.want.Mode {
+	case modelclient.ModeLocal:
+		if _, port, err := net.SplitHostPort(st.value(sfListen)); err == nil {
+			if p, err := strconv.Atoi(port); err == nil {
+				o.ListenPort = p
+			}
+		}
+		if p := st.value(sfLocalToken); p != "" {
+			o.TokenPaths = []string{p}
+		}
+	case modelclient.ModeRemote:
+		tok := st.value(sfRemoteToken)
+		if tok != "" {
+			o.TokenPaths = []string{tok}
+		}
+		if url := st.value(sfURL); url != "" {
+			o.CheckURL, o.CheckToken, o.CheckTokenFile = url, modelsetup.Secret(st.fields[sfPaste].Value()), tok
+		}
+	}
+	return o
+}
+
+// serverDesired is the setup the user asked for: the mode, the answers given
+// and the chosen mode's fields. A secret becomes a modelsetup.Secret here and
+// nowhere earlier; the master key goes in only while it is asked for.
+func (m *model) serverDesired() modelsetup.Desired {
+	st := &m.server
+	d := modelsetup.Desired{Mode: st.want.Mode, RemoveAgent: st.want.RemoveAgent, SaveUnchecked: st.want.SaveUnchecked}
+	switch st.want.Mode {
+	case modelclient.ModeLocal:
+		d.Listen, d.TokenFile = st.value(sfListen), st.value(sfLocalToken)
+		if needsMasterKey(st.state) {
+			d.MasterKey = modelsetup.Secret(st.fields[sfMaster].Value())
+		}
+	case modelclient.ModeRemote:
+		d.URL, d.TokenFile = st.value(sfURL), st.value(sfRemoteToken)
+		d.PastedToken = modelsetup.Secret(st.fields[sfPaste].Value())
+	}
+	return d
 }
 
 // observeServerCmd reads the machine once, off the update loop. The deps,
@@ -72,16 +291,252 @@ func (m *model) observeServerCmd() tea.Cmd {
 	}
 }
 
-// applyServerObserved takes an observation, unless a later one is out.
-func (m *model) applyServerObserved(msg serverObservedMsg) {
+// applyServerObserved takes an observation, unless a later one is out. The
+// observation a asked for goes on to the questions and the plan.
+func (m *model) applyServerObserved(msg serverObservedMsg) tea.Cmd {
 	st := &m.server
 	if msg.gen != st.gen {
-		return // a later observation is on its way
+		return nil // a later observation is on its way
 	}
-	st.state, st.loaded, st.busy, st.status = msg.st, true, false, ""
+	st.state, st.loaded, st.busy = msg.st, true, false
+	if st.pending {
+		st.status, st.pending = "", false
+	}
 	if !st.chosen {
 		st.want.Mode = msg.st.Resolution.Mode
 	}
+	m.ensureServerInputs()
+	st.fillServerFields()
+	if st.planGen != msg.gen {
+		return nil
+	}
+	st.planGen = 0
+	if why := m.serverWriteBlocked(); why != "" {
+		// The fresh read found what blocks a write (a parse error).
+		st.status = why
+		return nil
+	}
+	s := st.state
+	if st.want.Mode != modelclient.ModeLocal && s.Agent.Present && s.Agent.Managed {
+		st.queue = append(st.queue, promptRemoveAgent)
+	}
+	if st.want.Mode == modelclient.ModeRemote && st.value(sfURL) != "" && s.Server.Checked && !s.Server.OK {
+		st.queue = append(st.queue, promptSaveAnyway)
+	}
+	return m.nextServerStep()
+}
+
+// nextServerStep asks the next question queued before planning, or plans
+// when none is left.
+func (m *model) nextServerStep() tea.Cmd {
+	st := &m.server
+	if len(st.queue) > 0 {
+		st.prompt, st.queue = st.queue[0], st.queue[1:]
+		st.phase = serverConfirm
+		return nil
+	}
+	return m.serverPlanCmd()
+}
+
+// serverPlanCmd plans from the latest observation, in a command: Plan is a
+// dep like the others, so it is not called from Update.
+func (m *model) serverPlanCmd() tea.Cmd {
+	st := &m.server
+	st.gen++
+	st.phase, st.busy, st.status, st.pending = serverView, true, "planning…", true
+	gen, plan, state, want := st.gen, m.opts.Server.Plan, st.state, m.serverDesired()
+	return func() tea.Msg {
+		p, err := plan(state, want)
+		return serverPlannedMsg{gen: gen, plan: p, err: err}
+	}
+}
+
+// applyServerPlanned shows a plan on the confirm screen, or why there is
+// none: a refusal in its own words (each reason already says nothing was
+// changed).
+func (m *model) applyServerPlanned(msg serverPlannedMsg) {
+	st := &m.server
+	if msg.gen != st.gen {
+		return
+	}
+	st.busy, st.status, st.pending = false, "", false
+	if msg.err != nil {
+		var ref *modelsetup.RefusalError
+		if errors.As(msg.err, &ref) {
+			st.status = scrub(ref.Error())
+		} else {
+			st.status = "no plan: " + scrub(msg.err.Error()) + "; nothing was changed"
+		}
+		return
+	}
+	st.plan, st.planText = msg.plan, serverPlanText(st.state, msg.plan)
+	st.phase, st.prompt = serverConfirm, promptApply
+}
+
+// credentialsProblem is the start of the Problems entry Observe adds when
+// it strips a user:password from the stored url.
+const credentialsProblem = "url under [model-server] contains credentials"
+
+// serverPlanText is the text the user confirms: the plan's Format, and a
+// note when the plan writes a url over one whose credentials Observe took
+// out, since what is written is the url without them.
+func serverPlanText(s modelsetup.State, p modelsetup.Plan) string {
+	text := scrub(p.Format())
+	stripped := false
+	for _, pr := range s.Config.Problems {
+		if strings.HasPrefix(pr, credentialsProblem) {
+			stripped = true
+		}
+	}
+	if stripped {
+		for _, step := range p.Steps {
+			if step.Kind == modelsetup.StepConfig && strings.Contains(step.Detail, "url = ") {
+				text += "the stored url's credentials are not kept: the url is written without them\n"
+				break
+			}
+		}
+	}
+	return text
+}
+
+// serverApplyCmd runs the confirmed plan in a command. The deps and the plan
+// are taken here; the progress lines are gathered inside the command, in a
+// slice nothing else sees, and handed over in the result message.
+func (m *model) serverApplyCmd() tea.Cmd {
+	st := &m.server
+	st.phase, st.busy, st.writing, st.status, st.pending = serverApplying, true, true, "applying the plan…", false
+	apply, plan := m.opts.Server.Apply, st.plan
+	st.plan, st.planText = modelsetup.Plan{}, ""
+	return func() tea.Msg {
+		var lines []string
+		res := apply(context.Background(), plan, func(line string) { lines = append(lines, line) })
+		return serverAppliedMsg{res: res, progress: lines}
+	}
+}
+
+// stepKinds lists steps by kind, for a status line.
+func stepKinds(steps []modelsetup.Step) string {
+	var kinds []string
+	for _, s := range steps {
+		kinds = append(kinds, string(s.Kind))
+	}
+	return strings.Join(kinds, ", ")
+}
+
+// serverResultText says what an apply did: the progress lines, then what
+// ran or where it stopped and why, then the warnings. A wait that ran out
+// names the url, how the last ping failed and the log to read.
+func serverResultText(res modelsetup.Result, progress []string) string {
+	var lines []string
+	for _, l := range progress {
+		lines = append(lines, scrub(l))
+	}
+	if res.Failed == nil && res.Err == nil {
+		if len(res.Done) == 0 {
+			lines = append(lines, "applied: nothing needed changing")
+		} else {
+			lines = append(lines, "applied: "+strconv.Itoa(len(res.Done))+" "+pluralWord(len(res.Done), "step", "steps")+" done ("+stepKinds(res.Done)+")")
+		}
+	} else {
+		line := "not applied"
+		if res.Failed != nil {
+			line = "stopped at the " + string(res.Failed.Kind) + " step"
+		}
+		var wait *modelsetup.WaitError
+		switch {
+		case errors.As(res.Err, &wait):
+			line += ": wt-model did not answer at " + scrub(wait.URL) + " (" + serverKindWord(wait.Kind) + "); see " + wait.Log
+		case res.Err != nil:
+			line += ": " + scrub(res.Err.Error())
+		}
+		if len(res.Done) > 0 {
+			line += "; done before it: " + stepKinds(res.Done)
+		}
+		lines = append(lines, line+"; nothing after it was changed")
+	}
+	for _, w := range res.Warnings {
+		lines = append(lines, "warning: "+scrub(w))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func pluralWord(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// applyServerApplied takes an apply's result: it says what ran, clears the
+// secrets after a success, and reads the machine again.
+func (m *model) applyServerApplied(msg serverAppliedMsg) tea.Cmd {
+	st := &m.server
+	st.status = serverResultText(msg.res, msg.progress)
+	ok := msg.res.Failed == nil && msg.res.Err == nil
+	if ok {
+		st.fields[sfPaste].SetValue("")
+		st.fields[sfMaster].SetValue("")
+		st.edited = false
+	}
+	return m.finishServerWrite(ok)
+}
+
+// controlWords are an action's -ing and past forms.
+var controlWords = map[modelsetup.ControlAction][2]string{
+	modelsetup.ControlStart:   {"starting", "started"},
+	modelsetup.ControlStop:    {"stopping", "stopped"},
+	modelsetup.ControlRestart: {"restarting", "restarted"},
+}
+
+// serverControlCmd starts, stops or restarts the LaunchAgent in a command,
+// the dep taken here.
+func (m *model) serverControlCmd(a modelsetup.ControlAction) tea.Cmd {
+	st := &m.server
+	if why := m.serverControlBlocked(); why != "" {
+		st.status = why
+		return nil
+	}
+	st.phase, st.busy, st.writing, st.status, st.pending = serverApplying, true, true, controlWords[a][0]+" the LaunchAgent…", false
+	control := m.opts.Server.Control
+	return func() tea.Msg {
+		return serverControlledMsg{action: a, err: control(context.Background(), a)}
+	}
+}
+
+// applyServerControlled says how a start, stop or restart went and reads the
+// machine again.
+func (m *model) applyServerControlled(msg serverControlledMsg) tea.Cmd {
+	st := &m.server
+	if msg.err != nil {
+		st.status = msg.action.String() + " failed: " + scrub(msg.err.Error())
+	} else {
+		st.status = modelsetup.AgentLabel + " " + controlWords[msg.action][1]
+	}
+	return m.finishServerWrite(msg.err == nil)
+}
+
+// finishServerWrite ends an apply or a start/stop: the tab takes keys again,
+// a quit that waited for it happens now (through quit, so agent edits still
+// get their prompt) unless it failed, when the quit is called off here where
+// the failure is drawn; otherwise the machine is read again. The status says
+// what happened and stays through that read.
+func (m *model) finishServerWrite(ok bool) tea.Cmd {
+	st := &m.server
+	st.phase, st.busy, st.writing = serverView, false, false
+	if m.quitPending {
+		if !ok {
+			m.quitPending, m.tab = false, TabServer
+			if m.discardHeld {
+				m.discardHeld, m.dirty = false, true
+			}
+		} else {
+			m.quitPending, m.discardHeld = false, false
+			if _, cmd := m.quit(); cmd != nil {
+				return cmd
+			}
+		}
+	}
+	return m.observeServerCmd()
 }
 
 // switchTab moves to the next tab and, on a tab's first visit, starts what
@@ -128,9 +583,58 @@ func (st *serverTab) stepMode(step int) {
 	st.want.Mode, st.chosen = serverModes[i], true
 }
 
+// serverWriteBlocked is why a write key (a, s, x, R) does nothing now, or ""
+// when it may act. The hints and the handlers both read it (T5).
+func (m *model) serverWriteBlocked() string {
+	st := &m.server
+	switch {
+	case !st.loaded:
+		return "the model server's state is still being read; nothing was changed"
+	case st.state.Config.ParseErr != "":
+		return "config.toml at " + st.state.Config.Path + " does not parse, so nothing is written; fix it, then press r; nothing was changed"
+	case st.busy:
+		return "wait: the last action is still running; nothing was changed"
+	}
+	return ""
+}
+
+// serverControlBlocked is why s, x and R do nothing now, or "".
+func (m *model) serverControlBlocked() string {
+	st := &m.server
+	if why := m.serverWriteBlocked(); why != "" {
+		return why
+	}
+	switch {
+	case st.want.Mode != modelclient.ModeLocal:
+		return "s, x and R start, stop and restart the local model server's LaunchAgent: choose local first"
+	case !st.state.Platform.OK:
+		return "the local model server cannot run here, so s, x and R do nothing"
+	}
+	return ""
+}
+
+// focusServerField gives the focus to the field being edited, with the
+// cursor at the end of its text.
+func (st *serverTab) focusServerField() {
+	for f := range st.fields {
+		st.fields[f].Blur()
+	}
+	st.fields[st.field].Focus()
+	st.fields[st.field].CursorEnd()
+}
+
 // updateServer handles a message while the Model server tab is showing. It
-// never calls a dep: observing is a command (observeServerCmd).
+// never calls a dep: observing, planning, applying and start/stop are
+// commands.
 func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch m.server.phase {
+	case serverEdit:
+		return m.updateServerEdit(msg)
+	case serverConfirm:
+		return m.updateServerConfirm(msg)
+	case serverApplying:
+		return m.updateServerApplying(msg)
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
@@ -145,13 +649,14 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "tab":
 		return m, m.switchTab()
 	case "c":
-		// Observe runs every check, the ping included, and writes nothing.
-		st.status = "checking the model server"
+		// Observe runs every check, the ping of the entered url included,
+		// and writes nothing.
+		st.status, st.pending = "checking the model server", true
 		return m, m.observeServerCmd()
 	case "r":
 		// The same read; the one before it, if still out, is dropped. This is
 		// how a config.toml repaired by hand is read again.
-		st.status = "re-reading the model server's state"
+		st.status, st.pending = "re-reading the model server's state", true
 		return m, m.observeServerCmd()
 	case "left":
 		if st.loaded {
@@ -161,9 +666,144 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if st.loaded {
 			st.stepMode(1)
 		}
-	case "up", "down":
-		// Reserved for moving between the form's fields.
+	case "down", "enter":
+		if fields := st.visibleFields(); st.loaded && len(fields) > 0 {
+			st.phase, st.field = serverEdit, fields[0]
+			st.focusServerField()
+		}
+	case "a":
+		return m, m.startServerPlan()
+	case "s":
+		return m, m.serverControlCmd(modelsetup.ControlStart)
+	case "x":
+		return m, m.serverControlCmd(modelsetup.ControlStop)
+	case "R":
+		return m, m.serverControlCmd(modelsetup.ControlRestart)
 	}
 	// ctrl+s is the Agents tab's save and does nothing here.
+	return m, nil
+}
+
+// startServerPlan is a: it reads the machine again with the fields' values
+// (always: a plan from an older read could act on a port taken since, or a
+// remote check of another url), and that read goes on to the questions and
+// the plan (applyServerObserved).
+func (m *model) startServerPlan() tea.Cmd {
+	st := &m.server
+	if why := m.serverWriteBlocked(); why != "" {
+		st.status = why
+		return nil
+	}
+	st.want.RemoveAgent, st.want.SaveUnchecked, st.queue = false, false, nil
+	st.status, st.pending = "reading the machine again before planning…", true
+	cmd := m.observeServerCmd()
+	st.planGen = st.gen
+	return cmd
+}
+
+// updateServerEdit handles the fields: up and down (and enter, tab) move
+// between them, past either end back to the mode choice; esc leaves them;
+// every other key is the field's. Nothing here acts on the machine.
+func (m *model) updateServerEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
+	st := &m.server
+	fields := st.visibleFields()
+	at := -1
+	for i, f := range fields {
+		if f == st.field {
+			at = i
+		}
+	}
+	leave := func() (tea.Model, tea.Cmd) {
+		st.fields[st.field].Blur()
+		st.phase = serverView
+		return m, nil
+	}
+	if at < 0 {
+		return leave()
+	}
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "ctrl+c":
+			return m.quit()
+		case "esc":
+			return leave()
+		case "up", "shift+tab":
+			if at == 0 {
+				return leave()
+			}
+			st.field = fields[at-1]
+			st.focusServerField()
+			return m, nil
+		case "down", "enter", "tab":
+			if at == len(fields)-1 {
+				return leave()
+			}
+			st.field = fields[at+1]
+			st.focusServerField()
+			return m, nil
+		}
+	}
+	before := st.fields[st.field].Value()
+	var cmd tea.Cmd
+	st.fields[st.field], cmd = st.fields[st.field].Update(msg)
+	if st.fields[st.field].Value() != before {
+		st.edited = true
+	}
+	return m, cmd
+}
+
+// updateServerConfirm answers the question showing. Default No (P1): only y
+// or Y says yes; n or N says no (which cancels the plan's confirm); esc
+// cancels whatever is being planned; every other key is ignored and the
+// question stays. ctrl+c quits.
+func (m *model) updateServerConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	st := &m.server
+	var yes bool
+	switch key.String() {
+	case "ctrl+c":
+		return m.quit()
+	case "y", "Y":
+		yes = true
+	case "n", "N":
+	case "esc":
+		st.phase, st.queue, st.plan, st.planText = serverView, nil, modelsetup.Plan{}, ""
+		st.status = "not applied; nothing was changed"
+		return m, nil
+	default:
+		return m, nil
+	}
+	switch st.prompt {
+	case promptRemoveAgent:
+		st.want.RemoveAgent = yes
+	case promptSaveAnyway:
+		st.want.SaveUnchecked = yes
+	default:
+		if yes {
+			return m, m.serverApplyCmd()
+		}
+		st.phase, st.plan, st.planText = serverView, modelsetup.Plan{}, ""
+		st.status = "not applied; nothing was changed"
+		return m, nil
+	}
+	return m, m.nextServerStep()
+}
+
+// updateServerApplying takes keys while an apply or a start/stop is out:
+// a quit (held until the result is in, leave) and tab; nothing else acts.
+func (m *model) updateServerApplying(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "q", "ctrl+c":
+		return m.quit()
+	case "tab":
+		return m, m.switchTab()
+	}
 	return m, nil
 }

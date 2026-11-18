@@ -2,6 +2,9 @@ package configeditor
 
 import (
 	"context"
+	"errors"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -51,8 +54,9 @@ func TestStartTabOpensTheModelServerTab(t *testing.T) {
 }
 
 // serverMachine is a throwaway machine for the Model server tab: a canned
-// State per observation (the last one repeats) and a counter per dep, so a
-// test can tell what the tab asked for.
+// State per observation (the last one repeats), a canned plan, apply result
+// and control error, and a record of every dep call, so a test can tell what
+// the tab asked for and in which order.
 type serverMachine struct {
 	states   []modelsetup.State
 	observes int
@@ -60,29 +64,63 @@ type serverMachine struct {
 	plans    int
 	applies  int
 	controls int
+	// seq is every dep call in order: observe, plan, apply, control.
+	seq []string
+	// desired and planned are what each Plan call was given.
+	desired []modelsetup.Desired
+	planned []modelsetup.State
+	// applied are the plans Apply ran; actions what Control was asked.
+	applied []modelsetup.Plan
+	actions []modelsetup.ControlAction
+	// plan and planErr are what Plan returns (plan.Want is the Desired it
+	// was given when plan has none); result and progress what Apply returns
+	// and reports; controlErr what Control returns.
+	plan       modelsetup.Plan
+	planErr    error
+	result     modelsetup.Result
+	progress   []string
+	controlErr error
 }
 
 func (sm *serverMachine) deps() ServerDeps {
 	return ServerDeps{
 		Observe: func(_ context.Context, o modelsetup.ObserveOptions) modelsetup.State {
 			sm.observes++
+			sm.seq = append(sm.seq, "observe")
 			sm.opts = append(sm.opts, o)
 			if len(sm.states) == 0 {
 				return modelsetup.State{}
 			}
 			return sm.states[min(sm.observes, len(sm.states))-1]
 		},
-		Plan: func(modelsetup.State, modelsetup.Desired) (modelsetup.Plan, error) {
+		Plan: func(st modelsetup.State, want modelsetup.Desired) (modelsetup.Plan, error) {
 			sm.plans++
-			return modelsetup.Plan{}, nil
+			sm.seq = append(sm.seq, "plan")
+			sm.desired = append(sm.desired, want)
+			sm.planned = append(sm.planned, st)
+			if sm.planErr != nil {
+				return modelsetup.Plan{}, sm.planErr
+			}
+			p := sm.plan
+			if p.Want.Mode == "" {
+				p.Want = want
+			}
+			return p, nil
 		},
-		Apply: func(context.Context, modelsetup.Plan, func(string)) modelsetup.Result {
+		Apply: func(_ context.Context, p modelsetup.Plan, progress func(string)) modelsetup.Result {
 			sm.applies++
-			return modelsetup.Result{}
+			sm.seq = append(sm.seq, "apply")
+			sm.applied = append(sm.applied, p)
+			for _, line := range sm.progress {
+				progress(line)
+			}
+			return sm.result
 		},
-		Control: func(context.Context, modelsetup.ControlAction) error {
+		Control: func(_ context.Context, a modelsetup.ControlAction) error {
 			sm.controls++
-			return nil
+			sm.seq = append(sm.seq, "control")
+			sm.actions = append(sm.actions, a)
+			return sm.controlErr
 		},
 	}
 }
@@ -458,8 +496,12 @@ func TestServerDepsWithDefaultsFillsOnlyNilFuncs(t *testing.T) {
 // warning:), never a check mark or a bullet; only the prose glyphs the style
 // guide allows (· — …) may appear, and only in hints and prose.
 func TestServerTabViewIsASCII(t *testing.T) {
-	for _, st := range []modelsetup.State{fullState(), parseErrState(), offMacState(), {}} {
+	for i, st := range []modelsetup.State{fullState(), parseErrState(), offMacState(), {}} {
 		v := plain(serverEditor(t, &serverMachine{states: []modelsetup.State{st}}, 120, 50))
+		// An anchor: the view is drawn (an empty one would pass the scan).
+		if anchor := []string{"(x) local", "config.toml does not parse", "(-) local", "( ) native"}[i]; !strings.Contains(v, anchor) {
+			t.Errorf("state %d: the view lacks %q, so the scan below proves nothing:\n%s", i, anchor, v)
+		}
 		for _, r := range v {
 			if r > 127 && !strings.ContainsRune("·—…", r) {
 				t.Errorf("non-ASCII %q in the view:\n%s", r, v)
@@ -482,10 +524,768 @@ func TestServerTabNeverShowsASecret(t *testing.T) {
 		m.server.want.PastedToken = "tok-PASTED-SECRET"
 		m.server.want.MasterKey = "sk-MASTER-SECRET"
 		v := plain(m)
+		// Anchors: the url (without its password) and the mode choice are
+		// drawn, so the absence of a secret below means something.
+		if size[0] == 120 && (!strings.Contains(v, "(x) local") || !strings.Contains(v, "gpu.example:8787")) {
+			t.Errorf("at %dx%d the view lacks the mode choice or the url:\n%s", size[0], size[1], v)
+		}
 		for _, secret := range []string{"INLINE-SECRET", "URL-SECRET", "MSG-SECRET", "PASTED-SECRET", "MASTER-SECRET", "me:pw"} {
 			if strings.Contains(v, secret) {
 				t.Errorf("at %dx%d the view shows %q:\n%s", size[0], size[1], secret, v)
 			}
+		}
+	}
+}
+
+// remoteState is a machine stored in remote mode with no url or token yet
+// and no LaunchAgent: where a user setting up a remote server starts.
+func remoteState() modelsetup.State {
+	return modelsetup.State{
+		Platform:   modelsetup.Platform{OK: true},
+		Resolution: modelclient.Resolution{Mode: modelclient.ModeRemote, Source: modelclient.SourceStored},
+		Config: modelsetup.ConfigState{Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true,
+			Table: config.ModelServerState{Mode: "remote"}},
+		Host: modelsetup.HostState{Home: "/Users/dev", ConfigHome: "/Users/dev/.config"},
+	}
+}
+
+// failedRemoteState is remoteState with a stored url (which fills the url
+// field) whose check failed.
+func failedRemoteState() modelsetup.State {
+	st := remoteState()
+	st.Config.Table.URL = "https://gpu.example:8787"
+	st.Server = modelsetup.ServerState{URL: "https://gpu.example:8787", Checked: true, Kind: modelsetup.KindUnreachable,
+		Message: "model server at https://gpu.example:8787 is not reachable"}
+	return st
+}
+
+// noKeyState is fullState with no LiteLLM master key anywhere: neither
+// wt-model's pair nor the LiteLLM plist has one.
+func noKeyState() modelsetup.State {
+	st := fullState()
+	st.Pair.KeySet = false
+	st.LiteLLMPlist.HasMasterKey = false
+	return st
+}
+
+// okPlan is a two-step plan for the confirm screen.
+func okPlan() modelsetup.Plan {
+	return modelsetup.Plan{Steps: []modelsetup.Step{
+		{Kind: modelsetup.StepToken, Detail: "create the token file /Users/dev/.config/wt-model/server.token"},
+		{Kind: modelsetup.StepConfig, Detail: "write [model-server] in /Users/dev/.config/agent-wt/config.toml: mode = \"local\""},
+	}}
+}
+
+// hintLine is the view's last line: the key hints.
+func hintLine(m *model) string {
+	lines := strings.Split(plain(m), "\n")
+	return lines[len(lines)-1]
+}
+
+// TestServerTabAlwaysReObservesBeforePlanning pins that a reads the machine
+// again, with the form's values, before it plans: after the listen port is
+// edited, the observation looks at the new port, and Plan is given that
+// fresh observation and the edited address. A plan from a stale read could
+// bind a port that has since been taken.
+func TestServerTabAlwaysReObservesBeforePlanning(t *testing.T) {
+	fresh := fullState()
+	fresh.Listener.Port = 9999
+	sm := &serverMachine{states: []modelsetup.State{fullState(), fresh}, plan: okPlan()}
+	m := serverEditor(t, sm, 80, 24)
+	m = keys(t, m, "down", "ctrl+u", "127.0.0.1:9999", "esc")
+	m = keys(t, m, "a")
+	if got := strings.Join(sm.seq, ","); got != "observe,observe,plan" {
+		t.Fatalf("dep calls = %s, want observe,observe,plan", got)
+	}
+	if o := sm.opts[1]; o.ListenPort != 9999 {
+		t.Errorf("the observation before planning looked at port %d, want 9999", o.ListenPort)
+	}
+	if sm.desired[0].Listen != "127.0.0.1:9999" || sm.planned[0].Listener.Port != 9999 {
+		t.Errorf("Plan got Listen %q and a state with port %d, want the edited address and the fresh observation",
+			sm.desired[0].Listen, sm.planned[0].Listener.Port)
+	}
+	if m.server.phase != serverConfirm {
+		t.Errorf("phase = %d, want the confirm screen", m.server.phase)
+	}
+	// Every a reads again, even straight after the last one.
+	m = keys(t, m, "n", "a")
+	if got := strings.Join(sm.seq, ","); got != "observe,observe,plan,observe,plan" {
+		t.Errorf("dep calls after a second a = %s", got)
+	}
+}
+
+// TestServerTabRemotePingsTheEnteredURLBeforePlanning pins that for remote
+// the observation before planning pings the url and token the user ENTERED,
+// so the plan's check gate is about the server the user typed and not the
+// one stored before.
+func TestServerTabRemotePingsTheEnteredURLBeforePlanning(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{remoteState()}}
+	m := serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "down", "https://gpu.example:8787", "down", "~/remote.token", "down", "tok-PASTED", "esc", "a")
+	if got := strings.Join(sm.seq, ","); got != "observe,observe,plan" {
+		t.Fatalf("dep calls = %s, want observe,observe,plan", got)
+	}
+	o := sm.opts[1]
+	if o.CheckURL != "https://gpu.example:8787" || o.CheckToken.Reveal() != "tok-PASTED" || o.CheckTokenFile != "~/remote.token" {
+		t.Errorf("the observation before planning checked %q with token %q / file %q, want the entered ones",
+			o.CheckURL, o.CheckToken.Reveal(), o.CheckTokenFile)
+	}
+	if len(o.TokenPaths) != 1 || o.TokenPaths[0] != "~/remote.token" {
+		t.Errorf("TokenPaths = %q, want the typed token file described", o.TokenPaths)
+	}
+	d := sm.desired[0]
+	if d.Mode != modelclient.ModeRemote || d.URL != "https://gpu.example:8787" || d.TokenFile != "~/remote.token" || d.PastedToken.Reveal() != "tok-PASTED" {
+		t.Errorf("Plan got mode %q url %q token file %q, want the entered values", d.Mode, d.URL, d.TokenFile)
+	}
+}
+
+// TestServerTabDisablesWritesOnAParseError pins that a config.toml that does
+// not parse disables every write: a, s, x and R only say so, naming the file
+// and that nothing was changed, and Plan, Apply and Control are never
+// called. A parse error the observation before planning finds stops a too.
+func TestServerTabDisablesWritesOnAParseError(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{parseErrState()}}
+	m := serverEditor(t, sm, 80, 24)
+	for _, k := range []string{"a", "s", "x", "R"} {
+		m = keys(t, m, k)
+		if s := m.server.status; !strings.Contains(s, "/Users/dev/.config/agent-wt/config.toml") || !strings.Contains(s, "nothing was changed") {
+			t.Errorf("%s: status = %q, want the path and nothing was changed", k, s)
+		}
+		if !strings.Contains(flat(plain(m)), "nothingwaschanged") {
+			t.Errorf("%s: the view does not say nothing was changed:\n%s", k, plain(m))
+		}
+	}
+	if sm.plans+sm.applies+sm.controls != 0 || sm.observes != 1 {
+		t.Errorf("plans %d applies %d controls %d observes %d, want no write path and no new read", sm.plans, sm.applies, sm.controls, sm.observes)
+	}
+
+	sm = &serverMachine{states: []modelsetup.State{fullState(), parseErrState()}}
+	m = serverEditor(t, sm, 80, 24)
+	m = keys(t, m, "a")
+	if sm.plans != 0 || m.server.phase != serverView || !strings.Contains(m.server.status, "config.toml") || !strings.Contains(m.server.status, "nothing was changed") {
+		t.Errorf("a parse error found before planning: plans = %d phase = %d status = %q", sm.plans, m.server.phase, m.server.status)
+	}
+}
+
+// TestServerTabConfirmIsDefaultNo pins P1 on the plan's confirm screen: only
+// y or Y applies; n, N and esc cancel; every other key, enter and q among
+// them, is ignored and the prompt stays. ctrl+c quits.
+func TestServerTabConfirmIsDefaultNo(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{fullState()}, plan: okPlan()}
+	m := serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "a")
+	v := plain(m)
+	if m.server.phase != serverConfirm || !strings.Contains(v, "Apply this plan? [y/N]") || !strings.Contains(v, "create the token file") {
+		t.Fatalf("after a: phase = %d, want the plan and the question:\n%s", m.server.phase, v)
+	}
+	for _, k := range []string{"enter", " ", "q", "a", "s", "x", "R", "r", "tab", "left", "down", "esc!", "j", "1"} {
+		m = keys(t, m, k)
+		if m.server.phase != serverConfirm || m.tab != TabServer || sm.applies != 0 {
+			t.Fatalf("%q left the prompt: phase = %d tab = %d applies = %d", k, m.server.phase, m.tab, sm.applies)
+		}
+	}
+	for _, k := range []string{"n", "N", "esc"} {
+		m = keys(t, m, k)
+		if m.server.phase != serverView || sm.applies != 0 || !strings.Contains(m.server.status, "nothing was changed") {
+			t.Errorf("%s: phase = %d applies = %d status = %q, want cancelled", k, m.server.phase, sm.applies, m.server.status)
+		}
+		m = keys(t, m, "a")
+	}
+	_, cmd := m.Update(keyMsg("ctrl+c"))
+	if cmd == nil {
+		t.Fatal("ctrl+c on the confirm screen: no command, want tea.Quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok || sm.applies != 0 {
+		t.Errorf("ctrl+c on the confirm screen did not quit, or applied")
+	}
+}
+
+// TestServerTabAppliesAfterY pins that y runs the confirmed plan through
+// Apply, then says what ran (the progress lines and the outcome) and reads
+// the machine again; and that a failure names the step and its error, and a
+// wait that ran out names the url, how the ping failed and the log.
+func TestServerTabAppliesAfterY(t *testing.T) {
+	for _, yes := range []string{"y", "Y"} {
+		sm := &serverMachine{states: []modelsetup.State{fullState()}, plan: okPlan(),
+			progress: []string{"step 1/2: token", "step 2/2: config"},
+			result:   modelsetup.Result{Done: okPlan().Steps, Warnings: []string{"LiteLLM restart owed"}}}
+		m := serverEditor(t, sm, 120, 50)
+		m = keys(t, m, "a", yes)
+		if sm.applies != 1 || len(sm.applied[0].Steps) != 2 || m.server.phase != serverView || m.server.busy || m.server.writing {
+			t.Fatalf("%s: applies = %d phase = %d busy = %v writing = %v", yes, sm.applies, m.server.phase, m.server.busy, m.server.writing)
+		}
+		if got := strings.Join(sm.seq, ","); got != "observe,observe,plan,apply,observe" {
+			t.Errorf("%s: dep calls = %s, want a re-read after the apply", yes, got)
+		}
+		v := flat(plain(m))
+		for _, want := range []string{"step2/2:config", "applied", "LiteLLMrestartowed"} {
+			if !strings.Contains(v, want) {
+				t.Errorf("%s: the view lacks %q:\n%s", yes, want, plain(m))
+			}
+		}
+	}
+
+	wait := modelsetup.Step{Kind: modelsetup.StepWait}
+	sm := &serverMachine{states: []modelsetup.State{fullState()}, plan: okPlan(), result: modelsetup.Result{
+		Done: okPlan().Steps[:1], Failed: &wait,
+		Err: &modelsetup.WaitError{URL: "http://127.0.0.1:8787", Kind: modelsetup.KindUnauthorized, Message: "401", Log: "/Users/dev/.wt-model.err.log"}}}
+	m := serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "a", "y")
+	for _, want := range []string{"http://127.0.0.1:8787", "token refused", "/Users/dev/.wt-model.err.log", "token"} {
+		if !strings.Contains(m.server.status, want) {
+			t.Errorf("a wait that ran out: status lacks %q: %q", want, m.server.status)
+		}
+	}
+
+	plist := modelsetup.Step{Kind: modelsetup.StepPlist}
+	sm = &serverMachine{states: []modelsetup.State{fullState()}, plan: okPlan(),
+		result: modelsetup.Result{Failed: &plist, Err: errors.New("permission denied")}}
+	m = serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "a", "y")
+	if s := m.server.status; !strings.Contains(s, "plist") || !strings.Contains(s, "permission denied") || strings.Contains(s, "applied:") {
+		t.Errorf("a failed step: status = %q", s)
+	}
+}
+
+// TestServerTabRefusalIsShownVerbatim pins that a plan Plan refuses is shown
+// as its own words, every reason, and that nothing is applied.
+func TestServerTabRefusalIsShownVerbatim(t *testing.T) {
+	ref := &modelsetup.RefusalError{Reasons: []string{
+		"port 8787 is in use by pid 77, which is not wt's LaunchAgent; stop that process or choose another port; nothing was changed",
+		"token file /x is readable by others; run chmod 600 /x; nothing was changed",
+	}}
+	sm := &serverMachine{states: []modelsetup.State{fullState()}, planErr: ref}
+	m := serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "a")
+	if m.server.status != ref.Error() {
+		t.Errorf("status = %q, want the refusal verbatim %q", m.server.status, ref.Error())
+	}
+	if m.server.phase != serverView || sm.applies != 0 {
+		t.Errorf("phase = %d applies = %d, want the tab and nothing applied", m.server.phase, sm.applies)
+	}
+	v := flat(plain(m))
+	for _, r := range ref.Reasons {
+		if !strings.Contains(v, flat(r)) {
+			t.Errorf("the view lacks %q:\n%s", r, plain(m))
+		}
+	}
+}
+
+// TestServerTabOffersSaveAnywayDefaultNoAfterAFailedRemoteCheck pins the
+// remote check's way past a server that is off: after a failed check the tab
+// asks "Save anyway? [y/N]", and only y sets SaveUnchecked. Other keys leave
+// the question up, esc plans nothing, and a check that passed asks nothing.
+func TestServerTabOffersSaveAnywayDefaultNoAfterAFailedRemoteCheck(t *testing.T) {
+	for answer, want := range map[string]bool{"n": false, "N": false, "y": true, "Y": true} {
+		sm := &serverMachine{states: []modelsetup.State{failedRemoteState()}}
+		m := serverEditor(t, sm, 120, 50)
+		m = keys(t, m, "a")
+		v := plain(m)
+		if !strings.Contains(v, "Save anyway? [y/N]") || !strings.Contains(v, "not reachable") || sm.plans != 0 {
+			t.Fatalf("%s: want the question with the failure, before any plan (plans = %d):\n%s", answer, sm.plans, v)
+		}
+		m = keys(t, m, "enter", "q", "z", "a")
+		if sm.plans != 0 || !strings.Contains(plain(m), "Save anyway? [y/N]") {
+			t.Fatalf("%s: another key answered the question", answer)
+		}
+		m = keys(t, m, answer)
+		if sm.plans != 1 || sm.desired[0].SaveUnchecked != want {
+			t.Errorf("%s: plans = %d SaveUnchecked = %v, want %v", answer, sm.plans, sm.desired, want)
+		}
+	}
+
+	sm := &serverMachine{states: []modelsetup.State{failedRemoteState()}}
+	m := serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "a", "esc")
+	if sm.plans != 0 || m.server.phase != serverView || !strings.Contains(m.server.status, "nothing was changed") {
+		t.Errorf("esc: plans = %d phase = %d status = %q", sm.plans, m.server.phase, m.server.status)
+	}
+
+	ok := remoteState()
+	ok.Server = modelsetup.ServerState{URL: "https://gpu.example:8787", Checked: true, OK: true}
+	sm = &serverMachine{states: []modelsetup.State{ok}}
+	m = serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "a")
+	if sm.plans != 1 || sm.desired[0].SaveUnchecked || strings.Contains(plain(m), "Save anyway") {
+		t.Errorf("a passed check: plans = %d desired = %+v", sm.plans, sm.desired)
+	}
+}
+
+// TestServerTabAsksForTheMasterKeyWhenNeitherPairNorPlistHasOne pins that the
+// masked master-key input is offered in local mode only when neither
+// wt-model's pair nor the LiteLLM plist holds a key, and that what is typed
+// there reaches Plan as Desired.MasterKey.
+func TestServerTabAsksForTheMasterKeyWhenNeitherPairNorPlistHasOne(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{noKeyState()}}
+	m := serverEditor(t, sm, 120, 50)
+	if !strings.Contains(plain(m), "master") {
+		t.Fatalf("no master-key input with no key anywhere:\n%s", plain(m))
+	}
+	m = keys(t, m, "down", "down", "down", "sk-MASTER-1", "esc", "a")
+	if sm.plans != 1 || sm.desired[0].MasterKey.Reveal() != "sk-MASTER-1" {
+		t.Errorf("plans = %d, want the typed master key in Desired", sm.plans)
+	}
+
+	plistKey := noKeyState()
+	plistKey.LiteLLMPlist.HasMasterKey = true
+	pairKey := noKeyState()
+	pairKey.Pair.KeySet = true
+	remote := remoteState()
+	for name, st := range map[string]modelsetup.State{"plist key": plistKey, "pair key": pairKey, "remote": remote} {
+		m := serverEditor(t, &serverMachine{states: []modelsetup.State{st}}, 120, 50)
+		if strings.Contains(plain(m), "master") {
+			t.Errorf("%s: the master-key input is offered:\n%s", name, plain(m))
+		}
+	}
+	// A key typed while it was asked for is not sent once it is not.
+	sm = &serverMachine{states: []modelsetup.State{noKeyState(), pairKey}}
+	m = serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "down", "down", "down", "sk-MASTER-1", "esc", "a")
+	if sm.plans != 1 || sm.desired[0].MasterKey != "" {
+		t.Errorf("the pair has a key by now: Desired.MasterKey set = %v", sm.desired[0].MasterKey != "")
+	}
+}
+
+// TestServerTabLeavingLocalAsksAboutRemovingTheAgentDefaultNo pins the
+// question asked when the choice leaves local with wt's LaunchAgent
+// installed: "Remove the LaunchAgent? [y/N]", where only y sets RemoveAgent,
+// n keeps it, esc plans nothing and other keys are ignored. Without a
+// managed agent nothing is asked.
+func TestServerTabLeavingLocalAsksAboutRemovingTheAgentDefaultNo(t *testing.T) {
+	for answer, want := range map[string]bool{"n": false, "N": false, "y": true, "Y": true} {
+		sm := &serverMachine{states: []modelsetup.State{fullState()}}
+		m := serverEditor(t, sm, 120, 50)
+		m = keys(t, m, "left", "a")
+		if !strings.Contains(plain(m), "Remove the LaunchAgent? [y/N]") || sm.plans != 0 {
+			t.Fatalf("%s: want the question before any plan (plans = %d):\n%s", answer, sm.plans, plain(m))
+		}
+		m = keys(t, m, "enter", "q", "x", "a")
+		if sm.plans != 0 || !strings.Contains(plain(m), "Remove the LaunchAgent? [y/N]") {
+			t.Fatalf("%s: another key answered the question", answer)
+		}
+		m = keys(t, m, answer)
+		if sm.plans != 1 || sm.desired[0].Mode != modelclient.ModeNative || sm.desired[0].RemoveAgent != want {
+			t.Errorf("%s: plans = %d desired = %+v, want native with RemoveAgent %v", answer, sm.plans, sm.desired, want)
+		}
+	}
+
+	sm := &serverMachine{states: []modelsetup.State{fullState()}}
+	m := serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "left", "a", "esc")
+	if sm.plans != 0 || !strings.Contains(m.server.status, "nothing was changed") {
+		t.Errorf("esc: plans = %d status = %q", sm.plans, m.server.status)
+	}
+
+	noAgent := fullState()
+	noAgent.Agent = modelsetup.AgentState{}
+	unmanaged := fullState()
+	unmanaged.Agent.Managed = false
+	for name, st := range map[string]modelsetup.State{"no agent": noAgent, "not wt's": unmanaged} {
+		sm := &serverMachine{states: []modelsetup.State{st}}
+		m := serverEditor(t, sm, 120, 50)
+		m = keys(t, m, "left", "a")
+		if sm.plans != 1 || strings.Contains(plain(m), "Remove the LaunchAgent") {
+			t.Errorf("%s: plans = %d, want a plan without the question", name, sm.plans)
+		}
+	}
+	// Staying local asks nothing.
+	sm = &serverMachine{states: []modelsetup.State{fullState()}}
+	m = serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "a")
+	if sm.plans != 1 {
+		t.Errorf("staying local: plans = %d, want 1 without a question", sm.plans)
+	}
+}
+
+// TestServerTabQuitWaitsForAnApplyInFlight pins that a quit asked for while
+// an apply (or a start/stop) is out is held until its result is in, so the
+// result is never lost; that it then quits with the result kept; and that a
+// failed apply calls the quit off on this tab, where the failure is drawn.
+// Mirrors TestQuitWaitsForARegistryWriteInFlight.
+func TestServerTabQuitWaitsForAnApplyInFlight(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{fullState()}, plan: okPlan(), result: modelsetup.Result{Done: okPlan().Steps}}
+	m := serverEditor(t, sm, 80, 24)
+	m = keys(t, m, "a")
+	next, apply := m.Update(keyMsg("y"))
+	m = next.(*model)
+	if apply == nil || sm.applies != 0 || !m.server.writing {
+		t.Fatalf("y: cmd = %v applies = %d writing = %v, want the apply handed to a command", apply != nil, sm.applies, m.server.writing)
+	}
+	m = keys(t, m, "tab")
+	next, cmd := m.Update(keyMsg("q"))
+	m = next.(*model)
+	if cmd != nil || !m.quitPending || m.tab != TabServer {
+		t.Fatalf("q during the apply: cmd = %v quitPending = %v tab = %d, want the quit held on the Model server tab", cmd != nil, m.quitPending, m.tab)
+	}
+	if !strings.Contains(flat(plain(m)), "quit") || !strings.Contains(flat(plain(m)), "apply") {
+		t.Errorf("the tab does not say the quit is waiting for the apply:\n%s", plain(m))
+	}
+	next, cmd = m.Update(apply())
+	m = next.(*model)
+	if cmd == nil {
+		t.Fatal("the apply's result: no command, want the held quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("the held quit was not issued")
+	}
+	if !strings.Contains(m.server.status, "applied") {
+		t.Errorf("status = %q, want the result kept", m.server.status)
+	}
+
+	// A failed apply: the quit is called off and the failure is shown here.
+	plist := modelsetup.Step{Kind: modelsetup.StepPlist}
+	sm = &serverMachine{states: []modelsetup.State{fullState()}, plan: okPlan(), result: modelsetup.Result{Failed: &plist, Err: errors.New("disk full")}}
+	m = serverEditor(t, sm, 80, 24)
+	m = keys(t, m, "a")
+	next, apply = m.Update(keyMsg("y"))
+	m = next.(*model)
+	m = keys(t, m, "tab")
+	next, _ = m.Update(keyMsg("q"))
+	m = next.(*model)
+	m = send(t, m, apply())
+	if m.quitPending || m.tab != TabServer || !strings.Contains(m.server.status, "disk full") {
+		t.Errorf("a failed apply: quitPending = %v tab = %d status = %q", m.quitPending, m.tab, m.server.status)
+	}
+
+	// A start in flight holds the quit the same way.
+	sm = &serverMachine{states: []modelsetup.State{fullState()}}
+	m = serverEditor(t, sm, 80, 24)
+	next, start := m.Update(keyMsg("s"))
+	m = next.(*model)
+	next, cmd = m.Update(keyMsg("ctrl+c"))
+	m = next.(*model)
+	if start == nil || cmd != nil || !m.quitPending {
+		t.Fatalf("ctrl+c during a start: quitPending = %v, want held", m.quitPending)
+	}
+	_, cmd = m.Update(start())
+	if cmd == nil {
+		t.Fatal("the start's result: no command, want the held quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("the held quit was not issued after the start")
+	}
+}
+
+// TestServerTabMasksThePastedTokenAndTheKey pins that the pasted token and
+// the master key are drawn masked while typed, never appear on the confirm
+// screen or in a status, reach Apply through the plan, and are cleared from
+// their inputs once an apply succeeded.
+func TestServerTabMasksThePastedTokenAndTheKey(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{remoteState()}}
+	m := serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "down", "https://gpu.example:8787", "down", "down", "tok-PASTED-SECRET")
+	if v := plain(m); strings.Contains(v, "PASTED-SECRET") || !strings.Contains(v, "*****") {
+		t.Errorf("while typed the pasted token shows or is not masked:\n%s", v)
+	}
+	m = keys(t, m, "esc", "a")
+	if v := plain(m); m.server.phase != serverConfirm || strings.Contains(v, "PASTED-SECRET") {
+		t.Errorf("confirm screen (phase %d) shows the token:\n%s", m.server.phase, v)
+	}
+	m = keys(t, m, "y")
+	if sm.applies != 1 || sm.applied[0].Want.PastedToken.Reveal() != "tok-PASTED-SECRET" {
+		t.Errorf("the pasted token did not reach Apply")
+	}
+	if v := plain(m); strings.Contains(v, "PASTED-SECRET") || strings.Contains(m.server.status, "PASTED-SECRET") {
+		t.Errorf("after the apply the token shows:\n%s", v)
+	}
+	if got := m.server.fields[sfPaste].Value(); got != "" {
+		t.Errorf("the pasted-token input still holds %d characters after a successful apply", len(got))
+	}
+
+	sm = &serverMachine{states: []modelsetup.State{noKeyState()}}
+	m = serverEditor(t, sm, 120, 50)
+	m = keys(t, m, "down", "down", "down", "sk-MASTER-SECRET")
+	if v := plain(m); strings.Contains(v, "MASTER-SECRET") || !strings.Contains(v, "*****") {
+		t.Errorf("while typed the master key shows or is not masked:\n%s", v)
+	}
+	m = keys(t, m, "esc", "a")
+	if strings.Contains(plain(m), "MASTER-SECRET") {
+		t.Errorf("the confirm screen shows the master key")
+	}
+	m = keys(t, m, "y")
+	if sm.applied[0].Want.MasterKey.Reveal() != "sk-MASTER-SECRET" {
+		t.Errorf("the master key did not reach Apply")
+	}
+	if m.server.fields[sfMaster].Value() != "" || strings.Contains(plain(m), "MASTER-SECRET") {
+		t.Errorf("the master key is kept or shown after a successful apply")
+	}
+}
+
+// TestServerTabStartStopRestartCallControl pins s, x and R: each runs
+// Control with its action in a command and reads the machine again, a
+// failure is said, and outside local mode they only say why they do
+// nothing.
+func TestServerTabStartStopRestartCallControl(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{fullState()}}
+	m := serverEditor(t, sm, 120, 50)
+	for _, k := range []string{"s", "x", "R"} {
+		m = keys(t, m, k)
+		if m.server.status == "" || m.server.busy || m.server.writing {
+			t.Errorf("%s: status = %q busy = %v writing = %v", k, m.server.status, m.server.busy, m.server.writing)
+		}
+	}
+	want := []modelsetup.ControlAction{modelsetup.ControlStart, modelsetup.ControlStop, modelsetup.ControlRestart}
+	if len(sm.actions) != 3 || sm.actions[0] != want[0] || sm.actions[1] != want[1] || sm.actions[2] != want[2] {
+		t.Errorf("actions = %v, want start, stop, restart", sm.actions)
+	}
+	if got := strings.Join(sm.seq, ","); got != "observe,control,observe,control,observe,control,observe" {
+		t.Errorf("dep calls = %s, want a re-read after each", got)
+	}
+	sm.controlErr = errors.New("launchctl bootstrap: exit status 5")
+	m = keys(t, m, "s")
+	if !strings.Contains(m.server.status, "exit status 5") {
+		t.Errorf("a failed start: status = %q", m.server.status)
+	}
+
+	for name, st := range map[string]modelsetup.State{"remote": remoteState(), "off macOS": func() modelsetup.State {
+		st := offMacState()
+		st.Resolution = modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored}
+		return st
+	}()} {
+		sm := &serverMachine{states: []modelsetup.State{st}}
+		m := serverEditor(t, sm, 120, 50)
+		for _, k := range []string{"s", "x", "R"} {
+			m = keys(t, m, k)
+			if !strings.Contains(m.server.status, "local") {
+				t.Errorf("%s %s: status = %q, want why it does nothing", name, k, m.server.status)
+			}
+		}
+		if sm.controls != 0 {
+			t.Errorf("%s: controls = %d, want none", name, sm.controls)
+		}
+	}
+}
+
+// TestServerTabFitsTheTerminalInEveryPhase measures every phase of the tab
+// (the status view, the fields of each mode, the confirm screen with a long
+// plan, both questions, an apply in flight and a long result) at every
+// supported size: nothing taller or wider than the terminal, and the hints
+// on the last line.
+func TestServerTabFitsTheTerminalInEveryPhase(t *testing.T) {
+	long := modelsetup.Plan{}
+	for i := 0; i < 9; i++ {
+		long.Steps = append(long.Steps, modelsetup.Step{Kind: modelsetup.StepPlist,
+			Detail: "write wt's LaunchAgent plist /Users/dev/Library/LaunchAgents/local.wt-model.serve.plist: /Users/dev/.local/bin/wt-model serve --listen 127.0.0.1:8787"})
+	}
+	long.Notes = []string{"the environment sets WT_MODEL_URL, which overrides what is stored here"}
+	failed := modelsetup.Step{Kind: modelsetup.StepWait}
+	result := modelsetup.Result{Failed: &failed, Warnings: []string{strings.Repeat("a long warning ", 8), "another"},
+		Err: &modelsetup.WaitError{URL: "http://127.0.0.1:8787", Kind: modelsetup.KindUnreachable, Log: "/Users/dev/.wt-model.err.log"}}
+	progress := []string{"step 1/5: token", "step 2/5: pair", "step 3/5: plist", "step 4/5: bootstrap", "step 5/5: wait"}
+
+	phases := map[string]func(*testing.T, int, int) *model{
+		"view": func(t *testing.T, w, h int) *model {
+			return serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}}, w, h)
+		},
+		"local fields": func(t *testing.T, w, h int) *model {
+			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{noKeyState()}}, w, h), "down", "down", "down", "sk-x")
+		},
+		"remote fields": func(t *testing.T, w, h int) *model {
+			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{remoteState()}}, w, h), "down", "https://gpu.example:8787")
+		},
+		"confirm": func(t *testing.T, w, h int) *model {
+			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}, plan: long}, w, h), "a")
+		},
+		"remove agent": func(t *testing.T, w, h int) *model {
+			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}}, w, h), "left", "a")
+		},
+		"save anyway": func(t *testing.T, w, h int) *model {
+			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{failedRemoteState()}}, w, h), "a")
+		},
+		"applying": func(t *testing.T, w, h int) *model {
+			m := keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}, plan: long}, w, h), "a")
+			next, _ := m.Update(keyMsg("y"))
+			next, _ = next.(*model).Update(keyMsg("q"))
+			return next.(*model)
+		},
+		"result": func(t *testing.T, w, h int) *model {
+			sm := &serverMachine{states: []modelsetup.State{fullState()}, plan: long, result: result, progress: progress}
+			return keys(t, serverEditor(t, sm, w, h), "a", "y")
+		},
+	}
+	// reached says the phase was really reached, so a fit is not measured on
+	// the wrong screen.
+	reached := map[string]func(*model) bool{
+		"view":          func(m *model) bool { return m.server.phase == serverView && m.server.loaded },
+		"local fields":  func(m *model) bool { return m.server.phase == serverEdit && m.server.field == sfMaster },
+		"remote fields": func(m *model) bool { return m.server.phase == serverEdit && m.server.field == sfURL },
+		"confirm":       func(m *model) bool { return m.server.phase == serverConfirm && m.server.prompt == promptApply },
+		"remove agent":  func(m *model) bool { return m.server.phase == serverConfirm && m.server.prompt == promptRemoveAgent },
+		"save anyway":   func(m *model) bool { return m.server.phase == serverConfirm && m.server.prompt == promptSaveAnyway },
+		"applying":      func(m *model) bool { return m.server.phase == serverApplying && m.server.writing && m.quitPending },
+		"result":        func(m *model) bool { return strings.Contains(m.server.status, "did not answer") },
+	}
+	for name, open := range phases {
+		for _, size := range tabSizes {
+			m := open(t, size[0], size[1])
+			if !reached[name](m) {
+				t.Errorf("%s at %dx%d: the phase was not reached (phase %d)", name, size[0], size[1], m.server.phase)
+			}
+			assertFits(t, name, m.View(), size[0], size[1])
+			if last := hintLine(m); !strings.Contains(last, "quit") {
+				t.Errorf("%s at %dx%d: the last line is %q, want the hints", name, size[0], size[1], last)
+			}
+		}
+	}
+}
+
+// TestServerTabConfirmSaysTheURLsCredentialsAreNotKept pins carry-forward 1:
+// Observe strips a user:password from the stored url and says so in
+// Problems; when the plan then writes the url, the confirm screen says the
+// credentials will not be kept, so the user is not surprised by a remote
+// that stops accepting them. No note without the problem or without a url
+// write.
+func TestServerTabConfirmSaysTheURLsCredentialsAreNotKept(t *testing.T) {
+	st := remoteState()
+	st.Config.Table.URL = "https://gpu.example:8787/"
+	st.Config.Problems = []string{"url under [model-server] contains credentials, which wt will not display; move them out of the url"}
+	writesURL := modelsetup.Plan{Steps: []modelsetup.Step{{Kind: modelsetup.StepConfig,
+		Detail: "write [model-server] in /Users/dev/.config/agent-wt/config.toml: mode = \"remote\", url = \"https://gpu.example:8787/\""}}}
+	keepsTable := modelsetup.Plan{Notes: []string{"keep [model-server] in /Users/dev/.config/agent-wt/config.toml"}}
+	const note = "credentialsarenotkept"
+
+	m := keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{st}, plan: writesURL}, 120, 50), "a")
+	if m.server.phase != serverConfirm || !strings.Contains(flat(plain(m)), note) {
+		t.Errorf("a url write over a url with credentials: no note:\n%s", plain(m))
+	}
+	m = keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{st}, plan: keepsTable}, 120, 50), "a")
+	if strings.Contains(flat(plain(m)), note) {
+		t.Errorf("no url write, yet the note:\n%s", plain(m))
+	}
+	clean := st
+	clean.Config.Problems = nil
+	m = keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{clean}, plan: writesURL}, 120, 50), "a")
+	if strings.Contains(flat(plain(m)), note) {
+		t.Errorf("no credentials, yet the note:\n%s", plain(m))
+	}
+}
+
+// TestScrubTakesUserinfoThroughTheLastAt pins carry-forward 4: a password
+// with an @ in it is taken out whole, not up to its first @.
+func TestScrubTakesUserinfoThroughTheLastAt(t *testing.T) {
+	got := scrub("see https://me:p@ss@gpu.example:8787/x and http://a@b/ or mailto me@host")
+	if want := "see https://gpu.example:8787/x and http://b/ or mailto me@host"; got != want {
+		t.Errorf("scrub = %q, want %q", got, want)
+	}
+}
+
+// TestServerTabScrubsTheResolutionProblem pins carry-forward 5: the mode
+// resolution's problem text is scrubbed like every other free text the tab
+// draws.
+func TestServerTabScrubsTheResolutionProblem(t *testing.T) {
+	st := fullState()
+	st.Resolution = modelclient.Resolution{Problem: "WT_MODEL_URL https://me:pw-PROB-SECRET@gpu.example:8787 has no token"}
+	v := plain(serverEditor(t, &serverMachine{states: []modelsetup.State{st}}, 120, 50))
+	if strings.Contains(v, "PROB-SECRET") || !strings.Contains(v, "gpu.example:8787") {
+		t.Errorf("the resolution problem is not scrubbed, or not drawn:\n%s", v)
+	}
+}
+
+// TestServerTabHintsNameOnlyKeysThatAct pins carry-forward 6 and T5: a key
+// is in the hints only when pressing it acts. Before the first observation
+// the mode keys do nothing; with a parse error a and s/x/R refuse; s/x/R act
+// only for local; the fields' key only where a mode has fields.
+func TestServerTabHintsNameOnlyKeysThatAct(t *testing.T) {
+	m := newModel(testTheme(), &config.Config{}, nil)
+	m.opts, m.tab = Options{Server: (&serverMachine{}).deps()}, TabServer
+	m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = send(t, m, loadedMsg{})
+	if h := hintLine(m); strings.Contains(h, "left/right") || strings.Contains(h, "a apply") || !strings.Contains(h, "r re-read") {
+		t.Errorf("before the first observation the hints are %q", h)
+	}
+	cases := []struct {
+		name     string
+		st       modelsetup.State
+		has, not []string
+	}{
+		{"local", fullState(), []string{"left/right", "a apply", "s/x/R", "down"}, nil},
+		{"remote", remoteState(), []string{"a apply", "down"}, []string{"s/x/R"}},
+		{"parse error", parseErrState(), []string{"r re-read"}, []string{"a apply", "s/x/R"}},
+	}
+	for _, c := range cases {
+		h := hintLine(serverEditor(t, &serverMachine{states: []modelsetup.State{c.st}}, 120, 24))
+		for _, k := range c.has {
+			if !strings.Contains(h, k) {
+				t.Errorf("%s: hints %q lack %q", c.name, h, k)
+			}
+		}
+		for _, k := range c.not {
+			if strings.Contains(h, k) {
+				t.Errorf("%s: hints %q name %q, which does nothing here", c.name, h, k)
+			}
+		}
+	}
+	native := fullState()
+	native.Resolution.Mode = modelclient.ModeNative
+	if h := hintLine(serverEditor(t, &serverMachine{states: []modelsetup.State{native}}, 120, 24)); strings.Contains(h, "down") {
+		t.Errorf("native has no fields, yet the hints are %q", h)
+	}
+}
+
+// TestServerTabSaysWhenStoredLocalCannotRunHere pins carry-forward 7: off
+// macOS with local in force, no option is marked (x), and the tab says why
+// rather than leaving the choice blank.
+func TestServerTabSaysWhenStoredLocalCannotRunHere(t *testing.T) {
+	st := offMacState()
+	st.Resolution = modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored}
+	v := plain(serverEditor(t, &serverMachine{states: []modelsetup.State{st}}, 120, 50))
+	if strings.Contains(v, "(x)") || !strings.Contains(v, "local is set but cannot run here") {
+		t.Errorf("stored local off macOS:\n%s", v)
+	}
+}
+
+// TestServerTabCallsApplyAndControlOnlyFromCommands pins carry-forward 8:
+// Update hands Plan, Apply and Control to commands that captured the deps
+// when they were made; nothing is called until the command runs, and a dep
+// swapped afterwards is not the one called.
+func TestServerTabCallsApplyAndControlOnlyFromCommands(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{fullState()}, plan: okPlan()}
+	m := serverEditor(t, sm, 80, 24)
+	m = keys(t, m, "a")
+	next, apply := m.Update(keyMsg("y"))
+	m = next.(*model)
+	next, control := m.Update(keyMsg("s"))
+	m = next.(*model)
+	if apply == nil || sm.applies != 0 || sm.controls != 0 {
+		t.Fatalf("Update called a dep: applies = %d controls = %d", sm.applies, sm.controls)
+	}
+	other := &serverMachine{}
+	m.opts.Server = other.deps()
+	apply()
+	if sm.applies != 1 || other.applies != 0 {
+		t.Errorf("the apply command did not use the deps captured with it: %d / %d", sm.applies, other.applies)
+	}
+	if control != nil {
+		t.Errorf("s while an apply is out: a control command, want it refused")
+	}
+
+	sm = &serverMachine{states: []modelsetup.State{fullState()}}
+	m = serverEditor(t, sm, 80, 24)
+	next, control = m.Update(keyMsg("x"))
+	m = next.(*model)
+	if control == nil || sm.controls != 0 {
+		t.Fatalf("x: cmd = %v controls = %d", control != nil, sm.controls)
+	}
+	m.opts.Server = other.deps()
+	control()
+	if sm.controls != 1 || other.controls != 0 {
+		t.Errorf("the control command did not use the deps captured with it")
+	}
+}
+
+// TestServerTabSourceNeverFormatsAPlanWithV pins the other half of
+// carry-forward 8: the tab's code never formats a value with %v, %+v or %#v,
+// so a Plan or a Desired (which carry secrets, redacted or not) is never
+// printed whole.
+func TestServerTabSourceNeverFormatsAPlanWithV(t *testing.T) {
+	verb := regexp.MustCompile(`%[+#]?v`)
+	for _, f := range []string{"server_tab.go", "server_view.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loc := verb.FindIndex(src); loc != nil {
+			t.Errorf("%s formats with %q", f, src[loc[0]:loc[1]])
 		}
 	}
 }

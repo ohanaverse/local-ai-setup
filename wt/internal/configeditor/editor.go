@@ -40,7 +40,8 @@ type model struct {
 	server          serverTab
 	registryChanged bool
 	// quitPending is true when the user asked to leave while a registry
-	// write was in flight: the editor quits when the write's result is in.
+	// write, or a Model server apply or start/stop, was in flight: the editor
+	// quits when its result is in.
 	quitPending bool
 	// discardHeld is true when that held quit came from "discard and quit"
 	// on the unsaved-changes prompt: the edits the answer was about are no
@@ -189,6 +190,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizeFormInputs()
 		}
 		m.resizeModelForm()
+		m.resizeServerInputs()
 	case loadedMsg:
 		m.ready = true
 		if msg.cfg == nil {
@@ -214,8 +216,14 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modelSavedMsg:
 		return m, m.applyModelSaved(msg)
 	case serverObservedMsg:
-		m.applyServerObserved(msg)
+		return m, m.applyServerObserved(msg)
+	case serverPlannedMsg:
+		m.applyServerPlanned(msg)
 		return m, nil
+	case serverAppliedMsg:
+		return m, m.applyServerApplied(msg)
+	case serverControlledMsg:
+		return m, m.applyServerControlled(msg)
 	case filterMatchesMsg:
 		return m, m.applyFilterMatches(msg)
 	case saveMsg:
@@ -332,10 +340,17 @@ func (m *model) quit() (tea.Model, tea.Cmd) {
 // the write reports to, issues it. The Models tab is shown meanwhile: it is
 // the one that says the quit is waiting (the table's status, or the form's
 // title when the write is a form's save). A probe in flight holds nothing up.
+// An apply or a start/stop on the Model server tab holds the quit the same
+// way (finishServerWrite issues it), on that tab.
 func (m *model) leave() (tea.Model, tea.Cmd) {
 	if m.models.writing {
 		m.quitPending = true
 		m.phase, m.tab = phaseList, TabModels
+		return m, nil
+	}
+	if m.server.writing {
+		m.quitPending = true
+		m.phase, m.tab = phaseList, TabServer
 		return m, nil
 	}
 	return m, tea.Quit
@@ -361,7 +376,7 @@ func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m.handleSave()
 		case "n", "N":
-			if m.models.writing {
+			if m.models.writing || m.server.writing {
 				// The quit will wait (leave). The answer is kept with it.
 				m.discardHeld, m.dirty = true, false
 			}
