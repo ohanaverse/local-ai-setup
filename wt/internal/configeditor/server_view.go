@@ -14,8 +14,9 @@ import (
 
 // serverHints are the Model server tab's key hints for the phase showing,
 // fullest first. Only keys that act are named (T5), read from the same
-// predicates the handlers use: the mode keys once an observation is in, down
-// where the chosen mode has fields, a while a write may run
+// predicates the handlers use: the mode keys once an observation is in and
+// nothing is out (the form is inert while busy), down where the chosen mode
+// has fields, a while a write may run
 // (serverWriteBlocked), s/x/R for local (serverControlBlocked). c and r both
 // read the machine again, c to check after a change elsewhere, r to read a
 // config.toml repaired by hand.
@@ -37,7 +38,7 @@ func (m *model) serverHints() []string {
 	}
 	type hint struct{ key, label string }
 	var mode, keys []hint
-	if st.loaded {
+	if st.loaded && !st.busy {
 		mode = append(mode, hint{"left/right", "mode"})
 		if len(st.visibleFields()) > 0 {
 			mode = append(mode, hint{"down", "fields"})

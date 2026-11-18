@@ -75,8 +75,11 @@ type serverMachine struct {
 	// plan and planErr are what Plan returns (plan.Want is the Desired it
 	// was given when plan has none); result and progress what Apply returns
 	// and reports; controlErr what Control returns.
-	plan       modelsetup.Plan
-	planErr    error
+	plan    modelsetup.Plan
+	planErr error
+	// build makes Plan the real modelsetup.BuildPlan instead of the canned
+	// plan, for a test about what a real plan's text holds.
+	build      bool
 	result     modelsetup.Result
 	progress   []string
 	controlErr error
@@ -98,6 +101,9 @@ func (sm *serverMachine) deps() ServerDeps {
 			sm.seq = append(sm.seq, "plan")
 			sm.desired = append(sm.desired, want)
 			sm.planned = append(sm.planned, st)
+			if sm.build {
+				return modelsetup.BuildPlan(st, want)
+			}
 			if sm.planErr != nil {
 				return modelsetup.Plan{}, sm.planErr
 			}
@@ -1129,34 +1135,136 @@ func TestServerTabFitsTheTerminalInEveryPhase(t *testing.T) {
 	}
 }
 
-// TestServerTabConfirmSaysTheURLsCredentialsAreNotKept pins carry-forward 1:
-// Observe strips a user:password from the stored url and says so in
-// Problems; when the plan then writes the url, the confirm screen says the
-// credentials will not be kept, so the user is not surprised by a remote
-// that stops accepting them. No note without the problem or without a url
-// write.
-func TestServerTabConfirmSaysTheURLsCredentialsAreNotKept(t *testing.T) {
+// credURLState is a machine stored in remote mode whose url had a
+// user:password, which Observe took out (URLHadCredentials), with a passed
+// check of that url. No Problems line: the tab must not need its wording.
+func credURLState() modelsetup.State {
 	st := remoteState()
 	st.Config.Table.URL = "https://gpu.example:8787/"
-	st.Config.Problems = []string{"url under [model-server] contains credentials, which wt will not display; move them out of the url"}
-	writesURL := modelsetup.Plan{Steps: []modelsetup.Step{{Kind: modelsetup.StepConfig,
-		Detail: "write [model-server] in /Users/dev/.config/agent-wt/config.toml: mode = \"remote\", url = \"https://gpu.example:8787/\""}}}
-	keepsTable := modelsetup.Plan{Notes: []string{"keep [model-server] in /Users/dev/.config/agent-wt/config.toml"}}
-	const note = "credentialsarenotkept"
+	st.Config.URLHadCredentials = true
+	st.Server = modelsetup.ServerState{URL: "https://gpu.example:8787/", Checked: true, OK: true}
+	return st
+}
 
-	m := keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{st}, plan: writesURL}, 120, 50), "a")
+// TestServerTabConfirmSaysTheURLsCredentialsAreNotKept pins carry-forward 1
+// through the real modelsetup.BuildPlan: when the stored url had credentials
+// (ConfigState.URLHadCredentials) and the plan writes the url
+// (Plan.WritesURL; here a pasted token rewrites the table), the confirm
+// screen says the credentials will not be kept. Neither fact is read from
+// text, so a wording change in Observe or BuildPlan cannot drop the note
+// silently. No note when the url had none.
+func TestServerTabConfirmSaysTheURLsCredentialsAreNotKept(t *testing.T) {
+	const note = "credentialsarenotkept"
+	sm := &serverMachine{states: []modelsetup.State{credURLState()}, build: true}
+	m := keys(t, serverEditor(t, sm, 120, 50), "down", "down", "down", "tok-NEW", "esc", "a")
 	if m.server.phase != serverConfirm || !strings.Contains(flat(plain(m)), note) {
-		t.Errorf("a url write over a url with credentials: no note:\n%s", plain(m))
+		t.Errorf("phase %d status %q: a url write over a url with credentials, no note:\n%s", m.server.phase, m.server.status, plain(m))
 	}
-	m = keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{st}, plan: keepsTable}, 120, 50), "a")
-	if strings.Contains(flat(plain(m)), note) {
-		t.Errorf("no url write, yet the note:\n%s", plain(m))
+	clean := credURLState()
+	clean.Config.URLHadCredentials = false
+	sm = &serverMachine{states: []modelsetup.State{clean}, build: true}
+	m = keys(t, serverEditor(t, sm, 120, 50), "down", "down", "down", "tok-NEW", "esc", "a")
+	if m.server.phase != serverConfirm || strings.Contains(flat(plain(m)), note) {
+		t.Errorf("phase %d: no credentials, yet the note:\n%s", m.server.phase, plain(m))
 	}
-	clean := st
-	clean.Config.Problems = nil
-	m = keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{clean}, plan: writesURL}, 120, 50), "a")
-	if strings.Contains(flat(plain(m)), note) {
-		t.Errorf("no credentials, yet the note:\n%s", plain(m))
+}
+
+// TestServerTabRealPlanNeverShowsTheSecrets builds the plan with the real
+// modelsetup.BuildPlan from a Desired that carries a pasted token (remote) or
+// a master key (local), and pins that neither the plan's Format nor the
+// confirm screen holds the value, while the plan's Want still carries it
+// for Apply.
+func TestServerTabRealPlanNeverShowsTheSecrets(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{credURLState()}, build: true}
+	m := keys(t, serverEditor(t, sm, 120, 50), "down", "down", "down", "tok-FAKE-SECRET", "esc", "a")
+	p, err := modelsetup.BuildPlan(sm.planned[0], sm.desired[0])
+	if err != nil || p.Want.PastedToken.Reveal() != "tok-FAKE-SECRET" {
+		t.Fatalf("real remote plan: err %v, or the token did not reach Want", err)
+	}
+	if m.server.phase != serverConfirm || strings.Contains(plain(m), "FAKE-SECRET") || strings.Contains(p.Format(), "FAKE-SECRET") {
+		t.Errorf("phase %d: the pasted token is on the confirm screen or in Format:\n%s", m.server.phase, plain(m))
+	}
+
+	local := modelsetup.State{
+		Platform:   modelsetup.Platform{OK: true},
+		Resolution: modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored},
+		Config:     modelsetup.ConfigState{Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true, Table: config.ModelServerState{Mode: "local"}},
+		Token:      modelsetup.TokenState{Path: "/Users/dev/.config/wt-model/server.token"},
+		Host: modelsetup.HostState{Binary: "/Users/dev/.local/bin/wt-model", Path: "/usr/bin", Home: "/Users/dev",
+			ConfigHome: "/Users/dev/.config", UID: 501},
+		Agent:        modelsetup.AgentState{PlistPath: "/Users/dev/Library/LaunchAgents/local.wt-model.serve.plist"},
+		Listener:     modelsetup.ListenerState{Port: 8787},
+		LiteLLMPlist: modelsetup.LiteLLMPlistState{Path: "/Users/dev/Library/LaunchAgents/local.litellm.proxy.plist", Present: true},
+	}
+	sm = &serverMachine{states: []modelsetup.State{local}, build: true}
+	m = keys(t, serverEditor(t, sm, 120, 50), "down", "down", "down", "sk-FAKE-SECRET", "esc", "a")
+	p, err = modelsetup.BuildPlan(sm.planned[0], sm.desired[0])
+	if err != nil || p.Want.MasterKey.Reveal() != "sk-FAKE-SECRET" {
+		t.Fatalf("real local plan: err %v, or the key did not reach Want", err)
+	}
+	if m.server.phase != serverConfirm || strings.Contains(plain(m), "FAKE-SECRET") || strings.Contains(p.Format(), "FAKE-SECRET") {
+		t.Errorf("phase %d status %q: the master key is on the confirm screen or in Format:\n%s", m.server.phase, m.server.status, plain(m))
+	}
+	if !strings.Contains(flat(plain(m)), "keyasentered(notshown)") {
+		t.Errorf("the confirm screen does not show the pair step that uses the key:\n%s", plain(m))
+	}
+}
+
+// TestServerTabFormIsInertWhileAPlanIsPrepared pins that nothing on the form
+// changes while the read and the plan a started are out: the mode keys and
+// the key into the fields only say why they wait, so typed text can neither
+// change what is planned nor land on a question that appears meanwhile (a y
+// typed into a url must never confirm). The plan then comes from the form as
+// it was when a was pressed, and nothing is applied.
+func TestServerTabFormIsInertWhileAPlanIsPrepared(t *testing.T) {
+	st := remoteState()
+	st.Config.Table.URL = "https://gpu.example:8787"
+	sm := &serverMachine{states: []modelsetup.State{st}}
+	m := serverEditor(t, sm, 120, 50)
+	next, observe := m.Update(keyMsg("a"))
+	m = next.(*model)
+	for _, k := range []string{"down", "xy", "y", "left", "right", " ", "enter"} {
+		next, _ = m.Update(keyMsg(k))
+		m = next.(*model)
+	}
+	if m.server.phase != serverView || m.server.want.Mode != modelclient.ModeRemote || m.server.fields[sfURL].Value() != "https://gpu.example:8787" {
+		t.Fatalf("while the plan was prepared: phase %d mode %q url %q, want the form unchanged",
+			m.server.phase, m.server.want.Mode, m.server.fields[sfURL].Value())
+	}
+	if !strings.Contains(m.server.status, "wait") {
+		t.Errorf("status = %q, want it to say the form waits", m.server.status)
+	}
+	if h := hintLine(m); strings.Contains(h, "left/right") || strings.Contains(h, "down") {
+		t.Errorf("hints %q name keys that do nothing while busy", h)
+	}
+	m = send(t, m, observe())
+	if sm.applies != 0 || sm.plans != 1 || sm.desired[0].URL != "https://gpu.example:8787" {
+		t.Errorf("applies %d plans %d, want one plan of the url as it was and no apply", sm.applies, sm.plans)
+	}
+}
+
+// TestServerTabPlansTheSnapshotTakenAtA pins that the read a starts and the
+// plan after it use one snapshot of the form, taken when a was pressed: a
+// field changed between the read and the plan (set on the model here, since
+// the keys cannot) does not reach Plan, and the save-anyway answer given
+// about the url that was checked goes with that url.
+func TestServerTabPlansTheSnapshotTakenAtA(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{failedRemoteState()}}
+	m := serverEditor(t, sm, 120, 50)
+	next, observe := m.Update(keyMsg("a"))
+	m = next.(*model)
+	m.server.fields[sfURL].SetValue("https://other.example:9999")
+	m = send(t, m, observe())
+	if !strings.Contains(plain(m), "Save anyway? [y/N]") {
+		t.Fatalf("want the save-anyway question:\n%s", plain(m))
+	}
+	m.server.fields[sfURL].SetValue("https://third.example:7777")
+	m = keys(t, m, "y")
+	if sm.opts[1].CheckURL != "https://gpu.example:8787" {
+		t.Errorf("checked %q, want the url at a", sm.opts[1].CheckURL)
+	}
+	if sm.plans != 1 || sm.desired[0].URL != "https://gpu.example:8787" || !sm.desired[0].SaveUnchecked {
+		t.Errorf("Plan got url %q SaveUnchecked %v, want the snapshot's url with the answer", sm.desired[0].URL, sm.desired[0].SaveUnchecked)
 	}
 }
 

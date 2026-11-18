@@ -80,9 +80,8 @@ type serverTab struct {
 	// state is the latest observation; loaded is true once one is in.
 	state  modelsetup.State
 	loaded bool
-	// want holds the mode choice and the answers to the questions asked
-	// before the plan in progress (RemoveAgent, SaveUnchecked). The rest of
-	// a Desired comes from the fields when it is built (serverDesired).
+	// want holds the mode choice; the rest of a Desired comes from the
+	// fields when it is built (serverDesired).
 	want modelsetup.Desired
 	// chosen is true once the user has moved the mode choice; until then a
 	// new observation sets the choice to the effective mode.
@@ -113,9 +112,15 @@ type serverTab struct {
 	field  int
 	edited bool
 	// planGen is the observation a leads to a plan from (0: none wanted);
-	// queue the questions still to ask before planning.
-	planGen int
-	queue   []serverPrompt
+	// queue the questions still to ask before planning. planWant is the
+	// snapshot of the form a took (serverDesired, with the options that read
+	// used built from the same fields): the questions' answers go into it
+	// and Plan gets it, so what is planned is what was checked even if a
+	// field changed since. It holds the secrets until the plan is
+	// dispatched, then is cleared.
+	planGen  int
+	queue    []serverPrompt
+	planWant modelsetup.Desired
 	// prompt is the question the confirm phase asks; plan and planText the
 	// plan it is about and the text shown for it.
 	prompt   serverPrompt
@@ -260,12 +265,13 @@ func (m *model) serverObserveOptions() modelsetup.ObserveOptions {
 	return o
 }
 
-// serverDesired is the setup the user asked for: the mode, the answers given
-// and the chosen mode's fields. A secret becomes a modelsetup.Secret here and
-// nowhere earlier; the master key goes in only while it is asked for.
+// serverDesired is the setup the user asked for: the mode and the chosen
+// mode's fields (the questions' answers are added to a's snapshot). A
+// secret becomes a modelsetup.Secret here and nowhere earlier; the master
+// key goes in only while it is asked for.
 func (m *model) serverDesired() modelsetup.Desired {
 	st := &m.server
-	d := modelsetup.Desired{Mode: st.want.Mode, RemoveAgent: st.want.RemoveAgent, SaveUnchecked: st.want.SaveUnchecked}
+	d := modelsetup.Desired{Mode: st.want.Mode}
 	switch st.want.Mode {
 	case modelclient.ModeLocal:
 		d.Listen, d.TokenFile = st.value(sfListen), st.value(sfLocalToken)
@@ -283,9 +289,14 @@ func (m *model) serverDesired() modelsetup.Desired {
 // the generation and the options are taken here, before the command, so the
 // command touches nothing of the model; all I/O is inside it.
 func (m *model) observeServerCmd() tea.Cmd {
+	return m.observeServerCmdWith(m.serverObserveOptions())
+}
+
+// observeServerCmdWith is observeServerCmd with the options given.
+func (m *model) observeServerCmdWith(opts modelsetup.ObserveOptions) tea.Cmd {
 	m.server.gen++
 	m.server.asked, m.server.busy = true, true
-	gen, observe, opts := m.server.gen, m.opts.Server.Observe, m.serverObserveOptions()
+	gen, observe := m.server.gen, m.opts.Server.Observe
 	return func() tea.Msg {
 		return serverObservedMsg{gen: gen, st: observe(context.Background(), opts)}
 	}
@@ -316,11 +327,11 @@ func (m *model) applyServerObserved(msg serverObservedMsg) tea.Cmd {
 		st.status = why
 		return nil
 	}
-	s := st.state
-	if st.want.Mode != modelclient.ModeLocal && s.Agent.Present && s.Agent.Managed {
+	s, want := st.state, st.planWant
+	if want.Mode != modelclient.ModeLocal && s.Agent.Present && s.Agent.Managed {
 		st.queue = append(st.queue, promptRemoveAgent)
 	}
-	if st.want.Mode == modelclient.ModeRemote && st.value(sfURL) != "" && s.Server.Checked && !s.Server.OK {
+	if want.Mode == modelclient.ModeRemote && want.URL != "" && s.Server.Checked && !s.Server.OK {
 		st.queue = append(st.queue, promptSaveAnyway)
 	}
 	return m.nextServerStep()
@@ -338,13 +349,19 @@ func (m *model) nextServerStep() tea.Cmd {
 	return m.serverPlanCmd()
 }
 
-// serverPlanCmd plans from the latest observation, in a command: Plan is a
-// dep like the others, so it is not called from Update.
+// serverPlanCmd plans from the latest observation and the snapshot a took,
+// in a command: Plan is a dep like the others, so it is not called from
+// Update. The master key goes only while the fresh read still asks for it.
 func (m *model) serverPlanCmd() tea.Cmd {
 	st := &m.server
 	st.gen++
 	st.phase, st.busy, st.status, st.pending = serverView, true, "planning…", true
-	gen, plan, state, want := st.gen, m.opts.Server.Plan, st.state, m.serverDesired()
+	want := st.planWant
+	if !needsMasterKey(st.state) {
+		want.MasterKey = ""
+	}
+	st.planWant = modelsetup.Desired{}
+	gen, plan, state := st.gen, m.opts.Server.Plan, st.state
 	return func() tea.Msg {
 		p, err := plan(state, want)
 		return serverPlannedMsg{gen: gen, plan: p, err: err}
@@ -373,28 +390,14 @@ func (m *model) applyServerPlanned(msg serverPlannedMsg) {
 	st.phase, st.prompt = serverConfirm, promptApply
 }
 
-// credentialsProblem is the start of the Problems entry Observe adds when
-// it strips a user:password from the stored url.
-const credentialsProblem = "url under [model-server] contains credentials"
-
 // serverPlanText is the text the user confirms: the plan's Format, and a
-// note when the plan writes a url over one whose credentials Observe took
-// out, since what is written is the url without them.
+// note when the plan writes a url (Plan.WritesURL) over a stored one whose
+// credentials Observe took out (ConfigState.URLHadCredentials), since what
+// is written is the url without them. Both are data, not wording.
 func serverPlanText(s modelsetup.State, p modelsetup.Plan) string {
 	text := scrub(p.Format())
-	stripped := false
-	for _, pr := range s.Config.Problems {
-		if strings.HasPrefix(pr, credentialsProblem) {
-			stripped = true
-		}
-	}
-	if stripped {
-		for _, step := range p.Steps {
-			if step.Kind == modelsetup.StepConfig && strings.Contains(step.Detail, "url = ") {
-				text += "the stored url's credentials are not kept: the url is written without them\n"
-				break
-			}
-		}
+	if s.Config.URLHadCredentials && p.WritesURL() {
+		text += "the stored url's credentials are not kept: the url is written without them\n"
 	}
 	return text
 }
@@ -658,19 +661,16 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// how a config.toml repaired by hand is read again.
 		st.status, st.pending = "re-reading the model server's state", true
 		return m, m.observeServerCmd()
-	case "left":
-		if st.loaded {
-			st.stepMode(-1)
+	case "left", "right", " ", "down", "enter":
+		// The form is inert while anything is out (busy): a read, a plan,
+		// an apply or a start/stop. So a plan is always of the form a saw,
+		// and no question can appear under a field being typed into (a y in
+		// a url must never confirm). These keys only say why they wait.
+		if st.busy {
+			st.status = "wait: the form does not change while the model server tab is busy"
+			return m, nil
 		}
-	case "right", " ":
-		if st.loaded {
-			st.stepMode(1)
-		}
-	case "down", "enter":
-		if fields := st.visibleFields(); st.loaded && len(fields) > 0 {
-			st.phase, st.field = serverEdit, fields[0]
-			st.focusServerField()
-		}
+		m.updateServerForm(key.String())
 	case "a":
 		return m, m.startServerPlan()
 	case "s":
@@ -684,6 +684,26 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateServerForm moves the mode choice (left, right, space) or goes into
+// the chosen mode's fields (down, enter), once an observation is in.
+func (m *model) updateServerForm(key string) {
+	st := &m.server
+	if !st.loaded {
+		return
+	}
+	switch key {
+	case "left":
+		st.stepMode(-1)
+	case "right", " ":
+		st.stepMode(1)
+	default:
+		if fields := st.visibleFields(); len(fields) > 0 {
+			st.phase, st.field = serverEdit, fields[0]
+			st.focusServerField()
+		}
+	}
+}
+
 // startServerPlan is a: it reads the machine again with the fields' values
 // (always: a plan from an older read could act on a port taken since, or a
 // remote check of another url), and that read goes on to the questions and
@@ -694,9 +714,10 @@ func (m *model) startServerPlan() tea.Cmd {
 		st.status = why
 		return nil
 	}
-	st.want.RemoveAgent, st.want.SaveUnchecked, st.queue = false, false, nil
+	// One snapshot of the form for the read and the plan alike.
+	st.planWant, st.queue = m.serverDesired(), nil
 	st.status, st.pending = "reading the machine again before planning…", true
-	cmd := m.observeServerCmd()
+	cmd := m.observeServerCmdWith(m.serverObserveOptions())
 	st.planGen = st.gen
 	return cmd
 }
@@ -770,7 +791,7 @@ func (m *model) updateServerConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		yes = true
 	case "n", "N":
 	case "esc":
-		st.phase, st.queue, st.plan, st.planText = serverView, nil, modelsetup.Plan{}, ""
+		st.phase, st.queue, st.plan, st.planText, st.planWant = serverView, nil, modelsetup.Plan{}, "", modelsetup.Desired{}
 		st.status = "not applied; nothing was changed"
 		return m, nil
 	default:
@@ -778,9 +799,9 @@ func (m *model) updateServerConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch st.prompt {
 	case promptRemoveAgent:
-		st.want.RemoveAgent = yes
+		st.planWant.RemoveAgent = yes
 	case promptSaveAnyway:
-		st.want.SaveUnchecked = yes
+		st.planWant.SaveUnchecked = yes
 	default:
 		if yes {
 			return m, m.serverApplyCmd()
