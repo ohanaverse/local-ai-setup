@@ -10,7 +10,10 @@ import (
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/spf13/cobra"
+
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
@@ -109,6 +112,36 @@ func (a *app) resetModelCaches() {
 	a.sessCfg, a.sessCfgErr, a.sessCfgSet = nil, nil, false
 	a.built, a.builtErr, a.builtSet = nil, nil, false
 	a.models = nil
+}
+
+// errNoModeChosen ends a launch whose first-run gate opened wt config and
+// found the mode still unset.
+var errNoModeChosen = errors.New("no model-server mode chosen — " + launchStill)
+
+// ensureMode is the first-run gate of a launch that needs a model: it does
+// nothing unless the effective mode is unset (a stored or environment mode of
+// any kind, even an invalid one, is left to the launch's own handling). On a
+// terminal it opens wt config on the Model server tab once, as a separate
+// program run to completion, forgets every cached read and resolves again; a
+// mode still unset ends the launch (exit 1). Without a terminal it returns
+// the same refusal a script always got (ModeUnsetError with launchStill).
+// It never opens the editor twice in one process.
+func (a *app) ensureMode(_ *cobra.Command) error {
+	_, err := a.buildModels(launchStill)
+	if !modelclient.IsModeUnset(err) {
+		return nil
+	}
+	if !stdinTTY() {
+		return err
+	}
+	if eerr := runConfigEditor(os.Stdout, os.Stderr, a, configeditor.TabServer); eerr != nil {
+		return modelclient.Still(eerr, launchStill)
+	}
+	a.resetModelCaches()
+	if _, err := a.buildModels(launchStill); modelclient.IsModeUnset(err) {
+		return errNoModeChosen
+	}
+	return nil
 }
 
 // resolveModels is buildModels' one uncached read: the effective mode

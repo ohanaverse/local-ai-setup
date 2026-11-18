@@ -473,14 +473,21 @@ func rootCmdWith(h hooks) *cobra.Command {
 			// launchFilteredRemote and the picker give, decided without a
 			// network call). A model-driven agent always needs one, unless the
 			// mode is native and no model is asked for (-M, -T, -F): then it
-			// launches natively (nativeFallback, #615); an unset mode refuses
-			// here with ModeUnsetError's pointer at wt config; with no
+			// launches natively (nativeFallback, #615); an unset mode is the first-run
+			// gate's (ensureMode: wt config on a terminal, else ModeUnsetError's
+			// pointer at wt config); with no
 			// agent the picker does (without a terminal the picker's own
 			// refusal, below, comes first, as before; for `-W <new>` that
 			// is only after plan.Ensure has created the worktree and
 			// branch, which this check does not change). A command agent
 			// needs none.
 			if (agent != "" && !agents.IsCommand(agent)) || (agent == "" && stdinTTY()) {
+				// The first-run gate: an unset mode on a terminal opens
+				// wt config on the Model server tab (once) before anything
+				// is created; without a terminal it is the refusal below.
+				if err := a.ensureMode(cmd); err != nil {
+					return remoteExit(err)
+				}
 				if _, err := a.buildModels(launchStill); err != nil && !nativeFallback(err, pinned, cmd.Flags().Changed("model"), tags, family) {
 					return remoteExit(err) // buildModels' errors carry the still clause
 				}

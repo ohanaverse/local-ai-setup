@@ -183,11 +183,18 @@ func TestEachModelNeedingPathRefuses(t *testing.T) {
 				t.Fatal(err)
 			}
 			stubStdinTTY(t, tc.tty)
+			// On a terminal a launch asks (the first-run gate, left unset
+			// here); the one-shot commands never do.
+			want := "wt: " + unsetText(tc.still)
+			if tc.tty && tc.still == launchStill {
+				stubEditorSideEffect(t, nil)
+				want = "wt: " + errNoModeChosen.Error()
+			}
 			out, code := runRootWith(t, h, tc.args...)
 			if code != 1 {
 				t.Errorf("exit = %d, want 1\n%s", code, out)
 			}
-			if lines, want := wtLines(out), "wt: "+unsetText(tc.still); len(lines) != 1 || lines[0] != want {
+			if lines := wtLines(out); len(lines) != 1 || lines[0] != want {
 				t.Errorf("wt lines = %q, want exactly %q", lines, want)
 			}
 			if fileExists(marker) {
@@ -343,9 +350,14 @@ func TestModelLaunchRefusesBeforeAnyGitWork(t *testing.T) {
 			repo := initTestRepo(t)
 			t.Chdir(repo)
 			stubStdinTTY(t, tc.tty)
+			want := "wt: " + unsetText(launchStill)
+			if tc.tty { // the first-run gate asked, and the mode stayed unset
+				stubEditorSideEffect(t, nil)
+				want = "wt: " + errNoModeChosen.Error()
+			}
 			before := gitState(t, repo)
 			out, code := runRootWith(t, h, tc.args...)
-			if want := "wt: " + unsetText(launchStill); code != 1 || len(wtLines(out)) != 1 || wtLines(out)[0] != want {
+			if code != 1 || len(wtLines(out)) != 1 || wtLines(out)[0] != want {
 				t.Errorf("exit %d, output %q; want 1 and exactly %q", code, out, want)
 			}
 			if after := gitState(t, repo); after != before {

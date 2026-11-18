@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -375,13 +376,18 @@ func TestUnsetModeRefusesALaunchWithoutAnything(t *testing.T) {
 			t.Chdir(repo)
 			stubStdinTTY(t, tc.tty)
 			maybeInstallGuard = func() {}
-			out, code := r.run(t, tc.args...)
 			want := "wt: " + unsetText(launchStill)
-			if lines := wtLines(out); code != 1 || len(lines) != 1 || lines[0] != want {
-				t.Errorf("exit %d, wt lines %q; want 1 and exactly %q\n%s", code, wtLines(out), want, out)
+			if tc.tty { // the first-run gate asked, and the mode stayed unset
+				stubEditorSideEffect(t, nil)
+				want = "wt: " + errNoModeChosen.Error()
+			}
+			out, code := r.run(t, tc.args...)
+			// The editor's host-config load may add its own migration note.
+			if lines := wtLines(out); code != 1 || !slices.Contains(lines, want) || (!tc.tty && len(lines) != 1) {
+				t.Errorf("exit %d, wt lines %q; want 1 and %q\n%s", code, wtLines(out), want, out)
 			}
 			for _, s := range []string{"wt: no model server is configured", "wt config", "WT_MODEL_MODE"} {
-				if !strings.Contains(out, s) {
+				if !tc.tty && !strings.Contains(out, s) {
 					t.Errorf("output does not name %q:\n%s", s, out)
 				}
 			}
