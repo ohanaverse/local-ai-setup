@@ -998,6 +998,55 @@ func TestApplyBootoutWaitsUntilTheLabelIsGone(t *testing.T) {
 	}
 }
 
+// TestApplyRecoveryAfterABootoutTimeoutBootstrapsTheNewAgent pins that when
+// the pair is set and the agent plist was replaced but launchd never unloads
+// the old agent (the bootout poll times out), Recovery tells the user to
+// bootout and bootstrap the new plist: a kickstart would restart the old
+// definition and the new plist would never load. A failed wt-model kickstart
+// (the old definition is the one to restart) still recommends kickstart.
+func TestApplyRecoveryAfterABootoutTimeoutBootstrapsTheNewAgent(t *testing.T) {
+	plan := func() Plan {
+		p := mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+		spec := plSpec()
+		p.Agent = &spec
+		var steps []Step
+		for _, s := range p.Steps {
+			if s.Kind == StepKickstart {
+				steps = append(steps,
+					Step{Kind: StepPlist, Path: plAgentPath},
+					Step{Kind: StepBootout, Path: plAgentPath},
+					Step{Kind: StepBootstrap, Path: plAgentPath})
+				continue
+			}
+			steps = append(steps, s)
+		}
+		p.Steps = steps
+		return p
+	}
+	f := rotEnv(t)
+	f.loadedAfterBootout = 1 << 20
+	r, _ := apply(t, f, plan())
+	if r.Failed == nil || r.Failed.Kind != StepBootout || !f.called("Config.SetPair") {
+		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
+	}
+	for _, w := range []string{"launchctl bootout gui/501/" + AgentLabel, "launchctl bootstrap gui/501 " + plAgentPath} {
+		if !strings.Contains(r.Recovery, w) {
+			t.Errorf("Recovery %q does not say %q", r.Recovery, w)
+		}
+	}
+	if strings.Contains(r.Recovery, "kickstart -k gui/501/"+AgentLabel) {
+		t.Errorf("Recovery %q still recommends kickstarting wt-model", r.Recovery)
+	}
+
+	// The wt-model kickstart failing keeps the kickstart advice.
+	f = rotEnv(t)
+	f.kickstartErr[AgentLabel] = errors.New("Could not find service")
+	r, _ = apply(t, f, mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}))
+	if r.Failed == nil || r.Failed.Kind != StepKickstart || !strings.Contains(r.Recovery, "kickstart -k gui/501/"+AgentLabel) {
+		t.Errorf("kickstart failure: Failed = %+v, Recovery %q", r.Failed, r.Recovery)
+	}
+}
+
 // TestNoPlanOrResultTextContainsAKey generates real-shaped keys through the
 // fake RandRead (create and rotate, success and failure) and asserts no key
 // appears in Format, notes, steps, any fmt verb of Plan, Desired, Step or the

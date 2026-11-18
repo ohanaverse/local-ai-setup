@@ -244,7 +244,8 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		st.Config.RestErr = file.RestErr.Error()
 	}
 	// rawURL is the configured url as written, kept out of State: it may
-	// carry a user:password, which only the ping below uses.
+	// carry a user:password. A url with an @ is never pinged (fail closed);
+	// rawURL only feeds redactCheck, which scrubs it from other check text.
 	var rawURL string
 	if file.Table != nil {
 		t := *file.Table

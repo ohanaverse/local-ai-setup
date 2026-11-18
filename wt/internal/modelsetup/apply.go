@@ -102,13 +102,13 @@ func Apply(ctx context.Context, env Env, p Plan, progress func(string)) Result {
 	for i, s := range p.Steps {
 		if err := ctx.Err(); err != nil {
 			r = r.fail(s, err)
-			r.Recovery = run.recovery(env, p)
+			r.Recovery = run.recovery(env, p, &s)
 			return r
 		}
 		progress(fmt.Sprintf("step %d/%d: %s", i+1, len(p.Steps), stepLabel(s.Kind)))
 		if err := applyStep(ctx, env, p, s, &r, &run); err != nil {
 			r = r.fail(s, err)
-			r.Recovery = run.recovery(env, p)
+			r.Recovery = run.recovery(env, p, &s)
 			return r
 		}
 		r.Done = append(r.Done, s)
@@ -745,7 +745,7 @@ func keyAccepted(ctx context.Context, env Env, s Step, run *applyRun) error {
 // recovery says, after a failed step, where the LiteLLM change stands and
 // what to run by hand; "" when the LiteLLM plist was never touched or the
 // failure left nothing out of step. It never holds a key.
-func (run *applyRun) recovery(env Env, p Plan) string {
+func (run *applyRun) recovery(env Env, p Plan, failed *Step) string {
 	domain := "gui/" + strconv.Itoa(env.Host.UID())
 	url := run.pairURL
 	if url == "" {
@@ -776,6 +776,12 @@ func (run *applyRun) recovery(env Env, p Plan) string {
 		return "the plist " + run.plist + " and wt-model's pair both hold the new master key, but LiteLLM still runs with the old one: run " +
 			"`launchctl kickstart -k " + domain + "/" + litellm.ProxyLabel + "` (or `launchctl bootstrap " + domain + " " + run.plist +
 			"` if it is not loaded), then " + restartWt
+	case run.pairSet && !run.wtRestarted && failed != nil && (failed.Kind == StepBootout || failed.Kind == StepBootstrap):
+		// A kickstart would restart the OLD definition (or nothing is loaded):
+		// the new agent plist has to be bootstrapped.
+		agentPlist := failed.Path // the plan's bootout/bootstrap steps always carry it
+		return "the plist " + run.plist + ", wt-model's pair and LiteLLM all use the new master key, but wt-model's agent was not reloaded (the old definition may still be loaded): run " +
+			"`launchctl bootout " + domain + "/" + AgentLabel + "` (skip it if the job is already gone), then `launchctl bootstrap " + domain + " " + agentPlist + "`"
 	case run.pairSet && !run.wtRestarted:
 		return "the plist " + run.plist + ", wt-model's pair and LiteLLM all use the new master key, but wt-model has not been restarted to read it: run " + restartWt
 	}
