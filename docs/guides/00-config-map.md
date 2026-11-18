@@ -296,19 +296,7 @@ Full reference: [wt/docs/wt-agents/slot-profiles.md](../../wt/docs/wt-agents/slo
 - **Owner:** you (service setup = `01-initial-setup.md`; the `sh.brew.*` ones came from Homebrew installs).
 - **Consumers:** launchd (`RunAtLoad` + `KeepAlive` on each).
 - **Purpose:** keep the service stack alive: LiteLLM proxy (:4000, reads `~/.config/litellm/config.yaml`), oMLX (:8000), Redis, Postgres. Note: the litellm plist carries secrets as `EnvironmentVariables` (`OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` — the latter may embed the local Postgres password) — redact before sharing.
-
-```xml
-    <key>Label</key>
-    <string>local.litellm.proxy</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/user_name/.local/bin/litellm</string>
-        <string>--config</string>
-        <string>/Users/user_name/.config/litellm/config.yaml</string>
-        <string>--port</string>
-        <string>4000</string>
-    </array>
-```
+- **Contents:** [14-litellm-install-and-configuration](14-litellm-install-and-configuration.md) §5 holds the annotated plist — the one source for it. This map says who owns the file, not what is inside it.
 
 ## Verification
 

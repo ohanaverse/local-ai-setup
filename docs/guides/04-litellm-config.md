@@ -35,7 +35,7 @@ wt litellm sync --dry-run   # read-only: what a sync would add/adopt/rewrite/rem
 wt litellm sync             # write it: config.yaml is updated and the proxy restarted, only if something changed
 wt litellm list             # what is routed now — hand-written rows are marked "(hand-written)"
 
-launchctl kickstart -k gui/$(id -u)/local.litellm.proxy && echo "kickstart OK"   # only if wt's automatic restart failed: LiteLLM re-reads config.yaml only at start; down ~10–20 s (§5)
+wt litellm restart   # only if wt's automatic restart failed: LiteLLM re-reads config.yaml only at start; it lets a request in flight finish first (§5)
 
 LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<string>/,""); sub(/<\/string>.*/,""); print}' ~/Library/LaunchAgents/local.litellm.proxy.plist)   # value never echoed
 curl -s -H "Authorization: Bearer $LITELLM_MASTER_KEY" http://localhost:4000/v1/models \
@@ -241,12 +241,11 @@ cp ~/.config/litellm/config.yaml ~/.config/litellm/config.yaml.bak
 $EDITOR ~/.config/litellm/config.yaml
 python3 -c "import yaml; yaml.safe_load(open('$HOME/.config/litellm/config.yaml')); print('YAML OK')"
 wt litellm sync --dry-run   # would the next sync adopt, rewrite or remove what you just wrote?
-launchctl kickstart -k gui/$(id -u)/local.litellm.proxy && echo "kickstart OK"   # LiteLLM re-reads config.yaml only at start, and wt bounces it only when its own sync changed the file — so a row wt left alone needs this to take effect
+wt litellm restart   # LiteLLM re-reads config.yaml only at start, and wt bounces it only when its own sync changed the file — so a row wt left alone needs this to take effect
 ```
 
 ```text
 YAML OK
-kickstart OK
 ```
 
 (Exit 0 with `YAML OK`. On a syntax error: a `yaml.YAMLError` traceback and exit 1; fix before restarting or the proxy dies on start — the plist's `StandardErrorPath` `~/.litellm.err.log` shows why. wt likewise refuses to write a config it cannot parse and leaves the file untouched; an unreadable config makes `wt litellm ...` exit 1 with an error. If the dry run lists your edited id as `would adopt` / `would unroute`, its `model_name` collides with a registry id — rename the row or change the registry instead.)
@@ -272,21 +271,19 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:4000/ui
 307
 ```
 
-Full walk-through (Postgres install, Prisma generate/db push, Redis module warnings, plist template, troubleshooting): `docs/reference/litellm-admin-ui-setup.md`.
+Full walk-through (Postgres install, Prisma client generation, Redis module warnings, plist template, troubleshooting): `docs/reference/litellm-admin-ui-setup.md`.
 
 ### 5. Restart via LaunchAgent
 
 The proxy only re-reads `config.yaml` (and plist env) at start. Restart with the real label:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/local.litellm.proxy && echo "kickstart OK"
+wt litellm restart
 ```
 
-```text
-kickstart OK
-```
+If wt's own restart cannot run, the fallback is `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`. The install, plist and restart reference is [14-litellm-install-and-configuration](14-litellm-install-and-configuration.md).
 
-Measured recovery (live, 2026-08-29): old PID `40191` → new PID `65475`; the port refused connections and answered 401 again after **9 s**. Guide 01's measurement on the same label was ~15 s down, 401 by the 20 s mark. Plan for a ~10–20 s dead window and confirm rather than assume:
+Measured recovery (of a `kickstart -k`, which does not wait for a request in flight, unlike `wt litellm restart`) (live, 2026-08-29): old PID `40191` → new PID `65475`; the port refused connections and answered 401 again after **9 s**. Guide 01's measurement on the same label was ~15 s down, 401 by the 20 s mark. Plan for a ~10–20 s dead window and confirm rather than assume:
 
 ```bash
 for i in $(seq 1 60); do CODE=$(curl -s -o /dev/null -m 1 -w "%{http_code}" http://localhost:4000/v1/models); [ "$CODE" = "401" ] && { echo "401 after ${i}s"; break; }; sleep 1; done
@@ -298,7 +295,7 @@ launchctl list | awk '/local.litellm.proxy/{print "new PID:", $1}'
 new PID: 65475
 ```
 
-(401, not 000/200: the proxy is up and once again demanding the master key. `KeepAlive=true` in the plist means launchd respawns it if it dies — use `kickstart -k`, not bare `stop`.) To bring up whatever part of the stack is down: `uv run --directory llmbench llmbench provider restore` (from the repo root) (see guide 01 §7).
+(401, not 000/200: the proxy is up and once again demanding the master key. `KeepAlive=true` in the plist means launchd respawns it if it dies — use `wt litellm restart` (or `kickstart -k`), not bare `stop`.) To bring up whatever part of the stack is down: `uv run --directory llmbench llmbench provider restore` (from the repo root) (see guide 01 §7).
 
 ## Verification
 

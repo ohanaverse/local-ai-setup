@@ -29,7 +29,7 @@ LiteLLM applies to a request's headers is quoted in that file under
    wrapped in `json_agg`, unaligned and tuples-only (`-At`), from stdin
    (psql does not substitute `:session_id` in a `-c` command):
    ```
-   psql "${LITELLM_DATABASE_URL:-postgresql://keith@localhost:5432/litellm}" \
+   psql "${LITELLM_DATABASE_URL:-postgresql://$USER@localhost:5432/litellm}" \
      -At -v session_id="'<session-id>'" > session_logs_<id>.json <<'SQL'
    SELECT coalesce(json_agg(t ORDER BY t."startTime"), '[]')
    FROM (

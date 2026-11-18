@@ -180,19 +180,9 @@ This creates the Prisma client at `site-packages/prisma/`.
 
 ---
 
-## Step 9 — Push the database schema
+## Step 9 — Create the database schema
 
-**Automatic on LiteLLM ≥1.98 — the proxy runs `prisma migrate deploy` against `$DATABASE_URL` at startup** (verified 2026-09-30: log shows "184 migrations found", then all `LiteLLM_*` tables present). Keep this only as a manual fallback for older versions:
-
-Create all 72 LiteLLM tables in the `litellm` database:
-
-```bash
-SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.*/site-packages | tail -1)
-cd "$SP/litellm/proxy"
-PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
-DATABASE_URL="postgresql://keith@localhost:5432/litellm" \
-  ~/.local/share/uv/tools/litellm/bin/prisma db push --schema=./schema.prisma
-```
+**Automatic on LiteLLM ≥1.98 — the proxy runs `prisma migrate deploy` against `$DATABASE_URL` at startup** (verified 2026-09-30: log shows "184 migrations found", then all `LiteLLM_*` tables present). **Do not run `prisma db push`:** it creates tables outside the migration history and only adds a competing schema history. Start the proxy (Step 10) and let it create the tables; the install guide covers this in [14-litellm-install-and-configuration](../guides/14-litellm-install-and-configuration.md) section 3.
 
 Verify tables exist:
 
@@ -204,14 +194,15 @@ You should see 72 tables (`LiteLLM_SpendLogs`, `LiteLLM_UserTable`, `LiteLLM_Tea
 
 ---
 
-## Step 10 — Restart the proxy and verify
+## Step 10 — Reload the LaunchAgent, then verify
+
+Step 7 edited the plist, and launchd reads a plist only at load, so a restart alone keeps the old `EnvironmentVariables` (the proxy would start without `DATABASE_URL` and crash-loop). Reload the job:
 
 ```bash
-launchctl stop local.litellm.proxy
-sleep 2
-launchctl start local.litellm.proxy
-sleep 10
+launchctl bootout gui/$(id -u)/local.litellm.proxy 2> /dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.litellm.proxy.plist
 ```
+
+For a later reload of a changed `config.yaml` (no plist edit), `wt litellm restart` is enough — when a LiteLLM url is configured it also waits for the proxy to answer again.
 
 Verify the proxy is running and the database is connected:
 
@@ -253,51 +244,7 @@ The dashboard provides:
 
 ## Final plist
 
-The complete `~/Library/LaunchAgents/local.litellm.proxy.plist` after all steps:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>local.litellm.proxy</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/user_name/.local/bin/litellm</string>
-        <string>--config</string>
-        <string>/Users/user_name/.config/litellm/config.yaml</string>
-        <string>--port</string>
-        <string>4000</string>
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/Users/user_name/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-        <key>LITELLM_MASTER_KEY</key>
-        <string>sk-litellm-<rotate-me></string>
-        <key>UI_USERNAME</key>
-        <string>admin</string>
-        <key>UI_PASSWORD</key>
-        <string><strong-password></string>
-        <key>OPENROUTER_API_KEY</key>
-        <string>sk-or-v1-REPLACE_WITH_YOUR_KEY</string>
-        <key>DATABASE_URL</key>
-        <string>postgresql://keith@localhost:5432/litellm</string>
-        <key>LITELLM_SALT_KEY</key>
-        <string><generated-salt></string>
-    </dict>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Users/user_name/.litellm.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/user_name/.litellm.err.log</string>
-</dict>
-</plist>
-```
+The plist this page's steps build is [guide 14 §5](../guides/14-litellm-install-and-configuration.md) — the single source for it, with every `EnvironmentVariables` key explained. This page is the setup history behind that guide and keeps no second copy of the template.
 
 ---
 
@@ -326,15 +273,7 @@ PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
 
 ### `relation "LiteLLM_SpendLogs" does not exist`
 
-The database schema hasn't been pushed. Run:
-
-```bash
-SP=$(ls -d "$HOME"/.local/share/uv/tools/litellm/lib/python3.*/site-packages | tail -1)
-cd "$SP/litellm/proxy"
-PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
-DATABASE_URL="postgresql://keith@localhost:5432/litellm" \
-  ~/.local/share/uv/tools/litellm/bin/prisma db push --schema=./schema.prisma
-```
+The proxy has not yet created its tables. On LiteLLM ≥1.98 it runs `prisma migrate deploy` against `$DATABASE_URL` at every startup, so check that `DATABASE_URL` is set in the plist's `EnvironmentVariables` and that PostgreSQL is running (`pg_isready -h localhost -p 5432`), then restart with `wt litellm restart` and read `~/.litellm.err.log` for the migration error. Do not run `prisma db push`.
 
 ### `/v1/models` returns 500
 
@@ -349,9 +288,7 @@ This is correct behavior — the master key is now set, so API calls require `Au
 `launchctl unload/load` with `KeepAlive=true` may not fully restart. Use:
 
 ```bash
-launchctl stop local.litellm.proxy
-sleep 2
-launchctl start local.litellm.proxy
+wt litellm restart   # fallback if wt cannot run it: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
 ```
 
 ### PostgreSQL not running after reboot

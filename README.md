@@ -32,6 +32,8 @@ The how-to lives in the guides now; this README is just the index. Read
 | [`10-mlx-lm-quantization.md`](docs/guides/10-mlx-lm-quantization.md) | local mlx-lm quantization + `mlx_lm_server` speculative decoding |
 | [`11-capability-eval-benchmark.md`](docs/guides/11-capability-eval-benchmark.md) | cross-category capability benchmark (`llmbench eval`) |
 | [`12-model-tiers.md`](docs/guides/12-model-tiers.md) | which models suit which work: advisory tiers (`modeltiers`), aliases, re-calibration |
+| [`13-deployment-use-cases.md`](docs/guides/13-deployment-use-cases.md) | one `wt-model` server and `wt` sessions on one machine, a VM sandbox, or two machines |
+| [`14-litellm-install-and-configuration.md`](docs/guides/14-litellm-install-and-configuration.md) | install and configure LiteLLM: Postgres, Prisma, the LaunchAgent plist, linking to wt-model |
 
 ## 60-second health check
 
