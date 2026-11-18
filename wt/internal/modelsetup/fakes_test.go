@@ -33,6 +33,11 @@ type fakeEnv struct {
 	launchdUnavailable bool
 	jobs               map[string]LaunchdJob // by label
 	launchdErr         error                 // returned by every mutating call
+	bootstrapErr       error                 // returned by Bootstrap alone
+	bootoutErr         error                 // returned by Bootout alone
+	// bootstrapPID, when set, makes Bootstrap load and run the agent job with
+	// this pid and Bootout unload it, so a later Observe sees the change.
+	bootstrapPID int
 
 	// ConfigStore.
 	configFile config.ModelServerFile
@@ -41,17 +46,21 @@ type fakeEnv struct {
 	updateErr  error
 
 	// Net.
-	ping         modelapi.Ping
-	pingErr      error
-	getStatus    int
-	getBody      []byte
-	getErr       error
-	getReplies   map[string]getReply // by full URL; wins over getStatus/getBody
-	listenerPID  int
-	listenerOK   bool
-	listenerErr  error
-	processStart time.Time
-	processErr   error
+	ping        modelapi.Ping
+	pingErr     error
+	pingErrs    []error // consumed one per Ping before ping/pingErr apply
+	getStatus   int
+	getBody     []byte
+	getErr      error
+	getReplies  map[string]getReply // by full URL; wins over getStatus/getBody
+	listenerPID int
+	listenerOK  bool
+	listenerErr error
+	// listenerFromJob makes ListenerPID report the agent job's pid while it
+	// runs (and nothing otherwise) instead of listenerPID/listenerOK.
+	listenerFromJob bool
+	processStart    time.Time
+	processErr      error
 
 	// Host.
 	env      map[string]string
@@ -221,11 +230,23 @@ func (x fakeLaunchd) Print(_ context.Context, label string) (LaunchdJob, error) 
 
 func (x fakeLaunchd) Bootstrap(_ context.Context, plist string) error {
 	x.f.rec("Launchd.Bootstrap %s", plist)
+	if x.f.bootstrapErr != nil {
+		return x.f.bootstrapErr
+	}
+	if x.f.launchdErr == nil && x.f.bootstrapPID != 0 {
+		x.f.jobs[AgentLabel] = LaunchdJob{Loaded: true, Running: true, PID: x.f.bootstrapPID}
+	}
 	return x.f.launchdErr
 }
 
 func (x fakeLaunchd) Bootout(_ context.Context, label string) error {
 	x.f.rec("Launchd.Bootout %s", label)
+	if x.f.bootoutErr != nil {
+		return x.f.bootoutErr
+	}
+	if x.f.launchdErr == nil && x.f.bootstrapPID != 0 {
+		delete(x.f.jobs, label)
+	}
 	return x.f.launchdErr
 }
 
@@ -275,6 +296,11 @@ type fakeNet struct{ f *fakeEnv }
 
 func (x fakeNet) Ping(_ context.Context, ep modelclient.Endpoint) (modelapi.Ping, error) {
 	x.f.rec("Net.Ping %s", ep.Origin())
+	if len(x.f.pingErrs) > 0 {
+		err := x.f.pingErrs[0]
+		x.f.pingErrs = x.f.pingErrs[1:]
+		return modelapi.Ping{}, err
+	}
 	return x.f.ping, x.f.pingErr
 }
 
@@ -288,6 +314,12 @@ func (x fakeNet) Get(_ context.Context, url, bearer string) (int, []byte, error)
 
 func (x fakeNet) ListenerPID(_ context.Context, port int) (int, bool, error) {
 	x.f.rec("Net.ListenerPID %d", port)
+	if x.f.listenerFromJob {
+		if j := x.f.jobs[AgentLabel]; j.Running {
+			return j.PID, true, nil
+		}
+		return 0, false, nil
+	}
 	return x.f.listenerPID, x.f.listenerOK, x.f.listenerErr
 }
 
