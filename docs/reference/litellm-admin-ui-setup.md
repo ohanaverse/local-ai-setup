@@ -194,11 +194,15 @@ You should see 72 tables (`LiteLLM_SpendLogs`, `LiteLLM_UserTable`, `LiteLLM_Tea
 
 ---
 
-## Step 10 — Restart the proxy and verify
+## Step 10 — Reload the LaunchAgent, then verify
+
+Step 7 edited the plist, and launchd reads a plist only at load, so a restart alone keeps the old `EnvironmentVariables` (the proxy would start without `DATABASE_URL` and crash-loop). Reload the job:
 
 ```bash
-wt litellm restart   # waits for the proxy to answer again
+launchctl bootout gui/$(id -u)/local.litellm.proxy 2> /dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.litellm.proxy.plist
 ```
+
+For a later reload of a changed `config.yaml` (no plist edit), `wt litellm restart` is enough — when a LiteLLM url is configured it also waits for the proxy to answer again.
 
 Verify the proxy is running and the database is connected:
 
@@ -240,51 +244,7 @@ The dashboard provides:
 
 ## Final plist
 
-The complete `~/Library/LaunchAgents/local.litellm.proxy.plist` after all steps:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>local.litellm.proxy</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/keith/.local/bin/litellm</string>
-        <string>--config</string>
-        <string>/Users/keith/.config/litellm/config.yaml</string>
-        <string>--port</string>
-        <string>4000</string>
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/Users/keith/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-        <key>LITELLM_MASTER_KEY</key>
-        <string>sk-litellm-<rotate-me></string>
-        <key>UI_USERNAME</key>
-        <string>admin</string>
-        <key>UI_PASSWORD</key>
-        <string><strong-password></string>
-        <key>OPENROUTER_API_KEY</key>
-        <string>sk-or-v1-REPLACE_WITH_YOUR_KEY</string>
-        <key>DATABASE_URL</key>
-        <string>postgresql://keith@localhost:5432/litellm</string>
-        <key>LITELLM_SALT_KEY</key>
-        <string><generated-salt></string>
-    </dict>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Users/keith/.litellm.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/keith/.litellm.err.log</string>
-</dict>
-</plist>
-```
+The plist this page's steps build is [guide 14 §5](../guides/14-litellm-install-and-configuration.md) — the single source for it, with every `EnvironmentVariables` key explained. This page is the setup history behind that guide and keeps no second copy of the template.
 
 ---
 

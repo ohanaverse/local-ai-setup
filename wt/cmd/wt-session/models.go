@@ -138,8 +138,14 @@ func (a *app) ensureMode(_ *cobra.Command) error {
 		return modelclient.Still(eerr, launchStill)
 	}
 	a.resetModelCaches()
-	if _, err := a.buildModels(launchStill); modelclient.IsModeUnset(err) {
-		return errNoModeChosen
+	if _, err := a.buildModels(launchStill); err != nil {
+		if modelclient.IsModeUnset(err) {
+			return errNoModeChosen
+		}
+		// A concrete mode (native, a stored/environment problem or a
+		// half-configured server) is not a "still unset" outcome: the
+		// gate is finished and the launch below applies its own handling,
+		// including the native fallback.
 	}
 	return nil
 }

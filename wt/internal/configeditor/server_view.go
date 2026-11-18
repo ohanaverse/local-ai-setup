@@ -382,6 +382,9 @@ func serverStatusLines(st modelsetup.State) []serverLine {
 	if st.Config.TableErr != "" {
 		problems = append(problems, "[model-server]: "+st.Config.TableErr)
 	}
+	if st.Config.RestErr != "" {
+		problems = append(problems, "config.toml: "+st.Config.RestErr)
+	}
 	problems = append(problems, st.Config.Problems...)
 	for i, p := range problems {
 		label := ""

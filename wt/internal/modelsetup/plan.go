@@ -190,6 +190,14 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 			"config.toml at "+st.Config.Path+" has a TOML syntax error ("+st.Config.ParseErr+") and is never overwritten",
 			"fix it by hand, then re-read")}}
 	}
+	if st.Config.TableErr != "" {
+		// The config step re-reads the whole file and refuses what it cannot
+		// decode, so a plan would run every earlier step (token, plist,
+		// launchd) and then fail on the last one.
+		return Plan{}, &RefusalError{Reasons: []string{reason(
+			"[model-server] in "+st.Config.Path+" cannot be read ("+st.Config.TableErr+") and is never overwritten",
+			"fix it by hand, then re-read")}}
+	}
 	mode, ok := modelclient.ParseMode(string(want.Mode))
 	if !ok {
 		return Plan{}, &RefusalError{Reasons: []string{reason(
@@ -197,11 +205,6 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 			"choose one of native, local or remote")}}
 	}
 	want.Mode = mode
-	if st.Config.TableErr != "" {
-		return Plan{}, &RefusalError{Reasons: []string{reason(
-			"config.toml at "+st.Config.Path+" has a [model-server] table wt cannot read ("+st.Config.TableErr+"), and wt never writes over what it cannot read",
-			"fix the table by hand (or delete it), then re-read")}}
-	}
 	// Each secret stays only in the mode that uses it.
 	if mode != modelclient.ModeRemote {
 		want.PastedToken = ""
@@ -226,12 +229,14 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	// The config step is last, so a file its writer cannot decode would fail
-	// it only after every machine change before it: refuse the plan instead.
-	if _, writes := findStep(p, StepConfig); writes && st.Config.DecodeErr != "" {
+	// Same failure as TableErr above, from a key outside [model-server]
+	// (RestErr): the config step is last, so a file its writer cannot decode
+	// would fail it only after every machine change before it. A plan that
+	// leaves config.toml alone (a key rotation) does not reach that writer.
+	if _, writes := findStep(p, StepConfig); writes && st.Config.RestErr != "" {
 		return Plan{}, &RefusalError{Reasons: []string{reason(
-			"config.toml at "+st.Config.Path+" does not decode ("+st.Config.DecodeErr+"), so the [model-server] table cannot be written",
-			"fix the file by hand (`wt config` names the problem on its Agents tab), then re-read")}}
+			"config.toml at "+st.Config.Path+" has a key that cannot be read ("+st.Config.RestErr+") and is never overwritten",
+			"fix it by hand, then re-read")}}
 	}
 	p.restartNote()
 	return p, nil

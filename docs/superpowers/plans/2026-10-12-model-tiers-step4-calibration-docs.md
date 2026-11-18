@@ -1105,7 +1105,7 @@ Design rationale: `docs/superpowers/specs/2026-10-12-model-tiers-design.md`.
 ## TL;DR
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 uv run --directory modeltiers modeltiers run --dry-run   # fetch, resolve, assign, report; no tiers.toml written
 uv run --directory modeltiers modeltiers run             # the same, then write tiers.toml
 uv run --directory modeltiers modeltiers show            # the tier table, from the file
@@ -1729,13 +1729,13 @@ with:
 In `docs/guides/00-config-map.md`, replace:
 
 ```markdown
-- Provider artifacts + llama.cpp re-enable procedure: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md`
+- Provider artifacts + llama.cpp re-enable procedure: `/Users/user_name/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md`
 ```
 
 with:
 
 ```markdown
-- Provider artifacts + llama.cpp re-enable procedure: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md`
+- Provider artifacts + llama.cpp re-enable procedure: `/Users/user_name/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md`
 - Model tiers (`tiers.toml`, its two data files): [12-model-tiers](12-model-tiers.md)
 ```
 

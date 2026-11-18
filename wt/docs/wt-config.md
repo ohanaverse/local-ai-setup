@@ -68,7 +68,10 @@ kickstart -k`, `bootout`) says so: requests in flight are cut at once, unlike
 fields take typed keys until `esc`.
 
 When `config.toml` does not parse, the tab says so with the parser's message
-and writes nothing; fix the file and press `r`. It also opens by itself on a
+and writes nothing; fix the file and press `r`. The same holds for a key that
+does not decode, inside `[model-server]` or elsewhere in the file (a
+wrong-typed agent key): the tab lists it and every write key says why nothing
+was written. It also opens by itself on a
 terminal when a launch finds no mode chosen (the first-run gate in
 [`wt-session.md`](wt-session.md)); quitting the editor there goes back to the
 launch.

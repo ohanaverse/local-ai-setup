@@ -28,7 +28,7 @@ func TestBuildPlanRemoteRefusesAURLWithCredentials(t *testing.T) {
 		st := freshState()
 		st.Server = ServerState{Checked: true, OK: true, URL: "https://gpu.example:8787"}
 		p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: u, PastedToken: plPasted})
-		mustRefuse(t, p, err, "user:password", "token file")
+		mustRefuse(t, p, err, "user:password", "token file", "credentials")
 		if err != nil && (strings.Contains(err.Error(), user) || strings.Contains(err.Error(), pass) || strings.Contains(err.Error(), "gpu.example")) {
 			t.Errorf("refusal quotes the credentials: %q", err.Error())
 		}
@@ -185,12 +185,12 @@ func TestBuildPlanRefusesAConfigFileItCannotWrite(t *testing.T) {
 	mustRefuse(t, p, err, plCfgPath, "[model-server]")
 
 	st = freshState()
-	st.Config.DecodeErr = "toml: line 9 (last key \"agents.claude.args\"): incompatible types"
+	st.Config.RestErr = "toml: line 9 (last key \"agents.claude.args\"): incompatible types"
 	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
 	mustRefuse(t, p, err, plCfgPath, "agents.claude.args")
 
 	st = rotateState()
-	st.Config.DecodeErr = "toml: line 9: incompatible types"
+	st.Config.RestErr = "toml: line 9: incompatible types"
 	mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
 }
 
@@ -248,13 +248,13 @@ func TestRealHostHomeRefusesTheDevelopersHomeUnderTest(t *testing.T) {
 
 // TestObserveCarriesADecodeErrorElsewhereIntoState pins the wiring from the
 // tolerant read to the plan: a decode error outside [model-server] reaches
-// State.Config.DecodeErr, which BuildPlan refuses on before any step.
+// State.Config.RestErr, which BuildPlan refuses on before any step.
 func TestObserveCarriesADecodeErrorElsewhereIntoState(t *testing.T) {
 	f := obsConfigured(t)
-	f.configFile.DecodeErr = errors.New("toml: line 2 (last key \"agents.name\"): incompatible types")
+	f.configFile.RestErr = errors.New("toml: line 2 (last key \"agents.name\"): incompatible types")
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if st.Config.DecodeErr == "" {
-		t.Fatalf("DecodeErr not carried into State")
+	if st.Config.RestErr == "" {
+		t.Fatalf("RestErr not carried into State")
 	}
 	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, SaveUnchecked: true})
 	mustRefuse(t, p, err, "agents.name")

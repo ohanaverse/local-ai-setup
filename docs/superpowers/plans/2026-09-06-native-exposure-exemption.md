@@ -60,7 +60,7 @@ tags = ["native"]
 Run:
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
 uv run python -c "import tomllib, pathlib; tomllib.load(open(pathlib.Path('docs/contracts/registry.sample.toml'), 'rb'))"
 ```
 
@@ -149,7 +149,7 @@ def load_registry(path: Path | None = None) -> Registry:
 Read `_model_to_dict` (around line 429). Its explicit whitelist does **not** contain `native`, so no code change is needed. Confirm by inspection:
 
 ```bash
-grep -n "native" /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman/src/modelman/registry.py
+grep -n "native" /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman/src/modelman/registry.py
 ```
 
 Expected: output shows `native: bool = False`, `_derive_native`, and the `_derive_native(registry)` call — but no `native` key inside `_model_to_dict`.
@@ -157,7 +157,7 @@ Expected: output shows `native: bool = False`, `_derive_native`, and the `_deriv
 - [ ] **Step 5: Run modelman lint/typecheck**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman
 uv sync && make check
 ```
 
@@ -166,7 +166,7 @@ Expected: `ruff check src/ tests/` and `mypy src/` both pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
 git add modelman/src/modelman/registry.py
 git commit -m "feat(registry): derive ModelEntry.native from provider auth.type"
 ```
@@ -262,7 +262,7 @@ This already correctly rejects native providers. Leave it as-is; the comment is 
 - [ ] **Step 4: Run modelman lint/typecheck**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman
 make check
 ```
 
@@ -271,7 +271,7 @@ Expected: passes.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
 git add modelman/src/modelman/litellm.py
 git commit -m "feat(litellm): native models are always effectively exposed"
 ```
@@ -305,7 +305,7 @@ def test_is_effectively_exposed_native_not_exposed_not_ready():
 - [ ] **Step 2: Run the new test and the four existing exposure tests**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman
 uv run pytest tests/test_litellm.py -k "is_effectively_exposed" -v
 ```
 
@@ -314,7 +314,7 @@ Expected: all five tests pass, including the new native test.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
 git add modelman/tests/test_litellm.py
 git commit -m "test(litellm): native model is exposed even when unflagged and not ready"
 ```
@@ -378,7 +378,7 @@ def test_load_registry_matches_shared_fixture():
 - [ ] **Step 2: Run the contract test**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman
 uv run pytest tests/contracts/test_registry_fixture.py -v
 ```
 
@@ -387,7 +387,7 @@ Expected: passes.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
 git add modelman/tests/contracts/test_registry_fixture.py
 git commit -m "test(contract): assert native provider/model in shared registry fixture"
 ```
@@ -466,7 +466,7 @@ def test_save_registry_does_not_persist_native_field(tmp_path):
 - [ ] **Step 3: Run the new registry tests**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/modelman
 uv run pytest tests/test_registry.py -k "derive_native or persist_native" -v
 ```
 
@@ -475,7 +475,7 @@ Expected: both tests pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
 git add modelman/tests/test_registry.py
 git commit -m "test(registry): native derivation and non-persistence"
 ```
@@ -546,7 +546,7 @@ and
 - [ ] **Step 3: Run the Go contract tests**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/wt
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption/wt
 go test ./internal/config -run "TestLoadRegistryMatchesSharedFixture|TestRegistryFixtureNativeExposure" -v
 ```
 
@@ -555,7 +555,7 @@ Expected: both tests pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
 git add wt/internal/config/registry_fixture_test.go
 git commit -m "test(config): pin native exposure rule with shared fixture"
 ```
@@ -570,7 +570,7 @@ git commit -m "test(config): pin native exposure rule with shared fixture"
 - [ ] **Step 1: Run `make test-all`**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/native-exposure-exemption
 make test-all
 ```
 

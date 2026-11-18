@@ -89,16 +89,16 @@ func LoadSession(driverNames ...string) (*Config, error) {
 
 // ModelServerFile is a tolerant read of config.toml's [model-server] table.
 // Path is always set; ParseErr is a syntax error (nothing else is read);
-// TableErr is a decode error inside the table itself; DecodeErr is a decode
+// TableErr is a decode error inside the table itself; RestErr is a decode
 // error anywhere else in the file (a wrong-typed agent key), which every
 // writer of config.toml (UpdateModelServer included) refuses on.
 type ModelServerFile struct {
-	Path      string
-	Exists    bool
-	Table     *ModelServerState
-	ParseErr  error
-	TableErr  error
-	DecodeErr error
+	Path     string
+	Exists   bool
+	Table    *ModelServerState
+	ParseErr error
+	TableErr error
+	RestErr  error
 }
 
 // ReadModelServerFile never errors. Syntax is checked by decoding into a
@@ -131,7 +131,7 @@ func ReadModelServerFile() ModelServerFile {
 	// What every writer of the file (UpdateModelServer included) decodes.
 	var whole Config
 	if _, err := toml.Decode(string(data), &whole); err != nil {
-		f.DecodeErr = secretSafe(err, data)
+		f.RestErr = secretSafe(err, data)
 	}
 	return f
 }

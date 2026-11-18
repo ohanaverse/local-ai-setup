@@ -300,19 +300,7 @@ Full reference: [wt/docs/wt-agents/slot-profiles.md](../../wt/docs/wt-agents/slo
 - **Owner:** you (service setup = `01-initial-setup.md`; the `sh.brew.*` ones came from Homebrew installs), except two the `wt config` Model server tab can write: `local.wt-model.serve.plist` (wt owns it) and `local.litellm.proxy.plist` (wt creates it only when absent and, on request, replaces its one `LITELLM_MASTER_KEY` value after a backup; it never touches the rest of that file).
 - **Consumers:** launchd (`RunAtLoad` + `KeepAlive` on each).
 - **Purpose:** keep the service stack alive: LiteLLM proxy (:4000, reads `~/.config/litellm/config.yaml`), oMLX (:8000), Redis, Postgres. Note: the litellm plist carries secrets as `EnvironmentVariables` (`OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` — the latter may embed the local Postgres password) — redact before sharing.
-
-```xml
-    <key>Label</key>
-    <string>local.litellm.proxy</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/keith/.local/bin/litellm</string>
-        <string>--config</string>
-        <string>/Users/keith/.config/litellm/config.yaml</string>
-        <string>--port</string>
-        <string>4000</string>
-    </array>
-```
+- **Contents:** [14-litellm-install-and-configuration](14-litellm-install-and-configuration.md) §5 holds the annotated plist — the one source for it. This map says who owns the file, not what is inside it.
 
 ## Verification
 
@@ -323,9 +311,9 @@ ls ~/.config/local-ai/registry.toml ~/.config/agent-wt/config.toml ~/.config/lit
 ```
 
 ```text
-/Users/keith/.config/local-ai/registry.toml
-/Users/keith/.config/agent-wt/config.toml
-/Users/keith/.config/litellm/config.yaml
+/Users/user_name/.config/local-ai/registry.toml
+/Users/user_name/.config/agent-wt/config.toml
+/Users/user_name/.config/litellm/config.yaml
 ```
 
 LaunchAgent labels are loaded:
@@ -359,10 +347,10 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 
 ## Going deeper
 
-- Service setup (plists above): `/Users/keith/github/ohanaverse/local-ai-setup/docs/guides/01-initial-setup.md`
-- wt config/registry relationship: `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md`
-- wt config TUI + config dir layout: `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md`
-- Registry data model (wt consumer side): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
-- oMLX backend reference: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/oMLX Download and Run.md`
-- Provider artifacts + llama.cpp re-enable procedure: `/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md`
+- Service setup (plists above): `~/github/ohanaverse/local-ai-setup/docs/guides/01-initial-setup.md`
+- wt config/registry relationship: `~/github/ohanaverse/local-ai-setup/wt/README.md`
+- wt config TUI + config dir layout: `~/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md`
+- Registry data model (wt consumer side): `~/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
+- oMLX backend reference: `~/github/ohanaverse/local-ai-setup/docs/reference/oMLX Download and Run.md`
+- Provider artifacts + llama.cpp re-enable procedure: `~/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md`
 - Model tiers (`tiers.toml`, its two data files): [12-model-tiers](12-model-tiers.md)

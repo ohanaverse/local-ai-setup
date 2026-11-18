@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- All commands run from `wt/` (`cd /Users/keith/github/ohanaverse/local-ai-setup/wt`).
+- All commands run from `wt/` (`cd /Users/user_name/github/ohanaverse/local-ai-setup/wt`).
 - Every test carries a comment saying what it does and why it matters (user rule).
 - Do not push or open a PR without asking the user. Task 4 needs a push and is gated on approval.
 - Commit trailer: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`. Commits during execution reference the plan item, e.g. `- completes plan item #2`.

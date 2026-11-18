@@ -16,7 +16,7 @@ agent against it. The picker is one screen of the app; the user picks a model,
 
 **Repo layout.**
 
-- Repo root: `/Users/keith/github/ohanaverse/local-ai-setup/`
+- Repo root: `/Users/user_name/github/ohanaverse/local-ai-setup/`
 - `wt/` — Go module. Own CLAUDE.md, own Makefile, own docs/.
 - `wt/internal/tui/` — bubbletea TUI. Files we'll touch:
   - `model_list.go` — item/builder/delegate types for the model picker

@@ -146,7 +146,7 @@ reader resolves it — the key is never printed, only masked.
   stderr (illustrative — the path is machine-specific):
 
   ```text
-  wt-model: note: config.toml: [litellm] is a read-only fallback — 'wt-model litellm set' writes /Users/keith/.config/wt-model/config.toml now
+  wt-model: note: config.toml: [litellm] is a read-only fallback — 'wt-model litellm set' writes /Users/user_name/.config/wt-model/config.toml now
   ```
 - While the legacy table holds the pair, the first set (the one that creates
   the home's `[litellm]` table) needs both `--url` and `--api-key`. Nothing

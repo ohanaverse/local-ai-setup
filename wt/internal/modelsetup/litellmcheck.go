@@ -194,10 +194,11 @@ func checkPlist(env Env, base string) (port, mode Check) {
 	default:
 		port = Check{CheckOK, "port " + strconv.Itoa(want)}
 	}
-	if info.Mode != 0o600 {
-		mode = Check{CheckWarn, fmt.Sprintf("plist mode %04o, want 0600", info.Mode)}
+	if info.Mode&0o077 != 0 {
+		mode = Check{CheckWarn, fmt.Sprintf("plist mode %04o, want 0600 or tighter", info.Mode)}
 	} else {
-		mode = Check{CheckOK, "mode 0600"}
+		// Only group/other bits are flagged: a 0400 plist is tighter, not wrong.
+		mode = Check{CheckOK, fmt.Sprintf("mode %04o", info.Mode)}
 	}
 	return port, mode
 }

@@ -488,16 +488,27 @@ func TestReadModelServerFileNeverQuotesASecretValue(t *testing.T) {
 
 // TestReadModelServerFileReportsADecodeErrorElsewhere proves a wrong-typed
 // key outside [model-server] (which every config.toml writer refuses on) is
-// reported as DecodeErr, so a setup plan can refuse before its first step
+// reported as RestErr, so a setup plan can refuse before its first step
 // rather than fail at the last, while the table itself still reads.
 func TestReadModelServerFileReportsADecodeErrorElsewhere(t *testing.T) {
 	sessionHome(t, "[[agents]]\nname = 5\n\n[model-server]\nmode = \"remote\"\n")
 	f := ReadModelServerFile()
-	if f.DecodeErr == nil || f.TableErr != nil || f.Table == nil {
-		t.Errorf("file = %+v, want DecodeErr with the table read", f)
+	if f.RestErr == nil || f.TableErr != nil || f.Table == nil {
+		t.Errorf("file = %+v, want RestErr with the table read", f)
 	}
 	sessionHome(t, "[model-server]\nmode = \"remote\"\n")
-	if f := ReadModelServerFile(); f.DecodeErr != nil {
-		t.Errorf("DecodeErr = %v for a clean file", f.DecodeErr)
+	if f := ReadModelServerFile(); f.RestErr != nil {
+		t.Errorf("RestErr = %v for a clean file", f.RestErr)
+	}
+}
+
+// TestReadModelServerFileReportsAKeyElsewhereAsRestErr pins that a
+// wrong-typed key outside [model-server] still leaves the table readable but
+// sets RestErr, which a plan refuses on (the writer re-encodes the whole file).
+func TestReadModelServerFileReportsAKeyElsewhereAsRestErr(t *testing.T) {
+	sessionHome(t, "[[agents]]\nname = 5\n\n[model-server]\nmode = \"remote\"\n")
+	f := ReadModelServerFile()
+	if f.RestErr == nil || f.Table == nil {
+		t.Errorf("file = %+v, want RestErr set and the table still read", f)
 	}
 }

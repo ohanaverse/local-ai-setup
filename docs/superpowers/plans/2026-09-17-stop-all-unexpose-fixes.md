@@ -174,7 +174,7 @@ Expected: PASS (3 passed)
 - [x] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/src/modelman/litellm.py modelman/tests/test_litellm.py
 git commit -m "$(cat <<'EOF'
 feat(modelman): add apply_unexpose_queue for batched un-expose
@@ -435,7 +435,7 @@ Expected: PASS (5 passed)
 - [x] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/src/modelman/local_control.py modelman/tests/test_local_control.py
 git commit -m "$(cat <<'EOF'
 fix(modelman): surface stop --all unexpose failures, batch the restart
@@ -571,7 +571,7 @@ Expected: all pass
 - [x] **Step 6: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/src/modelman/local_control.py modelman/tests/test_local_control.py
 git commit -m "$(cat <<'EOF'
 fix(modelman): stop stale-flag self-heal from clobbering concurrent exposed writes
@@ -667,7 +667,7 @@ Expected: all pass
 - [x] **Step 6: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/src/modelman/main.py modelman/tests/commands/test_local_control.py
 git commit -m "$(cat <<'EOF'
 fix(modelman): print stop --all unexpose warnings to the CLI
@@ -830,7 +830,7 @@ Expected: all pass
 - [x] **Step 6: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/src/modelman/screens/models.py modelman/tests/screens/test_app_navigation.py
 git commit -m "$(cat <<'EOF'
 fix(modelman): sync EXPOSED column after TUI reconcile self-heals a dead model
@@ -867,12 +867,12 @@ Expected: all pass
 
 - [x] **Step 3: Run the root shell lint (unaffected by this change, but part of `make test-all`)**
 
-Run: `cd /Users/keith/github/ohanaverse/local-ai-setup && make lint`
+Run: `cd /Users/user_name/github/ohanaverse/local-ai-setup && make lint`
 Expected: no errors
 
 - [x] **Step 4: Confirm no guide drift**
 
-Run: `cd /Users/keith/github/ohanaverse/local-ai-setup && git grep -n "exposed = " docs/guides/`
+Run: `cd /Users/user_name/github/ohanaverse/local-ai-setup && git grep -n "exposed = " docs/guides/`
 Expected: same output as before this branch's work started (this plan never changes an actual model's exposure state, only code paths) — spot-check that the printed lines still match the live `~/.config/local-ai/modelman.toml` if in doubt.
 
 - [x] **Step 5: Update modelman/CLAUDE.md's Local-model lifecycle paragraph**
@@ -894,7 +894,7 @@ Replace with:
 - [x] **Step 6: Commit the CLAUDE.md update**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/CLAUDE.md
 git commit -m "$(cat <<'EOF'
 docs(modelman): document batched stop --all unexpose in CLAUDE.md

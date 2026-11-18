@@ -17,7 +17,7 @@
 - **Modify:** `wt/cmd/wt/commands.go` — remove the `Hidden: true` field from `rotateCmd` (one line).
 - **Modify:** `wt/cmd/wt/main_test.go` — add `TestNoWtCommandIsHidden` and widen `TestRootHelpListsModelSubcommands`'s expected list. `cobra` and `strings` are already imported, so no import changes.
 
-Work from: `/Users/keith/github/ohanaverse/local-ai-setup/.worktrees/wt-unhide-commands`
+Work from: `/Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/wt-unhide-commands`
 
 ---
 

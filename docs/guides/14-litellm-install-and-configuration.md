@@ -164,7 +164,7 @@ openssl rand -hex 32                  # LITELLM_SALT_KEY
 
 Paste each into the plist. Do not echo them into logs or chat, and do not commit the plist.
 
-**The salt key must never change once the database holds encrypted data** (provider keys added through the Admin UI or API). Changing it makes every stored key undecryptable and you must re-enter them. Back the value up in a password manager before first use. The master key can be rotated: edit the plist, restart, then update wt-model (section 10) and any other client.
+**The salt key must never change once the database holds encrypted data** (provider keys added through the Admin UI or API). Changing it makes every stored key undecryptable and you must re-enter them. Back the value up in a password manager before first use. The master key can be rotated: edit the plist, then reload the job with `launchctl bootout` followed by `launchctl bootstrap` (section 7) — a restart alone does not re-read the plist (see the Gotchas) — and finally update wt-model (section 10) and any other client.
 
 **A plist with `DATABASE_URL` and no `LITELLM_SALT_KEY` needs care before any key change.** LiteLLM falls back to the master key when no salt key is set (see its documentation), so provider credentials stored in the database are then encrypted with the master key, and adding a fresh random salt key, or rotating the master key, would leave them unreadable. If the database already holds stored credentials, first set `LITELLM_SALT_KEY` to the *current* master key's value and restart; after that the master key can be rotated safely. If you are sure the database holds no stored credentials, or it is a fresh database, generate a random salt key as above. `wt config` refuses to rotate such a plist and points here.
 
@@ -200,7 +200,7 @@ To reload after an edit to a plist already loaded, `launchctl bootout gui/$(id -
 wt litellm restart
 ```
 
-This sends the proxy one SIGTERM and waits for it to finish a request in flight (up to **3 minutes**), then launchd starts it again and wt waits for it to answer. The port refuses connections for the whole drain. Past 3 minutes it is killed and the in-flight request is cut off, with a notice. If the job is not running, or `launchctl` finds no pid, wt runs the forced `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`, which kills after 5 seconds. Set `WT_LITELLM_RESTART_CMD` to run your own command instead (for a proxy not under that LaunchAgent). Prefer `wt litellm restart` over a bare `kickstart -k` whenever an agent might be mid-request.
+This sends the proxy one SIGTERM and waits for it to finish a request in flight (up to **3 minutes**), then launchd starts it again. The port refuses connections for the whole drain; past 3 minutes the proxy is killed, the in-flight request is cut off with a notice, and launchd starts it again. wt then waits up to 30 s for the proxy to answer, but only when a LiteLLM url is configured (wt-model's pair, or the `[litellm]` table's read-only fallback); with no pair yet — the state at this point of a fresh install, since section 10 writes it — the restart is made and not waited for, and the command says so. If the job is not running, or `launchctl` finds no pid, wt runs the forced `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`, which kills after 5 seconds. Set `WT_LITELLM_RESTART_CMD` to run your own command instead (for a proxy not under that LaunchAgent). Prefer `wt litellm restart` over a bare `kickstart -k` whenever an agent might be mid-request.
 
 Upgrade with the repo script, never a bare `uv tool upgrade` (the Prisma client and the running process would both go stale):
 
@@ -221,7 +221,7 @@ wt-model litellm set --url http://localhost:4000 --api-key <master key>
 wt-model litellm status      # url and masked key; the key is never printed
 ```
 
-The pair lives in `~/.config/wt-model/` (`config.toml` plus a `0600` `litellm.key`). **A running `wt-model` reads the pair once at startup: restart it afterwards** (section 12). `wt-model serve` exits 1 without a pair.
+The pair lives in `~/.config/wt-model/` (`config.toml` plus a `0600` `litellm.key`). **A running `wt-model` reads the pair once at startup: restart it afterwards** (the Optional LaunchAgent section below). `wt-model serve` exits 1 without a pair.
 
 ## Verification
 
@@ -279,9 +279,9 @@ When a step fails, or an apply stops with a service out of step, a result screen
 
 The tab never installs LiteLLM, Postgres, Redis or Prisma, never touches the salt key, `DATABASE_URL`, provider keys or the UI login of an existing plist, and never replaces an existing plist. The manual steps above remain the whole procedure for anything it does not do.
 
-### 11. Optional: a wt-model LaunchAgent
+### Optional: a wt-model LaunchAgent
 
-`wt-model serve` is a foreground process; this runs it at login beside the proxy. This is the file the `wt config` Model server tab manages for `local` mode (`local.wt-model.serve`, token `~/.config/wt-model/server.token`); the tab recognises a plist with that label only when it carries wt's `managed by wt` marker comment, and otherwise reports it as not managed and never overwrites it, so a hand-made plist is yours to maintain. Use a token file (mode `0600`) that sessions also name (`token_file` under `[model-server]`, see [13-deployment-use-cases.md](13-deployment-use-cases.md)):
+`wt-model serve` is a foreground process; this runs it at login beside the proxy. This is the file the `wt config` Model server tab manages for `local` mode (`local.wt-model.serve`, token `~/.config/wt-model/server.token`); the tab recognises a plist with that label only when it carries wt's `managed by wt` marker comment, and otherwise reports it as not managed and never overwrites it, so a hand-made plist is yours to maintain. Use a token file (mode `0600`) that sessions also name (`token_file` under `[model-server]`, see [13-deployment-use-cases.md](13-deployment-use-cases.md)); a remote server's token is a separate file:
 
 ```bash
 mkdir -p ~/.config/wt-model
@@ -325,6 +325,8 @@ Save as `~/Library/LaunchAgents/local.wt-model.serve.plist`:
 
 `PATH` must include wherever `ollama`, `omlx`, `mtplx`, `rec` and `sushi` live, or wt-model cannot start local models. Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.wt-model.serve.plist`. After `wt-model litellm set` or a token change, `launchctl kickstart -k gui/$(id -u)/local.wt-model.serve` restarts it. Do not run a second, hand-started `wt-model` on the same port: `KeepAlive` would loop on the bind failure.
 
+This plist carries no "managed by wt" marker, so wt's local-mode setup treats it as hand-written: it refuses to overwrite it and offers the native or remote mode instead — remove it yourself (after `launchctl bootout gui/$(id -u)/local.wt-model.serve`) if you want wt to write and manage one.
+
 ## Gotchas
 
 | Symptom | Cause and fix |
@@ -337,7 +339,7 @@ Save as `~/Library/LaunchAgents/local.wt-model.serve.plist`:
 | `/v1/models` returns 401 | Wrong bearer. Compare the key with the plist's `LITELLM_MASTER_KEY`; update wt-model with `wt-model litellm set` and restart it. |
 | wt-model returns auth errors after you rotated the master key | wt-model reads the pair once. Restart it. |
 | Stored provider keys fail to decrypt | `LITELLM_SALT_KEY` changed. Restore the original; there is no recovery otherwise. |
-| `wt` warns an `os.environ/NAME` is unset | `NAME` is missing from the plist's `EnvironmentVariables` (your shell does not count). Add it and restart. |
+| `wt` warns an `os.environ/NAME` is unset | `NAME` is missing from the plist's `EnvironmentVariables` (your shell does not count). Add it, then reload the job (row below). |
 | Edits to the plist have no effect | `launchd` reads it at load: `bootout`, then `bootstrap` again; a restart alone does not re-read it. |
 | Plist is world-readable | `chmod 600`; it holds the master key, salt key and provider keys. |
 
@@ -345,6 +347,6 @@ Save as `~/Library/LaunchAgents/local.wt-model.serve.plist`:
 
 - Proxy config, `wt litellm sync`, the Admin UI: [04-litellm-config.md](04-litellm-config.md)
 - Restarts, upgrades, log triage: [08-maintenance-and-troubleshooting.md](08-maintenance-and-troubleshooting.md)
-- Redis and the Admin UI setup history: [litellm-admin-ui-setup.md](../reference/litellm-admin-ui-setup.md) (its `prisma db push` step is wrong for 1.98+; use section 3 here)
+- Redis and the Admin UI setup history: [litellm-admin-ui-setup.md](../reference/litellm-admin-ui-setup.md) (it no longer recommends `prisma db push`; section 3 here is the schema procedure)
 - wt-model server, its token and the pair: [wt-model-server.md](../../wt/docs/wt-model-server.md); layouts: [13-deployment-use-cases.md](13-deployment-use-cases.md)
 - Who owns which file: [00-config-map.md](00-config-map.md)

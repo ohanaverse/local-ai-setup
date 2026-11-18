@@ -50,12 +50,12 @@ type Platform struct {
 // in its place (hiddenURL itself holds an '@' and is refused), so the
 // credentials are not kept.
 type ConfigState struct {
-	Path                          string
-	Exists                        bool
-	ParseErr, TableErr, DecodeErr string
-	Table                         config.ModelServerState
-	Problems                      []string
-	URLHadCredentials             bool
+	Path                        string
+	Exists                      bool
+	ParseErr, TableErr, RestErr string
+	Table                       config.ModelServerState
+	Problems                    []string
+	URLHadCredentials           bool
 }
 
 // TokenState describes the token file; the token itself is never held.
@@ -240,8 +240,8 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	if file.TableErr != nil {
 		st.Config.TableErr = file.TableErr.Error()
 	}
-	if file.DecodeErr != nil {
-		st.Config.DecodeErr = file.DecodeErr.Error()
+	if file.RestErr != nil {
+		st.Config.RestErr = file.RestErr.Error()
 	}
 	// rawURL is the configured url as written, kept out of State: it may
 	// carry a user:password, which only the ping below uses.

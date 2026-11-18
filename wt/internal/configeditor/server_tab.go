@@ -615,6 +615,10 @@ func (m *model) serverWriteBlocked() string {
 		return "the model server's state is still being read; nothing was changed"
 	case st.state.Config.ParseErr != "":
 		return "config.toml at " + st.state.Config.Path + " does not parse, so nothing is written; fix it, then press r; nothing was changed"
+	case st.state.Config.TableErr != "":
+		return "[model-server] in " + st.state.Config.Path + " cannot be read, so nothing is written; fix it, then press r; nothing was changed"
+	case st.state.Config.RestErr != "":
+		return "config.toml at " + st.state.Config.Path + " has a key that cannot be read, so nothing is written; fix it, then press r; nothing was changed"
 	case st.busy:
 		return "wait: the last action is still running; nothing was changed"
 	}

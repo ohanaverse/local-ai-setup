@@ -17,7 +17,7 @@
 - `make check` (lint + typecheck) must pass. Ruff flags unused imports (F401) and unused variables.
 - Every test needs a docstring comment describing what it verifies and why (user's global test-documentation rule).
 - Commit messages end with `Co-Authored-By: Claude Code <noreply@anthropic.com>` and reference the plan task they complete, e.g. `fix(modelman): … — completes plan item Task 3`.
-- Work in the worktree at `/Users/keith/github/ohanaverse/local-ai-setup/.worktrees/ready-toggle-delete`; all paths below are relative to `modelman/` unless they start with `docs/`.
+- Work in the worktree at `/Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/ready-toggle-delete`; all paths below are relative to `modelman/` unless they start with `docs/`.
 - `tests/test_queue.py` + `tests/test_expose.py` together take ~2.5 min — use a longer timeout or run in background.
 
 ---
