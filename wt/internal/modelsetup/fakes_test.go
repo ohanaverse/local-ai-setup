@@ -25,8 +25,9 @@ type fakeEnv struct {
 	calls []string
 
 	// FS: files and their modes.
-	files map[string][]byte
-	modes map[string]os.FileMode
+	files    map[string][]byte
+	modTimes map[string]time.Time // Stat's ModTime by path
+	modes    map[string]os.FileMode
 
 	// Launchd.
 	launchdUnavailable bool
@@ -45,6 +46,7 @@ type fakeEnv struct {
 	getStatus    int
 	getBody      []byte
 	getErr       error
+	getReplies   map[string]getReply // by full URL; wins over getStatus/getBody
 	listenerPID  int
 	listenerOK   bool
 	listenerErr  error
@@ -127,12 +129,20 @@ type fakeInfo struct {
 	name string
 	size int
 	mode os.FileMode
+	mod  time.Time
+}
+
+// getReply is one canned Net.Get answer.
+type getReply struct {
+	status int
+	body   []byte
+	err    error
 }
 
 func (i fakeInfo) Name() string       { return i.name }
 func (i fakeInfo) Size() int64        { return int64(i.size) }
 func (i fakeInfo) Mode() fs.FileMode  { return i.mode }
-func (i fakeInfo) ModTime() time.Time { return time.Time{} }
+func (i fakeInfo) ModTime() time.Time { return i.mod }
 func (i fakeInfo) IsDir() bool        { return false }
 func (i fakeInfo) Sys() any           { return nil }
 
@@ -151,7 +161,7 @@ func (x fakeFS) Stat(p string) (fs.FileInfo, error) {
 	if !ok {
 		return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
 	}
-	return fakeInfo{p, len(d), x.f.modes[p]}, nil
+	return fakeInfo{p, len(d), x.f.modes[p], x.f.modTimes[p]}, nil
 }
 
 func (x fakeFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
@@ -270,6 +280,9 @@ func (x fakeNet) Ping(_ context.Context, ep modelclient.Endpoint) (modelapi.Ping
 
 func (x fakeNet) Get(_ context.Context, url, bearer string) (int, []byte, error) {
 	x.f.rec("Net.Get %s bearer=%t", url, bearer != "")
+	if r, ok := x.f.getReplies[url]; ok {
+		return r.status, r.body, r.err
+	}
 	return x.f.getStatus, x.f.getBody, x.f.getErr
 }
 

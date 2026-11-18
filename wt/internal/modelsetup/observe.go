@@ -125,7 +125,8 @@ type Check struct {
 	Detail string
 }
 
-// LiteLLMState holds the LiteLLM checks (filled by CheckLiteLLM, not Observe).
+// LiteLLMState holds the LiteLLM checks (filled by CheckLiteLLM, which Observe
+// calls in local mode only).
 type LiteLLMState struct {
 	Checked                                                                             bool
 	Reachable, Database, KeyAccepted, RoutesInSync, RestartOwed, PortMatches, PlistMode Check
@@ -313,6 +314,11 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		st.Server.Message = "not checked: " + err.Error()
 	} else if url != "" && token != "" {
 		st.Server = pingServer(ctx, env, modelclient.Endpoint{URL: url, Token: token})
+	}
+
+	// LiteLLM checks: only where the local model server is in use.
+	if st.Resolution.Mode == modelclient.ModeLocal && ctx.Err() == nil {
+		st.LiteLLM = CheckLiteLLM(ctx, env, pair)
 	}
 	return st
 }
