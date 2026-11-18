@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -141,7 +142,7 @@ func TestGateSkipsCommandAgents(t *testing.T) {
 	stubStdinTTY(t, true)
 	runs, _ := stubEditorSideEffect(t, nil)
 	out, code := r.run(t, "--cwd", "-A", "shell")
-	if *runs != 0 || strings.Contains(out, "no model") {
+	if code != 0 || *runs != 0 || strings.Contains(out, "no model") {
 		t.Fatalf("exit %d, editor runs %d\n%s", code, *runs, out)
 	}
 }
@@ -152,10 +153,36 @@ func TestGateOpensTheEditorAtMostOnce(t *testing.T) {
 	r := newNativeRig(t)
 	stubStdinTTY(t, true)
 	runs, _ := stubEditorSideEffect(t, nil)
-	r.run(t, "--cwd", "-A", "claude", "-M", "x/y")
-	if *runs != 1 {
-		t.Errorf("editor opened %d times, want 1", *runs)
+	out, code := r.run(t, "--cwd", "-A", "claude", "-M", "x/y")
+	if code != 1 || *runs != 1 || !slices.Contains(wtLines(out), "wt: no model-server mode chosen — nothing was launched") {
+		t.Errorf("exit %d, editor opened %d times, want 1 and 1 with the no-mode line\n%s", code, *runs, out)
 	}
+}
+
+// TestGateEditorFailureEndsTheLaunchOnce: when wt config itself fails (the
+// terminal went away), the launch ends with exit 1 and exactly one wt line
+// that names the editor's error and says nothing was launched; no agent runs
+// and nothing is created. Why: the editor-error branch of ensureMode must not
+// fall through to a launch or print twice.
+func TestGateEditorFailureEndsTheLaunchOnce(t *testing.T) {
+	r := newNativeRig(t)
+	root := sharedRootRepo(t)
+	t.Chdir(root)
+	stubStdinTTY(t, true)
+	call := stubConfigEditor(t, configeditor.Result{}, errors.New("terminal went away"))
+	out, code := r.run(t, "-W", "gatebranch", "-A", "claude")
+	// The editor's host-config load of the rig's legacy config.toml prints a
+	// migration note of its own; count only the lines about the failure.
+	var failed []string
+	for _, l := range wtLines(out) {
+		if strings.Contains(l, "terminal went away") {
+			failed = append(failed, l)
+		}
+	}
+	if code != 1 || !call.called || len(failed) != 1 || !strings.HasSuffix(failed[0], "nothing was launched") || r.ranAgent("claude") {
+		t.Fatalf("exit %d, editor called %v, failure lines %q\n%s", code, call.called, failed, out)
+	}
+	wantNothingCreated(t, root, "gatebranch")
 }
 
 // TestGateEditorChoosingRemoteProceedsToARemoteLaunch: a remote mode written
@@ -204,6 +231,7 @@ func TestOneShotCommandsRefuseNamingWtConfigAndNeverOpenTheEditor(t *testing.T) 
 		{"smoke", []string{"smoke", "openrouter/x/y"}, smokeStill},
 		{"profile -M profile/", []string{"profile", "show", "-A", "claude", "-M", "profile/base"}, showStill},
 		{"profile slots add", []string{"profile", "slots", "add", "mine", "--slot", "sonnet=openrouter/x/y"}, slotEditStill},
+		{"profile slots set", []string{"profile", "slots", "set", "base", "--slot", "sonnet=openrouter/x/y"}, slotEditStill},
 		{"profile slots candidates", []string{"profile", "slots", "candidates"}, candidatesStill},
 	} {
 		for _, tty := range []bool{false, true} {
@@ -217,6 +245,38 @@ func TestOneShotCommandsRefuseNamingWtConfigAndNeverOpenTheEditor(t *testing.T) 
 				out, code := runRootWith(t, h, tc.args...)
 				if code != 1 || *runs != 0 || !strings.Contains(out, "wt config") || !strings.Contains(out, tc.still) {
 					t.Errorf("exit %d, editor runs %d, want 1, 0, wt config and %q\n%s", code, *runs, tc.still, out)
+				}
+			})
+		}
+	}
+}
+
+// TestSoftOneShotCommandsNeverOpenTheEditor runs the commands that need no
+// model server (`profile slots rm|usage`, `stats`) with no mode, on and off a
+// terminal: they succeed (exit 0, stats reporting spend as not configured) and
+// the editor never opens. Why: they read wt's own files, so only a launch may
+// ask for a mode; a gate wired into openModels would break them.
+func TestSoftOneShotCommandsNeverOpenTheEditor(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"profile slots rm", []string{"profile", "slots", "rm", "base"}, ""},
+		{"profile slots usage", []string{"profile", "slots", "usage"}, ""},
+		{"stats", []string{"stats", "--json"}, `"` + spendNotConfigured + `"`},
+	} {
+		for _, tty := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/tty=%v", tc.name, tty), func(t *testing.T) {
+				home, _, h := noServerHome(t)
+				if err := os.WriteFile(filepath.Join(home, ".config", "agent-wt", "slot-profiles.toml"), []byte(slotsBase), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				stubStdinTTY(t, tty)
+				runs, _ := stubEditorSideEffect(t, nil)
+				out, code := runRootWith(t, h, tc.args...)
+				if code != 0 || *runs != 0 || !strings.Contains(out, tc.want) {
+					t.Errorf("exit %d, editor runs %d, want 0, 0 and %q\n%s", code, *runs, tc.want, out)
 				}
 			})
 		}

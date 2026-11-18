@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -382,8 +381,14 @@ func TestUnsetModeRefusesALaunchWithoutAnything(t *testing.T) {
 				want = "wt: " + errNoModeChosen.Error()
 			}
 			out, code := r.run(t, tc.args...)
-			// The editor's host-config load may add its own migration note.
-			if lines := wtLines(out); code != 1 || !slices.Contains(lines, want) || (!tc.tty && len(lines) != 1) {
+			// A terminal row runs the editor, whose host-config load of this
+			// rig's legacy config.toml genuinely prints the migration note
+			// after the refusal (run it: it is the second wt line), so only
+			// those rows may carry that one extra line; a non-terminal row
+			// is exactly one line.
+			lines := wtLines(out)
+			okLines := len(lines) == 1 || (tc.tty && len(lines) == 2 && strings.HasPrefix(lines[1], "wt: migrated config"))
+			if code != 1 || !okLines || lines[0] != want {
 				t.Errorf("exit %d, wt lines %q; want 1 and %q\n%s", code, wtLines(out), want, out)
 			}
 			for _, s := range []string{"wt: no model server is configured", "wt config", "WT_MODEL_MODE"} {

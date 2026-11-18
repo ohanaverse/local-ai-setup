@@ -12,7 +12,8 @@ import (
 // ModelServerState is the hand-edited [model-server] table of config.toml:
 // where the wt-model server is and which file holds its bearer token.
 type ModelServerState struct {
-	// Mode is native, local or remote (empty is read as native by callers).
+	// Mode is native, local or remote (empty is unset: a launch refuses, or on a
+	// terminal opens the first-run gate; native is only the explicit value).
 	Mode      string `toml:"mode,omitempty"`
 	URL       string `toml:"url,omitempty"`
 	TokenFile string `toml:"token_file,omitempty"`

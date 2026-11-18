@@ -9,9 +9,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/spf13/cobra"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
