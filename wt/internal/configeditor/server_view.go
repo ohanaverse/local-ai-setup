@@ -27,6 +27,8 @@ func (m *model) serverHints() []string {
 		return []string{"up/down field · enter next · esc done · ctrl+c quit", "up/down · enter · esc · ctrl+c quit"}
 	case serverApplying:
 		return []string{"tab next · q quit (after this finishes)", "tab · q quit"}
+	case serverMenu:
+		return m.serverMenuHints()
 	case serverConfirm:
 		switch st.prompt {
 		case promptRemoveAgent:
@@ -46,6 +48,12 @@ func (m *model) serverHints() []string {
 	}
 	if m.serverWriteBlocked() == "" {
 		keys = append(keys, hint{"a", "apply"})
+	}
+	if m.serverLiteLLMBlocked() == "" {
+		keys = append(keys, hint{"k", "key"})
+	}
+	if m.serverTightenBlocked() == "" {
+		keys = append(keys, hint{"t", "tighten"})
 	}
 	keys = append(keys, hint{"c", "check"}, hint{"r", "re-read"})
 	if m.serverControlBlocked() == "" {
@@ -356,6 +364,7 @@ func serverStatusLines(st modelsetup.State) []serverLine {
 	lines = append(lines, agentLines(st)...)
 	lines = append(lines, serverCheckLine(st))
 	lines = append(lines, litellmLines(st)...)
+	lines = append(lines, plistModeLines(st)...)
 	if names := envNames(st); len(names) > 0 {
 		lines = append(lines, serverLine{"env", strings.Join(names, ", ") + " set: they override config.toml", toneWarn})
 	}
@@ -647,8 +656,13 @@ func (m *model) serverTabView() string {
 		return bar
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	if m.server.phase == serverConfirm {
+	switch {
+	case m.server.phase == serverConfirm:
 		return m.serverPromptView(bar, dim)
+	case m.server.phase == serverMenu:
+		return m.serverMenuView(bar, dim)
+	case m.server.result != nil && m.server.phase == serverView:
+		return m.serverResultView(bar, dim)
 	}
 	// The bar, the blank line under it and the hint line are not the body's.
 	body := "\n" + m.serverBody(m.height-lipgloss.Height(bar)-2)
