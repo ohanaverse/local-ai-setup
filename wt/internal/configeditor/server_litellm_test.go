@@ -569,7 +569,7 @@ func TestServerTabMenuAgreesWithBuildPlan(t *testing.T) {
 		"present": litellmLocalState(xmlPlist()), "no salt": litellmLocalState(noSalt), "no key": litellmLocalState(noKey),
 		"binary": litellmLocalState(binary), "unreadable": litellmLocalState(unreadable),
 	} {
-		opts, _ := serverLiteLLMMenu(st)
+		opts, _ := serverLiteLLMMenu(st, false)
 		offered := map[modelsetup.LiteLLMAction]bool{}
 		for _, o := range opts {
 			offered[o.action] = true
@@ -688,5 +688,78 @@ func TestServerTabReadsTheLiteLLMProbeWhenLocalIsChosen(t *testing.T) {
 	m = keys(t, m, "right", "left") // remote, then local again after a probed read
 	if m.server.want.Mode != modelclient.ModeLocal || sm.observes != 2 {
 		t.Errorf("remote and back: mode %q observes %d, want local and no new read", m.server.want.Mode, sm.observes)
+	}
+}
+
+// TestServerTabProbesOnFirstOpenOfAStoredLocalConfig pins that opening the
+// tab on a config that already stores mode = "local" runs the LiteLLM probe
+// in its one first read: that read is made before the mode is known, and no
+// mode key moves the choice to local because it already is local, so a read
+// that skipped the probe left the k menu saying no litellm binary was found
+// when nobody had looked. The first read asks Observe to probe if the mode it
+// resolves is local (the fake answers by the same rule), the tab still reads
+// once, and k offers create. An unset or remote config is still not probed.
+func TestServerTabProbesOnFirstOpenOfAStoredLocalConfig(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		mode  modelclient.Mode
+		probe bool
+	}{{"local", modelclient.ModeLocal, true}, {"remote", modelclient.ModeRemote, false}, {"unset", "", false}} {
+		base := installable() // no LiteLLM plist, litellm installed, port free
+		base.Resolution.Mode = c.mode
+		base.Config.Table.Mode = string(c.mode)
+		probed := 0
+		sm := &serverMachine{}
+		deps := sm.deps()
+		observe := deps.Observe
+		deps.Observe = func(ctx context.Context, o modelsetup.ObserveOptions) modelsetup.State {
+			observe(ctx, o)
+			st := base
+			if o.LiteLLMProbeSkipped(base.Resolution.Mode) {
+				st.LiteLLMInstall = modelsetup.LiteLLMInstallState{ConfigPath: base.LiteLLMInstall.ConfigPath, ConfigExists: true}
+			} else {
+				probed++
+			}
+			return st
+		}
+		m := newModel(testTheme(), &config.Config{}, nil)
+		m.opts = Options{StartTab: TabServer, Server: deps, Models: newTabMachine(t, "").deps()}
+		m.tab = TabServer
+		m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
+		m = runCmd(t, m, m.Init())
+		if m.server.want.Mode != c.mode || sm.observes != 1 || (probed == 1) != c.probe || m.server.probeSkipped == c.probe {
+			t.Fatalf("%s: mode %q observes %d probed %d probeSkipped %v, want one read, probed %v",
+				c.name, m.server.want.Mode, sm.observes, probed, m.server.probeSkipped, c.probe)
+		}
+		if !c.probe {
+			continue
+		}
+		if v := flat(plain(keys(t, m, "k"))); !strings.Contains(v, flat(optCreate)) {
+			t.Errorf("k on a stored local config does not offer create:\n%s", plain(keys(t, m, "k")))
+		}
+	}
+}
+
+// TestServerTabMenuSaysTheProbeWasNotRun pins the k menu's reason when the
+// observation shown skipped the LiteLLM probe: the binary and the port were
+// never looked at, so it says the probe was not run and names r, and never
+// claims no litellm binary was found.
+func TestServerTabMenuSaysTheProbeWasNotRun(t *testing.T) {
+	st := installable()
+	st.LiteLLMInstall = modelsetup.LiteLLMInstallState{ConfigPath: st.LiteLLMInstall.ConfigPath, ConfigExists: true}
+	opts, reasons := serverLiteLLMMenu(st, true)
+	for _, o := range opts {
+		if o.action == modelsetup.LiteLLMCreate {
+			t.Fatalf("create offered from a read that skipped the probe")
+		}
+	}
+	all := strings.Join(reasons, "\n")
+	if strings.Contains(all, "no litellm binary was found") || !strings.Contains(all, "the LiteLLM probe was not run; press r, then k again") {
+		t.Errorf("reasons %q, want the probe named as not run, not a missing binary", all)
+	}
+	// A probed read with no binary still says so.
+	st.LiteLLMInstall.ListenerChecked = true
+	if _, reasons := serverLiteLLMMenu(st, false); !strings.Contains(strings.Join(reasons, "\n"), "no litellm binary was found") {
+		t.Errorf("probed read without a binary: reasons %q, want the missing binary named", reasons)
 	}
 }

@@ -136,9 +136,10 @@ type serverTab struct {
 	result *serverResultScreen
 	// menuAt is the menu option the cursor is on.
 	menuAt int
-	// probeSkipped is true when the observation shown was made with
-	// SkipLiteLLMProbe, so it holds no litellm binary or port check: choosing
-	// local then reads again with the probe (the k menu's create needs it).
+	// probeSkipped is true when the observation shown left out the LiteLLM
+	// probe, so it holds no litellm binary or port check: choosing local then
+	// reads again with the probe (the k menu's create needs it), and the menu
+	// says the probe was not run.
 	probeSkipped bool
 }
 
@@ -146,7 +147,8 @@ type serverTab struct {
 type serverObservedMsg struct {
 	gen int
 	st  modelsetup.State
-	// skippedProbe is the observation's SkipLiteLLMProbe option.
+	// skippedProbe is whether the observation left out the LiteLLM probe
+	// (its options' LiteLLMProbeSkipped for the mode it resolved).
 	skippedProbe bool
 }
 
@@ -260,6 +262,9 @@ func (m *model) serverObserveOptions() modelsetup.ObserveOptions {
 	st := &m.server
 	var o modelsetup.ObserveOptions
 	o.SkipLiteLLMProbe = st.want.Mode != modelclient.ModeLocal
+	// Until the user moves the mode choice the mode shown is the one the read
+	// resolves, so a config that stores local is probed in that same read.
+	o.ProbeLiteLLMWhenLocal = !st.chosen
 	switch st.want.Mode {
 	case modelclient.ModeLocal:
 		if _, port, err := net.SplitHostPort(st.value(sfListen)); err == nil {
@@ -315,7 +320,8 @@ func (m *model) observeServerCmdWith(opts modelsetup.ObserveOptions) tea.Cmd {
 	m.server.asked, m.server.busy = true, true
 	gen, observe := m.server.gen, m.opts.Server.Observe
 	return func() tea.Msg {
-		return serverObservedMsg{gen: gen, st: observe(context.Background(), opts), skippedProbe: opts.SkipLiteLLMProbe}
+		st := observe(context.Background(), opts)
+		return serverObservedMsg{gen: gen, st: st, skippedProbe: opts.LiteLLMProbeSkipped(st.Resolution.Mode)}
 	}
 }
 
