@@ -195,7 +195,14 @@ _STOP_REFUSAL_CASES = [
 @pytest.mark.parametrize(
     ("stderr", "stdout", "want_hint"),
     _STOP_REFUSAL_CASES,
-    ids=["both-missing", "url-missing", "token-missing", "stdout-refusal", "native-mode", "other-refusal"],
+    ids=[
+        "both-missing",
+        "url-missing",
+        "token-missing",
+        "stdout-refusal",
+        "native-mode",
+        "other-refusal",
+    ],
 )
 def test_stop_not_configured_refusal_hints_at_the_model_server_settings(
     monkeypatch, wt_on_path, stderr, stdout, want_hint
