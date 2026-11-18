@@ -292,6 +292,8 @@ Save as `~/Library/LaunchAgents/local.wt-model.serve.plist`:
 
 `PATH` must include wherever `ollama`, `omlx`, `mtplx`, `rec` and `sushi` live, or wt-model cannot start local models. Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.wt-model.serve.plist`. After `wt-model litellm set` or a token change, `launchctl kickstart -k gui/$(id -u)/local.wt-model.serve` restarts it. Do not run a second, hand-started `wt-model` on the same port: `KeepAlive` would loop on the bind failure.
 
+This plist carries no "managed by wt" marker, so wt's local-mode setup treats it as hand-written: it refuses to overwrite it and offers the native or remote mode instead — remove it yourself (after `launchctl bootout gui/$(id -u)/local.wt-model.serve`) if you want wt to write and manage one.
+
 ## Gotchas
 
 | Symptom | Cause and fix |

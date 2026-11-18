@@ -71,10 +71,13 @@ type AgentState struct {
 }
 
 // ListenerState is whatever listens on the model server's port. Ours is true
-// when it is the LaunchAgent job's own process.
+// when it is the LaunchAgent job's own process. Err is set when the process
+// table could not be asked at all, so a plan can tell "nothing listens" from
+// "unknown" (it refuses on Err, never assumes the port is free).
 type ListenerState struct {
 	Port, PID int
 	Ours      bool
+	Err       string
 }
 
 // ServerKind says how a ping failed.
@@ -342,7 +345,9 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 	st.Listener.Port = port
 	if ctx.Err() == nil {
-		if pid, ok, err := env.Net.ListenerPID(ctx, port); err == nil && ok {
+		if pid, ok, err := env.Net.ListenerPID(ctx, port); err != nil {
+			st.Listener.Err = err.Error() // unknown, never assumed free
+		} else if ok {
 			st.Listener.PID = pid
 			st.Listener.Ours = st.Agent.Job.Running && st.Agent.Job.PID == pid
 		}

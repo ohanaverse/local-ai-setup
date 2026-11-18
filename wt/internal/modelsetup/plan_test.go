@@ -428,6 +428,16 @@ func TestBuildPlanRefusesAForeignListener(t *testing.T) {
 	mustRefuse(t, p, err, "9000", "not checked")
 }
 
+// TestBuildPlanRefusesWhenThePortCheckFailed pins that a failed listener
+// lookup is refused, never read as "the port is free": lsof failing must not
+// let a plan take a port of unknown occupancy.
+func TestBuildPlanRefusesWhenThePortCheckFailed(t *testing.T) {
+	st := freshState()
+	st.Listener = ListenerState{Port: 8787, Err: "lsof: exit status 1"}
+	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
+	mustRefuse(t, p, err, "8787", "could not be checked", "check again")
+}
+
 // TestBuildPlanRefusesAnUnmarkedPlist pins that a plist at the agent path
 // without wt's marker is never overwritten.
 func TestBuildPlanRefusesAnUnmarkedPlist(t *testing.T) {

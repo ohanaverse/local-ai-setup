@@ -286,6 +286,8 @@ func planLocal(st State, want Desired) (Plan, error) {
 		reasons = append(reasons, reason("listen address "+listen+" is not loopback", "use 127.0.0.1:<port>"))
 	case st.Listener.Port != port:
 		reasons = append(reasons, reason("port "+portText+" was not checked for a listener", "check again before applying"))
+	case st.Listener.Err != "":
+		reasons = append(reasons, reason("port "+portText+" could not be checked for a listener ("+st.Listener.Err+")", "check again before applying"))
 	case st.Listener.PID != 0 && !st.Listener.Ours:
 		reasons = append(reasons, reason(fmt.Sprintf("port %d is in use by pid %d, which is not wt's LaunchAgent", port, st.Listener.PID),
 			"stop that process or choose another port"))
