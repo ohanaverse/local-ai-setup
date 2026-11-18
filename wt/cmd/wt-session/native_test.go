@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -582,5 +584,102 @@ func TestHalfConfiguredEnvOnlyStillRefuses(t *testing.T) {
 	}
 	if r.ranAgent("claude") || len(r.builds) != 0 || strings.Contains(out, "secret") {
 		t.Errorf("launched, or printed the token\n%s", out)
+	}
+}
+
+// inlineTokenTable is a [model-server] table carrying a plaintext token and a
+// url beside mode (no mode line when mode is ""): stray values for native,
+// a problem for every other mode.
+func inlineTokenTable(mode string) string {
+	body := "\n[model-server]\n"
+	if mode != "" {
+		body += "mode = \"" + mode + "\"\n"
+	}
+	return body + "url = \"http://127.0.0.1:9\"\ntoken = \"inline-secret\"\n"
+}
+
+// TestStoredNativeIgnoresAStrayInlineToken pins the spec's "an explicit
+// native ignores stray url/token values" for the inline token too: with
+// mode = "native" beside a url and a plaintext token, a launch runs
+// natively (nothing refused), `wt stop`'s session reader prints no
+// unreadable-server note and `wt stats` reads not_configured, never
+// unavailable. One note says the token is ignored and should be removed,
+// without its value. Refusing there would block every native launch over a
+// value native never uses.
+func TestStoredNativeIgnoresAStrayInlineToken(t *testing.T) {
+	r := newNativeRig(t)
+	r.appendConfig(inlineTokenTable("native"))
+	out, code := r.run(t, "--cwd", "-A", "claude")
+	if code != 0 || !r.ranAgent("claude") || len(r.builds) != 1 || !r.builds[0].model.Native {
+		t.Fatalf("exit %d, ran %v, builds %+v; want a native launch\n%s", code, r.ranAgent("claude"), r.builds, out)
+	}
+	if n := strings.Count(out, "wt: note: config.toml: [model-server] token is ignored in native mode"); n != 1 {
+		t.Errorf("the ignored-token note appears %d times, want 1:\n%s", n, out)
+	}
+	if strings.Contains(out, "inline-secret") {
+		t.Errorf("the output carries the token:\n%s", out)
+	}
+
+	var w bytes.Buffer
+	if got := (&app{hooks: testHooks()}).hostSessionReader(context.Background(), &w)(); got != nil || strings.Contains(w.String(), "could not read client sessions") {
+		t.Errorf("stop's session reader: sessions %v, note %q; want nothing to ask and no note", got, w.String())
+	}
+	a, err := newApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := runStats(t, a, "--json")
+	if !strings.Contains(stdout, `"`+spendNotConfigured+`"`) || strings.Contains(stdout, `"`+spendUnavailable+`"`) || strings.Contains(stderr+stdout, "inline-secret") {
+		t.Errorf("stats: stdout %s stderr %q; want spend %q, never %q, and no token", stdout, stderr, spendNotConfigured, spendUnavailable)
+	}
+}
+
+// TestInlineTokenStillRefusesOutsideNative pins the other side of that
+// ruling so it cannot widen: the same plaintext token with no mode (a url
+// makes it inferred remote), remote or local refuses the launch, exit 1,
+// naming token_file and never the value, and nothing runs.
+func TestInlineTokenStillRefusesOutsideNative(t *testing.T) {
+	for _, mode := range []string{"", "remote", "local"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			r := newNativeRig(t)
+			r.appendConfig(inlineTokenTable(mode))
+			out, code := r.run(t, "--cwd", "-A", "claude")
+			if code != 1 || !strings.Contains(out, "token_file") || strings.Contains(out, "inline-secret") {
+				t.Errorf("exit %d; want 1 naming token_file without the value\n%s", code, out)
+			}
+			if r.ranAgent("claude") || len(r.builds) != 0 {
+				t.Errorf("launched beside an inline token in mode %q\n%s", mode, out)
+			}
+		})
+	}
+	// With only the token (no url, no mode) the mode is unset: the token
+	// problem is still what is said, as before the mode existed.
+	r := newNativeRig(t)
+	r.appendConfig("\n[model-server]\ntoken = \"inline-secret\"\n")
+	if out, code := r.run(t, "--cwd", "-A", "claude"); code != 1 || !strings.Contains(out, "token_file") || r.ranAgent("claude") {
+		t.Errorf("token only: exit %d; want 1 naming token_file\n%s", code, out)
+	}
+}
+
+// TestEnvOnlyEndpointLaunchesAPinnedModel is the CI and llmbench shape end
+// to end through the root command: no [model-server] table, no mode and no
+// WT_MODEL_MODE, only WT_MODEL_URL and WT_MODEL_TOKEN. The env pair resolves
+// remote against the fake server and `-M` launches that model through its
+// gateway, exit 0, with no refusal. Scripts set exactly these two variables;
+// the mode must not turn them into an unset-mode refusal.
+func TestEnvOnlyEndpointLaunchesAPinnedModel(t *testing.T) {
+	r := newNativeRig(t)
+	f := newFakeModelServer(t, wireRow("openrouter/x/y", modelapi.ActionLaunch, 1))
+	t.Setenv("WT_MODEL_URL", f.URL)
+	t.Setenv("WT_MODEL_TOKEN", f.Token)
+	out, code := r.run(t, "--cwd", "-A", "claude", "-M", "openrouter/x/y")
+	if code != 0 || !r.ranAgent("claude") || len(r.builds) != 1 {
+		t.Fatalf("exit %d, ran %v, builds %d; want one launch\n%s", code, r.ranAgent("claude"), len(r.builds), out)
+	}
+	if b := r.builds[0]; b.model.ID != "openrouter/x/y" || b.model.Native || b.gw == (agents.Gateway{}) {
+		t.Errorf("build = %+v, want openrouter/x/y through the gateway", b)
+	}
+	if strings.Contains(out, "no model server is configured") || strings.Contains(out, "natively") {
+		t.Errorf("a refusal or native note beside an env endpoint:\n%s", out)
 	}
 }

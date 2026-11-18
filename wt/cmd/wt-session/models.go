@@ -115,7 +115,9 @@ func (a *app) resetModelCaches() {
 // (modelclient.ResolveMode over [model-server] and the environment), then,
 // for local or remote, the endpoint and the client built from it. An invalid
 // mode, an unset mode and native mode are refused before any endpoint work
-// (no token file is read for them); a stored local or remote with a field
+// (no token file is read for them; native ignores every stray url and token
+// value, an inline token included, which only earns a note; any other mode
+// refuses an inline token); a stored local or remote with a field
 // only the environment supplies resolves, one missing a setting everywhere
 // is ResolveEndpoint's *NotConfiguredError.
 func (a *app) resolveModels() (*modelSession, error) {
@@ -128,19 +130,25 @@ func (a *app) resolveModels() (*modelSession, error) {
 	if res.Problem != "" {
 		return nil, &modelclient.ModeProblemError{Problem: res.Problem}
 	}
-	// The table's other problems (an inline token) refuse whatever the
-	// mode; the stored mode's own problem is ResolveMode's to judge, since
+	// An explicit native ignores stray url and token values, an inline
+	// token included (spec: "an explicit native ignores stray url/token
+	// values"); a plaintext token still earns one note, without its value.
+	if res.Mode == modelclient.ModeNative {
+		if ms.Token != "" {
+			fmt.Fprintln(osStderr, "wt: note: config.toml: [model-server] token is ignored in native mode — remove it (a token belongs in a token_file with mode 0600)")
+		}
+		return nil, &modelclient.NativeModeError{Source: res.Source}
+	}
+	// Every other mode refuses on the table's other problems (an inline
+	// token); the stored mode's own problem is ResolveMode's to judge, since
 	// WT_MODEL_MODE may override it.
 	rest := ms
 	rest.Mode = ""
 	if p := rest.Problems(); len(p) > 0 {
 		return nil, errors.New(strings.Join(p, "; "))
 	}
-	switch res.Mode {
-	case "":
+	if res.Mode == "" {
 		return nil, &modelclient.ModeUnsetError{}
-	case modelclient.ModeNative:
-		return nil, &modelclient.NativeModeError{Source: res.Source}
 	}
 	tokenFile := ms.TokenFile
 	if tokenFile != "" {

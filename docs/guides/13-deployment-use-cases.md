@@ -109,7 +109,7 @@ curl -s -H "Authorization: Bearer $(cat ~/.config/agent-wt/model-server.token)" 
 wt model list --server                   # from a session machine: the server's catalog
 ```
 
-A session with no `[model-server]` that asks for a model (`-M`, `-T`, `-F`, `wt start`, …) refuses before anything starts and names both settings and the `wt-model serve` command ([wt-session.md](../../wt/docs/wt-session.md) quotes the refusal).
+A session with no `[model-server]` that asks for a model (`-M`, `-T`, `-F`, `wt start`, …) refuses before anything starts, naming `wt config` and `WT_MODEL_MODE` (a local or remote mode missing a setting names the missing setting) ([wt-session.md](../../wt/docs/wt-session.md) quotes the refusal).
 
 ## Gotchas
 

@@ -29,7 +29,7 @@ token_file = "~/.config/agent-wt/model-server.token"
 |---|---|
 | `url` | The server's address, as `wt-model serve`'s banner prints it. |
 | `token_file` | A file holding the server's bearer token, mode `0600` (a file group or other can read is refused). `~` is expanded. |
-| `token` | Never used for auth. Its presence is not inert: while it is set a save writes `config.toml` 0600 (and never loosens an existing stricter mode), and a command that needs a model refuses with the inline-token problem (below) until the token moves into a `token_file`. |
+| `token` | Never used for auth. Its presence is not inert: while it is set a save writes `config.toml` 0600 (and never loosens an existing stricter mode), and a command that needs a model refuses with the inline-token problem (below) until the token moves into a `token_file` (in native mode it is ignored, with one `wt: note:` asking you to remove it). |
 
 Make a token file once and give the server the same file
 (`--token-file`):
