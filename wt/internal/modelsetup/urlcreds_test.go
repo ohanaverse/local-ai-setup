@@ -3,6 +3,7 @@ package modelsetup
 import (
 	"context"
 	"fmt"
+	neturl "net/url"
 	"strings"
 	"testing"
 
@@ -80,9 +81,11 @@ var plainURLs = []string{
 }
 
 // leaks reports whether s quotes the test credentials or keeps an '@' other
-// than the ones in the fixed hiddenURL and checkHidden texts.
+// than the ones in the fixed hiddenURL, checkHidden and notCheckedAtURL texts.
 func leaks(s string) bool {
-	s = strings.ReplaceAll(strings.ReplaceAll(s, hiddenURL, ""), checkHidden, "")
+	for _, fixed := range []string{hiddenURL, checkHidden, notCheckedAtURL} {
+		s = strings.ReplaceAll(s, fixed, "")
+	}
 	return strings.Contains(s, "USERX") || strings.Contains(s, "PASSX") || strings.Contains(s, "@")
 }
 
@@ -107,7 +110,8 @@ func TestHasUserinfoIsAnyAt(t *testing.T) {
 // url with an '@', scheme or not, well-formed or not, is refused at plan time
 // by the one fixed credentials reason, which echoes nothing of the url (no
 // host either: naming one meant parsing, and every parse was bypassed),
-// whether the url was not checked or its check failed; and that a plain url
+// whether the url was not checked (as Observe leaves every such url) or a
+// check of it failed; and that a plain url
 // still plans.
 func TestBuildPlanRemoteRefusesASchemelessURLWithCredentials(t *testing.T) {
 	want := "the url contains an @ (read as a user:password); wt does not store credentials in config.toml; use a token file; nothing was changed"
@@ -115,6 +119,7 @@ func TestBuildPlanRemoteRefusesASchemelessURLWithCredentials(t *testing.T) {
 		for _, server := range []ServerState{
 			{},
 			{Checked: true, Kind: KindUnreachable, Message: checkHidden, URL: hiddenURL},
+			{URL: hiddenURL, Message: notCheckedAtURL},
 		} {
 			st := freshState()
 			st.Server = server
@@ -274,18 +279,18 @@ func TestPlainURLsPassUntouched(t *testing.T) {
 	}
 }
 
-// TestObserveCheckMessageDropsTheTypedCredentials pins that a failed check of
-// a typed url with an '@', scheme or not, keeps nothing of it in
-// ServerState: the url is the fixed hiddenURL and the message (modelclient's
-// errors quote the url they dialled, and the tab shows it) is the fixed
-// checkHidden.
+// TestObserveCheckMessageDropsTheTypedCredentials pins that a typed url with
+// an '@', scheme or not, keeps nothing of it in ServerState: it is not
+// pinged (whose failure, modelclient's text, would quote the host it
+// dialled), the url is the fixed hiddenURL and the message the fixed
+// notCheckedAtURL.
 func TestObserveCheckMessageDropsTheTypedCredentials(t *testing.T) {
 	for _, raw := range everyCredentialedURL() {
 		f := obsConfigured(t)
 		f.pingErr = &modelclient.UnreachableError{Addr: raw, Reason: "dial " + raw + "/control/v1/ping: refused"}
 		st := Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")})
-		if !st.Server.Checked || st.Server.OK || st.Server.URL != hiddenURL || st.Server.Message != checkHidden {
-			t.Errorf("%q: Server = %+v, want a failed check with the url and message hidden", raw, st.Server)
+		if st.Server.Checked || f.called("Net.Ping") || st.Server.URL != hiddenURL || st.Server.Message != notCheckedAtURL {
+			t.Errorf("%q: Server = %+v, want no check, with the url and message hidden", raw, st.Server)
 		}
 		if s := fmt.Sprintf("%+v", st.Server); leaks(s) {
 			t.Errorf("%q: Server quotes the credentials: %s", raw, s)
@@ -324,6 +329,9 @@ var hostileAtURLs = []string{
 	"USERX:\xff\xfePASSX@hostq", "\xffUSERX@\xfe", "USERX:PASSX@host q",
 	"https://USERX:" + strings.Repeat("LONGPASSX", 400) + "@hostq:8787",
 	"https://USERX:PASSX@" + strings.Repeat("longhostq.", 300) + "example",
+	// The parsed host modelclient quotes is not a 3-byte run of these, so
+	// only not pinging them keeps a piece of them off the screen.
+	"http://pw/@h", "SeCrEt://u:p@x", "http://%C3%A9%C3%A9/@x",
 }
 
 // credTokens are the pieces of a hostile url a leak would show: split on the
@@ -346,6 +354,26 @@ var fixedURLTexts = []string{
 	"(hidden: the url contains an @)",
 	"the check failed; the url contains an @ so the error text is hidden",
 	"the url contains an @ (read as a user:password); wt does not store credentials in config.toml",
+	"not checked: the url contains an @; retype it without credentials",
+}
+
+// modelclientUnreachable is the error modelclient's Ping gives for raw when
+// nothing answers: Addr is the parsed host of the trimmed url (the origin
+// when it has none), as Client.addr builds it, and the reason is the
+// transport's, which names the lowercased scheme it does not support or
+// the host it could not dial. Neither is a 3-byte run of raw in general.
+func modelclientUnreachable(raw string) error {
+	origin := strings.TrimRight(raw, "/")
+	addr := origin
+	u, err := neturl.Parse(origin)
+	if err == nil && u.Host != "" {
+		addr = u.Host
+	}
+	reason := "dial tcp: lookup " + addr + ": no such host"
+	if err == nil && u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" {
+		reason = `unsupported protocol scheme "` + u.Scheme + `"`
+	}
+	return &modelclient.UnreachableError{Addr: addr, Reason: reason}
 }
 
 // atURLSurfaces runs raw through every output a url reaches and returns each
@@ -357,7 +385,7 @@ var fixedURLTexts = []string{
 func atURLSurfaces(t *testing.T, raw string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
-	pingErr := &modelclient.UnreachableError{Addr: raw, Reason: "dial " + raw + "/control/v1/ping: refused (" + raw + ")"}
+	pingErr := modelclientUnreachable(raw)
 
 	if p, err := BuildPlan(freshState(), Desired{Mode: modelclient.ModeRemote, URL: raw, PastedToken: plPasted, SaveUnchecked: true}); err == nil {
 		t.Errorf("%q planned:\n%s", raw, p.Format())
@@ -432,8 +460,11 @@ func atURLSurfaces(t *testing.T, raw string) map[string]string {
 // TestNoPieceOfAnAtURLReachesAnyOutput is the property behind the rule "no
 // parsing, no partial echo": for every hostile url holding an ASCII '@', no
 // piece of it (two bytes or longer, split on url punctuation and white
-// space) appears in any output once the fixed placeholder and refusal
-// sentences are taken out, however the url would parse.
+// space; compared ignoring case and also percent-decoded, since a parser
+// lowercases a scheme and decodes a host) appears in any output once the
+// fixed placeholder and refusal sentences are taken out, however the url
+// would parse. The fake ping fails the way modelclient does, quoting the
+// parsed host, so a url that is pinged at all shows a piece here.
 func TestNoPieceOfAnAtURLReachesAnyOutput(t *testing.T) {
 	if len(hostileAtURLs) < 60 {
 		t.Fatalf("only %d hostile urls", len(hostileAtURLs))
@@ -446,11 +477,112 @@ func TestNoPieceOfAnAtURLReachesAnyOutput(t *testing.T) {
 			for _, fixed := range fixedURLTexts {
 				got = strings.ReplaceAll(got, fixed, "")
 			}
+			lower := strings.ToLower(got)
+		tokens:
 			for _, tok := range credTokens(raw) {
-				if strings.Contains(got, tok) {
-					t.Errorf("%s for %q shows %q:\n%s", name, raw, tok, got)
-					break
+				forms := []string{tok}
+				if dec, err := neturl.PathUnescape(tok); err == nil && dec != tok && len(dec) >= 2 {
+					forms = append(forms, dec)
 				}
+				for _, form := range forms {
+					if strings.Contains(lower, strings.ToLower(form)) {
+						t.Errorf("%s for %q shows %q:\n%s", name, raw, form, got)
+						break tokens
+					}
+				}
+			}
+		}
+	}
+}
+
+// wantNotCheckedAtURL pins notCheckedAtURL's text: a url with an '@' gets
+// this sentence in place of a check.
+const wantNotCheckedAtURL = "not checked: the url contains an @; retype it without credentials"
+
+// neverPingedAtURLs are urls with an '@' that Observe must not ping: the
+// earlier bypasses, urls whose parsed host modelclient would quote (and which
+// are not a 3-byte run of the typed text), the placeholder itself (the form
+// prefills it, so a re-check enters it) and a plain credentialed url.
+func neverPingedAtURLs() []string {
+	return append(append([]string{}, bypassURLs...),
+		"http://pw/@h", "http://pw?@h", "http://pw#@h", "SeCrEt://u:p@x", "PW://@x",
+		"http://%C3%A9%C3%A9/@x", hiddenURL, "https://USERX:PASSX@gpu.example:8787")
+}
+
+// atURLObserveCases runs Observe with raw as the url it would ping, from each
+// place that url comes from: entered with a token, entered with none, stored
+// in config.toml (mode remote) and WT_MODEL_URL. Each fake's ping would fail
+// the way modelclient does, so a ping that ran would show in the message.
+func atURLObserveCases(t *testing.T, raw string) map[string]struct {
+	f  *fakeEnv
+	st State
+} {
+	t.Helper()
+	out := map[string]struct {
+		f  *fakeEnv
+		st State
+	}{}
+	run := func(name string, f *fakeEnv, o ObserveOptions) {
+		f.pingErr = modelclientUnreachable(raw)
+		out[name] = struct {
+			f  *fakeEnv
+			st State
+		}{f, Observe(context.Background(), f.Env(), o)}
+	}
+	run("entered", obsConfigured(t), ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")})
+	run("entered, no token", obsConfigured(t), ObserveOptions{CheckURL: raw})
+	f := obsConfigured(t)
+	f.configFile.Table.Mode, f.configFile.Table.URL = "remote", raw
+	run("stored", f, ObserveOptions{})
+	f = obsConfigured(t)
+	f.configFile.Table.Mode, f.configFile.Table.URL = "remote", ""
+	f.env["WT_MODEL_URL"] = raw
+	run("WT_MODEL_URL", f, ObserveOptions{})
+	return out
+}
+
+// TestObserveNeverPingsAnAtURL pins the rule's last hole closed: a url with
+// an '@' is never pinged, whichever place it came from, because a ping both
+// sends its userinfo to the host as Basic auth and fails with modelclient's
+// text quoting the parsed host (not always a run of the typed url, so the
+// message redaction cannot catch it). The check reads as not made, with the
+// placeholder for the url and one fixed sentence that holds nothing of it.
+func TestObserveNeverPingsAnAtURL(t *testing.T) {
+	urls := neverPingedAtURLs()
+	if len(urls) < 20 {
+		t.Fatalf("only %d urls", len(urls))
+	}
+	for _, raw := range urls {
+		for name, c := range atURLObserveCases(t, raw) {
+			if c.f.called("Net.Ping") {
+				t.Errorf("%s %q: pinged: %q", name, raw, c.f.calls)
+			}
+			s := c.st.Server
+			if s.Checked || s.OK || s.Kind != KindNone || s.URL != hiddenURL || s.Message != wantNotCheckedAtURL {
+				t.Errorf("%s %q: Server = %+v, want not checked with %q", name, raw, s, wantNotCheckedAtURL)
+			}
+		}
+	}
+}
+
+// TestObserveStillPingsAPlainURL pins that the no-ping rule costs a url with
+// no '@' nothing: entered, stored or from WT_MODEL_URL, it is pinged as
+// written and recorded byte for byte, and its failure message is kept.
+func TestObserveStillPingsAPlainURL(t *testing.T) {
+	for _, raw := range []string{"gpu.example:8787", "https://gpu.example:8787", "[::1]:8787"} {
+		for name, c := range atURLObserveCases(t, raw) {
+			if name == "entered, no token" {
+				if c.f.called("Net.Ping") || c.st.Server.Message != "no token entered for "+raw {
+					t.Errorf("%s %q: calls %q Server %+v", name, raw, c.f.calls, c.st.Server)
+				}
+				continue
+			}
+			if !c.f.called("Net.Ping " + raw) {
+				t.Errorf("%s %q: not pinged as written: %q", name, raw, c.f.calls)
+			}
+			want := modelclientUnreachable(raw).Error()
+			if s := c.st.Server; !s.Checked || s.OK || s.Kind != KindUnreachable || s.URL != raw || s.Message != want {
+				t.Errorf("%s %q: Server = %+v, want a failed check of the url with %q", name, raw, s, want)
 			}
 		}
 	}

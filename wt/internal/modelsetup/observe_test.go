@@ -350,17 +350,17 @@ func TestObserveDescribesTheTokenFilesAPlanMayChoose(t *testing.T) {
 	}
 }
 
-// TestObserveRecordsThePingedURLWithoutUserinfo pins that ServerState names
-// the endpoint it pinged, so a plan can tell whose check it holds, and that
-// a url holding an '@' is never stored: it is pinged as written but
-// recorded as the fixed hiddenURL, whole (no host kept).
+// TestObserveRecordsThePingedURLWithoutUserinfo pins that a url holding an
+// '@' is never stored in ServerState: it is not pinged at all (the check
+// reads as not made) and is recorded as the fixed hiddenURL, whole (no host
+// kept).
 func TestObserveRecordsThePingedURLWithoutUserinfo(t *testing.T) {
 	f := obsConfigured(t)
 	f.configFile.Table.Mode = "remote"
 	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if !st.Server.Checked || st.Server.URL != hiddenURL {
-		t.Errorf("Server = %+v", st.Server)
+	if st.Server.Checked || st.Server.URL != hiddenURL || f.called("Net.Ping") {
+		t.Errorf("Server = %+v, calls %q", st.Server, f.calls)
 	}
 	if strings.Contains(fmt.Sprintf("%+v", st.Server), "pw-SECRET") {
 		t.Errorf("ServerState holds the url's password")
@@ -370,8 +370,8 @@ func TestObserveRecordsThePingedURLWithoutUserinfo(t *testing.T) {
 // TestObserveStripsUserinfoFromTheConfiguredURL pins that a [model-server]
 // url holding an '@' never reaches State.Config.Table (the tab draws that
 // table): it is replaced whole by hiddenURL, host included; that it is
-// reported as a problem the way an inline token is, and that the ping still
-// goes to the url as written.
+// reported as a problem the way an inline token is, and that it is not
+// pinged (a ping would send the user:password as Basic auth).
 func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
 	f := obsConfigured(t)
 	f.configFile.Table.Mode = "remote"
@@ -392,8 +392,8 @@ func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
 	if !found {
 		t.Errorf("Problems = %q, want one about the url's credentials", st.Config.Problems)
 	}
-	if !st.Server.Checked || !st.Server.OK {
-		t.Errorf("Server = %+v, want the url pinged as written", st.Server)
+	if st.Server.Checked || f.called("Net.Ping") {
+		t.Errorf("Server = %+v, calls %q, want the url not pinged", st.Server, f.calls)
 	}
 }
 
@@ -402,21 +402,34 @@ func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
 // one) with the token the user entered (pasted, else read from the typed
 // token file), so a remote plan's check gate is about the server the user
 // named. Without an entered token nothing is pinged and the reason is said;
-// no State field holds the entered token or the url's password (a url with
-// an '@' is recorded as hiddenURL).
+// no State field holds the entered token. An entered url with an '@' is
+// pinged neither (TestObserveNeverPingsAnAtURL has the full set), nor is the
+// stored one in its place.
 func TestObservePingsTheEnteredEndpoint(t *testing.T) {
 	f := obsConfigured(t)
 	st := Observe(context.Background(), f.Env(), ObserveOptions{
-		CheckURL: "https://me:pw-SECRET@gpu.example:8787", CheckToken: Secret("  tok-ENTERED  "),
+		CheckURL: "https://gpu.example:8787", CheckToken: Secret("  tok-ENTERED  "),
 	})
-	if !f.called("Net.Ping https://me:pw-SECRET@gpu.example:8787") || f.called("Net.Ping http://127.0.0.1:8787") {
+	if !f.called("Net.Ping https://gpu.example:8787") || f.called("Net.Ping http://127.0.0.1:8787") {
 		t.Errorf("calls = %q, want the entered url pinged as typed and not the stored one", f.calls)
 	}
 	if len(f.pingTokens) != 1 || f.pingTokens[0] != "tok-ENTERED" {
 		t.Errorf("ping tokens = %q, want the pasted token, trimmed", f.pingTokens)
 	}
-	if !st.Server.Checked || st.Server.URL != hiddenURL {
-		t.Errorf("Server = %+v, want the entered url recorded as %q", st.Server, hiddenURL)
+	if !st.Server.Checked || st.Server.URL != "https://gpu.example:8787" {
+		t.Errorf("Server = %+v, want the entered url recorded", st.Server)
+	}
+	if s := fmt.Sprintf("%+v", st); strings.Contains(s, "tok-ENTERED") {
+		t.Errorf("State holds the entered token")
+	}
+
+	// An entered url with an '@': nothing is pinged, the stored url included.
+	f = obsConfigured(t)
+	st = Observe(context.Background(), f.Env(), ObserveOptions{
+		CheckURL: "https://me:pw-SECRET@gpu.example:8787", CheckToken: Secret("tok-ENTERED"),
+	})
+	if f.called("Net.Ping") || st.Server.Checked || st.Server.URL != hiddenURL {
+		t.Errorf("calls = %q Server = %+v, want no ping and the url hidden", f.calls, st.Server)
 	}
 	if s := fmt.Sprintf("%+v", st); strings.Contains(s, "tok-ENTERED") || strings.Contains(s, "pw-SECRET") {
 		t.Errorf("State holds the entered token or the url's password")

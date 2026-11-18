@@ -26,7 +26,9 @@ import (
 // CheckURL, when set, is the url the user entered: Observe pings it instead
 // of the configured one, with CheckToken (a pasted token) or else the token
 // read from CheckTokenFile, so a remote plan's check is about the server the
-// user named. Neither the token nor the url's userinfo goes into State.
+// user named. Neither the token nor the url's userinfo goes into State. A
+// url holding an '@' (entered, stored or WT_MODEL_URL) is never pinged: the
+// check reads as not made, with the fixed notCheckedAtURL message.
 type ObserveOptions struct {
 	ListenPort     int
 	TokenPaths     []string
@@ -457,11 +459,20 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			st.Server.Message = "no token entered for " + shownURL(url)
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		st.Server.Message = "not checked: " + err.Error()
-	} else if url != "" && token != "" {
+	switch {
+	case hasUserinfo(url):
+		// Never pinged: a ping would send the userinfo to the host as Basic
+		// auth, and modelclient's failure quotes the parsed host, which no
+		// redaction of the typed text can find. The plan refuses the url
+		// anyway; the check reads as not made, in words that hold none of it.
+		st.Server = ServerState{URL: hiddenURL, Message: notCheckedAtURL}
+	case ctx.Err() != nil:
+		st.Server.Message = "not checked: " + ctx.Err().Error()
+	case url != "" && token != "":
 		st.Server = pingServer(ctx, env, modelclient.Endpoint{URL: url, Token: token})
 		st.Server.URL = shownURL(url)
+		// Defence in depth: the url pinged holds no '@' here, but the stored
+		// or entered one beside it may.
 		st.Server.Message = redactCheck(st.Server.Message, url, rawURL, envURL, opts.CheckURL)
 	}
 

@@ -270,7 +270,9 @@ func serverCheckLine(st modelsetup.State) serverLine {
 	case st.Resolution.Mode == modelclient.ModeNative:
 		return serverLine{"server", "none in native mode", toneDim}
 	case !s.Checked && s.Message != "":
-		return serverLine{"server", "not checked: " + scrub(s.Message), toneDim}
+		// A message that already says so (a url with an '@', a cancelled
+		// read) is not prefixed twice.
+		return serverLine{"server", "not checked: " + scrub(strings.TrimPrefix(s.Message, "not checked: ")), toneDim}
 	case !s.Checked:
 		return serverLine{"server", "not checked: " + missingForCheck(st), toneDim}
 	case s.OK:

@@ -7,7 +7,9 @@ import "strings"
 // stored in State: no parsing, no partial echo. A model-server url has no
 // legitimate '@', so any url holding one is refused, and nothing derived from
 // it (no host, no user, no piece) is ever shown: the whole url is replaced
-// by hiddenURL, and a check message that may quote it by checkHidden.
+// by hiddenURL, and it is never pinged (the check reads as not made, with
+// notCheckedAtURL); a check message that may still quote one is replaced by
+// checkHidden, as defence in depth.
 // Finding the credential span in an arbitrary string was tried twice and
 // bypassed twice; this rule has nothing to find.
 
@@ -15,6 +17,10 @@ import "strings"
 // or held in State. It holds an '@' itself, so it is refused like the url it
 // stands for and can never be written into config.toml.
 const hiddenURL = "(hidden: the url contains an @)"
+
+// notCheckedAtURL is ServerState.Message for a url holding an '@': Observe
+// never pings one, so the check is not made, and the words hold none of it.
+const notCheckedAtURL = "not checked: the url contains an @; retype it without credentials"
 
 // checkHidden replaces a check message that may quote a url holding an '@'.
 const checkHidden = "the check failed; the url contains an @ so the error text is hidden"
