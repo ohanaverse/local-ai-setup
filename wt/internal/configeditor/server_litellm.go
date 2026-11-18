@@ -274,8 +274,10 @@ func (m *model) resultWindow() (lines []string, rows int, scrolls bool) {
 }
 
 // updateServerResult takes keys while the result screen shows: up and down
-// scroll, esc and enter leave it; q, ctrl+c, tab, c and r work as ever.
-// Reports whether the key was handled here.
+// scroll, esc and enter leave it; q, ctrl+c and tab work as ever. Every other
+// key is eaten, c and r included: a check or re-read would replace the
+// status, and the Recovery commands and notes of a failed apply could not be
+// shown again. Reports whether the key was handled here.
 func (m *model) updateServerResult(key string) bool {
 	st := &m.server
 	lines, rows, _ := m.resultWindow()
@@ -286,11 +288,6 @@ func (m *model) updateServerResult(key string) bool {
 		st.result.top = min(st.result.top+1, max(len(lines)-rows, 0))
 	case "esc", "enter":
 		st.result = nil
-	case "c", "r":
-		// A new read replaces what the screen reports, and its status line
-		// would be hidden behind the screen: leave the screen.
-		st.result = nil
-		return false
 	case "q", "ctrl+c", "tab":
 		return false
 	}
@@ -315,5 +312,5 @@ func (m *model) serverResultHints(scrolls bool) []string {
 	if scrolls {
 		scroll, short = "up/down scroll · ", "up/down · "
 	}
-	return []string{scroll + "esc done · c check · r re-read · tab next · q quit", short + "esc · c · r · tab · q quit", "esc · q quit"}
+	return []string{scroll + "esc/enter done · tab next · q quit", short + "esc/enter · tab · q quit", "esc · q quit"}
 }

@@ -589,3 +589,38 @@ func TestServerTabMenuAgreesWithBuildPlan(t *testing.T) {
 		}
 	}
 }
+
+// TestServerTabResultScreenEatsCAndR pins that c and r do nothing while the
+// result screen shows: a check or re-read would replace the status and the
+// screen with it, and the Recovery commands and the backup note of a failed
+// apply could not be brought back. The screen and its text stay, no read is
+// asked for, and the hint line names esc/enter to close it and neither key;
+// after esc, c reads again as usual.
+func TestServerTabResultScreenEatsCAndR(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: failedRotate()}
+	m := keys(t, pickOption(t, serverEditor(t, sm, 120, 50), 1), "y")
+	if m.server.result == nil {
+		t.Fatalf("no result screen (status %q)", m.server.status)
+	}
+	before := sm.observes
+	for _, k := range []string{"c", "r"} {
+		m = keys(t, m, k)
+		if m.server.result == nil || !strings.Contains(m.server.result.recovery, "cp -p "+tlBackup) {
+			t.Fatalf("%s closed the result screen or lost its Recovery (status %q)", k, m.server.status)
+		}
+		if !strings.Contains(flat(plain(m)), flat("cp -p "+tlBackup)) || !strings.Contains(flat(plain(m)), flat(tlBackup+" (it holds")) {
+			t.Errorf("%s: the Recovery or the backup note is no longer drawn:\n%s", k, plain(m))
+		}
+		if sm.observes != before {
+			t.Errorf("%s: observes %d -> %d, want no read while the result shows", k, before, sm.observes)
+		}
+	}
+	h := hintLine(m)
+	if !strings.Contains(h, "esc/enter") || strings.Contains(h, "c check") || strings.Contains(h, "r re-read") {
+		t.Errorf("result hints = %q, want esc/enter to close and no c or r", h)
+	}
+	m = keys(t, m, "esc", "c")
+	if m.server.result != nil || sm.observes != before+1 {
+		t.Errorf("esc then c: result %v, observes %d, want the screen closed and one read", m.server.result != nil, sm.observes-before)
+	}
+}
