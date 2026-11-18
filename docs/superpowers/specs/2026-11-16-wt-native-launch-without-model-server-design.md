@@ -2,6 +2,8 @@
 
 Status: approved by the user in conversation 2026-11-16 (approach A). Follow-up for external enterprise gateways (pi): #618.
 
+> **Superseded in part (2026-11-17).** The trigger below, native whenever no `[model-server]` or `WT_MODEL_*` value exists, is reversed by [2026-11-17-wt-session-model-server-config-design.md](2026-11-17-wt-session-model-server-config-design.md): native is now an explicit stored mode (`mode = "native"` or `WT_MODEL_MODE=native`), and an unset mode refuses a launch (on a terminal the first model-using launch opens `wt config` once). The native launch itself (no catalog, no client session, the one `wt:` line) stands.
+
 ## Intent
 
 Since Phase 2 (#616) every launch of a model-driven agent refuses without a `[model-server]` (exit 1, "nothing was launched"). A machine that never used wt-model, or whose agent reaches its model through the agent's own configuration (for example org-managed Claude Code settings that point at a company gateway and supply credentials), can no longer launch `claude-wt` at all. The user's words: "without wt-model, claude-wt just runs claude without model prompt."

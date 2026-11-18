@@ -13,42 +13,46 @@
 
 ```bash
 # one shared token file, mode 0600:
-umask 077; head -c 32 /dev/urandom | base64 > ~/.config/agent-wt/model-server.token
+umask 077; head -c 32 /dev/urandom | base64 > ~/.config/wt-model/server.token
 
 # the model server (a foreground process; ctrl+c stops it):
-wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/agent-wt/model-server.token
+wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/wt-model/server.token
 
 # name it for every session on this machine — ~/.config/agent-wt/config.toml:
 #   [model-server]
+#   mode = "local"
 #   url = "http://127.0.0.1:8787"
-#   token_file = "~/.config/agent-wt/model-server.token"
+#   token_file = "~/.config/wt-model/server.token"
 
 wt model list --server      # the catalog this session's pickers will show
 ```
 
 ## Steps
 
+The `wt config` Model server tab does most of this for you: `local` makes the token file `~/.config/wt-model/server.token`, installs a `wt-model` LaunchAgent and writes the `[model-server]` table below; `remote` writes the table and keeps the token in `~/.config/agent-wt/remote-model-server.token` on the session machine. The commands here are the same steps by hand. A session with no mode chosen refuses a launch that needs a model (on a terminal it opens the tab first).
+
 ### 1. Make one token file
 
 The same command in every layout (a fresh 32-byte token, nobody else can read the file):
 
 ```bash
-umask 077; head -c 32 /dev/urandom | base64 > ~/.config/agent-wt/model-server.token
+mkdir -p ~/.config/wt-model; umask 077; head -c 32 /dev/urandom | base64 > ~/.config/wt-model/server.token
 ```
 
-`wt-model serve` takes it as `--token-file PATH`, and each session names the same file as `token_file` under `[model-server]` (or `WT_MODEL_TOKEN_FILE`). A file a group or other can read is refused by both sides (`chmod 600 PATH` is the fix). To rotate: write a new file with the command above, restart `wt-model serve`, and give every session machine the new token.
+On a machine that only runs sessions (use cases 2 and 3), put the copy at `~/.config/agent-wt/remote-model-server.token`. `wt-model serve` takes it as `--token-file PATH`, and each session names the same file as `token_file` under `[model-server]` (or `WT_MODEL_TOKEN_FILE`). A file a group or other can read is refused by both sides (`chmod 600 PATH` is the fix). To rotate: write a new file with the command above, restart `wt-model serve`, and give every session machine the new token.
 
 ### 2. Use case 1 — both on one machine
 
 ```bash
-wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/agent-wt/model-server.token
+wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/wt-model/server.token
 ```
 
 ```toml
 # ~/.config/agent-wt/config.toml (same machine)
 [model-server]
+mode = "local"
 url = "http://127.0.0.1:8787"
-token_file = "~/.config/agent-wt/model-server.token"
+token_file = "~/.config/wt-model/server.token"
 ```
 
 Loopback needs the token all the same — the server never opens without one. Everything a session does (pickers, `-M`, start/stop jobs, `wt smoke`, spend in `wt stats`) is a call to that one address.
@@ -60,18 +64,19 @@ The agent runs in the VM; the models run on the host. The VM needs exactly one o
 ```bash
 # on the host: make the token, then listen on an address the VM can reach
 # (the host's VM-facing interface if you can avoid 0.0.0.0):
-umask 077; head -c 32 /dev/urandom | base64 > ~/.config/agent-wt/model-server.token
-wt-model serve --listen 0.0.0.0:8787 --token-file ~/.config/agent-wt/model-server.token
+umask 077; head -c 32 /dev/urandom | base64 > ~/.config/wt-model/server.token
+wt-model serve --listen 0.0.0.0:8787 --token-file ~/.config/wt-model/server.token
 
 # give the VM the same token file (mode 0600 on both sides):
-scp ~/.config/agent-wt/model-server.token <vm>:~/.config/agent-wt/model-server.token
+scp ~/.config/wt-model/server.token <vm>:~/.config/agent-wt/remote-model-server.token
 ```
 
 ```toml
 # ~/.config/agent-wt/config.toml (in the VM; the host's address as the VM sees it)
 [model-server]
+mode = "remote"
 url = "http://<host>:8787"
-token_file = "~/.config/agent-wt/model-server.token"
+token_file = "~/.config/agent-wt/remote-model-server.token"
 ```
 
 The host keeps its own `[model-server]` (use case 1) or none: a host command (`wt model add`, `wt cloud-sync`, `wt litellm …`, `wt-model litellm set|status`) needs no server.
@@ -82,14 +87,15 @@ The same two halves as use case 2 over a LAN: `wt-model serve` on the machine th
 
 ```bash
 # on the model machine:
-wt-model serve --listen <lan-address>:8787 --token-file ~/.config/agent-wt/model-server.token
+wt-model serve --listen <lan-address>:8787 --token-file ~/.config/wt-model/server.token
 ```
 
 ```toml
 # ~/.config/agent-wt/config.toml (on the session machine)
 [model-server]
+mode = "remote"
 url = "http://<lan-address>:8787"
-token_file = "~/.config/agent-wt/model-server.token"
+token_file = "~/.config/agent-wt/remote-model-server.token"
 ```
 
 Several session machines (and several `wt` runs on each) can use one server at once; each run registers its own client session, and the server stops a local model no client session uses after its idle grace.
@@ -104,7 +110,7 @@ Several session machines (and several `wt` runs on each) can use one server at o
 
 ```bash
 wt-model --version                       # wt-model <version>
-curl -s -H "Authorization: Bearer $(cat ~/.config/agent-wt/model-server.token)" \
+curl -s -H "Authorization: Bearer $(cat ~/.config/wt-model/server.token)" \
   http://127.0.0.1:8787/control/v1/ping   # {"api_major":1,"schema":N,"server":"…"} — wt refuses a server whose schema differs: restart wt-model after updating wt
 wt model list --server                   # from a session machine: the server's catalog
 ```

@@ -23,11 +23,45 @@ tabs, named on its first line; `Tab` switches between them.
   it reads and writes this machine's registry and `config.yaml`, not the
   model server's, until it moves to `wt-model` ([`wt-session.md`](wt-session.md),
   "Interim limits").
-- **Model server** — checks the `wt-model` server and its LiteLLM proxy and
-  sets up the server's address, token and proxy key.
+- **Model server** — the mode this machine's sessions use (`native`, `local`
+  or `remote`), checked against the `wt-model` server and its LiteLLM proxy.
+  See "Model server tab" below.
 
 `wt config` needs no model server: it opens, and edits `config.toml`, with
 none configured.
+
+### Model server tab
+
+The tab shows the stored mode, what the machine actually has (the server's
+answer, the LiteLLM proxy for a local server, the token file) and the choice
+of mode. It is the one place `wt` writes the `[model-server]` table of
+`config.toml` (`mode`, `url`, `token_file`; [`wt-session.md`](wt-session.md)),
+and every change is a plan listed first: nothing is written until you answer
+`y` to "Apply this plan?" (default no).
+
+- `native` stores `mode = "native"` and no url or token: wt launches agents
+  with their own configuration and uses no model server.
+- `local` sets up a `wt-model` on this machine: a 0600 token file
+  (`~/.config/wt-model/server.token` unless you name another), wt-model's
+  LiteLLM pair, the `local.wt-model.serve` LaunchAgent listening on a loopback
+  address (`127.0.0.1:8787` unless you name another), then the table. macOS
+  only; a plist wt did not write is never overwritten.
+- `remote` stores the url of a server elsewhere and its token, from a token
+  file or a pasted token that the tab writes (0600) to
+  `~/.config/agent-wt/remote-model-server.token`. The entered url is pinged
+  first; a failed check can be saved anyway.
+
+Keys (the footer names the ones that apply): `left`/`right`/`space` choose the
+mode, `down` and `enter` move through its fields, `a` plans and applies, `c`
+checks (reads only), `r` re-reads, `s` / `x` / `R` start, stop or restart the
+local server, `tab` switches tabs and `q` quits. The tab is a form, so the
+text fields take typed keys until `esc`.
+
+When `config.toml` does not parse, the tab says so with the parser's message
+and writes nothing; fix the file and press `r`. It also opens by itself on a
+terminal when a launch finds no mode chosen (the first-run gate in
+[`wt-session.md`](wt-session.md)); quitting the editor there goes back to the
+launch.
 
 ### Agent list
 
@@ -94,7 +128,7 @@ status line, whichever tab `q` was typed on.
 The prompt is about agent edits only: a change made on the Models tab is
 already in `registry.toml` when it is made.
 
-`Esc` on either tab's list does not quit: it clears a filter (`/`) and does
+`Esc` on the Agents or Models list does not quit: it clears a filter (`/`) and does
 nothing else. Only `q` and `Ctrl+C` leave the editor.
 
 ## Where settings live
@@ -103,16 +137,16 @@ All `wt config` settings live in `~/.config/agent-wt/` (or
 `$XDG_CONFIG_HOME/agent-wt/`). The theme subcommand writes
 `themes.toml`; other subcommands will add their own files alongside it.
 
-> **The model server and LiteLLM are not `wt config` settings.** Every
-> session reaches its models through the model server named by the
-> hand-edited `[model-server]` table in `config.toml` (`url`, `token_file`;
-> [`wt-session.md`](wt-session.md)). The proxy's url and key live in the
-> `wt-model` config home (`~/.config/wt-model/`), which the model server
-> reads; `wt-model litellm status` / `wt-model litellm set` show and change
-> them (the `[litellm]` table here is their read-only fallback). Its `enabled` key is retired and ignored (one note
-> per process when it is `true`) and `wt litellm on` / `off` are retired
-> stubs that exit 1. The editor saves only the agents and `default_tag`, and
-> keeps both tables as they are.
+> **The Agents tab's save writes only the agents and `default_tag`.** The
+> `[model-server]` table (`mode`, `url`, `token_file`;
+> [`wt-session.md`](wt-session.md)) is written by the Model server tab alone,
+> as the plan it shows, and a save keeps it as it is. The proxy's url and key
+> are not `config.toml` settings: they live in the `wt-model` config home
+> (`~/.config/wt-model/`), which the model server reads; `wt-model litellm
+> status` / `wt-model litellm set` show and change them (the `[litellm]`
+> table here is their read-only fallback). Its `enabled` key is retired and
+> ignored (one note per process when it is `true`) and `wt litellm on` /
+> `off` are retired stubs that exit 1.
 
 > **The `[launch]` table is not a `wt config` setting either.** Its
 > `exit_prompt` key in `config.toml` is tolerated and ignored — the exit
