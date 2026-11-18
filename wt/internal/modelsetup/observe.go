@@ -318,6 +318,10 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			}
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			st.Agent.Err = err.Error()
+		} else if danglingLink(env, st.Agent.PlistPath) {
+			// A link there that does not resolve is a plist that exists (a
+			// plan must not write over the link), but one wt cannot read.
+			st.Agent.Present, st.Agent.Err = true, st.Agent.PlistPath+" is a symlink that does not resolve"
 		}
 	} else {
 		st.Agent.Err = "home directory: " + herr.Error()
@@ -397,7 +401,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		if !st.LiteLLMPlist.Present {
 			// A symlink there that does not resolve is a plist that exists
 			// (a create must not replace the link), but one wt cannot read.
-			if fi, lerr := env.FS.Lstat(lp); lerr == nil && fi.Mode()&fs.ModeSymlink != 0 {
+			if danglingLink(env, lp) {
 				st.LiteLLMPlist.Present = true
 				st.LiteLLMPlist.Err = lp + " is a symlink that does not resolve"
 			}
@@ -562,13 +566,26 @@ func configHome(xdg, home string, herr error) string {
 	return filepath.Join(home, ".config")
 }
 
+// danglingLink is true when p is a symlink (Lstat sees it) that Stat and
+// ReadFile report absent: a link whose target does not exist.
+func danglingLink(env Env, p string) bool {
+	fi, err := env.FS.Lstat(p)
+	return err == nil && fi.Mode()&fs.ModeSymlink != 0
+}
+
 // readToken fills ts from the token file and returns the token, or "" when it
-// is missing, empty, unreadable or loose (a loose file is never read).
+// is missing, empty, unreadable or loose (a loose file is never read). A
+// symlink that does not resolve reads as existing, with an error naming it.
 func readToken(env Env, ts *TokenState) string {
 	info, err := env.FS.Stat(ts.Path)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
+		switch {
+		case !errors.Is(err, fs.ErrNotExist):
 			ts.Err = err.Error()
+		case danglingLink(env, ts.Path):
+			// A token file that is a link to nothing exists, unreadable: a
+			// plan must not make a new token over the link.
+			ts.Exists, ts.Err = true, ts.Path+" is a symlink that does not resolve"
 		}
 		return ""
 	}

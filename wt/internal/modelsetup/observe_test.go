@@ -572,6 +572,29 @@ func TestObserveProbesLiteLLMWhenTheResolvedModeIsLocal(t *testing.T) {
 	}
 }
 
+// TestObserveCountsDanglingAgentPlistAndTokenLinksAsPresent pins that a
+// symlink that does not resolve at wt's LaunchAgent plist or at the local
+// token file reads as present with an error naming it, not absent, so the
+// plan refuses it up front (naming the link) instead of planning a new plist
+// or token that the write would then refuse at apply time.
+func TestObserveCountsDanglingAgentPlistAndTokenLinksAsPresent(t *testing.T) {
+	f := obsConfigured(t)
+	delete(f.files, obsTokenPath)
+	f.dangling = map[string]bool{obsAgentPath: true, obsTokenPath: true}
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if a := st.Agent; !a.Present || a.Managed || !strings.Contains(a.Err, obsAgentPath+" is a symlink that does not resolve") {
+		t.Errorf("dangling agent plist link: %+v", a)
+	}
+	if tk := st.Token; tk.Path != obsTokenPath || !tk.Exists || !strings.Contains(tk.Err, obsTokenPath+" is a symlink that does not resolve") {
+		t.Errorf("dangling token link: %+v", tk)
+	}
+	st.Host.ConfigHome = "/Users/user_name/.config"
+	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, TokenFile: obsTokenPath})
+	if err == nil || !strings.Contains(err.Error(), obsAgentPath) || !strings.Contains(err.Error(), obsTokenPath) || len(p.Steps) != 0 {
+		t.Errorf("plan over dangling links: err %v, steps %d", err, len(p.Steps))
+	}
+}
+
 // TestObserveCountsADanglingLiteLLMPlistLinkAsPresent pins that a LiteLLM
 // plist path holding a symlink that does not resolve reads as present (with
 // an error naming it), not absent, so a create plan refuses it instead of

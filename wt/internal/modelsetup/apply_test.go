@@ -746,9 +746,10 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 
 	// A step failing after the edit and before the pair: the plist holds the
 	// new key, the pair the old one, and the Result says how to restore the
-	// backup. No rotation step between the edit and the pair can fail on the
-	// fake, so a hand-built StepChmod (a real step only of the tighten plan)
-	// on a missing path stands in for that failure after the backup and edit.
+	// backup. The rotation plan has no step between the edit (its second) and
+	// the pair, so a hand-built StepChmod (a real step only of the tighten
+	// plan) on a missing path, put right after the backup and the edit,
+	// stands in for any failure there.
 	f = rotEnv(t)
 	f.modes[plLiteLLM] = 0o644
 	p := plan()
