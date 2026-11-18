@@ -1,0 +1,171 @@
+# Phase 4 stage 2: the hard cut (host-admin commands and the editors move to `wt-model`)
+
+Status: draft for approval, 2026-11-18. Calls the author made without the user's say are marked **[call]**. Everything else was decided by the user, here or in the documents it builds on: `2026-11-15-wt-model-session-split-design.md` (the split), `2026-11-17-wt-model-config-home-design.md` (stage 1, shipped), `2026-11-17-wt-phase3-import-ratchet-design.md` (phase 3, shipped), `2026-11-17-wt-session-model-server-config-design.md` (the stored mode and the Model server tab, shipped as #634 to #646).
+
+## Intent and why
+
+The split spec's goal is that `wt-model` runs on its own, as a server with its own CLI and TUI, so `wt-session` can live in a VM or on another machine and carry no model-administration code. Phases 1 to 3 delivered the server, the client and the import-graph ratchet. What is still in the session binary is the administration half: every registry command, `cloud-sync`, the LiteLLM route commands, the provider stop/served/warm commands, and the `wt config` editor whose Models tab edits the registry and whose Model server tab sets up `wt-model` on the local machine.
+
+This stage moves all of that to `wt-model`, with hard-cut pointers on the old names, and splits the shared code that the stored-mode work (#634 to #646) put in one place, so that:
+
+1. a `wt-session` binary links no registry, provider, LiteLLM, launchd or cloud-sync code, and the user can still choose and check **native** and **remote** mode with `wt config`, with no `wt-model` installed;
+2. `wt-model` owns everything it runs: its registry commands, its Models TUI, and the **local** setup (LaunchAgent, token file, the LiteLLM pair and the LiteLLM plist actions).
+
+## Goals
+
+- `wt-session` has no administration command and links none of the admin packages (`modeladmin`, `localmodels`, `litellm`, `lifecycle`, `cloudsync`, `spend`, `hoststop`, `candidates`, `modelsetup`, `modeleditor`, the server packages); the depcheck ratchet then also covers `cmd/wt-session`. It still links the shared leaf libraries `config` (which parses `registry.toml` for the cleanup commands' best-effort protected-path read and `stats`' fallback) and `provider` (the provider table), because those are not administration code **[call]**.
+- `wt-model` has every administration command the session binary has today, with the same flags, output shapes and exit codes, plus `wt-model setup` for the local machine and a TUI that hosts the Models tab and the Setup tab.
+- `wt config` stays in `wt-session` with the Agents tab and a **Mode** tab: native and remote are configured there; choosing **local** stores the mode with the default loopback url and token path and points at `wt-model setup`.
+- One shared definition of the mode, url and token rules (no drift between the two binaries); the url `@` rule from #645 and #646 keeps exactly one definition.
+- Old command names print a pointer and exit 1; every script, skill, doc and fixture that calls an old name moves in the same change set as the command it calls.
+
+## Non-goals
+
+- No change to the control API, the gateway, the registry schema, the provider lifecycle, tiers, or modeltiers' contract (it still reads `model list --json`, now from `wt-model`).
+- No network exposure of any administration action (the split spec's rule stands).
+- No `wt-session`-only install target, and no auto-start of `wt-model` (both stay out of scope).
+- No new LiteLLM behaviour: the LiteLLM actions of the Setup tab are the ones shipped in #638 to #646, moved.
+- Not solved here: #641 (verification false-failure candidates), #642 (Apply lock), #643 (live launchd check), the `piCompat` issue (`issues.md` #6).
+
+## Anti-goals (a failure even if it works)
+
+- Two copies of the url/mode/token rules, or a session-side copy of launchd or LiteLLM code "for convenience".
+- A pointer that exits 0, or an old name that still silently works in one binary.
+- `wt-model` linking any package of the session half (the ratchet's `sessionBanned`), or `wt-session` linking `modelsetup`, `modeleditor` or any other admin package.
+- A user able to reach a half-configured state because the two editors disagree about the same `config.toml` table.
+
+## Constraints from the current code
+
+- `internal/modelsetup` (about 3,900 lines non-test) holds both halves: native/remote (config, token, ping) and local/LiteLLM (LaunchAgent, pair, plist). One `State`, one `Desired`, one `Plan`, one `Env`, one `Observe`, one `Apply` switch. It imports `internal/modelclient` for `ParseMode`/`ResolveMode`, `Endpoint`, `Ping`, the typed errors and `HasUserinfo`/`HiddenURL` (`env.go:29,83,411`, `observe.go:17,291,622`, `urlcreds.go:23`).
+- `internal/depcheck` bans `internal/modelclient` from `cmd/wt-model` (`sessionBanned`) and bans `modelsetup`, `configeditor` and the other admin packages from the session library packages (`adminBanned`). `cmd/wt-model` links neither `modelsetup` nor `modelclient` today. **So the session-safe half of the new code cannot import `modelclient`, because `wt-model` will link it through `modelsetup`.**
+- `internal/configeditor` is one package (about 4,550 lines non-test): Agents tab (links `agents`), Models tab (`models_tab.go` 829, `models_form.go` 690: imports only `config`, `localmodels`, `modeladmin`, `themes`, `tuilayout`), Model server tab (`server_tab.go` 919, `server_view.go` 750, `server_litellm.go` 323, built on `modelsetup` and `modelclient`), and one shell (`editor.go` 467, `tabs.go` 155) that owns tab switching, the held quit across writes and the first-visit probes. It is in both `adminBanned` and `sessionBanned`, and linked by `cmd/wt-session` only.
+- `cmd/wt-model` has `serve` and `litellm status|set` only, no TUI, and prints cobra help with no arguments. Its `TestMain` has four isolations (config home, git, tiers, lifecycle processes).
+- The host commands in `cmd/wt-session` (registry reads through `a.hostConfig()`): `model init|list|add|edit|rm`, `cloud-sync`, `litellm sync|list|providers|restart`, `served`, `warm`, and the provider half of `stop` (`stop <provider>`, `stop --all`). `start`, `stop <model>`, `model list --server`, `smoke`, `job`, `rotate`, `profile slots`, `stats` and the cleanup commands are session commands and stay. `litellm set|status` already exist in both names (stage 1).
+- Retired commands already have a stub shape: `retiredLitellmToggleCmd` in `cmd/wt-session/litellm.go` (hidden, flag parsing off, annotation `wt-removed`, exit 1 with one `wt:` line), with `TestLitellmOnOffAreRetired` and a skip for annotated commands in `TestNoWtCommandIsHidden`.
+- External callers of the moved commands (all must move in the same change set as the command): `modeltiers/src/modeltiers/inventory.py` (`wt model list --json`); `llmbench/src/llmbench/wt_bridge.py` (`wt warm`, `wt served`; `wt stop <model> --yes` is a session call and stays); `bin/update/litellm` (`wt litellm restart`); `benchmarks/mtplx-profile-matrix` (`wt model edit`, `wt model list` plain columns, `wt stop mtplx`); `bin/mlx-quantize` (a printed hint); skills (`wt-cloud-sync`, `wt-adding-a-provider`, `wt-adding-a-benchmark-backend`, `wt-mlx-lm-quantization`, `wt-manage-slot-profiles`, `wt-repo-cleanup`); user-visible strings in Go (`agents/price_notice.go` "run 'wt cloud-sync'", `smoke.go`, `config` hints, `modelclient/drive.go` "run 'wt model list --server'") and about 70 docs. Fixtures: `docs/contracts/model-list.sample.json` (held by `model_list_contract_test.go` and `modeltiers/tests/conftest.py`), `litellm-cli.sample.json` (read by both `litellm_test.go` files), `job.sample.json` (pins a `wt model list --server` sentence).
+
+## Approaches considered
+
+**How to cut the shared setup engine** (the decision the user made: A):
+
+- **A. Split `modelsetup` by who runs it. (chosen)** A new session-safe leaf package `modelmode` holds the types and logic for native and remote (State/Desired/Plan/Step/Result, Observe of config and ping, BuildPlan, the config and pasted-token steps, the url rule, `Secret`, `RefusalError`). The existing `modelsetup` keeps local, LaunchAgent and LiteLLM and **extends** `modelmode` (embeds its types, delegates the steps it does not own). `wt-session`'s editor links `modelmode`; `wt-model` links `modelsetup` (and so `modelmode`).
+- **B. Duplicate the native/remote logic in `wt-session`.** Least coupling, but two code paths that drift (the spec's anti-goal). Rejected.
+- **C. Keep one `modelsetup`, inject the session half through interfaces.** The session binary would still import the package for its types, so it needs a ratchet exception, which is what phase 3 emptied. Rejected.
+
+**How `modelmode` avoids importing `modelclient`** (a sub-decision of A, **[call]**):
+
+- **A1. `modelmode` owns the mode logic and the url rule; `modelclient` aliases it. (chosen)** `modelclient/mode.go` (112 lines, stdlib only) and `HasUserinfo`/`HiddenURL` (42 lines) move down into `modelmode`; `modelclient` keeps its exported API with type and function aliases and imports `modelmode` (no cycle as long as `modelmode` never imports `modelclient`). Ping becomes a seam that returns an already-classified failure; `wt-session` injects one built on `modelclient`, `wt-model` one over plain HTTP plus `modelapi`.
+- **A2. Take `modelclient` out of `sessionBanned`.** Smaller code change, but it changes the ratchet's stated rule ("a server must not link the session client") and lets the server grow a dependency on its own client. Rejected; if A1 proves unworkable the builder comes back to the user before choosing it.
+
+**Where the editors live:**
+
+- **Two editors on a shared UI leaf. (chosen, [call])** `internal/editorkit` (new leaf: scrub, status/prompt/result-screen layout, text inputs, fit/clip helpers, tab bar; depends on bubbletea, lipgloss, `themes`, `tuilayout`, stdlib only), `internal/sessioneditor` (Agents tab + Mode tab, linked by `cmd/wt-session`), `internal/modeleditor` (Models tab + Setup tab, linked by `cmd/wt-model`). Each editor has its own shell (tab switching, held quit, first-visit probes), about 400 lines each, copied from `editor.go` and trimmed.
+- One editor with build-tag or capability switches: rejected (the binary would still link both halves).
+- Keep `configeditor` as the admin editor's name: rejected; it is in both ban lists today and renaming avoids silently flipping the meaning of an existing entry.
+
+## Design
+
+### Packages and the import graph
+
+| Package | Role | Links | Linked by |
+|---|---|---|---|
+| `internal/urlrule` (new) | the one definition of the url `@` rule: `HasUserinfo`, the placeholder, `Shown` (stdlib only) | stdlib | `config` (its `proxyurl.go` copy and `TestProxyURLRuleIsModelclientsRule` are deleted), `modelmode`, `modelclient` (aliases), `modelping` |
+| `internal/modelping` (new) | one ping and its classification into `ServerKind` plus a message (unreachable, unauthorized, not a model server, skew, schema); the `Endpoint` type (origin and token) | `modelapi`, `urlrule`, stdlib | `modelclient` (its `Client.Ping` delegates; `Endpoint` is aliased), `modelsetup` and `wt-model`'s setup seam, `cmd/wt-session`'s injected ping |
+| `internal/modelmode` (new) | session-safe: mode rules, native/remote State/Desired/Plan/Step/Result, Observe, BuildPlan, Apply for config + pasted token, the `Secret` type, narrow seams (the Ping seam takes the already-classified result of `modelping`) | `config`, `modelping`, `urlrule`, stdlib | `modelclient` (aliases), `modelsetup`, `sessioneditor`, `cmd/wt-session`, `cmd/wt-model` (via `modelsetup`) |
+| `internal/modelsetup` (existing, shrinks) | admin: local setup, LaunchAgent, token generation, pair, LiteLLM create/rotate/tighten, checks, Control | `modelmode`, `modelping`, `config`, `litellm`, stdlib | `modeleditor`, `cmd/wt-model` |
+| `internal/editorkit` (new) | UI leaf shared by both editors | `themes`, `tuilayout`, bubbletea, lipgloss | both editors |
+| `internal/sessioneditor` (new, from `configeditor`) | `wt config`: Agents tab + Mode tab | `agents`, `modelmode`, `editorkit`, `config` | `cmd/wt-session` |
+| `internal/modeleditor` (new, from `configeditor`) | `wt-model`'s TUI: Models tab + Setup tab | `modeladmin`, `localmodels`, `modelsetup`, `editorkit`, `config` | `cmd/wt-model` |
+| `internal/configeditor` | deleted when both editors exist | | |
+
+Ratchet changes (the builder pins them in `depcheck_test.go` in the first PR that creates each package): `urlrule`, `modelping`, `modelmode` and `editorkit` join the session library set (off `adminBanned`, never in `sessionBanned`; `modelping` and `modelmode` must stay off `modelclient`); `sessioneditor` joins the session library set **and** `sessionBanned` (so `wt-model` never links it) and `adminScreensBanned` (off `tui`); `modeleditor` joins `adminBanned` and must not link anything in `sessionBanned`; `configeditor` leaves both lists when deleted. A new test holds `cmd/wt-session` off the admin packages once the commands have moved; today it links all of them. Two session paths that stay still use admin code and must be cut loose first: `wt stats` uses `spend.Row` and `spend.Result` as its own types (`stats_usage.go`), and the start answerer and `main`/`start.go` call `lifecycle.WithSessions` and `lifecycle.WaitPendingRoutes` (`answerer.go:181`, `main.go:52`, `start.go:35`). Stage 5 moves those types and helpers to a leaf (the spend rollup types next to the `modelapi` rollup they decode; the lifecycle helpers to the shared CLI leaf or `modelclient`); the new test starts with the packages that are already cut loose (`modeladmin`, `modeleditor`, `modelsetup`, `cloudsync`, `hoststop`, `localmodels`, `litellm`, `candidates`, the server packages) and adds `spend` and `lifecycle` in the same PR that removes their last use, and its list only shrinks like the existing allow-list **[call]**.
+
+### `modelmode`: what moves, what stays
+
+The url `@` rule (`HasUserinfo`/`HiddenURL`) moves to the new stdlib-only leaf `urlrule` and is aliased from `modelclient`; `config`'s second copy (`proxyurl.go`) and the test that pins it equal to `modelclient`'s are deleted, so the rule has exactly one definition **[call]**. Moves into `modelmode`: `Mode`, `ParseMode`, `ResolveMode`, `Resolution` and the mode errors (from `modelclient`, which keeps aliases); `Secret`, `RefusalError`, the url rule (`shownURL`, `redactCheck`, `notCheckedAtURL`), `DefaultListen`, `DefaultLocalTokenPath`, `RemoteTokenPath`, `Step`/`StepKind`/`StepAction`/`Result`/`ServerKind`/`ServerState`/`ConfigState`/`TokenState`, and the S half of `Env` (FS read/write/chmod/lstat with `guardUnderTest`, `ConfigStore` read/update, `Net.Ping`, `Host.Getenv`/`Home`).
+
+Stays in `modelsetup`: the LaunchAgent, token generation, `Launchd`, the pair, the LiteLLM plist and checks, `Control`, `Backup`/`Remove`, `Listener`, platform and binary discovery, every local and LiteLLM plan and apply step.
+
+How the admin package extends it:
+
+- Seam interfaces widen: `modelsetup.FS` embeds `modelmode.FS` and adds `Remove` and `Backup`; likewise `Net`, `Host`, `ConfigStore` (adds `Pair`/`SetPair`). `modelsetup.Env` has the narrow seams plus `Launchd`, `LiteLLM`, `DesiredRoutes`, and `Mode() modelmode.Env` returns the narrow view.
+- `modelsetup.State` embeds `modelmode.State` and adds `Platform`, `Pair`, `Agent`, `Listener`, `Tools` (binary, path, uid), `LiteLLMPlist`, `LiteLLMInstall`, `LiteLLM`. The admin host data must not be a field named `Host` (it would shadow the promoted one); `plan.go` and `observe.go` and two test files reference `st.Host.Binary/UID/Path`; they move to `st.Tools.*`.
+- `modelsetup.Desired` embeds `modelmode.Desired` (Mode, URL, TokenFile, PastedToken, SaveUnchecked) and adds Listen, MasterKey, RemoveAgent, LiteLLM. `modelsetup.Plan` embeds `modelmode.Plan` and adds Agent and the LiteLLM spec; `Format` is promoted. Admin `StepKind` constants are typed `modelmode.StepKind`.
+- `modelsetup.Observe` calls `modelmode.Observe`, then adds the admin reads. Three local-mode fallbacks live in the middle of today's single `Observe` and need an explicit hook: the token fallback to the agent's token file (`observe.go:362`), the local server-url default to the agent's listen address (`:489`), and `TokenFiles` including the agent's token file (`:373`). `modelmode.Options` carries `LocalFallback{TokenFile, Listen}` that the admin side fills after reading the plist **[call]**.
+- `modelsetup.Apply` handles its own step kinds and delegates the rest to `modelmode.ApplyStep(ctx, env, plan, step, *Result) (handled bool, err error)`. A `modelmode` Apply knows only the token and config kinds; the existing "unknown kind" refusal then gives a safety property: the session binary can never run an admin step.
+- Ping becomes a seam returning an already-classified result: `Ping(ctx, modelping.Endpoint) (modelapi.Ping, ServerKind, message string, error)`. The ping request and the failure classification (unreachable, unauthorized, not a model server, skew, schema) live once in the new leaf `modelping`; `modelclient.Client.Ping` delegates to it, `wt-session` injects a function built on it, and `wt-model`'s `setup` injects the same function, so the rules are not copied **[call]**. `modelclient`'s typed errors stay as its API and are produced from the same classification.
+- Plain `modelmode.BuildPlan(State, Desired)` plans **native**, **remote**, and a **local pointer** plan: a config step with `mode = local`, the stored `url` and `token_file` **kept when they are already set** and `http://<DefaultListen>` and `<DefaultLocalTokenPath>` written only into empty fields (so re-choosing local never overwrites a working non-default setup; a hand-written `mode = local` with no url gets the defaults at the next save), and a note that `wt-model setup` does the machine setup **[call]**. Leaving local (to native or remote) from the session Mode tab never removes the LaunchAgent: the plan's note says "wt-model's LaunchAgent is untouched; remove it with `wt-model setup`" and the session side does not read the plist **[call]**. `wt-model setup`'s own plan for leaving local keeps today's behaviour (bootout, remove plist, with the default-No prompt).
+- The secret-scoping rule in `BuildPlan` (a pasted token or master key cleared for modes that do not use it) is stated once in each package.
+- Every url, token and secret safeguard shipped in #634 to #646 keeps its tests: the property test `TestNoPieceOfAnAtURLReachesAnyOutput` splits (the remote, native, stored, entered and env surfaces go with `modelmode`; the local `Format` surface stays), and the hostile-string lists already duplicated in `modelclient` and `modelsetup` stay test-only copies.
+
+### The two editors
+
+**`wt config` (`sessioneditor`)**: tabs Agents and Mode. Agents is today's Agents tab, unchanged. Mode is the mode-choice, url, token-file/paste, check, plan, confirm (`[y/N]`, default No) and apply flow of today's Model server tab for native and remote, driven by `ModeDeps{Observe, Plan, Apply}` over `modelmode.Env`. It shows mode, source (env override, stored), url, token (path and `ok`/`loose`/`missing`), the server check with the classified kind, problems, and the existing safeguards (parse error disables writes, the entered url is pinged with the entered token before a remote plan, a url with an `@` is refused, form keys are inert while busy, held quit, prompts visible at every size). The local choice is allowed on every platform (it is a pointer), stores the defaults, and shows "run `wt-model setup` to set up wt-model on this machine" (and when `wt-model` is on `PATH` offers to run it **[call]**). It shows no LiteLLM, pair, agent or route rows. The first-run gate (`ensureMode`) opens `sessioneditor` on the Mode tab. The session editor reads no registry: `runConfigEditor` uses the session config load (`config.LoadSession`, which by design does not validate `supported_providers`) instead of `a.hostConfig()`, and its Agents tab saves through a session-side validation (`ValidateSession`: duplicate names, a default provider inside the supported list; provider ids are not checked because no registry is read) in place of `ValidateAll`; the builder must also make sure the in-memory agents `LoadSession` synthesizes (`AllProviders`) are never written by the editor's save (the save re-reads and writes only real entries) **[call]**.
+
+**`wt-model` TUI (`modeleditor`)**: tabs Models and Setup. Models is today's Models tab (no change to its behaviour; the registry-changed hook runs the one route sync, `syncAndWarn`). Setup is the local-setup half of today's Model server tab: platform, agent, pair, listener, LiteLLM rows and checks, the LiteLLM `k`/`t` menu, Control `s`/`x`/`R`, the remove-agent prompt, the masked master-key input, the result screen. Commands: `wt-model setup` opens the Setup tab; `wt-model model` (bare) opens the Models tab, as `wt model` does today; `wt-model` with no arguments stays cobra help **[call]**. `DesiredRoutes` (`litellm.DesiredIDs` over the sync inputs) is supplied by `cmd/wt-model`; `syncInputs` and the helpers it pulls in (`probeInventory`, `desiredLocalModels`, `syncUntouchedAndWarnings`, `routedIDSet`, `missingProviderWarnings`, `untrustedFamilies`, `desiredLocalIDs`, `gapReason`, `syncAndWarn`, `seedEnv`, `ollamaCaps`, about ten helpers in `litellm.go:138-555` and `model.go`) move from `cmd/wt-session` into an admin package (`litellm`/`modeladmin`) **in stage 3**, because the Models tab's hooks need them there **[call]**.
+
+**`editorkit`**: scrub/`userinfoRE`/`keyRE`, `homePath`, `breakPath`, the status-drop layout, `serverPromptView`, `wrapIndented`, the result screen and its scrolling, `wrapText`, `tildePath`, `fitHints`, `newTextInput`, `renderFormFields`, `tabBar(names)`. Each editor keeps its own shell: `sessioneditor` (agents list/form, mode tab, dirty/save, held quit on mode writes), `modeleditor` (models tab, setup tab, no save key, held quit on model or setup writes).
+
+### Command homes after the cut
+
+| Command | Home | Old name |
+|---|---|---|
+| `model init|list|add|edit|rm` | `wt-model model ...` | pointer, exit 1 (`wt model list --server` stays, see below) |
+| `cloud-sync` | `wt-model cloud-sync` | pointer |
+| `litellm sync|list|providers|restart` | `wt-model litellm ...` | pointer (`litellm status|set` already exist in both names and stay in both) |
+| `stop <provider>`, `stop --all` | `wt-model stop <provider>|--all` | pointer for provider/`--all`; `stop <model>` stays a session client call |
+| `served <provider>`, `warm <provider> <model>` | `wt-model served`, `wt-model warm` | pointer |
+| `wt config` Models tab, bare `wt model` | `wt-model model` (bare) | pointer (bare `wt model` exits 1 with the pointer) |
+| Model server tab (local setup) | `wt-model setup` | `wt config` Mode tab keeps native/remote and points at it for local |
+| `start`, `stop <model>`, `smoke`, `job`, `rotate`, `profile ...`, `stats`, cleanup commands, `wt model list --server`, `litellm status|set` | `wt-session` (unchanged) | n/a |
+
+`wt model list --server` (the catalog as a session sees it) stays in `wt-session` **[call]**; plain `wt model list` is the host registry listing and gets the pointer, so the same cobra command stays registered with one rule: without `--server` it prints the pointer. The mixed `stop` follows the same rule (a model id is a client call, a provider name or `--all` is the pointer). Their moved implementations in `wt-model` read sessions through `sessionreg` directly (the server owns it); `hostSessionReader`'s `modelclient` use does not move.
+
+### Host commands and live sessions: the serve runtime record
+
+The registry of live client sessions exists only in memory inside the running `wt-model serve` process (`internal/sessionreg`), and a separate `wt-model stop <provider>|--all` process cannot read it. Today the session binary asks the running server through its client (`hostSessionReader`), which `wt-model` must not link. **Decided by the user (option A):** while it runs, `wt-model serve` writes a small runtime record, mode 0600 and in the `~/.config/wt-model/` home, holding its pid, its listen address and the **path** of its token file (never the token); it removes the record on clean shutdown, and a stale record is tolerated because a host command always verifies by pinging the address it names. Host commands that need session awareness (`stop <provider>`, `stop --all`) read the record, ask the live server for the session list through the shared `modelping`/`modelapi` HTTP path (not through `modelclient`), keep today's prompts (default No) for a model in use, and when no server answers print today's "could not read client sessions" note and continue exactly as today. The record's name and exact format are the builder's, within those constraints (no token in the file, 0600, removed on clean exit, verified by ping, one definition read by the host commands). `serve` removing its own record is a file operation of `wt-model`'s own state file and needs an entry on the removal scan's allow-list with its reason (`internal/removal/deletionscan_test.go`), like the one `modelsetup/env.go` has. The record must ship in a PR before the provider-`stop` move (staging 4d).
+
+### The pointer family
+
+One shared stub constructor, generalising `retiredLitellmToggleCmd`: hidden, `DisableFlagParsing`, `SilenceUsage`, annotation `wt-removed` (so `TestNoWtCommandIsHidden` skips it), `RunE` returns exit 1 with one line `wt: <old command> moved to wt-model — run 'wt-model <new command>'; nothing was changed`. A table of (old path, new command) registers every stub, and one table test walks it (one line of output, exit 1, config and registry bytes unchanged) instead of one test per stub **[call]**. The two vacuity floors (`seen < 20` in `error_line_test.go` and `model_cmds_test.go`) are re-based once commands leave. A word guard for bare removed words stays as today.
+
+### Callers, in the same change sets
+
+Each command-family PR updates its callers: `modeltiers` calls `wt-model model list --json` (code, tests, `conftest.py`, docs, `docs/guides/12-model-tiers.md`); `llmbench`'s bridge calls `wt-model served` and `wt-model warm` (and keeps `wt stop <model> --yes`); `bin/update/litellm` feature-detects and runs `wt-model litellm restart`; `benchmarks/mtplx-profile-matrix` uses `wt-model model edit|list` and `wt-model stop mtplx` (it parses the plain list's column 5, so the plain table's shape is part of the contract and moves unchanged); `bin/update/rec` and `bin/update/sushi` hints, `bin/mlx-quantize`'s hint and the benchmark docs; the six skills; the user-visible strings in Go (`price_notice.go`, `smoke.go`, `config` hints, `modelclient/drive.go`, `main.go` help and example text); `docs/contracts` fixtures stay where they are and their readers move with the commands (`model_list_contract_test.go` moves to `cmd/wt-model`; `modeltiers/tests/conftest.py` keeps reading the same fixture); the roughly 70 docs and both CLAUDE.md files (command names, the stage-1 and phase-3 notes, the ratchet paragraph, the `wt config` three-tab text in `configuration.md` and `wt-model-server.md`).
+
+### Shared helpers in `cmd/wt-session`
+
+Used by both halves today and so not movable as files: `hostConfig`/`loadHost`, `configError`, the exit-code helpers and prompts (`exitcode.go`, `start.go`'s `askYesNo`/`promptReplace`), `plain_table.go`, `stdinTTY`, `openTTY`, `renderTable`. Those with no session dependency (`exitcode` is already a package; `plain_table`, prompts, `renderTable`) move to a shared leaf (`internal/cli`, name the builder's) used by both binaries; `hostConfig` stays with the session cleanup commands' best-effort read (`protectedPaths`, `noRegistry`) and `stats`' registry fallback **[call]**, since those must keep reading a registry that may not exist. `boundary_test.go`'s banned-call list stays; its list of session files grows by the new ones.
+
+### Staging (each PR is one reviewable unit; the order is the plan's spine)
+
+1. **Ratchet and `modelmode` extraction.** Create `urlrule`, `modelping` and `modelmode` (move mode/url/token/native/remote types and logic, widen the seams in `modelsetup`, move `mode.go` and the url rule down, alias in `modelclient`, delete `config`'s copy of the rule); no behaviour change; all existing tests green; `depcheck` updated.
+2. **`editorkit`.** Move the shared UI plumbing; no behaviour change.
+3. **Split `configeditor`.** Create `sessioneditor` (Agents + Mode, linked by `wt config`) and `modeleditor` (Models + Setup), both still reachable; `wt config` opens `sessioneditor`; `cmd/wt-model` gains the `setup` and bare `model` entry points; the old `wt config` Model-server-local behaviour is replaced by the pointer; the first-run gate opens the Mode tab; `configeditor` is deleted.
+4. **Command families to `wt-model`**, one PR each, each with its pointer stubs, callers and docs: (a) `model init|list|add|edit|rm` plus `served` and `warm` with `modeltiers`, `llmbench`, `benchmarks`; (b) `cloud-sync` with its skill; (c) `litellm sync|list|providers|restart` with `bin/update/litellm`; (d) provider `stop`/`--all`.
+5. **Close-out.** Cut `stats` and the answerer loose from `spend` and `lifecycle`; the `cmd/wt-session` ratchet test, the vacuity floors, the docs sweep (guides 02, 04, 06, 08, 13, 14, `wt-model-server.md`), the spec's command-homes table amendment, the "As built" note.
+
+### What users see
+
+- Everyone who ran an admin command in `wt` now gets a one-line pointer and exit 1 (nothing changed); scripts must use the new names (the callers above are updated).
+- `wt config` loses the Models tab and the local-setup half of the Model server tab (it becomes the Mode tab); the first-run gate still opens it. For `local`, the user runs `wt-model setup` (one extra step on a one-machine setup).
+- A machine with only `wt-session` installed can choose and check native and remote and never sees launchd code.
+- Install is unchanged (`make install` builds all three binaries).
+
+## Decisions
+
+Made by the user: the hard-cut (earlier rulings: all registry commands move, pointers, callers move in the same PR, modeltiers calls `wt-model model list --json`); option A (split `modelsetup` by who runs it); `wt-session` configures native without `wt-model`; the local/remote split above; host commands learn live sessions from a runtime record that `wt-model serve` writes (option A of the builder check's question 2; the alternatives were dropping the "model in use" prompt, or a server-side admin endpoint, which the split spec forbids).
+
+Made by the author **[call]** (collected so they can be checked; the builder check's questions 1, 3, 4, 5 and 6 are answered by these): the Agents tab validates through a session-side `ValidateSession` and never writes `LoadSession`'s synthesized agents; re-choosing local keeps stored url and token values; the ping and its classification live once in a new `modelping` leaf and the url `@` rule once in a new `urlrule` leaf (deleting `config`'s copy); the session binary keeps linking `config` and `provider` as leaf libraries; the `cmd/wt-session` ratchet test starts with the packages already cut loose and adds `spend` and `lifecycle` when their last use is gone; `modelmode` avoids `modelclient` by moving the mode logic and url rule down and aliasing (A1, not A2); the local pointer plan and the "LaunchAgent untouched" rule for leaving local from the session editor; the session editor offers to run `wt-model setup` when it is on `PATH`; the session editor reads no registry (`config.LoadSession`); `LocalFallback` hook for the three local-mode fallbacks; two editors on an `editorkit` leaf with new package names; `wt-model`'s entry points (`setup`, bare `model`, bare `wt-model` stays help); `syncInputs` moves into `litellm`; `wt model list --server` and `stop <model>` stay in `wt-session`; one table-driven pointer test; `hostConfig` stays for the cleanup commands and `stats`; the staging order.
+
+## Left to the builder
+
+Package and file names where not given; the exact `modelmode` API and how its tests are shared (an exported test-helper package versus duplicated fakes: test files cannot cross packages); how the wording of the pointer lines reads per command; the exact `Observe` hook shape; how to stage the `cmd/wt-model` tests (reuse its four isolations; the serve runtime record needs a seam so tests never write the real config home); whether the shared CLI leaf is one package or two; how to name the `cmd/wt-session` ratchet test and where the admin-package list lives.
+
+## Risks
+
+- `Observe` is one 290-line function with three entangled local fallbacks; the cut is the subtlest edit of stage 2 and needs the whole existing observe/plan/apply test suite as its safety net before any file is moved.
+- Golden plan files (`plan_native`, `plan_remote`) contain admin text (the LaunchAgent "left installed", the bootout and remove-plist steps); they split into a `modelmode` golden without them and an admin golden that keeps them.
+- Test helpers (`fakeEnv` and the recording fakes) are test-only and cannot be shared across packages.
+- A hand-written `mode = local` with no url used to fall back to the agent's listen address in the tab; the session Mode tab uses the documented default instead. Session resolution itself (`ResolveEndpoint`) is unchanged.
+- Hard cuts break unmigrated scripts outside this repository; the pointer line is the only mitigation.
