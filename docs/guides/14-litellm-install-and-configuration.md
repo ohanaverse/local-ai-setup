@@ -248,7 +248,7 @@ It never installs LiteLLM, Postgres, Redis or Prisma, never touches the salt key
 
 ### Optional: a wt-model LaunchAgent
 
-`wt-model serve` is a foreground process; this runs it at login beside the proxy. Use a token file (mode `0600`) that sessions also name (`token_file` under `[model-server]`, see [13-deployment-use-cases.md](13-deployment-use-cases.md)). This is the path the `local` mode's setup writes; a remote server's token is a separate file:
+`wt-model serve` is a foreground process; this runs it at login beside the proxy. This is the file the `wt config` Model server tab manages for `local` mode (`local.wt-model.serve`, token `~/.config/wt-model/server.token`); the tab recognises a plist with that label only when it carries wt's `managed by wt` marker comment, and otherwise reports it as not managed and never overwrites it, so a hand-made plist is yours to maintain. Use a token file (mode `0600`) that sessions also name (`token_file` under `[model-server]`, see [13-deployment-use-cases.md](13-deployment-use-cases.md)); a remote server's token is a separate file:
 
 ```bash
 mkdir -p ~/.config/wt-model

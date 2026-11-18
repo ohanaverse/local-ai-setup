@@ -54,7 +54,7 @@ func TestMain(m *testing.M) {
 	probeInventory = localmodels.OnDiskSnapshotForTest
 	// The model-server client path fails closed: no WT_MODEL_* from the
 	// developer's shell reaches a test.
-	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN"} {
+	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN", "WT_MODEL_MODE"} {
 		os.Unsetenv(k)
 	}
 	// wt remove's live-process finder runs lsof over the whole machine: no

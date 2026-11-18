@@ -749,19 +749,19 @@ func (m model) proceedWithPath() (model, tea.Cmd) {
 
 // enterModelPhaseForAgent loads the model server's catalog for m.agent under
 // the active filters (-T/-F) and builds the picker from it
-// (beginCatalogLoad). With no model server configured at all and no -M/-T/-F
-// (a nil client, #615) it launches the agent natively instead.
+// (beginCatalogLoad). In native mode with no -M/-T/-F (a nil client, #615)
+// it launches the agent natively instead.
 func (m model) enterModelPhaseForAgent() (model, tea.Cmd) {
 	if m.client == nil {
 		// Only a model-driven agent reaches this phase, and wt-session opens
-		// the picker with no client only when no model server is configured
-		// and no model is asked for (it refuses every other launch first).
+		// the picker with no client only in native mode with no model asked
+		// for (it refuses every other launch, an unset mode included, first).
 		return m.launchNative()
 	}
 	return m.beginCatalogLoad()
 }
 
-// launchNative is the launch of m.agent with no model server configured
+// launchNative is the launch of m.agent in native mode, with no model server
 // (#615): the native model through the same builder as every launch, a zero
 // Gateway, and the one native note printed once the launch gate is past (a
 // declined gate launches nothing, so it says nothing). Nothing is registered

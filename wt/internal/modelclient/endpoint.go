@@ -20,7 +20,9 @@ func (e Endpoint) Origin() string { return strings.TrimRight(e.URL, "/") }
 // Gateway returns the origin and token a streaming gateway client needs.
 func (e Endpoint) Gateway() (origin, token string) { return e.Origin(), e.Token }
 
-// NotConfiguredError says the model server url or token is missing.
+// NotConfiguredError says the model server url or token is missing. Its three
+// leads are kept byte for byte (llmbench's wt_bridge hint and scripts key on
+// them); the tail names the settings and wt config's mode choice.
 type NotConfiguredError struct {
 	MissingURL, MissingToken bool
 }
@@ -35,7 +37,7 @@ func (e *NotConfiguredError) Error() string {
 	case e.MissingToken:
 		lead = "the model server token is not configured"
 	}
-	return lead + " — set url and token_file under [model-server] in config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE); start a server yourself with 'wt-model serve --listen ADDR --token-file PATH', because wt never starts one"
+	return lead + " — set url and token_file under [model-server] in config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE), or choose the mode in wt config (Model server tab): native, local or remote"
 }
 
 // Still appends what did not happen (or did) to err, keeping err as the cause.
@@ -101,10 +103,10 @@ func ResolveEndpoint(url, tokenFile string, env func(string) string) (Endpoint, 
 }
 
 // NoServerConfigured reports whether err says no model server is configured at
-// all: neither the url nor the token is set (anywhere, wrapped or not). A
-// session launches a model-driven agent natively only for this; one setting
-// missing is a half-configured server and stays a refusal, and any other
-// error, an unreachable or refusing server included, is never bypassed.
+// all: neither the url nor the token is set (anywhere, wrapped or not). Since
+// the mode exists this no longer chooses a native launch (only native mode
+// does, IsNativeMode); it is the legacy half of NoServer, for callers that
+// treat "nothing to ask" softly.
 func NoServerConfigured(err error) bool {
 	var nc *NotConfiguredError
 	return errors.As(err, &nc) && nc.MissingURL && nc.MissingToken

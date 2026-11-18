@@ -8,40 +8,60 @@ through the server's gateway. The session reads `config.toml` only, never
 `registry.toml`, LiteLLM's `config.yaml` or a local provider, and it never
 reads the LiteLLM key.
 
-wt never starts a model server, never guesses an address and never falls
-back to anything local. With none configured, a command that needs a model
-refuses before anything starts; a launch that asks for no model runs the agent
-natively instead (see "Native launch" below). ("Client session" is the server's record of
-one wt run; a "wt session" is a launch that claims a worktree.)
+A wt session never starts a model server, never guesses an address and never
+falls back to anything local. It works from a stored **mode**: `native` (no
+model server), `local` (a `wt-model` on this machine) or `remote` (one
+elsewhere), chosen on the Model server tab of `wt config`
+([wt-config.md](wt-config.md)). With no mode chosen anywhere, a command that
+needs a model refuses before anything starts, and on a terminal the first
+launch that needs a model opens `wt config` on that tab once (the "first-run
+gate", below). With native mode chosen, a launch that asks for no model runs
+the agent natively instead (see "Native launch" below). ("Client session" is
+the server's record of one wt run; a "wt session" is a launch that claims a
+worktree.)
 
 ## Configuration: `[model-server]`
 
 The model server is named in `~/.config/agent-wt/config.toml` (or
-`$XDG_CONFIG_HOME/agent-wt/config.toml`), by hand:
+`$XDG_CONFIG_HOME/agent-wt/config.toml`). The Model server tab of `wt config`
+writes the table, and you can still edit it by hand:
 
 ```toml
 [model-server]
+mode = "remote"
 url = "http://127.0.0.1:7801"
-token_file = "~/.config/agent-wt/model-server.token"
+token_file = "~/.config/agent-wt/remote-model-server.token"
 ```
 
 | Key | Meaning |
 |---|---|
+| `mode` | `native`, `local` or `remote` (case-insensitive). Absent means no mode is chosen: a command that needs a model refuses (below). A stored `local` or `remote` still needs `url` and `token_file`; with `url` or `token_file` set and no `mode` the mode reads as `remote`. Any other value refuses: `mode under [model-server] is "X"; it must be one of native, local, remote`. |
 | `url` | The server's address, as `wt-model serve`'s banner prints it. |
 | `token_file` | A file holding the server's bearer token, mode `0600` (a file group or other can read is refused). `~` is expanded. |
-| `token` | Never used for auth. Its presence is not inert: while it is set a save writes `config.toml` 0600 (and never loosens an existing stricter mode), and a command that needs a model refuses with the inline-token problem (below) until the token moves into a `token_file`. |
+| `token` | Never used for auth. Its presence is not inert: while it is set a save writes `config.toml` 0600 (and never loosens an existing stricter mode), and a command that needs a model refuses with the inline-token problem (below) until the token moves into a `token_file` (in native mode it is ignored, with one `wt: note:` asking you to remove it). |
 
-Make a token file once and give the server the same file
-(`--token-file`):
+What the tab writes: for `remote`, the table above, with the token in a
+0600 file (`~/.config/agent-wt/remote-model-server.token` unless you name
+another, or paste the token and the tab writes it there); for `local`, the
+same table pointing at `http://<listen>` with the token file
+`~/.config/wt-model/server.token` that the `wt-model` LaunchAgent
+(`local.wt-model.serve`) also uses, and the LaunchAgent itself; for
+`native`, `mode = "native"` with no url or token. Doing it by hand, make a
+token file once and give the server the same file (`--token-file`):
 
 ```bash
-umask 077; head -c 32 /dev/urandom | base64 > ~/.config/agent-wt/model-server.token
+umask 077; head -c 32 /dev/urandom | base64 > ~/.config/agent-wt/remote-model-server.token
 ```
+
+The server side keeps its own copy at `~/.config/wt-model/server.token`; the
+split is explained in
+[../../docs/guides/13-deployment-use-cases.md](../../docs/guides/13-deployment-use-cases.md).
 
 ### Environment overrides
 
 | Variable | Overrides |
 |---|---|
+| `WT_MODEL_MODE` | `mode`: `native`, `local` or `remote` (case-insensitive); anything else refuses: `WT_MODEL_MODE is "X"; it must be one of native, local, remote`. Wins over everything below. |
 | `WT_MODEL_URL` | `url` |
 | `WT_MODEL_TOKEN_FILE` | `token_file` (and `WT_MODEL_TOKEN`) |
 | `WT_MODEL_TOKEN` | the token itself, as a literal; used when `WT_MODEL_TOKEN_FILE` is unset, and wins over `token_file` |
@@ -49,18 +69,43 @@ umask 077; head -c 32 /dev/urandom | base64 > ~/.config/agent-wt/model-server.to
 The environment wins over the file, highest first: `WT_MODEL_URL`, then
 `WT_MODEL_TOKEN_FILE`, then `WT_MODEL_TOKEN`.
 
+The effective mode is, in order: a valid `WT_MODEL_MODE`; else `remote` when
+`WT_MODEL_URL` and a token (`WT_MODEL_TOKEN_FILE` or `WT_MODEL_TOKEN`) are
+both set (the pair overrides a stored `mode`, native included); else the
+stored `mode`; else `remote` when any url or token is set anywhere (a
+half-configured server, which refuses naming the missing setting); else
+unset.
+
 ## The refusals
 
-A command that needs a model and finds no endpoint refuses with one line and
-exit 1. With neither the url nor the token set:
+A command that needs a model and finds no model server refuses with one line
+and exit 1. With no mode chosen anywhere (no `mode` under `[model-server]`, no
+`WT_MODEL_MODE`, no url or token) it begins `no model server is configured`
+and names `wt config` and `WT_MODEL_MODE`:
 
 ```
-wt: no model server is configured; [litellm] is no longer used by wt — set url and token_file under [model-server] in config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE); start a server yourself with 'wt-model serve --listen ADDR --token-file PATH', because wt never starts one; nothing was launched
+wt: no model server is configured — choose a mode: run wt config (Model server tab) or set WT_MODEL_MODE to native, local or remote; nothing was launched
 ```
 
-With one of them set, the line starts `the model server url is not
-configured` or `the model server token is not configured` instead, and goes
-on the same way. The last clause says what did not happen, per command:
+On a terminal a launch that needs a model does not refuse at first: this is
+the **first-run gate**. The first launch with the mode unset opens `wt config`
+on the Model server tab, once per run and before anything is created; when
+you quit with a mode chosen the launch goes on, and with none still chosen it
+ends with `no model-server mode chosen — nothing was launched` (exit 1). The
+gate never opens for a stored or environment mode, even an invalid one, and
+never without a terminal: a script gets the refusal above.
+
+In native mode it is `wt: no model server is configured — native mode has no
+model server; change the mode in wt config; …`. In local or remote mode (or
+with only a url or a token set, which reads as remote) with a setting missing,
+the line starts `no model server is configured; [litellm] is no longer used by
+wt`, `the model server url is not configured` or `the model server token is not
+configured`, then `— set url and token_file under [model-server] in config.toml
+(or WT_MODEL_URL and WT_MODEL_TOKEN_FILE), or choose the mode in wt config
+(Model server tab): native, local or remote`. A server that does not answer its
+ping adds the mode's way out: for local, `start it from wt config (Model
+server tab) or run launchctl kickstart -k gui/<uid>/local.wt-model.serve`; for
+remote, the url it tried. The last clause says what did not happen, per command:
 `nothing was launched` (a launch that asks for a model: `-M`, `-T`, `-F`), `nothing was started`
 (`wt start`), `nothing was stopped` (`wt stop MODEL`), `the job was not read`
 or `nothing was cancelled` (`wt job`), `nothing was run` (`wt smoke`),
@@ -116,20 +161,21 @@ exception: on a session every driver has an agent, eligible for every row
 the server lists except another agent's native row, and an entry only
 narrows that (`supported_providers`).
 
-## Native launch: no server configured at all
+## Native launch: native mode
 
-With **neither** `url` nor a token set (not in `config.toml`, not in
-`WT_MODEL_URL`, `WT_MODEL_TOKEN_FILE` or `WT_MODEL_TOKEN`), `wt -A <agent>`
+With native mode chosen (`mode = "native"` under `[model-server]`, or
+`WT_MODEL_MODE=native`; a `WT_MODEL_URL` plus a token in the environment
+overrides a stored native, `WT_MODEL_MODE` overrides everything), `wt -A <agent>`
 and the agent picker launch a model-driven agent **natively** (#615): no model
 prompt, no catalog, no client session; the agent's own configuration decides
 the model (for example org-managed settings that supply the gateway and
 credentials). `-W`, `--root`, `--cwd`, the launch warnings and the guard, the
 worktree claim, `--yolo`, arguments after `--` and the summary line work as
-for any launch. It prints one line on stderr, so the fallback is never
+for any launch. It prints one line on stderr, so a native launch is never
 silent:
 
 ```
-wt: no model server is configured — launching claude natively, with its own configuration; to choose models through wt-model, set url and token_file under [model-server] in config.toml
+wt: native mode — launching claude natively, with its own configuration; to choose models through wt-model, change the mode in wt config
 ```
 
 The agent gets no gateway origin or token (the zero route), no rotation or
@@ -138,8 +184,13 @@ do not apply to a native launch; slot profiles cannot apply either, so a
 problem in `slot-profiles.toml` is not reported on one. In the picker the line
 is printed once the launch gate is past, so declining the launch says nothing.
 
-The fallback is narrow on purpose. A **half-configured** server (url without
-a token, or the reverse) still refuses and names the missing setting, an
+Native is explicit: it is stored (`mode = "native"`) or asked for with
+`WT_MODEL_MODE=native`, and a stored or environment native ignores any
+`url`, `token_file` or `WT_MODEL_TOKEN*` value left lying around (only an
+inline `token` earns one `wt: note:`, asking you to remove it). With no mode
+chosen a launch refuses (above). A
+**half-configured** server (url without a token, or the reverse, and no mode)
+still refuses and names the missing setting, an
 unreachable server or a refused token still fails fast, and a launch that asks
 for a model (`-M`, `-T`, `-F`, a slot profile) still refuses with nothing
 launched. A configured server is never bypassed. `wt start`, `stop`, `job`,
@@ -154,7 +205,7 @@ These run with no model server configured:
 
 - a command agent's launch (`-A shell`, `shell-wt`), the worktree picker for
   it included;
-- a model-driven agent's launch that asks for no model, natively (above);
+- a model-driven agent's launch that asks for no model, in native mode (above);
 - `wt --init`, `--check-guard`, `--no-guard`, `--version`;
 - `wt worktrees` (`wt cleanup`), `wt remove`, `wt rescue`, `wt restore-root`;
 - `wt config` (and `wt config theme|path`);
@@ -206,8 +257,9 @@ hidden stubs that change nothing and exit 1:
 wt: litellm on is retired — every session routes through the model server; set url and token_file under [model-server] in config.toml; nothing was changed
 ```
 
-Nothing is migrated: wt does not write `[model-server]` for you and does not
-start a server.
+Nothing is migrated, and `wt` itself never starts a server or writes
+`[model-server]` on a launch: only the Model server tab of `wt config` does,
+on your confirmation.
 
 ## Interim limits
 

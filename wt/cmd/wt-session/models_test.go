@@ -508,9 +508,9 @@ func TestOpenModelsWrapsEveryFailureWithStill(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(home, "agent-wt", "config.toml"), []byte("default_tag = \"code\"\n"), 0o644)
 		_, err := (&app{}).openModels(context.Background(), still)
 		ends(t, err)
-		var nc *modelclient.NotConfiguredError
-		if !errors.As(err, &nc) {
-			t.Errorf("err = %T, want *NotConfiguredError", err)
+		// No [model-server] at all is an unset mode since stage 3.
+		if !modelclient.IsModeUnset(err) {
+			t.Errorf("err = %T, want *ModeUnsetError", err)
 		}
 	})
 	t.Run("unreachable", func(t *testing.T) {
@@ -715,5 +715,132 @@ func TestOpenModelsReportsInlineTokenAndLoadFailure(t *testing.T) {
 	var nc *modelclient.NotConfiguredError
 	if _, err := b.openModels(context.Background(), "x"); err == nil || errors.As(err, &nc) {
 		t.Errorf("unloadable config: openModels err = %v, want the load error, not not-configured", err)
+	}
+}
+
+// writeSessionConfig writes config.toml with body in a fresh config home and
+// returns its path.
+func writeSessionConfig(t *testing.T, body string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(home, "agent-wt", "config.toml")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// closedServerConfig is a [model-server] table of mode naming a fake server
+// that has already stopped, its token in a 0600 file; url overrides the url.
+func closedServerConfig(t *testing.T, mode, url string) (body, addr string) {
+	t.Helper()
+	f := newFakeModelServer(t)
+	tok := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tok, []byte(f.Token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if url == "" {
+		url = f.URL
+	}
+	return fmt.Sprintf("[model-server]\nmode = %q\nurl = %q\ntoken_file = %q\n", mode, url, tok), strings.TrimPrefix(f.URL, "http://")
+}
+
+// TestUnreachableLocalServerNamesTheFix pins the local mode's hint on a
+// failed ping: the wt-model this machine is meant to run is down, so the
+// error names both ways to bring it back (wt config's Model server tab and
+// the launchctl kickstart of its LaunchAgent for this user's uid), keeps the
+// classified cause for errors.As and still ends with the caller's clause.
+func TestUnreachableLocalServerNamesTheFix(t *testing.T) {
+	body, _ := closedServerConfig(t, "local", "")
+	writeSessionConfig(t, body)
+	_, err := (&app{hooks: testHooks()}).openModels(context.Background(), "nothing was launched")
+	if err == nil {
+		t.Fatal("openModels succeeded against a stopped server")
+	}
+	msg := err.Error()
+	want := fmt.Sprintf("launchctl kickstart -k gui/%d/local.wt-model.serve", os.Getuid())
+	for _, s := range []string{"is not reachable", "local mode", "wt config (Model server tab)", want} {
+		if !strings.Contains(msg, s) {
+			t.Errorf("err = %q, missing %q", msg, s)
+		}
+	}
+	var ue *modelclient.UnreachableError
+	if !errors.As(err, &ue) || !strings.HasSuffix(msg, "; nothing was launched") {
+		t.Errorf("err = %q (%T), want the *UnreachableError cause and the still clause last", msg, err)
+	}
+}
+
+// TestUnreachableRemoteServerNamesTheURLAndTheClassifiedError pins the remote
+// mode's hint: the url the session tried and the classified ping error, with
+// no launchctl advice (the server is another machine's), and never a
+// password the url carries.
+func TestUnreachableRemoteServerNamesTheURLAndTheClassifiedError(t *testing.T) {
+	_, addr := closedServerConfig(t, "remote", "")
+	body, _ := closedServerConfig(t, "remote", "http://someone:hunter2@"+addr+"/?key=k3y")
+	writeSessionConfig(t, body)
+	_, err := (&app{hooks: testHooks()}).openModels(context.Background(), "nothing was launched")
+	if err == nil {
+		t.Fatal("openModels succeeded against a stopped server")
+	}
+	msg := err.Error()
+	for _, s := range []string{"remote mode", "http://" + addr, "model server at " + addr + " is not reachable", "wt config"} {
+		if !strings.Contains(msg, s) {
+			t.Errorf("err = %q, missing %q", msg, s)
+		}
+	}
+	for _, bad := range []string{"launchctl", "hunter2", "someone", "k3y"} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("err = %q carries %q", msg, bad)
+		}
+	}
+	var ue *modelclient.UnreachableError
+	if !errors.As(err, &ue) || !strings.HasSuffix(msg, "; nothing was launched") {
+		t.Errorf("err = %q (%T), want the *UnreachableError cause and the still clause last", msg, err)
+	}
+}
+
+// TestResetModelCachesResolvesAfresh pins resetModelCaches, which the
+// first-run gate calls after wt config returns: buildModels caches its
+// outcome (a mode set after the first read is not seen), and after a reset
+// both the config.toml read and the resolution are fresh — a stored mode
+// written in between and an environment mode set in between each change the
+// answer — and an opened session is dropped too.
+func TestResetModelCachesResolvesAfresh(t *testing.T) {
+	p := writeSessionConfig(t, "default_tag = \"code\"\n")
+	a := &app{hooks: testHooks()}
+	if _, err := a.buildModels("x"); !modelclient.IsModeUnset(err) {
+		t.Fatalf("first read: err = %v, want unset", err)
+	}
+	if err := os.WriteFile(p, []byte("[model-server]\nmode = \"native\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.buildModels("x"); !modelclient.IsModeUnset(err) {
+		t.Fatalf("cached read: err = %v, want the cached unset", err)
+	}
+	a.models = &modelSession{}
+	a.resetModelCaches()
+	if a.models != nil || a.sessCfgSet || a.builtSet || a.sessCfg != nil || a.sessCfgErr != nil || a.built != nil || a.builtErr != nil {
+		t.Fatalf("after reset: %+v, want every model cache cleared", a)
+	}
+	if _, err := a.buildModels("x"); !modelclient.IsNativeMode(err) {
+		t.Fatalf("after a stored mode: err = %v, want native", err)
+	}
+
+	f := newFakeModelServer(t)
+	t.Setenv("WT_MODEL_MODE", "remote")
+	t.Setenv("WT_MODEL_URL", f.URL)
+	t.Setenv("WT_MODEL_TOKEN", f.Token)
+	if _, err := a.buildModels("x"); !modelclient.IsNativeMode(err) {
+		t.Fatalf("env set, no reset: err = %v, want the cached native", err)
+	}
+	a.resetModelCaches()
+	ms, err := a.openModels(context.Background(), "x")
+	if err != nil || ms.mode != modelclient.ModeRemote || ms.ep.URL != f.URL {
+		t.Errorf("after the env mode: %+v, %v; want remote at %q", ms, err, f.URL)
 	}
 }

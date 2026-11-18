@@ -36,21 +36,21 @@ func TestNativeModelBuildsEveryDriverWithoutAGateway(t *testing.T) {
 	}
 }
 
-// TestNativeNoteSaysWhatHappenedAndTheWayOut pins the stderr line a native
-// launch prints: a bare wt: line (informational, style guide M4, not a
-// "note:") naming the agent, that nothing is configured and
-// the agent's own configuration decides the model, and the config key that
-// turns wt-model on. The fallback must never be silent, and a refusal never
-// carries this text.
-func TestNativeNoteSaysWhatHappenedAndTheWayOut(t *testing.T) {
+// TestNativeNoteNamesNativeModeAndWtConfig pins the stderr line a native
+// launch prints, word for word: a bare wt: line (informational, style guide
+// M4, not a "note:") saying the launch is native because native mode was
+// chosen, naming the agent and that its own configuration decides the model,
+// and pointing at wt config to change the mode. Since stage 3 native is an
+// explicit choice, so the line no longer says "no model server is
+// configured" (which is now the unset refusal's lead) or names config keys.
+func TestNativeNoteNamesNativeModeAndWtConfig(t *testing.T) {
 	got := NativeNote("claude")
-	for _, want := range []string{"wt: no model server is configured", "claude natively", "own configuration", "[model-server]"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("NativeNote = %q, missing %q", got, want)
-		}
+	want := "wt: native mode — launching claude natively, with its own configuration; to choose models through wt-model, change the mode in wt config"
+	if got != want {
+		t.Errorf("NativeNote =\n  %q\nwant\n  %q", got, want)
 	}
-	if strings.Contains(got, "\n") {
-		t.Errorf("NativeNote = %q, want one line", got)
+	if strings.Contains(got, "no model server is configured") {
+		t.Errorf("NativeNote = %q carries the refusal lead", got)
 	}
 }
 

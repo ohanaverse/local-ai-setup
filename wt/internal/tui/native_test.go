@@ -13,8 +13,8 @@ import (
 )
 
 // nativeModelFor is a picker model with no model client at the point a
-// model-driven agent is chosen (wt-session found no model server configured
-// at all).
+// model-driven agent is chosen (wt-session resolved native mode, so it opened
+// the picker without a client).
 func nativeModelFor() model {
 	m := newRunModel(false, false, "", "claude", "", "", "", []string{"--x"}, themes.Default, ".", nil, &config.Config{}, nil)
 	m.selectedPath = "/work/tree"
@@ -27,7 +27,9 @@ func nativeModelFor() model {
 // model phase and commits a launch of the native model (a zero Gateway, the
 // worktree as its directory, the passthrough args), leaves the one native note
 // to the launch gate (said once it passes), and leaves no status. Without it the picker stopped on
-// "no model server is configured" for every agent.
+// "no model server is configured" for every agent. Since stage 3 wt-session
+// passes no client only in native mode (an unset mode refuses before the
+// picker opens), so a nil client still means "launch natively".
 func TestPickerLaunchesAChosenAgentNativelyWithNoServer(t *testing.T) {
 	m := nativeModelFor()
 	var got struct {

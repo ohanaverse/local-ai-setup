@@ -591,12 +591,16 @@ func TestStatsCmdWorksWithoutARegistry(t *testing.T) {
 			// The repair is the one configError names for the same error: a
 			// registry problem is never `wt config`'s to fix (the exact
 			// wording is pinned by TestStatsFamilyNoteNamesTheRepairThatWorks).
+			// Only the registry note is checked for `wt config`: since the
+			// model-server mode exists, the spend line's unset-mode refusal
+			// rightly names wt config as the place to choose a mode.
 			wantHint := map[string]string{
 				"missing":          "seed it with `wt model init`)",
 				"unparseable":      "; fix that file by hand)",
 				"dangling symlink": "; fix the link or move it aside)",
 			}
-			if !strings.Contains(stderr, wantHint[name]) || strings.Contains(stderr, "wt config") {
+			note := lines[len(lines)-1]
+			if !strings.Contains(note, wantHint[name]) || strings.Contains(note, "wt config") {
 				t.Errorf("stderr = %q, want the %q repair and no `wt config`", stderr, wantHint[name])
 			}
 

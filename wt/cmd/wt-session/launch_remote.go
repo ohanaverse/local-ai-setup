@@ -21,8 +21,8 @@ import (
 // launch reached and with what arguments, without running it.
 var launchCommand = launchCommandImpl
 
-// launchNative launches a model-driven agent with no model server configured
-// (#615): the native model and a zero Gateway, so the agent's own
+// launchNative launches a model-driven agent in native mode, with no model
+// server (#615): the native model and a zero Gateway, so the agent's own
 // configuration decides the model and no gateway token reaches it. It prints
 // the one native note, registers no client session and records no rotation or
 // usage (there is no model id). Everything else a launch does (the worktree,
@@ -94,7 +94,7 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	if err != nil {
 		return remoteExit(modelclient.Still(err, launchStill))
 	}
-	// No model server configured at all and no model asked for: native (#615).
+	// Native mode and no model asked for: native (#615).
 	if _, berr := a.buildModels(launchStill); berr != nil && nativeFallback(berr, pinned, pinnedSupplied, tags, family) {
 		return launchNative(a, agent, worktreePath, cfg, yolo, extraArgs, pp)
 	}

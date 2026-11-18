@@ -4,19 +4,24 @@
 
 ### Added
 
-- With **no model server configured at all** (neither `url` nor a token), `wt -A <agent>` and the agent picker launch a model-driven agent **natively** (#615): no model prompt, no client session, the agent's own configuration decides the model. One `wt:` line says so. `-W`, `--root`, `--cwd`, the guard, `--yolo` and arguments after `--` work as usual; `profiles.toml` overlays do not apply, and no rotation or usage record is written. A half-configured server, an unreachable one, and any launch that asks for a model (`-M`, `-T`, `-F`) still refuse exactly as before. See `docs/wt-session.md`, "Native launch".
+- A stored **model-server mode**: `mode` under `[model-server]` in `config.toml` is `native`, `local` or `remote`, and `WT_MODEL_MODE` overrides it (so does `WT_MODEL_URL` with a token, which reads as remote). With **native** mode chosen, `wt -A <agent>` and the agent picker launch a model-driven agent natively (#615): no model prompt, no client session, the agent's own configuration decides the model. One `wt:` line says so. `-W`, `--root`, `--cwd`, the guard, `--yolo` and arguments after `--` work as usual; `profiles.toml` overlays do not apply, and no rotation or usage record is written. An explicit native ignores stray `url`/`token_file` values. A launch that asks for a model (`-M`, `-T`, `-F`) still refuses. See `docs/wt-session.md`.
+- A **Model server tab** in `wt config` (now three tabs): it shows the mode and what the machine has, and writes `[model-server]` as a plan you confirm. For `local` it makes the token file `~/.config/wt-model/server.token`, sets wt-model's LiteLLM pair and installs the `local.wt-model.serve` LaunchAgent; for `remote` it stores the url and a token file (or a pasted token, written 0600 to `~/.config/agent-wt/remote-model-server.token`). It stays reachable when `config.toml` has a syntax error and writes nothing until you fix it. See `docs/wt-config.md`.
+- The **first-run gate**: on a terminal, the first launch that needs a model with no mode chosen opens `wt config` on the Model server tab once, then goes on with the mode you chose (or ends with exit 1 when none was).
 
 ### Changed
 
 - **Breaking:** every `wt` run that needs a model is now a **client session**
   of a model server (`wt-model serve`): the pickers, `-M`, `wt start`/`wt stop
   <model>`, `wt job`, `wt smoke`, `wt model list --server` and the spend in
-  `wt stats` all come from one endpoint and one token, named by hand under
-  `[model-server]` (`url`, `token_file`) in `~/.config/agent-wt/config.toml`
-  (or `WT_MODEL_URL`/`WT_MODEL_TOKEN_FILE`). With none configured a
-  model-needing command refuses before anything starts (exit 1), naming both
-  settings and the `wt-model serve` command; wt never starts a server and
-  never guesses an address. Every agent reaches its model through the
+  `wt stats` all come from one endpoint and one token, named under
+  `[model-server]` (`mode`, `url`, `token_file`) in `~/.config/agent-wt/config.toml`
+  (written by the `wt config` Model server tab, or by hand; the environment
+  overrides with `WT_MODEL_MODE`, `WT_MODEL_URL`, `WT_MODEL_TOKEN_FILE`). With
+  no mode chosen a model-needing command refuses before anything starts
+  (exit 1), naming `wt config` and `WT_MODEL_MODE` (on a terminal it opens the
+  tab first). This **reverses** the earlier native fallback, which launched
+  natively whenever nothing was configured: native is now an explicit mode.
+  A session never starts a server itself and never guesses an address. Every agent reaches its model through the
   server's gateway: the direct routes and pi's direct `models.json` rewrite
   are removed, and pi's file now holds the gateway origin and the client
   token (written mode 0600), never the LiteLLM key. `[litellm] enabled` is
