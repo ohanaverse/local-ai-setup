@@ -617,3 +617,15 @@ func orNone(s string) string {
 	}
 	return s
 }
+
+// WritesURL reports whether the plan's config step writes a url into
+// [model-server] (local and remote do; native clears it). A plan that keeps
+// the stored table has no config step and writes nothing.
+func (p Plan) WritesURL() bool {
+	for _, s := range p.Steps {
+		if s.Kind == StepConfig && p.Want.URL != "" {
+			return true
+		}
+	}
+	return false
+}

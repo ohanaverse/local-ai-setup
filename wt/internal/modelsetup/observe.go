@@ -41,12 +41,16 @@ type Platform struct {
 }
 
 // ConfigState is config.toml's [model-server] table as read.
+// URLHadCredentials is true when the stored url carried a user:password,
+// which Observe took out of Table.URL (Problems says so in words); a plan
+// that writes the url writes it without them.
 type ConfigState struct {
 	Path               string
 	Exists             bool
 	ParseErr, TableErr string
 	Table              config.ModelServerState
 	Problems           []string
+	URLHadCredentials  bool
 }
 
 // TokenState describes the token file; the token itself is never held.
@@ -228,6 +232,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			st.Config.Problems = append(st.Config.Problems, "token under [model-server] is set; move it into a 0600 token_file")
 		}
 		if t.URL != rawURL {
+			st.Config.URLHadCredentials = true
 			st.Config.Problems = append(st.Config.Problems, "url under [model-server] contains credentials, which wt will not display; move them out of the url")
 		}
 	}

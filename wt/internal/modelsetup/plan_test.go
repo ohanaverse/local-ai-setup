@@ -1,6 +1,7 @@
 package modelsetup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -612,5 +613,81 @@ func TestBuildPlanRemoteCheckOfAnotherURLIsNotAVerification(t *testing.T) {
 	var re *RefusalError
 	if !errors.As(err, &re) {
 		t.Errorf("a failed check of the same url did not refuse: %v", err)
+	}
+}
+
+// TestBuildPlanRemoteCheckMatchesATypedURLWithCredentials pins that a check
+// recorded without userinfo (State.Server.URL is always stripped) still
+// counts for a typed url that carries a user:password, both ways: a passed
+// check is not called unchecked, and a failed one is refused. A raw string
+// comparison would read every credentialed url as unchecked.
+func TestBuildPlanRemoteCheckMatchesATypedURLWithCredentials(t *testing.T) {
+	want := Desired{Mode: modelclient.ModeRemote, URL: "https://u:p@gpu.example:8787", PastedToken: plPasted}
+	st := freshState()
+	st.Server = ServerState{Checked: true, OK: true, URL: "https://gpu.example:8787"}
+	p := mustPlan(t, st, want)
+	if strings.Contains(p.Format(), "was not checked") {
+		t.Errorf("a passed check of the same host read as unchecked:\n%s", p.Format())
+	}
+	st.Server = ServerState{Checked: true, Kind: KindUnreachable, URL: "https://gpu.example:8787"}
+	_, err := BuildPlan(st, want)
+	var re *RefusalError
+	if !errors.As(err, &re) {
+		t.Errorf("a failed check of the same host did not refuse: %v", err)
+	}
+}
+
+// TestPlanWritesURLIsData pins Plan.WritesURL: true exactly when the plan has
+// a config step that writes a url (local and remote setups), false for native
+// (which clears it) and for a plan that keeps the stored table. The tab keys
+// its "credentials are not kept" note on it, not on a step's wording.
+func TestPlanWritesURLIsData(t *testing.T) {
+	remote := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, SaveUnchecked: true})
+	local := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal})
+	native := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeNative})
+	kept := mustPlan(t, baseState(), Desired{Mode: modelclient.ModeLocal})
+	for name, c := range map[string]struct {
+		p    Plan
+		want bool
+	}{"remote": {remote, true}, "local": {local, true}, "native": {native, false}, "kept": {kept, false}} {
+		if got := c.p.WritesURL(); got != c.want {
+			t.Errorf("%s: WritesURL = %v, want %v (steps %v)", name, got, c.want, kinds(c.p))
+		}
+	}
+}
+
+// TestObserveAndPlanFlagACredentialedURLThatWillBeRewritten runs the real
+// Observe and the real BuildPlan end to end: a stored url with a
+// user:password sets ConfigState.URLHadCredentials (beside the Problems line
+// a person reads). A remote plan that keeps the url as the State shows it
+// but changes the token rewrites the table, url included, so it writes the
+// url without its credentials (Plan.WritesURL); one that changes nothing
+// keeps the table, and the credentials, as they are. Those facts are what
+// the tab's note reads, so neither may depend on wording.
+func TestObserveAndPlanFlagACredentialedURLThatWillBeRewritten(t *testing.T) {
+	f := obsConfigured(t)
+	f.configFile.Table.Mode = "remote"
+	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if !st.Config.URLHadCredentials {
+		t.Fatalf("URLHadCredentials = false for a url with userinfo")
+	}
+	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, PastedToken: "tok-NEW"})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if !p.WritesURL() {
+		t.Errorf("a new token rewrites the table, yet WritesURL is false:\n%s", p.Format())
+	}
+	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, TokenFile: obsTokenPath})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if p.WritesURL() {
+		t.Errorf("nothing changes, so the stored table (and its credentials) stays, yet WritesURL is true:\n%s", p.Format())
+	}
+	f = obsConfigured(t)
+	if st = Observe(context.Background(), f.Env(), ObserveOptions{}); st.Config.URLHadCredentials {
+		t.Errorf("URLHadCredentials = true for a plain url")
 	}
 }
