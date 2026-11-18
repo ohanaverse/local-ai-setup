@@ -18,7 +18,7 @@ var adminBanned = []string{
 	"internal/cloudsync", "internal/spend", "internal/modeladmin",
 	"internal/configeditor", "internal/modelserver", "internal/modelgateway",
 	"internal/modeljobs", "internal/sessionreg", "internal/candidates",
-	"internal/hoststop",
+	"internal/hoststop", "internal/modelsetup",
 }
 
 // sessionBanned is the set cmd/wt-model must not link: the session half.
