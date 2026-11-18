@@ -104,9 +104,10 @@ func wtLines(out string) []string {
 
 // TestLaunchWithoutEndpointRefusesWithBothSettings pins the flip's refusal
 // (Task 18) for a launch that asks for a model: with no [model-server] and no
-// WT_MODEL_* a `-M` launch of a model-driven agent (a plain one runs natively
-// since #615) stops before anything runs, with exactly one line naming
-// both settings and saying nothing was launched, exit 1. A registry that the
+// WT_MODEL_* (an unset mode since stage 3) a `-M` launch of a model-driven
+// agent stops before anything runs, with exactly one line naming the two
+// ways to choose a mode (wt config, WT_MODEL_MODE) and saying nothing was
+// launched, exit 1. A registry that the
 // pre-flip path would have launched from is present and is not used: no
 // provider probe, no route check, no refcount sweep, no agent process, and
 // config.toml is byte-for-byte unchanged (config.Load, the registry's
@@ -124,14 +125,14 @@ func TestLaunchWithoutEndpointRefusesWithBothSettings(t *testing.T) {
 	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) {
 		t.Errorf("config.toml changed: the registry's loader ran\n%s", after)
 	}
-	want := "wt: " + notConfiguredText(launchStill)
+	want := "wt: " + unsetText(launchStill)
 	if code != 1 {
 		t.Errorf("exit = %d, want 1\n%s", code, out)
 	}
 	if lines := wtLines(out); len(lines) != 1 || lines[0] != want {
 		t.Errorf("wt lines = %q, want exactly %q", lines, want)
 	}
-	for _, s := range []string{"url and token_file under [model-server]", "WT_MODEL_URL and WT_MODEL_TOKEN_FILE", "nothing was launched"} {
+	for _, s := range []string{"no model server is configured", "wt config", "WT_MODEL_MODE", "nothing was launched"} {
 		if !strings.Contains(out, s) {
 			t.Errorf("output does not name %q:\n%s", s, out)
 		}
@@ -142,11 +143,11 @@ func TestLaunchWithoutEndpointRefusesWithBothSettings(t *testing.T) {
 }
 
 // TestEachModelNeedingPathRefuses walks every path that needs a model from
-// the server (Task 18's list) with no endpoint configured: a launch that asks
-// for a model (-M, -T, -F, a slot profile pin; a plain launch or picker runs
-// the agent natively since #615, see native_test.go) and every server command
-// each refuses with
-// NotConfiguredError's text and its own clause saying what did not happen
+// the server (Task 18's list) with no endpoint configured (an unset mode): a
+// launch that asks for a model (-M, -T, -F, a slot profile pin; a plain launch
+// or picker refuses the same way since stage 3, see native_test.go) and every
+// server command each refuses with
+// ModeUnsetError's text and its own clause saying what did not happen
 // (a launch's "nothing was launched"), exit 1, and spawns no agent. One path that fell back to the registry instead would be a
 // session reading host state the split exists to keep away from it.
 func TestEachModelNeedingPathRefuses(t *testing.T) {
@@ -186,7 +187,7 @@ func TestEachModelNeedingPathRefuses(t *testing.T) {
 			if code != 1 {
 				t.Errorf("exit = %d, want 1\n%s", code, out)
 			}
-			if lines, want := wtLines(out), "wt: "+notConfiguredText(tc.still); len(lines) != 1 || lines[0] != want {
+			if lines, want := wtLines(out), "wt: "+unsetText(tc.still); len(lines) != 1 || lines[0] != want {
 				t.Errorf("wt lines = %q, want exactly %q", lines, want)
 			}
 			if fileExists(marker) {
@@ -318,8 +319,8 @@ func inTestRepo(t *testing.T, _ string) []string {
 }
 
 // TestModelLaunchRefusesBeforeAnyGitWork pins the refusal's place in a
-// repository: with no model server configured, a launch that asks for a model
-// (-M or -T; a plain one runs natively since #615) with
+// repository: with no model server configured (an unset mode), a launch that
+// asks for a model (-M or -T; a plain one refuses too since stage 3) with
 // -W (a new name), --root, or from the worktree picker refuses with the one
 // not-configured line, exit 1, before RunE does anything — no worktree or
 // branch is created, the main guard is not installed. The plan says a
@@ -344,7 +345,7 @@ func TestModelLaunchRefusesBeforeAnyGitWork(t *testing.T) {
 			stubStdinTTY(t, tc.tty)
 			before := gitState(t, repo)
 			out, code := runRootWith(t, h, tc.args...)
-			if want := "wt: " + notConfiguredText(launchStill); code != 1 || len(wtLines(out)) != 1 || wtLines(out)[0] != want {
+			if want := "wt: " + unsetText(launchStill); code != 1 || len(wtLines(out)) != 1 || wtLines(out)[0] != want {
 				t.Errorf("exit %d, output %q; want 1 and exactly %q", code, out, want)
 			}
 			if after := gitState(t, repo); after != before {

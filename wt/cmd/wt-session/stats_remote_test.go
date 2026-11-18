@@ -398,3 +398,23 @@ func TestCollectUsageNoServerMapsTheOpenError(t *testing.T) {
 		})
 	}
 }
+
+// TestCollectUsageNoServerReadsUnsetAndNativeAsNotConfigured pins the spend
+// status for the stage 3 mode errors: an unset mode and native mode (bare or
+// wrapped) read spendNotConfigured like a missing endpoint, not
+// spendUnavailable, since there is no server whose spend could be read.
+func TestCollectUsageNoServerReadsUnsetAndNativeAsNotConfigured(t *testing.T) {
+	for name, err := range map[string]error{
+		"unset":          &modelclient.ModeUnsetError{},
+		"wrapped unset":  modelclient.Still(&modelclient.ModeUnsetError{}, "x"),
+		"native":         &modelclient.NativeModeError{},
+		"wrapped native": modelclient.Still(&modelclient.NativeModeError{}, "x"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rep := collectUsageNoServer(err, time.Hour, time.Now().UTC(), statsFilter{}, nil)
+			if rep.SpendStatus != spendNotConfigured || !strings.Contains(rep.SpendReason, err.Error()) {
+				t.Errorf("status %q reason %q, want %q naming %q", rep.SpendStatus, rep.SpendReason, spendNotConfigured, err)
+			}
+		})
+	}
+}

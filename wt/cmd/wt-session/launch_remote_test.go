@@ -507,8 +507,9 @@ func TestUnreachableServerFailsFastWithAddress(t *testing.T) {
 // TestPickerGetsTheModelServerOnlyWhenOneIsConfigured proves the one tui.Run
 // caller hands the picker its model-server client when an endpoint is
 // configured (and the session config with it, never the host's), and, since
-// the flip, that with none configured the picker opens natively (no client,
-// a nil client; #615) unless the launch asks for a model (-T), which
+// the flip, that with none configured the picker refuses (an unset mode,
+// exit 1, nothing was launched), with native mode chosen it opens natively
+// (a nil client; #615) unless the launch asks for a model (-T), which
 // refuses before the TUI opens (exit 1, nothing was launched), while a pinned
 // command agent's worktree picker still opens, with no client too. The picker's fetch
 // itself runs inside the TUI; nothing here reaches the fake server.
@@ -539,25 +540,34 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 		t.Errorf("the launch path asked the server %v before the picker opened", r.f.Reqs)
 	}
 
-	// No endpoint: the picker opens natively (#615), with no client,
-	// unless the launch asks for a model, which refuses before the
-	// picker opens.
+	// No endpoint and no mode: the picker refuses before it opens.
 	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN"} {
 		t.Setenv(k, "")
 	}
+	unset := &app{}
+	unset.sessCfgSet, unset.sessCfg = true, &config.Config{}
+	called = false
+	if err := runLaunchPath(cmd, unset, "", "", "", "", nil, "", ""); err == nil || err.Error() != unsetText(launchStill) || exitcode.Of(err) != 1 || called {
+		t.Errorf("no mode: err = %v (exit %d), called = %v; want %q, exit 1, no TUI", err, exitcode.Of(err), called, unsetText(launchStill))
+	}
+
+	// Native mode: the picker opens natively (#615), with no client,
+	// unless the launch asks for a model, which refuses before the
+	// picker opens.
+	t.Setenv("WT_MODEL_MODE", "native")
 	a := &app{}
 	a.sessCfgSet, a.sessCfg = true, &config.Config{}
 	called, gotModels = false, nil
 	if err := runLaunchPath(cmd, a, "", "", "", "", nil, "", ""); err != nil || !called || gotModels != nil {
-		t.Errorf("no endpoint: err = %v, called = %v, models = %v; want a native picker with no client", err, called, gotModels)
+		t.Errorf("native: err = %v, called = %v, models = %v; want a native picker with no client", err, called, gotModels)
 	}
 	called = false
 	err := runLaunchPath(cmd, a, "", "", "code", "", nil, "", "")
-	if want := notConfiguredText(launchStill); err == nil || err.Error() != want || exitcode.Of(err) != 1 {
-		t.Errorf("no endpoint, -T: err = %v (exit %d), want %q, exit 1", err, exitcode.Of(err), want)
+	if want := nativeRefusalText(launchStill); err == nil || err.Error() != want || exitcode.Of(err) != 1 {
+		t.Errorf("native, -T: err = %v (exit %d), want %q, exit 1", err, exitcode.Of(err), want)
 	}
 	if called {
-		t.Error("no endpoint, -T: the TUI opened")
+		t.Error("native, -T: the TUI opened")
 	}
 
 	// No endpoint, a pinned command: its worktree picker needs no model.

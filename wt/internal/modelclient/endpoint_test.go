@@ -130,9 +130,9 @@ func TestZeroNotConfiguredErrorIsNotATokenError(t *testing.T) {
 }
 
 // TestNotConfiguredMessages pins the three exact refusal texts and that each
-// names both settings and wt-model serve.
+// names both settings and wt config.
 func TestNotConfiguredMessages(t *testing.T) {
-	tail := " — set url and token_file under [model-server] in config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE); start a server yourself with 'wt-model serve --listen ADDR --token-file PATH', because wt never starts one"
+	tail := " — set url and token_file under [model-server] in config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE), or choose the mode in wt config (Model server tab): native, local or remote"
 	cases := []struct {
 		e    NotConfiguredError
 		want string
@@ -190,6 +190,35 @@ func TestNoServerConfigured(t *testing.T) {
 	} {
 		if got := NoServerConfigured(tc.err); got != tc.want {
 			t.Errorf("%s: NoServerConfigured = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestNotConfiguredErrorLeadsAreUnchangedAndTheTailNamesWtConfig pins the
+// stage 3 rewrite of NotConfiguredError: its three leads are byte-identical
+// (llmbench's wt_bridge hint and several wt tests key on them), and only the
+// tail changed: it names wt config and the three modes, and no longer says
+// "wt never starts one", which is false for the local mode.
+func TestNotConfiguredErrorLeadsAreUnchangedAndTheTailNamesWtConfig(t *testing.T) {
+	for _, c := range []struct {
+		e    NotConfiguredError
+		lead string
+	}{
+		{NotConfiguredError{MissingURL: true, MissingToken: true}, "no model server is configured; [litellm] is no longer used by wt — "},
+		{NotConfiguredError{MissingURL: true}, "the model server url is not configured — "},
+		{NotConfiguredError{MissingToken: true}, "the model server token is not configured — "},
+	} {
+		got := c.e.Error()
+		if !strings.HasPrefix(got, c.lead) {
+			t.Errorf("%q does not begin with the unchanged lead %q", got, c.lead)
+		}
+		for _, want := range []string{"wt config", "native, local or remote", "[model-server]", "WT_MODEL_URL"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%q does not name %q", got, want)
+			}
+		}
+		if strings.Contains(got, "wt never starts one") || strings.Contains(got, "\n") {
+			t.Errorf("%q still says wt never starts a server, or is not one line", got)
 		}
 	}
 }

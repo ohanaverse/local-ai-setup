@@ -93,7 +93,7 @@ func runLaunchPath(
 	// client session says it without the registry's "profile/" holder,
 	// which it never reads.
 	var slotNotes []string
-	// A native launch (no model server at all, #615) never uses a slot
+	// A native launch (native mode, #615) never uses a slot
 	// profile, so it says nothing about the file either.
 	if _, ok := agents.SlotsFor(agent); (agent == "" || ok) && !wouldLaunchNative(a, agent, pinned, cmd.Flags().Changed("model"), tags, family) {
 		slotNotes = slotWarningsRemote(a)
@@ -141,7 +141,7 @@ func runLaunchPath(
 	case agents.IsCommand(agent):
 		// A command needs no model; nothing below asks for one.
 	case nativeFallback(merr, pinned, cmd.Flags().Changed("model"), tags, family):
-		// No model server at all and no model asked for (#615): the picker
+		// Native mode and no model asked for (#615): the picker
 		// opens with no client and launches a chosen agent natively.
 	default:
 		return remoteExit(merr) // buildModels' errors carry the still clause
@@ -471,9 +471,10 @@ func rootCmdWith(h hooks) *cobra.Command {
 			// before the launch question, a worktree or branch, the guard or
 			// any other git work, rather than after (the same refusal
 			// launchFilteredRemote and the picker give, decided without a
-			// network call). A model-driven agent always needs one, unless no
-			// server is configured at all and no model is asked for (-M, -T,
-			// -F): then it launches natively (nativeFallback, #615); with no
+			// network call). A model-driven agent always needs one, unless the
+			// mode is native and no model is asked for (-M, -T, -F): then it
+			// launches natively (nativeFallback, #615); an unset mode refuses
+			// here with ModeUnsetError's pointer at wt config; with no
 			// agent the picker does (without a terminal the picker's own
 			// refusal, below, comes first, as before; for `-W <new>` that
 			// is only after plan.Ensure has created the worktree and

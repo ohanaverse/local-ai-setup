@@ -163,7 +163,8 @@ func stopCmd(a *app) *cobra.Command {
 // hostSessionReader returns what stopSessions runs: the model server's
 // catalog read for the sessions each model has (Row.Sessions), once. A host
 // stop is local to the machine that runs the server, so a stop with no model
-// server configured simply has no sessions to ask about; a configured server
+// server (an unset or native mode, or a missing url or token) simply has no
+// sessions to ask about; a configured server
 // that cannot be read is a note, since the stop then cannot tell whether a
 // client session uses what it is about to take down.
 func (a *app) hostSessionReader(ctx context.Context, w io.Writer) func() map[string]int {
@@ -185,7 +186,7 @@ func (a *app) hostSessionReader(ctx context.Context, w io.Writer) func() map[str
 				}
 			}
 			var nc *modelclient.NotConfiguredError
-			if !errors.As(err, &nc) {
+			if !modelclient.NoServer(err) && !errors.As(err, &nc) {
 				fmt.Fprintf(w, "wt: note: could not read client sessions from the model server (%s) — models they use are stopped without asking\n", cleanup.Flatten(err.Error()))
 			}
 		})

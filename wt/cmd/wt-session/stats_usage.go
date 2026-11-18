@@ -290,7 +290,8 @@ func collectUsageRemote(ctx context.Context, ms *modelSession, window time.Durat
 
 // collectUsageNoServer is collectUsageRemote's answer when the model server
 // could not be opened (unreachable, refused or not configured): no spend,
-// the reason (spendNotConfigured when no server is configured, else
+// the reason (spendNotConfigured when there is no server to ask: an unset
+// or native mode, or a missing url or token; else
 // spendUnavailable), and the launch counts. families names each id's family
 // (the host registry's, when this machine has one that loads); an id it does
 // not name takes its provider prefix.
@@ -298,7 +299,7 @@ func collectUsageNoServer(openErr error, window time.Duration, asOf time.Time, f
 	return collectUsage(window, asOf, f, families, func() spendOutcome {
 		var nc *modelclient.NotConfiguredError
 		status := spendUnavailable
-		if errors.As(openErr, &nc) {
+		if modelclient.NoServer(openErr) || errors.As(openErr, &nc) {
 			status = spendNotConfigured
 		}
 		return spendOutcome{status: status, reason: "spend unavailable: " + openErr.Error()}

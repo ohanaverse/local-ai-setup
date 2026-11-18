@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -22,6 +24,9 @@ type modelSession struct {
 	client *modelclient.Client
 	ep     modelclient.Endpoint
 	hooks  *hooks
+	// mode is the effective mode the session resolved: local or remote
+	// (native and unset never build a session).
+	mode modelclient.Mode
 }
 
 // agentDriverNames is the agent drivers a session synthesizes an agent for:
@@ -49,11 +54,13 @@ func (a *app) sessionCfg() (*config.Config, error) {
 	return a.sessCfg, a.sessCfgErr
 }
 
-// openModels resolves the endpoint from [model-server] and the environment,
-// builds the client and pings. Every path that needs a model calls it (or
-// buildModels) before it starts or launches anything: with nothing
-// configured it is the *NotConfiguredError refusal (exit 1 through
-// remoteExit), since the flip there is no other path. Each failure carries still, the clause saying
+// openModels resolves the mode and the endpoint from [model-server] and the
+// environment, builds the client and pings. Every path that needs a model
+// calls it (or buildModels) before it starts or launches anything: an unset
+// mode is the *ModeUnsetError refusal, native mode the *NativeModeError one,
+// a local or remote mode missing a setting the *NotConfiguredError one (each
+// exit 1 through remoteExit). A failed ping carries the mode's way out
+// (pingHint). Each failure carries still, the clause saying
 // what did not happen; the typed cause stays reachable with errors.As. A
 // success is cached on the app. Callers must never wrap an openModels error
 // with Still again: it already ends with the clause. The cache is
@@ -68,7 +75,7 @@ func (a *app) openModels(ctx context.Context, still string) (*modelSession, erro
 		return nil, err
 	}
 	if _, err := ms.client.Ping(ctx); err != nil {
-		return nil, modelclient.Still(err, still)
+		return nil, modelclient.Still(pingHint(err, ms), still)
 	}
 	a.models = ms
 	return a.models, nil
@@ -94,16 +101,46 @@ func (a *app) buildModels(still string) (*modelSession, error) {
 	return a.built, nil
 }
 
-// resolveModels is buildModels' one uncached read: the endpoint from
-// [model-server] and the environment, and the client built from it.
+// resetModelCaches forgets every cached read of the model server's
+// configuration (config.toml, the resolution and an opened session), so the
+// next buildModels or openModels resolves afresh: the first-run gate calls it
+// after wt config may have changed the mode.
+func (a *app) resetModelCaches() {
+	a.sessCfg, a.sessCfgErr, a.sessCfgSet = nil, nil, false
+	a.built, a.builtErr, a.builtSet = nil, nil, false
+	a.models = nil
+}
+
+// resolveModels is buildModels' one uncached read: the effective mode
+// (modelclient.ResolveMode over [model-server] and the environment), then,
+// for local or remote, the endpoint and the client built from it. An invalid
+// mode, an unset mode and native mode are refused before any endpoint work
+// (no token file is read for them); a stored local or remote with a field
+// only the environment supplies resolves, one missing a setting everywhere
+// is ResolveEndpoint's *NotConfiguredError.
 func (a *app) resolveModels() (*modelSession, error) {
 	cfg, err := a.sessionCfg()
 	if err != nil {
 		return nil, err
 	}
 	ms := cfg.ModelServer()
-	if p := ms.Problems(); len(p) > 0 {
+	res := modelclient.ResolveMode(ms.Mode, ms.URL, ms.TokenFile, os.Getenv)
+	if res.Problem != "" {
+		return nil, &modelclient.ModeProblemError{Problem: res.Problem}
+	}
+	// The table's other problems (an inline token) refuse whatever the
+	// mode; the stored mode's own problem is ResolveMode's to judge, since
+	// WT_MODEL_MODE may override it.
+	rest := ms
+	rest.Mode = ""
+	if p := rest.Problems(); len(p) > 0 {
 		return nil, errors.New(strings.Join(p, "; "))
+	}
+	switch res.Mode {
+	case "":
+		return nil, &modelclient.ModeUnsetError{}
+	case modelclient.ModeNative:
+		return nil, &modelclient.NativeModeError{Source: res.Source}
 	}
 	tokenFile := ms.TokenFile
 	if tokenFile != "" {
@@ -115,7 +152,43 @@ func (a *app) resolveModels() (*modelSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelSession{client: a.hooks.client(ep), ep: ep, hooks: &a.hooks}, nil
+	return &modelSession{client: a.hooks.client(ep), ep: ep, hooks: &a.hooks, mode: res.Mode}, nil
+}
+
+// pingHintError is a failed ping with the session mode's way out appended;
+// the classified modelclient error stays reachable with errors.As.
+type pingHintError struct {
+	err  error
+	hint string
+}
+
+func (e *pingHintError) Error() string { return e.err.Error() + "; " + e.hint }
+func (e *pingHintError) Unwrap() error { return e.err }
+
+// pingHint words a failed ping for the session's mode. local: the server is
+// this machine's LaunchAgent, so the fix is the Model server tab or a
+// kickstart of local.wt-model.serve for this user. remote: the url tried
+// (without credentials, query or fragment) beside the classified error,
+// which already says what went wrong there.
+func pingHint(err error, ms *modelSession) error {
+	switch ms.mode {
+	case modelclient.ModeLocal:
+		return &pingHintError{err: err, hint: fmt.Sprintf("local mode: start it from wt config (Model server tab) or run launchctl kickstart -k gui/%d/local.wt-model.serve", os.Getuid())}
+	case modelclient.ModeRemote:
+		return &pingHintError{err: err, hint: "remote mode, url " + displayURL(ms.ep.URL) + " — check the server there, or change the url or mode in wt config (Model server tab)"}
+	}
+	return err
+}
+
+// displayURL is raw safe to print: no user info, query or fragment, which
+// may carry a secret.
+func displayURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "(the configured url does not parse)"
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	return u.String()
 }
 
 // remoteExit is the one mapping from a model-server error to an exit status:
@@ -148,19 +221,19 @@ func remoteExit(err error) error {
 }
 
 // nativeFallback reports whether a launch whose model setup failed with err
-// runs the agent natively instead (#615): only when no model server is
-// configured at all (neither url nor token; one missing is a half-configured
-// server and refuses) and the launch asks for no model (-M, -T, -F pick from a
-// catalog that does not exist). A configured server is never bypassed.
-// pinnedSet is whether -M was given at all: an explicit empty -M still asks
-// for a model, so it refuses like any other.
+// runs the agent natively instead (#615): only when the effective mode is
+// native (stored mode = "native" or WT_MODEL_MODE=native; an unset mode and
+// a half-configured server refuse) and the launch asks for no model (-M, -T,
+// -F pick from a catalog native mode does not have). A configured server is
+// never bypassed. pinnedSet is whether -M was given at all: an explicit empty
+// -M still asks for a model, so it refuses like any other.
 func nativeFallback(err error, pinned string, pinnedSet bool, tags, family string) bool {
-	return pinned == "" && !pinnedSet && tags == "" && family == "" && modelclient.NoServerConfigured(err)
+	return pinned == "" && !pinnedSet && tags == "" && family == "" && modelclient.IsNativeMode(err)
 }
 
 // wouldLaunchNative reports whether a launch of agent with these filters would
 // run natively (#615): a model-driven agent, or a picker that may need one
-// (agent ""), with no model server configured at all and no model asked for.
+// (agent ""), in native mode with no model asked for.
 func wouldLaunchNative(a *app, agent, pinned string, pinnedSet bool, tags, family string) bool {
 	if agents.IsCommand(agent) {
 		return false

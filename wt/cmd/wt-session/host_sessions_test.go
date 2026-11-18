@@ -49,3 +49,25 @@ func TestHostSessionReaderNotesAnUnreachableServer(t *testing.T) {
 		t.Errorf("note = %q", w.String())
 	}
 }
+
+// TestHostSessionReaderIsSilentWithNoServer proves a host stop on a machine
+// with no model server to ask (an unset mode, or native mode) has simply no
+// sessions to ask about and prints no note: only a configured server that
+// cannot be read is worth one. The native case keeps a stray url and token
+// file naming a stopped server, which native mode ignores: it must neither
+// try that server nor note it.
+func TestHostSessionReaderIsSilentWithNoServer(t *testing.T) {
+	stray, _ := closedServerConfig(t, "native", "")
+	for name, body := range map[string]string{
+		"unset":  "default_tag = \"code\"\n",
+		"native": stray,
+	} {
+		t.Run(name, func(t *testing.T) {
+			writeSessionConfig(t, body)
+			var w bytes.Buffer
+			if got := (&app{hooks: testHooks()}).hostSessionReader(context.Background(), &w)(); got != nil || w.Len() != 0 {
+				t.Errorf("sessions = %v, note = %q; want nil and no note", got, w.String())
+			}
+		})
+	}
+}
