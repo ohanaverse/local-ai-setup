@@ -51,7 +51,7 @@ func serverLiteLLMMenu(s modelsetup.State) (opts []menuOption, reasons []string)
 	case !p.HasMasterKey:
 		reasons = append(reasons, "a new key is not offered: "+where+" has no LITELLM_MASTER_KEY to replace ("+guide14Path+")")
 	case p.HasDatabaseURL && !p.HasSaltKey:
-		reasons = append(reasons, "a new key is not offered: "+where+" sets DATABASE_URL but no LITELLM_SALT_KEY, so a new master key would make LiteLLM's stored credentials unreadable ("+guide14Path+")")
+		reasons = append(reasons, "a new key is not offered: "+where+" sets DATABASE_URL but no LITELLM_SALT_KEY, so a new master key could make LiteLLM's stored credentials unreadable; first set LITELLM_SALT_KEY to the current master key ("+guide14Path+")")
 	default:
 		opts = append(opts, menuOption{modelsetup.LiteLLMRotateKey, "generate a new key"})
 	}

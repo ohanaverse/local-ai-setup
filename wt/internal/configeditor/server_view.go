@@ -107,8 +107,10 @@ type serverLine struct {
 // last @ before the host: a password may hold an @ itself.
 var userinfoRE = regexp.MustCompile(`://[^/\s]*@`)
 
-// keyRE finds a LiteLLM-style key (sk- and a long run of key characters).
-var keyRE = regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`)
+// keyRE finds a LiteLLM-style key (sk- and a long run of key characters) that
+// does not continue a longer word: group 1 is the character before it (RE2
+// has no lookbehind), kept by the replacement.
+var keyRE = regexp.MustCompile(`(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}`)
 
 // scrub takes any url userinfo and any sk- key out of text the tab draws:
 // Observe already strips them from what it stores, but a message a dep
@@ -120,7 +122,7 @@ var keyRE = regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`)
 // side (a credential is never shown); TestScrubTakesTheHostWithAnAtInTheQuery
 // pins it.
 func scrub(s string) string {
-	return keyRE.ReplaceAllString(userinfoRE.ReplaceAllString(s, "://"), "sk-<hidden>")
+	return keyRE.ReplaceAllString(userinfoRE.ReplaceAllString(s, "://"), "${1}sk-<hidden>")
 }
 
 // homePath writes a path under home with ~ for the home.
