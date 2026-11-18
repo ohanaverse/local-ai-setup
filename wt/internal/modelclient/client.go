@@ -119,10 +119,10 @@ type response struct {
 // fixed text: neither quotes the url (url.Parse's own error quotes it whole,
 // and the transport's names a schemeless url's first word as its scheme).
 func (c *Client) send(ctx context.Context, method, rawurl string, body any) (*response, error) {
-	if HasUserinfo(c.ep.URL) {
+	switch c.addr() {
+	case HiddenURL:
 		return nil, &CredentialsInURLError{}
-	}
-	if c.addr() == unparsedAddr {
+	case unparsedAddr:
 		return nil, &UnreachableError{Addr: unparsedAddr, Reason: unbuildableRequest}
 	}
 	var rd io.Reader
