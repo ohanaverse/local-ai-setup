@@ -1,112 +1,68 @@
 package modelclient
 
-import (
-	"errors"
-	"strings"
-)
+import "github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
+
+// The mode rules live in internal/modelmode; these are modelclient's names
+// for them, so the session side keeps its vocabulary (and every caller's
+// modelclient.ResolveMode, ModeUnsetError and friends keep compiling).
 
 // Mode is how a session reaches a model server: native (none), local or remote.
-type Mode string
+type Mode = modelmode.Mode
 
 // The three modes.
 const (
-	ModeNative Mode = "native"
-	ModeLocal  Mode = "local"
-	ModeRemote Mode = "remote"
+	ModeNative = modelmode.ModeNative
+	ModeLocal  = modelmode.ModeLocal
+	ModeRemote = modelmode.ModeRemote
 )
 
-// ParseMode reads a mode name, trimmed and case-insensitive.
-func ParseMode(s string) (Mode, bool) {
-	switch m := Mode(strings.ToLower(strings.TrimSpace(s))); m {
-	case ModeNative, ModeLocal, ModeRemote:
-		return m, true
-	}
-	return "", false
-}
-
 // ModeSource says where a resolved mode came from.
-type ModeSource int
+type ModeSource = modelmode.ModeSource
 
 // The sources, highest precedence first (after SourceNone).
 const (
-	SourceNone ModeSource = iota
-	SourceEnvMode
-	SourceEnvEndpoint
-	SourceStored
-	SourceInferred
+	SourceNone        = modelmode.SourceNone
+	SourceEnvMode     = modelmode.SourceEnvMode
+	SourceEnvEndpoint = modelmode.SourceEnvEndpoint
+	SourceStored      = modelmode.SourceStored
+	SourceInferred    = modelmode.SourceInferred
 )
 
 // Resolution is the effective mode. Mode == "" and Problem == "" means unset.
-type Resolution struct {
-	Mode    Mode
-	Source  ModeSource
-	Problem string
-}
+type Resolution = modelmode.Resolution
 
-const modeNames = "native, local, remote"
+// ModeUnsetError says no mode is chosen anywhere.
+type ModeUnsetError = modelmode.ModeUnsetError
+
+// NativeModeError says the mode is native, which has no model server.
+type NativeModeError = modelmode.NativeModeError
+
+// ModeProblemError says a stored or environment mode value is invalid.
+type ModeProblemError = modelmode.ModeProblemError
+
+// ParseMode reads a mode name, trimmed and case-insensitive. It is
+// modelmode.ParseMode.
+func ParseMode(s string) (Mode, bool) { return modelmode.ParseMode(s) }
 
 // ResolveMode decides the effective mode: a valid WT_MODEL_MODE; the env url
 // plus a token; the stored mode; any endpoint value (inferred remote, so a
 // half-configured server refuses later in ResolveEndpoint); else unset. An
-// explicit native ignores stray endpoint values.
+// explicit native ignores stray endpoint values. It is modelmode.ResolveMode.
 func ResolveMode(storedMode, storedURL, storedTokenFile string, env func(string) string) Resolution {
-	if v := strings.TrimSpace(env("WT_MODEL_MODE")); v != "" {
-		if m, ok := ParseMode(v); ok {
-			return Resolution{Mode: m, Source: SourceEnvMode}
-		}
-		return Resolution{Problem: "WT_MODEL_MODE is " + quote(v) + "; it must be one of " + modeNames}
-	}
-	if env("WT_MODEL_URL") != "" && (env("WT_MODEL_TOKEN_FILE") != "" || env("WT_MODEL_TOKEN") != "") {
-		return Resolution{Mode: ModeRemote, Source: SourceEnvEndpoint}
-	}
-	if v := strings.TrimSpace(storedMode); v != "" {
-		if m, ok := ParseMode(v); ok {
-			return Resolution{Mode: m, Source: SourceStored}
-		}
-		return Resolution{Problem: "mode under [model-server] is " + quote(v) + "; it must be one of " + modeNames}
-	}
-	if storedURL != "" || storedTokenFile != "" || env("WT_MODEL_URL") != "" ||
-		env("WT_MODEL_TOKEN_FILE") != "" || env("WT_MODEL_TOKEN") != "" {
-		return Resolution{Mode: ModeRemote, Source: SourceInferred}
-	}
-	return Resolution{}
+	return modelmode.ResolveMode(storedMode, storedURL, storedTokenFile, env)
 }
 
-func quote(s string) string { return `"` + s + `"` }
+// IsModeUnset reports whether err is, or wraps, a *ModeUnsetError. It is
+// modelmode.IsModeUnset.
+func IsModeUnset(err error) bool { return modelmode.IsModeUnset(err) }
 
-// ModeUnsetError says no mode is chosen anywhere.
-type ModeUnsetError struct{}
-
-func (*ModeUnsetError) Error() string {
-	return "no model server is configured — choose a mode: run wt config (Model server tab) or set WT_MODEL_MODE to native, local or remote"
-}
-
-// NativeModeError says the mode is native, which has no model server.
-type NativeModeError struct{ Source ModeSource }
-
-func (*NativeModeError) Error() string {
-	return "no model server is configured — native mode has no model server; change the mode in wt config"
-}
-
-// ModeProblemError says a stored or environment mode value is invalid.
-type ModeProblemError struct{ Problem string }
-
-func (e *ModeProblemError) Error() string { return e.Problem }
-
-// IsModeUnset reports whether err is, or wraps, a *ModeUnsetError.
-func IsModeUnset(err error) bool {
-	var e *ModeUnsetError
-	return errors.As(err, &e)
-}
-
-// IsNativeMode reports whether err is, or wraps, a *NativeModeError.
-func IsNativeMode(err error) bool {
-	var e *NativeModeError
-	return errors.As(err, &e)
-}
+// IsNativeMode reports whether err is, or wraps, a *NativeModeError. It is
+// modelmode.IsNativeMode.
+func IsNativeMode(err error) bool { return modelmode.IsNativeMode(err) }
 
 // NoServer reports whether err means there is no model server to use: the
-// mode is unset or native, or the legacy NoServerConfigured holds.
+// mode is unset or native, or the legacy NoServerConfigured holds. It stays
+// here: NoServerConfigured is this package's endpoint rule.
 func NoServer(err error) bool {
 	return IsModeUnset(err) || IsNativeMode(err) || NoServerConfigured(err)
 }
