@@ -100,7 +100,7 @@ Expected: no output, exit code 0.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/src/modelman/screens/forms.py
 git commit -m "feat(forms): make identity fields add-only and promote family to top"
 ```
@@ -221,7 +221,7 @@ Expected: all 4 PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/tests/screens/test_forms.py
 git commit -m "test(forms): pin immutable-identity field order, disabled state, and focus"
 ```
@@ -361,7 +361,7 @@ Expected: all tests PASS (including the 4 new ones from Task 2).
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/tests/screens/test_forms.py
 git commit -m "test(forms): adapt submit/focus tests to immutable identity fields"
 ```
@@ -457,7 +457,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/tests/screens/test_models.py
 git commit -m "test(models): rework discard-revert test to edit cost (location is now immutable)"
 ```
@@ -639,7 +639,7 @@ Expected: all 4 PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/tests/screens/test_app_navigation.py
 git commit -m "test(navigation): adapt edit-mode submit and rework location-edit tests to cost"
 ```
@@ -656,7 +656,7 @@ Expected: all tests PASS (no failures, no errors).
 
 - [ ] **Step 2: Run the repo lint + link checks**
 
-Run: `cd /Users/keith/github/ohanaverse/local-ai-setup && make lint`
+Run: `cd /Users/user_name/github/ohanaverse/local-ai-setup && make lint`
 
 Expected: PASS (shell lint + markdown link check). The plan doc itself is under `docs/superpowers/plans/` — confirm `bin/check-links` does not flag it (it should not, since it contains no repo-relative markdown links).
 
@@ -664,14 +664,14 @@ Expected: PASS (shell lint + markdown link check). The plan doc itself is under 
 
 This change touches no modelman state, so the guide snapshots are unaffected. Still, run the CLAUDE.md-mandated grep to be safe:
 
-Run: `cd /Users/keith/github/ohanaverse/local-ai-setup && git grep -n "litellm_exposed = " docs/guides/`
+Run: `cd /Users/user_name/github/ohanaverse/local-ai-setup && git grep -n "litellm_exposed = " docs/guides/`
 
 Expected: output unchanged from before this work (no new drift introduced).
 
 - [ ] **Step 4: Final commit (if any uncommitted changes remain)**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git status
 ```
 

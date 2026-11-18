@@ -16,7 +16,7 @@ Two independent features, both built on the same `mlx_lm.*` tooling bundled insi
 ## TL;DR
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: ~/github/ohanaverse/local-ai-setup
 bin/mlx-quantize convert --model mlx-community/some-model -q --mlx-path /tmp/some-model-4bit
 # → Output written to: /tmp/some-model-4bit
 #   Next: register it. Either hand-edit registry.toml — add an [[models]] entry

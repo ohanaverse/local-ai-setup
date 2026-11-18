@@ -64,7 +64,7 @@ def test_registry_round_trips_usage_tier(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/test_registry.py::test_registry_round_trips_usage_tier -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/test_registry.py::test_registry_round_trips_usage_tier -v`
 Expected: FAIL with `TypeError: __init__() got an unexpected keyword argument 'usage_tier'` (ModelEntry has no such field).
 
 - [ ] **Step 3: Add `usage_tier` to ModelEntry**
@@ -156,18 +156,18 @@ In `_parse_model` (line ~358), extend the `ModelEntry(...)` constructor call to 
 
 - [ ] **Step 6: Run test to verify it passes**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/test_registry.py::test_registry_round_trips_usage_tier -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/test_registry.py::test_registry_round_trips_usage_tier -v`
 Expected: PASS.
 
 - [ ] **Step 7: Run the full registry test file**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/test_registry.py -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/test_registry.py -v`
 Expected: all PASS (existing cost-kind test still passes because we didn't change Cost parsing).
 
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/registry.py tests/test_registry.py
 git commit -m "feat(registry): add usage_tier field to ModelEntry"
 ```
@@ -182,7 +182,7 @@ git commit -m "feat(registry): add usage_tier field to ModelEntry"
 
 - [ ] **Step 1: Verify the existing tests for VariantSpec**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/test_providers -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/test_providers -v`
 Expected: all PASS. This confirms the baseline.
 
 - [ ] **Step 2: Add the two new optional fields**
@@ -210,13 +210,13 @@ Note: TypedDict is `total=False` — adding new fields is non-breaking for exist
 
 - [ ] **Step 3: Run provider tests to confirm no regression**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/test_providers -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/test_providers -v`
 Expected: all PASS.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/providers/base.py
 git commit -m "feat(variantspec): add cost and usage_tier fields"
 ```
@@ -283,7 +283,7 @@ def test_format_tier_high():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py -v -k "format_cost or format_tier"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py -v -k "format_cost or format_tier"`
 Expected: ImportError or AttributeError for `_format_cost` / `_format_tier`.
 
 - [ ] **Step 3: Add the formatters to `screens/models.py`**
@@ -329,13 +329,13 @@ def _format_tier(model: ModelEntry) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py -v -k "format_cost or format_tier"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py -v -k "format_cost or format_tier"`
 Expected: all PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/models.py tests/screens/test_models.py
 git commit -m "feat(models-screen): add cost and tier formatters"
 ```
@@ -466,7 +466,7 @@ async def test_details_panel_updates_on_cursor_move(tmp_path, monkeypatch):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py -v -k "model_screen_columns_and_details_panel or details_panel_updates_on_cursor_move"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py -v -k "model_screen_columns_and_details_panel or details_panel_updates_on_cursor_move"`
 Expected: FAIL — column list still includes "PATH"; no `#details-panel` widget.
 
 - [ ] **Step 3: Update `compose()` to drop PATH column and add details panel**
@@ -579,18 +579,18 @@ Replace the existing `reload_preserving_cursor(...)` call site (line ~325) with 
 
 - [ ] **Step 8: Run tests to verify they pass**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py -v -k "model_screen_columns_and_details_panel or details_panel_updates_on_cursor_move"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py -v -k "model_screen_columns_and_details_panel or details_panel_updates_on_cursor_move"`
 Expected: PASS.
 
 - [ ] **Step 9: Run the full screen test file**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/ -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/ -v`
 Expected: all PASS (or known-failing unrelated tests; investigate anything new).
 
 - [ ] **Step 10: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/models.py tests/screens/test_models.py
 git commit -m "feat(models-screen): reshape table to 9 cols with cost/tier, move PATH to details panel"
 ```
@@ -628,7 +628,7 @@ def test_variant_to_model_entry_passes_through_cost_and_tier():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py::test_variant_to_model_entry_passes_through_cost_and_tier -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py::test_variant_to_model_entry_passes_through_cost_and_tier -v`
 Expected: FAIL — `ModelEntry.__init__` doesn't accept cost/tier yet (it does for cost, but the adapter doesn't pass them).
 
 - [ ] **Step 3: Update `_variant_to_model_entry`**
@@ -690,13 +690,13 @@ def _model_entry_to_variant(entry: ModelEntry) -> VariantSpec:
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py::test_variant_to_model_entry_passes_through_cost_and_tier -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_models.py::test_variant_to_model_entry_passes_through_cost_and_tier -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/models.py tests/screens/test_models.py
 git commit -m "feat(models-screen): round-trip cost and usage_tier through variants"
 ```
@@ -751,7 +751,7 @@ def test_parse_cost_fields_unknown_kind():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v -k "parse_cost_fields"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v -k "parse_cost_fields"`
 Expected: ImportError — `parse_cost_fields` does not exist.
 
 - [ ] **Step 3: Add the helper to `forms.py`**
@@ -786,13 +786,13 @@ def parse_cost_fields(kind: str, price_mtok: str, price_period: str, period: str
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v -k "parse_cost_fields"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v -k "parse_cost_fields"`
 Expected: all PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/forms.py tests/screens/test_forms.py
 git commit -m "feat(forms): add parse_cost_fields helper"
 ```
@@ -958,7 +958,7 @@ The last test exercises the spec via `parse_cost_fields` directly; the full subm
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v -k "cost_section or tier_section or submits_cost"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v -k "cost_section or tier_section or submits_cost"`
 Expected: FAIL — `#cost-kind-select`, `#price-per-mtok`, `#price-per-period`, `#period-select`, `#usage-tier-select` don't exist.
 
 - [ ] **Step 3: Add cost & tier fields to `ModelForm.compose()`**
@@ -1256,18 +1256,18 @@ Replace `_submit` (line ~482):
 
 - [ ] **Step 7: Run the new tests**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v -k "cost_section or tier_section or submits_cost"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v -k "cost_section or tier_section or submits_cost"`
 Expected: all PASS.
 
 - [ ] **Step 8: Run the full forms test file**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v`
 Expected: all PASS (existing tests still pass; we extended the form without changing existing keys).
 
 - [ ] **Step 9: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git add src/modelman/screens/forms.py tests/screens/test_forms.py
 git commit -m "feat(forms): ModelForm cost section + ollama usage tier"
 ```
@@ -1280,33 +1280,33 @@ git commit -m "feat(forms): ModelForm cost section + ollama usage tier"
 
 - [ ] **Step 1: Run the full test suite**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest -v`
 Expected: all PASS.
 
 - [ ] **Step 2: Lint**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && make lint`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && make lint`
 Expected: clean.
 
 - [ ] **Step 3: Typecheck**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && make typecheck`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && make typecheck`
 Expected: clean.
 
 - [ ] **Step 4: Format check**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && make format`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && make format`
 Expected: no changes (or only formatting fixes that auto-resolve).
 
 - [ ] **Step 5: Smoke test in the TUI**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run modelman`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run modelman`
 Expected: launches, family screen renders, drill-in shows the new column layout and details panel. Press `e` on a model; verify the cost section is visible. Press `escape` to leave.
 
 - [ ] **Step 6: Commit any auto-formatting**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git status
 # If anything changed:
 git add -u

@@ -48,6 +48,7 @@ type ConfigState struct {
 	Path               string
 	Exists             bool
 	ParseErr, TableErr string
+	RestErr            string
 	Table              config.ModelServerState
 	Problems           []string
 	URLHadCredentials  bool
@@ -214,6 +215,9 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 	if file.TableErr != nil {
 		st.Config.TableErr = file.TableErr.Error()
+	}
+	if file.RestErr != nil {
+		st.Config.RestErr = file.RestErr.Error()
 	}
 	// rawURL is the configured url as written, kept out of State: it may
 	// carry a user:password, which only the ping below uses.

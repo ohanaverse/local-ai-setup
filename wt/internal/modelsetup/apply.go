@@ -121,7 +121,10 @@ func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result) error {
 		if w != "" {
 			r.Warnings = append(r.Warnings, w)
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		return waitUnloaded(ctx, env)
 	case StepBootstrap:
 		return env.Launchd.Bootstrap(ctx, s.Path)
 	case StepKickstart:
@@ -233,6 +236,26 @@ func bootout(ctx context.Context, env Env) (warning string, err error) {
 		return "the LaunchAgent " + AgentLabel + " was not loaded; nothing to unload", nil
 	}
 	return "", err
+}
+
+// waitUnloaded polls launchd until the agent is gone, since bootout can
+// return while the job is still being torn down and an immediate bootstrap
+// would then fail. It gives up quietly at ReadyTimeout: the bootstrap that
+// follows reports the real failure.
+func waitUnloaded(ctx context.Context, env Env) error {
+	deadline := env.Host.Now().Add(ReadyTimeout)
+	for {
+		job, err := env.Launchd.Print(ctx, AgentLabel)
+		if err != nil || !job.Loaded {
+			return nil
+		}
+		if !env.Host.Now().Before(deadline) {
+			return nil
+		}
+		if err := env.Host.Sleep(ctx, ReadyPoll); err != nil {
+			return err
+		}
+	}
 }
 
 // waitReady pings the plan's server every ReadyPoll until it answers or

@@ -659,7 +659,7 @@ In the paragraph beginning "`modelman start <model_id>` / `modelman stop <model_
 - [x] **Step 3: Check links**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/local-model-visibility && make check-links
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/local-model-visibility && make check-links
 ```
 
 Expected: PASS (the new doc references point at the already-committed spec file from Task 0's brainstorming step).
@@ -694,7 +694,7 @@ EOF
 - [x] **Step 1: Run the full monorepo verification**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/local-model-visibility && make test-all
+cd /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/local-model-visibility && make test-all
 ```
 
 Expected: PASS — lint, modelman `make check`/`make test`, wt `go build`/`vet`/`test` all green.

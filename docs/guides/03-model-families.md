@@ -173,10 +173,10 @@ for f in ~/.config/agent-wt/rotation*.state; do echo "$f:"; cat "$f"; done
 Each file's path followed by its single model-id line; `rotation.state` is the live cursor, any `rotation-*.state` files are inert legacy. Example (illustrative — your ids will differ):
 
 ```text
-/Users/keith/.config/agent-wt/rotation-claude-code-_.state:
+/Users/user_name/.config/agent-wt/rotation-claude-code-_.state:
 ollama/gemma4:9b
 
-/Users/keith/.config/agent-wt/rotation.state:
+/Users/user_name/.config/agent-wt/rotation.state:
 ollama/glm-5.3-flash:cloud
 ```
 
@@ -191,7 +191,7 @@ ollama/glm-5.3-flash:cloud
 
 ## Going deeper
 
-- wt README (flags, TUI keys, rotation, config split): `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md`
-- wt registry-consumer design (fail-closed load, joined Config, tag/family filter semantics): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`
-- Model registry data model (family/tags/agents, cascading filters): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
+- wt README (flags, TUI keys, rotation, config split): `~/github/ohanaverse/local-ai-setup/wt/README.md`
+- wt registry-consumer design (fail-closed load, joined Config, tag/family filter semantics): `~/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`
+- Model registry data model (family/tags/agents, cascading filters): `~/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
 - Previous/next in this set: [02-providers-and-models](02-providers-and-models.md), [04-litellm-config](04-litellm-config.md)

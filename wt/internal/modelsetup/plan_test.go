@@ -231,6 +231,19 @@ func TestBuildPlanRefusesAParseErrorBeforeAnyStep(t *testing.T) {
 	}
 }
 
+// TestBuildPlanRefusesAnUnreadableTableBeforeAnyStep pins that a
+// [model-server] table that does not decode refuses every mode: the config
+// step re-reads the whole file and would fail last, after the token, plist and
+// launchd steps had already run.
+func TestBuildPlanRefusesAnUnreadableTableBeforeAnyStep(t *testing.T) {
+	for _, m := range []modelclient.Mode{modelclient.ModeNative, modelclient.ModeLocal, modelclient.ModeRemote} {
+		st := freshState()
+		st.Config.Exists, st.Config.TableErr = true, "toml: cannot load TOML value of type int64 into a Go string"
+		p, err := BuildPlan(st, Desired{Mode: m, URL: "https://x", PastedToken: plPasted})
+		mustRefuse(t, p, err, plCfgPath, "cannot be read", "int64")
+	}
+}
+
 // TestBuildPlanRefusesAnUnknownMode pins that a mode other than the three is
 // refused, since the config writer does not validate it.
 func TestBuildPlanRefusesAnUnknownMode(t *testing.T) {
@@ -616,24 +629,19 @@ func TestBuildPlanRemoteCheckOfAnotherURLIsNotAVerification(t *testing.T) {
 	}
 }
 
-// TestBuildPlanRemoteCheckMatchesATypedURLWithCredentials pins that a check
-// recorded without userinfo (State.Server.URL is always stripped) still
-// counts for a typed url that carries a user:password, both ways: a passed
-// check is not called unchecked, and a failed one is refused. A raw string
-// comparison would read every credentialed url as unchecked.
-func TestBuildPlanRemoteCheckMatchesATypedURLWithCredentials(t *testing.T) {
-	want := Desired{Mode: modelclient.ModeRemote, URL: "https://u:p@gpu.example:8787", PastedToken: plPasted}
-	st := freshState()
-	st.Server = ServerState{Checked: true, OK: true, URL: "https://gpu.example:8787"}
-	p := mustPlan(t, st, want)
-	if strings.Contains(p.Format(), "was not checked") {
-		t.Errorf("a passed check of the same host read as unchecked:\n%s", p.Format())
-	}
-	st.Server = ServerState{Checked: true, Kind: KindUnreachable, URL: "https://gpu.example:8787"}
-	_, err := BuildPlan(st, want)
+// TestBuildPlanRemoteRefusesAURLWithCredentials pins that a typed url with a
+// user:password is refused before any step, since config.toml would store it
+// in plain text and a re-apply would read it as "keep"; the reason names the
+// fix and never echoes the credentials.
+func TestBuildPlanRemoteRefusesAURLWithCredentials(t *testing.T) {
+	want := Desired{Mode: modelclient.ModeRemote, URL: "https://u:SECRETPW@gpu.example:8787", PastedToken: plPasted}
+	_, err := BuildPlan(freshState(), want)
 	var re *RefusalError
 	if !errors.As(err, &re) {
-		t.Errorf("a failed check of the same host did not refuse: %v", err)
+		t.Fatalf("BuildPlan error = %v, want a refusal", err)
+	}
+	if strings.Contains(err.Error(), "SECRETPW") || !strings.Contains(err.Error(), "credentials") {
+		t.Errorf("refusal = %q, want it to name credentials without echoing them", err)
 	}
 }
 
@@ -689,5 +697,18 @@ func TestObserveAndPlanFlagACredentialedURLThatWillBeRewritten(t *testing.T) {
 	f = obsConfigured(t)
 	if st = Observe(context.Background(), f.Env(), ObserveOptions{}); st.Config.URLHadCredentials {
 		t.Errorf("URLHadCredentials = true for a plain url")
+	}
+}
+
+// TestBuildPlanRefusesAKeyElsewhereInTheFile pins that a wrong-typed key
+// outside [model-server] (ConfigState.RestErr) refuses before any step, as
+// the config step would fail on it after the early steps ran.
+func TestBuildPlanRefusesAKeyElsewhereInTheFile(t *testing.T) {
+	st := freshState()
+	st.Config.RestErr = "agents.name: incompatible types"
+	for _, m := range []modelclient.Mode{modelclient.ModeNative, modelclient.ModeLocal, modelclient.ModeRemote} {
+		if _, err := BuildPlan(st, Desired{Mode: m, URL: "https://gpu.example:8787", PastedToken: plPasted}); err == nil {
+			t.Errorf("mode %s planned despite RestErr", m)
+		}
 	}
 }

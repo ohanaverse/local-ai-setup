@@ -1824,7 +1824,7 @@ echo "$LOG_PREFIX providers restored"
 
 Run:
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 chmod +x bin/llm-isolate-provider bin/llm-restore-providers
 bash -n bin/llm-isolate-provider
 bash -n bin/llm-restore-providers
@@ -1834,7 +1834,7 @@ Expected: no syntax errors.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add bin/llm-isolate-provider bin/llm-restore-providers
 git commit -m "feat(benchmark): add service isolation helpers for modelman benchmark"
 ```
@@ -1928,7 +1928,7 @@ git commit -m "docs(benchmark): add CLI usage and status tracker updates"
 - [ ] **Step 1: Push modelman branch**
 
 ```bash
-cd /Users/keith/github/ohanaverse/modelman
+cd /Users/user_name/github/ohanaverse/modelman
 git push -u origin feat/modelman-benchmark
 ```
 
@@ -1941,7 +1941,7 @@ Body: summarize the design, link to PR #14 spec, and note the companion helpers 
 - [ ] **Step 3: Push local-ai-setup helpers branch**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git checkout -b feat/benchmark-isolation-helpers
 git push -u origin feat/benchmark-isolation-helpers
 ```

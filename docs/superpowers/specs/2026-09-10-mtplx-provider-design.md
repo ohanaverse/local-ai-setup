@@ -8,7 +8,7 @@ its OpenAI-compatible API, and wt can offer that model alongside cloud models.
 
 ## Context
 
-- MTPLX is installed on this machine at `/Users/keith/.mtplx/bin/mtplx`.
+- MTPLX is installed on this machine at `/Users/user_name/.mtplx/bin/mtplx`.
 - One model is cached: `Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality`.
 - MTPLX serves an OpenAI-compatible API via `mtplx serve --model <repo> --port <port>`.
 - Its default port is `8000`, which conflicts with oMLX, so this provider will
