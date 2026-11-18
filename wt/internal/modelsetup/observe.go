@@ -140,8 +140,11 @@ type LiteLLMPlistState struct {
 	Port         int
 	Mode         os.FileMode
 	HasMasterKey bool
-	Binary       bool
-	Err          string
+	// HasSaltKey and HasDatabaseURL say whether LITELLM_SALT_KEY and
+	// DATABASE_URL are set (names only, never values).
+	HasSaltKey, HasDatabaseURL bool
+	Binary                     bool
+	Err                        string
 }
 
 // LiteLLMInstallState is what a create plan needs to know of an installed
@@ -150,6 +153,11 @@ type LiteLLMPlistState struct {
 type LiteLLMInstallState struct {
 	Binary, ConfigPath string
 	ConfigExists       bool
+	// Port is the port a created plist would use; ListenerPID is the
+	// process listening on it (0 for none), ListenerChecked whether it was
+	// looked at (only when no LiteLLM plist exists).
+	Port, ListenerPID int
+	ListenerChecked   bool
 }
 
 // CheckStatus is the outcome of one LiteLLM check.
@@ -372,8 +380,13 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	} else {
 		st.LiteLLMPlist.Present, st.LiteLLMPlist.Port, st.LiteLLMPlist.Mode = true, info.Port, info.Mode
 		for _, n := range info.EnvNames {
-			if n == "LITELLM_MASTER_KEY" {
+			switch n {
+			case "LITELLM_MASTER_KEY":
 				st.LiteLLMPlist.HasMasterKey = true
+			case "LITELLM_SALT_KEY":
+				st.LiteLLMPlist.HasSaltKey = true
+			case "DATABASE_URL":
+				st.LiteLLMPlist.HasDatabaseURL = true
 			}
 		}
 	}
@@ -384,6 +397,18 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	if st.LiteLLMInstall.ConfigPath != "" {
 		if _, err := env.FS.Stat(st.LiteLLMInstall.ConfigPath); err == nil {
 			st.LiteLLMInstall.ConfigExists = true
+		}
+	}
+
+	// With no LiteLLM plist, whatever listens on the port a created one would
+	// use (a LiteLLM run by hand or under another label) blocks a create.
+	if !st.LiteLLMPlist.Present && ctx.Err() == nil {
+		st.LiteLLMInstall.Port = defaultLiteLLMPort
+		if pid, ok, err := env.Net.ListenerPID(ctx, defaultLiteLLMPort); err == nil {
+			st.LiteLLMInstall.ListenerChecked = true
+			if ok {
+				st.LiteLLMInstall.ListenerPID = pid
+			}
 		}
 	}
 

@@ -704,7 +704,8 @@ const (
 func createState() State {
 	st := freshState()
 	st.LiteLLMPlist = LiteLLMPlistState{Path: plLiteLLM}
-	st.LiteLLMInstall = LiteLLMInstallState{Binary: plLiteLLMBin, ConfigPath: plLiteLLMCfg, ConfigExists: true}
+	st.LiteLLMInstall = LiteLLMInstallState{Binary: plLiteLLMBin, ConfigPath: plLiteLLMCfg, ConfigExists: true,
+		Port: 4000, ListenerChecked: true}
 	return st
 }
 
@@ -713,6 +714,7 @@ func createState() State {
 func rotateState() State {
 	st := baseState()
 	st.LiteLLMPlist.Mode = 0o644
+	st.LiteLLMPlist.HasSaltKey = true
 	st.LiteLLMInstall = LiteLLMInstallState{Binary: plLiteLLMBin, ConfigPath: plLiteLLMCfg, ConfigExists: true}
 	return st
 }
@@ -788,8 +790,11 @@ func TestBuildPlanCreateOnlyWhenAbsent(t *testing.T) {
 // else may hold the old key and what it never changes.
 func TestBuildPlanRotateOrdersBackupEditPairKickstart(t *testing.T) {
 	p := mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
-	if !sameKinds(kinds(p), StepBackup, StepMasterKey, StepChmod, StepPair, StepKickstartLiteLLM, StepKickstart, StepWait) {
+	if !sameKinds(kinds(p), StepBackup, StepMasterKey, StepChmod, StepPair, StepKickstartLiteLLM, StepWait, StepKickstart, StepWait) {
 		t.Fatalf("steps = %v", kinds(p))
+	}
+	if s := p.Steps[5]; s.Action != ActionWaitLiteLLM || s.Value != "http://localhost:4000" {
+		t.Errorf("LiteLLM wait after the restart = %+v", s)
 	}
 	for _, k := range []StepKind{StepBackup, StepMasterKey, StepChmod} {
 		if s, _ := stepOf(p, k); s.Path != plLiteLLM {
@@ -811,7 +816,7 @@ func TestBuildPlanRotateOrdersBackupEditPairKickstart(t *testing.T) {
 	st := rotateState()
 	st.LiteLLMPlist.Mode = 0o600
 	p = mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
-	if !sameKinds(kinds(p), StepBackup, StepMasterKey, StepPair, StepKickstartLiteLLM, StepKickstart, StepWait) {
+	if !sameKinds(kinds(p), StepBackup, StepMasterKey, StepPair, StepKickstartLiteLLM, StepWait, StepKickstart, StepWait) {
 		t.Errorf("0600 plist: steps = %v", kinds(p))
 	}
 }
@@ -890,5 +895,47 @@ func TestBuildPlanCreateValidatesTheSpecBeforeAnyStep(t *testing.T) {
 	ok := LiteLLMSpec{Binary: plLiteLLMBin, ConfigPath: plLiteLLMCfg, Path: plPATH, Home: plHome, Port: 65535}
 	if err := checkLiteLLMSpec(ok); err != nil {
 		t.Errorf("valid spec refused: %v", err)
+	}
+}
+
+// TestBuildPlanCreateRefusesAListenerOnTheLiteLLMPort pins Important 2(a): a
+// LiteLLM started by hand or under another label holds port 4000 when no
+// local.litellm.proxy plist exists; the new job would crash-loop on bind
+// while the old process answered the checks, so create refuses naming the
+// pid and guide 14, and a port nobody checked refuses too.
+func TestBuildPlanCreateRefusesAListenerOnTheLiteLLMPort(t *testing.T) {
+	st := createState()
+	st.LiteLLMInstall.ListenerPID = 4242
+	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	mustRefuse(t, p, err, "pid 4242", "4000", guide14)
+	st = createState()
+	st.LiteLLMInstall.ListenerChecked = false
+	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	mustRefuse(t, p, err, "4000", "not checked")
+}
+
+// TestBuildPlanRotateGuardsTheSaltFallback pins Important 3: LiteLLM encrypts
+// stored credentials with LITELLM_MASTER_KEY when no salt key is set, so a
+// plist with DATABASE_URL and no salt key refuses rotation (naming guide 14's
+// key section); with both it proceeds, and with neither it proceeds saying
+// there is no salt key, so "never changed: LITELLM_SALT_KEY" is only said
+// when one exists.
+func TestBuildPlanRotateGuardsTheSaltFallback(t *testing.T) {
+	want := Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}
+	st := rotateState()
+	st.LiteLLMPlist.HasSaltKey, st.LiteLLMPlist.HasDatabaseURL = false, true
+	p, err := BuildPlan(st, want)
+	mustRefuse(t, p, err, "DATABASE_URL", "LITELLM_SALT_KEY", guide14+"#6-generate-the-keys-file-mode")
+
+	st.LiteLLMPlist.HasSaltKey = true
+	text := mustPlan(t, st, want).Format()
+	if !strings.Contains(text, "never changed in "+plLiteLLM+": LITELLM_SALT_KEY") {
+		t.Errorf("both set:\n%s", text)
+	}
+
+	st.LiteLLMPlist.HasSaltKey, st.LiteLLMPlist.HasDatabaseURL = false, false
+	text = mustPlan(t, st, want).Format()
+	if strings.Contains(text, "never changed in "+plLiteLLM+": LITELLM_SALT_KEY") || !strings.Contains(text, "no salt key set; nothing to preserve") {
+		t.Errorf("neither set:\n%s", text)
 	}
 }

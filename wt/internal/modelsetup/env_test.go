@@ -66,8 +66,8 @@ func TestRealBackupNamesNeverCollide(t *testing.T) {
 		if err != nil || string(got) != want {
 			t.Errorf("%s = %q (%v), want %q", path, got, err, want)
 		}
-		if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o640 {
-			t.Errorf("%s mode = %v (%v), want 0640", path, st.Mode().Perm(), err)
+		if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %v (%v), want 0600 (the source's 0640 without group or other bits)", path, st.Mode().Perm(), err)
 		}
 		if filepath.Dir(path) != dir || !strings.HasPrefix(filepath.Base(path), "local.litellm.proxy.plist.bak-") {
 			t.Errorf("backup %s is not beside the file", path)
@@ -96,5 +96,27 @@ func TestBackupNameAddsASuffixOnlyOnACollision(t *testing.T) {
 func TestDefaultEnvFindsNoLiteLLMBinaryUnderTest(t *testing.T) {
 	if p, ok := DefaultEnv().LiteLLM.Binary(); ok || p != "" {
 		t.Errorf("Binary() = %q, %t under test", p, ok)
+	}
+}
+
+// TestRealBackupIsNeverLooserThanTheSource pins Important 1 on the real file
+// system: the backup holds the plist's secrets, so it drops group and other
+// bits (0644 -> 0600) and never loosens a stricter file (0400 stays 0400).
+func TestRealBackupIsNeverLooserThanTheSource(t *testing.T) {
+	for _, c := range []struct{ from, want os.FileMode }{{0o644, 0o600}, {0o400, 0o400}} {
+		p := filepath.Join(t.TempDir(), "p.plist")
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, c.from); err != nil {
+			t.Fatal(err)
+		}
+		dst, err := realFS{}.Backup(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st, err := os.Stat(dst); err != nil || st.Mode().Perm() != c.want {
+			t.Errorf("%04o: backup mode %v (%v), want %04o", c.from, st.Mode().Perm(), err, c.want)
+		}
 	}
 }

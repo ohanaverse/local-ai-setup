@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -45,7 +46,7 @@ func apEnv(t *testing.T) *fakeEnv {
 func (f *fakeEnv) mutations() []string {
 	var out []string
 	for _, c := range f.calls {
-		for _, p := range []string{"FS.WriteAtomic", "FS.Chmod", "FS.Remove", "Launchd.", "Config.Update", "Config.SetPair", "LiteLLM.PlistVar", "Host.RandRead", "Net.Ping"} {
+		for _, p := range []string{"FS.WriteAtomic", "FS.Chmod", "FS.Remove", "Launchd.", "Config.Update", "Config.SetPair", "LiteLLM.PlistVar", "Host.RandRead", "Net.Ping", "Net.Get http://localhost:4000"} {
 			if strings.HasPrefix(c, p) {
 				out = append(out, c)
 				break
@@ -564,7 +565,22 @@ func rotEnv(t *testing.T) *fakeEnv {
 		Port: 4000, MasterKey: apOldMaster, SaltKey: apOldSalt})
 	f.modes[plLiteLLM] = 0o644
 	f.pair.URL, f.pair.APIKey = "http://localhost:4000", apOldMaster
+	liteLLMUp(f, 0)
 	return f
+}
+
+// liteLLMUp makes the fake LiteLLM answer its liveliness and authenticated
+// checks, and (pid != 0) makes a bootstrap of its plist run the job with
+// that pid, which also listens on 4000.
+func liteLLMUp(f *fakeEnv, pid int) {
+	f.getReplies = map[string]getReply{
+		"http://localhost:4000/health/liveliness": {status: 200},
+		"http://localhost:4000/v1/models":         {status: 200},
+	}
+	if pid != 0 {
+		f.litellmPID = pid
+		f.listeners = map[int]int{4000: pid}
+	}
 }
 
 // envOf reads the environment variables of the plist at path on the fake FS.
@@ -604,7 +620,7 @@ func TestApplyRotateKeepsTheBackupAndTightensTheMode(t *testing.T) {
 	if len(b) != 1 {
 		t.Fatalf("backups = %q, want one", b)
 	}
-	if string(f.files[b[0]]) != string(old) || f.modes[b[0]] != 0o644 {
+	if string(f.files[b[0]]) != string(old) || f.modes[b[0]] != 0o600 {
 		t.Errorf("backup %s: old bytes kept %t, mode %04o", b[0], string(f.files[b[0]]) == string(old), f.modes[b[0]])
 	}
 	vars := envOf(t, f, plLiteLLM)
@@ -623,10 +639,12 @@ func TestApplyRotateKeepsTheBackupAndTightensTheMode(t *testing.T) {
 	}
 	want := []string{
 		"Host.RandRead 32",
-		"FS.WriteAtomic " + plLiteLLM + " 0644",
+		"FS.WriteAtomic " + plLiteLLM + " 0600",
 		"FS.Chmod " + plLiteLLM + " 0600",
 		"Config.SetPair url=true key=true",
 		"Launchd.Kickstart local.litellm.proxy kill=true",
+		"Net.Get http://localhost:4000/health/liveliness bearer=false",
+		"Net.Get http://localhost:4000/v1/models bearer=true",
 		"Launchd.Kickstart " + AgentLabel + " kill=true",
 		"Net.Ping http://127.0.0.1:8787",
 	}
@@ -728,7 +746,7 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 	if r.Failed == nil || r.Failed.Kind != StepChmod || f.called("Config.SetPair") {
 		t.Fatalf("chmod: Failed = %+v", r.Failed)
 	}
-	if b := backupsOf(f, plLiteLLM); len(b) != 1 || !strings.Contains(r.Recovery, "cp -p "+b[0]+" "+plLiteLLM) {
+	if b := backupsOf(f, plLiteLLM); len(b) != 1 || !strings.Contains(r.Recovery, "cp -p "+b[0]+" "+plLiteLLM+" && chmod 600 "+plLiteLLM) {
 		t.Errorf("Recovery %q does not name the restore (backups %q)", r.Recovery, b)
 	}
 }
@@ -741,7 +759,7 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 // anything is written.
 func TestApplyCreateWritesThePlistLoadsItAndPairsTheSameKey(t *testing.T) {
 	f := apEnv(t)
-	f.getReplies = map[string]getReply{"http://localhost:4000/health/liveliness": {status: 200}}
+	liteLLMUp(f, 77)
 	p := mustPlan(t, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
 	r, lines := apply(t, f, p)
 	if r.Err != nil {
@@ -771,6 +789,9 @@ func TestApplyCreateWritesThePlistLoadsItAndPairsTheSameKey(t *testing.T) {
 		"Host.RandRead 32", "Host.RandRead 32",
 		"FS.WriteAtomic " + plLiteLLM + " 0600",
 		"Launchd.Bootstrap " + plLiteLLM,
+		"Net.Get http://localhost:4000/health/liveliness bearer=false",
+		"Launchd.Print local.litellm.proxy",
+		"Net.Get http://localhost:4000/v1/models bearer=true",
 		"Config.SetPair url=true key=true",
 	}
 	got := f.mutations()
@@ -815,6 +836,106 @@ func TestApplyCreateWritesThePlistLoadsItAndPairsTheSameKey(t *testing.T) {
 	}
 	if r.Err == nil || !strings.Contains(r.Err.Error(), plHome+"/.litellm.err.log") || !strings.Contains(r.Recovery, "wt-model litellm set") {
 		t.Errorf("LiteLLM down: Err %v, Recovery %q", r.Err, r.Recovery)
+	}
+	// Minor iii: a failed create also says how to abandon it.
+	for _, w := range []string{"launchctl bootout gui/501/local.litellm.proxy", "remove " + plLiteLLM} {
+		if !strings.Contains(r.Recovery, w) {
+			t.Errorf("Recovery %q does not say %q", r.Recovery, w)
+		}
+	}
+}
+
+// TestApplyCreateRefusesAnAnswerFromAnotherProcess pins Important 2(b): when
+// /health/liveliness is answered by a process that is not the job just
+// bootstrapped (a LiteLLM started by hand holds port 4000 while the new job
+// crash-loops on bind), or LiteLLM rejects the new key, the pair is never
+// written and the Result says what answered and how to finish or abandon.
+func TestApplyCreateRefusesAnAnswerFromAnotherProcess(t *testing.T) {
+	p := mustPlan(t, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	f := apEnv(t)
+	liteLLMUp(f, 77)
+	f.listeners[4000] = 99
+	r, lines := apply(t, f, p)
+	if r.Failed == nil || r.Failed.Kind != StepWait || f.called("Config.SetPair") || f.called("Config.Update") {
+		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
+	}
+	for _, w := range []string{"pid 99", "pid 77", "4000"} {
+		if !strings.Contains(r.Err.Error(), w) {
+			t.Errorf("Err %q does not say %q", r.Err, w)
+		}
+	}
+	if !strings.Contains(r.Recovery, "launchctl bootout gui/501/local.litellm.proxy") {
+		t.Errorf("Recovery = %q", r.Recovery)
+	}
+	noSecrets(t, f, lines, r, envOf(t, f, plLiteLLM)["LITELLM_MASTER_KEY"])
+
+	// LiteLLM answers but rejects the new key.
+	f = apEnv(t)
+	liteLLMUp(f, 77)
+	f.getReplies["http://localhost:4000/v1/models"] = getReply{status: 401}
+	r, _ = apply(t, f, p)
+	if r.Failed == nil || r.Failed.Kind != StepWait || f.called("Config.SetPair") || !strings.Contains(r.Err.Error(), "rejected the new master key") {
+		t.Errorf("rejected key: Failed = %+v, Err = %v", r.Failed, r.Err)
+	}
+}
+
+// TestApplyRotateNeverWritesTheKeyAtALooseMode pins Important 1: the edited
+// plist is written in one step without group or other bits (0644 is written
+// 0600, never 0644 first), the backup (which holds the salt key and any
+// DATABASE_URL) is created without them, an 0600 plist stays 0600 and a
+// stricter one (0400) is never loosened.
+func TestApplyRotateNeverWritesTheKeyAtALooseMode(t *testing.T) {
+	for _, c := range []struct{ from, want os.FileMode }{{0o644, 0o600}, {0o600, 0o600}, {0o400, 0o400}, {0o755, 0o700}} {
+		f := rotEnv(t)
+		f.modes[plLiteLLM] = c.from
+		st := rotateState()
+		st.LiteLLMPlist.Mode = c.from
+		r, _ := apply(t, f, mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}))
+		if r.Err != nil {
+			t.Fatalf("%04o: %v", c.from, r.Err)
+		}
+		var writes []string
+		for _, call := range f.calls {
+			if strings.HasPrefix(call, "FS.WriteAtomic "+plLiteLLM) {
+				writes = append(writes, call)
+			}
+		}
+		if want := fmt.Sprintf("FS.WriteAtomic %s %04o", plLiteLLM, c.want); len(writes) != 1 || writes[0] != want {
+			t.Errorf("%04o: plist writes %q, want only %q", c.from, writes, want)
+		}
+		if m := f.modes[plLiteLLM]; m&0o077 != 0 || (c.from&0o077 == 0 && m != c.from) {
+			t.Errorf("%04o: plist ends %04o", c.from, m)
+		}
+		b := backupsOf(f, plLiteLLM)
+		if len(b) != 1 || f.modes[b[0]]&0o077 != 0 || f.modes[b[0]] != c.from&^0o077 {
+			t.Errorf("%04o: backup %q mode %04o", c.from, b, f.modes[b[0]])
+		}
+	}
+}
+
+// TestApplyRotateWaitsForLiteLLMWithTheNewKey pins minor (i): after the
+// LiteLLM restart the rotation waits for it to answer and accept the new key
+// before restarting wt-model; one that does not come back stops the apply
+// with plist and pair agreeing, wt-model untouched, and a Recovery naming
+// the log and the wt-model restart.
+func TestApplyRotateWaitsForLiteLLMWithTheNewKey(t *testing.T) {
+	f := rotEnv(t)
+	f.getReplies = nil
+	f.getStatus = 502
+	r, _ := apply(t, f, mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}))
+	if r.Failed == nil || r.Failed.Kind != StepWait || r.Failed.Action != ActionWaitLiteLLM {
+		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
+	}
+	if k := envOf(t, f, plLiteLLM)["LITELLM_MASTER_KEY"]; k == apOldMaster || f.pair.APIKey != k {
+		t.Errorf("plist and pair disagree")
+	}
+	if f.called("Launchd.Kickstart " + AgentLabel) {
+		t.Errorf("wt-model restarted although LiteLLM did not come back")
+	}
+	for _, w := range []string{plHome + "/.litellm.err.log", "launchctl kickstart -k gui/501/" + AgentLabel} {
+		if !strings.Contains(r.Err.Error()+r.Recovery, w) {
+			t.Errorf("Err/Recovery do not say %q: %v / %q", w, r.Err, r.Recovery)
+		}
 	}
 }
 
@@ -884,7 +1005,7 @@ func TestNoPlanOrResultTextContainsAKey(t *testing.T) {
 	}
 	mk := func() []run {
 		c := apEnv(t)
-		c.getReplies = map[string]getReply{"http://localhost:4000/health/liveliness": {status: 200}}
+		liteLLMUp(c, 77)
 		c2 := apEnv(t)
 		c2.getStatus = 500
 		r2 := rotEnv(t)
@@ -898,9 +1019,15 @@ func TestNoPlanOrResultTextContainsAKey(t *testing.T) {
 	}
 	for _, c := range mk() {
 		p := mustPlan(t, c.st, c.want)
+		var oldKeys []string // a rotation's old keys, read from the plist first
+		if raw, ok := c.f.files[plLiteLLM]; ok {
+			if sc, err := scanEnv(raw); err == nil {
+				oldKeys = []string{sc.vars["LITELLM_MASTER_KEY"], sc.vars["LITELLM_SALT_KEY"]}
+			}
+		}
 		r, lines := apply(t, c.f, p)
 		vars := envOf(t, c.f, plLiteLLM)
-		keys := []string{vars["LITELLM_MASTER_KEY"], vars["LITELLM_SALT_KEY"], c.f.pair.APIKey}
+		keys := append([]string{vars["LITELLM_MASTER_KEY"], vars["LITELLM_SALT_KEY"], c.f.pair.APIKey}, oldKeys...)
 		if keys[0] == "" || keys[0] == apOldMaster {
 			t.Fatalf("%s: no new key was generated", c.name)
 		}

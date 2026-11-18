@@ -45,6 +45,9 @@ type fakeEnv struct {
 	loadedAfterBootout int
 	lingering          map[string]int
 	kickstartErr       map[string]error // by label
+	// litellmPID, when set, makes a Bootstrap of the LiteLLM plist load and
+	// run the local.litellm.proxy job with this pid.
+	litellmPID int
 
 	// ConfigStore.
 	configFile config.ModelServerFile
@@ -62,6 +65,7 @@ type fakeEnv struct {
 	getErr      error
 	getReplies  map[string]getReply // by full URL; wins over getStatus/getBody
 	listenerPID int
+	listeners   map[int]int // pid listening by port; wins over the rest
 	listenerOK  bool
 	listenerErr error
 	// listenerFromJob makes ListenerPID report the agent job's pid while it
@@ -224,7 +228,8 @@ func (x fakeFS) Backup(p string) (string, error) {
 	}
 	// The same naming rule as the real FS: never over an earlier backup.
 	dst := backupName(p, x.f.now, func(c string) bool { _, ok := x.f.files[c]; return ok })
-	x.f.files[dst], x.f.modes[dst] = append([]byte(nil), d...), x.f.modes[p]
+	// Like the real FS: the copy never has group or other bits.
+	x.f.files[dst], x.f.modes[dst] = append([]byte(nil), d...), x.f.modes[p]&^0o077
 	return dst, nil
 }
 
@@ -258,6 +263,9 @@ func (x fakeLaunchd) Bootstrap(_ context.Context, plist string) error {
 	}
 	if x.f.launchdErr == nil && x.f.bootstrapPID != 0 {
 		x.f.jobs[AgentLabel] = LaunchdJob{Loaded: true, Running: true, PID: x.f.bootstrapPID}
+	}
+	if x.f.launchdErr == nil && x.f.litellmPID != 0 && plist == x.f.plistPath {
+		x.f.jobs[litellm.ProxyLabel] = LaunchdJob{Loaded: true, Running: true, PID: x.f.litellmPID}
 	}
 	return x.f.launchdErr
 }
@@ -344,6 +352,9 @@ func (x fakeNet) Get(_ context.Context, url, bearer string) (int, []byte, error)
 
 func (x fakeNet) ListenerPID(_ context.Context, port int) (int, bool, error) {
 	x.f.rec("Net.ListenerPID %d", port)
+	if pid, ok := x.f.listeners[port]; ok {
+		return pid, pid != 0, nil
+	}
 	if x.f.listenerFromJob {
 		if j := x.f.jobs[AgentLabel]; j.Running {
 			return j.PID, true, nil

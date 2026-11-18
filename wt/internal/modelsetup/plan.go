@@ -446,10 +446,10 @@ func planLocal(st State, want Desired) (Plan, error) {
 	// once the plist holds the key it is given (rotate: then LiteLLM restarts
 	// right after the pair, before wt-model).
 	if want.LiteLLM == LiteLLMRotateKey {
-		n := len(lsteps) - 1 // the trailing LiteLLM restart follows the pair
+		n := len(lsteps) - 2 // the trailing LiteLLM restart and wait follow the pair
 		p.Steps = append(p.Steps, lsteps[:n]...)
 		p.Steps = append(p.Steps, *pairStep)
-		p.Steps = append(p.Steps, lsteps[n])
+		p.Steps = append(p.Steps, lsteps[n:]...)
 		pairStep = nil
 		pairChanged = true
 	} else {
@@ -750,6 +750,14 @@ func planLiteLLMCreate(st State) (*LiteLLMSpec, []Step, []string, []string) {
 		reasons = append(reasons, reason("no litellm binary was found (in ~/.local/bin, /opt/homebrew/bin, /usr/local/bin or on PATH), and wt never installs LiteLLM",
 			"install it as "+guide14+" describes, then check again"))
 	}
+	switch {
+	case !inst.ListenerChecked || inst.Port != defaultLiteLLMPort:
+		reasons = append(reasons, reason(fmt.Sprintf("port %d was not checked for a listener", defaultLiteLLMPort), "check again before applying"))
+	case inst.ListenerPID != 0:
+		reasons = append(reasons, reason(fmt.Sprintf("port %d is in use by pid %d (a LiteLLM run by hand or under another label?), so a new LaunchAgent could not listen there",
+			defaultLiteLLMPort, inst.ListenerPID),
+			"stop that process, or keep it and enter its master key instead ("+guide14+")"))
+	}
 	if !inst.ConfigExists {
 		reasons = append(reasons, reason("LiteLLM's config.yaml "+orNone(inst.ConfigPath)+" does not exist, and wt never writes a first one",
 			"create it as "+guide14+" describes, then check again"))
@@ -773,7 +781,8 @@ func planLiteLLMCreate(st State) (*LiteLLMSpec, []Step, []string, []string) {
 				" --port " + strconv.Itoa(spec.Port) + ", PATH=" + spec.Path + ", logs " + spec.Home + "/.litellm.log and " + spec.Home +
 				"/.litellm.err.log, started at login and kept alive, with a new generated LITELLM_MASTER_KEY and LITELLM_SALT_KEY (not shown)"},
 		{Kind: StepBootstrap, Path: lp.Path, Detail: "load the LiteLLM LaunchAgent: launchctl bootstrap " + domain + " " + lp.Path},
-		{Kind: StepWait, Action: ActionWaitLiteLLM, Value: url, Detail: "wait for LiteLLM to answer at " + url + "/health/liveliness"},
+		{Kind: StepWait, Action: ActionWaitLiteLLM, Value: url, Detail: "wait for LiteLLM to answer at " + url +
+			"/health/liveliness, then check that the new job is what listens on port " + strconv.Itoa(spec.Port) + " and that it accepts the new master key"},
 	}
 	notes := []string{
 		"the new LiteLLM plist leaves out DATABASE_URL, the UI login and provider keys: add them as " + guide14 +
@@ -801,20 +810,30 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 		reasons = append(reasons, reason(path+" cannot be read as an XML plist", "fix it as "+guide14+" describes, then check again"))
 	case !lp.HasMasterKey:
 		reasons = append(reasons, reason(path+" has no LITELLM_MASTER_KEY to replace", "add one as "+guide14+" describes"))
+	case lp.HasDatabaseURL && !lp.HasSaltKey:
+		// LiteLLM encrypts stored provider credentials with the master key
+		// when no salt key is set: a new one would leave them undecryptable.
+		reasons = append(reasons, reason(path+" sets DATABASE_URL but no LITELLM_SALT_KEY, so LiteLLM encrypts its stored credentials with the master key and a new one would make them unreadable",
+			"keep the master key, or see "+guide14+"#6-generate-the-keys-file-mode before changing either key"))
 	}
 	if len(reasons) > 0 {
 		return nil, nil, reasons
 	}
 	steps := []Step{
-		{Kind: StepBackup, Path: lp.Path, Detail: "back up " + lp.Path + " to a dated copy beside it (" + lp.Path + ".bak-<date>-<time>, same mode; it keeps the old key)"},
-		{Kind: StepMasterKey, Path: lp.Path, Detail: "replace LITELLM_MASTER_KEY in " + lp.Path + " with a new generated key (not shown), keeping every other byte of the file"},
+		{Kind: StepBackup, Path: lp.Path, Detail: "back up " + lp.Path + " to a dated copy beside it (" + lp.Path + ".bak-<date>-<time>, its mode without group or other bits; it keeps the old key)"},
+		{Kind: StepMasterKey, Path: lp.Path, Detail: "replace LITELLM_MASTER_KEY in " + lp.Path + " with a new generated key (not shown), keeping every other byte of the file; " +
+			"it is written without group or other bits"},
 	}
 	if lp.Mode.Perm()&0o077 != 0 {
 		steps = append(steps, Step{Kind: StepChmod, Path: lp.Path,
-			Detail: fmt.Sprintf("tighten %s to mode 0600 (it is %04o now, readable by others)", lp.Path, lp.Mode.Perm())})
+			Detail: fmt.Sprintf("set %s to mode 0600 (it was %04o, readable by others; the edit already dropped those bits)", lp.Path, lp.Mode.Perm())})
 	}
-	steps = append(steps, Step{Kind: StepKickstartLiteLLM, Path: lp.Path,
-		Detail: "restart LiteLLM so it uses the new key: launchctl kickstart -k gui/" + strconv.Itoa(st.Host.UID) + "/" + litellm.ProxyLabel})
+	url := liteLLMURL(st, LiteLLMRotateKey)
+	steps = append(steps,
+		Step{Kind: StepKickstartLiteLLM, Path: lp.Path,
+			Detail: "restart LiteLLM so it uses the new key: launchctl kickstart -k gui/" + strconv.Itoa(st.Host.UID) + "/" + litellm.ProxyLabel},
+		Step{Kind: StepWait, Action: ActionWaitLiteLLM, Value: url,
+			Detail: "wait for LiteLLM to answer at " + url + "/health/liveliness and accept the new master key"})
 	cfg := ""
 	if st.Config.Path != "" {
 		cfg = " in " + st.Config.Path
@@ -822,7 +841,11 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 	notes := []string{
 		"anything else that holds the old master key stops working once LiteLLM restarts: other clients and scripts that send it, a [litellm] api_key" +
 			cfg + " if one is set there, and copies of the plist (the backup keeps the old key; remove it once the new key works)",
-		"never changed in " + lp.Path + ": LITELLM_SALT_KEY, DATABASE_URL, provider keys and the UI login",
+	}
+	if lp.HasSaltKey {
+		notes = append(notes, "never changed in "+lp.Path+": LITELLM_SALT_KEY, DATABASE_URL, provider keys and the UI login")
+	} else {
+		notes = append(notes, "never changed in "+lp.Path+": DATABASE_URL, provider keys and the UI login; LITELLM_SALT_KEY: no salt key set; nothing to preserve")
 	}
 	return steps, notes, nil
 }

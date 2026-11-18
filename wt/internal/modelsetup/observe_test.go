@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"testing"
 
@@ -451,6 +452,24 @@ func TestObserveDescribesTheLiteLLMInstallAndHidesParserText(t *testing.T) {
 	}
 	if !st.LiteLLMPlist.Present || st.LiteLLMPlist.Binary || strings.Contains(st.LiteLLMPlist.Err, "sk-LEAK-2") || st.LiteLLMPlist.Err == "" {
 		t.Errorf("LiteLLMPlist = %+v", st.LiteLLMPlist)
+	}
+
+	// No plist: the LiteLLM port is checked for a listener (create needs it).
+	f = newFakeEnv(t)
+	f.plistErr = &fs.PathError{Op: "open", Path: f.plistPath, Err: fs.ErrNotExist}
+	f.listeners = map[int]int{4000: 4242}
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if got := st.LiteLLMInstall; got.Port != 4000 || got.ListenerPID != 4242 || !got.ListenerChecked {
+		t.Errorf("no plist: LiteLLMInstall = %+v", got)
+	}
+	// A plist: its env names say whether a salt key and DATABASE_URL are set,
+	// and the port is not checked.
+	f = newFakeEnv(t)
+	f.listeners = map[int]int{4000: 4242}
+	f.plistInfo = litellm.ProxyPlistInfo{Port: 4000, EnvNames: []string{"DATABASE_URL", "LITELLM_MASTER_KEY", "LITELLM_SALT_KEY"}}
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if lp := st.LiteLLMPlist; !lp.HasSaltKey || !lp.HasDatabaseURL || !lp.HasMasterKey || st.LiteLLMInstall.ListenerChecked {
+		t.Errorf("plist names: %+v %+v", lp, st.LiteLLMInstall)
 	}
 
 	f = newFakeEnv(t)

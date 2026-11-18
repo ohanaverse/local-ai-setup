@@ -43,8 +43,8 @@ type FS interface {
 	WriteAtomic(path string, data []byte, perm os.FileMode) error
 	Chmod(path string, perm os.FileMode) error
 	Remove(path string) error
-	// Backup copies path to a dated file beside it, with the same mode, and
-	// returns the copy's path. It never replaces an earlier backup: a second
+	// Backup copies path to a dated file beside it, at its mode without group
+	// or other bits, and returns the copy's path. It never replaces an earlier backup: a second
 	// one in the same second gets a -2, -3, ... suffix.
 	Backup(path string) (string, error)
 }
@@ -169,7 +169,8 @@ func backupName(p string, t time.Time, exists func(string) bool) string {
 }
 
 // Backup copies p beside itself under the first free dated name, created
-// with O_EXCL so an earlier backup is never replaced, at p's mode.
+// with O_EXCL so an earlier backup is never replaced, at p's mode without
+// group or other bits (the copy holds the same secrets).
 func (realFS) Backup(p string) (string, error) {
 	info, err := os.Stat(p)
 	if err != nil {
@@ -179,7 +180,8 @@ func (realFS) Backup(p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	perm := info.Mode().Perm()
+	// The copy holds the same secrets, so it never has group or other bits.
+	perm := info.Mode().Perm() &^ 0o077
 	now := time.Now()
 	for n := 1; n <= maxBackupTries; n++ {
 		dst := backupCandidate(p, now, n)

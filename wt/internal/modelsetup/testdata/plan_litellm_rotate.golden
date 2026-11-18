@@ -1,11 +1,12 @@
-set up mode local in 7 steps:
-  1. back up /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist to a dated copy beside it (/Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist.bak-<date>-<time>, same mode; it keeps the old key)
-  2. replace LITELLM_MASTER_KEY in /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist with a new generated key (not shown), keeping every other byte of the file
-  3. tighten /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist to mode 0600 (it is 0644 now, readable by others)
+set up mode local in 8 steps:
+  1. back up /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist to a dated copy beside it (/Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist.bak-<date>-<time>, its mode without group or other bits; it keeps the old key)
+  2. replace LITELLM_MASTER_KEY in /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist with a new generated key (not shown), keeping every other byte of the file; it is written without group or other bits
+  3. set /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist to mode 0600 (it was 0644, readable by others; the edit already dropped those bits)
   4. set wt-model's LiteLLM pair in /Users/user_name/.config/wt-model/: url http://localhost:4000, key the new LITELLM_MASTER_KEY (not shown)
   5. restart LiteLLM so it uses the new key: launchctl kickstart -k gui/501/local.litellm.proxy
-  6. restart the LaunchAgent so it reads the new pair: launchctl kickstart -k gui/501/local.wt-model.serve
-  7. wait for wt-model to answer at http://127.0.0.1:8787
+  6. wait for LiteLLM to answer at http://localhost:4000/health/liveliness and accept the new master key
+  7. restart the LaunchAgent so it reads the new pair: launchctl kickstart -k gui/501/local.wt-model.serve
+  8. wait for wt-model to answer at http://127.0.0.1:8787
 left alone and notes:
   - keep the token file /Users/user_name/.config/wt-model/server.token
   - keep the LaunchAgent plist /Users/user_name/Library/LaunchAgents/local.wt-model.serve.plist (unchanged)
