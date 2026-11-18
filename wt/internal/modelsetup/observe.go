@@ -39,6 +39,17 @@ type ObserveOptions struct {
 	// create plan reads: the binary search and the listener on the default
 	// port. Native and remote choices set it, so a read there pays for none.
 	SkipLiteLLMProbe bool
+	// ProbeLiteLLMWhenLocal overrides SkipLiteLLMProbe when the mode the
+	// read resolves is local: a caller that does not yet know the mode (the
+	// configuration editor's first read) pays for the probe only then.
+	ProbeLiteLLMWhenLocal bool
+}
+
+// LiteLLMProbeSkipped reports whether a read made with o and resolving
+// mode left out the LiteLLM probe (so its binary and port are unknown, not
+// absent). Observe follows the same rule.
+func (o ObserveOptions) LiteLLMProbeSkipped(mode modelclient.Mode) bool {
+	return o.SkipLiteLLMProbe && !(o.ProbeLiteLLMWhenLocal && mode == modelclient.ModeLocal)
 }
 
 // Platform says whether the local mode can be set up here: macOS with launchd.
@@ -421,7 +432,8 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 
 	// LiteLLM install (for a create plan): the binary and config.yaml.
-	if !opts.SkipLiteLLMProbe {
+	skipProbe := opts.LiteLLMProbeSkipped(st.Resolution.Mode)
+	if !skipProbe {
 		st.LiteLLMInstall.Binary, _ = env.LiteLLM.Binary()
 	}
 	st.LiteLLMInstall.ConfigPath = env.LiteLLM.ConfigPath()
@@ -433,7 +445,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 
 	// With no LiteLLM plist, whatever listens on the port a created one would
 	// use (a LiteLLM run by hand or under another label) blocks a create.
-	if !st.LiteLLMPlist.Present && !opts.SkipLiteLLMProbe && ctx.Err() == nil {
+	if !st.LiteLLMPlist.Present && !skipProbe && ctx.Err() == nil {
 		st.LiteLLMInstall.Port = DefaultLiteLLMPort
 		if pid, ok, err := env.Net.ListenerPID(ctx, DefaultLiteLLMPort); err == nil {
 			st.LiteLLMInstall.ListenerChecked = true

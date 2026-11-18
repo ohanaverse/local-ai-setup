@@ -530,6 +530,48 @@ func TestObserveLiteLLMJobAndProbeGate(t *testing.T) {
 	}
 }
 
+// TestObserveProbesLiteLLMWhenTheResolvedModeIsLocal pins
+// ProbeLiteLLMWhenLocal: with SkipLiteLLMProbe also set, the binary search
+// and the port lookup still run when the mode Observe resolves is local, and
+// are left out for any other mode. The configuration editor's first read is
+// made before it knows the mode; without this, a config that stores local
+// showed a menu that said no litellm binary was found when nobody looked.
+// LiteLLMProbeSkipped answers the same rule for the caller.
+func TestObserveProbesLiteLLMWhenTheResolvedModeIsLocal(t *testing.T) {
+	opts := ObserveOptions{SkipLiteLLMProbe: true, ProbeLiteLLMWhenLocal: true}
+	for _, c := range []struct {
+		mode  string
+		probe bool
+	}{{"local", true}, {"remote", false}, {"native", false}} {
+		f := obsConfigured(t)
+		f.configFile.Table.Mode = c.mode
+		f.plistErr = &fs.PathError{Op: "open", Path: f.plistPath, Err: fs.ErrNotExist}
+		f.listeners = map[int]int{4000: 4242}
+		f.litellmBin = plLiteLLMBin
+		st := Observe(context.Background(), f.Env(), opts)
+		got := st.LiteLLMInstall
+		if probed := got.Binary == plLiteLLMBin && got.ListenerChecked && got.ListenerPID == 4242; probed != c.probe {
+			t.Errorf("%s: install %+v, want probed %v", c.mode, got, c.probe)
+		}
+		if f.called("LiteLLM.Binary") != c.probe || f.called("Net.ListenerPID 4000") != c.probe {
+			t.Errorf("%s: calls %q, want the probe %v", c.mode, f.calls, c.probe)
+		}
+		if skipped := opts.LiteLLMProbeSkipped(st.Resolution.Mode); skipped == c.probe {
+			t.Errorf("%s: LiteLLMProbeSkipped = %v, want %v", c.mode, skipped, !c.probe)
+		}
+	}
+	// Without ProbeLiteLLMWhenLocal the skip holds for local too.
+	f := obsConfigured(t)
+	f.litellmBin = plLiteLLMBin
+	st := Observe(context.Background(), f.Env(), ObserveOptions{SkipLiteLLMProbe: true})
+	if st.Resolution.Mode != "local" || st.LiteLLMInstall.Binary != "" || f.called("LiteLLM.Binary") {
+		t.Errorf("skip alone, local: mode %q install %+v", st.Resolution.Mode, st.LiteLLMInstall)
+	}
+	if !(ObserveOptions{SkipLiteLLMProbe: true}).LiteLLMProbeSkipped(st.Resolution.Mode) || (ObserveOptions{}).LiteLLMProbeSkipped("") {
+		t.Errorf("LiteLLMProbeSkipped ignores SkipLiteLLMProbe")
+	}
+}
+
 // TestObserveCountsADanglingLiteLLMPlistLinkAsPresent pins that a LiteLLM
 // plist path holding a symlink that does not resolve reads as present (with
 // an error naming it), not absent, so a create plan refuses it instead of
