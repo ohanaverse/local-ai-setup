@@ -1,4 +1,4 @@
-package modelclient
+package modelping
 
 import (
 	"strings"
@@ -21,16 +21,16 @@ func TestCleanDropsControlsAndBidi(t *testing.T) {
 		"bidi⁦i⁩‏":          "bidii",
 	}
 	for in, want := range cases {
-		if got := clean(in); got != want {
-			t.Errorf("clean(%q) = %q, want %q", in, got, want)
+		if got := Clean(in); got != want {
+			t.Errorf("Clean(%q) = %q, want %q", in, got, want)
 		}
-		for _, r := range clean(in) {
+		for _, r := range Clean(in) {
 			if unicode.IsControl(r) {
-				t.Errorf("clean(%q) kept control %U", in, r)
+				t.Errorf("Clean(%q) kept control %U", in, r)
 			}
 		}
 	}
-	if strings.Contains(clean("a\nb"), "\n") {
+	if strings.Contains(Clean("a\nb"), "\n") {
 		t.Error("newline survived")
 	}
 }

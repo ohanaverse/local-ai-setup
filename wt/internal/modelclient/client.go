@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 )
 
 const (
@@ -83,18 +84,10 @@ func New(ep Endpoint, opts ...Option) *Client {
 }
 
 // addr is host:port of the endpoint, as the error texts and the server's
-// --listen flag name it. It never echoes the raw url: one holding an '@' is
-// HiddenURL whole (no parsing, HasUserinfo), and one url.Parse finds no host
-// in is the fixed unparsedAddr.
-func (c *Client) addr() string {
-	if HasUserinfo(c.ep.URL) {
-		return HiddenURL
-	}
-	if u, err := url.Parse(c.ep.Origin()); err == nil && u.Host != "" {
-		return u.Host
-	}
-	return unparsedAddr
-}
+// --listen flag name it: modelping.Addr, which never echoes the raw url (an
+// '@' url shows urlrule.Hidden whole, a url with no host shows the fixed
+// unparsedAddr).
+func (c *Client) addr() string { return modelping.Addr(c.ep.URL) }
 
 // Now is the server's clock: the local clock plus the offset measured from the
 // Date header of the latest response (the local clock before the first one).

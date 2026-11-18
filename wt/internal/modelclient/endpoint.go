@@ -4,21 +4,14 @@ package modelclient
 
 import (
 	"errors"
-	"strings"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tokenfile"
 )
 
-// Endpoint is where the model server is and the token that opens it.
-type Endpoint struct {
-	URL, Token string
-}
-
-// Origin is the URL without trailing slashes.
-func (e Endpoint) Origin() string { return strings.TrimRight(e.URL, "/") }
-
-// Gateway returns the origin and token a streaming gateway client needs.
-func (e Endpoint) Gateway() (origin, token string) { return e.Origin(), e.Token }
+// Endpoint is where the model server is and the token that opens it. It
+// lives in internal/modelping; this name is its modelclient alias.
+type Endpoint = modelping.Endpoint
 
 // NotConfiguredError says the model server url or token is missing. Its three
 // leads are kept byte for byte (llmbench's wt_bridge hint and scripts key on
