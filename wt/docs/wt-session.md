@@ -188,7 +188,7 @@ written again. A session never reads the pair, and every save of
 one note (illustrative — the path is machine-specific):
 
 ```
-wt: note: config.toml: [litellm] is a read-only fallback — 'wt litellm set' writes /Users/keith/.config/wt-model/config.toml now
+wt: note: config.toml: [litellm] is a read-only fallback — 'wt litellm set' writes /Users/user_name/.config/wt-model/config.toml now
 ```
 
 Its `enabled` key is retired: every session routes through the model

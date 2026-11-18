@@ -7,20 +7,20 @@
 ## Prerequisites
 
 - **Registry has models.** `~/.config/local-ai/registry.toml` is wt's model source for providers, cloud models and local-model metadata; which local models are offered comes from wt's live inventory of what is on disk or running. If it is empty or missing, create it first — see [02-providers-and-models](02-providers-and-models.md).
-- **`wt` built and on PATH** (`/Users/keith/.local/bin/wt`):
+- **`wt` built and on PATH** (`~/.local/bin/wt`):
 
   ```bash
-  make -C /Users/keith/github/ohanaverse/local-ai-setup/wt install
+  make -C ~/github/ohanaverse/local-ai-setup/wt install
   ```
 
   **Check the binary:** if `wt --help` lacks a flag or command this guide names (`--root`, `--new`, `wt cleanup`, `wt rescue`), the `wt` on PATH is older than the guide. The rebuild command above is the fix: `make -C wt install` builds `wt-session`, `wt` (the same binary under two names) and `wt-model`, re-seals each and installs them and the shims over the PATH copies in `~/.local/bin/` (a bare `go build` would refresh only one of them); a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4).
-- **Shims on PATH** (`claude-wt` … `shell-wt` in `/Users/keith/.local/bin/`). Missing? `make install` from `/Users/keith/github/ohanaverse/local-ai-setup/wt` — verified real (copies `bin/*-wt` to `/Users/keith/.local/bin/` and re-signs on macOS to dodge AMFI `SIGKILL`/exit 137). All 7 shims present here:
+- **Shims on PATH** (`claude-wt` … `shell-wt` in `~/.local/bin/`). Missing? `make install` from `~/github/ohanaverse/local-ai-setup/wt` — verified real (copies `bin/*-wt` to `~/.local/bin/` and re-signs on macOS to dodge AMFI `SIGKILL`/exit 137). All 7 shims present here:
 
   ```
-  /Users/keith/.local/bin/claude-wt  /Users/keith/.local/bin/codex-wt
-  /Users/keith/.local/bin/pi-wt      /Users/keith/.local/bin/shell-wt
-  /Users/keith/.local/bin/agy-wt     /Users/keith/.local/bin/copilot-wt
-  /Users/keith/.local/bin/opencode-wt
+  /Users/user_name/.local/bin/claude-wt  /Users/user_name/.local/bin/codex-wt
+  /Users/user_name/.local/bin/pi-wt      /Users/user_name/.local/bin/shell-wt
+  /Users/user_name/.local/bin/agy-wt     /Users/user_name/.local/bin/copilot-wt
+  /Users/user_name/.local/bin/opencode-wt
   ```
 - **Know the model shapes** the picker will offer: [03-model-families](03-model-families.md) explains `family` and `tags`, which decide picker contents and rotation order.
 
@@ -44,7 +44,7 @@ claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx   # skip everything 
 
 ### 1. Shims and agent support matrix
 
-Every `*-wt` shim is one line forwarding to the unified binary (`exec wt --agent <name> "$@"`). Mapping and capabilities, copied verbatim from `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md` (all 7 launcher binaries verified present in `/Users/keith/.local/bin/`; matrix semantics verified against `internal/agents/` in source):
+Every `*-wt` shim is one line forwarding to the unified binary (`exec wt --agent <name> "$@"`). Mapping and capabilities, copied verbatim from `~/github/ohanaverse/local-ai-setup/wt/README.md` (all 7 launcher binaries verified present in `~/.local/bin/`; matrix semantics verified against `internal/agents/` in source):
 
 | Launcher | Agent | Model rotation |
 |---|---|---|
@@ -170,7 +170,7 @@ Available Commands:
 ```
 
 - `wt config theme` → `list` / `show [name]` / `set <name>` / `unset`; stored in `~/.config/agent-wt/themes.toml`, effective on next launch.
-- `wt config path` → prints `/Users/keith/.config/agent-wt`.
+- `wt config path` → prints `/Users/user_name/.config/agent-wt`.
 
 `~/.config/agent-wt/config.toml` shape (wt-owned): a `default_tag = "code"` line plus `[[agents]]` entries (launch names, per-agent provider availability). **wt never writes providers or models into this file** — the Agents tab of `wt config` touches only agents and the default tag, and its Models tab and `wt model add|edit|rm` write `registry.toml`; registry data is overwritten in-memory on every load and never persisted back here (the `Load()` comment in `internal/config/config.go`: "registry.toml is the source of truth"). The `[[providers]]`/`[[models]]` blocks still present on disk are inert migration exchange output (see [00-config-map](00-config-map.md)).
 
@@ -196,7 +196,7 @@ Start the model first (`wt start sushi/…`) or let the smoke run do it; either 
 - `--check-guard` / `--no-guard` — inspect/remove the `block-main-commit` pre-commit hook that every launch auto-installs in a git repo (blocks commits to `main`/`master`; `git commit --no-verify` is the emergency bypass). A first-time install prints one line on stderr — `wt: installed the block-main-commit hook (--no-guard to skip)` — on every install path (a launch inside a git repo and `wt --init` alike); a hook already present is left alone and prints nothing. Live read-only run in `wt`-managed repo:
 
   ```bash
-  wt --check-guard        # from: /Users/keith/github/ohanaverse/local-ai-setup
+  wt --check-guard        # from: ~/github/ohanaverse/local-ai-setup
   ```
 
   Observed: `wt: main guard is installed in this repo.`
@@ -332,14 +332,14 @@ Model pin dry explanation (no agent launch required): suppose `ollama/qwen3.8:27
 - **wt never resumes a session, for any agent** — there is no resume/fresh prompt. Continue a conversation with the agent's own flags after `--` (§2, "Sessions are the agent's own"); whether a resumed session's stored model overrides the model you picked is the agent's behaviour, and wt does not guard against it.
 - **Tag rotation is latent while models are untagged:** a model with `tags = []` is not narrowed by tag, and `-T`-less rotation walks the whole list — the header's tag slot shows `code` without meaning a filter is active. Check `grep -c '^tags = \[\]' ~/.config/local-ai/registry.toml` (untagged models) vs `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` (all models); set tags with `wt model edit <id> --tags code` or in the Tags field of the Models tab's form ([03-model-families](03-model-families.md) Step 3).
 - **Stale PATH binary:** a `wt` on PATH that predates the registry-consumer merge (2026-08-28) reads its model catalog from `config.toml` and misses registry-only models; `wt --help` lacking a flag this guide names is the quick tell. Rebuild with the Prerequisites command.
-- **Three hand-installed `dsh-*` shims sit alongside the wt ones:** `/Users/keith/.local/bin/` also has `dsh-headless-wt`, `dsh-tui-wt`, and `dsh-webui-wt` — unknown to wt 0.1.0, so launching one errors with `unknown agent "dsh-…"`. Present on disk but not wt-documented.
+- **Three hand-installed `dsh-*` shims sit alongside the wt ones:** `~/.local/bin/` also has `dsh-headless-wt`, `dsh-tui-wt`, and `dsh-webui-wt` — unknown to wt 0.1.0, so launching one errors with `unknown agent "dsh-…"`. Present on disk but not wt-documented.
 - **`-W` is the real flag.** The `-w` short form was removed and now errors with `-w is removed; use -W or --worktree`.
 - **`rotation.state` is written by single-model launches only** (`RecordFor()`); the `wt rotate <tag>` probe, `esc`/canceled prompts and slot-profile launches never touch it. One global slot — per-tag/agent state files are legacy migration inputs. The picker's `> ` marker is a second file, `last-picked.state`, which every recorded launch writes.
 
 ## Going deeper
 
-- `/Users/keith/github/ohanaverse/local-ai-setup/wt/README.md` — agents, install, guard, copilot passthrough env vars
-- `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/configuration.md` and `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md` — config.toml and themes.toml reference
-- Specs (all verified present): `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`, `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`, `/Users/keith/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-native-unification-design.md`
+- `~/github/ohanaverse/local-ai-setup/wt/README.md` — agents, install, guard, copilot passthrough env vars
+- `~/github/ohanaverse/local-ai-setup/wt/docs/configuration.md` and `~/github/ohanaverse/local-ai-setup/wt/docs/wt-config.md` — config.toml and themes.toml reference
+- Specs (all verified present): `~/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`, `~/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`, `~/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-native-unification-design.md`
 - [00-config-map](00-config-map.md) — who owns which `~/.config` file; [02-providers-and-models](02-providers-and-models.md) — registry content; [03-model-families](03-model-families.md) — families/tags that feed the picker
 - Launch-log consumers and spend: [07-usage-and-spend](07-usage-and-spend.md)

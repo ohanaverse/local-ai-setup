@@ -83,7 +83,10 @@ the plist is installed, `launchctl unload` it by hand:
 1. `brew install llama.cpp` (the formula was uninstalled; confirms
    `/opt/homebrew/bin/llama-server` exists).
 2. Restore the LaunchAgent:
-   `cp docs/reference/artifacts/llamacpp/local.llamacpp.server.plist ~/Library/LaunchAgents/`
+   `cp docs/reference/artifacts/llamacpp/local.llamacpp.server.plist ~/Library/LaunchAgents/`,
+   then replace the `/Users/user_name` placeholder with your real home
+   directory (launchd does not expand `~` or `$HOME`):
+   `sed -i '' "s#/Users/user_name#$HOME#g" ~/Library/LaunchAgents/local.llamacpp.server.plist`
    (or start from the template in `01-initial-setup.md`'s history — the
    artifact copy already pins `--port 8080`, `--ctx-size 16384`,
    `--n-gpu-layers 999`).

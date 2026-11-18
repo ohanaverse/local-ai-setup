@@ -39,7 +39,7 @@ start of a run and adds no check of its own; the refusal is the error.
 ## Usage
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 benchmarks/mtplx-profile-matrix --model mtplx/<org>/<name> --profile profile/<slot profile> --dry-run
 benchmarks/mtplx-profile-matrix --model mtplx/<org>/<name> --profile profile/<slot profile> --runs 1
 benchmarks/mtplx-profile-matrix --model mtplx/<org>/<name> --profile profile/<slot profile> \

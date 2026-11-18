@@ -1228,7 +1228,7 @@ in-scope local provider's `list_local()` live rather than trusting only
 
 - [ ] **Step 2: Check whether the monorepo-root `CLAUDE.md` needs updating**
 
-Run: `grep -n "modelman start" /Users/keith/github/ohanaverse/local-ai-setup/CLAUDE.md`
+Run: `grep -n "modelman start" /Users/user_name/github/ohanaverse/local-ai-setup/CLAUDE.md`
 
 If it only names the command (not its listing behavior), no change is needed there — the root `CLAUDE.md`'s per-package pointer already sends readers to `modelman/CLAUDE.md` for detail. Only edit it if it currently asserts something about `start`'s output that Task 3 changed.
 

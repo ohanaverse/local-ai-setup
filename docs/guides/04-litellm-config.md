@@ -6,7 +6,7 @@
 
 ## Prerequisites
 
-- [01-initial-setup](01-initial-setup.md) complete: proxy running under the `local.litellm.proxy` LaunchAgent with `--config /Users/keith/.config/litellm/config.yaml --port 4000`, master key in the plist's `EnvironmentVariables`, Postgres + Redis up (health checks: guide 01 §6).
+- [01-initial-setup](01-initial-setup.md) complete: proxy running under the `local.litellm.proxy` LaunchAgent with `--config ~/.config/litellm/config.yaml --port 4000`, master key in the plist's `EnvironmentVariables`, Postgres + Redis up (health checks: guide 01 §6).
 - `wt` on PATH (`make install` from the repo root) — it owns every write to `config.yaml`. Registry context (adding providers and models — which is what puts a model on the proxy): [02-providers-and-models](02-providers-and-models.md).
 - Live pre-flight — all three lines must match before relying on anything below:
 
@@ -26,7 +26,7 @@ ui:307
 
 ## TL;DR
 
-<!-- UNVERIFIED — not run as one block: a real `wt litellm sync` mutates the live /Users/keith/.config/litellm/config.yaml and restarts the proxy. `wt litellm sync --dry-run` and `wt litellm list` (both read-only) were run live 2026-10-03; the kickstart + confirm-curl portion was run live earlier, see §5 and Verification. -->
+<!-- UNVERIFIED — not run as one block: a real `wt litellm sync` mutates the live ~/.config/litellm/config.yaml and restarts the proxy. `wt litellm sync --dry-run` and `wt litellm list` (both read-only) were run live 2026-10-03; the kickstart + confirm-curl portion was run live earlier, see §5 and Verification. -->
 
 There is no per-model "put this on the proxy" command. **wt derives the routes**: every cloud model `registry.toml` configures, plus each local model while it runs (an ollama model while it is pulled) — a local model needs no registry entry (#179 Phase B). So the workflow is: add a cloud model to the registry, or start a local one (guide 02), and the sync that follows writes its row. `wt model add|edit|rm` and the Models tab of `wt config` run that sync after their own write (guide 02 Step 1), `wt start`/`wt stop` update the routes themselves; run `wt litellm sync` yourself after a hand edit of `registry.toml`, or after starting a server outside wt when the client will not go through wt (a launch through wt writes a running model's missing route itself — §2).
 
@@ -58,7 +58,7 @@ To take a **cloud** model off the proxy, remove it from the registry — `wt mod
 
 ### 1. config.yaml anatomy
 
-One file drives the proxy; the LaunchAgent starts `litellm` with it and the env block in the same plist carries the secrets (`LITELLM_MASTER_KEY`, `UI_USERNAME`, `UI_PASSWORD`, `OPENROUTER_API_KEY`, `DATABASE_URL`, `LITELLM_SALT_KEY` — 6 secret keys (plus `PATH`); **values never printed here**). **wt** writes this file (`wt litellm sync` and the automatic route updates of `wt start`/`wt stop`; override the path with `WT_LITELLM_CONFIG`, legacy alias `MODELMAN_LITELLM_CONFIG`; default `/Users/keith/.config/litellm/config.yaml`).
+One file drives the proxy; the LaunchAgent starts `litellm` with it and the env block in the same plist carries the secrets (`LITELLM_MASTER_KEY`, `UI_USERNAME`, `UI_PASSWORD`, `OPENROUTER_API_KEY`, `DATABASE_URL`, `LITELLM_SALT_KEY` — 6 secret keys (plus `PATH`); **values never printed here**). **wt** writes this file (`wt litellm sync` and the automatic route updates of `wt start`/`wt stop`; override the path with `WT_LITELLM_CONFIG`, legacy alias `MODELMAN_LITELLM_CONFIG`; default `~/.config/litellm/config.yaml`).
 
 Shape — example rows, redacted; your `model_list` holds whatever is routed (`wt litellm list` shows it). The `api_key` on an OpenRouter row is a **real key on disk**; shown as `sk-or-v1-…`:
 
@@ -120,7 +120,7 @@ What wt manages vs preserves (enforced in code, `wt/internal/litellm`):
 Count the live list:
 
 ```bash
-python3 -c "import yaml;d=yaml.safe_load(open('/Users/keith/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
+python3 -c "import yaml;d=yaml.safe_load(open('$HOME/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
 ```
 
 Output is one line, `model_list entries: <N>`, where N is however many rows `config.yaml` holds (wt's rows plus any hand-written ones — `wt litellm list` shows which is which).
@@ -237,9 +237,9 @@ Hand-edit flow — always back up, edit, validate, then preview what wt would ma
 <!-- UNVERIFIED — $EDITOR is interactive (not drivable here). The cp and the yaml-check line's equivalent form ran fine live (§1 count uses the same safe_load on the same file); rerun as a block when editing. -->
 
 ```bash
-cp /Users/keith/.config/litellm/config.yaml /Users/keith/.config/litellm/config.yaml.bak
-$EDITOR /Users/keith/.config/litellm/config.yaml
-python3 -c "import yaml; yaml.safe_load(open('/Users/keith/.config/litellm/config.yaml')); print('YAML OK')"
+cp ~/.config/litellm/config.yaml ~/.config/litellm/config.yaml.bak
+$EDITOR ~/.config/litellm/config.yaml
+python3 -c "import yaml; yaml.safe_load(open('$HOME/.config/litellm/config.yaml')); print('YAML OK')"
 wt litellm sync --dry-run   # would the next sync adopt, rewrite or remove what you just wrote?
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy && echo "kickstart OK"   # LiteLLM re-reads config.yaml only at start, and wt bounces it only when its own sync changed the file — so a row wt left alone needs this to take effect
 ```
@@ -322,7 +322,7 @@ Auth is actually enforced, and the row is on disk:
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:4000/v1/models
-grep -c 'model_name: <model-id>' /Users/keith/.config/litellm/config.yaml   # <model-id> = a model you routed
+grep -c 'model_name: <model-id>' ~/.config/litellm/config.yaml   # <model-id> = a model you routed
 ```
 
 ```text

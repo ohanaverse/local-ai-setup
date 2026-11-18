@@ -264,16 +264,16 @@ The complete `~/Library/LaunchAgents/local.litellm.proxy.plist` after all steps:
     <string>local.litellm.proxy</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/keith/.local/bin/litellm</string>
+        <string>/Users/user_name/.local/bin/litellm</string>
         <string>--config</string>
-        <string>/Users/keith/.config/litellm/config.yaml</string>
+        <string>/Users/user_name/.config/litellm/config.yaml</string>
         <string>--port</string>
         <string>4000</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/keith/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>/Users/user_name/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>LITELLM_MASTER_KEY</key>
         <string>sk-litellm-<rotate-me></string>
         <key>UI_USERNAME</key>
@@ -292,9 +292,9 @@ The complete `~/Library/LaunchAgents/local.litellm.proxy.plist` after all steps:
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/keith/.litellm.log</string>
+    <string>/Users/user_name/.litellm.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/keith/.litellm.err.log</string>
+    <string>/Users/user_name/.litellm.err.log</string>
 </dict>
 </plist>
 ```

@@ -13,7 +13,7 @@
 		<key>OPENROUTER_API_KEY</key>
 		<string>REDACTED-OPENROUTER_API_KEY</string>
 		<key>PATH</key>
-		<string>/Users/keith/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<string>/Users/user_name/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
 		<key>UI_PASSWORD</key>
 		<string>REDACTED-UI_PASSWORD</string>
 		<key>UI_USERNAME</key>
@@ -25,17 +25,17 @@
 	<string>local.litellm.proxy</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Users/keith/.local/bin/litellm</string>
+		<string>/Users/user_name/.local/bin/litellm</string>
 		<string>--config</string>
-		<string>/Users/keith/.config/litellm/config.yaml</string>
+		<string>/Users/user_name/.config/litellm/config.yaml</string>
 		<string>--port</string>
 		<string>4000</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>
-	<string>/Users/keith/.litellm.err.log</string>
+	<string>/Users/user_name/.litellm.err.log</string>
 	<key>StandardOutPath</key>
-	<string>/Users/keith/.litellm.log</string>
+	<string>/Users/user_name/.litellm.log</string>
 </dict>
 </plist>

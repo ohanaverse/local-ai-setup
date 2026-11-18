@@ -357,7 +357,7 @@ cat > ~/Library/LaunchAgents/local.llamacpp.server.plist << 'EOF'
     <array>
         <string>/opt/homebrew/bin/llama-server</string>
         <string>-m</string>
-        <string>/Users/keith/models/qwen3.8-27b.Q4_K_M.gguf</string>
+        <string>/Users/user_name/models/qwen3.8-27b.Q4_K_M.gguf</string>
         <string>--host</string>
         <string>127.0.0.1</string>
         <string>--port</string>
@@ -372,9 +372,9 @@ cat > ~/Library/LaunchAgents/local.llamacpp.server.plist << 'EOF'
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/keith/.llamacpp.log</string>
+    <string>/Users/user_name/.llamacpp.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/keith/.llamacpp.err.log</string>
+    <string>/Users/user_name/.llamacpp.err.log</string>
 </dict>
 </plist>
 EOF
@@ -401,16 +401,16 @@ cat > ~/Library/LaunchAgents/local.litellm.proxy.plist << 'EOF'
     <string>local.litellm.proxy</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/keith/.local/bin/litellm</string>
+        <string>/Users/user_name/.local/bin/litellm</string>
         <string>--config</string>
-        <string>/Users/keith/.config/litellm/config.yaml</string>
+        <string>/Users/user_name/.config/litellm/config.yaml</string>
         <string>--port</string>
         <string>4000</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/keith/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>/Users/user_name/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>OPENROUTER_API_KEY</key>
         <string>sk-or-v1-REPLACE_WITH_YOUR_KEY</string>
     </dict>
@@ -419,9 +419,9 @@ cat > ~/Library/LaunchAgents/local.litellm.proxy.plist << 'EOF'
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/keith/.litellm.log</string>
+    <string>/Users/user_name/.litellm.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/keith/.litellm.err.log</string>
+    <string>/Users/user_name/.litellm.err.log</string>
 </dict>
 </plist>
 EOF

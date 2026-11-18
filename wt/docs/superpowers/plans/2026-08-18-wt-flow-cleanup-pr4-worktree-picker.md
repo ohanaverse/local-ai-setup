@@ -245,7 +245,7 @@ git commit -m "refactor(worktree): Enumerate returns three ordered groups"
 - [ ] **Step 1: Find all callers**
 
 ```bash
-grep -rn "worktree.Enumerate" /Users/keith/github/ohanaverse/agent-worktree
+grep -rn "worktree.Enumerate" /Users/user_name/github/ohanaverse/agent-worktree
 ```
 
 - [ ] **Step 2: Update each caller's iteration**

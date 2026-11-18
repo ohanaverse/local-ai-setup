@@ -49,7 +49,7 @@ files consistently.
 Before deletion:
 
 1. Resolve the target to the expected absolute path under
-   `/Users/keith/.agents/skills`.
+   `/Users/user_name/.agents/skills`.
 2. Confirm the target is a real directory and not a symbolic link.
 3. If the target is already absent, treat removal as an idempotent success.
 4. If the target is a file, symlink, or unexpected path type, stop without
@@ -70,9 +70,9 @@ required.
 
 Verify all of the following after removal:
 
-- `/Users/keith/.agents/skills/graphify` is absent.
+- `/Users/user_name/.agents/skills/graphify` is absent.
 - No `graphify` skill definition remains under
-  `/Users/keith/.agents/skills`.
+  `/Users/user_name/.agents/skills`.
 - A Pi startup or equivalent skill-discovery run completes without the
   `[Skill conflicts]` Graphify warning.
 - The repository remains clean apart from this committed specification.

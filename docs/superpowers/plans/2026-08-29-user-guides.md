@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-29-user-guides-design.md`
 
-**Repo root (all paths relative to it):** `/Users/keith/github/ohanaverse/local-ai-setup`
+**Repo root (all paths relative to it):** `/Users/user_name/github/ohanaverse/local-ai-setup`
 
 ## Guide skeleton (binding for every guide file)
 
@@ -33,7 +33,7 @@ Every file in `docs/guides/` uses exactly these top-level sections, in order:
 
 Conventions (from spec, mandatory):
 
-- Absolute paths always (`~/.config/...`, `/Users/keith/github/ohanaverse/...`). Never "the file from step 2" without the path.
+- Absolute paths always (`~/.config/...`, `/Users/user_name/github/ohanaverse/...`). Never "the file from step 2" without the path.
 - Every command in a fenced block. Blocks that must run from a specific directory start with a comment like `# from: ~/github/ohanaverse/modelman`.
 - Every non-trivial command is followed by *expected output* ("You should see …").
 - Commands that could not be verified safely are marked with `<!-- UNVERIFIED -->` directly above the block.
@@ -73,7 +73,7 @@ Expected: version strings for `wt`, ollama, litellm, modelman. Record exactly.
 Read `docs/superpowers/specs/2026-08-29-user-guides-design.md`. Confirm branch:
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git rev-parse --abbrev-ref HEAD
 ```
 
@@ -101,7 +101,7 @@ If a listed file does not exist, note it and proceed — the guide that needed i
 - [ ] **Step 3: Probe the installed tools**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 wt --help
 ls bin/
 launchctl list | grep -iE 'llm|ollama|omlx|litellm'
@@ -129,7 +129,7 @@ Run the **Version stamp** commands from Verification tooling. Save the outputs �
 Only if files were created (they shouldn't be):
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git status --short
 ```
 
@@ -145,7 +145,7 @@ Expected: empty (clean tree).
 - [ ] **Step 1: Inspect every config file**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 ls -la ~/.config/local-ai/ ~/.config/agent-wt/ ~/.config/litellm/
 head -40 ~/.config/local-ai/registry.toml
 head -40 ~/.config/local-ai/modelman.toml
@@ -188,7 +188,7 @@ Guide structure with this content:
 - [ ] **Step 4: Commit**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git add docs/guides/00-config-map.md
 git commit -m "docs(guides): add config file map"
 ```
@@ -205,7 +205,7 @@ git commit -m "docs(guides): add config file map"
 - [ ] **Step 1: Verify what a fresh install requires**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 uv tool list | grep -i litellm
 ollama --version
 brew list --versions 2>/dev/null | grep -E 'llama.cpp|redis|postgresql'
@@ -240,7 +240,7 @@ curl -s http://localhost:4000/v1/models | head -20
 - [ ] **Step 3: Archive the old doc**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 mkdir -p docs/archive
 git mv "docs/Local AI Setup 2026-08-25.md" docs/archive/
 ```
@@ -250,7 +250,7 @@ git mv "docs/Local AI Setup 2026-08-25.md" docs/archive/
 - [ ] **Step 5: Commit**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git add docs/guides/01-initial-setup.md docs/archive/
 git commit -m "docs(guides): add initial setup guide; archive dated setup doc"
 ```
@@ -292,7 +292,7 @@ Record subcommands/flags. Determine which operations are TUI-only vs CLI (from `
 - [ ] **Step 4: Commit**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git add docs/guides/02-providers-and-models.md
 git commit -m "docs(guides): add provider and model management guide"
 ```
@@ -328,7 +328,7 @@ Expected: real family names, tags (`code`, `design`) actually present. Record re
 - [ ] **Step 4: Commit**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git add docs/guides/03-model-families.md
 git commit -m "docs(guides): add model families guide"
 ```
@@ -368,7 +368,7 @@ Expected: full `config.yaml` (record its real top-level sections: `model_list` e
 - [ ] **Step 3: Move the admin doc**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git mv docs/litellm-admin-ui-setup.md docs/reference/
 ```
 
@@ -377,7 +377,7 @@ git mv docs/litellm-admin-ui-setup.md docs/reference/
 - [ ] **Step 5: Commit**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git add docs/guides/04-litellm-config.md docs/reference/
 git commit -m "docs(guides): add LiteLLM config guide; move admin-ui doc to reference"
 ```
@@ -392,7 +392,7 @@ git commit -m "docs(guides): add LiteLLM config guide; move admin-ui doc to refe
 - [ ] **Step 1: Verify benchmark tooling**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 ls benchmarks/ benchmarks/results/ bin/
 head -30 bin/llm-isolate-provider
 bin/llm-isolate-provider 2>&1 | head -5   # expect usage error, safe
@@ -408,11 +408,11 @@ Expected: `bin/llm-isolate-provider` prints usage on missing arg (exit non-zero,
 - **TL;DR:**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 bin/llm-isolate-provider omlx          # pick one: ollama | llamacpp | omlx | omlx-6bit
 # from: ~/github/ohanaverse/modelman
 uv run modelman benchmark run --family qwen3.8
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 bin/llm-restore-providers
 ```
 
@@ -426,7 +426,7 @@ bin/llm-restore-providers
 - [ ] **Step 4: Commit**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git add docs/guides/05-benchmarks.md
 git commit -m "docs(guides): add benchmark operations guide"
 ```
@@ -471,7 +471,7 @@ wt --check-guard
 - [ ] **Step 4: Commit**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git add docs/guides/06-wt-agents-and-models.md
 git commit -m "docs(guides): add wt agent and model guide"
 ```
@@ -513,7 +513,7 @@ uv run modelman usage report --days 7 | tee /tmp/usage-$(date +%F).md
 - [ ] **Step 4: Commit**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git add docs/guides/07-usage-and-spend.md
 git commit -m "docs(guides): add usage and spend guide"
 ```
@@ -543,7 +543,7 @@ Expected: running job labels, real log paths, `200` for running services (record
 - **TL;DR:** the full health check as one block:
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 curl -s -o /dev/null -w 'litellm: %{http_code}\n' http://localhost:4000/health || echo "litellm: DOWN"
 curl -s -o /dev/null -w 'ollama: %{http_code}\n' http://localhost:11434/api/tags || echo "ollama: DOWN"
 launchctl list | grep -iE 'llm|ollama|omlx|litellm|redis|postgres'
@@ -574,7 +574,7 @@ launchctl list | grep -iE 'llm|ollama|omlx|litellm|redis|postgres'
 - [ ] **Step 4: Commit**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git add docs/guides/08-maintenance-and-troubleshooting.md
 git commit -m "docs(guides): add maintenance and troubleshooting guide"
 ```
@@ -643,7 +643,7 @@ Add directly under the `# CLAUDE.md` title:
 - [ ] **Step 4: Commit**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git add README.md CLAUDE.md
 git commit -m "docs: restructure README as guides index; point CLAUDE.md at playbooks"
 ```
@@ -662,7 +662,7 @@ Run the link-check script (Verification tooling). Expected: `ALL LINKS OK`.
 - [ ] **Step 2: Coverage check against spec inventory**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 ls docs/guides/
 ```
 
@@ -671,7 +671,7 @@ Expected output (exactly ten files): `00-config-map.md` `01-initial-setup.md` `0
 - [ ] **Step 3: Verify migrations happened**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git log --diff-filter=R --name-status --oneline | grep -E '^R100' | sort -u
 ls docs/archive/ docs/reference/
 git grep -n "Local AI Setup" README.md CLAUDE.md docs/guides/ || true
@@ -686,7 +686,7 @@ Read every TL;DR block in files `00`–`08` in one pass. Fix any implicit prereq
 - [ ] **Step 5: Commit fixes (if any) + final commit message check**
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup
+# from: /Users/user_name/github/ohanaverse/local-ai-setup
 git status --short
 git log --oneline main..HEAD
 ```

@@ -109,7 +109,7 @@ class AddFamilyModal(ModalScreen[tuple[str, str] | None]):
 
 - [ ] **Step 3: Confirm the module still imports**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run python -c "import modelman.screens.forms"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run python -c "import modelman.screens.forms"`
 Expected: no output, exit 0. (Task 2 still references `FamilyManifest` inside `EditFamilyModal`, which no longer exists as an import — this step is expected to currently pass only because Python doesn't check names inside untouched methods until they execute; if it fails with `NameError` at import time, that means Task 2 needs to happen first. If so, do Task 2's Step 1 now and continue; otherwise proceed.)
 
 - [ ] **Step 4: Commit**
@@ -199,12 +199,12 @@ class EditFamilyModal(ModalScreen[str | None]):
 
 - [ ] **Step 2: Remove the now-unused `Path` import**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && grep -n "Path" src/modelman/screens/forms.py`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && grep -n "Path" src/modelman/screens/forms.py`
 Expected: no matches (both prior uses were in the code just deleted). If there are no matches, delete `from pathlib import Path` (line 5). If there *are* matches (e.g. `ModelForm` grew a `Path` reference since this plan was written), leave the import and note why in the commit message instead of deleting blindly.
 
 - [ ] **Step 3: Verify the module compiles and ruff is clean**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run python -c "import modelman.screens.forms" && uv run ruff check src/modelman/screens/forms.py`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run python -c "import modelman.screens.forms" && uv run ruff check src/modelman/screens/forms.py`
 Expected: no `NameError`, no ruff findings (in particular no `F401 'pathlib.Path' imported but unused`).
 
 - [ ] **Step 4: Commit**
@@ -446,7 +446,7 @@ async def test_family_screen_edit_persists_display_name_to_state(tmp_path, monke
 
 - [ ] **Step 2: Run the file and verify it passes**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_family_edit.py -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_family_edit.py -v`
 Expected: all 7 tests PASS. (This exercises Task 1/2's new modal contracts but not yet `FamilyScreen`'s own migration — `test_family_screen_e_opens_edit_modal_for_selected_row`, `_e_with_no_rows_is_a_noop`, and `_edit_persists_display_name_to_state` will fail until Task 5 lands, because `FamilyScreen` still reads `families/*.yaml` via `manifest.py` at this point. **That's expected** — leave those three red and move to Task 4/5, then return here.)
 
 - [ ] **Step 3: Commit**
@@ -765,7 +765,7 @@ Note the `DISPLAY` column: the legacy manifest always had a `display_name` (defa
 
 - [ ] **Step 7: Confirm the module imports cleanly**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run python -c "import modelman.screens.families"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run python -c "import modelman.screens.families"`
 Expected: `NameError` or `ImportError` mentioning `AddFamilyModal`/`EditFamilyModal`/`ConfirmModal`'s constructors, `get_family_dir`, `load_manifest`, or `FamilyManifest` is expected here — Task 5 hasn't updated the action methods yet, so `action_add_family` etc. still reference the old modal contracts and `get_family_dir`. **This is fine**; the import itself (module-level code) should succeed since those names only get resolved when the methods run. If the import itself fails, re-check Steps 1–6 for a stray top-level reference.
 
 - [ ] **Step 8: Commit**
@@ -1119,7 +1119,7 @@ def _open_family(self, family_name: str) -> None:
 
 - [ ] **Step 5: Run the whole test suite and verify**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest -v`
 Expected: `tests/screens/test_family_edit.py` now fully PASSes (the 3 tests left red at the end of Task 3 turn green). `tests/screens/test_app_navigation.py` will show new failures — every test that still constructs a `FamilyManifest`/calls `save_manifest`/`monkeypatch.setenv("MODELMAN_FAMILY_DIR", ...)` now fails because `FamilyScreen` no longer reads that env var or that file format at all. **This is expected** — Task 6 rewrites those tests. Confirm the failures are all in `test_app_navigation.py` and are all related to `FamilyManifest`/`MODELMAN_FAMILY_DIR` (e.g. `ManifestError`, empty table where a row was expected, `AttributeError` on `FamilyManifest`) — if any failure is somewhere else (e.g. `test_family_edit.py`, `test_queue.py`, `test_status.py`), stop and investigate before continuing.
 
 - [ ] **Step 6: Commit**
@@ -1773,7 +1773,7 @@ async def test_family_screen_reconciles_size_from_provider(tmp_path, monkeypatch
 
 - [ ] **Step 7: Run the rewritten tests**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_app_navigation.py -v -k "family_screen or add_family or delete_family"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_app_navigation.py -v -k "family_screen or add_family or delete_family"`
 Expected: all rewritten tests PASS (9 tests, plus the 3 already-passing registry-based tests at the top of the file still pass). The still-`@pytest.mark.skip`ped tests further down report `SKIPPED`, not failed — Task 7 handles those.
 
 - [ ] **Step 8: Commit**
@@ -3281,7 +3281,7 @@ async def test_enter_on_provider_row_does_not_open_edit_dialog(tmp_path, monkeyp
 
 - [ ] **Step 15: Run the whole suite**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest -v`
 Expected: every test PASSes, zero `SKIPPED` remaining that mention "FamilyScreen migrates to Registry in PR 3" (confirm with `uv run pytest -v 2>&1 | grep -c SKIPPED` — should no longer include those 14).
 
 - [ ] **Step 16: Commit**
@@ -3299,17 +3299,17 @@ git commit -m "test(families): un-skip and migrate FamilyScreen-to-ModelScreen i
 
 - [ ] **Step 1: Run the full test suite, lint, and typecheck**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest -v && uv run ruff check src/ tests/ && uv run mypy src/`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest -v && uv run ruff check src/ tests/ && uv run mypy src/`
 Expected: all tests PASS, ruff reports no findings, mypy reports no errors. If mypy flags `families.py` (e.g. `self.registry_path: Path = Path()` placeholder in `__init__` before `on_mount` sets the real value — acceptable per the constructor pattern `ModelScreen` doesn't share since it takes these as required constructor args, but `FamilyScreen` takes none), fix the specific error rather than adding `# type: ignore`.
 
 - [ ] **Step 2: Grep for any remaining `manifest.py` usage in the screens package**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && grep -rn "FamilyManifest\|get_family_dir\|save_manifest\|load_manifest\|MODELMAN_FAMILY_DIR\|MODELMAN_CONFIG" src/modelman/screens/`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && grep -rn "FamilyManifest\|get_family_dir\|save_manifest\|load_manifest\|MODELMAN_FAMILY_DIR\|MODELMAN_CONFIG" src/modelman/screens/`
 Expected: no matches. (`config.py`/`manifest.py` themselves are untouched and may still be referenced from `modelman/cli.py`'s `migrate` command or similar — that's out of scope; this grep only checks the `screens/` package this PR touched.)
 
 - [ ] **Step 3: Manual smoke test**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run modelman` (or however the TUI entry point is invoked — check `pyproject.toml`'s `[project.scripts]` if `modelman` isn't on PATH) against a real or scratch `~/.config/local-ai/registry.toml` + `modelman.toml`. Confirm: family list renders, 'a' adds a family, Enter opens `ModelScreen` without crashing, 'e' edits a family's display name, 'd' on an empty family deletes it. This is the check that catches anything the test suite's mocked providers don't — e.g. a real `ProviderRegistry.get()` call path this plan didn't exercise.
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run modelman` (or however the TUI entry point is invoked — check `pyproject.toml`'s `[project.scripts]` if `modelman` isn't on PATH) against a real or scratch `~/.config/local-ai/registry.toml` + `modelman.toml`. Confirm: family list renders, 'a' adds a family, Enter opens `ModelScreen` without crashing, 'e' edits a family's display name, 'd' on an empty family deletes it. This is the check that catches anything the test suite's mocked providers don't — e.g. a real `ProviderRegistry.get()` call path this plan didn't exercise.
 
 - [ ] **Step 4: Final commit (only if Steps 1-3 required fixes)**
 
