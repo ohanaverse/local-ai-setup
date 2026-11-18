@@ -296,24 +296,49 @@ func TestServerTabShowsAParseErrorWithThePath(t *testing.T) {
 }
 
 // TestServerTabDropsAStaleObservation pins that an observation older than
-// the latest one asked for is dropped: a slow ping must not overwrite a
-// later answer.
+// the latest one asked for is dropped, in both orders of arrival: delivered
+// after the newer one it does not overwrite it; delivered first it changes
+// nothing and the tab stays busy until the newer one lands. A slow ping must
+// not overwrite a later answer, nor end the wait for it.
 func TestServerTabDropsAStaleObservation(t *testing.T) {
-	sm := &serverMachine{states: []modelsetup.State{fullState()}}
-	m := serverEditor(t, sm, 80, 24)
-	older := m.observeServerCmd()
-	newer := m.observeServerCmd()
-	sm.states = []modelsetup.State{parseErrState(), parseErrState(), offMacState()}
-	sm.observes = 1
-	oldMsg := older() // parseErrState
-	newMsg := newer() // offMacState
+	newerReason := offMacState().Platform.Reason
+
+	// staleMsgs opens the tab on fullState and dispatches two observations:
+	// the older reads parseErrState, the newer offMacState.
+	staleMsgs := func() (*model, *serverMachine, tea.Msg, tea.Msg) {
+		sm := &serverMachine{states: []modelsetup.State{fullState()}}
+		m := serverEditor(t, sm, 80, 24)
+		older := m.observeServerCmd()
+		newer := m.observeServerCmd()
+		sm.states = []modelsetup.State{fullState(), parseErrState(), offMacState()}
+		return m, sm, older(), newer()
+	}
+
+	// Newer first, then the stale one.
+	m, _, oldMsg, newMsg := staleMsgs()
 	m = send(t, m, newMsg)
 	m = send(t, m, oldMsg)
-	if m.server.state.Config.ParseErr != "" || m.server.state.Platform.OK {
-		t.Errorf("state = %+v, want the newer (off-macOS) observation", m.server.state.Platform)
+	if !m.server.loaded || m.server.state.Platform.Reason != newerReason || m.server.state.Config.ParseErr != "" {
+		t.Errorf("newer then older: loaded = %v state = %+v %+v, want the newer (off-macOS) observation",
+			m.server.loaded, m.server.state.Platform, m.server.state.Config)
 	}
 	if m.server.busy {
-		t.Errorf("busy after the latest observation arrived")
+		t.Errorf("newer then older: busy after the latest observation arrived")
+	}
+
+	// The stale one first: nothing changes and the tab still waits.
+	m, _, oldMsg, newMsg = staleMsgs()
+	m = send(t, m, oldMsg)
+	if !m.server.busy {
+		t.Errorf("older first: busy = false, want true while the latest observation is out")
+	}
+	if st := m.server.state; !st.Platform.OK || st.Resolution.Mode != modelclient.ModeLocal || st.Config.ParseErr != "" {
+		t.Errorf("older first: state = %+v %+v, want fullState unchanged", st.Platform, st.Config)
+	}
+	m = send(t, m, newMsg)
+	if m.server.busy || !m.server.loaded || m.server.state.Platform.Reason != newerReason {
+		t.Errorf("then the newer: busy = %v loaded = %v platform = %+v, want the newer observation applied",
+			m.server.busy, m.server.loaded, m.server.state.Platform)
 	}
 }
 
