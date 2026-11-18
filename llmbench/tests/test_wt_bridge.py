@@ -183,6 +183,11 @@ _STOP_REFUSAL_CASES = [
     ("Error: the model server url is not configured\n", "", True),
     ("Error: the model server token is not configured\n", "", True),
     ("", "wt: the model server token is not configured\n", True),
+    (
+        "Error: no model server is configured — native mode has no model server; change the mode in wt config\n",
+        "",
+        True,
+    ),
     ("Error: not running\n", "", False),
 ]
 
@@ -190,7 +195,7 @@ _STOP_REFUSAL_CASES = [
 @pytest.mark.parametrize(
     ("stderr", "stdout", "want_hint"),
     _STOP_REFUSAL_CASES,
-    ids=["both-missing", "url-missing", "token-missing", "stdout-refusal", "other-refusal"],
+    ids=["both-missing", "url-missing", "token-missing", "stdout-refusal", "native-mode", "other-refusal"],
 )
 def test_stop_not_configured_refusal_hints_at_the_model_server_settings(
     monkeypatch, wt_on_path, stderr, stdout, want_hint
@@ -200,8 +205,11 @@ def test_stop_not_configured_refusal_hints_at_the_model_server_settings(
     refused and benchmark isolation fails. When the refusal is wt's
     not-configured one (its pinned leads, on either output stream),
     stop()'s failure output must carry the hint that names the settings —
-    [model-server] in ~/.config/agent-wt/config.toml, or WT_MODEL_URL and
-    WT_MODEL_TOKEN_FILE; any other refusal keeps its own message alone."""
+    a local or remote mode chosen in wt config (Model server tab), or
+    WT_MODEL_URL and WT_MODEL_TOKEN_FILE — right for an unset mode and for
+    native mode alike (native ignores a url and token_file in config.toml,
+    so the hint never tells the user to set them there); any other refusal
+    keeps its own message alone."""
 
     def run(argv, **kwargs):
         return _cp(stdout=stdout, returncode=1, stderr=stderr)
@@ -216,9 +224,9 @@ def test_stop_not_configured_refusal_hints_at_the_model_server_settings(
             line = line[len(prefix) :]
     assert line in msg  # wt's own line is kept
     for name in (
-        "[model-server]",
-        "~/.config/agent-wt/config.toml",
+        "choose local or remote in wt config (Model server tab)",
         "WT_MODEL_URL",
         "WT_MODEL_TOKEN_FILE",
     ):
         assert (name in msg) == want_hint, f"{name} hint presence != {want_hint}"
+    assert "set url and token_file" not in msg
