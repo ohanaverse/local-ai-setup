@@ -228,8 +228,13 @@ func pingHint(err error, ms *modelSession) error {
 }
 
 // displayURL is raw safe to print: no user info, query or fragment, which
-// may carry a secret.
+// may carry a secret. A url holding an '@' is modelclient.HiddenURL whole,
+// with no parsing (ResolveEndpoint refuses one first; this is the backstop):
+// a parse can misread where the credentials end (http://pw/@h).
 func displayURL(raw string) string {
+	if modelclient.HasUserinfo(raw) {
+		return modelclient.HiddenURL
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return "(the configured url does not parse)"

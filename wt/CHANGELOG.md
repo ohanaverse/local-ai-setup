@@ -11,6 +11,7 @@
 
 ### Changed
 
+- **Breaking:** a model-server url that contains an `@` anywhere (`WT_MODEL_URL` or `url` under `[model-server]`, with or without a scheme) is now refused before any request, exit 1, with a fixed message that quotes no part of it: `the model server url contains an @ (read as a user:password); wt does not use credentials in the url: use a token file (WT_MODEL_TOKEN_FILE or token_file under [model-server])` (#639). A url with a valid scheme and a `user:password` used to work, since the userinfo was ignored and the request carried only the `Authorization: Bearer` header; a schemeless or malformed one printed the password in its "not reachable" error and `--listen` hint. Drop the userinfo (percent-encode an `@` a path really needs as `%40`). Native mode still ignores the url. A url with no host (or one that does not parse) now fails with fixed text too, never echoing the url.
 - **Breaking:** every `wt` run that needs a model is now a **client session**
   of a model server (`wt-model serve`): the pickers, `-M`, `wt start`/`wt stop
   <model>`, `wt job`, `wt smoke`, `wt model list --server` and the spend in

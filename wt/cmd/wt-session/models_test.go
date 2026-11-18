@@ -778,10 +778,11 @@ func TestUnreachableLocalServerNamesTheFix(t *testing.T) {
 // TestUnreachableRemoteServerNamesTheURLAndTheClassifiedError pins the remote
 // mode's hint: the url the session tried and the classified ping error, with
 // no launchctl advice (the server is another machine's), and never a
-// password the url carries.
+// secret the url's query carries. (A url with a user:password is refused
+// before any ping since #639: TestNoPieceOfAnAtURLReachesSessionOutput.)
 func TestUnreachableRemoteServerNamesTheURLAndTheClassifiedError(t *testing.T) {
 	_, addr := closedServerConfig(t, "remote", "")
-	body, _ := closedServerConfig(t, "remote", "http://someone:hunter2@"+addr+"/?key=k3y")
+	body, _ := closedServerConfig(t, "remote", "http://"+addr+"/?key=k3y")
 	writeSessionConfig(t, body)
 	_, err := (&app{hooks: testHooks()}).openModels(context.Background(), "nothing was launched")
 	if err == nil {

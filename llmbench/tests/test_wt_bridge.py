@@ -237,3 +237,25 @@ def test_stop_not_configured_refusal_hints_at_the_model_server_settings(
     ):
         assert (name in msg) == want_hint, f"{name} hint presence != {want_hint}"
     assert "set url and token_file" not in msg
+
+
+def test_stop_url_credentials_refusal_gets_no_settings_hint(monkeypatch, wt_on_path):
+    """wt refuses a model-server url containing an `@` (wt issue #639) with a
+    fixed line that is not one of the not-configured leads: the server is
+    configured, its url is what to fix. stop() must surface wt's own line and
+    must not append the hint that tells the user to set the url and token."""
+    line = (
+        "the model server url contains an @ (read as a user:password); wt does not "
+        "use credentials in the url: use a token file (WT_MODEL_TOKEN_FILE or "
+        "token_file under [model-server]); nothing was stopped"
+    )
+
+    def run(argv, **kwargs):
+        return _cp(returncode=1, stderr="wt: " + line + "\n")
+
+    monkeypatch.setattr(wt_bridge.subprocess, "run", run)
+    with pytest.raises(wt_bridge.WtBridgeError) as excinfo:
+        wt_bridge.stop("omlx/Qwen3.6-35B-A3B-6bit")
+    msg = str(excinfo.value)
+    assert line in msg
+    assert wt_bridge._NOT_CONFIGURED_HINT not in msg

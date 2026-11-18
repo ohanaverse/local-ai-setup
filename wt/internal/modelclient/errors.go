@@ -11,6 +11,14 @@ import (
 type UnreachableError struct{ Addr, Reason string }
 
 func (e *UnreachableError) Error() string {
+	if e.Addr == HiddenURL {
+		return (&CredentialsInURLError{}).Error()
+	}
+	if e.Addr == unparsedAddr {
+		// No address to name or to suggest for --listen: the url itself
+		// is what to fix, and it is not shown.
+		return unbuildableRequest + " (it is not shown) — write it as http://HOST:PORT under [model-server] in config.toml, or in WT_MODEL_URL"
+	}
 	return fmt.Sprintf("model server at %s is not reachable (%s) — start it with 'wt-model serve --listen %s --token-file PATH', or fix url under [model-server] in config.toml",
 		clean(e.Addr), clean(e.Reason), clean(e.Addr))
 }

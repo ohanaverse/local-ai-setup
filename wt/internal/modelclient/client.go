@@ -83,12 +83,17 @@ func New(ep Endpoint, opts ...Option) *Client {
 }
 
 // addr is host:port of the endpoint, as the error texts and the server's
-// --listen flag name it.
+// --listen flag name it. It never echoes the raw url: one holding an '@' is
+// HiddenURL whole (no parsing, HasUserinfo), and one url.Parse finds no host
+// in is the fixed unparsedAddr.
 func (c *Client) addr() string {
+	if HasUserinfo(c.ep.URL) {
+		return HiddenURL
+	}
 	if u, err := url.Parse(c.ep.Origin()); err == nil && u.Host != "" {
 		return u.Host
 	}
-	return c.ep.Origin()
+	return unparsedAddr
 }
 
 // Now is the server's clock: the local clock plus the offset measured from the
@@ -107,8 +112,19 @@ type response struct {
 }
 
 // send performs one request under the per-request timeout and returns the
-// response whatever its status; only transport failures are errors.
+// response whatever its status; only transport failures are errors. A url
+// holding an '@' is refused before any request is built (ResolveEndpoint
+// refuses it first; this is the backstop for a Client built directly), and a
+// url with no host, or one net/http cannot build a request from, fails with
+// fixed text: neither quotes the url (url.Parse's own error quotes it whole,
+// and the transport's names a schemeless url's first word as its scheme).
 func (c *Client) send(ctx context.Context, method, rawurl string, body any) (*response, error) {
+	switch c.addr() {
+	case HiddenURL:
+		return nil, &CredentialsInURLError{}
+	case unparsedAddr:
+		return nil, &UnreachableError{Addr: unparsedAddr, Reason: unbuildableRequest}
+	}
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -125,7 +141,7 @@ func (c *Client) send(ctx context.Context, method, rawurl string, body any) (*re
 	defer cancel()
 	req, err := http.NewRequestWithContext(rctx, method, rawurl, rd)
 	if err != nil {
-		return nil, err
+		return nil, &UnreachableError{Addr: unparsedAddr, Reason: unbuildableRequest}
 	}
 	req.Header.Set("Authorization", "Bearer "+c.ep.Token)
 	req.Header.Set("Accept", "application/json")
