@@ -237,7 +237,7 @@ func ProbeProxy(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("the last LiteLLM proxy restart failed, so routes written since may not be live: %w", err)
 	}
 	if err := waitProxy(ctx, url, proxyProbeTimeout); err != nil {
-		return fmt.Errorf("the LiteLLM proxy does not answer at %s: %w", url, err)
+		return fmt.Errorf("the LiteLLM proxy does not answer at %s: %w", config.ShownProxyURL(url), err)
 	}
 	return nil
 }

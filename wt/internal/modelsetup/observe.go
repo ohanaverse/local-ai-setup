@@ -390,9 +390,14 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 
 	// Pair.
 	pair, perr := env.Config.Pair()
-	st.Pair = PairState{URL: pair.URL, KeySet: pair.APIKey != ""}
+	// The pair url is shown like every url here: one holding an '@' is the
+	// fixed placeholder, whole (#640). The pair still reads as present.
+	st.Pair = PairState{URL: shownURL(pair.URL), KeySet: pair.APIKey != ""}
 	if perr != nil {
 		st.Pair.Err = perr.Error()
+		if hasUserinfo(st.Pair.Err) {
+			st.Pair.Err = pairErrHidden
+		}
 	}
 
 	// LiteLLM plist.

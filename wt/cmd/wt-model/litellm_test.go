@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 )
 
 // asWTModel sets config.BinaryName to "wt-model" the way main() does, so a
@@ -288,5 +290,32 @@ func TestLitellmSetFreshClearWritesTheEmptyKeyFile(t *testing.T) {
 	}
 	if st.Mode().Perm() != 0o600 || st.Size() != 0 {
 		t.Errorf("key file: mode %v size %d, want 0600 and empty", st.Mode().Perm(), st.Size())
+	}
+}
+
+// TestLitellmSetRefusesAnAtURL pins the write side of #640 through the real
+// command tree: `wt-model litellm set --url` with an '@' anywhere in the url
+// exits 1 with the fixed refusal (as main reports it: one `wt-model:` line)
+// that quotes no piece of the url, prints nothing else, and writes nothing,
+// even with --api-key beside it.
+func TestLitellmSetRefusesAnAtURL(t *testing.T) {
+	for _, raw := range []string{"USERY:PASSY@litellm:4000", "http://USERY:PASSY@localhost:4000", "http://localhost:4000/?k=USERY@PASSY"} {
+		home := proxyEnv(t)
+		stdout, stderr, err := execLitellm(t, "set", "--url", raw, "--api-key", "sk-new")
+		var rep bytes.Buffer
+		code := exitcode.Report("wt-model", err, &rep)
+		if code != 1 || !errors.Is(err, config.ErrProxyURLHasAt) {
+			t.Errorf("%q: exit %d err %v, want 1 and the fixed refusal", raw, code, err)
+		}
+		all := stdout + stderr + rep.String()
+		if strings.Contains(all, "USERY") || strings.Contains(all, "PASSY") || stdout != "" {
+			t.Errorf("%q: output quotes the url or reports success: stdout %q stderr %q report %q", raw, stdout, stderr, rep.String())
+		}
+		if rep.String() != "wt-model: "+config.ErrProxyURLHasAt.Error()+"\n" {
+			t.Errorf("%q: report %q, want the one fixed line", raw, rep.String())
+		}
+		if _, serr := os.Stat(filepath.Join(home, "wt-model")); !os.IsNotExist(serr) {
+			t.Errorf("%q: the wt-model home was written (%v)", raw, serr)
+		}
 	}
 }

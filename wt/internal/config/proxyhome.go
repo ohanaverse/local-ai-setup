@@ -202,7 +202,7 @@ func readProxyHome(path string) (lit proxyHomeLitellm, present bool, err error) 
 // decodeProxyHome reads and decodes the whole home document at path. exists
 // is false when the file is not there (a fresh home). A file that exists but
 // does not parse is an error, loud: never merge onto a document wt cannot
-// read.
+// read. The error never quotes a url or key value (secretSafe, #640).
 func decodeProxyHome(path string) (doc proxyHomeDoc, exists bool, err error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -212,7 +212,7 @@ func decodeProxyHome(path string) (doc proxyHomeDoc, exists bool, err error) {
 		return doc, false, err
 	}
 	if _, err := toml.Decode(string(data), &doc); err != nil {
-		return doc, false, fmt.Errorf("parse %s: %w", path, err)
+		return doc, false, fmt.Errorf("parse %s: %w", path, secretSafe(err, data))
 	}
 	return doc, true, nil
 }
@@ -294,11 +294,17 @@ func keyTokenState(path string) (key string, present bool, err error) {
 // refuses the set before anything is touched. Only the new home is written:
 // the legacy config.toml is never opened for writing, so a broken legacy
 // config or registry can never block the one command that fixes the pair.
+// A url holding an '@' is refused first, writing nothing (ErrProxyURLHasAt).
 // A set that would create the home's [litellm] table and leaves out a field
 // the legacy table holds is refused, writing nothing (refusePartialFirstSet).
 func SetProxy(url, key *string) error {
 	if url == nil && key == nil {
 		return nil
+	}
+	// A url with an '@' is refused before anything is read or written
+	// (#640); a key-only set over a stored one still works.
+	if url != nil && ProxyURLHasAt(*url) {
+		return ErrProxyURLHasAt
 	}
 	home := ProxyHomePath()
 	if home == "" {
@@ -493,9 +499,10 @@ func MaskKey(key string) string {
 // docs/contracts/litellm-cli.sample.json's status member (the fixture's
 // golden); the text form is the block `wt litellm status` has always
 // printed. The url keeps LitellmBaseURL's trailing-slash trim and prints
-// (unset) when empty; the key prints masked (MaskKey) and never itself.
+// (unset) when empty, and ProxyURLHidden when it holds an '@'; the key
+// prints masked (MaskKey) and never itself.
 func WriteProxyStatus(w io.Writer, pair ProxyPair, asJSON bool) error {
-	url := strings.TrimRight(pair.URL, "/")
+	url := ShownProxyURL(strings.TrimRight(pair.URL, "/"))
 	if asJSON {
 		return json.NewEncoder(w).Encode(struct {
 			URL       string `json:"url"`

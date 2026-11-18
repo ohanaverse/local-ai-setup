@@ -202,8 +202,14 @@ func pairLine(p modelsetup.PairState) serverLine {
 		return serverLine{"pair", "unreadable: " + scrub(p.Err), toneBad}
 	}
 	url := p.URL
-	if url == "" {
+	switch {
+	case url == "":
 		url = "url unset"
+	case modelclient.HasUserinfo(url):
+		// Observe hands over the placeholder already; a url with an '@'
+		// from anywhere else is hidden whole too, since scrub only finds
+		// one after "://" (#640).
+		url = modelclient.HiddenURL
 	}
 	key := "key unset"
 	if p.KeySet {

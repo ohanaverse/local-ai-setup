@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -47,7 +48,12 @@ func loadServeConfig() (*config.Config, *url.URL, string, error) {
 	}
 	u, err := url.Parse(base)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return nil, nil, "", fmt.Errorf("the LiteLLM url %q is not a valid URL: run 'wt-model litellm set --url URL --api-key KEY'", base)
+		// A url with an '@' is never quoted (#640): the placeholder stands in.
+		shown := strconv.Quote(base)
+		if config.ProxyURLHasAt(base) {
+			shown = config.ProxyURLHidden
+		}
+		return nil, nil, "", fmt.Errorf("the LiteLLM url %s is not a valid URL: run 'wt-model litellm set --url URL --api-key KEY'", shown)
 	}
 	return cfg, u, key, nil
 }

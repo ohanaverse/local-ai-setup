@@ -26,6 +26,17 @@ const hiddenURL = modelclient.HiddenURL
 // never pings one, so the check is not made, and the words hold none of it.
 const notCheckedAtURL = "not checked: the url contains an @; retype it without credentials"
 
+// notCheckedPairAtURL is the Detail of every LiteLLM check that reads the
+// wt-model pair url (reachable, database, key, routes, port) when that url
+// holds an '@': CheckLiteLLM never requests one, and the words hold none of
+// it. The pair is a different setting from the model-server url, under the
+// same rule (#640).
+const notCheckedPairAtURL = "not checked: the pair url contains an @"
+
+// pairErrHidden replaces the pair's read error when its text holds an '@'
+// (a TOML parse error may quote the line it stopped on, url and all).
+const pairErrHidden = "wt-model's LiteLLM pair could not be read; the error text contains an @ so it is hidden"
+
 // checkHidden replaces a check message that may quote a url holding an '@'.
 const checkHidden = "the check failed; the url contains an @ so the error text is hidden"
 

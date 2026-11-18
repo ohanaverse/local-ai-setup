@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // proxyLabel is the proxy LaunchAgent's Label. The agent the fallback restart
@@ -491,7 +493,8 @@ func healthURL(baseURL string) string { return strings.TrimRight(baseURL, "/") +
 
 // WaitReady polls <baseURL>/health/liveliness until it answers 200 or the
 // timeout elapses, so a caller does not launch an agent into a proxy that is
-// still coming back up.
+// still coming back up. Its errors never quote a url holding an '@'
+// (config.ShownProxyURL, #640).
 func WaitReady(ctx context.Context, baseURL string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -500,6 +503,10 @@ func WaitReady(ctx context.Context, baseURL string, timeout time.Duration) error
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
+			if config.ProxyURLHasAt(url) {
+				// net/url's error quotes the whole url (#640).
+				return fmt.Errorf("LiteLLM proxy url %s does not parse as a url", config.ProxyURLHidden)
+			}
 			return err
 		}
 		if resp, err := client.Do(req); err == nil {
@@ -510,7 +517,7 @@ func WaitReady(ctx context.Context, baseURL string, timeout time.Duration) error
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("LiteLLM proxy not ready at %s: %w", url, ctx.Err())
+			return fmt.Errorf("LiteLLM proxy not ready at %s: %w", config.ShownProxyURL(url), ctx.Err())
 		case <-time.After(300 * time.Millisecond):
 		}
 	}

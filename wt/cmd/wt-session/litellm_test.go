@@ -202,6 +202,27 @@ func TestLitellmRestartWaitsAndReports(t *testing.T) {
 	}
 }
 
+// TestLitellmRestartHidesAnAtURL pins the success line's one url rule
+// (#640): a stored pair url holding an '@' (hand-written, or set by an older
+// wt) is printed only as config.ProxyURLHidden, never in part.
+func TestLitellmRestartHidesAnAtURL(t *testing.T) {
+	const url = "http://USERX:PASSX@proxy.test:4000"
+	t.Setenv("WT_LITELLM_RESTART_CMD", "true")
+	t.Cleanup(litellm.StubProxyReadinessForTest(
+		func(context.Context, string, time.Duration) bool { return false },
+		func(context.Context, string, time.Duration) error { return nil },
+	))
+	cfg := litellmTestConfig()
+	cfg.SetLitellmForTest(config.LitellmState{URL: url})
+	var out bytes.Buffer
+	if err := runLitellmRestart(&out, cfg); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if got, want := out.String(), "restarted the LiteLLM proxy at "+config.ProxyURLHidden+"\n"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
+}
+
 // TestLitellmListAndProviders pins the read-only commands' JSON shapes: the
 // "routed" id list and ownership rows of `list --json`, and the per-provider
 // policy of `providers --json` (cloud or not). They are what a script reads
@@ -2254,4 +2275,25 @@ func resetIgnoredLitellmNote(t *testing.T) {
 	old := ignoredLitellmNoted.Load()
 	ignoredLitellmNoted.Store(false)
 	t.Cleanup(func() { ignoredLitellmNoted.Store(old) })
+}
+
+// TestLitellmSetRefusesAnAtURL pins the write side of #640 on the `wt
+// litellm set` twin: a url with an '@' anywhere exits 1 with one `wt:` line,
+// the fixed refusal, quoting no piece of the url, and writes no wt-model
+// home, even with --api-key beside it.
+func TestLitellmSetRefusesAnAtURL(t *testing.T) {
+	for _, raw := range []string{"USERY:PASSY@litellm:4000", "http://USERY:PASSY@localhost:4000"} {
+		dir := t.TempDir()
+		writeEmptyRegistry(t, dir)
+		out, code := runRoot(t, "litellm", "set", "--url", raw, "--api-key", "sk-new1234")
+		if code != 1 || len(wtLines(out)) != 1 || !strings.Contains(out, config.ErrProxyURLHasAt.Error()) {
+			t.Errorf("%q: exit %d, output %q; want 1 and the one fixed refusal line", raw, code, out)
+		}
+		if strings.Contains(out, "USERY") || strings.Contains(out, "PASSY") {
+			t.Errorf("%q: the output quotes the url: %q", raw, out)
+		}
+		if _, err := os.Stat(filepath.Dir(config.ProxyHomePath())); !os.IsNotExist(err) {
+			t.Errorf("%q: the wt-model home was written (%v)", raw, err)
+		}
+	}
 }
