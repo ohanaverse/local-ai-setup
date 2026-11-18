@@ -847,18 +847,22 @@ func TestBuildPlanRotateRefusesWithoutAReadableXMLPlist(t *testing.T) {
 }
 
 // TestBuildPlanUseExistingKeyIsTheDefault pins that LiteLLMUseExistingKey
-// plans byte-identically to the zero value: the key is read from the plist
-// into the pair and the plist is never edited.
+// plans byte-identically to the zero value where the pair is not set (the
+// key is read from the plist into the pair), and that it never edits the
+// plist anywhere. Over a set pair it differs on purpose, by re-setting the
+// pair (TestBuildPlanUseExistingKeyRePairsOverASetPair).
 func TestBuildPlanUseExistingKeyIsTheDefault(t *testing.T) {
-	for _, st := range []State{freshState(), baseState(), rotateState()} {
+	for _, st := range []State{freshState()} {
 		a := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
 		b := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey})
 		if a.Format() != b.Format() || fmt.Sprint(kinds(a)) != fmt.Sprint(kinds(b)) {
 			t.Errorf("use-existing differs from the default:\n%s\n---\n%s", a.Format(), b.Format())
 		}
-		for _, s := range b.Steps {
+	}
+	for _, st := range []State{freshState(), baseState(), rotateState()} {
+		for _, s := range mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey}).Steps {
 			if s.Kind == StepMasterKey || s.Kind == StepLiteLLMPlist || s.Kind == StepBackup {
-				t.Errorf("use-existing edits the plist: %v", kinds(b))
+				t.Errorf("use-existing edits the plist")
 			}
 		}
 	}
@@ -965,4 +969,52 @@ func TestBuildPlanTightenLiteLLMIsAChmodOnly(t *testing.T) {
 	if p.Want.LiteLLM != LiteLLMNone {
 		t.Errorf("native plan kept the action %q", p.Want.LiteLLM)
 	}
+}
+
+// TestBuildPlanUseExistingKeyRePairsOverASetPair pins that choosing "use the
+// plist's key" reads the plist's master key into wt-model's pair even when
+// the pair is already set (it may hold a stale key), as a pair-from-plist
+// step whose text names the plist and never a key; the default request
+// (LiteLLMNone) over the same state still only keeps the pair, and so does a
+// use request when the plist has no key to read.
+func TestBuildPlanUseExistingKeyRePairsOverASetPair(t *testing.T) {
+	st := baseState() // pair set, plist holds a key
+	p := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey})
+	s, ok := stepOf(p, StepPair)
+	if !ok || s.Action != ActionPairKeyFromPlist || s.Path != plLiteLLM {
+		t.Fatalf("pair step = %+v (found %v), want the pair read from %s", s, ok, plLiteLLM)
+	}
+	text := p.Format()
+	if !strings.Contains(text, "read from "+plLiteLLM) || strings.Contains(text, "keep wt-model's LiteLLM pair") {
+		t.Errorf("Format does not say the pair is re-set from the plist:\n%s", text)
+	}
+	kept := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
+	if _, ok := stepOf(kept, StepPair); ok || !strings.Contains(kept.Format(), "keep wt-model's LiteLLM pair") {
+		t.Errorf("the default request no longer keeps the pair:\n%s", kept.Format())
+	}
+	keyless := baseState()
+	keyless.LiteLLMPlist.HasMasterKey = false
+	p = mustPlan(t, keyless, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey})
+	if _, ok := stepOf(p, StepPair); ok {
+		t.Errorf("a plist without a key planned a pair step")
+	}
+}
+
+// TestApplyUseExistingKeyWritesThePlistKeyOverAStalePair pins that applying
+// that plan reads the plist's key and writes it into the pair, replacing the
+// stale one, and that neither key appears in a call, line or result.
+func TestApplyUseExistingKeyWritesThePlistKeyOverAStalePair(t *testing.T) {
+	f := apEnv(t)
+	f.pair.URL, f.pair.APIKey = "http://localhost:4000", "sk-STALE-1"
+	st := baseState()
+	var lines []string
+	full := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey})
+	pairStep, _ := stepOf(full, StepPair)
+	// The pair step alone: the restart and wait after it need a live server.
+	r := Apply(context.Background(), f.Env(), Plan{Want: full.Want, Steps: []Step{pairStep}},
+		func(s string) { lines = append(lines, s) })
+	if r.Err != nil || f.pair.APIKey != apPlistKey {
+		t.Fatalf("err %v, pair key from the plist: %t", r.Err, f.pair.APIKey == apPlistKey)
+	}
+	noSecrets(t, f, lines, r, apPlistKey, "sk-STALE-1")
 }

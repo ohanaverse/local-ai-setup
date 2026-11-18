@@ -414,7 +414,10 @@ func planLocal(st State, want Desired) (Plan, error) {
 		url := liteLLMURL(st, want.LiteLLM)
 		pairStep = &Step{Kind: StepPair, Action: ActionPairKeyNew, Value: url,
 			Detail: "set wt-model's LiteLLM pair" + pairWhere(st) + ": url " + url + ", key the new LITELLM_MASTER_KEY (not shown)"}
-	} else if st.Pair.URL != "" && st.Pair.KeySet && st.Pair.Err == "" {
+	} else if st.Pair.URL != "" && st.Pair.KeySet && st.Pair.Err == "" &&
+		!(want.LiteLLM == LiteLLMUseExistingKey && st.LiteLLMPlist.HasMasterKey) {
+		// Asking for the plist's key re-sets even a set pair (it may hold a
+		// stale key); every other request keeps it.
 		pairKept = "keep wt-model's LiteLLM pair (" + st.Pair.URL + ")"
 	} else {
 		url := liteLLMURL(st, want.LiteLLM)
