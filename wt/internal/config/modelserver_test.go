@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -256,4 +257,201 @@ token_file = "/t"
 		t.Fatal(err)
 	}
 	check(t, "Save")
+}
+
+// TestReadModelServerFileMissingFile proves a missing config.toml reads as
+// not existing with no errors, so the config editor can offer a first save.
+func TestReadModelServerFileMissingFile(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	f := ReadModelServerFile()
+	if f.Exists || f.ParseErr != nil || f.TableErr != nil || f.Table != nil {
+		t.Errorf("file = %+v, want a clean absent file", f)
+	}
+}
+
+// TestReadModelServerFileSyntaxError proves a syntax-broken file reports
+// ParseErr and no table, so callers can refuse to act on guesses.
+func TestReadModelServerFileSyntaxError(t *testing.T) {
+	sessionHome(t, "default_tag = \n[model-server\n")
+	f := ReadModelServerFile()
+	if !f.Exists || f.ParseErr == nil || f.Table != nil {
+		t.Errorf("file = %+v, want ParseErr set and no table", f)
+	}
+}
+
+// TestReadModelServerFileSemanticErrorElsewhereStillReadsTheTable proves a
+// wrong-typed key outside [model-server] never hides the table: the reader
+// decodes the table on its own.
+func TestReadModelServerFileSemanticErrorElsewhereStillReadsTheTable(t *testing.T) {
+	sessionHome(t, `[[agents]]
+name = 5
+
+[model-server]
+mode = "remote"
+url = "http://127.0.0.1:9"
+`)
+	f := ReadModelServerFile()
+	if f.ParseErr != nil || f.TableErr != nil {
+		t.Fatalf("errors = %v / %v", f.ParseErr, f.TableErr)
+	}
+	if f.Table == nil || f.Table.Mode != "remote" {
+		t.Errorf("table = %+v, want mode remote", f.Table)
+	}
+}
+
+// TestReadModelServerFileTableTypeError proves a wrong-typed key inside
+// [model-server] is reported as TableErr, not ParseErr (the syntax is fine).
+func TestReadModelServerFileTableTypeError(t *testing.T) {
+	sessionHome(t, "[model-server]\nurl = 5\n")
+	f := ReadModelServerFile()
+	if f.ParseErr != nil || f.TableErr == nil {
+		t.Errorf("file = %+v, want TableErr only", f)
+	}
+}
+
+// TestUpdateModelServerPreservesOtherTables proves a model-server update
+// keeps agents and [launch] intact while writing the new table.
+func TestUpdateModelServerPreservesOtherTables(t *testing.T) {
+	path := sessionHome(t, `default_tag = "design"
+
+[[agents]]
+name = "claude"
+supported_providers = ["no-such-provider"]
+
+[launch]
+exit_prompt = "never"
+`)
+	err := UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
+		cur.Mode = "remote"
+		cur.URL = "http://127.0.0.1:9"
+		return cur, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	for _, want := range []string{`default_tag = "design"`, `name = "claude"`, "[launch]", `exit_prompt = "never"`, "[model-server]", `mode = "remote"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("%q missing:\n%s", want, raw)
+		}
+	}
+}
+
+// TestUpdateModelServerRefusesASyntaxBrokenFileAndLeavesItUntouched proves a
+// file that does not parse is never rewritten: the writer would drop what it
+// could not read.
+func TestUpdateModelServerRefusesASyntaxBrokenFileAndLeavesItUntouched(t *testing.T) {
+	body := "default_tag = \n[model-server\n"
+	path := sessionHome(t, body)
+	err := UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
+		cur.Mode = "native"
+		return cur, nil
+	})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != body {
+		t.Errorf("file changed:\n%s", raw)
+	}
+}
+
+// TestUpdateModelServerRefusesATypeErrorElsewhere proves a wrong-typed key
+// outside [model-server] also refuses the write (the re-encode would drop
+// it), leaves the bytes alone and names the key.
+func TestUpdateModelServerRefusesATypeErrorElsewhere(t *testing.T) {
+	body := "default_tag = 5\n"
+	path := sessionHome(t, body)
+	err := UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
+		cur.Mode = "native"
+		return cur, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "default_tag") {
+		t.Fatalf("err = %v, want one naming default_tag", err)
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != body {
+		t.Errorf("file changed:\n%s", raw)
+	}
+}
+
+// TestUpdateModelServerWorksWhenConfigFailsValidationButParses proves a file
+// that decodes but fails validation (an agent naming a missing provider) is
+// still written, so a broken agent never blocks fixing the server.
+func TestUpdateModelServerWorksWhenConfigFailsValidationButParses(t *testing.T) {
+	path := sessionHome(t, `[[agents]]
+name = "claude"
+supported_providers = ["no-such-provider"]
+`)
+	err := UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
+		cur.Mode = "local"
+		return cur, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), `mode = "local"`) {
+		t.Errorf("mode missing:\n%s", raw)
+	}
+}
+
+// TestUpdateModelServerKeepsAnExistingStricterMode proves an update never
+// loosens a 0600 config.toml.
+func TestUpdateModelServerKeepsAnExistingStricterMode(t *testing.T) {
+	path := sessionHome(t, "default_tag = \"code\"\n")
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
+		cur.Mode = "native"
+		return cur, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %o, want 600", st.Mode().Perm())
+	}
+}
+
+// TestNativeModeWritesOnlyTheModeKey proves a native-only table is written
+// as just mode = "native": empty url/token fields are omitted, not stored.
+func TestNativeModeWritesOnlyTheModeKey(t *testing.T) {
+	path := sessionHome(t, "default_tag = \"code\"\n")
+	err := UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
+		return ModelServerState{Mode: "native"}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	s := string(raw)
+	if !strings.Contains(s, `mode = "native"`) {
+		t.Errorf("mode missing:\n%s", s)
+	}
+	for _, bad := range []string{"url =", "token_file =", "token ="} {
+		if strings.Contains(s, bad) {
+			t.Errorf("%q present:\n%s", bad, s)
+		}
+	}
+}
+
+// TestUpdateModelServerChangeErrorWritesNothing proves an error from the
+// change callback aborts the update and leaves the file as it was.
+func TestUpdateModelServerChangeErrorWritesNothing(t *testing.T) {
+	body := "default_tag = \"code\"\n"
+	path := sessionHome(t, body)
+	want := errors.New("nope")
+	err := UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
+		return ModelServerState{Mode: "remote"}, want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != body {
+		t.Errorf("file changed:\n%s", raw)
+	}
 }

@@ -1,19 +1,26 @@
 package config
 
 import (
+	"os"
 	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // ModelServerState is the hand-edited [model-server] table of config.toml:
 // where the wt-model server is and which file holds its bearer token.
 type ModelServerState struct {
-	URL       string `toml:"url"`
-	TokenFile string `toml:"token_file"`
+	// Mode is native, local or remote (empty is read as native by callers).
+	Mode      string `toml:"mode,omitempty"`
+	URL       string `toml:"url,omitempty"`
+	TokenFile string `toml:"token_file,omitempty"`
 	// Token is never used for auth, but its presence is not inert: a save
 	// writes config.toml 0600 when it is set, and no save loosens an
 	// existing stricter mode. A value here is also reported as a problem so
 	// the user moves it into a 0600 token_file.
-	Token string `toml:"token"`
+	Token string `toml:"token,omitempty"`
 }
 
 // ModelServer returns the [model-server] table, zero when it is absent.
@@ -27,6 +34,11 @@ func (c *Config) ModelServer() ModelServerState {
 // Problems lists what is wrong with the table beyond a missing value.
 func (s ModelServerState) Problems() []string {
 	var out []string
+	switch strings.ToLower(strings.TrimSpace(s.Mode)) {
+	case "", "native", "local", "remote":
+	default:
+		out = append(out, "[model-server] mode "+strconv.Quote(s.Mode)+" is not native, local or remote")
+	}
 	if s.Token != "" {
 		out = append(out, "[model-server] token is not used for auth — while it is set wt writes config.toml 0600, and no save loosens an existing stricter mode — put the token in a file with mode 0600 and set token_file")
 	}
@@ -69,4 +81,68 @@ func LoadSession(driverNames ...string) (*Config, error) {
 		cfg.litellm = *cfg.LitellmTable
 	}
 	return cfg, nil
+}
+
+// ModelServerFile is a tolerant read of config.toml's [model-server] table.
+// Path is always set; ParseErr is a syntax error (nothing else is read);
+// TableErr is a decode error inside the table itself.
+type ModelServerFile struct {
+	Path     string
+	Exists   bool
+	Table    *ModelServerState
+	ParseErr error
+	TableErr error
+}
+
+// ReadModelServerFile never errors. Syntax is checked by decoding into a
+// generic map; the table is decoded alone, so a problem elsewhere in the
+// file (a wrong-typed agent key) never hides it.
+func ReadModelServerFile() ModelServerFile {
+	f := ModelServerFile{Path: Path()}
+	data, err := os.ReadFile(f.Path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			f.ParseErr = err
+			f.Exists = true
+		}
+		return f
+	}
+	f.Exists = true
+	var generic map[string]any
+	if _, err := toml.Decode(string(data), &generic); err != nil {
+		f.ParseErr = err
+		return f
+	}
+	var only struct {
+		ModelServer *ModelServerState `toml:"model-server"`
+	}
+	if _, err := toml.Decode(string(data), &only); err != nil {
+		f.TableErr = err
+		return f
+	}
+	f.Table = only.ModelServer
+	return f
+}
+
+// UpdateModelServer rewrites the [model-server] table under the config lock.
+// Any decode error (syntax, or a wrong-typed key elsewhere) is returned and
+// nothing is written, because the writer re-encodes the whole struct and
+// would drop what it could not decode.
+func UpdateModelServer(change func(cur ModelServerState) (ModelServerState, error)) error {
+	return WithLock(func() error {
+		cfg, _, err := readConfigFile()
+		if err != nil {
+			return err
+		}
+		next, err := change(cfg.ModelServer())
+		if err != nil {
+			return err
+		}
+		if next == (ModelServerState{}) {
+			cfg.ModelServerTable = nil
+		} else {
+			cfg.ModelServerTable = &next
+		}
+		return writeConfigFile(cfg)
+	})
 }
