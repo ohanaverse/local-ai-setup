@@ -26,6 +26,23 @@ One port carries two surfaces:
   on the host, and it serves only the inference paths (see
   [Endpoints](#endpoints)).
 
+## Setting it up
+
+The way in is the Model server tab of `wt config`
+([wt-config.md](wt-config.md), "Model server tab"). Choose `local` there and
+its plan writes the token file, wt-model's LiteLLM pair and a LaunchAgent,
+`local.wt-model.serve`, that runs `wt-model serve` on a loopback address
+(`127.0.0.1:8787` unless you name another) at login; macOS only, and a plist
+wt did not write (no wt marker comment) is never overwritten. Choose `remote`
+to point a session at a server on another machine. The tab shows the plan and
+asks `Apply this plan? [y/N]` (default no) before anything is written. The
+LiteLLM proxy itself is a separate concern: the tab only checks it and offers
+narrow actions on its plist ([guide 14](../../docs/guides/14-litellm-install-and-configuration.md)).
+
+Running `wt-model serve` yourself, as the rest of this page describes, stays
+the alternative: a server started by hand on the chosen port is refused by the
+tab, not adopted, so use one route or the other per port.
+
 ## Where it runs
 
 The server runs on the machine that owns the models. Three setups use it the
@@ -70,7 +87,10 @@ the control API starts and stops models and the gateway spends the host's
 LiteLLM key, so neither is ever open.
 
 - The path is whatever `--token-file` names. The server reads it once at
-  startup.
+  startup. The tab's `local` mode writes `~/.config/wt-model/server.token`
+  (unless you name another path); its `remote` mode, given a pasted token,
+  writes the client's copy to `~/.config/agent-wt/remote-model-server.token`.
+  Both are written 0600, and the tab never deletes a token file.
 - The mode must be `0600` or stricter (no group or other bits). A looser mode
   is refused with `chmod 600 PATH`.
 - After trimming surrounding whitespace the token must not be empty.
