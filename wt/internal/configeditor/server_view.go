@@ -107,15 +107,21 @@ type serverLine struct {
 // last @ before the host: a password may hold an @ itself.
 var userinfoRE = regexp.MustCompile(`://[^/\s]*@`)
 
-// scrub takes any url userinfo out of text the tab draws: Observe already
-// strips it from what it stores, but a message a dep composed may still
-// carry one, and nothing the tab shows may hold a credential.
+// keyRE finds a LiteLLM-style key (sk- and a long run of key characters).
+var keyRE = regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`)
+
+// scrub takes any url userinfo and any sk- key out of text the tab draws:
+// Observe already strips them from what it stores, but a message a dep
+// composed may still carry one, and nothing the tab shows may hold a
+// credential.
 //
 // Deliberately greedy: an @ anywhere before the first / or space ends the
 // userinfo, so "https://h:1?x=a@b" loses its host too. That errs on the safe
 // side (a credential is never shown); TestScrubTakesTheHostWithAnAtInTheQuery
 // pins it.
-func scrub(s string) string { return userinfoRE.ReplaceAllString(s, "://") }
+func scrub(s string) string {
+	return keyRE.ReplaceAllString(userinfoRE.ReplaceAllString(s, "://"), "sk-<hidden>")
+}
 
 // homePath writes a path under home with ~ for the home.
 //

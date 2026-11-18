@@ -406,16 +406,20 @@ func TestServerTabShowsTheBackupNoteAfterASuccessfulRotate(t *testing.T) {
 }
 
 // TestServerTabScrubsTheNotesAndRecovery pins that a url's user:password in
-// a result's notes or recovery is never drawn, and that no fake key a
-// careless dep put in a warning appears via the status path either.
+// a result's notes or recovery is never drawn, and that a fake key a careless
+// dep put in a warning never reaches the rendered result screen either.
 func TestServerTabScrubsTheNotesAndRecovery(t *testing.T) {
 	res := failedRotate()
 	res.Notes = []string{"see https://user:hunter2@host:4000/x"}
 	res.Recovery = "run `curl https://user:hunter2@host:4000/health`"
+	res.Warnings = []string{"LiteLLM said the key sk-warnkey0123456789abcdef0123456789abcdef was refused"}
 	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: res}
 	m := keys(t, pickOption(t, serverEditor(t, sm, 120, 50), 1), "y")
 	if strings.Contains(plain(m), "hunter2") || !strings.Contains(plain(m), "host:4000") {
 		t.Errorf("the result screen leaks or loses the url:\n%s", plain(m))
+	}
+	if strings.Contains(plain(m), "warnkey") {
+		t.Errorf("a key in a warning reaches the result screen:\n%s", plain(m))
 	}
 }
 
