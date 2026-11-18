@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- managed by wt -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.wt-model.serve</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/user_name/.local/bin/wt-model</string>
+		<string>serve</string>
+		<string>--listen</string>
+		<string>127.0.0.1:8787</string>
+		<string>--token-file</string>
+		<string>/Users/user_name/.config/wt-model/token</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/Users/user_name/.wt-model.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/user_name/.wt-model.err.log</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+</dict>
+</plist>
