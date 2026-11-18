@@ -248,6 +248,50 @@ func TestRealChmodGuardsTheResolvedPath(t *testing.T) {
 	}
 }
 
+// TestRealFileSeamsGuardASymlinkedParent pins the test guard on a path
+// whose parent directory (not the file) is a symlink leaving the temp
+// directory: WriteAtomic, Remove and Backup each resolve the nearest existing
+// ancestor and refuse with errOutsideTempUnderTest, so a test can never
+// write, remove or back up through a linked directory into the developer's
+// files. The resolver is stubbed to send that one directory to outsideProbe,
+// so no link ever leaves the temp directory and nothing outside is touched.
+func TestRealFileSeamsGuardASymlinkedParent(t *testing.T) {
+	dir := t.TempDir()
+	linkdir := filepath.Join(dir, "linkdir")
+	if err := os.Mkdir(linkdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existing, src := filepath.Join(linkdir, "file"), filepath.Join(dir, "src")
+	for _, f := range []string{existing, src} {
+		if err := os.WriteFile(f, []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fsys := realFS{resolve: func(p string) (string, error) {
+		if filepath.Clean(p) == linkdir {
+			return outsideProbe, nil
+		}
+		return filepath.EvalSymlinks(p)
+	}}
+	for name, err := range map[string]error{
+		"WriteAtomic, file absent":   fsys.WriteAtomic(filepath.Join(linkdir, "new"), []byte("x"), 0o600),
+		"WriteAtomic, file present":  fsys.WriteAtomic(existing, []byte("x"), 0o600),
+		"Remove":                     fsys.Remove(existing),
+		"Backup":                     func() error { _, _, err := fsys.Backup(src, linkdir); return err }(),
+		"Backup, dir under the link": func() error { _, _, err := fsys.Backup(src, filepath.Join(linkdir, "a", "b")); return err }(),
+	} {
+		if !errors.Is(err, errOutsideTempUnderTest) {
+			t.Errorf("%s: err = %v, want errOutsideTempUnderTest", name, err)
+		}
+	}
+	if b, err := os.ReadFile(existing); err != nil || string(b) != "old" {
+		t.Errorf("the file under the link changed: %q %v", b, err)
+	}
+	if ents, _ := os.ReadDir(linkdir); len(ents) != 1 {
+		t.Errorf("linkdir holds %d entries, want only the original file", len(ents))
+	}
+}
+
 // TestRealWriteAtomicRefusesAnUnresolvableSymlink pins that a symlink that
 // does not resolve (dangling, or a loop) is refused with nothing written: a
 // rename over it would replace the link with a regular file holding a new

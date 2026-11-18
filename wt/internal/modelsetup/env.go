@@ -182,6 +182,25 @@ func (x realFS) evalSymlinks(p string) (string, error) {
 	return filepath.EvalSymlinks(p)
 }
 
+// guardAncestorUnderTest guards, in a test binary only, p with its nearest
+// existing ancestor's symlinks resolved, so a write, removal or backup under
+// a linked directory that leaves the temp directory is refused before it
+// happens (guardUnderTest alone sees only the path as given).
+func (x realFS) guardAncestorUnderTest(p string) error {
+	if !testing.Testing() {
+		return nil
+	}
+	p = filepath.Clean(p)
+	for dir, rest := filepath.Dir(p), filepath.Base(p); ; dir, rest = filepath.Dir(dir), filepath.Join(filepath.Base(dir), rest) {
+		if real, err := x.evalSymlinks(dir); err == nil {
+			return guardUnderTest(filepath.Join(real, rest))
+		}
+		if filepath.Dir(dir) == dir {
+			return nil
+		}
+	}
+}
+
 func (realFS) ReadFile(p string) ([]byte, error)   { return os.ReadFile(p) }
 func (realFS) Stat(p string) (fs.FileInfo, error)  { return os.Stat(p) }
 func (realFS) Lstat(p string) (fs.FileInfo, error) { return os.Lstat(p) }
@@ -200,14 +219,20 @@ func (x realFS) Chmod(p string, m os.FileMode) error {
 	}
 	return os.Chmod(p, m)
 }
-func (realFS) Remove(p string) error {
+func (x realFS) Remove(p string) error {
 	if err := guardUnderTest(p); err != nil {
+		return err
+	}
+	if err := x.guardAncestorUnderTest(p); err != nil {
 		return err
 	}
 	return os.Remove(p)
 }
 func (x realFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
 	if err := guardUnderTest(p); err != nil {
+		return err
+	}
+	if err := x.guardAncestorUnderTest(p); err != nil {
 		return err
 	}
 	// A rename over a symlink would replace the link with a regular file, so
@@ -247,8 +272,12 @@ func backupCandidate(p string, t time.Time, n int) string {
 // or other bits (the copy holds the same secrets). dir is created 0700, or
 // tightened to 0700 when it has group or other bits (tightened is then
 // true); a dir that is not a directory (a symlink included) is refused.
-func (realFS) Backup(p, dir string) (string, bool, error) {
+func (x realFS) Backup(p, dir string) (string, bool, error) {
 	if err := guardUnderTest(dir); err != nil {
+		return "", false, err
+	}
+	// The copy goes inside dir, so dir itself counts as an ancestor.
+	if err := x.guardAncestorUnderTest(filepath.Join(dir, filepath.Base(p))); err != nil {
 		return "", false, err
 	}
 	info, err := os.Stat(p)
