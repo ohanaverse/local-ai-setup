@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
@@ -27,7 +26,7 @@ type Secret = modelmode.Secret
 // Apply, and no step, note, Format text or refusal holds them. LiteLLM is
 // what a local plan does to the LiteLLM LaunchAgent (nothing by default).
 type Desired struct {
-	Mode                       modelclient.Mode
+	Mode                       modelmode.Mode
 	URL, TokenFile, Listen     string
 	PastedToken, MasterKey     Secret
 	SaveUnchecked, RemoveAgent bool
@@ -171,7 +170,7 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 			"[model-server] in "+st.Config.Path+" cannot be read ("+st.Config.TableErr+") and is never overwritten",
 			"fix it by hand, then re-read")}}
 	}
-	mode, ok := modelclient.ParseMode(string(want.Mode))
+	mode, ok := modelmode.ParseMode(string(want.Mode))
 	if !ok {
 		return Plan{}, &RefusalError{Reasons: []string{reason(
 			"mode "+strconv.Quote(string(want.Mode))+" is not native, local or remote",
@@ -179,22 +178,22 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 	}
 	want.Mode = mode
 	// Each secret stays only in the mode that uses it.
-	if mode != modelclient.ModeRemote {
+	if mode != modelmode.ModeRemote {
 		want.PastedToken = ""
 	}
-	if mode != modelclient.ModeLocal {
+	if mode != modelmode.ModeLocal {
 		want.MasterKey = ""
 		want.LiteLLM = LiteLLMNone
 	}
 	var p Plan
 	var err error
 	switch mode {
-	case modelclient.ModeLocal:
+	case modelmode.ModeLocal:
 		if want.LiteLLM == LiteLLMTighten {
 			return planTightenLiteLLM(st, want)
 		}
 		p, err = planLocal(st, want)
-	case modelclient.ModeRemote:
+	case modelmode.ModeRemote:
 		p, err = planRemote(st, want)
 	default:
 		p, err = planNative(st, want)
@@ -552,7 +551,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 // else a note that it is kept. It is always the last step.
 func (p *Plan) config(st State) {
 	t := st.Config.Table
-	cur, _ := modelclient.ParseMode(t.Mode)
+	cur, _ := modelmode.ParseMode(t.Mode)
 	if cur == p.Want.Mode && t.URL == p.Want.URL && expandIn(t.TokenFile, st.Host.Home) == p.Want.TokenFile {
 		p.Notes = append(p.Notes, "keep [model-server] in "+st.Config.Path+" (already mode = \""+string(p.Want.Mode)+"\")")
 		return

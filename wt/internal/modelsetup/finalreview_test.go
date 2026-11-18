@@ -209,40 +209,20 @@ func TestPlansSayARestartCutsRequestsInFlight(t *testing.T) {
 	}
 }
 
-// TestRealFSRefusesPathsOutsideTheTempDirUnderTest pins that the real file
-// seams never change a file outside os.TempDir() from a test binary, so a
-// test that reaches DefaultEnv cannot touch the developer's LaunchAgents or
-// config home.
+// TestRealFSRefusesPathsOutsideTheTempDirUnderTest pins that this package's
+// own Remove seam never changes a file outside os.TempDir() from a test
+// binary, so a test that reaches DefaultEnv cannot touch the developer's
+// LaunchAgents or config home. (modelmode holds the same rule for its
+// WriteAtomic and Chmod seams under the same test name.)
 func TestRealFSRefusesPathsOutsideTheTempDirUnderTest(t *testing.T) {
 	outside := "/nonexistent-wt-test-root/Library/LaunchAgents/x.plist"
 	fsys := realFS{}
 	for name, err := range map[string]error{
-		"WriteAtomic": fsys.WriteAtomic(outside, []byte("x"), 0o600),
-		"Chmod":       fsys.Chmod(outside, 0o600),
-		"Remove":      fsys.Remove(outside),
+		"Remove": fsys.Remove(outside),
 	} {
 		if err == nil || !strings.Contains(err.Error(), "test binary") {
 			t.Errorf("%s outside the temp dir: err = %v, want a test-binary refusal", name, err)
 		}
-	}
-	inside := filepath.Join(t.TempDir(), "f")
-	if err := fsys.WriteAtomic(inside, []byte("x"), 0o600); err != nil {
-		t.Errorf("WriteAtomic inside the temp dir: %v", err)
-	}
-}
-
-// TestRealHostHomeRefusesTheDevelopersHomeUnderTest pins that the real home
-// seam hands a test binary no home outside os.TempDir(): a test that wants one
-// sets HOME to a temp dir.
-func TestRealHostHomeRefusesTheDevelopersHomeUnderTest(t *testing.T) {
-	t.Setenv("HOME", "/nonexistent-wt-test-home")
-	if h, err := (realHost{}).Home(); err == nil {
-		t.Errorf("Home() = %q under test with HOME outside the temp dir", h)
-	}
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	if h, err := (realHost{}).Home(); err != nil || h != dir {
-		t.Errorf("Home() = %q, %v; want %q", h, err, dir)
 	}
 }
 

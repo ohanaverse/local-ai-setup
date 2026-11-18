@@ -15,8 +15,8 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
@@ -393,7 +393,7 @@ func waitReady(ctx context.Context, env Env, p Plan, s Step) error {
 	if err != nil {
 		return fmt.Errorf("read the token file: %w", err)
 	}
-	ep := modelclient.Endpoint{URL: url, Token: strings.TrimSpace(string(raw))}
+	ep := modelping.Endpoint{URL: url, Token: strings.TrimSpace(string(raw))}
 	deadline := env.Host.Now().Add(ReadyTimeout)
 	for {
 		st := pingServer(ctx, env, ep)

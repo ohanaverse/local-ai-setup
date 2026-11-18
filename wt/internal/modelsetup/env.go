@@ -25,8 +25,6 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 )
 
@@ -38,15 +36,10 @@ const (
 	DefaultListen = modelmode.DefaultListen
 )
 
-// FS is the file system the setup reads and writes.
+// FS is the file system the setup reads and writes: the session-safe five
+// (from modelmode) plus the removal and the dated backup.
 type FS interface {
-	ReadFile(path string) ([]byte, error)
-	Stat(path string) (fs.FileInfo, error)
-	// Lstat is Stat without following a final symlink: a dangling link is
-	// there for Lstat and absent for Stat.
-	Lstat(path string) (fs.FileInfo, error)
-	WriteAtomic(path string, data []byte, perm os.FileMode) error
-	Chmod(path string, perm os.FileMode) error
+	modelmode.FS
 	Remove(path string) error
 	// Backup copies path to a dated file in dir (created 0700 when absent,
 	// tightened to 0700 when looser: tightened says so), at path's mode
@@ -71,27 +64,27 @@ type Launchd interface {
 	Kickstart(ctx context.Context, label string, kill bool) error
 }
 
-// ConfigStore is wt's config home: the [model-server] table and the LiteLLM
-// proxy pair.
+// ConfigStore is wt's config home: the [model-server] table (modelmode's)
+// and the LiteLLM proxy pair.
 type ConfigStore interface {
-	Read() config.ModelServerFile
-	Update(change func(config.ModelServerState) (config.ModelServerState, error)) error
+	modelmode.ConfigStore
 	Pair() (config.ProxyPair, error)
 	SetPair(url, key *string) error
 }
 
-// Net is the network and process table as the setup sees them.
+// Net is the network and process table as the setup sees them: modelmode's
+// ping plus the listener and process probes.
 type Net interface {
-	Ping(ctx context.Context, ep modelclient.Endpoint) (modelapi.Ping, error)
+	modelmode.Net
 	Get(ctx context.Context, url, bearer string) (status int, body []byte, err error)
 	ListenerPID(ctx context.Context, port int) (pid int, ok bool, err error)
 	ProcessStart(ctx context.Context, pid int) (time.Time, error)
 }
 
-// Host is the process environment: variables, paths, the clock and entropy.
+// Host is the process environment: variables and paths (modelmode's), the
+// clock and entropy.
 type Host interface {
-	Getenv(string) string
-	Home() (string, error)
+	modelmode.Host
 	Executable() (string, error)
 	LookPath(string) (string, error)
 	Now() time.Time
@@ -137,122 +130,34 @@ func DefaultEnv() Env {
 	}
 }
 
+// Mode is the session-safe view of this Env: the four seam values modelmode
+// needs, nothing more (the wider seams stay on this side of the boundary).
+func (e Env) Mode() modelmode.Env {
+	return modelmode.Env{FS: e.FS, Config: e.Config, Net: e.Net, Host: e.Host}
+}
+
 // errUnderTest is what the real launchctl, lsof and ps seams return in a test
 // binary, so no test loads, unloads or inspects the developer's services.
 var errUnderTest = errors.New("the machine's services and process table are not touched from a test binary")
 
-// errOutsideTempUnderTest is what a real file seam returns in a test binary
-// for a path outside os.TempDir(), so no test changes the developer's files.
-var errOutsideTempUnderTest = errors.New("a test binary changes no file outside the temp directory")
-
-// guardUnderTest refuses, in a test binary only, any path that is not inside
-// os.TempDir() (as given, or with its symlinks resolved).
-func guardUnderTest(paths ...string) error {
-	if !testing.Testing() {
-		return nil
-	}
-	roots := []string{filepath.Clean(os.TempDir())}
-	if r, err := filepath.EvalSymlinks(roots[0]); err == nil {
-		roots = append(roots, r)
-	}
-	for _, p := range paths {
-		p = filepath.Clean(p)
-		inside := false
-		for _, r := range roots {
-			if strings.HasPrefix(p, r+string(filepath.Separator)) {
-				inside = true
-			}
-		}
-		if !inside {
-			return fmt.Errorf("%s: %w", p, errOutsideTempUnderTest)
-		}
-	}
-	return nil
-}
-
+// realFS is the real file system seam: modelmode.RealFS's five methods
+// (guards included) with this package's Remove and Backup on top.
 type realFS struct {
-	// resolve resolves a path's symlinks: filepath.EvalSymlinks when nil. A
-	// test sets it to check the guard on a resolved path outside the temp
-	// directory without making a link that leaves it.
-	resolve func(string) (string, error)
+	modelmode.RealFS
 }
 
-func (x realFS) evalSymlinks(p string) (string, error) {
-	if x.resolve != nil {
-		return x.resolve(p)
-	}
-	return filepath.EvalSymlinks(p)
-}
-
-// guardAncestorUnderTest guards, in a test binary only, p with its nearest
-// existing ancestor's symlinks resolved, so a write, removal or backup under
-// a linked directory that leaves the temp directory is refused before it
-// happens (guardUnderTest alone sees only the path as given).
-func (x realFS) guardAncestorUnderTest(p string) error {
-	if !testing.Testing() {
-		return nil
-	}
-	p = filepath.Clean(p)
-	for dir, rest := filepath.Dir(p), filepath.Base(p); ; dir, rest = filepath.Dir(dir), filepath.Join(filepath.Base(dir), rest) {
-		if real, err := x.evalSymlinks(dir); err == nil {
-			return guardUnderTest(filepath.Join(real, rest))
-		}
-		if filepath.Dir(dir) == dir {
-			return nil
-		}
-	}
-}
-
-func (realFS) ReadFile(p string) ([]byte, error)   { return os.ReadFile(p) }
-func (realFS) Stat(p string) (fs.FileInfo, error)  { return os.Stat(p) }
-func (realFS) Lstat(p string) (fs.FileInfo, error) { return os.Lstat(p) }
-func (x realFS) Chmod(p string, m os.FileMode) error {
-	if err := guardUnderTest(p); err != nil {
-		return err
-	}
-	// Chmod follows a link, so in a test binary the path it resolves to is
-	// guarded too (one that does not resolve fails os.Chmod on its own).
-	if testing.Testing() {
-		if real, err := x.evalSymlinks(p); err == nil {
-			if err := guardUnderTest(real); err != nil {
-				return err
-			}
-		}
-	}
-	return os.Chmod(p, m)
-}
+// Remove refuses in a test binary any path outside the temp directory
+// (through modelmode's guard, and the nearest existing ancestor's), so a
+// test never deletes a developer's file. It is the one os.Remove in this
+// package (internal/removal's deletion scan counts it).
 func (x realFS) Remove(p string) error {
-	if err := guardUnderTest(p); err != nil {
+	if err := modelmode.GuardUnderTest(p); err != nil {
 		return err
 	}
-	if err := x.guardAncestorUnderTest(p); err != nil {
+	if err := x.GuardAncestorUnderTest(p); err != nil {
 		return err
 	}
 	return os.Remove(p)
-}
-func (x realFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
-	if err := guardUnderTest(p); err != nil {
-		return err
-	}
-	if err := x.guardAncestorUnderTest(p); err != nil {
-		return err
-	}
-	// A rename over a symlink would replace the link with a regular file, so
-	// a plist a dotfiles tool links into place is written where it points. A
-	// link that does not resolve (dangling, a loop, an unreadable parent) is
-	// refused: replacing it would put the content where the user did not mean
-	// it to go. The resolved path is guarded again in a test binary.
-	if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		real, err := x.evalSymlinks(p)
-		if err != nil {
-			return fmt.Errorf("%s is a symlink that does not resolve; nothing was written", p)
-		}
-		if err := guardUnderTest(real); err != nil {
-			return err
-		}
-		p = real
-	}
-	return config.WriteFileAtomic(p, d, m)
 }
 
 // maxBackupTries bounds the -N suffixes Backup tries within one second.
@@ -275,11 +180,11 @@ func backupCandidate(p string, t time.Time, n int) string {
 // tightened to 0700 when it has group or other bits (tightened is then
 // true); a dir that is not a directory (a symlink included) is refused.
 func (x realFS) Backup(p, dir string) (string, bool, error) {
-	if err := guardUnderTest(dir); err != nil {
+	if err := modelmode.GuardUnderTest(dir); err != nil {
 		return "", false, err
 	}
 	// The copy goes inside dir, so dir itself counts as an ancestor.
-	if err := x.guardAncestorUnderTest(filepath.Join(dir, filepath.Base(p))); err != nil {
+	if err := x.GuardAncestorUnderTest(filepath.Join(dir, filepath.Base(p))); err != nil {
 		return "", false, err
 	}
 	info, err := os.Stat(p)
@@ -399,20 +304,12 @@ func (realLaunchd) Kickstart(ctx context.Context, label string, kill bool) error
 	return err
 }
 
-type realConfig struct{}
+type realConfig struct{ modelmode.RealConfig }
 
-func (realConfig) Read() config.ModelServerFile { return config.ReadModelServerFile() }
-func (realConfig) Update(change func(config.ModelServerState) (config.ModelServerState, error)) error {
-	return config.UpdateModelServer(change)
-}
 func (realConfig) Pair() (config.ProxyPair, error) { return config.ResolveProxy() }
 func (realConfig) SetPair(url, key *string) error  { return config.SetProxy(url, key) }
 
-type realNet struct{}
-
-func (realNet) Ping(ctx context.Context, ep modelclient.Endpoint) (modelapi.Ping, error) {
-	return modelclient.New(ep).Ping(ctx)
-}
+type realNet struct{ modelmode.RealNet }
 
 // maxGetBody bounds what Get reads of a reply.
 const maxGetBody = 1 << 20
@@ -497,27 +394,8 @@ func (realNet) ProcessStart(ctx context.Context, pid int) (time.Time, error) {
 	return t, nil
 }
 
-type realHost struct{}
+type realHost struct{ modelmode.RealHost }
 
-func (realHost) Getenv(k string) string { return os.Getenv(k) }
-
-// errHomeUnderTest is what the real home seam returns in a test binary
-// whose HOME is not inside os.TempDir().
-var errHomeUnderTest = errors.New("a test binary uses no home directory outside the temp directory (set HOME to a temp dir)")
-
-// Home is the user's home directory. In a test binary it is refused unless
-// HOME was pointed inside os.TempDir(), so a test that reaches DefaultEnv
-// never plans or writes under the developer's home.
-func (realHost) Home() (string, error) {
-	h, err := os.UserHomeDir()
-	if err != nil || !testing.Testing() {
-		return h, err
-	}
-	if guardUnderTest(h) != nil {
-		return "", errHomeUnderTest
-	}
-	return h, nil
-}
 func (realHost) Executable() (string, error)       { return os.Executable() }
 func (realHost) LookPath(n string) (string, error) { return exec.LookPath(n) }
 func (realHost) Now() time.Time                    { return time.Now() }

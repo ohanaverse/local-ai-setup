@@ -15,7 +15,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 )
 
 // fakeEnv implements every seam in memory. It records each call in order in
@@ -347,15 +347,31 @@ func (x fakeConfig) SetPair(url, key *string) error {
 
 type fakeNet struct{ f *fakeEnv }
 
-func (x fakeNet) Ping(_ context.Context, ep modelclient.Endpoint) (modelapi.Ping, error) {
+func (x fakeNet) Ping(_ context.Context, ep modelping.Endpoint) (modelapi.Ping, modelping.Kind, string, error) {
 	x.f.rec("Net.Ping %s", ep.Origin())
 	x.f.pingTokens = append(x.f.pingTokens, ep.Token)
+	var err error
 	if len(x.f.pingErrs) > 0 {
-		err := x.f.pingErrs[0]
+		err = x.f.pingErrs[0]
 		x.f.pingErrs = x.f.pingErrs[1:]
-		return modelapi.Ping{}, err
+	} else {
+		err = x.f.pingErr
 	}
-	return x.f.ping, x.f.pingErr
+	p := x.f.ping
+	if err == nil {
+		return p, modelping.KindNone, "", nil
+	}
+	// The seam answers with the classification beside the error, exactly as
+	// modelping.Checked does: the decoded ping beside a skew or schema error
+	// carries the numbers the server spoke.
+	o := modelping.Classify(err)
+	if o.Kind == modelping.KindSkew {
+		p.APIMajor = o.API
+	}
+	if o.Kind == modelping.KindSchema {
+		p.Schema = o.Schema
+	}
+	return p, o.Kind, o.Message, err
 }
 
 func (x fakeNet) Get(_ context.Context, url, bearer string) (int, []byte, error) {
