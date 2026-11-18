@@ -97,12 +97,12 @@ async def test_app_loads_saved_theme_on_startup(tmp_path, monkeypatch):
 
 - [ ] **Step 2: Check whether `MagicMock` is still used elsewhere in the file**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && grep -n "MagicMock" tests/test_app_settings.py`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && grep -n "MagicMock" tests/test_app_settings.py`
 Expected: no matches (the deleted mocking was the only use). If none, remove the now-unused `from unittest.mock import MagicMock` import at the top of the file. If there *is* another use, leave the import.
 
 - [ ] **Step 3: Run the file**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/test_app_settings.py -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/test_app_settings.py -v`
 Expected: all tests PASS, zero skipped.
 
 - [ ] **Step 4: Commit**
@@ -318,7 +318,7 @@ Note: `FamilyScreen` only lists a family in its table if it has models or a `Sta
 
 - [ ] **Step 3: Run the file**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_forms.py -v`
 Expected: all tests PASS, zero skipped.
 
 - [ ] **Step 4: Commit**
@@ -399,17 +399,17 @@ def test_no_args_launches_tui_at_family_list(tmp_path, monkeypatch):
 
 - [ ] **Step 2: Confirm `tmp_path`/`monkeypatch` params are still needed**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && grep -n "tmp_path\|monkeypatch" tests/commands/test_download.py`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && grep -n "tmp_path\|monkeypatch" tests/commands/test_download.py`
 Expected: neither rewritten test body references `tmp_path` or `monkeypatch` anymore (both were only used for the deleted env-var/file setup). Remove the now-unused `tmp_path, monkeypatch` parameters from both function signatures (`def test_download_launches_tui_at_family(tmp_path, monkeypatch):` → `def test_download_launches_tui_at_family():`, same for the other), since pytest fixtures that go unused are dead-weight and ruff/flake8-style conventions in this repo flag unused params in reviewed code (matches the "No Placeholders"/tidy-diff spirit — don't leave dead parameters a reader has to wonder about).
 
 - [ ] **Step 3: Check whether the `FamilyManifest`/`save_manifest` import (module-scoped inside the old test body) leaves anything else broken**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && grep -n "FamilyManifest\|save_manifest\|manifest" tests/commands/test_download.py`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && grep -n "FamilyManifest\|save_manifest\|manifest" tests/commands/test_download.py`
 Expected: no matches (the import was local to the deleted test body, not module-level — nothing to clean up at the top of the file).
 
 - [ ] **Step 4: Run the file**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/commands/test_download.py -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/commands/test_download.py -v`
 Expected: all 3 tests PASS, zero skipped.
 
 - [ ] **Step 5: Commit**
@@ -544,12 +544,12 @@ This single helper edit removes the dead setup for both `test_model_screen_provi
 
 - [ ] **Step 5: Verify the file is clean**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && grep -n "MODELMAN_CONFIG\|MODELMAN_FAMILY_DIR" tests/screens/test_app_navigation.py`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && grep -n "MODELMAN_CONFIG\|MODELMAN_FAMILY_DIR" tests/screens/test_app_navigation.py`
 Expected: no matches.
 
 - [ ] **Step 6: Run the file**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_app_navigation.py -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_app_navigation.py -v`
 Expected: all tests PASS (same count as before this task — this is a pure cleanup, no test added/removed/skipped).
 
 - [ ] **Step 7: Commit**
@@ -654,12 +654,12 @@ with:
 
 - [ ] **Step 4: Confirm no other `MODELMAN_CONFIG` references remain in this file**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && grep -n "MODELMAN_CONFIG\|config.yaml" tests/screens/test_status.py`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && grep -n "MODELMAN_CONFIG\|config.yaml" tests/screens/test_status.py`
 Expected: no matches.
 
 - [ ] **Step 5: Run the file**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest tests/screens/test_status.py -v`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest tests/screens/test_status.py -v`
 Expected: all tests PASS (same count as before — pure cleanup).
 
 - [ ] **Step 6: Commit**
@@ -725,7 +725,7 @@ of load_manifest()/get_family_dir() outside the migrate path.
 
 - [ ] **Step 3: Confirm both modules still import cleanly**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run python -c "import modelman.config, modelman.manifest"`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run python -c "import modelman.config, modelman.manifest"`
 Expected: no output, exit 0.
 
 - [ ] **Step 4: Commit**
@@ -743,17 +743,17 @@ git commit -m "docs(config,manifest): mark migrate-time-only, matching queue.py'
 
 - [ ] **Step 1: Run the full test suite, lint, and typecheck**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && uv run pytest -v && uv run ruff check src/ tests/ && uv run mypy src/`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && uv run pytest -v && uv run ruff check src/ tests/ && uv run mypy src/`
 Expected: all tests PASS, zero `SKIPPED`, ruff reports no findings, mypy reports no errors.
 
 - [ ] **Step 2: Confirm no stray "PR 3" references remain**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && grep -rn "PR 3\|migrates in PR 3\|migrates to Registry" src/ tests/`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && grep -rn "PR 3\|migrates in PR 3\|migrates to Registry" src/ tests/`
 Expected: at most `tests/screens/test_family_edit.py`'s module docstring (a historical note about when that file was migrated, not a skip reason — leave it) and `docs/superpowers/plans/2026-08-27-shared-model-registry-phase2-pr3.md` (a plan document, not code). No `@pytest.mark.skip` reasons should remain.
 
 - [ ] **Step 3: Confirm `MODELMAN_CONFIG`/`MODELMAN_FAMILY_DIR` usage is now isolated to the migrate path**
 
-Run: `cd /Users/keith/github/ohanaverse/modelman && grep -rln "MODELMAN_CONFIG\|MODELMAN_FAMILY_DIR" src/ tests/`
+Run: `cd /Users/user_name/github/ohanaverse/modelman && grep -rln "MODELMAN_CONFIG\|MODELMAN_FAMILY_DIR" src/ tests/`
 Expected exactly these files, no others:
 - `src/modelman/config.py`, `src/modelman/manifest.py` (the env-var reads themselves — untouched)
 - `src/modelman/main.py`, `src/modelman/migrate.py` (the migrate command — untouched)

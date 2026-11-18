@@ -92,7 +92,7 @@ Add the required import at the top of the test file if not already present:
 Run:
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/wt
+cd /Users/user_name/github/ohanaverse/local-ai-setup/wt
 go test ./cmd/wt -run TestStatsCmdSortsByModelThenAgentWithAllFirst -v
 ```
 
@@ -134,7 +134,7 @@ The `statsAllAgents` constant is still used for row labels, so keep it. Only the
 Run:
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/wt
+cd /Users/user_name/github/ohanaverse/local-ai-setup/wt
 go test ./cmd/wt -run TestStatsCmd -v
 ```
 
@@ -145,7 +145,7 @@ Expected: all `TestStatsCmd*` tests pass, including the new sort-order test.
 Run:
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/wt
+cd /Users/user_name/github/ohanaverse/local-ai-setup/wt
 go test ./...
 ```
 
@@ -156,7 +156,7 @@ Expected: PASS across all packages.
 Run:
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/wt
+cd /Users/user_name/github/ohanaverse/local-ai-setup/wt
 go build ./...
 ```
 

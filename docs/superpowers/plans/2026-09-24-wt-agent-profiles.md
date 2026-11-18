@@ -2531,7 +2531,7 @@ add one line:
 
 - [ ] **Step 3: Check links**
 
-Run: `cd /Users/keith/github/ohanaverse/local-ai-setup && make check-links`
+Run: `cd /Users/user_name/github/ohanaverse/local-ai-setup && make check-links`
 Expected: PASS (no broken relative links introduced)
 
 - [ ] **Step 4: Commit**

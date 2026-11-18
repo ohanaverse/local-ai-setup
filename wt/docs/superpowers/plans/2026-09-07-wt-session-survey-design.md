@@ -2510,7 +2510,7 @@ combo, at the 1d/7d/30d windows.
 
 - [ ] **Step 4: Verify links**
 
-Run: `make check-links` (from the monorepo root, `/Users/keith/github/ohanaverse/local-ai-setup/.worktrees/session-survey`)
+Run: `make check-links` (from the monorepo root, `/Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/session-survey`)
 Expected: no broken links.
 
 - [ ] **Step 5: Commit**

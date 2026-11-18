@@ -173,7 +173,7 @@ Field notes:
 ```toml
 [model_state."llamacpp/qwen3.8-27b-q4"]
   downloaded = true
-  disk_path = "/Users/keith/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/.../Qwen3.8-27B-UD-Q4_K_XL.gguf"
+  disk_path = "/Users/user_name/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/.../Qwen3.8-27B-UD-Q4_K_XL.gguf"
   size_bytes = 17179869184
   litellm_exposed = true
 ```

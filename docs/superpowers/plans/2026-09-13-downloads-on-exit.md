@@ -1707,7 +1707,7 @@ Expected: no output (or only comments in `tests/screens/test_models.py`/`tests/s
 - [ ] **Step 2: Delete the files**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/modelman
 git rm src/modelman/downloads.py src/modelman/screens/downloads.py src/modelman/screens/status.py
 git rm tests/test_downloads.py tests/screens/test_downloads_screen.py tests/screens/test_status.py
 ```
@@ -1825,7 +1825,7 @@ Expected: PASS, all green.
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/tests/screens/test_models.py
 git commit -m "$(cat <<'EOF'
 test(modelman): rewrite test_models.py for the downloads-on-exit redesign
@@ -1975,7 +1975,7 @@ Expected: PASS, all green (this is the first point since Task 1 where the entire
 - [ ] **Step 13: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/tests/screens/test_app_navigation.py
 git commit -m "$(cat <<'EOF'
 test(modelman): rewrite test_app_navigation.py for the downloads-on-exit redesign
@@ -2187,7 +2187,7 @@ EOF
 
 - [ ] **Step 1: Run the full monorepo test-all target**
 
-Run: `cd /Users/keith/github/ohanaverse/local-ai-setup && make test-all`
+Run: `cd /Users/user_name/github/ohanaverse/local-ai-setup && make test-all`
 Expected: PASS — lint (`make lint-shell` + `check-links`), modelman `make check`/`make test`, wt `go build`/`vet`/`test` all green. (wt is unaffected by this change but `make test-all` runs it anyway; a wt failure here would indicate an unrelated pre-existing issue, not this plan's work.)
 
 - [ ] **Step 2: Confirm no stray references remain**

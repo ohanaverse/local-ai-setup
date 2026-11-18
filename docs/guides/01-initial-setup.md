@@ -24,8 +24,8 @@ omlx 0.6.3rc3
 postgresql@16 16.15
 redis 8.10.1
 /opt/homebrew/bin/omlx
-/Users/keith/.local/bin/litellm
-/Users/keith/.local/bin/hf
+/Users/user_name/.local/bin/litellm
+/Users/user_name/.local/bin/hf
 ```
 
 You need:
@@ -46,7 +46,8 @@ On this machine Ollama ships as the Ollama.app login item, not a brew service �
 ```bash
 # TL;DR — full install on a fresh Mac.
 # Plists referenced by the launchctl line are created in "Steps" below
-# (LiteLLM §7); on a clean machine do Steps first, then rerun this block.
+# (LiteLLM §7, which points at guide 14 for the template); on a clean
+# machine do Steps first, then rerun this block.
 
 # 1. brew installs (versions above are what's on this machine)
 brew install omlx postgresql@16 redis   # redis: use --build-from-source if the pour hits an EPERM (§6)
@@ -69,7 +70,7 @@ ollama pull qwen3.8:27b-mlx
 wt model init
 wt start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it needs no `[[models]]` entry: with the `ollama` provider row in registry.toml, a pulled model starts by its `ollama/<name:tag>` id). No routing step: the start writes the model_list entry and restarts the proxy; a pulled ollama model stays routed after a stop
 
-# 5. Restart the LiteLLM LaunchAgent (wt already restarted it after the sync — this is only needed if that restart was skipped or failed; it lets a request in flight finish, then waits for the proxy to answer)
+# 5. Restart the LiteLLM LaunchAgent (wt already restarted it after the sync — this is only needed if that restart was skipped or failed; it lets a request in flight finish, then waits for the proxy to answer when a LiteLLM url is configured — guide 14 section 10)
 wt litellm restart
 
 # 6. Smoke curls
@@ -267,7 +268,7 @@ curl -s http://localhost:8000/v1/models | head -c 250
 
 OpenRouter — an account + key from [openrouter.ai/keys](https://openrouter.ai/keys). LiteLLM reads the variable **`OPENROUTER_API_KEY`** (not `OPENAI_API_KEY`). On this machine it lives in the LiteLLM LaunchAgent plist so the proxy has it after reboots (§7). OpenRouter model entries in `~/.config/litellm/config.yaml` use `model: openrouter/<author>/<slug>`; their `api_key` is the key wt resolved from the provider's `secret_ref` (an `os.environ/NAME` ref is resolved, not written as-is), so it is a literal key on disk — see [04-litellm-config](04-litellm-config.md) §1.
 
-Confirm all secret env keys are present in the plist (values not printed):
+Confirm all secret env keys are present in the plist once §7 has created it (values not printed):
 
 ```bash
 grep -cE 'OPENROUTER_API_KEY|LITELLM_MASTER_KEY|DATABASE_URL|LITELLM_SALT_KEY|UI_PASSWORD|UI_USERNAME' ~/Library/LaunchAgents/local.litellm.proxy.plist
@@ -359,64 +360,22 @@ No `prisma db push` needed on ≥1.98 — the proxy runs `prisma migrate deploy`
 
 The LiteLLM proxy is a hand-rolled LaunchAgent (the brew services in §4/§6 are already in place by then).
 
-Rebuilding from a backup volume with the same username? Skip the template — every path inside the old plist matches this machine verbatim (`/Users/keith/.local/bin/litellm`, `~/.config/litellm/config.yaml`, `.litellm.log`/`.litellm.err.log`), including the secrets:
+Rebuilding from a backup volume with the same username? Skip building it — every path inside the old plist already matches this machine, so nothing needs editing (`~/.local/bin/litellm`, `~/.config/litellm/config.yaml`, `.litellm.log`/`.litellm.err.log`), including the secrets:
 
 ```bash
 cp "/Volumes/Users Bak/keith/Library/LaunchAgents/local.litellm.proxy.plist" ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.litellm.proxy.plist   # bootout gui/$(id -u)/local.litellm.proxy first if already loaded
 ```
 
-Otherwise, its plist template — fill in real secrets (`LITELLM_MASTER_KEY`/`LITELLM_SALT_KEY` start with `sk-` / random 40 chars; `OPENROUTER_API_KEY` from openrouter.ai; `UI_USERNAME`/`UI_PASSWORD` of your choice; `DATABASE_URL` from §6):
-
-<!-- UNVERIFIED — existing plist not overwritten; template mirrors the live plist's structure (verified: PATH, LITELLM_MASTER_KEY, UI_USERNAME, UI_PASSWORD, OPENROUTER_API_KEY, DATABASE_URL, LITELLM_SALT_KEY) merged with the archive doc's template. -->
+Otherwise, build it from [14-litellm-install-and-configuration](14-litellm-install-and-configuration.md) — §5 is the annotated template (every `EnvironmentVariables` key and what it is), §6 the key generation and the file mode — then load it. That guide is the plist's single source, so nothing here keeps a second copy that can drift from it.
 
 ```bash
-cat > ~/Library/LaunchAgents/local.litellm.proxy.plist << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>local.litellm.proxy</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/keith/.local/bin/litellm</string>
-        <string>--config</string>
-        <string>/Users/keith/.config/litellm/config.yaml</string>
-        <string>--port</string>
-        <string>4000</string>
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/Users/keith/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-        <key>OPENROUTER_API_KEY</key>
-        <string>sk-or-v1-REPLACE_WITH_YOUR_KEY</string>
-        <key>LITELLM_MASTER_KEY</key>
-        <string>sk-REPLACE</string>
-        <key>LITELLM_SALT_KEY</key>
-        <string>REPLACE_WITH_openssl_rand_base64_32</string>
-        <key>UI_USERNAME</key>
-        <string>REPLACE</string>
-        <key>UI_PASSWORD</key>
-        <string>REPLACE</string>
-        <key>DATABASE_URL</key>
-        <string>postgresql://keith@localhost:5432/litellm</string>
-    </dict>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Users/keith/.litellm.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/keith/.litellm.err.log</string>
-</dict>
-</plist>
-EOF
-chmod 600 ~/Library/LaunchAgents/local.litellm.proxy.plist   # it holds the master key and provider keys
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.litellm.proxy.plist   # bootout gui/$(id -u)/local.litellm.proxy first if already loaded
+```
 
-launchctl load -w ~/Library/LaunchAgents/local.litellm.proxy.plist   # (modern equivalent: launchctl bootstrap gui/$(id -u) <plist>; unload via launchctl bootout)
+Either way, check it came up:
+
+```bash
 launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'
 ```
 
@@ -431,13 +390,15 @@ launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'
 
 (PIDs will differ. The plist's `EnvironmentVariables` block carries the secrets — `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `OPENROUTER_API_KEY`, `UI_USERNAME`, `UI_PASSWORD`, `DATABASE_URL` — redact before sharing.)
 
-Restart the proxy after any edit to `~/.config/litellm/config.yaml` or the plist:
+After an edit to `~/.config/litellm/config.yaml`, restart the proxy:
 
 ```bash
-wt litellm restart
+wt litellm restart   # waits for the proxy to answer again when a LiteLLM url is configured (the pair, or the [litellm] fallback); a fresh install has none until guide 14 section 10
 ```
 
-Expect the port to refuse connections while a request in flight finishes (up to 3 minutes) and then for ~15 s while it starts; `wt litellm restart` waits for the proxy to answer again. If wt's own restart cannot run, the fallback is `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`. The full install, plist and restart reference is [14-litellm-install-and-configuration](14-litellm-install-and-configuration.md).
+Expect the port to refuse connections while a request in flight finishes (up to 3 minutes) and then for ~15 s while it starts. If wt's own restart cannot run, the fallback is `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`.
+
+After an edit to the **plist**, a restart is not enough: launchd reads the plist at load, so run `launchctl bootout gui/$(id -u)/local.litellm.proxy` and then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.litellm.proxy.plist`. The full install, plist and restart reference is [14-litellm-install-and-configuration](14-litellm-install-and-configuration.md).
 
 `uv run --directory llmbench llmbench provider restore` (from the repo root) brings the whole stack back in one shot: it starts ollama, oMLX and the LiteLLM proxy when they are not answering, and leaves a service that already answers alone.
 

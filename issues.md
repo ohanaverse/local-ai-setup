@@ -90,9 +90,9 @@ Link-check script widened to benchmarks/docs/reference/docs/archive.
 Guides 03 and 06 present `go build -o "$(go env GOPATH)/bin/wt"` as "the fix"
 for the stale wt binary, but guide 08 §4 (verified live) shows that command
 leaves the stale binary in charge: `go env GOPATH` is asdf-managed
-(`/Users/keith/.asdf/installs/golang/1.26.7/packages`), its `bin/` holds no
+(`/Users/user_name/.asdf/installs/golang/1.26.7/packages`), its `bin/` holds no
 `wt`, and `~/.local/bin` shadows it on PATH. The real fix is
-`go build -o /Users/keith/.local/bin/wt ./cmd/wt`.
+`go build -o /Users/user_name/.local/bin/wt ./cmd/wt`.
 
 - `docs/guides/06-wt-agents-and-models.md:13` — "The rebuild command above is the fix"
 - `docs/guides/03-model-families.md:234` — same ineffective command

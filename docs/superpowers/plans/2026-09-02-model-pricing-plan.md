@@ -1109,7 +1109,7 @@ git commit --no-verify -m "feat(wt): show per-token and subscription pricing in 
 Run:
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 grep -rn "price_per_million_tokens\|price_per_period\|cost.kind\|usage_tier\|price_per_period\|kind = \"per_token\"\|kind = \"subscription\"\|kind = \"free\"" --include="*.py" --include="*.go" --include="*.toml" modelman wt docs
 ```
 
@@ -1126,7 +1126,7 @@ Update tests, fixtures, sample files, and docs. Pay special attention to:
 Run:
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 make test-all
 ```
 
@@ -1155,7 +1155,7 @@ git commit --no-verify -m "fix: sweep remaining old cost/usage_tier references"
 Run:
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git grep -n "litellm_exposed = " docs/guides/
 ```
 
@@ -1178,7 +1178,7 @@ the repo records changes). Example line:
 Run:
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 make lint
 make test-all
 ```

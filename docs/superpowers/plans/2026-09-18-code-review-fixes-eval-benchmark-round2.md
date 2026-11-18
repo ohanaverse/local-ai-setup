@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- All commands run from the worktree root: `/Users/keith/github/ohanaverse/local-ai-setup/.worktrees/capability-eval-benchmark`. Python commands use `uv run --directory modelman ...` (repo convention; never bare pytest).
+- All commands run from the worktree root: `/Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/capability-eval-benchmark`. Python commands use `uv run --directory modelman ...` (repo convention; never bare pytest).
 - Every new test carries a comment describing what it tests and why (user's global CLAUDE.md Test Documentation rule).
 - Commits during plan execution reference the plan item they complete ("completes plan item #N of this plan").
 - Commit trailer: `Co-Authored-By: Claude Code <noreply@anthropic.com>`.

@@ -658,7 +658,7 @@ async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path
     stub.is_downloaded.return_value = True
     stub.size_of.return_value = 19530941006
     stub.list_local.return_value = [
-        {"variant_id": "ornith-1.5", "local_path": "/Users/keith/.omlx/models/ornith-1.5"}
+        {"variant_id": "ornith-1.5", "local_path": "/Users/user_name/.omlx/models/ornith-1.5"}
     ]
     monkeypatch.setattr(prov_registry.ProviderRegistry, "get", staticmethod(lambda name, cfg: stub))
 
@@ -675,7 +675,7 @@ async def test_reconcile_sets_state_ready_for_local_artifact_omlx_model(tmp_path
         assert app.screen.state.get("omlx/ornith-1.5").ready is True
         assert (
             app.screen.state.get("omlx/ornith-1.5").disk_path
-            == "/Users/keith/.omlx/models/ornith-1.5"
+            == "/Users/user_name/.omlx/models/ornith-1.5"
         )
         assert app.screen.state.get("omlx/ornith-1.5").size_bytes == 19530941006
         # No overlay attribute survives the rewrite.
