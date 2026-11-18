@@ -1,6 +1,6 @@
 # wt-session: a stored, editable model-server configuration (`native` | `local` | `remote`)
 
-Status: design, written 2026-11-17 from a conversation with the user (approach A chosen). Not yet approved. Partly supersedes the automatic native fallback of #615 (`2026-11-16-wt-native-launch-without-model-server-design.md`, approach 1); the user confirmed that reversal. See "Relationship to #615".
+Status: design, written 2026-11-17 from a conversation with the user (approach A chosen). Approved by the user 2026-11-17. Partly supersedes the automatic native fallback of #615 (`2026-11-16-wt-native-launch-without-model-server-design.md`, approach 1); the user confirmed that reversal. See "Relationship to #615".
 
 ## Intent
 
