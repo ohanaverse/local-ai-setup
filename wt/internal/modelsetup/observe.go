@@ -21,9 +21,17 @@ import (
 // of DefaultListen. TokenPaths are extra token files to describe in
 // State.TokenFiles (a path the user typed for remote, say), so BuildPlan can
 // judge them without reading the disk itself.
+//
+// CheckURL, when set, is the url the user entered: Observe pings it instead
+// of the configured one, with CheckToken (a pasted token) or else the token
+// read from CheckTokenFile, so a remote plan's check is about the server the
+// user named. Neither the token nor the url's userinfo goes into State.
 type ObserveOptions struct {
-	ListenPort int
-	TokenPaths []string
+	ListenPort     int
+	TokenPaths     []string
+	CheckURL       string
+	CheckToken     Secret
+	CheckTokenFile string
 }
 
 // Platform says whether the local mode can be set up here: macOS with launchd.
@@ -371,6 +379,19 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			listen = DefaultListen
 		}
 		url = "http://" + listen
+	}
+	if check := strings.TrimSpace(opts.CheckURL); check != "" {
+		url, token = check, strings.TrimSpace(opts.CheckToken.Reveal())
+		if path := strings.TrimSpace(opts.CheckTokenFile); token == "" && path != "" {
+			ts := TokenState{Path: path}
+			if x, err := expandHome(path, home, herr); err == nil {
+				ts.Path = x
+			}
+			token = readToken(env, &ts)
+		}
+		if token == "" {
+			st.Server.Message = "no token entered for " + stripUserinfo(url)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		st.Server.Message = "not checked: " + err.Error()

@@ -48,7 +48,8 @@ type fakeEnv struct {
 	// Net.
 	ping        modelapi.Ping
 	pingErr     error
-	pingErrs    []error // consumed one per Ping before ping/pingErr apply
+	pingErrs    []error  // consumed one per Ping before ping/pingErr apply
+	pingTokens  []string // the token of each Ping, in order
 	getStatus   int
 	getBody     []byte
 	getErr      error
@@ -296,6 +297,7 @@ type fakeNet struct{ f *fakeEnv }
 
 func (x fakeNet) Ping(_ context.Context, ep modelclient.Endpoint) (modelapi.Ping, error) {
 	x.f.rec("Net.Ping %s", ep.Origin())
+	x.f.pingTokens = append(x.f.pingTokens, ep.Token)
 	if len(x.f.pingErrs) > 0 {
 		err := x.f.pingErrs[0]
 		x.f.pingErrs = x.f.pingErrs[1:]
