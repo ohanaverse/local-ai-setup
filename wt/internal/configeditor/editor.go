@@ -236,6 +236,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.tab == TabModels {
 		return m.updateModels(msg)
 	}
+	if m.tab == TabServer {
+		return m.updateServer(msg)
+	}
 
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		// Delegate to the list while it is filtering so single-key global
@@ -258,7 +261,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m.quit()
 		case "tab":
-			m.tab = TabModels
+			m.tab = nextTab(m.tab)
 			if !m.models.asked {
 				// The first visit probes; later ones show what is there
 				// (r refreshes).
@@ -396,6 +399,9 @@ func (m *model) View() string {
 		if m.tab == TabModels {
 			return m.modelsView()
 		}
+		if m.tab == TabServer {
+			return m.serverView()
+		}
 		var status string
 		if s := m.statusBlock(); s != "" {
 			status = s + "\n\n"
@@ -424,6 +430,7 @@ func (m *model) resizeFormInputs() {
 func Run(theme themes.Theme, cfg *config.Config, cfgErr error, o Options, opts ...tea.ProgramOption) (Result, error) {
 	m := newModel(theme, cfg, cfgErr)
 	o.Models = o.Models.withDefaults()
+	o.Server = o.Server.withDefaults()
 	m.opts, m.tab = o, o.StartTab
 	allOpts := append([]tea.ProgramOption{tea.WithAltScreen()}, opts...)
 	p := tea.NewProgram(m, allOpts...)

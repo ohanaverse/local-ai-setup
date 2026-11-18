@@ -96,7 +96,7 @@ func buildAgentsList(theme themes.Theme, width, height int, cfg *config.Config) 
 	// q first: the help line of a 40-column terminal ends after it.
 	extra := []key.Binding{
 		key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
-		key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "models")),
+		key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next")),
 	}
 	l.AdditionalShortHelpKeys = func() []key.Binding { return extra }
 	l.AdditionalFullHelpKeys = func() []key.Binding { return extra }

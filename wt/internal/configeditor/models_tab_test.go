@@ -412,7 +412,7 @@ func TestTabKeySwitchesTabsAndProbesOnce(t *testing.T) {
 	if !strings.HasPrefix(m.View(), "[Agents]   Models") || tm.probes != 0 {
 		t.Fatalf("the editor should open on the Agents tab without probing; probes = %d, view:\n%s", tm.probes, m.View())
 	}
-	if !strings.Contains(m.View(), "tab models") || !strings.Contains(m.View(), "q quit") {
+	if !strings.Contains(m.View(), "tab next") || !strings.Contains(m.View(), "q quit") {
 		t.Errorf("the Agents tab's help should name tab and q:\n%s", m.View())
 	}
 	// The key alone: the probe is a command, not something Update waits for.
@@ -423,9 +423,10 @@ func TestTabKeySwitchesTabsAndProbesOnce(t *testing.T) {
 	}
 	// Back and forth before the probe has answered: no waiting, no second probe.
 	next, cmd := m.Update(keyMsg("tab"))
-	if m = next.(*model); m.tab != TabAgents || cmd != nil {
-		t.Fatalf("tab while the first probe is out should go back to Agents; tab = %d", m.tab)
+	if m = next.(*model); m.tab != TabServer || cmd != nil {
+		t.Fatalf("tab while the first probe is out should go on to Model server; tab = %d", m.tab)
 	}
+	m = keys(t, m, "tab")
 	next, cmd = m.Update(keyMsg("tab"))
 	if m = next.(*model); m.tab != TabModels || cmd != nil {
 		t.Fatalf("back on Models with the probe still out: tab = %d, a second probe = %v", m.tab, cmd != nil)
@@ -435,8 +436,12 @@ func TestTabKeySwitchesTabsAndProbesOnce(t *testing.T) {
 		t.Fatalf("after the probe: probes = %d, view:\n%s", tm.probes, m.View())
 	}
 	m = keys(t, m, "tab")
+	if m.tab != TabServer {
+		t.Fatal("tab on the Models tab should go on to Model server")
+	}
+	m = keys(t, m, "tab")
 	if m.tab != TabAgents {
-		t.Fatal("tab on the Models tab should go back to Agents")
+		t.Fatal("tab on the Model server tab should go back to Agents")
 	}
 	m = keys(t, m, "tab")
 	if tm.probes != 1 {
@@ -1099,7 +1104,7 @@ func TestModelsTabFilterTakesTheTabsKeys(t *testing.T) {
 		t.Error("ctrl+c while a Models filter is being typed should quit")
 	}
 	agents := stillCursors(modelsEditor(t, newTabMachine(t, tabRegistry), 80, 24))
-	agents = keys(t, keys(t, agents, "tab"), "/", "q")
+	agents = keys(t, keys(t, agents, "tab", "tab"), "/", "q")
 	if agents.tab != TabAgents || agents.list.FilterState() != list.Filtering {
 		t.Fatalf("tab = %d, filter state = %v; want the Agents filter being typed", agents.tab, agents.list.FilterState())
 	}
@@ -1211,7 +1216,7 @@ func TestCtrlSOnTheModelsTabDoesNothing(t *testing.T) {
 	if cmd != nil || saves != 0 || !m.dirty || m.saving {
 		t.Errorf("ctrl+s on the Models tab: saves = %d, dirty = %v; want the agents left unsaved for their own tab", saves, m.dirty)
 	}
-	m = keys(t, m, "tab")
+	m = keys(t, m, "tab", "tab")
 	if _, cmd = m.Update(keyMsg("ctrl+s")); saves != 1 {
 		t.Errorf("ctrl+s on the Agents tab: saves = %d, want 1", saves)
 	}
@@ -1329,9 +1334,9 @@ func TestQuitWaitsForARegistryWriteInFlight(t *testing.T) {
 	t.Run("agent edits made while the quit waited are asked about", func(t *testing.T) {
 		tm, m, write := removing(t, false)
 		next, _ := m.Update(keyMsg("q"))
-		// The tab still takes keys while the quit waits: tab goes to Agents,
+		// The tab still takes keys while the quit waits: tab goes on (twice) to Agents,
 		// where a form can be opened and submitted.
-		m = keys(t, next.(*model), "tab")
+		m = keys(t, next.(*model), "tab", "tab")
 		if m.tab != TabAgents || !m.quitPending {
 			t.Fatalf("tab = %d, quitPending = %v; want the Agents tab with the quit still held", m.tab, m.quitPending)
 		}
@@ -1456,7 +1461,7 @@ func TestAHeldQuitIsShownOnTheModelsTab(t *testing.T) {
 		t.Fatal(err)
 	}
 	next, write := m.Update(keyMsg("y"))
-	m = keys(t, next.(*model), "tab")
+	m = keys(t, next.(*model), "tab", "tab")
 	if m.tab != TabAgents {
 		t.Fatalf("tab = %d, want Agents while the write is out", m.tab)
 	}
@@ -1465,7 +1470,7 @@ func TestAHeldQuitIsShownOnTheModelsTab(t *testing.T) {
 	if cmd != nil || m.tab != TabModels || !strings.Contains(m.View(), "quitting when the registry write is done") {
 		t.Fatalf("q from the Agents tab with a write in flight: tab = %d\n%s\nwant the Models tab saying it waits", m.tab, m.View())
 	}
-	m = keys(t, m, "tab")
+	m = keys(t, m, "tab", "tab")
 	m = send(t, m, write())
 	if m.tab != TabModels || !strings.Contains(m.View(), "not removed: ") {
 		t.Errorf("the refusal that called the quit off: tab = %d\n%s\nwant it shown on the Models tab", m.tab, m.View())
@@ -1574,7 +1579,7 @@ func TestAgentsStatusFollowsTheLastSave(t *testing.T) {
 	}
 	t.Cleanup(func() { saveCmd = old })
 
-	m := keys(t, modelsEditor(t, newTabMachine(t, tabRegistry), 80, 24), "tab")
+	m := keys(t, modelsEditor(t, newTabMachine(t, tabRegistry), 80, 24), "tab", "tab")
 	if view := m.View(); m.tab != TabAgents || strings.Contains(view, "save") {
 		t.Fatalf("want the Agents tab with no status yet:\n%s", view)
 	}
