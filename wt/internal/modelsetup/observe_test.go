@@ -268,3 +268,48 @@ func TestObserveFindsTheModelBinaryBesideWtThenOnPath(t *testing.T) {
 		t.Errorf("missing: %+v", st.Host)
 	}
 }
+
+// TestObserveKeepsAnInlineConfigTokenOutOfState pins that a literal token in
+// [model-server] is reported as a problem but never copied into State.
+func TestObserveKeepsAnInlineConfigTokenOutOfState(t *testing.T) {
+	f := obsConfigured(t)
+	f.configFile.Table.Token = obsFakeToken
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if strings.Contains(fmt.Sprintf("%+v", st), obsFakeToken) {
+		t.Errorf("State holds the inline token: %+v", st.Config)
+	}
+	if len(st.Config.Problems) == 0 {
+		t.Errorf("inline token not reported as a problem")
+	}
+}
+
+// TestObserveExpandsATildeInTheConfiguredTokenFile pins that a config
+// token_file of ~/... is read from the home directory, as a session does.
+func TestObserveExpandsATildeInTheConfiguredTokenFile(t *testing.T) {
+	f := obsConfigured(t)
+	f.configFile.Table.TokenFile = "~/.config/wt-model/token"
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if !st.Token.Exists || st.Token.Err != "" || !st.Server.Checked {
+		t.Errorf("Token = %+v Server = %+v", st.Token, st.Server)
+	}
+}
+
+// TestObserveTokenChoiceMirrorsTheSession pins ResolveEndpoint's order: an env
+// token file wins and never falls back to a literal WT_MODEL_TOKEN, which is
+// otherwise used untrimmed.
+func TestObserveTokenChoiceMirrorsTheSession(t *testing.T) {
+	f := obsConfigured(t)
+	f.env["WT_MODEL_TOKEN_FILE"] = "/missing/token"
+	f.env["WT_MODEL_TOKEN"] = obsFakeToken
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if st.Token.Path != "/missing/token" || st.Token.Exists || st.Server.Checked {
+		t.Errorf("env file must win without fallback: %+v %+v", st.Token, st.Server)
+	}
+	f = obsConfigured(t)
+	f.env["WT_MODEL_TOKEN"] = " " + obsFakeToken + " "
+	f.calls = nil
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if !st.Server.Checked || f.called("FS.ReadFile "+obsTokenPath) {
+		t.Errorf("literal token: %+v calls %q", st.Server, f.calls)
+	}
+}

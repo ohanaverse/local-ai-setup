@@ -3,6 +3,7 @@ package modelsetup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
@@ -79,6 +80,10 @@ const (
 
 // ServerState is the result of pinging the configured model server. Checked
 // is true only when a URL and a token were known and a Ping was attempted.
+// When the URL or token came from the local agent (its listen address or
+// token file, used in local mode when nothing else is set) that is a fallback
+// a session would not apply, so the tab words it as the agent's, not the
+// session's.
 type ServerState struct {
 	Checked, OK bool
 	Kind        ServerKind
@@ -174,7 +179,9 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		st.Config.TableErr = file.TableErr.Error()
 	}
 	if file.Table != nil {
-		st.Config.Table = *file.Table
+		t := *file.Table
+		t.Token = "" // a secret never goes into State; Problems reports its presence
+		st.Config.Table = t
 		if file.Table.Token != "" {
 			st.Config.Problems = append(st.Config.Problems, "token under [model-server] is set; move it into a 0600 token_file")
 		}
@@ -224,16 +231,29 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 
 	// Token.
-	tokenPath := getenv("WT_MODEL_TOKEN_FILE")
-	if tokenPath == "" {
-		tokenPath = tbl.TokenFile
-	}
-	if tokenPath == "" && st.Resolution.Mode == modelclient.ModeLocal {
-		tokenPath = st.Agent.TokenFile
-	}
-	token := strings.TrimSpace(getenv("WT_MODEL_TOKEN"))
-	st.Token.Path = tokenPath
-	if token == "" && tokenPath != "" {
+	// This mirrors the session's resolution (modelclient.ResolveEndpoint and
+	// cmd/wt-session/models.go), read through the FS seam: an env token file
+	// wins and never falls back to the literal; a configured token_file is
+	// used (with ~ expanded) unless WT_MODEL_TOKEN is set; the literal is used
+	// untrimmed. Only when nothing is set in local mode does the local agent's
+	// own token file apply, which a session would not do.
+	var token string
+	switch {
+	case getenv("WT_MODEL_TOKEN_FILE") != "":
+		st.Token.Path = getenv("WT_MODEL_TOKEN_FILE")
+		token = readToken(env, &st.Token)
+	case tbl.TokenFile != "" && getenv("WT_MODEL_TOKEN") == "":
+		st.Token.Path = tbl.TokenFile
+		if p, err := expandHome(tbl.TokenFile, home, herr); err != nil {
+			st.Token.Err = err.Error()
+		} else {
+			st.Token.Path = p
+			token = readToken(env, &st.Token)
+		}
+	case getenv("WT_MODEL_TOKEN") != "":
+		token = getenv("WT_MODEL_TOKEN")
+	case st.Resolution.Mode == modelclient.ModeLocal && st.Agent.TokenFile != "":
+		st.Token.Path = st.Agent.TokenFile
 		token = readToken(env, &st.Token)
 	}
 
@@ -295,6 +315,21 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		st.Server = pingServer(ctx, env, modelclient.Endpoint{URL: url, Token: token})
 	}
 	return st
+}
+
+// expandHome is config.ExpandHome with the home directory taken from the
+// Host seam.
+func expandHome(path, home string, herr error) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	if herr != nil || home == "" {
+		return "", fmt.Errorf("expand ~ in token_file: no home directory")
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, path[2:]), nil
 }
 
 // readToken fills ts from the token file and returns the token, or "" when it
