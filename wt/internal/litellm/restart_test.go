@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // TestRestartCommandPrecedence pins env precedence (WT_LITELLM_RESTART_CMD
@@ -141,5 +143,22 @@ func TestListeningOnlyFalseWhenNothingIsThere(t *testing.T) {
 	gone.Close()
 	if Listening(ctx, url, time.Second) {
 		t.Error("a refused connection must not count as listening")
+	}
+}
+
+// TestWaitReadyNeverQuotesAnAtURL pins the read side of #640 in the
+// readiness wait every restart reports: a pair url with an '@' that never
+// answers, or that does not even build a request, fails with text that
+// holds the fixed placeholder and no piece of the url (net/url's own error
+// quotes the whole url); a plain url's timeout still names it.
+func TestWaitReadyNeverQuotesAnAtURL(t *testing.T) {
+	for _, raw := range []string{"http://USERY:PASSY@127.0.0.1:1", "http://USERY:PASSY%zz@127.0.0.1:1"} {
+		err := WaitReady(context.Background(), raw, 300*time.Millisecond)
+		if err == nil || strings.Contains(err.Error(), "USERY") || strings.Contains(err.Error(), "PASSY") || !strings.Contains(err.Error(), config.ProxyURLHidden) {
+			t.Errorf("%q: err = %v, want the placeholder and nothing of the url", raw, err)
+		}
+	}
+	if err := WaitReady(context.Background(), "http://127.0.0.1:1", 300*time.Millisecond); err == nil || !strings.Contains(err.Error(), "http://127.0.0.1:1/health/liveliness") {
+		t.Errorf("plain url: err = %v, want it named as before", err)
 	}
 }

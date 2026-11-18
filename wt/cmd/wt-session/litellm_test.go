@@ -2255,3 +2255,24 @@ func resetIgnoredLitellmNote(t *testing.T) {
 	ignoredLitellmNoted.Store(false)
 	t.Cleanup(func() { ignoredLitellmNoted.Store(old) })
 }
+
+// TestLitellmSetRefusesAnAtURL pins the write side of #640 on the `wt
+// litellm set` twin: a url with an '@' anywhere exits 1 with one `wt:` line,
+// the fixed refusal, quoting no piece of the url, and writes no wt-model
+// home, even with --api-key beside it.
+func TestLitellmSetRefusesAnAtURL(t *testing.T) {
+	for _, raw := range []string{"USERY:PASSY@litellm:4000", "http://USERY:PASSY@localhost:4000"} {
+		dir := t.TempDir()
+		writeEmptyRegistry(t, dir)
+		out, code := runRoot(t, "litellm", "set", "--url", raw, "--api-key", "sk-new1234")
+		if code != 1 || len(wtLines(out)) != 1 || !strings.Contains(out, config.ErrProxyURLHasAt.Error()) {
+			t.Errorf("%q: exit %d, output %q; want 1 and the one fixed refusal line", raw, code, out)
+		}
+		if strings.Contains(out, "USERY") || strings.Contains(out, "PASSY") {
+			t.Errorf("%q: the output quotes the url: %q", raw, out)
+		}
+		if _, err := os.Stat(filepath.Dir(config.ProxyHomePath())); !os.IsNotExist(err) {
+			t.Errorf("%q: the wt-model home was written (%v)", raw, err)
+		}
+	}
+}

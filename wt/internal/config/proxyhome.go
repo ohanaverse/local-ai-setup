@@ -294,11 +294,17 @@ func keyTokenState(path string) (key string, present bool, err error) {
 // refuses the set before anything is touched. Only the new home is written:
 // the legacy config.toml is never opened for writing, so a broken legacy
 // config or registry can never block the one command that fixes the pair.
+// A url holding an '@' is refused first, writing nothing (ErrProxyURLHasAt).
 // A set that would create the home's [litellm] table and leaves out a field
 // the legacy table holds is refused, writing nothing (refusePartialFirstSet).
 func SetProxy(url, key *string) error {
 	if url == nil && key == nil {
 		return nil
+	}
+	// A url with an '@' is refused before anything is read or written
+	// (#640); a key-only set over a stored one still works.
+	if url != nil && ProxyURLHasAt(*url) {
+		return ErrProxyURLHasAt
 	}
 	home := ProxyHomePath()
 	if home == "" {
@@ -493,9 +499,10 @@ func MaskKey(key string) string {
 // docs/contracts/litellm-cli.sample.json's status member (the fixture's
 // golden); the text form is the block `wt litellm status` has always
 // printed. The url keeps LitellmBaseURL's trailing-slash trim and prints
-// (unset) when empty; the key prints masked (MaskKey) and never itself.
+// (unset) when empty, and ProxyURLHidden when it holds an '@'; the key
+// prints masked (MaskKey) and never itself.
 func WriteProxyStatus(w io.Writer, pair ProxyPair, asJSON bool) error {
-	url := strings.TrimRight(pair.URL, "/")
+	url := ShownProxyURL(strings.TrimRight(pair.URL, "/"))
 	if asJSON {
 		return json.NewEncoder(w).Encode(struct {
 			URL       string `json:"url"`

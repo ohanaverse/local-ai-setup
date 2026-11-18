@@ -17,7 +17,8 @@ import (
 // it. Every Detail is short, lower-case ASCII and free of secrets: the API key
 // is passed only as the bearer of one Net.Get and no error text from the
 // network is copied into a Detail (it could echo a header). The plist and
-// config.yaml paths come from env.LiteLLM.
+// config.yaml paths come from env.LiteLLM. A pair url holding an '@' is
+// never requested: its checks read as not made (notCheckedPairAtURL).
 func CheckLiteLLM(ctx context.Context, env Env, pair config.ProxyPair) LiteLLMState {
 	var st LiteLLMState
 	if pair.URL == "" || pair.APIKey == "" {
@@ -27,6 +28,17 @@ func CheckLiteLLM(ctx context.Context, env Env, pair config.ProxyPair) LiteLLMSt
 		return st
 	}
 	st.Checked = true
+	if hasUserinfo(pair.URL) {
+		// Never requested (#640): a failed request's text can quote the
+		// host it dialled, and the port check would parse the url. Each
+		// check that reads the url says so in fixed words; the file checks
+		// that need no url still run.
+		nc := Check{Detail: notCheckedPairAtURL}
+		st.Reachable, st.Database, st.KeyAccepted, st.RoutesInSync, st.PortMatches = nc, nc, nc, nc, nc
+		st.RestartOwed = checkRestartOwed(ctx, env)
+		_, st.PlistMode = checkPlist(env, "")
+		return st
+	}
 	base := strings.TrimRight(pair.URL, "/")
 
 	// Network checks.

@@ -779,6 +779,6 @@ func runLitellmRestart(out io.Writer, cfg *config.Config) error {
 		fmt.Fprintln(out, "restarted the LiteLLM proxy (no [litellm] url, so it was not waited for)")
 		return nil
 	}
-	fmt.Fprintf(out, "restarted the LiteLLM proxy at %s\n", url)
+	fmt.Fprintf(out, "restarted the LiteLLM proxy at %s\n", config.ShownProxyURL(url))
 	return nil
 }

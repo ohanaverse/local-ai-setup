@@ -122,6 +122,14 @@ reader resolves it — the key is never printed, only masked.
 
 - The key file's mode must be `0600` or stricter (no group or other bits).
   A looser mode is refused with `chmod 600 PATH`.
+- The url holds no credentials: `litellm set --url` refuses a url with an `@`
+  anywhere in it (exit 1, a fixed message that quotes none of it, nothing
+  written); give the key with `--api-key`, and write an `@` a path needs as
+  `%40`. A url with an `@` already stored (a hand edit, an older wt) is still
+  what the gateway forwards to, but `litellm status`, the `wt config` Model
+  server tab and every error print it only as
+  `(hidden: the url contains an @)`, and the tab's LiteLLM checks do not
+  request it (they read `not checked: the pair url contains an @`).
 - A home that cannot be read (a loose or unreadable key file, a `config.toml`
   that does not parse, a dangling link) is never replaced by the legacy pair.
   Only what uses the pair refuses on it: `wt-model serve` at startup,

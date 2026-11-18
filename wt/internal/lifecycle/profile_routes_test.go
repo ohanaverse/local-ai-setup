@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1014,5 +1015,24 @@ func TestStartFailureSettlesAnOwedRestart(t *testing.T) {
 	}
 	if got := routedIDs(t, path); len(got) != 0 {
 		t.Fatalf("routed = %v, want none: the model never started", got)
+	}
+}
+
+// TestProbeProxyNeverQuotesAnAtURL pins the read side of #640 in the probe
+// every profile launch makes: when the pair url holds an '@' and the proxy
+// does not answer, the error names the fixed placeholder in its place and
+// quotes no piece of the url (the wait's own text is litellm.WaitReady's,
+// which hides it too).
+func TestProbeProxyNeverQuotesAnAtURL(t *testing.T) {
+	stubRoutes(t, litellm.Result{}, nil)
+	fakeRestarter(t)
+	down := errors.New("LiteLLM proxy not ready at " + config.ProxyURLHidden + ": context deadline exceeded")
+	waitProxy = func(context.Context, string, time.Duration) error { return down }
+	cfg := routesCfg()
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://USERY:PASSY@localhost:4000", APIKey: "sk-test-1234"})
+	err := ProbeProxy(context.Background(), cfg)
+	if err == nil || !errors.Is(err, down) || strings.Contains(err.Error(), "USERY") || strings.Contains(err.Error(), "PASSY") ||
+		!strings.HasPrefix(err.Error(), "the LiteLLM proxy does not answer at "+config.ProxyURLHidden+": ") {
+		t.Errorf("ProbeProxy = %v, want the placeholder and nothing of the url", err)
 	}
 }

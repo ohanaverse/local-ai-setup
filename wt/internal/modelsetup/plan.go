@@ -485,7 +485,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 		!(want.LiteLLM == LiteLLMUseExistingKey && st.LiteLLMPlist.HasMasterKey) {
 		// Asking for the plist's key re-sets even a set pair (it may hold a
 		// stale key); every other request keeps it.
-		pairKept = "keep wt-model's LiteLLM pair (" + st.Pair.URL + ")"
+		pairKept = "keep wt-model's LiteLLM pair (" + shownURL(st.Pair.URL) + ")"
 	} else {
 		url := liteLLMURL(st, want.LiteLLM)
 		where := pairWhere(st)
@@ -660,7 +660,7 @@ func (p *Plan) keepLocalSetup(st State) {
 		p.Notes = append(p.Notes, "keep the local token file "+tok)
 	}
 	if st.Pair.URL != "" || st.Pair.KeySet {
-		p.Notes = append(p.Notes, "keep wt-model's LiteLLM pair ("+orNone(st.Pair.URL)+")")
+		p.Notes = append(p.Notes, "keep wt-model's LiteLLM pair ("+orNone(shownURL(st.Pair.URL))+")")
 	}
 }
 

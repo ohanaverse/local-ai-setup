@@ -426,3 +426,24 @@ func TestServeRequiredFlagsAreNamedWithDashes(t *testing.T) {
 		t.Fatalf("err = %v, want one naming --listen HOST:PORT and --token-file PATH", err)
 	}
 }
+
+// TestServeInvalidURLRefusalNeverQuotesAnAtURL pins the read side of #640 at
+// startup: a stored pair url that does not parse as a url with a host is
+// refused naming the setup command, and when it holds an '@' the refusal
+// shows the fixed placeholder instead of quoting it; a plain invalid url is
+// still quoted, as before.
+func TestServeInvalidURLRefusalNeverQuotesAnAtURL(t *testing.T) {
+	seedProxyHome(t, "USERY:PASSY@hq", "sk-test", 0o600)
+	_, err := run(t, "serve", "--listen", "127.0.0.1:0", "--token-file", writeToken(t, 0o600))
+	if err == nil || !strings.Contains(err.Error(), "wt-model litellm set") || !strings.Contains(err.Error(), config.ProxyURLHidden) {
+		t.Fatalf("err = %v, want the refusal with the placeholder", err)
+	}
+	if strings.Contains(err.Error(), "USERY") || strings.Contains(err.Error(), "PASSY") {
+		t.Errorf("the refusal quotes the url: %v", err)
+	}
+	seedProxyHome(t, "nohost", "sk-test", 0o600)
+	_, err = run(t, "serve", "--listen", "127.0.0.1:0", "--token-file", writeToken(t, 0o600))
+	if err == nil || !strings.Contains(err.Error(), `"nohost"`) {
+		t.Errorf("err = %v, want a plain invalid url quoted as before", err)
+	}
+}

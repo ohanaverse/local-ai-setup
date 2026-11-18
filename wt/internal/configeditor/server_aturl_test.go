@@ -139,3 +139,123 @@ func TestServerTabNeverPingsAStoredCredentialedURL(t *testing.T) {
 		}
 	}
 }
+
+// atPairURLs are wt-model pair urls holding an '@' (issue #640): schemeless
+// (which the tab's "://" scrub cannot see), with a scheme, and a password
+// holding '/'. Each carries USERQ or PASSQ, which no fixed text holds.
+var atPairURLs = []string{
+	"USERQ:PASSQ@litellm:4000",
+	"http://USERQ:PASSQ@localhost:4000",
+	"USERQ:p/PASSQ@hq",
+	"http://localhost:4000/?k=USERQ@PASSQ",
+}
+
+// writeAtPair writes the wt-model home's pair (under the test's
+// XDG_CONFIG_HOME) by hand, as an older wt or a hand edit could have left
+// it: `wt-model litellm set` now refuses such a url.
+func writeAtPair(t *testing.T, raw string) {
+	t.Helper()
+	home := config.ProxyHomePath()
+	if err := os.MkdirAll(filepath.Dir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "[litellm]\nurl = \"" + raw + "\"\nkey_file = \"litellm.key\"\n"
+	if err := os.WriteFile(home, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(home), "litellm.key"), []byte("sk-PAIRKEYQ\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestServerTabNeverShowsOrRequestsAnAtPairURL drives the tab over the real
+// modelsetup.Observe with a local [model-server] and a wt-model pair whose
+// url holds an '@' (#640): the pair row shows the fixed placeholder, the
+// LiteLLM rows say not checked with the fixed sentence, nothing is requested
+// of that url (no Net.Get at all), and neither the view nor the status holds
+// USERQ or PASSQ; then a real plan from that pair (leaving local, which keeps
+// the pair) reaches a confirm screen that names the pair by the placeholder
+// only.
+func TestServerTabNeverShowsOrRequestsAnAtPairURL(t *testing.T) {
+	const notChecked = "not checked: the pair url contains an @"
+	for _, raw := range atPairURLs {
+		dir := t.TempDir()
+		tok := filepath.Join(dir, "server.token")
+		if err := os.WriteFile(tok, []byte("tok-FILE\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		models := newTabMachine(t, "").deps()
+		path := config.Path()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		body := "[model-server]\nmode = \"local\"\nurl = \"http://127.0.0.1:8787\"\ntoken_file = \"" + tok + "\"\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		writeAtPair(t, raw)
+
+		var pings, gets []string
+		env := modelsetup.DefaultEnv()
+		env.Net = recNet{&pings, &gets}
+		env.Host = tmpHost{home: dir}
+		env.Launchd = noLaunchd{}
+		env.LiteLLM = noLiteLLM{dir: dir}
+
+		m := newModel(testTheme(), &config.Config{}, nil)
+		m.opts = Options{StartTab: TabServer, Server: ServerDepsFromEnv(env), Models: models}
+		m.tab = TabServer
+		m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 60})
+		m = runCmd(t, m, m.Init())
+		st := m.server.state
+		if st.Pair.URL != modelclient.HiddenURL || !st.Pair.KeySet {
+			t.Fatalf("%q: Pair = %+v, want the url hidden and the key set", raw, st.Pair)
+		}
+		if len(gets) != 0 {
+			t.Errorf("%q: requested %q, want nothing of an '@' pair url", raw, gets)
+		}
+		v := flat(plain(m))
+		if !strings.Contains(v, flat("LiteLLM "+modelclient.HiddenURL)) || !strings.Contains(v, flat("reachable skipped: "+notChecked)) {
+			t.Errorf("%q: the pair row or the LiteLLM rows do not say it is hidden and not checked:\n%s", raw, plain(m))
+		}
+		for _, s := range []string{plain(m), m.server.status} {
+			if strings.Contains(s, "USERQ") || strings.Contains(s, "PASSQ") {
+				t.Errorf("%q: the tab shows the pair url:\n%s", raw, s)
+			}
+		}
+
+		// A real plan built from that pair: leaving local keeps it.
+		full := fullState()
+		full.Pair, full.LiteLLM = st.Pair, st.LiteLLM
+		sm := &serverMachine{states: []modelsetup.State{full}, build: true}
+		m = serverEditor(t, sm, 120, 60)
+		m = keys(t, m, "left", "a", "n")
+		if m.server.phase != serverConfirm {
+			t.Fatalf("%q: phase %d status %q, want the native plan's confirm", raw, m.server.phase, m.server.status)
+		}
+		cv := plain(m)
+		if !strings.Contains(flat(cv), flat("keep wt-model's LiteLLM pair ("+modelclient.HiddenURL+")")) {
+			t.Errorf("%q: the confirm does not name the pair by the placeholder:\n%s", raw, cv)
+		}
+		if strings.Contains(cv, "USERQ") || strings.Contains(cv, "PASSQ") {
+			t.Errorf("%q: the confirm screen shows the pair url:\n%s", raw, cv)
+		}
+	}
+}
+
+// TestPairLineHidesAnAtURLItWasHanded pins the pair row's own defence: a
+// PairState whose url holds an '@' (one Observe would never hand over, but
+// a dep composed by hand could) is drawn as the placeholder, whole, even
+// when it has no "://" for the tab's scrub to find; a plain url is drawn as
+// it was.
+func TestPairLineHidesAnAtURLItWasHanded(t *testing.T) {
+	for _, raw := range atPairURLs {
+		l := pairLine(modelsetup.PairState{URL: raw, KeySet: true})
+		if l.text != "LiteLLM "+modelclient.HiddenURL+", key set" {
+			t.Errorf("%q: pair row %q", raw, l.text)
+		}
+	}
+	if l := pairLine(modelsetup.PairState{URL: "http://localhost:4000", KeySet: true}); l.text != "LiteLLM http://localhost:4000, key set" {
+		t.Errorf("plain pair row %q", l.text)
+	}
+}

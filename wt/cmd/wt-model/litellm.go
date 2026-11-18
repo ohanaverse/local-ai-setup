@@ -59,7 +59,9 @@ setup command other messages name:
 The url is written to ~/.config/wt-model/config.toml and the api key to the
 0600 file its key_file names (litellm.key by default); the legacy [litellm]
 table of config.toml is never written. A flag left out keeps its current
-value; --api-key "" clears the key without deleting the file.
+value; --api-key "" clears the key without deleting the file. A url with
+an @ anywhere in it is refused and nothing is written: the url carries no
+credentials (write an @ a path needs as %40).
 
 Flags:
   --url URL        set the proxy base URL
