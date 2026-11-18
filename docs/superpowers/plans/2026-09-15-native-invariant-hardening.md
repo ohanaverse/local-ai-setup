@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-15-native-invariant-hardening-design.md`
 
-**Worktree:** `/Users/keith/github/ohanaverse/las-native-invariant` (branch `fix/native-invariant-hardening`). All commands run from `modelman/` inside that worktree. Python commands use `uv run` from `modelman/`.
+**Worktree:** `/Users/user_name/github/ohanaverse/las-native-invariant` (branch `fix/native-invariant-hardening`). All commands run from `modelman/` inside that worktree. Python commands use `uv run` from `modelman/`.
 
 ---
 

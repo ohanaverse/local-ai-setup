@@ -99,7 +99,7 @@ Every guide uses the same structure:
 
 ## LLM-consumability conventions
 
-- Absolute paths always (`/Users/keith/...` or `~/.config/...`) — never
+- Absolute paths always (`/Users/user_name/...` or `~/.config/...`) — never
   "the config file mentioned above."
 - Every command in a fenced code block, with the source tool named
   (e.g., `# run from: ~/github/ohanaverse/modelman`).

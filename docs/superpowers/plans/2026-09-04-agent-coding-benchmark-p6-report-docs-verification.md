@@ -1050,7 +1050,7 @@ This guide, unlike 00/02/04/05/08, embeds no `litellm_exposed` snapshots — not
 ## TL;DR
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
+# from: /Users/user_name/github/ohanaverse/local-ai-setup/modelman
 uv run modelman benchmark agent list-tasks --root ../benchmarks/tasks
 uv run modelman benchmark agent list-suites --root ../benchmarks/suites
 uv run modelman benchmark agent run --suite ../benchmarks/suites/smoke.toml --dry-run
@@ -1060,7 +1060,7 @@ uv run modelman benchmark agent run --suite ../benchmarks/suites/smoke.toml --dr
 ```bash
 uv run modelman benchmark agent run --suite ../benchmarks/suites/smoke.toml
 # → Agent benchmark complete: 1 row(s), 1 ran without an isolation error
-#   Results: /Users/keith/.config/local-ai/benchmarks/<run-id>
+#   Results: /Users/user_name/.config/local-ai/benchmarks/<run-id>
 
 uv run modelman benchmark agent show --latest
 ```

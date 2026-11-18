@@ -101,7 +101,7 @@ git commit -m "test(tui): declare ollama as claude's supported provider in testC
 - [ ] **Step 1: Create and check out the feature branch**
 
 ```bash
-cd /Users/keith/github/ohanaverse/agent-worktree
+cd /Users/user_name/github/ohanaverse/agent-worktree
 git checkout main
 git pull --ff-only
 git checkout -b feat/list-based-model-selection
@@ -1730,7 +1730,7 @@ The `firstModel` helper is no longer used after Task 8's `selectedEntryMsg` rewr
 
 - [ ] **Step 1: Search for any remaining `firstModel` references**
 
-Run: `grep -rn 'firstModel' /Users/keith/github/ohanaverse/agent-worktree/internal/`
+Run: `grep -rn 'firstModel' /Users/user_name/github/ohanaverse/agent-worktree/internal/`
 Expected: only the helper definition itself. If any test or production code still calls it, rewrite those call sites to use `ModelsForAgentAndTag` (and pick index 0) instead.
 
 - [ ] **Step 2: Remove the `firstModel` helper if no callers remain**

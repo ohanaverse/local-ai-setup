@@ -8,7 +8,7 @@
     <array>
         <string>/opt/homebrew/bin/llama-server</string>
         <string>-m</string>
-        <string>/Users/keith/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-Q4_K_M.gguf</string>
+        <string>/Users/user_name/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-Q4_K_M.gguf</string>
         <string>--host</string>
         <string>127.0.0.1</string>
         <string>--port</string>
@@ -23,8 +23,8 @@
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/keith/.llamacpp.log</string>
+    <string>/Users/user_name/.llamacpp.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/keith/.llamacpp.err.log</string>
+    <string>/Users/user_name/.llamacpp.err.log</string>
 </dict>
 </plist>

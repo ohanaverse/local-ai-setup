@@ -255,7 +255,7 @@ Only a pointer to the latest run. No per-model history.
 ```toml
 [benchmarks]
 last_run = "2026-09-05T14:32:00Z"
-last_run_dir = "/Users/keith/.config/local-ai/benchmarks/20260905-143200"
+last_run_dir = "/Users/user_name/.config/local-ai/benchmarks/20260905-143200"
 ```
 
 If users want historical analysis, they consume the `~/.config/local-ai/benchmarks/`

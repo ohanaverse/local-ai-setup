@@ -13,11 +13,11 @@
 ## Global Constraints
 
 - Directory name == frontmatter `name:`, lowercase, starts with `wt-` (Agent Skills format; works on Claude Code, Pi, Codex).
-- Do not modify `/Users/keith/github/ohanaverse/repo-cleanup-skill`. Source commit for the copy: `3ae75af`.
+- Do not modify `/Users/user_name/github/ohanaverse/repo-cleanup-skill`. Source commit for the copy: `3ae75af`.
 - Do not rename the `wt cloud-sync` command or any other CLI text; only references to the *skill* change.
 - A global gitignore ignores `.claude/`: new files there need `git add -f`. `git mv` of tracked files is unaffected.
 - `wt/CHANGELOG.md` is history; leave its old skill names.
-- Run from the worktree `/Users/keith/github/ohanaverse/local-ai-setup/.worktrees/move-repo-cleanup`.
+- Run from the worktree `/Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/move-repo-cleanup`.
 
 ## Review Focus
 
@@ -82,7 +82,7 @@ Expected: all three print nothing (the `10-mlx-lm-quantization.md` guide filenam
 - Consumes: `make lint-skills` (now also covers the new skill).
 - Produces: `make install-skill-claude`, `install-skill-pi`, `install-skill-codex`, `uninstall-skill-claude|pi|codex`; destinations `$(HOME)/.claude/skills/wt-repo-cleanup/`, `$(HOME)/.agents/skills/wt-repo-cleanup/`, `$(HOME)/.codex/skills/wt-repo-cleanup/`. Each install first removes the same host's old `repo-cleanup` and `wt-repo-cleanup` directories.
 
-- [ ] **Step 1: Copy.** `cp /Users/keith/github/ohanaverse/repo-cleanup-skill/skill/repo-cleanup/SKILL.md .claude/skills/wt-repo-cleanup/SKILL.md` (`mkdir -p` first). Edit frontmatter `name: wt-repo-cleanup`; change the `# /repo-cleanup` heading to `# /wt-repo-cleanup`; replace every other self-reference to `/repo-cleanup`; change "install the current `wt` (`make install` in the local-ai-setup repo)" to "(`make install` in the repo that holds this skill)".
+- [ ] **Step 1: Copy.** `cp /Users/user_name/github/ohanaverse/repo-cleanup-skill/skill/repo-cleanup/SKILL.md .claude/skills/wt-repo-cleanup/SKILL.md` (`mkdir -p` first). Edit frontmatter `name: wt-repo-cleanup`; change the `# /repo-cleanup` heading to `# /wt-repo-cleanup`; replace every other self-reference to `/repo-cleanup`; change "install the current `wt` (`make install` in the local-ai-setup repo)" to "(`make install` in the repo that holds this skill)".
 - [ ] **Step 2: Lint.** `make lint-skills` → `OK: 8 skills`.
 - [ ] **Step 3: Write the install targets** with the old repo's Makefile as the model (host paths as above). Add them to `.PHONY`. Do not add them to `make install`.
 - [ ] **Step 4: Test in a scratch home.**

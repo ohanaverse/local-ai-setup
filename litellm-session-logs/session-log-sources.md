@@ -995,7 +995,7 @@ you find a repo's sessions:
 DB=$HOME/.local/share/opencode/opencode.db
 Q="select s.id, s.title, datetime(s.time_created/1000,'unixepoch'), s.tokens_input, s.tokens_output
    from session s join project p on p.id = s.project_id
-   where p.worktree = '/Users/keith/github/ohanaverse/local-ai-setup'
+   where p.worktree = '/Users/user_name/github/ohanaverse/local-ai-setup'
    order by s.time_created desc limit 5"
 sqlite3 -readonly "$DB" "$Q" 2>/dev/null || sqlite3 "file:$DB?immutable=1" "$Q"
 ```

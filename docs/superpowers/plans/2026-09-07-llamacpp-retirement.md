@@ -35,7 +35,7 @@ Capture the host's llama.cpp/omlx/litellm artifacts verbatim (except the litellm
 - [ ] **Step 1: Create the artifacts directory tree and copy verbatim plists**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 mkdir -p docs/reference/artifacts/llamacpp docs/reference/artifacts/litellm docs/reference/artifacts/omlx docs/reference/artifacts/registry
 cp ~/Library/LaunchAgents/local.llamacpp.server.plist docs/reference/artifacts/llamacpp/
 cp ~/Library/LaunchAgents/local.llamacpp.server.plist.qwen3.8.bak docs/reference/artifacts/llamacpp/
@@ -77,10 +77,10 @@ Expected: count ≥ 4 (one per redacted key present) and the second grep must no
 - [ ] **Step 4: Extract the two llama.cpp rows from the live litellm config into an artifact**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/modelman
 uv run python - <<'EOF'
 import yaml
-src = "/Users/keith/.config/litellm/config.yaml"
+src = "/Users/user_name/.config/litellm/config.yaml"
 dst = "../docs/reference/artifacts/litellm/llamacpp-model-rows.yaml"
 with open(src) as f:
     cfg = yaml.safe_load(f)
@@ -96,9 +96,9 @@ Expected: `captured rows: ['llama.cpp/local-llama', 'llama.cpp/ornith-1.5-35b']`
 - [ ] **Step 5: Extract the llamacpp registry provider block into an artifact**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/modelman
 uv run python - <<'EOF'
-src = "/Users/keith/.config/local-ai/registry.toml"
+src = "/Users/user_name/.config/local-ai/registry.toml"
 dst = "../docs/reference/artifacts/registry/llamacpp-provider.toml"
 lines = open(src).read().splitlines(keepends=True)
 start = next(i for i, l in enumerate(lines)
@@ -127,7 +127,7 @@ type = "none"
 - [ ] **Step 6: Verify artifact inventory and commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 find docs/reference/artifacts -type f | sort
 git add docs/reference/artifacts
 git commit -m "chore(artifacts): capture llama.cpp/oMLX/LiteLLM artifacts pre-retirement (issue #33)"
@@ -256,7 +256,7 @@ UNUSED in its module docstring) and the `llamacpp` case branch in
 - [ ] **Step 2: Verify the guide's relative links resolve**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 bin/check-links
 ```
 
@@ -301,7 +301,7 @@ def test_supported_provider_ids_matches_llm_isolate_providers_documented_list():
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/modelman
 uv run pytest tests/benchmark/test_isolation.py::test_supported_provider_ids_matches_llm_isolate_providers_documented_list -v
 ```
 
@@ -368,7 +368,7 @@ steps: docs/reference/provider-artifacts.md (repo root)."""
 - [ ] **Step 6: Run the touched test plus the neighbor suites**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/modelman
 uv run pytest tests/benchmark/test_isolation.py tests/test_registry.py tests/test_sync.py -q
 ```
 
@@ -377,7 +377,7 @@ Expected: all PASS (the llamacpp ids in test_registry/test_sync are fixture data
 - [ ] **Step 7: Run the full modelman test suite**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/modelman
 uv run pytest -q
 ```
 
@@ -386,7 +386,7 @@ Expected: all PASS. If `test_forms.py`/`test_models.py` fail, they must be passi
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/src/modelman/registry.py modelman/src/modelman/benchmark/isolation.py modelman/src/modelman/providers/llamacpp.py modelman/tests/benchmark/test_isolation.py
 git commit -m "feat(modelman): retire llamacpp provider wiring, keep implementation (issue #33)"
 ```
@@ -507,7 +507,7 @@ api = "openai-completions"
 - [ ] **Step 4: Verify syntax and no leftover references**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 /opt/homebrew/bin/bash -n benchmarks/qwen3.8-benchmark && /opt/homebrew/bin/bash -n benchmarks/ornith-1.5-benchmark && echo "syntax OK"
 grep -n "llama_cpp\|LLAMACPP\|llamacpp" benchmarks/qwen3.8-benchmark benchmarks/ornith-1.5-benchmark benchmarks/suites/q4-agent-sweep.toml || echo "no references remain"
 ```
@@ -586,7 +586,7 @@ with:
 - [ ] **Step 3: Verify and commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 bash -n bin/llm-restore-providers && bash -n bin/llm-isolate-provider && echo "syntax OK"
 git add bin/llm-restore-providers bin/llm-isolate-provider
 git commit -m "fix(bin): restore helper no longer restarts llamacpp (issue #33)"
@@ -610,7 +610,7 @@ Run only after Tasks 1–5 are committed (artifacts must exist in the repo first
 - [ ] **Step 1: Confirm the artifacts are committed**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git log --oneline -1 -- docs/reference/artifacts/llamacpp/local.llamacpp.server.plist
 ```
 
@@ -640,10 +640,10 @@ Expected: `formula gone`.
 - [ ] **Step 4: Remove the two llama.cpp rows from the litellm config**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/modelman
 uv run python - <<'EOF'
 import yaml
-p = "/Users/keith/.config/litellm/config.yaml"
+p = "/Users/user_name/.config/litellm/config.yaml"
 with open(p) as f:
     cfg = yaml.safe_load(f)
 before = {m["model_name"] for m in cfg["model_list"]}
@@ -662,9 +662,9 @@ Expected: `removed: ['llama.cpp/local-llama', 'llama.cpp/ornith-1.5-35b']` then 
 - [ ] **Step 5: Remove the llamacpp block from the registry**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/modelman
 uv run python - <<'EOF'
-p = "/Users/keith/.config/local-ai/registry.toml"
+p = "/Users/user_name/.config/local-ai/registry.toml"
 lines = open(p).read().splitlines(keepends=True)
 start = next(i for i, l in enumerate(lines)
              if l.strip() == "[[providers]]"
@@ -682,7 +682,7 @@ Expected: `removed llamacpp provider block` then `no llamacpp rows in registry`.
 - [ ] **Step 6: Verify the restore helper is green (the issue #33 acceptance test)**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 PATH=$PWD/bin:$PATH llm-restore-providers
 ```
 
@@ -738,7 +738,7 @@ Line 7, replace `(Ollama, llama.cpp, oMLX)` with `(Ollama, oMLX — llama.cpp is
 - [ ] **Step 5: Check links and commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 bin/check-links
 git add CLAUDE.md README.md modelman/CLAUDE.md modelman/README.md
 git commit -m "docs: root/modelman docs reflect llama.cpp retirement (issue #33)"
@@ -765,7 +765,7 @@ Expected: check-links clean, commit lands.
 2. In the `~/.config/litellm/config.yaml` section, replace `the remaining 11 — 3 omlx variants, 2 llama.cpp rows, the hand-managed \`openrouter/qwen/qwen3.8-*\` set, and \`ollama/q8\`/\`ollama/o35\` — are deliberately hand-managed.` with `the remaining 9 — 3 omlx variants, the hand-managed \`openrouter/qwen/qwen3.8-*\` set, and \`ollama/q8\`/\`ollama/o35\` — are deliberately hand-managed. (The 2 llama.cpp rows were retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).)`
 3. In the plists Purpose line, remove `, llama-server (:8080, pinned GGUF)` from the service list.
 4. In the Verification `launchctl list` output block, delete the line `94631	0	local.llamacpp.server`. (The parenthetical below the block mentions only the PIDs column — no other change needed.)
-5. In "Going deeper", add: `- Provider artifacts + llama.cpp re-enable procedure: \`/Users/keith/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md\``
+5. In "Going deeper", add: `- Provider artifacts + llama.cpp re-enable procedure: \`/Users/user_name/github/ohanaverse/local-ai-setup/docs/reference/provider-artifacts.md\``
 
 - [ ] **Step 2: `docs/guides/01-initial-setup.md`**
 
@@ -833,7 +833,7 @@ Expected: check-links clean, commit lands.
 - [ ] **Step 7: Check exposure-snapshot drift, links, and commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git grep -n "litellm_exposed = " docs/guides/ | wc -l   # note the count
 bin/check-links
 git add docs/guides/
@@ -901,7 +901,7 @@ Leave the rest of the milestone text untouched.
 - [ ] **Step 5: Check links and commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 bin/check-links
 git add benchmarks/README.md benchmarks/qwen3.8-benchmark.md benchmarks/ornith-1.5-benchmark.md docs/superpowers/plans/2026-09-06-issue-roadmap.md
 git commit -m "docs(benchmarks+roadmap): mark llama.cpp retired, Milestone A resolved (issue #33)"
@@ -914,7 +914,7 @@ git commit -m "docs(benchmarks+roadmap): mark llama.cpp retired, Milestone A res
 - [ ] **Step 1: Lint and links**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 make lint-shell
 bin/check-links
 ```
@@ -924,7 +924,7 @@ Expected: both clean.
 - [ ] **Step 2: Full test suite (mirrors CI)**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 make test-all
 ```
 
@@ -938,7 +938,7 @@ ls ~/Library/LaunchAgents | grep llamacpp || echo "no llamacpp plist"
 brew list --versions llama.cpp || echo "no llama.cpp formula"
 ls ~/.llamacpp.log 2>/dev/null || echo "no llama.cpp logs"
 curl -s -m 5 http://localhost:4000/v1/models | grep -c llama.cpp || echo "0 llama.cpp rows via proxy"
-cd /Users/keith/github/ohanaverse/local-ai-setup && PATH=$PWD/bin:$PATH llm-restore-providers
+cd /Users/user_name/github/ohanaverse/local-ai-setup && PATH=$PWD/bin:$PATH llm-restore-providers
 ```
 
 Expected: all five "gone" confirmations plus `[llm-restore-providers] providers restored` with exit 0 — this is the issue #33 acceptance criterion.
@@ -946,7 +946,7 @@ Expected: all five "gone" confirmations plus `[llm-restore-providers] providers 
 - [ ] **Step 4: Benchmark smoke (optional, ~2 min; needs ollama + omlx up)**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 ./benchmarks/qwen3.8-benchmark 30
 ```
 
@@ -959,7 +959,7 @@ Expected: runs the ollama and omlx backends plus OpenRouter rows (OpenRouter row
 - [ ] **Step 1: Push the branch**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git push -u origin docs/issue-33-llamacpp-retirement
 ```
 

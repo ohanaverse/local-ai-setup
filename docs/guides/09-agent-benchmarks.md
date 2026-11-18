@@ -14,7 +14,7 @@ Design rationale, gate taxonomy, and scoring rules: `docs/superpowers/specs/2026
 ## TL;DR
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench
+# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench
 uv run llmbench agent list-tasks --root ../benchmarks/tasks
 uv run llmbench agent list-suites --root ../benchmarks/suites
 uv run llmbench agent run --suite ../benchmarks/suites/smoke.toml --dry-run
@@ -25,9 +25,9 @@ Captured live on 2026-09-05 (one `ollama/glm-5.3-flash:cloud` row on the `day31-
 ```bash
 uv run llmbench agent run --suite ../benchmarks/suites/smoke.toml
 # → Agent benchmark complete: 1 row(s), 1 ran without an isolation error
-#   Results: /Users/keith/.config/local-ai/benchmarks/20260905-160301
+#   Results: /Users/user_name/.config/local-ai/benchmarks/20260905-160301
 # → error: providers failed to restore after the run (all results were saved to
-#   /Users/keith/.config/local-ai/benchmarks/20260905-160301): failed to restore
+#   /Users/user_name/.config/local-ai/benchmarks/20260905-160301): failed to restore
 #   providers: [llm-restore-providers] llamacpp did not come back up
 #   (http://localhost:8080/v1/models)
 

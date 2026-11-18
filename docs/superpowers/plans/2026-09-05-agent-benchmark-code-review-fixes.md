@@ -892,7 +892,7 @@ Expected: `REAL STDERR DIAGNOSTIC` prints (to the terminal's stderr), `stdout na
 
 - [ ] **Step 4: Lint the script**
 
-Run: `make lint-shell` (from the repo root, `/Users/keith/github/ohanaverse/local-ai-setup`)
+Run: `make lint-shell` (from the repo root, `/Users/user_name/github/ohanaverse/local-ai-setup`)
 Expected: PASS — `bash -n` and `shellcheck --severity=error` both clean on `bin/llm-isolate-provider`.
 
 - [ ] **Step 5: Manual functional smoke test (only if the target hardware/services are available)**

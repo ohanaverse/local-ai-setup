@@ -198,7 +198,7 @@ the second, on the screen, is the action the screen lists.
 ── wt-tweaks ─────────────────────────────────────────────────────────────
  worktree  wt-tweaks
  branch    wt-tweaks
- path      /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/wt-tweaks
+ path      /Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/wt-tweaks
  PR        #590 open
  age       12 days
  Verdict   work — 2 commits and 3 files exist only here

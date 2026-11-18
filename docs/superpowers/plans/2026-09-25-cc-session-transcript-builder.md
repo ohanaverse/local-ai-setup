@@ -8,7 +8,7 @@
 
 **Tech Stack:** POSIX sh (`#!/bin/sh`, macOS `stat -f`), Python 3 stdlib only (no venv/deps — directory convention).
 
-**Worktree:** `/Users/keith/github/ohanaverse/local-ai-setup/.worktrees/cc-session-transcripts` (branch `cc-session-transcripts`, created from `main` at `5509ad3`; the spec is committed at `7381eaf`+). **Run all commands from this worktree**, and the capture/builder commands from its `litellm-session-logs/` directory. Pipeline outputs (`session_*`) are gitignored there already.
+**Worktree:** `/Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/cc-session-transcripts` (branch `cc-session-transcripts`, created from `main` at `5509ad3`; the spec is committed at `7381eaf`+). **Run all commands from this worktree**, and the capture/builder commands from its `litellm-session-logs/` directory. Pipeline outputs (`session_*`) are gitignored there already.
 
 **No test framework exists for this directory (spec non-goal).** Verification is against the real session `cce7a30d-9fc2-46d6-8388-bc4d55df6917` (a `/code-review low` run whose record lives under `~/.claude/projects/-Users-keith-github-ohanaverse-local-ai-setup--worktrees-fix-config-toml-race-143/`) plus `make lint-shell` / `make lint`. Every verification step below lists exact expected values pre-computed from that session.
 
@@ -125,7 +125,7 @@ Expected: the bash -n loop lists the new script (`bash -n litellm-session-logs/0
 - [ ] **Step 5: Verify error path on a nonexistent session**
 
 Run (from `litellm-session-logs/`): `./03_capture_claude_code.sh no-such-session-id-000000000000; echo "exit=$?"`
-Expected: `error: no no-such-session-id-000000000000.jsonl under /Users/keith/.claude/projects`, a hint line on stderr, and `exit=1`. No directory created.
+Expected: `error: no no-such-session-id-000000000000.jsonl under /Users/user_name/.claude/projects`, a hint line on stderr, and `exit=1`. No directory created.
 
 - [ ] **Step 6: Capture the real session**
 
@@ -135,7 +135,7 @@ Run (from `litellm-session-logs/`):
 ./03_capture_claude_code.sh cce7a30d-9fc2-46d6-8388-bc4d55df6917
 ```
 
-Expected: `captured session cce7a30d-9fc2-46d6-8388-bc4d55df6917 from /Users/keith/.claude/projects/-Users-keith-github-ohanaverse-local-ai-setup--worktrees-fix-config-toml-race-143 into session_cc_cce7a30d-9fc2-46d6-8388-bc4d55df6917/` followed by an `ls -lR` inventory containing exactly 6 files:
+Expected: `captured session cce7a30d-9fc2-46d6-8388-bc4d55df6917 from /Users/user_name/.claude/projects/-Users-keith-github-ohanaverse-local-ai-setup--worktrees-fix-config-toml-race-143 into session_cc_cce7a30d-9fc2-46d6-8388-bc4d55df6917/` followed by an `ls -lR` inventory containing exactly 6 files:
 
 - `capture.json` (~130 bytes)
 - `cce7a30d-9fc2-46d6-8388-bc4d55df6917.jsonl` (282273 bytes)
@@ -729,7 +729,7 @@ grep -c "<task-notification>" "$OUT"      # → 1 (rendered once, from the user 
 grep -c "System prompt (prompt_snapshot)" "$OUT"       # → 4 (2 in main, 2 in subagent — all distinct, all rendered)
 grep -c "Instructions (preference files)" "$OUT"       # → 2 (main + subagent)
 grep -cF "CLI version: \`2.1.283\`" "$OUT" # → 1
-grep -cF "Working dir: \`/Users/keith/github/ohanaverse/local-ai-setup/.worktrees/fix-config-toml-race-143\`" "$OUT"  # → 1
+grep -cF "Working dir: \`/Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/fix-config-toml-race-143\`" "$OUT"  # → 1
 grep -cF "Git branch: \`fix-config-toml-race-143\`" "$OUT"  # → 1
 grep -c "Total cost: \$" "$OUT"            # → 1
 grep -c "Models seen in turns: \`claude-sonnet-5\`" "$OUT"   # → 1

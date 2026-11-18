@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Run everything from `/Users/keith/github/ohanaverse/local-ai-setup/modelman` with `uv run ...` — modelman is not installed globally.
+- Run everything from `/Users/user_name/github/ohanaverse/local-ai-setup/modelman` with `uv run ...` — modelman is not installed globally.
 - `agent/judge.py`'s existing public names and behavior must be unchanged after the `judge_core` extraction — its existing tests (`tests/benchmark/agent/test_judge.py`) must pass with zero edits.
 - Every judged category's `rubric.toml` dimensions must sum to exactly 100.
 - `coding` is graded by EvalPlus only — no judge, no rubric.toml/rubric.md for that category.
@@ -3959,7 +3959,7 @@ categories = ["coding", "reasoning"]
 - [ ] **Step 2: Dry-run it against the real registry**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup/modelman
+cd /Users/user_name/github/ohanaverse/local-ai-setup/modelman
 uv run modelman benchmark eval run --suite ../benchmarks/suites/eval-sweep.toml \
     --root ../benchmarks/tasks/eval --dry-run
 ```
@@ -4011,7 +4011,7 @@ Design rationale: `docs/superpowers/specs/2026-09-17-capability-eval-benchmark-d
 ## TL;DR
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman
+# from: /Users/user_name/github/ohanaverse/local-ai-setup/modelman
 uv run modelman benchmark eval list-categories --root ../benchmarks/tasks/eval
 uv run modelman benchmark eval list-items --category doc_summary --root ../benchmarks/tasks/eval
 uv run modelman benchmark eval run --suite ../benchmarks/suites/eval-sweep.toml \

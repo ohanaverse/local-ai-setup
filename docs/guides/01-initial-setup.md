@@ -24,8 +24,8 @@ omlx 0.6.3rc3
 postgresql@16 16.15
 redis 8.10.1
 /opt/homebrew/bin/omlx
-/Users/keith/.local/bin/litellm
-/Users/keith/.local/bin/hf
+/Users/user_name/.local/bin/litellm
+/Users/user_name/.local/bin/hf
 ```
 
 You need:
@@ -359,7 +359,7 @@ No `prisma db push` needed on ≥1.98 — the proxy runs `prisma migrate deploy`
 
 The LiteLLM proxy is a hand-rolled LaunchAgent (the brew services in §4/§6 are already in place by then).
 
-Rebuilding from a backup volume with the same username? Skip the template — every path inside the old plist matches this machine verbatim (`/Users/keith/.local/bin/litellm`, `~/.config/litellm/config.yaml`, `.litellm.log`/`.litellm.err.log`), including the secrets:
+Rebuilding from a backup volume with the same username? Skip the template — every path inside the old plist matches this machine verbatim (`/Users/user_name/.local/bin/litellm`, `~/.config/litellm/config.yaml`, `.litellm.log`/`.litellm.err.log`), including the secrets:
 
 ```bash
 cp "/Volumes/Users Bak/keith/Library/LaunchAgents/local.litellm.proxy.plist" ~/Library/LaunchAgents/
@@ -380,16 +380,16 @@ cat > ~/Library/LaunchAgents/local.litellm.proxy.plist << 'EOF'
     <string>local.litellm.proxy</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/keith/.local/bin/litellm</string>
+        <string>/Users/user_name/.local/bin/litellm</string>
         <string>--config</string>
-        <string>/Users/keith/.config/litellm/config.yaml</string>
+        <string>/Users/user_name/.config/litellm/config.yaml</string>
         <string>--port</string>
         <string>4000</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/keith/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>/Users/user_name/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>OPENROUTER_API_KEY</key>
         <string>sk-or-v1-REPLACE_WITH_YOUR_KEY</string>
         <key>LITELLM_MASTER_KEY</key>
@@ -408,9 +408,9 @@ cat > ~/Library/LaunchAgents/local.litellm.proxy.plist << 'EOF'
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/keith/.litellm.log</string>
+    <string>/Users/user_name/.litellm.log</string>
     <key>StandardErrorPath</string>
-    <string>/Users/keith/.litellm.err.log</string>
+    <string>/Users/user_name/.litellm.err.log</string>
 </dict>
 </plist>
 EOF

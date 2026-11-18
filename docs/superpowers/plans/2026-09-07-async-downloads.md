@@ -3414,7 +3414,7 @@ Expected: PASS
 - [x] **Step 5: Commit**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add modelman/CLAUDE.md
 git commit -m "$(cat <<'EOF'
 docs(modelman): document DownloadManager and the locked_state race fix

@@ -208,7 +208,7 @@ func TestIsExposedNonNativeRequiresFlag(t *testing.T) {
 ### Step 6: Run tests
 
 ```bash
-cd /Users/keith/github/ohanaverse/agent-worktree
+cd /Users/user_name/github/ohanaverse/agent-worktree
 go test ./internal/config -run 'TestGatewayConfigDirectByDefault|TestIsExposed' -v
 ```
 
@@ -846,7 +846,7 @@ so matched rows should become the norm. Remaining `WT-only` rows are usually:
 ### Step 4: Commit
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup
+cd /Users/user_name/github/ohanaverse/local-ai-setup
 git add docs/guides/00-config-map.md docs/guides/06-wt-agents-and-models.md docs/guides/07-usage-and-spend.md
 git commit -m "docs(guides): wt LiteLLM gateway mode and exposure filter"
 ```
@@ -858,14 +858,14 @@ git commit -m "docs(guides): wt LiteLLM gateway mode and exposure filter"
 ### Step 1: Run full agent-worktree test suite
 
 ```bash
-cd /Users/keith/github/ohanaverse/agent-worktree
+cd /Users/user_name/github/ohanaverse/agent-worktree
 go test ./... -count=1
 ```
 
 ### Step 2: Build and install wt
 
 ```bash
-go build -o /Users/keith/.local/bin/wt ./cmd/wt
+go build -o /Users/user_name/.local/bin/wt ./cmd/wt
 ```
 
 ### Step 3: Real launch + usage report
