@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python (modelman), bash (bin helpers), pytest, ruff, `make lint-shell`, `make check-links`.
 
-**Worktree:** `/Users/keith/github/ohanaverse/local-ai-setup/.worktrees/mtplx-provider` (branch `mtplx-provider`). All Python commands use `uv run` from `modelman/`; root commands use the worktree root.
+**Worktree:** `/Users/user_name/github/ohanaverse/local-ai-setup/.worktrees/mtplx-provider` (branch `mtplx-provider`). All Python commands use `uv run` from `modelman/`; root commands use the worktree root.
 
 ---
 

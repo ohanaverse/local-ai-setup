@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Run from the repo root `/Users/keith/github/ohanaverse/local-ai-setup`.
+- Run from the repo root `/Users/user_name/github/ohanaverse/local-ai-setup`.
 - Do not delete the working-tree copy of anything under `.superpowers/` — the directory is live scratch for in-flight subagent-driven work (`.superpowers/sdd/2026-09-19-wt-stats-any-pair/` exists right now). Untrack only.
 - Do not push or open a PR without asking the user.
 - The global `~/.gitignore` interacts with repo ignore rules (git-rules.md); `.superpowers/` is not covered by it today (only `.claude/` is), so a plain edit to `.gitignore` works.

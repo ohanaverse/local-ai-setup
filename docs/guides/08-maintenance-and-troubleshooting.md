@@ -55,18 +55,18 @@ Reading it fast:
 Read the plists, not memory. All four launchd jobs carry both keys (verified live on 2026-08-29):
 
 ```bash
-grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.litellm.proxy.plist /Users/keith/Library/LaunchAgents/sh.brew.omlx.plist
+grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.litellm.proxy.plist ~/Library/LaunchAgents/sh.brew.omlx.plist
 ```
 
 ```text
-/Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <key>RunAtLoad</key>
-/Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <true/>
-/Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <key>KeepAlive</key>
-/Users/keith/Library/LaunchAgents/local.litellm.proxy.plist:    <true/>
-/Users/keith/Library/LaunchAgents/sh.brew.omlx.plist:	<key>RunAtLoad</key>
-/Users/keith/Library/LaunchAgents/sh.brew.omlx.plist:	<true/>
-/Users/keith/Library/LaunchAgents/sh.brew.omlx.plist:	<key>KeepAlive</key>
-/Users/keith/Library/LaunchAgents/sh.brew.omlx.plist:	<true/>
+/Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist:    <key>RunAtLoad</key>
+/Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist:    <true/>
+/Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist:    <key>KeepAlive</key>
+/Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist:    <true/>
+/Users/user_name/Library/LaunchAgents/sh.brew.omlx.plist:	<key>RunAtLoad</key>
+/Users/user_name/Library/LaunchAgents/sh.brew.omlx.plist:	<true/>
+/Users/user_name/Library/LaunchAgents/sh.brew.omlx.plist:	<key>KeepAlive</key>
+/Users/user_name/Library/LaunchAgents/sh.brew.omlx.plist:	<true/>
 ```
 
 (`postgresql@16` and `redis` plists also carry `RunAtLoad`/`KeepAlive` `true` — verified by reading those two files directly; same shape, skipped above for brevity.)
@@ -94,9 +94,9 @@ Per-backend reference — commands and log paths verified against the live plist
 
 | Backend | Check (§TL;DR) | Restart | Logs |
 |---------|----------------|---------|------|
-| LiteLLM :4000 | `401` curl | `wt litellm restart` | `/Users/keith/.litellm.err.log` (+ `/Users/keith/.litellm.log`) |
+| LiteLLM :4000 | `401` curl | `wt litellm restart` | `~/.litellm.err.log` (+ `~/.litellm.log`) |
 | oMLX :8000 | `200` on `/health` | `omlx restart` or `brew services restart omlx` | `/opt/homebrew/var/log/omlx.log` |
-| Ollama :11434 | `200` on `/api/tags` | relaunch Ollama.app (no plist — launchd does not own it) | `/Users/keith/.ollama/logs/server.log` |
+| Ollama :11434 | `200` on `/api/tags` | relaunch Ollama.app (no plist — launchd does not own it) | `~/.ollama/logs/server.log` |
 | Postgres 5432 | `pg_isready -h localhost` | `brew services restart postgresql@16` | `/opt/homebrew/var/log/postgresql@16.log` |
 | Redis 6379 | `redis-cli ping` | `brew services restart redis` | `/opt/homebrew/var/log/redis.log` |
 
@@ -109,7 +109,7 @@ Worked on a model you expect on `:4000` but don't see (or a client gets 404/`mod
 **Step 1 — is it in the proxy at all?** Without auth you learn nothing (`401`); pull the master key from the plist env (value stays un-printed) and list model ids:
 
 ```bash
-LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<string>/,""); sub(/<\/string>.*/,""); print}' /Users/keith/Library/LaunchAgents/local.litellm.proxy.plist)
+LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<string>/,""); sub(/<\/string>.*/,""); print}' ~/Library/LaunchAgents/local.litellm.proxy.plist)
 curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $LITELLM_MASTER_KEY" | python3 -c 'import json,sys; [print(m["id"]) for m in json.load(sys.stdin)["data"]]'
 ```
 
@@ -125,7 +125,7 @@ Local-model routes appear only while that model runs — wt writes the route on 
 **Step 2 — does `model_list` in config.yaml carry it?** config.yaml is what the proxy routes from:
 
 ```bash
-grep -n 'model_name:' /Users/keith/.config/litellm/config.yaml
+grep -n 'model_name:' ~/.config/litellm/config.yaml
 ```
 
 Output is one `<line>:  - model_name: <id>` row per routed model. Example (illustrative — your ids and line numbers will differ):
@@ -184,7 +184,7 @@ A dead backend is a §1/§3 problem, not a config problem — fix the backend fi
 **Step 6 — api_base right?** The row must point the proxy at the right port:
 
 ```bash
-grep -A3 'model_name: <model-id>' /Users/keith/.config/litellm/config.yaml
+grep -A3 'model_name: <model-id>' ~/.config/litellm/config.yaml
 ```
 
 Example (illustrative — an ollama-served row):
@@ -203,7 +203,7 @@ OpenAI-compatible local backends (omlx, omlx-6bit, mtplx, mlx_lm_server) must ha
 **Step 7 — config.yaml still valid YAML?** A hand-edit typo keeps the proxy in a crash loop (it re-reads only at start):
 
 ```bash
-python3 -c "import yaml;d=yaml.safe_load(open('/Users/keith/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
+python3 -c "import yaml;d=yaml.safe_load(open('$HOME/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
 ```
 
 Output is one line, `model_list entries: <N>`. A traceback instead means a parse error → fix it by hand (wt refuses to write a file it cannot parse, so `wt litellm sync` cannot repair it); once it parses, `wt litellm sync` rebuilds any wt row you deleted (wt does atomic, comment-preserving writes, guide 04 §1). `<N>` is however many rows `config.yaml` carries — compare it with the number of ids Step 1's authenticated `/v1/models` call returns (pipe that command into `wc -l`); after a restart (Step 8) the two should match.
@@ -247,11 +247,11 @@ Log homes (all from live plists / on-disk checks, 2026-08-29):
 
 | Service | Log file(s) | Notes |
 |---------|-------------|-------|
-| LiteLLM | `/Users/keith/.litellm.err.log`, `/Users/keith/.litellm.log` | two files (stderr/stdout); launchd appends — the file only grows |
+| LiteLLM | `~/.litellm.err.log`, `~/.litellm.log` | two files (stderr/stdout); launchd appends — the file only grows |
 | oMLX | `/opt/homebrew/var/log/omlx.log` | single file, both streams; `omlx diagnose` for install/runtime issues |
 | Postgres | `/opt/homebrew/var/log/postgresql@16.log` | single file |
 | Redis | `/opt/homebrew/var/log/redis.log` | single file |
-| Ollama | `/Users/keith/.ollama/logs/server.log`, `app.log` | app-managed; rotated as `server-1.log` … `server-5.log` |
+| Ollama | `~/.ollama/logs/server.log`, `app.log` | app-managed; rotated as `server-1.log` … `server-5.log` |
 | rec | `/tmp/local-ai-setup-rec.log` (next to `WT_REC_PIDFILE` when set) | written while wt runs `rec serve`; also `~/.local/share/rec/state/launch-server.log` for rec's own launches |
 | Sushi | `/tmp/local-ai-setup-sushi.log` (next to `WT_SUSHI_PIDFILE` when set) | written while wt or llmbench runs `sushi serve` (they share the file); Sushi's own logs are under `~/.sushi/logs` |
 
@@ -275,14 +275,14 @@ launchctl list | grep -E 'litellm|omlx|postgresql|redis'
 Then read the actual error:
 
 ```bash
-tail -50 /Users/keith/.litellm.err.log
+tail -50 ~/.litellm.err.log
 ```
 
 Most tail traffic on this machine is benign — e.g. the traceback shape below is what an unauthenticated scan/probe produces (every 401 in the health check lands here too) and is *not* a fault:
 
 ```text
 Traceback (most recent call last):
-  File "/Users/keith/.local/share/uv/tools/litellm/lib/python3.13/site-packages/litellm/proxy/auth/user_api_key_auth.py", line 1489, in _user_api_key_auth_builder
+  File "/Users/user_name/.local/share/uv/tools/litellm/lib/python3.13/site-packages/litellm/proxy/auth/user_api_key_auth.py", line 1489, in _user_api_key_auth_builder
     raise Exception("No api key passed in.")
 Exception: No api key passed in.
 ```
@@ -352,7 +352,7 @@ bin/update/wt            # rebuild + reinstall from the current checkout
 
 Upgrading wt across #179 (the `wt_managed` route marker)? Read [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* and *Upgrading to discovered local models (#179 Phase B)*, and run `wt litellm sync --dry-run` before the first `wt model add|edit|rm`, `wt model init` or `wt cloud-sync` triggers the first real sync.
 
-**Gotcha (verified on this machine, 2026-08-29):** `go env GOPATH` is `/Users/keith/.asdf/installs/golang/1.26.7/packages` (asdf-managed), so a fresh binary built without `-o` lands in `…/packages/bin/wt` — but `which -a wt` resolves **only** to `/Users/keith/.local/bin/wt` (the repeated identical lines in `which -a wt` output are PATH repeats of the same binary, not four installs), because `~/.local/bin` comes first in PATH and the asdf packages `bin` dir carries no `wt` at all (checked: `ls "$(go env GOPATH)/bin/wt"` → `No such file or directory`). A binary built into GOPATH therefore leaves the stale `~/.local/bin/wt` answering `wt` — exactly what guide 06's "the installed binary is STALE" caveat describes, and why `bin/update/wt` goes through `make install` (which copies over the shadowing file) rather than a bare `go build`. If you build by hand instead, build straight over the shadowing copy or delete the stale one, then re-check `which wt`, `wt --version` **and** `ls -la` the file mtime.
+**Gotcha (verified on the author's machine, 2026-08-29):** `go env GOPATH` was `$HOME/.asdf/installs/golang/1.26.7/packages` (asdf-managed), so a fresh binary built without `-o` lands in `…/packages/bin/wt` — but `which -a wt` resolves **only** to `~/.local/bin/wt` (the repeated identical lines in `which -a wt` output are PATH repeats of the same binary, not four installs), because `~/.local/bin` comes first in PATH and the asdf packages `bin` dir carries no `wt` at all (checked: `ls "$(go env GOPATH)/bin/wt"` → `No such file or directory`). A binary built into GOPATH therefore leaves the stale `~/.local/bin/wt` answering `wt` — exactly what guide 06's "the installed binary is STALE" caveat describes, and why `bin/update/wt` goes through `make install` (which copies over the shadowing file) rather than a bare `go build`. If you build by hand instead, build straight over the shadowing copy or delete the stale one, then re-check `which wt`, `wt --version` **and** `ls -la` the file mtime.
 
 Verify — `wt --version` ran live, 2026-08-29:
 
@@ -364,11 +364,11 @@ wt --version
 wt 0.1.0
 ```
 
-**LiteLLM** — `bin/update/litellm`. Three steps, because LiteLLM's env holds more than the package: upgrade the tool, regenerate the Prisma client, kick the proxy. The script reads `~/.local/share/uv/tools/litellm/uv-receipt.toml` first — `uv tool upgrade` changes the env in place, keeping the venv, extras and Python the receipt records and removing any package added by hand — and if that receipt does not name `proxy`, `extra-proxy` and Python 3.11 it takes the reinstall form instead (`--reinstall` forces that path when the receipt looks fine but you want it rebuilt anyway). It honours `WT_LITELLM_RESTART_CMD` (legacy `MODELMAN_LITELLM_RESTART_CMD`) for the restart, falling back to the launchd kickstart; `--no-restart` leaves the proxy alone. The command runs with its output captured and printed afterwards, not attached to the terminal, so one that leaves the proxy running in the background cannot hold the sweep open. A proxy that does not answer within 60 seconds of the restart ends the script in `failed`. It finds the Prisma schema by globbing the tool env (`lib/python3.*/site-packages/litellm/proxy/schema.prisma`) instead of assuming a Python version — `uv tool upgrade` mutates that venv in place, and the interpreter there has been 3.11, 3.13 and 3.14 on this machine. Because the proxy holds the code it imported at boot, an upgrade you ran from another terminal is not live until this script kicks it: that case reports `restarted` — the version stood still, the process did not — where `--no-restart` reports `current`.
+**LiteLLM** — `bin/update/litellm`. Three steps, because LiteLLM's env holds more than the package: upgrade the tool, regenerate the Prisma client, kick the proxy. The script reads `~/.local/share/uv/tools/litellm/uv-receipt.toml` first — `uv tool upgrade` changes the env in place, keeping the venv, extras and Python the receipt records and removing any package added by hand — and if that receipt does not name `proxy`, `extra-proxy` and Python 3.11 it takes the reinstall form instead (`--reinstall` forces that path when the receipt looks fine but you want it rebuilt anyway). It honours `WT_LITELLM_RESTART_CMD` (legacy `MODELMAN_LITELLM_RESTART_CMD`) for the restart, else runs `wt litellm restart`, falling back to the launchd `kickstart -k` only when the wt on PATH is too old to have that command; `--no-restart` leaves the proxy alone. The command runs with its output captured and printed afterwards, not attached to the terminal, so one that leaves the proxy running in the background cannot hold the sweep open. A proxy that does not answer within 60 seconds of the restart ends the script in `failed`. It finds the Prisma schema by globbing the tool env (`lib/python3.*/site-packages/litellm/proxy/schema.prisma`) instead of assuming a Python version — `uv tool upgrade` mutates that venv in place, and the interpreter there has been 3.11, 3.13 and 3.14 on this machine. Because the proxy holds the code it imported at boot, an upgrade you ran from another terminal is not live until this script kicks it: that case reports `restarted` — the version stood still, the process did not — where `--no-restart` reports `current`.
 
 ```bash
 bin/update/litellm --check      # installed version, plus whether uv sees an update
-bin/update/litellm --dry-run    # the upgrade, the prisma generate, the kickstart
+bin/update/litellm --dry-run    # the upgrade, the prisma generate, the restart
 ```
 
 ```bash
@@ -383,10 +383,10 @@ LiteLLM: Current Version = 1.105.0
 
 Two things upgrade can break (guide 01 §6/§7):
 
-1. **Prisma can be removed or left stale** — a reinstall re-creates the env outright, and an in-place `uv tool upgrade` replaces each package whose version changes (run against a scratch tool on uv 0.12.21, 2026-10-10; not against LiteLLM). The proxy needs `prisma` + `prisma-client-py` (verified present in `/Users/keith/.local/share/uv/tools/litellm/bin/`) and the client generated from LiteLLM's schema for the Postgres-backed Admin UI. After any `uv tool upgrade` **or** `uv tool install --force --reinstall --python 3.11 'litellm[proxy,extra-proxy]'` (the nuclear fallback, with the extras and Python of guide 01 §1: bare `litellm[proxy]` drops Prisma; `--force`/`--reinstall` flags verified via `uv tool install --help`), re-check:
+1. **Prisma can be removed or left stale** — a reinstall re-creates the env outright, and an in-place `uv tool upgrade` replaces each package whose version changes (run against a scratch tool on uv 0.12.21, 2026-10-10; not against LiteLLM). The proxy needs `prisma` + `prisma-client-py` (verified present in `~/.local/share/uv/tools/litellm/bin/`) and the client generated from LiteLLM's schema for the Postgres-backed Admin UI. After any `uv tool upgrade` **or** `uv tool install --force --reinstall --python 3.11 'litellm[proxy,extra-proxy]'` (the nuclear fallback, with the extras and Python of guide 01 §1: bare `litellm[proxy]` drops Prisma; `--force`/`--reinstall` flags verified via `uv tool install --help`), re-check:
 
    ```bash
-   ls /Users/keith/.local/share/uv/tools/litellm/bin/ | grep prisma
+   ls ~/.local/share/uv/tools/litellm/bin/ | grep prisma
    ```
 
    ```text
@@ -396,7 +396,7 @@ Two things upgrade can break (guide 01 §6/§7):
 
    Both names listed is not the whole check: the generated client lives inside the tool env too, and it is built from the schema of the LiteLLM that was installed when it ran, so re-run guide 01 §6's `prisma generate` after any upgrade or reinstall, then kickstart the proxy. Empty → Prisma was not installed through the `extra-proxy` extra (an upgrade removes a hand-installed copy); reinstall with the command above first. `bin/update/litellm` does all three — upgrade, `prisma generate`, restart — and repairs a missing Prisma by falling back to the reinstall form on its own.
 
-2. **The proxy must be restarted after upgrade + any config change** — `wt litellm restart`, which lets a request in flight finish before the proxy goes down and waits for it to answer again, or the forced `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`, which cuts that request off after 5 seconds (§2 step 8 for the measured recovery). An upgrade with no restart leaves the proxy serving the old code from the new env; `bin/update/litellm` restarts by default for exactly that reason, with `wt litellm restart` (the forced form only under a wt too old to have it).
+2. **The proxy must be restarted after upgrade + any config change** — `wt litellm restart`, which lets a request in flight finish before the proxy goes down and — when a LiteLLM url is configured — waits for it to answer again, or the forced `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`, which cuts that request off after 5 seconds (§2 step 8 for the measured recovery). An upgrade with no restart leaves the proxy serving the old code from the new env; `bin/update/litellm` restarts by default for exactly that reason, with `wt litellm restart` (the forced form only under a wt too old to have it).
 
 **Ollama** — `bin/update/ollama`. It is the app (`/Applications/Ollama.app`, a `com.ollama.ollama` login item), not a brew service and not a plist, and it has **no CLI update path** — `ollama --help` lists `serve`, `create`, `show`, `run`, `stop`, `pull`, `push`, `signin`, `signout`, `list`, `ps`, `cp`, `rm`, `launch` and nothing else. So the script cannot upgrade it; what it does is answer whether opening the app is worth your time: it prints the installed version, the app bundle's version, whether `/usr/local/bin/ollama` is still a symlink into the bundle, whether the daemon answers, and the latest published release (best-effort — `--no-network` skips that, and an unreachable network reports `latest: unknown` rather than failing). Update through Ollama.app's own flow, or re-download from ollama.com, then re-run it.
 
@@ -459,7 +459,7 @@ After any benchmark work (guide 05), make sure the stack was restored. `llmbench
 <!-- UNVERIFIED — restarting live services; not run in this session (this host currently has omlx down on an unrelated Xcode-CLT license gate, which would make a live restore hang/fail for reasons unrelated to this doc). Output below is read from the CLI's source (`src/llmbench/providers/lifecycle/cli.py::restore_cmd`), not captured from a live run: -->
 
 ```bash
-# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench
+# from: ~/github/ohanaverse/local-ai-setup/llmbench
 uv run llmbench provider restore
 ```
 
@@ -727,7 +727,7 @@ launchctl list | grep litellm   # PID present; middle column 0 (or -15 post-kick
 ```
 
 ```bash
-python3 -c "import yaml;d=yaml.safe_load(open('/Users/keith/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
+python3 -c "import yaml;d=yaml.safe_load(open('$HOME/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
 ```
 
 Expect `model_list entries: <N>`, with `<N>` equal to the number of ids the auth'd `/v1/models` list returns (Steps §2 step 1 piped into `wc -l`) once the proxy has restarted since the last config change.
@@ -735,7 +735,7 @@ Expect `model_list entries: <N>`, with `<N>` equal to the number of ids the auth
 ## Gotchas
 
 - **KeepAlive turns "it crashed" into "it loops".** Every service here has `KeepAlive=true`, so after a config typo launchd respawns the failing job immediately and indefinitely — the port never comes up and `launchctl list` may even look normal (fresh PID). Check the logs (§3), not just the ports.
-- **Restart LiteLLM with `wt litellm restart`; for any other LaunchAgent use `launchctl kickstart -k gui/$(id -u)/<label>`.** With `KeepAlive=true`, bare `launchctl stop` (or killing the PID) just gets the job relaunched — you cannot hold a service down that way, and it does not re-read anything in a controlled way. `kickstart -k` is the verified, one-shot kill+restart used by all the guides; for the brew trio use `brew services restart <name>`.
+- **Restart LiteLLM with `wt litellm restart`; for any other LaunchAgent use `launchctl kickstart -k gui/$(id -u)/<label>`.** With `KeepAlive=true`, bare `launchctl stop` (or killing the PID) just gets the job relaunched — you cannot hold a service down that way, and it does not re-read anything in a controlled way. `kickstart -k` is the verified, one-shot kill+restart, and the forced fallback when wt's own restart cannot run (it cuts off a request in flight after 5 s); for the brew trio use `brew services restart <name>`.
 - **The `launchctl list` middle column reads `0` or `-15` here — both healthy.** `0` = last exit was clean; `-15` = last exit was from SIGTERM, i.e. normal residue after a `kickstart -k` (live example above). What's *not* healthy: `-` PID with a non-zero status, or a PID that changes while the port stays dead (§3).
 - **A model still loaded after wt stopped it means two Ollama servers.** `wt stop` (or the stop prompt on exit) prints `done`, yet `ollama ps` still lists the model and the memory is not freed: run `pgrep -fl "ollama serve"`. Two lines means LiteLLM started a second server beside the app's, which it does at proxy startup for any ollama row in `config.yaml` with no `api_base` ([04-litellm-config](04-litellm-config.md) Gotchas). wt fills that field in on its next write; to clear it at once, kill the extra `ollama serve` (the one that is not under `Ollama.app`) and restart the proxy (§2 Step 8). Left alone, the stray copy unloads after Ollama's keep-alive, five minutes by default, which makes this look intermittent.
 - **An omlx model is running only when omlx has it loaded.** The omlx service lists every model in its directory on `/v1/models` whether or not it is loaded, so that list is not "what is running"; wt asks omlx what is loaded instead (`curl -s http://localhost:8000/health` shows the pool's `model_count` and `loaded_count`). When some omlx models are loaded and others are not, only omlx's key-protected status endpoint says which: if the server has an API key, set `auth.secret_ref` on the registry's omlx provider, or `wt litellm sync` warns that the omlx probe did not succeed and leaves its routes unchanged, and a start asks before replacing.

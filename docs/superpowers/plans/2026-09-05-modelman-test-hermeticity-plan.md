@@ -566,7 +566,7 @@ Expected: both `0`. Any non-zero count means a test path is bypassing the autous
 - [x] **Step 3: Run repo-level `make test-all`**
 
 ```bash
-cd /Users/keith/github/ohanaverse/local-ai-setup && make test-all
+cd /Users/user_name/github/ohanaverse/local-ai-setup && make test-all
 ```
 
 Expected: lint + modelman check/test + wt build/vet/test all green.

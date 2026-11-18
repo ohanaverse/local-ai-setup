@@ -3261,7 +3261,7 @@ Each rule, with a real line it changes:
 | 7 | `` (`modelman.benchmark.isolation.SUPPORTED_PROVIDER_IDS` `` | `` (`llmbench.benchmark.isolation.SUPPORTED_PROVIDER_IDS` `` |
 | 8 | `` `MODELMAN_BENCHMARK_WORKLOAD` envvar overrides `` | `` `LLMBENCH_WORKLOAD` envvar overrides `` |
 | 9 | ``Set `MODELMAN_AGENT_DEBUG=1` to also get `metrics.log` `` | ``Set `LLMBENCH_AGENT_DEBUG=1` to also get `metrics.log` `` |
-| 10 (three guides) | `# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman` | `# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench` |
+| 10 (three guides) | `# from: /Users/user_name/github/ohanaverse/local-ai-setup/modelman` | `# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench` |
 | 11 (three guides) | `` `uv run modelman …` `` | `` `uv run llmbench …` `` |
 
 Rule 10 leaves `local-ai-setup/modelman/docs/…` alone (guide 05's link to the benchmark design spec, which stays where it is until Step 6). It runs over the three benchmark guides only, because the `# from: …/modelman` lines in guides 01, 02, 03, 07 and 08 precede real modelman commands. One block is the exception: guide 08's `provider restore`, whose command rule 4 has just rewritten. Step 3 moves its working directory. The relative paths in the guides' commands (`--suite ../benchmarks/suites/smoke.toml`, `--root ../benchmarks/tasks/eval`) need no change: `llmbench/` is a sibling of `modelman/`.
@@ -3295,8 +3295,8 @@ EDITS = [
     # --- guide 05: who runs, and where the pointers live ---
     (
         'docs/guides/05-benchmarks.md',
-        '- modelman runnable from its repo (`uv run llmbench …` from `/Users/keith/github/ohanaverse/local-ai-setup/llmbench`; modelman is not installed globally).',
-        '- llmbench runnable from its directory (`uv run llmbench …` from `/Users/keith/github/ohanaverse/local-ai-setup/llmbench`; llmbench is not installed globally).',
+        '- modelman runnable from its repo (`uv run llmbench …` from `/Users/user_name/github/ohanaverse/local-ai-setup/llmbench`; modelman is not installed globally).',
+        '- llmbench runnable from its directory (`uv run llmbench …` from `/Users/user_name/github/ohanaverse/local-ai-setup/llmbench`; llmbench is not installed globally).',
     ),
     (
         'docs/guides/05-benchmarks.md',
@@ -3325,8 +3325,8 @@ EDITS = [
     ),
     (
         'docs/guides/05-benchmarks.md',
-        '; modelman runs write under `/Users/keith/.config/local-ai/benchmarks/<run-id>/`',
-        '; llmbench runs write under `/Users/keith/.config/local-ai/benchmarks/<run-id>/`',
+        '; modelman runs write under `/Users/user_name/.config/local-ai/benchmarks/<run-id>/`',
+        '; llmbench runs write under `/Users/user_name/.config/local-ai/benchmarks/<run-id>/`',
     ),
     (
         'docs/guides/05-benchmarks.md',
@@ -3351,8 +3351,8 @@ EDITS = [
     # --- guide 08: the one restore block runs from llmbench/ ---
     (
         'docs/guides/08-maintenance-and-troubleshooting.md',
-        '# from: /Users/keith/github/ohanaverse/local-ai-setup/modelman\nuv run llmbench provider restore\n',
-        '# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench\nuv run llmbench provider restore\n',
+        '# from: /Users/user_name/github/ohanaverse/local-ai-setup/modelman\nuv run llmbench provider restore\n',
+        '# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench\nuv run llmbench provider restore\n',
     ),
     # --- guides 09, 10, 11: module map and working directory ---
     (

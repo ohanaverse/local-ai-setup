@@ -192,7 +192,7 @@ None required. Existing state files reconcile correctly on next mount:
 - `state.ready = True` with `disk_path = "<hf_cache_path>"` → reconciles to `state.ready = True` if files still present; demotes if not.
 - `state.ready = False` with no `disk_path` → reconciles to `state.ready = True` if files appear externally; no-op otherwise.
 
-The user-reported bug case (omlx/ornith-1.5 with files on disk but `state.ready = false`) auto-fixes on next mount: reconcile sees files, sets `state.ready = True`, `state.disk_path = "/Users/keith/.omlx/models/Ornith-1.5-35B-A3B-MLX-4bit"`, `state.size_bytes = 19530941006`.
+The user-reported bug case (omlx/ornith-1.5 with files on disk but `state.ready = false`) auto-fixes on next mount: reconcile sees files, sets `state.ready = True`, `state.disk_path = "/Users/user_name/.omlx/models/Ornith-1.5-35B-A3B-MLX-4bit"`, `state.size_bytes = 19530941006`.
 
 ### 9. Testing strategy
 

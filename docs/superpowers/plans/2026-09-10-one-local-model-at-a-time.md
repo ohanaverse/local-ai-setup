@@ -2361,7 +2361,7 @@ Start/stop the local model itself with modelman: `modelman start
 
 - [ ] **Step 3: Run the full verification suite**
 
-Run: `make test-all` from the repo root (`/Users/keith/github/ohanaverse/local-ai-setup`).
+Run: `make test-all` from the repo root (`/Users/user_name/github/ohanaverse/local-ai-setup`).
 Expected: PASS — `make lint-shell` (bash -n + shellcheck on `bin/llm-isolate-provider`), `make check-links` (validates the new doc cross-references resolve), modelman `make check`/`make test`, wt `go build`/`go vet`/`go test`.
 
 - [ ] **Step 4: Commit**

@@ -35,9 +35,9 @@ Read-only checks against the two source repos, run from their existing local clo
 - [ ] **Step 1: Check `modelman` for unmerged branches, worktrees, and uncommitted changes**
 
 ```bash
-git -C /Users/keith/github/ohanaverse/modelman status
-git -C /Users/keith/github/ohanaverse/modelman worktree list
-git -C /Users/keith/github/ohanaverse/modelman branch -vv
+git -C /Users/user_name/github/ohanaverse/modelman status
+git -C /Users/user_name/github/ohanaverse/modelman worktree list
+git -C /Users/user_name/github/ohanaverse/modelman branch -vv
 ```
 
 Expected: `status` clean (or only expected untracked build artifacts like `.venv`, `.pytest_cache`); `worktree list` shows only the main worktree (or any listed worktrees have no uncommitted work — check each); `branch -vv` shows no local branch ahead of its remote tracking branch, or any that are get named and resolved before proceeding.
@@ -45,9 +45,9 @@ Expected: `status` clean (or only expected untracked build artifacts like `.venv
 - [ ] **Step 2: Check `agent-worktree` the same way**
 
 ```bash
-git -C /Users/keith/github/ohanaverse/agent-worktree status
-git -C /Users/keith/github/ohanaverse/agent-worktree worktree list
-git -C /Users/keith/github/ohanaverse/agent-worktree branch -vv
+git -C /Users/user_name/github/ohanaverse/agent-worktree status
+git -C /Users/user_name/github/ohanaverse/agent-worktree worktree list
+git -C /Users/user_name/github/ohanaverse/agent-worktree branch -vv
 ```
 
 Same expectations as Step 1.
@@ -55,7 +55,7 @@ Same expectations as Step 1.
 - [ ] **Step 3: Confirm the `wt-litellm-gateway` plan is landed or explicitly paused**
 
 ```bash
-git -C /Users/keith/github/ohanaverse/agent-worktree log --oneline --all --grep="litellm-gateway" -i
+git -C /Users/user_name/github/ohanaverse/agent-worktree log --oneline --all --grep="litellm-gateway" -i
 gh pr list --repo ohanaverse/agent-worktree --state all --search "litellm gateway"
 ```
 
@@ -64,8 +64,8 @@ Expected: the referenced plan (`agent-worktree/docs/superpowers/plans/2026-08-30
 - [ ] **Step 4: Scan for anything secret in the two histories that hasn't already been through a rotate/accept decision**
 
 ```bash
-git -C /Users/keith/github/ohanaverse/modelman log -p --all | grep -iE "api[_-]?key|secret|password|token" | grep -v "secret_ref\|api_key.*=.*type\|SecretRef\|test" | head -50
-git -C /Users/keith/github/ohanaverse/agent-worktree log -p --all | grep -iE "api[_-]?key|secret|password|token" | grep -v "secret_ref\|api_key.*=.*type\|SecretRef\|test" | head -50
+git -C /Users/user_name/github/ohanaverse/modelman log -p --all | grep -iE "api[_-]?key|secret|password|token" | grep -v "secret_ref\|api_key.*=.*type\|SecretRef\|test" | head -50
+git -C /Users/user_name/github/ohanaverse/agent-worktree log -p --all | grep -iE "api[_-]?key|secret|password|token" | grep -v "secret_ref\|api_key.*=.*type\|SecretRef\|test" | head -50
 ```
 
 Expected: no hits, or any hits are field names/test fixtures (not real credential values). If a real secret value turns up, stop and handle it the same way `local-ai-setup/issues.md` item 1 was handled (rotate, decide on history rewrite vs. accept) before merging that history into the new monorepo.
@@ -223,7 +223,7 @@ Expected: hits in guides 03, 06, 08 per `issues.md` item 5 (the `~/.local/bin/wt
 
 - [ ] **Step 2: Update each to the new relative path**
 
-Change `go build -o /Users/keith/.local/bin/wt ./cmd/wt` to `go build -o /Users/keith/.local/bin/wt ./wt/cmd/wt` in each of the three files found in Step 1 (use the Edit tool per file — the exact surrounding text differs per guide, so this is not a blind sed).
+Change `go build -o /Users/user_name/.local/bin/wt ./cmd/wt` to `go build -o /Users/user_name/.local/bin/wt ./wt/cmd/wt` in each of the three files found in Step 1 (use the Edit tool per file — the exact surrounding text differs per guide, so this is not a blind sed).
 
 - [ ] **Step 3: Grep both merged trees for any other repo-root-relative assumption**
 

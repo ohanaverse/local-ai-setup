@@ -144,7 +144,7 @@ async def test_modelform_discovered_mode_locks_provider_and_model():
     discovered = DiscoveredModel(
         provider_id="omlx",
         variant_id="Qwen3.8-27B-4bit",
-        path="/Users/keith/.omlx/models/Qwen3.8-27B-4bit",
+        path="/Users/user_name/.omlx/models/Qwen3.8-27B-4bit",
         size_bytes=123,
     )
     form = ModelForm(
@@ -178,7 +178,7 @@ async def test_modelform_discovered_mode_submits_without_parse_model():
     discovered = DiscoveredModel(
         provider_id="omlx",
         variant_id="Qwen3.8-27B-4bit",
-        path="/Users/keith/.omlx/models/Qwen3.8-27B-4bit",
+        path="/Users/user_name/.omlx/models/Qwen3.8-27B-4bit",
         size_bytes=123,
     )
     form = ModelForm(
@@ -493,7 +493,7 @@ async def test_discovered_model_renders_as_synthetic_row(tmp_path, monkeypatch):
             DiscoveredModel(
                 provider_id="mtplx",
                 variant_id="Youssofal/Qwen3.8-27B-MTPLX",
-                path="/Users/keith/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX",
+                path="/Users/user_name/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX",
                 size_bytes=5_000_000_000,
             )
         ],
@@ -730,7 +730,7 @@ async def test_register_discovered_model_writes_ready_state_without_queuing_down
     discovered = DiscoveredModel(
         provider_id="omlx",
         variant_id="Qwen3.8-27B-4bit",
-        path="/Users/keith/.omlx/models/Qwen3.8-27B-4bit",
+        path="/Users/user_name/.omlx/models/Qwen3.8-27B-4bit",
         size_bytes=19_530_941_006,
     )
     monkeypatch.setattr(
@@ -763,7 +763,7 @@ async def test_register_discovered_model_writes_ready_state_without_queuing_down
         assert entry_id not in app.screen.queued_ready
         model_state = app.screen.state.get(entry_id)
         assert model_state.ready is True
-        assert model_state.disk_path == "/Users/keith/.omlx/models/Qwen3.8-27B-4bit"
+        assert model_state.disk_path == "/Users/user_name/.omlx/models/Qwen3.8-27B-4bit"
         assert model_state.size_bytes == 19_530_941_006
         assert app.screen._discovered_by_key == {}
 
