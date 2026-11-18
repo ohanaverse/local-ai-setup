@@ -744,8 +744,12 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 	}
 	noSecrets(t, f, lines, r, newKey, apOldMaster, apOldSalt)
 
-	// A failed chmod after the edit: the plist holds the new key, the pair the
-	// old one, and the Result says how to restore the backup.
+	// A step failing after the edit and before the pair: the plist holds the
+	// new key, the pair the old one, and the Result says how to restore the
+	// backup. The rotation plan has no step between the edit (its second) and
+	// the pair, so a hand-built StepChmod (a real step only of the tighten
+	// plan) on a missing path, put right after the backup and the edit,
+	// stands in for any failure there.
 	f = rotEnv(t)
 	f.modes[plLiteLLM] = 0o644
 	p := plan()
@@ -1109,4 +1113,28 @@ func TestNoPlanOrResultTextContainsAKey(t *testing.T) {
 			t.Errorf("%s: the key's hex shows", c.name)
 		}
 	}
+}
+
+// TestApplyCreateCountsADanglingSymlinkAsPresent pins that create's "no
+// plist exists" check does not follow a final symlink: a dangling link at the
+// LiteLLM plist path (a dotfiles tool's link to a file not there yet) is a
+// plist that exists, so create refuses before generating a key, writes
+// nothing and leaves the pair alone, instead of renaming a regular file over
+// the link with new keys in it.
+func TestApplyCreateCountsADanglingSymlinkAsPresent(t *testing.T) {
+	p := mustPlan(t, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	f := apEnv(t)
+	liteLLMUp(f, 77)
+	f.dangling = map[string]bool{plLiteLLM: true}
+	r, lines := apply(t, f, p)
+	if r.Failed == nil || r.Failed.Kind != StepLiteLLMPlist {
+		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
+	}
+	if !strings.Contains(r.Err.Error(), plLiteLLM+" exists now") {
+		t.Errorf("Err = %v", r.Err)
+	}
+	if f.called("FS.WriteAtomic "+plLiteLLM) || f.called("Config.SetPair") || f.called("Launchd.Bootstrap "+plLiteLLM) {
+		t.Errorf("wrote through a dangling link: %q", f.mutations())
+	}
+	noSecrets(t, f, lines, r)
 }

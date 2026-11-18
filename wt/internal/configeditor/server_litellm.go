@@ -29,11 +29,13 @@ func plistLoose(p modelsetup.LiteLLMPlistState) bool {
 }
 
 // serverLiteLLMMenu is what the k menu offers for a state, and the reasons
-// for what it does not (each a line of its own). It reads State only: the
+// for what it does not (each a line of its own). probeSkipped says the
+// observation skipped the LiteLLM probe, so its binary and port are unknown,
+// not absent. It reads State only: the
 // rules mirror modelsetup.BuildPlan's refusals so the menu never offers an
 // action the plan would refuse for a reason the observation already shows;
 // a refusal for anything else still arrives as the plan's own text.
-func serverLiteLLMMenu(s modelsetup.State) (opts []menuOption, reasons []string) {
+func serverLiteLLMMenu(s modelsetup.State, probeSkipped bool) (opts []menuOption, reasons []string) {
 	p, inst := s.LiteLLMPlist, s.LiteLLMInstall
 	where := p.Path
 	if where == "" {
@@ -59,7 +61,11 @@ func serverLiteLLMMenu(s modelsetup.State) (opts []menuOption, reasons []string)
 		return opts, reasons
 	}
 	var why []string
-	if inst.Binary == "" {
+	switch {
+	case probeSkipped:
+		// The read shown never looked for the binary or at the port.
+		why = append(why, "the LiteLLM probe was not run; press r, then k again")
+	case inst.Binary == "":
 		why = append(why, "no litellm binary was found, and wt never installs LiteLLM")
 	}
 	if !inst.ConfigExists {
@@ -70,6 +76,7 @@ func serverLiteLLMMenu(s modelsetup.State) (opts []menuOption, reasons []string)
 		port = modelsetup.DefaultLiteLLMPort
 	}
 	switch {
+	case probeSkipped:
 	case !inst.ListenerChecked:
 		why = append(why, "port "+strconv.Itoa(port)+" was not checked; press r, then k again")
 	case inst.ListenerPID != 0:
@@ -133,7 +140,7 @@ func (m *model) updateServerMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	st := &m.server
-	opts, _ := serverLiteLLMMenu(st.state)
+	opts, _ := serverLiteLLMMenu(st.state, st.probeSkipped)
 	switch key.String() {
 	case "ctrl+c":
 		return m.quit()
@@ -159,7 +166,7 @@ func (m *model) updateServerMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // serverMenuHints are the menu's hints: only keys that act.
 func (m *model) serverMenuHints() []string {
-	opts, _ := serverLiteLLMMenu(m.server.state)
+	opts, _ := serverLiteLLMMenu(m.server.state, m.server.probeSkipped)
 	if len(opts) == 0 {
 		return []string{"esc back · ctrl+c quit", "esc · ctrl+c quit"}
 	}
@@ -169,7 +176,7 @@ func (m *model) serverMenuHints() []string {
 // serverMenuView draws the menu: the title and the options always, then the
 // reasons as dim lines as far as they fit, behind a marker for the rest.
 func (m *model) serverMenuView(bar string, dim lipgloss.Style) string {
-	opts, reasons := serverLiteLLMMenu(m.server.state)
+	opts, reasons := serverLiteLLMMenu(m.server.state, m.server.probeSkipped)
 	lines := []string{"", "LiteLLM master key"}
 	if len(opts) == 0 {
 		lines = append(lines, "nothing can be done here:")
@@ -274,8 +281,10 @@ func (m *model) resultWindow() (lines []string, rows int, scrolls bool) {
 }
 
 // updateServerResult takes keys while the result screen shows: up and down
-// scroll, esc and enter leave it; q, ctrl+c, tab, c and r work as ever.
-// Reports whether the key was handled here.
+// scroll, esc and enter leave it; q, ctrl+c and tab work as ever. Every other
+// key is eaten, c and r included: a check or re-read would replace the
+// status, and the Recovery commands and notes of a failed apply could not be
+// shown again. Reports whether the key was handled here.
 func (m *model) updateServerResult(key string) bool {
 	st := &m.server
 	lines, rows, _ := m.resultWindow()
@@ -286,11 +295,6 @@ func (m *model) updateServerResult(key string) bool {
 		st.result.top = min(st.result.top+1, max(len(lines)-rows, 0))
 	case "esc", "enter":
 		st.result = nil
-	case "c", "r":
-		// A new read replaces what the screen reports, and its status line
-		// would be hidden behind the screen: leave the screen.
-		st.result = nil
-		return false
 	case "q", "ctrl+c", "tab":
 		return false
 	}
@@ -315,5 +319,5 @@ func (m *model) serverResultHints(scrolls bool) []string {
 	if scrolls {
 		scroll, short = "up/down scroll · ", "up/down · "
 	}
-	return []string{scroll + "esc done · c check · r re-read · tab next · q quit", short + "esc · c · r · tab · q quit", "esc · q quit"}
+	return []string{scroll + "esc/enter done · tab next · q quit", short + "esc/enter · tab · q quit", "esc · q quit"}
 }

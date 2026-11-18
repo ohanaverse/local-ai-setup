@@ -136,12 +136,24 @@ type serverTab struct {
 	result *serverResultScreen
 	// menuAt is the menu option the cursor is on.
 	menuAt int
+	// probeSkipped is true when the observation shown left out the LiteLLM
+	// probe, so it holds no litellm binary or port check: choosing local then
+	// reads again with the probe (the k menu's create needs it), and the menu
+	// says the probe was not run.
+	probeSkipped bool
+	// probeRead is true while the read the choice of local started, for its
+	// LiteLLM probe, is out. Only that read lets the mode keys through, so
+	// native to remote (which passes over local) is not stopped halfway.
+	probeRead bool
 }
 
 // serverObservedMsg carries one observation.
 type serverObservedMsg struct {
 	gen int
 	st  modelsetup.State
+	// skippedProbe is whether the observation left out the LiteLLM probe
+	// (its options' LiteLLMProbeSkipped for the mode it resolved).
+	skippedProbe bool
 }
 
 // serverPlannedMsg carries one plan, or why there is none.
@@ -254,6 +266,9 @@ func (m *model) serverObserveOptions() modelsetup.ObserveOptions {
 	st := &m.server
 	var o modelsetup.ObserveOptions
 	o.SkipLiteLLMProbe = st.want.Mode != modelclient.ModeLocal
+	// Until the user moves the mode choice the mode shown is the one the read
+	// resolves, so a config that stores local is probed in that same read.
+	o.ProbeLiteLLMWhenLocal = !st.chosen
 	switch st.want.Mode {
 	case modelclient.ModeLocal:
 		if _, port, err := net.SplitHostPort(st.value(sfListen)); err == nil {
@@ -306,10 +321,11 @@ func (m *model) observeServerCmd() tea.Cmd {
 // observeServerCmdWith is observeServerCmd with the options given.
 func (m *model) observeServerCmdWith(opts modelsetup.ObserveOptions) tea.Cmd {
 	m.server.gen++
-	m.server.asked, m.server.busy = true, true
+	m.server.asked, m.server.busy, m.server.probeRead = true, true, false
 	gen, observe := m.server.gen, m.opts.Server.Observe
 	return func() tea.Msg {
-		return serverObservedMsg{gen: gen, st: observe(context.Background(), opts)}
+		st := observe(context.Background(), opts)
+		return serverObservedMsg{gen: gen, st: st, skippedProbe: opts.LiteLLMProbeSkipped(st.Resolution.Mode)}
 	}
 }
 
@@ -320,7 +336,7 @@ func (m *model) applyServerObserved(msg serverObservedMsg) tea.Cmd {
 	if msg.gen != st.gen {
 		return nil // a later observation is on its way
 	}
-	st.state, st.loaded, st.busy = msg.st, true, false
+	st.state, st.loaded, st.busy, st.probeSkipped, st.probeRead = msg.st, true, false, msg.skippedProbe, false
 	if st.pending {
 		st.status, st.pending = "", false
 	}
@@ -696,11 +712,21 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// an apply or a start/stop. So a plan is always of the form a saw,
 		// and no question can appear under a field being typed into (a y in
 		// a url must never confirm). These keys only say why they wait.
-		if st.busy {
+		modeKey := key.String() == "left" || key.String() == "right" || key.String() == " "
+		if st.busy && !(st.probeRead && modeKey) {
 			st.status = "wait: the form does not change while the model server tab is busy"
 			return m, nil
 		}
+		was := st.want.Mode
 		m.updateServerForm(key.String())
+		if st.want.Mode == modelclient.ModeLocal && was != modelclient.ModeLocal && st.probeSkipped {
+			// The read shown skipped the LiteLLM probe (its mode was not
+			// local), so read again with it, exactly as r does.
+			st.status, st.pending = m.cancelServerPlan()+"re-reading the model server's state", true
+			cmd := m.observeServerCmd()
+			st.probeRead = true
+			return m, cmd
+		}
 	case "a":
 		return m, m.startServerPlan()
 	case "k":

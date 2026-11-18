@@ -498,7 +498,8 @@ func TestObserveDescribesTheLiteLLMInstallAndHidesParserText(t *testing.T) {
 
 // TestObserveLiteLLMJobAndProbeGate pins that a present LiteLLM plist has its
 // job's loaded state read (JobChecked, JobLoaded), and that SkipLiteLLMProbe
-// leaves out the binary search and the port lookup a create plan alone uses.
+// leaves out the binary search and the port lookup a create plan alone uses
+// (the fake has a litellm binary and a listener, so an ignored skip shows).
 func TestObserveLiteLLMJobAndProbeGate(t *testing.T) {
 	f := newFakeEnv(t)
 	f.plistInfo = litellm.ProxyPlistInfo{Port: 4000, EnvNames: []string{"LITELLM_MASTER_KEY"}}
@@ -514,8 +515,133 @@ func TestObserveLiteLLMJobAndProbeGate(t *testing.T) {
 	f = newFakeEnv(t)
 	f.plistErr = &fs.PathError{Op: "open", Path: f.plistPath, Err: fs.ErrNotExist}
 	f.listeners = map[int]int{4000: 4242}
+	f.litellmBin = plLiteLLMBin
 	st = Observe(context.Background(), f.Env(), ObserveOptions{SkipLiteLLMProbe: true})
 	if got := st.LiteLLMInstall; got.Binary != "" || got.ListenerChecked || got.ListenerPID != 0 {
 		t.Errorf("skipped probe: %+v", got)
+	}
+	if f.called("LiteLLM.Binary") || f.called("Net.ListenerPID 4000") {
+		t.Errorf("skipped probe still searched: %q", f.calls)
+	}
+	// Without the skip the same fake is probed, so the checks above can fail.
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if got := st.LiteLLMInstall; got.Binary != plLiteLLMBin || !got.ListenerChecked || got.ListenerPID != 4242 {
+		t.Errorf("probe: %+v", got)
+	}
+}
+
+// TestObserveProbesLiteLLMWhenTheResolvedModeIsLocal pins
+// ProbeLiteLLMWhenLocal: with SkipLiteLLMProbe also set, the binary search
+// and the port lookup still run when the mode Observe resolves is local, and
+// are left out for any other mode. The configuration editor's first read is
+// made before it knows the mode; without this, a config that stores local
+// showed a menu that said no litellm binary was found when nobody looked.
+// LiteLLMProbeSkipped answers the same rule for the caller.
+func TestObserveProbesLiteLLMWhenTheResolvedModeIsLocal(t *testing.T) {
+	opts := ObserveOptions{SkipLiteLLMProbe: true, ProbeLiteLLMWhenLocal: true}
+	for _, c := range []struct {
+		mode  string
+		probe bool
+	}{{"local", true}, {"remote", false}, {"native", false}} {
+		f := obsConfigured(t)
+		f.configFile.Table.Mode = c.mode
+		f.plistErr = &fs.PathError{Op: "open", Path: f.plistPath, Err: fs.ErrNotExist}
+		f.listeners = map[int]int{4000: 4242}
+		f.litellmBin = plLiteLLMBin
+		st := Observe(context.Background(), f.Env(), opts)
+		got := st.LiteLLMInstall
+		if probed := got.Binary == plLiteLLMBin && got.ListenerChecked && got.ListenerPID == 4242; probed != c.probe {
+			t.Errorf("%s: install %+v, want probed %v", c.mode, got, c.probe)
+		}
+		if f.called("LiteLLM.Binary") != c.probe || f.called("Net.ListenerPID 4000") != c.probe {
+			t.Errorf("%s: calls %q, want the probe %v", c.mode, f.calls, c.probe)
+		}
+		if skipped := opts.LiteLLMProbeSkipped(st.Resolution.Mode); skipped == c.probe {
+			t.Errorf("%s: LiteLLMProbeSkipped = %v, want %v", c.mode, skipped, !c.probe)
+		}
+	}
+	// Without ProbeLiteLLMWhenLocal the skip holds for local too.
+	f := obsConfigured(t)
+	f.litellmBin = plLiteLLMBin
+	st := Observe(context.Background(), f.Env(), ObserveOptions{SkipLiteLLMProbe: true})
+	if st.Resolution.Mode != "local" || st.LiteLLMInstall.Binary != "" || f.called("LiteLLM.Binary") {
+		t.Errorf("skip alone, local: mode %q install %+v", st.Resolution.Mode, st.LiteLLMInstall)
+	}
+	if !(ObserveOptions{SkipLiteLLMProbe: true}).LiteLLMProbeSkipped(st.Resolution.Mode) || (ObserveOptions{}).LiteLLMProbeSkipped("") {
+		t.Errorf("LiteLLMProbeSkipped ignores SkipLiteLLMProbe")
+	}
+}
+
+// TestObserveCountsDanglingAgentPlistAndTokenLinksAsPresent pins that a
+// symlink that does not resolve at wt's LaunchAgent plist or at the local
+// token file reads as present with an error naming it, not absent, so the
+// plan refuses it up front (naming the link) instead of planning a new plist
+// or token that the write would then refuse at apply time.
+func TestObserveCountsDanglingAgentPlistAndTokenLinksAsPresent(t *testing.T) {
+	f := obsConfigured(t)
+	delete(f.files, obsTokenPath)
+	f.dangling = map[string]bool{obsAgentPath: true, obsTokenPath: true}
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if a := st.Agent; !a.Present || a.Managed || !strings.Contains(a.Err, obsAgentPath+" is a symlink that does not resolve") {
+		t.Errorf("dangling agent plist link: %+v", a)
+	}
+	if tk := st.Token; tk.Path != obsTokenPath || !tk.Exists || !strings.Contains(tk.Err, obsTokenPath+" is a symlink that does not resolve") {
+		t.Errorf("dangling token link: %+v", tk)
+	}
+	st.Host.ConfigHome = "/Users/user_name/.config"
+	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, TokenFile: obsTokenPath})
+	if err == nil || !strings.Contains(err.Error(), obsAgentPath) || !strings.Contains(err.Error(), obsTokenPath) || len(p.Steps) != 0 {
+		t.Errorf("plan over dangling links: err %v, steps %d", err, len(p.Steps))
+	}
+}
+
+// TestPlanRefusesAPastedTokenOverADanglingLink pins that a pasted token aimed
+// at a token path holding a link that does not resolve is refused when the
+// plan is built, naming the link, instead of planning a "replace" that the
+// write refuses only after the user confirmed it.
+func TestPlanRefusesAPastedTokenOverADanglingLink(t *testing.T) {
+	f := obsConfigured(t)
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	st.Host.ConfigHome = "/Users/user_name/.config"
+	st.TokenFiles = []TokenState{{Path: RemoteTokenPath(st.Host.ConfigHome), Exists: true, Dangling: true, Err: RemoteTokenPath(st.Host.ConfigHome) + " is a symlink that does not resolve"}}
+	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: "http://m:1", PastedToken: Secret("tok")})
+	if err == nil || !strings.Contains(err.Error(), "symlink that does not resolve") || len(p.Steps) != 0 {
+		t.Errorf("pasted token over a dangling link: err %v, steps %d", err, len(p.Steps))
+	}
+}
+
+// TestPlanReplacesAnUnreadableTokenWithAPastedOne pins that a token file that
+// exists but cannot be read (not a dangling link) is still replaced by a
+// pasted token: pasting is the remedy the file-path refusal names for it.
+func TestPlanReplacesAnUnreadableTokenWithAPastedOne(t *testing.T) {
+	f := obsConfigured(t)
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	st.Host.ConfigHome = "/Users/user_name/.config"
+	st.TokenFiles = []TokenState{{Path: RemoteTokenPath(st.Host.ConfigHome), Exists: true, Err: "read: permission denied"}}
+	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: "http://m:1", PastedToken: Secret("tok")})
+	if err != nil || len(p.Steps) == 0 {
+		t.Errorf("pasted token over an unreadable file: err %v, steps %d", err, len(p.Steps))
+	}
+}
+
+// TestObserveCountsADanglingLiteLLMPlistLinkAsPresent pins that a LiteLLM
+// plist path holding a symlink that does not resolve reads as present (with
+// an error naming it), not absent, so a create plan refuses it instead of
+// offering to write a new plist over the link.
+func TestObserveCountsADanglingLiteLLMPlistLinkAsPresent(t *testing.T) {
+	f := newFakeEnv(t)
+	f.litellmBin = plLiteLLMBin
+	f.files[f.configPath] = []byte("model_list: []\n")
+	f.plistErr = &fs.PathError{Op: "open", Path: f.plistPath, Err: fs.ErrNotExist}
+	f.dangling = map[string]bool{f.plistPath: true}
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	lp := st.LiteLLMPlist
+	if !lp.Present || !strings.Contains(lp.Err, f.plistPath+" is a symlink that does not resolve") {
+		t.Fatalf("dangling plist link: %+v", lp)
+	}
+	st.Host.ConfigHome = "/Users/user_name/.config"
+	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	if err == nil || !strings.Contains(err.Error(), "already exists") || len(p.Steps) != 0 {
+		t.Errorf("create over a dangling link: err %v, steps %d", err, len(p.Steps))
 	}
 }

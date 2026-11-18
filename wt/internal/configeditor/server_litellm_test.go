@@ -1,6 +1,7 @@
 package configeditor
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -126,8 +127,9 @@ func pickOption(t *testing.T, m *model, i int) *model {
 
 // TestServerTabRotateShowsThePlanAndNeverTheKey pins that choosing a new key
 // reads the machine again, plans with Desired.LiteLLM = rotate, and shows the
-// real plan's text (backup, edit, chmod, restart, what else may hold the old
-// key) on the confirm screen; a master key typed into the form earlier and
+// real plan's text (the backup, the LITELLM_MASTER_KEY edit, the pair, the
+// LiteLLM and wt-model restarts, what else may hold the old key) on the
+// confirm screen; a master key typed into the form earlier and
 // any fake key never appear, and no key reaches Plan.
 func TestServerTabRotateShowsThePlanAndNeverTheKey(t *testing.T) {
 	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true}
@@ -567,7 +569,7 @@ func TestServerTabMenuAgreesWithBuildPlan(t *testing.T) {
 		"present": litellmLocalState(xmlPlist()), "no salt": litellmLocalState(noSalt), "no key": litellmLocalState(noKey),
 		"binary": litellmLocalState(binary), "unreadable": litellmLocalState(unreadable),
 	} {
-		opts, _ := serverLiteLLMMenu(st)
+		opts, _ := serverLiteLLMMenu(st, false)
 		offered := map[modelsetup.LiteLLMAction]bool{}
 		for _, o := range opts {
 			offered[o.action] = true
@@ -586,5 +588,216 @@ func TestServerTabMenuAgreesWithBuildPlan(t *testing.T) {
 				t.Errorf("%s: %s is hidden but the plan accepts it", name, a)
 			}
 		}
+	}
+}
+
+// TestServerTabResultScreenEatsCAndR pins that c and r do nothing while the
+// result screen shows: a check or re-read would replace the status and the
+// screen with it, and the Recovery commands and the backup note of a failed
+// apply could not be brought back. The screen and its text stay, no read is
+// asked for, and the hint line names esc/enter to close it and neither key;
+// after esc, c reads again as usual.
+func TestServerTabResultScreenEatsCAndR(t *testing.T) {
+	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: failedRotate()}
+	m := keys(t, pickOption(t, serverEditor(t, sm, 120, 50), 1), "y")
+	if m.server.result == nil {
+		t.Fatalf("no result screen (status %q)", m.server.status)
+	}
+	before := sm.observes
+	for _, k := range []string{"c", "r"} {
+		m = keys(t, m, k)
+		if m.server.result == nil || !strings.Contains(m.server.result.recovery, "cp -p "+tlBackup) {
+			t.Fatalf("%s closed the result screen or lost its Recovery (status %q)", k, m.server.status)
+		}
+		if !strings.Contains(flat(plain(m)), flat("cp -p "+tlBackup)) || !strings.Contains(flat(plain(m)), flat(tlBackup+" (it holds")) {
+			t.Errorf("%s: the Recovery or the backup note is no longer drawn:\n%s", k, plain(m))
+		}
+		if sm.observes != before {
+			t.Errorf("%s: observes %d -> %d, want no read while the result shows", k, before, sm.observes)
+		}
+	}
+	h := hintLine(m)
+	if !strings.Contains(h, "esc/enter") || strings.Contains(h, "c check") || strings.Contains(h, "r re-read") {
+		t.Errorf("result hints = %q, want esc/enter to close and no c or r", h)
+	}
+	m = keys(t, m, "esc", "c")
+	if m.server.result != nil || sm.observes != before+1 {
+		t.Errorf("esc then c: result %v, observes %d, want the screen closed and one read", m.server.result != nil, sm.observes-before)
+	}
+}
+
+// TestServerTabReadsTheLiteLLMProbeWhenLocalIsChosen pins that choosing
+// local with the mode keys, after an observation that skipped the LiteLLM
+// probe (the first read of an unset or remote config does), reads the
+// machine again with the probe, exactly as r would, so the k menu can offer
+// create without the user first pressing r. Moving between native and remote
+// asks for no read, and coming back to local after a probed read asks for
+// none either. The fake answers like Observe: the litellm binary and the
+// port check only when the probe is not skipped.
+func TestServerTabReadsTheLiteLLMProbeWhenLocalIsChosen(t *testing.T) {
+	base := installable()
+	base.Resolution = modelclient.Resolution{}
+	base.Config.Table.Mode = ""
+	probed := 0
+	sm := &serverMachine{}
+	deps := sm.deps()
+	observe := deps.Observe
+	deps.Observe = func(ctx context.Context, o modelsetup.ObserveOptions) modelsetup.State {
+		observe(ctx, o)
+		st := base
+		if o.SkipLiteLLMProbe {
+			st.LiteLLMInstall = modelsetup.LiteLLMInstallState{ConfigPath: base.LiteLLMInstall.ConfigPath, ConfigExists: true}
+		} else {
+			probed++
+		}
+		return st
+	}
+	m := newModel(testTheme(), &config.Config{}, nil)
+	m.opts = Options{StartTab: TabServer, Server: deps, Models: newTabMachine(t, "").deps()}
+	m.tab = TabServer
+	m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
+	m = runCmd(t, m, m.Init())
+	if sm.observes != 1 || probed != 0 {
+		t.Fatalf("first read: observes %d probed %d, want one read without the probe", sm.observes, probed)
+	}
+
+	// Among native and remote: no read.
+	for _, c := range []struct {
+		key  string
+		mode modelclient.Mode
+	}{{"right", modelclient.ModeNative}, {"left", modelclient.ModeRemote}, {" ", modelclient.ModeNative}} {
+		m = keys(t, m, c.key)
+		if m.server.want.Mode != c.mode || sm.observes != 1 {
+			t.Fatalf("%q: mode %q observes %d, want %q and no read", c.key, m.server.want.Mode, sm.observes, c.mode)
+		}
+	}
+	next, cmd := m.Update(keyMsg("right")) // local
+	m = next.(*model)
+	if m.server.want.Mode != modelclient.ModeLocal || cmd == nil || !m.server.busy ||
+		!strings.Contains(m.server.status, "re-reading the model server's state") {
+		t.Fatalf("local: mode %q cmd %v busy %v status %q, want a re-read as r starts", m.server.want.Mode, cmd != nil, m.server.busy, m.server.status)
+	}
+	m = runCmd(t, m, cmd)
+	if sm.observes != 2 || probed != 1 || sm.opts[1].SkipLiteLLMProbe {
+		t.Fatalf("local: observes %d probed %d, want a second read with the probe", sm.observes, probed)
+	}
+	if v := flat(plain(keys(t, m, "k"))); !strings.Contains(v, flat(optCreate)) {
+		t.Errorf("k after choosing local does not offer create:\n%s", plain(keys(t, m, "k")))
+	}
+
+	m = keys(t, m, "right", "left") // remote, then local again after a probed read
+	if m.server.want.Mode != modelclient.ModeLocal || sm.observes != 2 {
+		t.Errorf("remote and back: mode %q observes %d, want local and no new read", m.server.want.Mode, sm.observes)
+	}
+}
+
+// TestServerTabModeKeysPassThroughLocalDuringItsProbeRead pins that going
+// from native to remote, which passes over local, is not stopped halfway by
+// the probe read the stop on local starts: the next mode key is let through
+// while that read is out, and only that read.
+func TestServerTabModeKeysPassThroughLocalDuringItsProbeRead(t *testing.T) {
+	base := installable()
+	base.Resolution = modelclient.Resolution{}
+	base.Config.Table.Mode = ""
+	sm := &serverMachine{}
+	deps := sm.deps()
+	observe := deps.Observe
+	deps.Observe = func(ctx context.Context, o modelsetup.ObserveOptions) modelsetup.State {
+		observe(ctx, o)
+		return base
+	}
+	m := newModel(testTheme(), &config.Config{}, nil)
+	m.opts = Options{StartTab: TabServer, Server: deps, Models: newTabMachine(t, "").deps()}
+	m.tab = TabServer
+	m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
+	m = runCmd(t, m, m.Init())
+	m = keys(t, m, "right")                // native
+	next, cmd := m.Update(keyMsg("right")) // local: the probe read starts
+	m = next.(*model)
+	if !m.server.busy || cmd == nil {
+		t.Fatalf("local: busy %v cmd %v, want a read out", m.server.busy, cmd != nil)
+	}
+	next, _ = m.Update(keyMsg("right")) // remote, while that read is out
+	m = next.(*model)
+	if m.server.want.Mode != modelclient.ModeRemote {
+		t.Fatalf("mode %q, want remote: the key was held back (%q)", m.server.want.Mode, m.server.status)
+	}
+	next, _ = m.Update(keyMsg("enter")) // other keys still wait
+	m = next.(*model)
+	if !strings.Contains(m.server.status, "wait") {
+		t.Errorf("enter during the probe read: status %q, want the wait line", m.server.status)
+	}
+}
+
+// TestServerTabProbesOnFirstOpenOfAStoredLocalConfig pins that opening the
+// tab on a config that already stores mode = "local" runs the LiteLLM probe
+// in its one first read: that read is made before the mode is known, and no
+// mode key moves the choice to local because it already is local, so a read
+// that skipped the probe left the k menu saying no litellm binary was found
+// when nobody had looked. The first read asks Observe to probe if the mode it
+// resolves is local (the fake answers by the same rule), the tab still reads
+// once, and k offers create. An unset or remote config is still not probed.
+func TestServerTabProbesOnFirstOpenOfAStoredLocalConfig(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		mode  modelclient.Mode
+		probe bool
+	}{{"local", modelclient.ModeLocal, true}, {"remote", modelclient.ModeRemote, false}, {"unset", "", false}} {
+		base := installable() // no LiteLLM plist, litellm installed, port free
+		base.Resolution.Mode = c.mode
+		base.Config.Table.Mode = string(c.mode)
+		probed := 0
+		sm := &serverMachine{}
+		deps := sm.deps()
+		observe := deps.Observe
+		deps.Observe = func(ctx context.Context, o modelsetup.ObserveOptions) modelsetup.State {
+			observe(ctx, o)
+			st := base
+			if o.LiteLLMProbeSkipped(base.Resolution.Mode) {
+				st.LiteLLMInstall = modelsetup.LiteLLMInstallState{ConfigPath: base.LiteLLMInstall.ConfigPath, ConfigExists: true}
+			} else {
+				probed++
+			}
+			return st
+		}
+		m := newModel(testTheme(), &config.Config{}, nil)
+		m.opts = Options{StartTab: TabServer, Server: deps, Models: newTabMachine(t, "").deps()}
+		m.tab = TabServer
+		m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
+		m = runCmd(t, m, m.Init())
+		if m.server.want.Mode != c.mode || sm.observes != 1 || (probed == 1) != c.probe || m.server.probeSkipped == c.probe {
+			t.Fatalf("%s: mode %q observes %d probed %d probeSkipped %v, want one read, probed %v",
+				c.name, m.server.want.Mode, sm.observes, probed, m.server.probeSkipped, c.probe)
+		}
+		if !c.probe {
+			continue
+		}
+		if v := flat(plain(keys(t, m, "k"))); !strings.Contains(v, flat(optCreate)) {
+			t.Errorf("k on a stored local config does not offer create:\n%s", plain(keys(t, m, "k")))
+		}
+	}
+}
+
+// TestServerTabMenuSaysTheProbeWasNotRun pins the k menu's reason when the
+// observation shown skipped the LiteLLM probe: the binary and the port were
+// never looked at, so it says the probe was not run and names r, and never
+// claims no litellm binary was found.
+func TestServerTabMenuSaysTheProbeWasNotRun(t *testing.T) {
+	st := installable()
+	st.LiteLLMInstall = modelsetup.LiteLLMInstallState{ConfigPath: st.LiteLLMInstall.ConfigPath, ConfigExists: true}
+	opts, reasons := serverLiteLLMMenu(st, true)
+	for _, o := range opts {
+		if o.action == modelsetup.LiteLLMCreate {
+			t.Fatalf("create offered from a read that skipped the probe")
+		}
+	}
+	all := strings.Join(reasons, "\n")
+	if strings.Contains(all, "no litellm binary was found") || !strings.Contains(all, "the LiteLLM probe was not run; press r, then k again") {
+		t.Errorf("reasons %q, want the probe named as not run, not a missing binary", all)
+	}
+	// A probed read with no binary still says so.
+	st.LiteLLMInstall.ListenerChecked = true
+	if _, reasons := serverLiteLLMMenu(st, false); !strings.Contains(strings.Join(reasons, "\n"), "no litellm binary was found") {
+		t.Errorf("probed read without a binary: reasons %q, want the missing binary named", reasons)
 	}
 }

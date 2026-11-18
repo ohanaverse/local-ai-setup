@@ -305,6 +305,12 @@ func planRemote(st State, want Desired) (Plan, error) {
 		path := RemoteTokenPath(st.Host.ConfigHome)
 		want.TokenFile = path
 		ts, _ := tokenAt(st, path)
+		if ts.Dangling {
+			// A link that does not resolve: apply would refuse it after the
+			// confirmation, so refuse it now.
+			reasons = append(reasons, reason("token path "+path+" cannot be replaced ("+ts.Err+")", "remove or repair the link, then plan again"))
+			break
+		}
 		s := Step{Kind: StepToken, Path: path, Action: ActionWritePastedToken,
 			Detail: "write the pasted token to " + path + " (mode 0600)"}
 		if ts.Exists {

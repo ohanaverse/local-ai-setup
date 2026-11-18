@@ -487,7 +487,9 @@ func applyLiteLLMPlist(ctx context.Context, env Env, p Plan, s Step, run *applyR
 	if err := checkLiteLLMSpec(spec); err != nil {
 		return fmt.Errorf("%w (nothing was written)", err)
 	}
-	if _, err := env.FS.Stat(s.Path); err == nil {
+	// Lstat: a dangling symlink at the path is a plist that exists, never
+	// one to rename a new file over.
+	if _, err := env.FS.Lstat(s.Path); err == nil {
 		return fmt.Errorf("%s exists now, and wt never replaces a LiteLLM plist; nothing was written: check again", s.Path)
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("look for %s: %w", s.Path, err)
@@ -549,7 +551,8 @@ func applyMasterKey(env Env, s Step, run *applyRun) error {
 		return fmt.Errorf("edit %s: %w; nothing was changed", s.Path, err)
 	}
 	// Written in one step without group or other bits: the new key is never
-	// readable by others, even if the apply stops before StepChmod.
+	// readable by others, not even for a moment (there is no later chmod
+	// step in a rotation to tighten it).
 	if err := env.FS.WriteAtomic(s.Path, out, info.Mode().Perm()&^0o077); err != nil {
 		return fmt.Errorf("write %s: %w", s.Path, err)
 	}

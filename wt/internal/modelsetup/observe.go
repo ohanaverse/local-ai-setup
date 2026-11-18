@@ -39,6 +39,17 @@ type ObserveOptions struct {
 	// create plan reads: the binary search and the listener on the default
 	// port. Native and remote choices set it, so a read there pays for none.
 	SkipLiteLLMProbe bool
+	// ProbeLiteLLMWhenLocal overrides SkipLiteLLMProbe when the mode the
+	// read resolves is local: a caller that does not yet know the mode (the
+	// configuration editor's first read) pays for the probe only then.
+	ProbeLiteLLMWhenLocal bool
+}
+
+// LiteLLMProbeSkipped reports whether a read made with o and resolving
+// mode left out the LiteLLM probe (so its binary and port are unknown, not
+// absent). Observe follows the same rule.
+func (o ObserveOptions) LiteLLMProbeSkipped(mode modelclient.Mode) bool {
+	return o.SkipLiteLLMProbe && !(o.ProbeLiteLLMWhenLocal && mode == modelclient.ModeLocal)
 }
 
 // Platform says whether the local mode can be set up here: macOS with launchd.
@@ -68,7 +79,10 @@ type ConfigState struct {
 type TokenState struct {
 	Path                 string
 	Exists, Loose, Empty bool
-	Err                  string
+	// Dangling: the path is a symlink that does not resolve (Exists is true
+	// too, and Err names it). Writing there would replace the link.
+	Dangling bool
+	Err      string
 }
 
 // PairState describes the LiteLLM proxy pair; the key is only a flag.
@@ -305,6 +319,10 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			} else {
 				st.Agent.Managed, st.Agent.Listen, st.Agent.Binary, st.Agent.TokenFile = p.Managed, p.Listen, p.Binary, p.TokenFile
 			}
+		} else if danglingLink(env, st.Agent.PlistPath) {
+			// A link there that does not resolve is a plist that exists (a
+			// plan must not write over the link), but one wt cannot read.
+			st.Agent.Present, st.Agent.Err = true, st.Agent.PlistPath+" is a symlink that does not resolve"
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			st.Agent.Err = err.Error()
 		}
@@ -381,9 +399,14 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	lp := env.LiteLLM.PlistPath()
 	st.LiteLLMPlist.Path = lp
 	if info, err := env.LiteLLM.ReadPlist(lp); err != nil {
-		st.LiteLLMPlist.Present = !errors.Is(err, fs.ErrNotExist)
+		// A symlink there that does not resolve is a plist that exists (a
+		// create must not replace the link), but one wt cannot read.
+		dangling := danglingLink(env, lp)
+		st.LiteLLMPlist.Present = dangling || !errors.Is(err, fs.ErrNotExist)
 		var se *xml.SyntaxError
 		switch {
+		case dangling:
+			st.LiteLLMPlist.Err = lp + " is a symlink that does not resolve"
 		case !st.LiteLLMPlist.Present:
 		case errors.Is(err, litellm.ErrBinaryPlist):
 			st.LiteLLMPlist.Binary, st.LiteLLMPlist.Err = true, err.Error()
@@ -413,7 +436,8 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 
 	// LiteLLM install (for a create plan): the binary and config.yaml.
-	if !opts.SkipLiteLLMProbe {
+	skipProbe := opts.LiteLLMProbeSkipped(st.Resolution.Mode)
+	if !skipProbe {
 		st.LiteLLMInstall.Binary, _ = env.LiteLLM.Binary()
 	}
 	st.LiteLLMInstall.ConfigPath = env.LiteLLM.ConfigPath()
@@ -425,7 +449,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 
 	// With no LiteLLM plist, whatever listens on the port a created one would
 	// use (a LiteLLM run by hand or under another label) blocks a create.
-	if !st.LiteLLMPlist.Present && !opts.SkipLiteLLMProbe && ctx.Err() == nil {
+	if !st.LiteLLMPlist.Present && !skipProbe && ctx.Err() == nil {
 		st.LiteLLMInstall.Port = DefaultLiteLLMPort
 		if pid, ok, err := env.Net.ListenerPID(ctx, DefaultLiteLLMPort); err == nil {
 			st.LiteLLMInstall.ListenerChecked = true
@@ -542,12 +566,30 @@ func configHome(xdg, home string, herr error) string {
 	return filepath.Join(home, ".config")
 }
 
+// danglingLink is true when p is a symlink (Lstat sees it) that Stat cannot
+// follow: its target does not exist, or the links loop. Whatever the reason,
+// a write there would replace the link, so it reads as present, unreadable.
+func danglingLink(env Env, p string) bool {
+	fi, err := env.FS.Lstat(p)
+	if err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		return false
+	}
+	_, err = env.FS.Stat(p)
+	return err != nil
+}
+
 // readToken fills ts from the token file and returns the token, or "" when it
-// is missing, empty, unreadable or loose (a loose file is never read).
+// is missing, empty, unreadable or loose (a loose file is never read). A
+// symlink that does not resolve reads as existing, with an error naming it.
 func readToken(env Env, ts *TokenState) string {
 	info, err := env.FS.Stat(ts.Path)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
+		switch {
+		case danglingLink(env, ts.Path):
+			// A token file that is a link to nothing exists, unreadable: a
+			// plan must not make a new token over the link.
+			ts.Exists, ts.Dangling, ts.Err = true, true, ts.Path+" is a symlink that does not resolve"
+		case !errors.Is(err, fs.ErrNotExist):
 			ts.Err = err.Error()
 		}
 		return ""

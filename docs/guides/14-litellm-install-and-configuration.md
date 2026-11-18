@@ -276,7 +276,7 @@ Anything else that holds the old master key stops working once LiteLLM restarts:
 | an unreadable plist, or no `LITELLM_MASTER_KEY` (rotate) | fix the plist as sections 5 and 6 describe |
 | `DATABASE_URL` but no `LITELLM_SALT_KEY` (rotate; checked when planning and again when applying, before the backup) | set `LITELLM_SALT_KEY` to the current master key's value first, or confirm the database holds no stored credentials (section 6) |
 
-When a step fails, or an apply stops with a service out of step, a result screen shows the commands to run by hand (to put the plist, wt-model's pair or a service right) first, then the notes (the backup's path), then the result's own text; up and down scroll it, esc leaves it. A quit asked for during such an apply is held back until the notes can be read. Secrets never appear on it.
+When a step fails, or an apply stops with a service out of step, a result screen shows the commands to run by hand (to put the plist, wt-model's pair or a service right) first, then the notes (the backup's path), then the result's own text; up and down scroll it, esc or enter leaves it, and `c` and `r` do nothing until then, so the commands cannot be replaced before they are read. A quit asked for during such an apply is held back until the notes can be read. Secrets never appear on it.
 
 The tab never installs LiteLLM, Postgres, Redis or Prisma, never touches the salt key, `DATABASE_URL`, provider keys or the UI login of an existing plist, and never replaces an existing plist. The manual steps above remain the whole procedure for anything it does not do.
 
