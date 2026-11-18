@@ -336,7 +336,7 @@ func (m *model) applyServerObserved(msg serverObservedMsg) tea.Cmd {
 	if msg.gen != st.gen {
 		return nil // a later observation is on its way
 	}
-	st.state, st.loaded, st.busy, st.probeSkipped = msg.st, true, false, msg.skippedProbe
+	st.state, st.loaded, st.busy, st.probeSkipped, st.probeRead = msg.st, true, false, msg.skippedProbe, false
 	if st.pending {
 		st.status, st.pending = "", false
 	}

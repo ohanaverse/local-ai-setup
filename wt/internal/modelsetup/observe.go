@@ -79,7 +79,10 @@ type ConfigState struct {
 type TokenState struct {
 	Path                 string
 	Exists, Loose, Empty bool
-	Err                  string
+	// Dangling: the path is a symlink that does not resolve (Exists is true
+	// too, and Err names it). Writing there would replace the link.
+	Dangling bool
+	Err      string
 }
 
 // PairState describes the LiteLLM proxy pair; the key is only a flag.
@@ -585,7 +588,7 @@ func readToken(env Env, ts *TokenState) string {
 		case danglingLink(env, ts.Path):
 			// A token file that is a link to nothing exists, unreadable: a
 			// plan must not make a new token over the link.
-			ts.Exists, ts.Err = true, ts.Path+" is a symlink that does not resolve"
+			ts.Exists, ts.Dangling, ts.Err = true, true, ts.Path+" is a symlink that does not resolve"
 		case !errors.Is(err, fs.ErrNotExist):
 			ts.Err = err.Error()
 		}
