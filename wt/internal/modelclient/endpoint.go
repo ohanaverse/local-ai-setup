@@ -75,10 +75,16 @@ func sessionTokenError(err error, fromEnv bool) error {
 
 // ResolveEndpoint decides the endpoint. The environment wins over config,
 // highest first: WT_MODEL_URL, then WT_MODEL_TOKEN_FILE, then WT_MODEL_TOKEN
-// as a literal. tokenFile must already have ~ expanded.
+// as a literal. tokenFile must already have ~ expanded. The url it settles
+// on is refused with *CredentialsInURLError when it holds an '@' (HasUserinfo),
+// whichever source it came from, before a token file is read or any request
+// is built.
 func ResolveEndpoint(url, tokenFile string, env func(string) string) (Endpoint, error) {
 	if v := env("WT_MODEL_URL"); v != "" {
 		url = v
+	}
+	if HasUserinfo(url) {
+		return Endpoint{}, &CredentialsInURLError{}
 	}
 	var tok string
 	fromEnv := false

@@ -66,7 +66,7 @@ token is `~/.config/agent-wt/remote-model-server.token` (same content, mode
 | Variable | Overrides |
 |---|---|
 | `WT_MODEL_MODE` | `mode`: `native`, `local` or `remote` (case-insensitive); anything else refuses: `WT_MODEL_MODE is "X"; it must be one of native, local, remote`. Wins over everything below. |
-| `WT_MODEL_URL` | `url` |
+| `WT_MODEL_URL` | `url` (a url containing an `@` refuses; see [The refusals](#the-refusals)) |
 | `WT_MODEL_TOKEN_FILE` | `token_file` (and `WT_MODEL_TOKEN`) |
 | `WT_MODEL_TOKEN` | the token itself, as a literal; used when `WT_MODEL_TOKEN_FILE` is unset, and wins over `token_file` |
 
@@ -124,6 +124,16 @@ shown` (`wt profile show -M ...`).
 The other refusals of a configuration that cannot be used, each exit 1 with
 the same last clause:
 
+- A url (from `WT_MODEL_URL` or `url` under `[model-server]`) that contains
+  an `@` anywhere, with or without a scheme: `the model server url contains
+  an @ (read as a user:password); wt does not use credentials in the url: use
+  a token file (WT_MODEL_TOKEN_FILE or token_file under [model-server])`. No
+  part of the url is shown and no request is made; the rule is the Model
+  server tab's (any `@`, no parsing). A path that needs an `@` takes `%40`.
+  Native mode resolves no url, so it never refuses this.
+- A url with no host, or one that does not parse: `the model server url does
+  not parse as a url with a host (it is not shown) — write it as
+  http://HOST:PORT under [model-server] in config.toml, or in WT_MODEL_URL`.
 - An inline token: `[model-server] token is not used for auth — while it is set wt writes config.toml 0600, and no save loosens an existing stricter mode — put the token in a file with mode 0600 and set token_file`.
 - A token file group or other can read: `token file PATH is accessible by
   group or other (mode MODE); run 'chmod 600 PATH'`, then `check token_file

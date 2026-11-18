@@ -1,6 +1,10 @@
 package modelsetup
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+)
 
 // The one rule for a url that may carry credentials, shared by the plan's
 // refusal, Apply's config-step backstop and every place a url is shown or
@@ -16,7 +20,7 @@ import "strings"
 // hiddenURL stands in for a url holding an '@' wherever one would be shown
 // or held in State. It holds an '@' itself, so it is refused like the url it
 // stands for and can never be written into config.toml.
-const hiddenURL = "(hidden: the url contains an @)"
+const hiddenURL = modelclient.HiddenURL
 
 // notCheckedAtURL is ServerState.Message for a url holding an '@': Observe
 // never pings one, so the check is not made, and the words hold none of it.
@@ -26,9 +30,10 @@ const notCheckedAtURL = "not checked: the url contains an @; retype it without c
 const checkHidden = "the check failed; the url contains an @ so the error text is hidden"
 
 // hasUserinfo reports whether a typed url holds an ASCII '@' anywhere: every
-// such url is read as carrying a user:password and refused.
+// such url is read as carrying a user:password and refused. It is
+// modelclient.HasUserinfo, the one definition the session side applies too.
 func hasUserinfo(raw string) bool {
-	return strings.Contains(raw, "@")
+	return modelclient.HasUserinfo(raw)
 }
 
 // shownURL is the form of a url that State, a plan or a message may hold:
