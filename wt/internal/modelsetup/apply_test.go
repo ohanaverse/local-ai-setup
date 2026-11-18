@@ -744,8 +744,11 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 	}
 	noSecrets(t, f, lines, r, newKey, apOldMaster, apOldSalt)
 
-	// A failed chmod after the edit: the plist holds the new key, the pair the
-	// old one, and the Result says how to restore the backup.
+	// A step failing after the edit and before the pair: the plist holds the
+	// new key, the pair the old one, and the Result says how to restore the
+	// backup. No rotation step between the edit and the pair can fail on the
+	// fake, so a hand-built StepChmod (a real step only of the tighten plan)
+	// on a missing path stands in for that failure after the backup and edit.
 	f = rotEnv(t)
 	f.modes[plLiteLLM] = 0o644
 	p := plan()

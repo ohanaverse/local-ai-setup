@@ -551,7 +551,8 @@ func applyMasterKey(env Env, s Step, run *applyRun) error {
 		return fmt.Errorf("edit %s: %w; nothing was changed", s.Path, err)
 	}
 	// Written in one step without group or other bits: the new key is never
-	// readable by others, even if the apply stops before StepChmod.
+	// readable by others, not even for a moment (there is no later chmod
+	// step in a rotation to tighten it).
 	if err := env.FS.WriteAtomic(s.Path, out, info.Mode().Perm()&^0o077); err != nil {
 		return fmt.Errorf("write %s: %w", s.Path, err)
 	}

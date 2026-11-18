@@ -126,8 +126,9 @@ func pickOption(t *testing.T, m *model, i int) *model {
 
 // TestServerTabRotateShowsThePlanAndNeverTheKey pins that choosing a new key
 // reads the machine again, plans with Desired.LiteLLM = rotate, and shows the
-// real plan's text (backup, edit, chmod, restart, what else may hold the old
-// key) on the confirm screen; a master key typed into the form earlier and
+// real plan's text (the backup, the LITELLM_MASTER_KEY edit, the pair, the
+// LiteLLM and wt-model restarts, what else may hold the old key) on the
+// confirm screen; a master key typed into the form earlier and
 // any fake key never appear, and no key reaches Plan.
 func TestServerTabRotateShowsThePlanAndNeverTheKey(t *testing.T) {
 	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true}

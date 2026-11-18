@@ -498,7 +498,8 @@ func TestObserveDescribesTheLiteLLMInstallAndHidesParserText(t *testing.T) {
 
 // TestObserveLiteLLMJobAndProbeGate pins that a present LiteLLM plist has its
 // job's loaded state read (JobChecked, JobLoaded), and that SkipLiteLLMProbe
-// leaves out the binary search and the port lookup a create plan alone uses.
+// leaves out the binary search and the port lookup a create plan alone uses
+// (the fake has a litellm binary and a listener, so an ignored skip shows).
 func TestObserveLiteLLMJobAndProbeGate(t *testing.T) {
 	f := newFakeEnv(t)
 	f.plistInfo = litellm.ProxyPlistInfo{Port: 4000, EnvNames: []string{"LITELLM_MASTER_KEY"}}
@@ -514,9 +515,18 @@ func TestObserveLiteLLMJobAndProbeGate(t *testing.T) {
 	f = newFakeEnv(t)
 	f.plistErr = &fs.PathError{Op: "open", Path: f.plistPath, Err: fs.ErrNotExist}
 	f.listeners = map[int]int{4000: 4242}
+	f.litellmBin = plLiteLLMBin
 	st = Observe(context.Background(), f.Env(), ObserveOptions{SkipLiteLLMProbe: true})
 	if got := st.LiteLLMInstall; got.Binary != "" || got.ListenerChecked || got.ListenerPID != 0 {
 		t.Errorf("skipped probe: %+v", got)
+	}
+	if f.called("LiteLLM.Binary") || f.called("Net.ListenerPID 4000") {
+		t.Errorf("skipped probe still searched: %q", f.calls)
+	}
+	// Without the skip the same fake is probed, so the checks above can fail.
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if got := st.LiteLLMInstall; got.Binary != plLiteLLMBin || !got.ListenerChecked || got.ListenerPID != 4242 {
+		t.Errorf("probe: %+v", got)
 	}
 }
 
