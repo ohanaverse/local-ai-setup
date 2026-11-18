@@ -371,7 +371,7 @@ func TestObserveRecordsThePingedURLWithoutUserinfo(t *testing.T) {
 // url holding an '@' never reaches State.Config.Table (the tab draws that
 // table): it is replaced whole by hiddenURL, host included; that it is
 // reported as a problem the way an inline token is, and that it is not
-// pinged (a ping would send the user:password as Basic auth).
+// pinged (a failed ping's text could quote the url, or all of it when malformed).
 func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
 	f := obsConfigured(t)
 	f.configFile.Table.Mode = "remote"

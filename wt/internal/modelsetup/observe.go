@@ -461,9 +461,8 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 	switch {
 	case hasUserinfo(url):
-		// Never pinged: a ping would send the userinfo to the host as Basic
-		// auth, and modelclient's failure quotes the parsed host, which no
-		// redaction of the typed text can find. The plan refuses the url
+		// Never pinged: modelclient's failure quotes the parsed host, which no
+		// redaction of the typed text can find, and quotes a malformed url whole. The plan refuses the url
 		// anyway; the check reads as not made, in words that hold none of it.
 		st.Server = ServerState{URL: hiddenURL, Message: notCheckedAtURL}
 	case ctx.Err() != nil:

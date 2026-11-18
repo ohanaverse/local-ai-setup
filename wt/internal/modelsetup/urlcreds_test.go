@@ -542,10 +542,10 @@ func atURLObserveCases(t *testing.T, raw string) map[string]struct {
 }
 
 // TestObserveNeverPingsAnAtURL pins the rule's last hole closed: a url with
-// an '@' is never pinged, whichever place it came from, because a ping both
-// sends its userinfo to the host as Basic auth and fails with modelclient's
-// text quoting the parsed host (not always a run of the typed url, so the
-// message redaction cannot catch it). The check reads as not made, with the
+// an '@' is never pinged, whichever place it came from, because a failed ping's
+// text quotes the parsed host (not always a run of the typed url, so the
+// message redaction cannot catch it) and, for a malformed url, the whole url
+// in a url.Parse error. The check reads as not made, with the
 // placeholder for the url and one fixed sentence that holds nothing of it.
 func TestObserveNeverPingsAnAtURL(t *testing.T) {
 	urls := neverPingedAtURLs()

@@ -75,8 +75,8 @@ func (noLiteLLM) Binary() (string, bool)                        { return "", fal
 // modelsetup.Observe and BuildPlan, reading a real config.toml whose
 // [model-server] is remote with "https://u:p@gpu.example:8787" and a token
 // file: opening the tab and pressing c (which enters the prefilled
-// placeholder as the url to check) never pings anything, so the user:password
-// never goes out as Basic auth; the server row says not checked with the
+// placeholder as the url to check) never pings anything, so no failed-ping text
+// can quote it; the server row says not checked with the
 // fixed sentence; and a refuses with the fixed refusal.
 func TestServerTabNeverPingsAStoredCredentialedURL(t *testing.T) {
 	dir := t.TempDir()
