@@ -232,9 +232,130 @@ func TestRenderedPlistHasNoSecretOutsideItsEnvironment(t *testing.T) {
 			t.Errorf("%s is not the value of its own environment entry", c.key)
 		}
 	}
-	env := out[strings.Index(out, "<key>EnvironmentVariables</key>"):]
-	if strings.Contains(out[:len(out)-len(env)], "test") {
-		t.Error("a secret-looking value appears before EnvironmentVariables")
+	open := strings.Index(out, "<key>EnvironmentVariables</key>\n\t<dict>\n")
+	closeAt := strings.LastIndex(out, "\t</dict>\n</dict>")
+	if open < 0 || closeAt < open {
+		t.Fatal("cannot find the EnvironmentVariables dict")
+	}
+	for _, secret := range []string{fakeMaster, fakeSalt} {
+		i := strings.Index(out, secret)
+		if i < open || i > closeAt {
+			t.Errorf("a secret sits outside the EnvironmentVariables dict")
+		}
+	}
+}
+
+// holder keeps a spec in an exported field, the safe way to embed it.
+type holder struct{ Spec LiteLLMSpec }
+
+// TestLiteLLMSpecInExportedFieldStaysRedacted shows the supported way to
+// hold a spec (an exported field) keeps both keys out of every print verb.
+func TestLiteLLMSpecInExportedFieldStaysRedacted(t *testing.T) {
+	h := holder{Spec: litellmTestSpec()}
+	for _, f := range []string{"%v", "%+v", "%#v"} {
+		for _, arg := range []any{h, &h} {
+			out := fmt.Sprintf(f, arg)
+			if strings.Contains(out, fakeMaster) || strings.Contains(out, fakeSalt) {
+				t.Errorf("%s leaks a key", f)
+			}
+		}
+	}
+}
+
+// TestGenerateSaltKeyShape pins the salt format from guide 14 (raw 64 hex,
+// no sk- prefix), the injected-reader-only rule and no value on failure.
+func TestGenerateSaltKeyShape(t *testing.T) {
+	k, err := GenerateSaltKey(func(b []byte) error {
+		for i := range b {
+			b[i] = 0xab
+		}
+		return nil
+	})
+	if err != nil || k != strings.Repeat("ab", 32) {
+		t.Fatalf("got %q, %v", k, err)
+	}
+	boom := errors.New("no entropy")
+	if k, err := GenerateSaltKey(func([]byte) error { return boom }); !errors.Is(err, boom) || k != "" {
+		t.Fatalf("got %q, %v", k, err)
+	}
+}
+
+func envPlist(root, env string) string {
+	return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n" + root +
+		"\t<key>EnvironmentVariables</key>\n\t<dict>\n" + env + "\t</dict>\n</dict>\n</plist>\n"
+}
+
+// TestReplaceMasterKeyIgnoresDecoys proves the target is found structurally:
+// the master-key text inside a comment, a CDATA section or outside the
+// EnvironmentVariables dict is never edited. With a real entry present the
+// real one is edited and every decoy byte is kept; with none, the call
+// refuses as missing.
+func TestReplaceMasterKeyIgnoresDecoys(t *testing.T) {
+	const real = "\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t<string>old</string>\n"
+	decoys := map[string]struct{ root, env string }{
+		"comment": {"", "\t\t<!-- <key>LITELLM_MASTER_KEY</key><string>x</string> -->\n\t\t<key>LITELLM_MASTER_KEY_X</key>\n\t\t<string>old</string>\n"},
+		"cdata":   {"", "\t\t<key>NOTE</key>\n\t\t<string><![CDATA[<key>LITELLM_MASTER_KEY</key><string>x</string>]]></string>\n"},
+		"root":    {"\t<key>LITELLM_MASTER_KEY</key>\n\t<string>old</string>\n", "\t\t<key>PATH</key>\n\t\t<string>/bin</string>\n"},
+	}
+	for name, d := range decoys {
+		if out, err := ReplaceMasterKey([]byte(envPlist(d.root, d.env)), "sk-new"); err == nil || out != nil {
+			t.Errorf("%s alone: want refusal, got %v", name, err)
+		}
+		in := envPlist(d.root, d.env+real)
+		out, err := ReplaceMasterKey([]byte(in), "sk-new")
+		if err != nil {
+			t.Errorf("%s with real: %v", name, err)
+			continue
+		}
+		want := strings.Replace(in, real, "\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t<string>sk-new</string>\n", 1)
+		if string(out) != want {
+			t.Errorf("%s with real: wrong bytes:\n%s", name, out)
+		}
+	}
+}
+
+// TestReplaceMasterKeyAcceptsDashesNextToAComment keeps the document
+// well formed for a new key holding "--" even when a comment is present.
+func TestReplaceMasterKeyAcceptsDashesNextToAComment(t *testing.T) {
+	in := envPlist("", "\t\t<!-- note -->\n\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t<string>old</string>\n")
+	out, err := ReplaceMasterKey([]byte(in), "sk--a-->b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "<!-- note -->") || !strings.Contains(string(out), "<string>sk--a--&gt;b</string>") {
+		t.Fatalf("got:\n%s", out)
+	}
+}
+
+// TestReplaceMasterKeyRefusesACommentBetweenKeyAndValue: the edit only touches
+// a string that directly follows its key.
+func TestReplaceMasterKeyRefusesACommentBetweenKeyAndValue(t *testing.T) {
+	in := envPlist("", "\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t<!-- c -->\n\t\t<string>old</string>\n")
+	if out, err := ReplaceMasterKey([]byte(in), "sk-new"); err == nil || out != nil {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// TestEnvScanVerifyCatchesAWrongEdit is the verify step's own test: a result
+// that changed another variable, or not the master key, is refused.
+func TestEnvScanVerifyCatchesAWrongEdit(t *testing.T) {
+	in := envPlist("", "\t\t<key>A</key>\n\t\t<string>1</string>\n\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t<string>old</string>\n")
+	before, err := scanEnv([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := strings.Replace(in, "old", "new", 1)
+	if err := verifyReplaced(before, []byte(good), "new"); err != nil {
+		t.Fatal(err)
+	}
+	for name, bad := range map[string]string{
+		"other var": strings.Replace(good, "<string>1</string>", "<string>2</string>", 1),
+		"not new":   in,
+		"broken":    good + "<oops>",
+	} {
+		if err := verifyReplaced(before, []byte(bad), "new"); err == nil {
+			t.Errorf("%s accepted", name)
+		}
 	}
 }
 
