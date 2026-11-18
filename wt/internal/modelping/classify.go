@@ -40,7 +40,6 @@ func Classify(err error) Outcome {
 		return Outcome{}
 	}
 	o := Outcome{Message: err.Error()}
-	var un *UnreachableError
 	var ua *UnauthorizedError
 	var ns *NotModelServerError
 	var sk *SkewError
@@ -54,8 +53,6 @@ func Classify(err error) Outcome {
 		o.Kind, o.API = KindSkew, sk.Server
 	case errors.As(err, &sc):
 		o.Kind, o.Schema = KindSchema, sc.Server
-	case errors.As(err, &un):
-		o.Kind = KindUnreachable
 	default:
 		o.Kind = KindUnreachable
 	}

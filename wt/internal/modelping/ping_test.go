@@ -303,7 +303,13 @@ func TestGetJSONPingsFirstThenDecodes(t *testing.T) {
 	if err := GetJSON(context.Background(), ep, "/y", nil); !whyIs(err, "GET /y answered HTTP 500") {
 		t.Errorf("500: err = %v", err)
 	}
-	if err := GetJSON(context.Background(), ep, "/z", nil); !whyIs(err, "its answer to GET /z is not the expected JSON") {
+	var out map[string]any
+	if err := GetJSON(context.Background(), ep, "/z", &out); !whyIs(err, "its answer to GET /z is not the expected JSON") {
 		t.Errorf("bad JSON: err = %v", err)
+	}
+	// A nil out means the caller wants the status only: a body it never
+	// reads is not an error.
+	if err := GetJSON(context.Background(), ep, "/z", nil); err != nil {
+		t.Errorf("nil out: err = %v, want nil", err)
 	}
 }

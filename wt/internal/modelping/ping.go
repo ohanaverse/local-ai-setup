@@ -151,7 +151,15 @@ func CheckPing(addr string, r *Response) (modelapi.Ping, error) {
 // Ping checks that a server answers, is a wt-model and speaks this API major:
 // one GET to its ping endpoint over a fresh transport.
 func Ping(ctx context.Context, ep Endpoint) (modelapi.Ping, error) {
-	r, err := Send(ctx, NewHTTPClient(), DefaultTimeout, ep, "GET", ep.Origin()+"/control/v1/ping", nil)
+	hc := NewHTTPClient()
+	defer hc.CloseIdleConnections()
+	return pingOn(ctx, hc, ep)
+}
+
+// pingOn is Ping over a transport the caller owns, so GetJSON's handshake and
+// its GET share one connection.
+func pingOn(ctx context.Context, hc *http.Client, ep Endpoint) (modelapi.Ping, error) {
+	r, err := Send(ctx, hc, DefaultTimeout, ep, "GET", ep.Origin()+"/control/v1/ping", nil)
 	if err != nil {
 		return modelapi.Ping{}, err
 	}
@@ -165,11 +173,13 @@ func Ping(ctx context.Context, ep Endpoint) (modelapi.Ping, error) {
 // First caller: the phase 4 stage 2 admin commands; it lives here because
 // the spine puts every request the model side shares in this package.
 func GetJSON(ctx context.Context, ep Endpoint, path string, out any) error {
-	if _, err := Ping(ctx, ep); err != nil {
+	hc := NewHTTPClient()
+	defer hc.CloseIdleConnections()
+	if _, err := pingOn(ctx, hc, ep); err != nil {
 		return err
 	}
 	addr := Addr(ep.URL)
-	r, err := Send(ctx, NewHTTPClient(), DefaultTimeout, ep, "GET", ep.Origin()+path, nil)
+	r, err := Send(ctx, hc, DefaultTimeout, ep, "GET", ep.Origin()+path, nil)
 	if err != nil {
 		return err
 	}
@@ -180,6 +190,9 @@ func GetJSON(ctx context.Context, ep Endpoint, path string, out any) error {
 		return &NotModelServerError{Addr: addr, Why: "it answered HTTP " + strconv.Itoa(r.Status) + ", a redirect, which wt does not follow"}
 	case r.Status < 200 || r.Status > 299:
 		return &NotModelServerError{Addr: addr, Why: "GET " + path + " answered HTTP " + strconv.Itoa(r.Status)}
+	}
+	if out == nil {
+		return nil
 	}
 	if err := json.Unmarshal(r.Body, out); err != nil {
 		return &NotModelServerError{Addr: addr, Why: "its answer to GET " + path + " is not the expected JSON"}
