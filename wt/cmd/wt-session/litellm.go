@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,7 +130,12 @@ func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, warnings []str
 	return nil
 }
 
-func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
+// syncInputs probes the local providers and returns what a sync is called
+// with: the local models to route, the options (untouched ids and families,
+// the under-the-lock recheck) and the probe warnings to report after it. The
+// one place both the real sync and the Model server tab's desired-routes
+// check decide this, so they cannot disagree.
+func syncInputs(cfg *config.Config) ([]config.Model, litellm.Options, []string) {
 	snap := probeInventory(cfg)
 	// The local models to route: running ones, plus pulled ollama models,
 	// registered or discovered (desiredLocalModels). That set is
@@ -149,6 +155,23 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bo
 		// under the lock.
 		Recheck: func() []string { return desiredLocalIDs(cfg, probeInventory(cfg)) },
 	}
+	return desired, o, probeWarns
+}
+
+// desiredRouteIDs lists the model_names a sync would leave in config.yaml
+// now (litellm.DesiredIDs), for the Model server tab's route check. It
+// probes the providers, so it is slow; the tab calls it from its observation.
+func desiredRouteIDs(_ context.Context) ([]string, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	desired, o, _ := syncInputs(cfg)
+	return litellm.DesiredIDs(cfg, desired, o)
+}
+
+func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
+	desired, o, probeWarns := syncInputs(cfg)
 	if dryRun {
 		plan, err := litellm.PlanSync(cfg, desired, o)
 		if err != nil {

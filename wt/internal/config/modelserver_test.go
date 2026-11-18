@@ -455,3 +455,14 @@ func TestUpdateModelServerChangeErrorWritesNothing(t *testing.T) {
 		t.Errorf("file changed:\n%s", raw)
 	}
 }
+
+// TestReadModelServerFileReportsAKeyElsewhereAsRestErr pins that a
+// wrong-typed key outside [model-server] still leaves the table readable but
+// sets RestErr, which a plan refuses on (the writer re-encodes the whole file).
+func TestReadModelServerFileReportsAKeyElsewhereAsRestErr(t *testing.T) {
+	sessionHome(t, "[[agents]]\nname = 5\n\n[model-server]\nmode = \"remote\"\n")
+	f := ReadModelServerFile()
+	if f.RestErr == nil || f.Table == nil {
+		t.Errorf("file = %+v, want RestErr set and the table still read", f)
+	}
+}

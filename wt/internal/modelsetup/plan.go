@@ -141,6 +141,20 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 			"config.toml at "+st.Config.Path+" has a TOML syntax error ("+st.Config.ParseErr+") and is never overwritten",
 			"fix it by hand, then re-read")}}
 	}
+	if st.Config.TableErr != "" {
+		// The config step re-reads the whole file and refuses what it cannot
+		// decode, so a plan would run every earlier step (token, plist,
+		// launchd) and then fail on the last one.
+		return Plan{}, &RefusalError{Reasons: []string{reason(
+			"[model-server] in "+st.Config.Path+" cannot be read ("+st.Config.TableErr+") and is never overwritten",
+			"fix it by hand, then re-read")}}
+	}
+	if st.Config.RestErr != "" {
+		// Same failure as above, from a key outside [model-server].
+		return Plan{}, &RefusalError{Reasons: []string{reason(
+			st.Config.Path+" has a key that cannot be read ("+st.Config.RestErr+") and is never overwritten",
+			"fix it by hand, then re-read")}}
+	}
 	mode, ok := modelclient.ParseMode(string(want.Mode))
 	if !ok {
 		return Plan{}, &RefusalError{Reasons: []string{reason(
@@ -183,6 +197,8 @@ func planRemote(st State, want Desired) (Plan, error) {
 	want.URL = strings.TrimSpace(want.URL)
 	if want.URL == "" {
 		reasons = append(reasons, reason("remote mode has no url", "enter the model server's url"))
+	} else if strings.Contains(want.URL, "@") {
+		reasons = append(reasons, reason("the url carries credentials, which config.toml would store in plain text", "remove the user:password part and give the token as a token file or paste it"))
 	}
 	var tokenStep *Step
 	switch {
@@ -286,8 +302,6 @@ func planLocal(st State, want Desired) (Plan, error) {
 		reasons = append(reasons, reason("listen address "+listen+" is not loopback", "use 127.0.0.1:<port>"))
 	case st.Listener.Port != port:
 		reasons = append(reasons, reason("port "+portText+" was not checked for a listener", "check again before applying"))
-	case st.Listener.Err != "":
-		reasons = append(reasons, reason("port "+portText+" could not be checked for a listener ("+st.Listener.Err+")", "check again before applying"))
 	case st.Listener.PID != 0 && !st.Listener.Ours:
 		reasons = append(reasons, reason(fmt.Sprintf("port %d is in use by pid %d, which is not wt's LaunchAgent", port, st.Listener.PID),
 			"stop that process or choose another port"))
@@ -618,4 +632,16 @@ func orNone(s string) string {
 		return "none"
 	}
 	return s
+}
+
+// WritesURL reports whether the plan's config step writes a url into
+// [model-server] (local and remote do; native clears it). A plan that keeps
+// the stored table has no config step and writes nothing.
+func (p Plan) WritesURL() bool {
+	for _, s := range p.Steps {
+		if s.Kind == StepConfig && p.Want.URL != "" {
+			return true
+		}
+	}
+	return false
 }

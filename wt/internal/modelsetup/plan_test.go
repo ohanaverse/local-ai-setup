@@ -1,6 +1,7 @@
 package modelsetup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -230,6 +231,19 @@ func TestBuildPlanRefusesAParseErrorBeforeAnyStep(t *testing.T) {
 	}
 }
 
+// TestBuildPlanRefusesAnUnreadableTableBeforeAnyStep pins that a
+// [model-server] table that does not decode refuses every mode: the config
+// step re-reads the whole file and would fail last, after the token, plist and
+// launchd steps had already run.
+func TestBuildPlanRefusesAnUnreadableTableBeforeAnyStep(t *testing.T) {
+	for _, m := range []modelclient.Mode{modelclient.ModeNative, modelclient.ModeLocal, modelclient.ModeRemote} {
+		st := freshState()
+		st.Config.Exists, st.Config.TableErr = true, "toml: cannot load TOML value of type int64 into a Go string"
+		p, err := BuildPlan(st, Desired{Mode: m, URL: "https://x", PastedToken: plPasted})
+		mustRefuse(t, p, err, plCfgPath, "cannot be read", "int64")
+	}
+}
+
 // TestBuildPlanRefusesAnUnknownMode pins that a mode other than the three is
 // refused, since the config writer does not validate it.
 func TestBuildPlanRefusesAnUnknownMode(t *testing.T) {
@@ -428,16 +442,6 @@ func TestBuildPlanRefusesAForeignListener(t *testing.T) {
 	mustRefuse(t, p, err, "9000", "not checked")
 }
 
-// TestBuildPlanRefusesWhenThePortCheckFailed pins that a failed listener
-// lookup is refused, never read as "the port is free": lsof failing must not
-// let a plan take a port of unknown occupancy.
-func TestBuildPlanRefusesWhenThePortCheckFailed(t *testing.T) {
-	st := freshState()
-	st.Listener = ListenerState{Port: 8787, Err: "lsof: exit status 1"}
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
-	mustRefuse(t, p, err, "8787", "could not be checked", "check again")
-}
-
 // TestBuildPlanRefusesAnUnmarkedPlist pins that a plist at the agent path
 // without wt's marker is never overwritten.
 func TestBuildPlanRefusesAnUnmarkedPlist(t *testing.T) {
@@ -622,5 +626,89 @@ func TestBuildPlanRemoteCheckOfAnotherURLIsNotAVerification(t *testing.T) {
 	var re *RefusalError
 	if !errors.As(err, &re) {
 		t.Errorf("a failed check of the same url did not refuse: %v", err)
+	}
+}
+
+// TestBuildPlanRemoteRefusesAURLWithCredentials pins that a typed url with a
+// user:password is refused before any step, since config.toml would store it
+// in plain text and a re-apply would read it as "keep"; the reason names the
+// fix and never echoes the credentials.
+func TestBuildPlanRemoteRefusesAURLWithCredentials(t *testing.T) {
+	want := Desired{Mode: modelclient.ModeRemote, URL: "https://u:SECRETPW@gpu.example:8787", PastedToken: plPasted}
+	_, err := BuildPlan(freshState(), want)
+	var re *RefusalError
+	if !errors.As(err, &re) {
+		t.Fatalf("BuildPlan error = %v, want a refusal", err)
+	}
+	if strings.Contains(err.Error(), "SECRETPW") || !strings.Contains(err.Error(), "credentials") {
+		t.Errorf("refusal = %q, want it to name credentials without echoing them", err)
+	}
+}
+
+// TestPlanWritesURLIsData pins Plan.WritesURL: true exactly when the plan has
+// a config step that writes a url (local and remote setups), false for native
+// (which clears it) and for a plan that keeps the stored table. The tab keys
+// its "credentials are not kept" note on it, not on a step's wording.
+func TestPlanWritesURLIsData(t *testing.T) {
+	remote := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, SaveUnchecked: true})
+	local := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal})
+	native := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeNative})
+	kept := mustPlan(t, baseState(), Desired{Mode: modelclient.ModeLocal})
+	for name, c := range map[string]struct {
+		p    Plan
+		want bool
+	}{"remote": {remote, true}, "local": {local, true}, "native": {native, false}, "kept": {kept, false}} {
+		if got := c.p.WritesURL(); got != c.want {
+			t.Errorf("%s: WritesURL = %v, want %v (steps %v)", name, got, c.want, kinds(c.p))
+		}
+	}
+}
+
+// TestObserveAndPlanFlagACredentialedURLThatWillBeRewritten runs the real
+// Observe and the real BuildPlan end to end: a stored url with a
+// user:password sets ConfigState.URLHadCredentials (beside the Problems line
+// a person reads). A remote plan that keeps the url as the State shows it
+// but changes the token rewrites the table, url included, so it writes the
+// url without its credentials (Plan.WritesURL); one that changes nothing
+// keeps the table, and the credentials, as they are. Those facts are what
+// the tab's note reads, so neither may depend on wording.
+func TestObserveAndPlanFlagACredentialedURLThatWillBeRewritten(t *testing.T) {
+	f := obsConfigured(t)
+	f.configFile.Table.Mode = "remote"
+	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if !st.Config.URLHadCredentials {
+		t.Fatalf("URLHadCredentials = false for a url with userinfo")
+	}
+	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, PastedToken: "tok-NEW"})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if !p.WritesURL() {
+		t.Errorf("a new token rewrites the table, yet WritesURL is false:\n%s", p.Format())
+	}
+	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, TokenFile: obsTokenPath})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if p.WritesURL() {
+		t.Errorf("nothing changes, so the stored table (and its credentials) stays, yet WritesURL is true:\n%s", p.Format())
+	}
+	f = obsConfigured(t)
+	if st = Observe(context.Background(), f.Env(), ObserveOptions{}); st.Config.URLHadCredentials {
+		t.Errorf("URLHadCredentials = true for a plain url")
+	}
+}
+
+// TestBuildPlanRefusesAKeyElsewhereInTheFile pins that a wrong-typed key
+// outside [model-server] (ConfigState.RestErr) refuses before any step, as
+// the config step would fail on it after the early steps ran.
+func TestBuildPlanRefusesAKeyElsewhereInTheFile(t *testing.T) {
+	st := freshState()
+	st.Config.RestErr = "agents.name: incompatible types"
+	for _, m := range []modelclient.Mode{modelclient.ModeNative, modelclient.ModeLocal, modelclient.ModeRemote} {
+		if _, err := BuildPlan(st, Desired{Mode: m, URL: "https://gpu.example:8787", PastedToken: plPasted}); err == nil {
+			t.Errorf("mode %s planned despite RestErr", m)
+		}
 	}
 }

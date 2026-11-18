@@ -1,10 +1,13 @@
 package configeditor
 
 import (
+	"context"
+
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -18,7 +21,14 @@ const (
 	// TabModels manages the models in the shared registry.toml. Each change
 	// there is written at once.
 	TabModels
+	// TabServer sets up and controls the model server (wt-model and the
+	// LiteLLM it fronts).
+	TabServer
 )
+
+// nextTab is the tab the tab key goes to: Agents, Models, Model server, and
+// round to Agents again.
+func nextTab(t Tab) Tab { return Tab((int(t) + 1) % len(tabNames)) }
 
 // Options are what `wt config` is opened with.
 type Options struct {
@@ -27,6 +37,56 @@ type Options struct {
 	// Models are the functions the Models tab reaches the machine through.
 	// Run fills in the real ones for any left nil.
 	Models ModelsDeps
+	// Server are the functions the Model server tab reaches the machine
+	// through. Run fills in the real ones for any left nil.
+	Server ServerDeps
+}
+
+// ServerDeps are the Model server tab's ways out of the program. Each is
+// called from a tea.Cmd, never from Update.
+type ServerDeps struct {
+	// Observe reads the machine's model-server state.
+	Observe func(ctx context.Context, o modelsetup.ObserveOptions) modelsetup.State
+	// Plan turns a state and a wish into the steps that would apply it.
+	Plan func(st modelsetup.State, want modelsetup.Desired) (modelsetup.Plan, error)
+	// Apply runs a plan, reporting each step through progress.
+	Apply func(ctx context.Context, p modelsetup.Plan, progress func(string)) modelsetup.Result
+	// Control starts, stops or restarts a service.
+	Control func(ctx context.Context, a modelsetup.ControlAction) error
+}
+
+// ServerDepsFromEnv builds the four functions over env, so a caller can
+// inject its own Env (cmd/wt-session adds the routes it wants this way).
+func ServerDepsFromEnv(env modelsetup.Env) ServerDeps {
+	return ServerDeps{
+		Observe: func(ctx context.Context, o modelsetup.ObserveOptions) modelsetup.State {
+			return modelsetup.Observe(ctx, env, o)
+		},
+		Plan: modelsetup.BuildPlan,
+		Apply: func(ctx context.Context, p modelsetup.Plan, progress func(string)) modelsetup.Result {
+			return modelsetup.Apply(ctx, env, p, progress)
+		},
+		Control: func(ctx context.Context, a modelsetup.ControlAction) error {
+			return modelsetup.Control(ctx, env, a)
+		},
+	}
+}
+
+func (d ServerDeps) withDefaults() ServerDeps {
+	def := ServerDepsFromEnv(modelsetup.DefaultEnv())
+	if d.Observe == nil {
+		d.Observe = def.Observe
+	}
+	if d.Plan == nil {
+		d.Plan = def.Plan
+	}
+	if d.Apply == nil {
+		d.Apply = def.Apply
+	}
+	if d.Control == nil {
+		d.Control = def.Control
+	}
+	return d
 }
 
 // ModelsDeps are the Models tab's ways out of the program: reading the
@@ -72,7 +132,7 @@ type Result struct {
 }
 
 // tabNames are the tabs in the order they are drawn and switched.
-var tabNames = []string{"Agents", "Models"}
+var tabNames = []string{"Agents", "Models", "Model server"}
 
 // tabBar is the editor's first line: every tab, the current one in brackets
 // (and in the accent colour, where there is colour) so that it reads as

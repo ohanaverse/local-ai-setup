@@ -389,7 +389,7 @@ func (m *model) modelsDetailLines(sides bool) (id, path []string) {
 
 // modelsHints are the tab's key hints, fullest first.
 var modelsHints = []string{
-	"enter edit · n add · d remove · r refresh · / filter · tab agents · q quit",
+	"enter edit · n add · d remove · r refresh · / filter · tab next · q quit",
 	"enter · n · d · r · / · tab · q quit",
 }
 
@@ -650,7 +650,7 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m.quit()
 		case "tab":
-			m.tab = TabAgents
+			return m, m.switchTab()
 		}
 		return m, nil
 	}
@@ -675,8 +675,7 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m.quit()
 	case "tab":
-		m.tab = TabAgents
-		return m, nil
+		return m, m.switchTab()
 	case "r":
 		if mt.busy {
 			m.noteProbeOut()

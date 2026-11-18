@@ -1,6 +1,8 @@
 // Package configeditor is the TUI behind `wt config`: an Agents tab that
-// edits the agent section of wt's config.toml, and a Models tab that manages
-// the models in the shared registry.toml (through internal/modeladmin).
+// edits the agent section of wt's config.toml, a Models tab that manages the
+// models in the shared registry.toml (through internal/modeladmin), and a
+// Model server tab that shows the model server's setup (through
+// internal/modelsetup, reached only by its injected ServerDeps).
 package configeditor
 
 import (
@@ -35,9 +37,11 @@ type model struct {
 	// models is the Models tab's state. registryChanged is true once that
 	// tab has written registry.toml (Result.RegistryChanged).
 	models          modelsTab
+	server          serverTab
 	registryChanged bool
 	// quitPending is true when the user asked to leave while a registry
-	// write was in flight: the editor quits when the write's result is in.
+	// write, or a Model server apply or start/stop, was in flight: the editor
+	// quits when its result is in.
 	quitPending bool
 	// discardHeld is true when that held quit came from "discard and quit"
 	// on the unsaved-changes prompt: the edits the answer was about are no
@@ -97,9 +101,13 @@ func (m *model) Init() tea.Cmd {
 		// cfg and cfgErr are captured when newModel is called.
 		return loadedMsg{cfg: m.cfg, err: m.cfgErr}
 	}
-	if m.tab == TabModels {
+	switch m.tab {
+	case TabModels:
 		// Opened on the Models tab (`wt model`): probe at once.
 		return tea.Batch(loaded, m.probeCmd())
+	case TabServer:
+		// Opened on the Model server tab: observe at once.
+		return tea.Batch(loaded, m.observeServerCmd())
 	}
 	return loaded
 }
@@ -182,6 +190,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizeFormInputs()
 		}
 		m.resizeModelForm()
+		m.resizeServerInputs()
 	case loadedMsg:
 		m.ready = true
 		if msg.cfg == nil {
@@ -206,6 +215,15 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyModelRemoved(msg)
 	case modelSavedMsg:
 		return m, m.applyModelSaved(msg)
+	case serverObservedMsg:
+		return m, m.applyServerObserved(msg)
+	case serverPlannedMsg:
+		m.applyServerPlanned(msg)
+		return m, nil
+	case serverAppliedMsg:
+		return m, m.applyServerApplied(msg)
+	case serverControlledMsg:
+		return m, m.applyServerControlled(msg)
 	case filterMatchesMsg:
 		return m, m.applyFilterMatches(msg)
 	case saveMsg:
@@ -236,6 +254,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.tab == TabModels {
 		return m.updateModels(msg)
 	}
+	if m.tab == TabServer {
+		return m.updateServer(msg)
+	}
 
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		// Delegate to the list while it is filtering so single-key global
@@ -258,13 +279,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m.quit()
 		case "tab":
-			m.tab = TabModels
-			if !m.models.asked {
-				// The first visit probes; later ones show what is there
-				// (r refreshes).
-				return m, m.probeCmd()
-			}
-			return m, nil
+			// The first visit to a tab fills it; later ones show what is
+			// there (r refreshes).
+			return m, m.switchTab()
 		case "d":
 			if m.ready {
 				if it, ok := m.list.SelectedItem().(agentItem); ok {
@@ -323,10 +340,17 @@ func (m *model) quit() (tea.Model, tea.Cmd) {
 // the write reports to, issues it. The Models tab is shown meanwhile: it is
 // the one that says the quit is waiting (the table's status, or the form's
 // title when the write is a form's save). A probe in flight holds nothing up.
+// An apply or a start/stop on the Model server tab holds the quit the same
+// way (finishServerWrite issues it), on that tab.
 func (m *model) leave() (tea.Model, tea.Cmd) {
 	if m.models.writing {
 		m.quitPending = true
 		m.phase, m.tab = phaseList, TabModels
+		return m, nil
+	}
+	if m.server.writing {
+		m.quitPending = true
+		m.phase, m.tab = phaseList, TabServer
 		return m, nil
 	}
 	return m, tea.Quit
@@ -352,7 +376,7 @@ func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m.handleSave()
 		case "n", "N":
-			if m.models.writing {
+			if m.models.writing || m.server.writing {
 				// The quit will wait (leave). The answer is kept with it.
 				m.discardHeld, m.dirty = true, false
 			}
@@ -396,6 +420,9 @@ func (m *model) View() string {
 		if m.tab == TabModels {
 			return m.modelsView()
 		}
+		if m.tab == TabServer {
+			return m.serverTabView()
+		}
 		var status string
 		if s := m.statusBlock(); s != "" {
 			status = s + "\n\n"
@@ -424,6 +451,7 @@ func (m *model) resizeFormInputs() {
 func Run(theme themes.Theme, cfg *config.Config, cfgErr error, o Options, opts ...tea.ProgramOption) (Result, error) {
 	m := newModel(theme, cfg, cfgErr)
 	o.Models = o.Models.withDefaults()
+	o.Server = o.Server.withDefaults()
 	m.opts, m.tab = o, o.StartTab
 	allOpts := append([]tea.ProgramOption{tea.WithAltScreen()}, opts...)
 	p := tea.NewProgram(m, allOpts...)

@@ -362,3 +362,73 @@ func TestObserveRecordsThePingedURLWithoutUserinfo(t *testing.T) {
 		t.Errorf("ServerState holds the url's password")
 	}
 }
+
+// TestObserveStripsUserinfoFromTheConfiguredURL pins that a user:password in
+// [model-server] url never reaches State.Config.Table (the tab draws that
+// table), that it is reported as a problem the way an inline token is, and
+// that the ping still goes to the url as written.
+func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
+	f := obsConfigured(t)
+	f.configFile.Table.Mode = "remote"
+	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if st.Config.Table.URL != "https://gpu.example:8787/" {
+		t.Errorf("Config.Table.URL = %q, want the url without userinfo", st.Config.Table.URL)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", st), "pw-SECRET") {
+		t.Errorf("State holds the url's password")
+	}
+	found := false
+	for _, p := range st.Config.Problems {
+		if strings.Contains(p, "credentials") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Problems = %q, want one about the url's credentials", st.Config.Problems)
+	}
+	if !st.Server.Checked || !st.Server.OK {
+		t.Errorf("Server = %+v, want the url pinged as written", st.Server)
+	}
+}
+
+// TestObservePingsTheEnteredEndpoint pins ObserveOptions.Check: when the tab
+// asks about a url the user typed, Observe pings that url (not the stored
+// one) with the token the user entered (pasted, else read from the typed
+// token file), so a remote plan's check gate is about the server the user
+// named. Without an entered token nothing is pinged and the reason is said;
+// no State field holds the entered token or the url's password.
+func TestObservePingsTheEnteredEndpoint(t *testing.T) {
+	f := obsConfigured(t)
+	st := Observe(context.Background(), f.Env(), ObserveOptions{
+		CheckURL: "https://me:pw-SECRET@gpu.example:8787", CheckToken: Secret("  tok-ENTERED  "),
+	})
+	if !f.called("Net.Ping https://me:pw-SECRET@gpu.example:8787") || f.called("Net.Ping http://127.0.0.1:8787") {
+		t.Errorf("calls = %q, want the entered url pinged as typed and not the stored one", f.calls)
+	}
+	if len(f.pingTokens) != 1 || f.pingTokens[0] != "tok-ENTERED" {
+		t.Errorf("ping tokens = %q, want the pasted token, trimmed", f.pingTokens)
+	}
+	if !st.Server.Checked || st.Server.URL != "https://gpu.example:8787" {
+		t.Errorf("Server = %+v, want the entered url, without userinfo", st.Server)
+	}
+	if s := fmt.Sprintf("%+v", st); strings.Contains(s, "tok-ENTERED") || strings.Contains(s, "pw-SECRET") {
+		t.Errorf("State holds the entered token or the url's password")
+	}
+
+	// A typed token file is read for the ping.
+	f = obsConfigured(t)
+	f.files["/srv/remote.token"] = []byte("tok-FILE\n")
+	f.modes["/srv/remote.token"] = 0o600
+	st = Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: "https://gpu.example:8787", CheckTokenFile: "/srv/remote.token"})
+	if len(f.pingTokens) != 1 || f.pingTokens[0] != "tok-FILE" || !st.Server.Checked {
+		t.Errorf("ping tokens = %q Server = %+v, want the typed file's token", f.pingTokens, st.Server)
+	}
+
+	// No entered token: not pinged, and the reason is said.
+	f = obsConfigured(t)
+	st = Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: "https://gpu.example:8787"})
+	if f.called("Net.Ping") || st.Server.Checked || !strings.Contains(st.Server.Message, "no token") {
+		t.Errorf("calls = %q Server = %+v, want no ping and a message naming the missing token", f.calls, st.Server)
+	}
+}

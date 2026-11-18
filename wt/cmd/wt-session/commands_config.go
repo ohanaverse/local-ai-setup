@@ -1,7 +1,7 @@
 // wt config command — user-level preferences. Bare, it opens the config
-// editor (internal/configeditor): the Agents tab, and the Models tab that
+// editor (internal/configeditor): the Agents tab, the Models tab that
 // bare `wt model` opens it on (runConfigEditor, which also runs the one route
-// sync the Models tab owes). `wt config theme` manages the active color
+// sync the Models tab owes), and the Model server tab. `wt config theme` manages the active color
 // theme.
 //
 // The theme subcommand family uses the active theme (loaded by newApp)
@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/spf13/cobra"
 )
@@ -39,9 +40,14 @@ func runConfigEditor(out, errOut io.Writer, a *app, start configeditor.Tab) erro
 	// The editor's Models tab is a host screen (R3, R17): it reads and
 	// writes the registry, so the editor opens on the host's config.
 	cfg, _ := a.hostConfig()
+	// The Model server tab's seams: the real machine, with the routes check
+	// asking what a sync would write now.
+	env := modelsetup.DefaultEnv()
+	env.DesiredRoutes = desiredRouteIDs
 	res, err := configeditorRun(a.theme, cfg, a.hostConfigErr(), configeditor.Options{
 		StartTab: start,
 		Models:   configeditor.ModelsDeps{Probe: probeInventory, SeedEnv: seedEnv, Capabilities: ollamaCaps},
+		Server:   configeditor.ServerDepsFromEnv(env),
 	})
 	if res.RegistryChanged {
 		// What `wt model add|edit|rm` run after their write: the sync's own
@@ -59,11 +65,13 @@ func configCmd(a *app) *cobra.Command {
 		Use:   "config",
 		Short: "Manage wt preferences and config.toml",
 		Long: "Manage wt user preferences.\n\n" +
-			"With no subcommand, launches an interactive TUI with two tabs (tab\n" +
-			"switches): Agents, the agents in config.toml, saved with ctrl+s; and\n" +
+			"With no subcommand, launches an interactive TUI with three tabs (tab\n" +
+			"switches): Agents, the agents in config.toml, saved with ctrl+s;\n" +
 			"Models, the models in registry.toml, where each change is written at\n" +
-			"once and the LiteLLM routes are synced when you quit. `wt model` opens\n" +
-			"it on the Models tab.\n\n" +
+			"once and the LiteLLM routes are synced when you quit; and Model server,\n" +
+			"which checks the wt-model server and its LiteLLM proxy and sets up the\n" +
+			"server's address, token and proxy key. `wt model` opens it on the\n" +
+			"Models tab.\n\n" +
 			"Subcommands:\n" +
 			"  theme   active color theme\n" +
 			"  path    print the config directory",

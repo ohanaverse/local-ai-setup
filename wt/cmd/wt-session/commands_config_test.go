@@ -7,14 +7,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -315,5 +318,97 @@ func TestConfigPath_PrintsDir(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), tmp) {
 		t.Errorf("output %q should contain config dir %q", out.String(), tmp)
+	}
+}
+
+// TestConfigEditorIsGivenTheModelServerDeps pins that `wt config` hands the
+// editor its Model server dependencies: without them the tab would open on
+// the zero ServerDeps and could neither observe nor apply anything.
+func TestConfigEditorIsGivenTheModelServerDeps(t *testing.T) {
+	call := stubConfigEditor(t, configeditor.Result{}, nil)
+	a, _ := newTestApp(t)
+	if err := runConfigEditor(&bytes.Buffer{}, &bytes.Buffer{}, a, configeditor.TabAgents); err != nil {
+		t.Fatal(err)
+	}
+	if call.opts.Server.Observe == nil {
+		t.Fatal("Options.Server.Observe is nil: the Model server tab has no dependencies")
+	}
+}
+
+// TestConfigLongTextNamesThreeTabs pins that `wt config --help` names all
+// three tabs and says what the Model server one does; the text used to say
+// "two tabs" and would otherwise hide the new screen.
+func TestConfigLongTextNamesThreeTabs(t *testing.T) {
+	a, _ := newTestApp(t)
+	long := configCmd(a).Long
+	for _, want := range []string{"three tabs", "Agents", "Models", "Model server"} {
+		if !strings.Contains(long, want) {
+			t.Errorf("Long text lacks %q:\n%s", want, long)
+		}
+	}
+	if strings.Contains(long, "two tabs") {
+		t.Errorf("Long text still says two tabs:\n%s", long)
+	}
+}
+
+// TestWtConfigOpensWhenConfigTomlIsSyntaxBroken pins that a config.toml that
+// does not parse does not keep `wt config` from opening: the editor is the
+// place to see and fix that, so it must be reached with a non-nil load error,
+// and nothing may be written on the way.
+func TestWtConfigOpensWhenConfigTomlIsSyntaxBroken(t *testing.T) {
+	registry := modelHome(t, "providers = []\nmodels = []\n")
+	call := stubConfigEditor(t, configeditor.Result{}, nil)
+	broken := filepath.Join(config.Dir(), "config.toml")
+	if err := os.MkdirAll(filepath.Dir(broken), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const garbage = "this is = = not toml [[\n"
+	if err := os.WriteFile(broken, []byte(garbage), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runWT(t, "config"); err != nil {
+		t.Fatalf("wt config error = %v, want the editor opened", err)
+	}
+	if !call.called {
+		t.Fatal("configeditorRun was not reached")
+	}
+	if call.cfgErr == nil {
+		t.Fatal("the editor got a nil load error for a syntax-broken config.toml")
+	}
+	if b, _ := os.ReadFile(broken); string(b) != garbage {
+		t.Fatalf("config.toml was rewritten: %q", b)
+	}
+	if b, _ := os.ReadFile(registry); string(b) != "providers = []\nmodels = []\n" {
+		t.Fatalf("registry.toml was rewritten: %q", b)
+	}
+}
+
+// TestDesiredRouteIDsAreWhatASyncWouldWrite pins the Model server tab's
+// routes seam end to end in the command package: with the registry, the
+// provider probe and config.yaml all faked, it returns the ids a sync would
+// leave, a cloud model added and a stale wt row dropped. It touches no real
+// provider or config.
+func TestDesiredRouteIDsAreWhatASyncWouldWrite(t *testing.T) {
+	modelHome(t, writeRegistry)
+	t.Setenv("OPENROUTER_API_KEY", "sk-test")
+	yamlPath := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("WT_LITELLM_CONFIG", yamlPath)
+	if err := os.WriteFile(yamlPath, []byte(`model_list:
+  - model_name: gone/stale
+    litellm_params: {model: openai/stale}
+    model_info: {wt_managed: true}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := probeInventory
+	probeInventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
+	t.Cleanup(func() { probeInventory = old })
+
+	got, err := desiredRouteIDs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"openrouter/a--b"}) {
+		t.Fatalf("desiredRouteIDs = %v, want [openrouter/a--b]", got)
 	}
 }

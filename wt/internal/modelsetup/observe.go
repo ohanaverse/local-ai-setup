@@ -21,9 +21,17 @@ import (
 // of DefaultListen. TokenPaths are extra token files to describe in
 // State.TokenFiles (a path the user typed for remote, say), so BuildPlan can
 // judge them without reading the disk itself.
+//
+// CheckURL, when set, is the url the user entered: Observe pings it instead
+// of the configured one, with CheckToken (a pasted token) or else the token
+// read from CheckTokenFile, so a remote plan's check is about the server the
+// user named. Neither the token nor the url's userinfo goes into State.
 type ObserveOptions struct {
-	ListenPort int
-	TokenPaths []string
+	ListenPort     int
+	TokenPaths     []string
+	CheckURL       string
+	CheckToken     Secret
+	CheckTokenFile string
 }
 
 // Platform says whether the local mode can be set up here: macOS with launchd.
@@ -33,12 +41,17 @@ type Platform struct {
 }
 
 // ConfigState is config.toml's [model-server] table as read.
+// URLHadCredentials is true when the stored url carried a user:password,
+// which Observe took out of Table.URL (Problems says so in words); a plan
+// that writes the url writes it without them.
 type ConfigState struct {
 	Path               string
 	Exists             bool
 	ParseErr, TableErr string
+	RestErr            string
 	Table              config.ModelServerState
 	Problems           []string
+	URLHadCredentials  bool
 }
 
 // TokenState describes the token file; the token itself is never held.
@@ -71,13 +84,10 @@ type AgentState struct {
 }
 
 // ListenerState is whatever listens on the model server's port. Ours is true
-// when it is the LaunchAgent job's own process. Err is set when the process
-// table could not be asked at all, so a plan can tell "nothing listens" from
-// "unknown" (it refuses on Err, never assumes the port is free).
+// when it is the LaunchAgent job's own process.
 type ListenerState struct {
 	Port, PID int
 	Ours      bool
-	Err       string
 }
 
 // ServerKind says how a ping failed.
@@ -206,12 +216,28 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	if file.TableErr != nil {
 		st.Config.TableErr = file.TableErr.Error()
 	}
+	if file.RestErr != nil {
+		st.Config.RestErr = file.RestErr.Error()
+	}
+	// rawURL is the configured url as written, kept out of State: it may
+	// carry a user:password, which only the ping below uses.
+	var rawURL string
 	if file.Table != nil {
 		t := *file.Table
 		t.Token = "" // a secret never goes into State; Problems reports its presence
+		rawURL = t.URL
+		// Only a url with an @ is rewritten: a parse-and-print round trip
+		// would otherwise re-encode an ordinary url and read as a change.
+		if strings.Contains(t.URL, "@") {
+			t.URL = stripUserinfo(t.URL)
+		}
 		st.Config.Table = t
 		if file.Table.Token != "" {
 			st.Config.Problems = append(st.Config.Problems, "token under [model-server] is set; move it into a 0600 token_file")
+		}
+		if t.URL != rawURL {
+			st.Config.URLHadCredentials = true
+			st.Config.Problems = append(st.Config.Problems, "url under [model-server] contains credentials, which wt will not display; move them out of the url")
 		}
 	}
 	tbl := st.Config.Table
@@ -345,9 +371,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 	st.Listener.Port = port
 	if ctx.Err() == nil {
-		if pid, ok, err := env.Net.ListenerPID(ctx, port); err != nil {
-			st.Listener.Err = err.Error() // unknown, never assumed free
-		} else if ok {
+		if pid, ok, err := env.Net.ListenerPID(ctx, port); err == nil && ok {
 			st.Listener.PID = pid
 			st.Listener.Ours = st.Agent.Job.Running && st.Agent.Job.PID == pid
 		}
@@ -356,7 +380,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	// Server.
 	url := getenv("WT_MODEL_URL")
 	if url == "" {
-		url = tbl.URL
+		url = rawURL
 	}
 	if url == "" && st.Resolution.Mode == modelclient.ModeLocal {
 		listen := st.Agent.Listen
@@ -364,6 +388,19 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			listen = DefaultListen
 		}
 		url = "http://" + listen
+	}
+	if check := strings.TrimSpace(opts.CheckURL); check != "" {
+		url, token = check, strings.TrimSpace(opts.CheckToken.Reveal())
+		if path := strings.TrimSpace(opts.CheckTokenFile); token == "" && path != "" {
+			ts := TokenState{Path: path}
+			if x, err := expandHome(path, home, herr); err == nil {
+				ts.Path = x
+			}
+			token = readToken(env, &ts)
+		}
+		if token == "" {
+			st.Server.Message = "no token entered for " + stripUserinfo(url)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		st.Server.Message = "not checked: " + err.Error()
