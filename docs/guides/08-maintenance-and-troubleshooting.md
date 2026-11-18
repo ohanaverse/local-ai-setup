@@ -94,7 +94,7 @@ Per-backend reference — commands and log paths verified against the live plist
 
 | Backend | Check (§TL;DR) | Restart | Logs |
 |---------|----------------|---------|------|
-| LiteLLM :4000 | `401` curl | `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` | `/Users/keith/.litellm.err.log` (+ `/Users/keith/.litellm.log`) |
+| LiteLLM :4000 | `401` curl | `wt litellm restart` | `/Users/keith/.litellm.err.log` (+ `/Users/keith/.litellm.log`) |
 | oMLX :8000 | `200` on `/health` | `omlx restart` or `brew services restart omlx` | `/opt/homebrew/var/log/omlx.log` |
 | Ollama :11434 | `200` on `/api/tags` | relaunch Ollama.app (no plist — launchd does not own it) | `/Users/keith/.ollama/logs/server.log` |
 | Postgres 5432 | `pg_isready -h localhost` | `brew services restart postgresql@16` | `/opt/homebrew/var/log/postgresql@16.log` |
@@ -211,12 +211,10 @@ Output is one line, `model_list entries: <N>`. A traceback instead means a parse
 **Step 8 — restart, then re-check Step 1.** The proxy reads config.yaml only at start:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/local.litellm.proxy && echo "kickstart OK"
+wt litellm restart
 ```
 
-```text
-kickstart OK
-```
+If wt's own restart cannot run, the fallback is `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` ([14-litellm-install-and-configuration](14-litellm-install-and-configuration.md) section 9).
 
 Measured live 2026-08-29 (this session): old PID `65475` → new PID `96295`; the port refused connections and answered `401` again after **7 s**. Guides 01/04 measured 9–15 s on earlier runs — plan for a ~10–20 s dead window and confirm with the Step 1 curl rather than assuming. Everything else uses the mechanics in the §1 table.
 
@@ -737,7 +735,7 @@ Expect `model_list entries: <N>`, with `<N>` equal to the number of ids the auth
 ## Gotchas
 
 - **KeepAlive turns "it crashed" into "it loops".** Every service here has `KeepAlive=true`, so after a config typo launchd respawns the failing job immediately and indefinitely — the port never comes up and `launchctl list` may even look normal (fresh PID). Check the logs (§3), not just the ports.
-- **Use `launchctl kickstart -k gui/$(id -u)/<label>` to restart.** With `KeepAlive=true`, bare `launchctl stop` (or killing the PID) just gets the job relaunched — you cannot hold a service down that way, and it does not re-read anything in a controlled way. `kickstart -k` is the verified, one-shot kill+restart used by all the guides; for the brew trio use `brew services restart <name>`.
+- **Restart LiteLLM with `wt litellm restart`; for any other LaunchAgent use `launchctl kickstart -k gui/$(id -u)/<label>`.** With `KeepAlive=true`, bare `launchctl stop` (or killing the PID) just gets the job relaunched — you cannot hold a service down that way, and it does not re-read anything in a controlled way. `kickstart -k` is the verified, one-shot kill+restart used by all the guides; for the brew trio use `brew services restart <name>`.
 - **The `launchctl list` middle column reads `0` or `-15` here — both healthy.** `0` = last exit was clean; `-15` = last exit was from SIGTERM, i.e. normal residue after a `kickstart -k` (live example above). What's *not* healthy: `-` PID with a non-zero status, or a PID that changes while the port stays dead (§3).
 - **A model still loaded after wt stopped it means two Ollama servers.** `wt stop` (or the stop prompt on exit) prints `done`, yet `ollama ps` still lists the model and the memory is not freed: run `pgrep -fl "ollama serve"`. Two lines means LiteLLM started a second server beside the app's, which it does at proxy startup for any ollama row in `config.yaml` with no `api_base` ([04-litellm-config](04-litellm-config.md) Gotchas). wt fills that field in on its next write; to clear it at once, kill the extra `ollama serve` (the one that is not under `Ollama.app`) and restart the proxy (§2 Step 8). Left alone, the stray copy unloads after Ollama's keep-alive, five minutes by default, which makes this look intermittent.
 - **An omlx model is running only when omlx has it loaded.** The omlx service lists every model in its directory on `/v1/models` whether or not it is loaded, so that list is not "what is running"; wt asks omlx what is loaded instead (`curl -s http://localhost:8000/health` shows the pool's `model_count` and `loaded_count`). When some omlx models are loaded and others are not, only omlx's key-protected status endpoint says which: if the server has an API key, set `auth.secret_ref` on the registry's omlx provider, or `wt litellm sync` warns that the omlx probe did not succeed and leaves its routes unchanged, and a start asks before replacing.

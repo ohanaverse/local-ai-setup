@@ -69,8 +69,8 @@ ollama pull qwen3.8:27b-mlx
 wt model init
 wt start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it needs no `[[models]]` entry: with the `ollama` provider row in registry.toml, a pulled model starts by its `ollama/<name:tag>` id). No routing step: the start writes the model_list entry and restarts the proxy; a pulled ollama model stays routed after a stop
 
-# 5. Restart the LiteLLM LaunchAgent (takes ~20 s to come back; wt already restarted it after the sync — this is only needed if that restart was skipped or failed)
-launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
+# 5. Restart the LiteLLM LaunchAgent (wt already restarted it after the sync — this is only needed if that restart was skipped or failed; it lets a request in flight finish, then waits for the proxy to answer)
+wt litellm restart
 
 # 6. Smoke curls
 LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<string>/,""); sub(/<\/string>.*/,""); print}' ~/Library/LaunchAgents/local.litellm.proxy.plist)
@@ -409,11 +409,12 @@ cat > ~/Library/LaunchAgents/local.litellm.proxy.plist << 'EOF'
     <true/>
     <key>StandardOutPath</key>
     <string>/Users/keith/.litellm.log</string>
-    <key>StandardErrorPath</string>
+    <key>StandardErrorPath</key>
     <string>/Users/keith/.litellm.err.log</string>
 </dict>
 </plist>
 EOF
+chmod 600 ~/Library/LaunchAgents/local.litellm.proxy.plist   # it holds the master key and provider keys
 
 launchctl load -w ~/Library/LaunchAgents/local.litellm.proxy.plist   # (modern equivalent: launchctl bootstrap gui/$(id -u) <plist>; unload via launchctl bootout)
 launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'
@@ -433,14 +434,10 @@ launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'
 Restart the proxy after any edit to `~/.config/litellm/config.yaml` or the plist:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/local.litellm.proxy && echo "kickstart OK"
+wt litellm restart
 ```
 
-```text
-kickstart OK
-```
-
-Expect the port to refuse connections for ~15 s — the proxy was answering 401 again by the 20 s mark (verified live; new PID proves the bounce).
+Expect the port to refuse connections while a request in flight finishes (up to 3 minutes) and then for ~15 s while it starts; `wt litellm restart` waits for the proxy to answer again. If wt's own restart cannot run, the fallback is `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`. The full install, plist and restart reference is [14-litellm-install-and-configuration](14-litellm-install-and-configuration.md).
 
 `uv run --directory llmbench llmbench provider restore` (from the repo root) brings the whole stack back in one shot: it starts ollama, oMLX and the LiteLLM proxy when they are not answering, and leaves a service that already answers alone.
 
@@ -530,7 +527,7 @@ claude-wt -W smoke-test --new -M ollama/qwen3.8:27b-mlx   # --new is accepted an
 ## Gotchas
 
 - **oMLX routes are wt-written and exist only while the model runs.** `wt start omlx/<model-id>` (e.g. `omlx/mlx-community--Qwen3.8-27B-4bit`) writes a `model_list` row named after the registry id — or, for a model directory with no registry entry, after its discovered id `omlx/<directory name>` — with `api_base: http://localhost:8000/v1`; `wt stop` removes it. The old hand-written omlx rows (`omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-{4,6}bit`) were removed 2026-09-30 (#168). Don't add rows by hand: wt never removes or replaces an unmarked row whose name is not a registry id, so a hand-written row under a discovered model's id blocks wt's own. oMLX serves only models present in `~/.omlx/models/`; for benchmark isolation, `uv run --directory llmbench llmbench provider isolate omlx` (4-bit) or `... omlx-6bit` (6-bit), then `... provider restore`.
-- **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); LiteLLM: `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`.
+- **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); LiteLLM: `wt litellm restart`.
 - **Postgres credentials are not in this repo.** The proxy gets them from `DATABASE_URL` in `~/Library/LaunchAgents/local.litellm.proxy.plist` and `general_settings.database_url` in `~/.config/litellm/config.yaml` (`postgresql://keith@localhost:5432/litellm`, trust auth, no password on local socket connections).
 - **"Installed ≠ loaded" for LaunchAgents.** A plist sitting in `~/Library/LaunchAgents/` proves nothing; check `launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'`. If a job shows `-` in the PID column it is loaded but exited (check the plist's `StandardErrorPath` log: `~/.litellm.err.log`).
 - **Discrepancies in the archive doc, reality wins:** (1) it says `omlx status` — oMLX 0.6.3rc3 has no `status` subcommand (`start|stop|restart|serve|launch|diagnose|cluster` only); (2) its `sk-1234` Bearer examples are placeholders — real key is `LITELLM_MASTER_KEY` from the plist; (3) its `hf login` is stale — current huggingface-hub v1.28.0 CLI says `hf auth login`. (The archive doc's llama.cpp items are moot — llama.cpp was retired 2026-09-07, see [provider-artifacts.md](../reference/provider-artifacts.md).)
