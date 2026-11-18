@@ -1,6 +1,8 @@
 // Package configeditor is the TUI behind `wt config`: an Agents tab that
-// edits the agent section of wt's config.toml, and a Models tab that manages
-// the models in the shared registry.toml (through internal/modeladmin).
+// edits the agent section of wt's config.toml, a Models tab that manages the
+// models in the shared registry.toml (through internal/modeladmin), and a
+// Model server tab that shows the model server's setup (through
+// internal/modelsetup, reached only by its injected ServerDeps).
 package configeditor
 
 import (
@@ -35,6 +37,7 @@ type model struct {
 	// models is the Models tab's state. registryChanged is true once that
 	// tab has written registry.toml (Result.RegistryChanged).
 	models          modelsTab
+	server          serverTab
 	registryChanged bool
 	// quitPending is true when the user asked to leave while a registry
 	// write was in flight: the editor quits when the write's result is in.
@@ -97,9 +100,13 @@ func (m *model) Init() tea.Cmd {
 		// cfg and cfgErr are captured when newModel is called.
 		return loadedMsg{cfg: m.cfg, err: m.cfgErr}
 	}
-	if m.tab == TabModels {
+	switch m.tab {
+	case TabModels:
 		// Opened on the Models tab (`wt model`): probe at once.
 		return tea.Batch(loaded, m.probeCmd())
+	case TabServer:
+		// Opened on the Model server tab: observe at once.
+		return tea.Batch(loaded, m.observeServerCmd())
 	}
 	return loaded
 }
@@ -206,6 +213,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyModelRemoved(msg)
 	case modelSavedMsg:
 		return m, m.applyModelSaved(msg)
+	case serverObservedMsg:
+		m.applyServerObserved(msg)
+		return m, nil
 	case filterMatchesMsg:
 		return m, m.applyFilterMatches(msg)
 	case saveMsg:
@@ -261,13 +271,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m.quit()
 		case "tab":
-			m.tab = nextTab(m.tab)
-			if !m.models.asked {
-				// The first visit probes; later ones show what is there
-				// (r refreshes).
-				return m, m.probeCmd()
-			}
-			return m, nil
+			// The first visit to a tab fills it; later ones show what is
+			// there (r refreshes).
+			return m, m.switchTab()
 		case "d":
 			if m.ready {
 				if it, ok := m.list.SelectedItem().(agentItem); ok {
@@ -400,7 +406,7 @@ func (m *model) View() string {
 			return m.modelsView()
 		}
 		if m.tab == TabServer {
-			return m.serverView()
+			return m.serverTabView()
 		}
 		var status string
 		if s := m.statusBlock(); s != "" {

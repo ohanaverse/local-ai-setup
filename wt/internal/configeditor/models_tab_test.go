@@ -327,7 +327,7 @@ func modelsEditor(t *testing.T, tm *tabMachine, width, height int) *model {
 	t.Helper()
 	cfg, _ := tm.deps().Load()
 	m := newModel(testTheme(), cfg, nil)
-	m.opts = Options{StartTab: TabModels, Models: tm.deps()}
+	m.opts = Options{StartTab: TabModels, Models: tm.deps(), Server: (&serverMachine{}).deps()}
 	m.tab = TabModels
 	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
 	next, _ := m.Update(loadedMsg{cfg: cfg})
@@ -406,7 +406,7 @@ func TestTabKeySwitchesTabsAndProbesOnce(t *testing.T) {
 	tm := newTabMachine(t, tabRegistry)
 	cfg, _ := tm.deps().Load()
 	m := newModel(testTheme(), cfg, nil)
-	m.opts = Options{Models: tm.deps()}
+	m.opts = Options{Models: tm.deps(), Server: (&serverMachine{}).deps()}
 	m = send(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = send(t, m, loadedMsg{cfg: cfg})
 	if !strings.HasPrefix(m.View(), "[Agents]   Models") || tm.probes != 0 {
@@ -421,10 +421,12 @@ func TestTabKeySwitchesTabsAndProbesOnce(t *testing.T) {
 	if m.tab != TabModels || probe == nil || tm.probes != 0 || !strings.Contains(m.View(), "Probing providers...") {
 		t.Fatalf("tab should switch at once and hand the probe to a command; tab = %d, probes = %d, view:\n%s", m.tab, tm.probes, m.View())
 	}
-	// Back and forth before the probe has answered: no waiting, no second probe.
+	// Back and forth before the probe has answered: no waiting, no second
+	// probe. The Model server tab's first visit observes, in a command of
+	// its own.
 	next, cmd := m.Update(keyMsg("tab"))
-	if m = next.(*model); m.tab != TabServer || cmd != nil {
-		t.Fatalf("tab while the first probe is out should go on to Model server; tab = %d", m.tab)
+	if m = next.(*model); m.tab != TabServer || cmd == nil || tm.probes != 0 {
+		t.Fatalf("tab while the first probe is out should go on to Model server and observe it; tab = %d", m.tab)
 	}
 	m = keys(t, m, "tab")
 	next, cmd = m.Update(keyMsg("tab"))

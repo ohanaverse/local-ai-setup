@@ -650,7 +650,7 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m.quit()
 		case "tab":
-			m.tab = nextTab(m.tab)
+			return m, m.switchTab()
 		}
 		return m, nil
 	}
@@ -675,8 +675,7 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m.quit()
 	case "tab":
-		m.tab = nextTab(m.tab)
-		return m, nil
+		return m, m.switchTab()
 	case "r":
 		if mt.busy {
 			m.noteProbeOut()

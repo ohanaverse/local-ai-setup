@@ -1,0 +1,415 @@
+package configeditor
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
+)
+
+// serverHints are the Model server tab's key hints, fullest first. Only keys
+// that act are named (T5): c and r both read the machine again, c to check
+// after a change elsewhere, r to read a config.toml repaired by hand.
+var serverHints = []string{
+	"left/right mode · c check · r re-read · tab next · q quit",
+	"left/right · c · r · tab · q quit",
+}
+
+// serverLabelW is the width of a status line's label column ("problems"
+// and two spaces).
+const serverLabelW = 10
+
+// tone is how a status line is coloured; the words on it always say the
+// same (V2), so a terminal without colour loses nothing.
+type tone int
+
+const (
+	toneNone tone = iota
+	toneDim
+	toneWarn
+	toneBad
+)
+
+// serverLine is one entry of the status block: a label (empty for a
+// continuation entry under the previous label), its text and its tone.
+type serverLine struct {
+	label, text string
+	tone        tone
+}
+
+// userinfoRE finds a user:password in a url inside free text.
+var userinfoRE = regexp.MustCompile(`://[^/@\s]*@`)
+
+// scrub takes any url userinfo out of text the tab draws: Observe already
+// strips it from what it stores, but a message a dep composed may still
+// carry one, and nothing the tab shows may hold a credential.
+func scrub(s string) string { return userinfoRE.ReplaceAllString(s, "://") }
+
+// homePath writes a path under home with ~ for the home.
+//
+// The token file is shown in this one form whatever the config wrote: Observe
+// hands back the expanded path (State.Token.Path), which is the file a
+// session reads, while [model-server] token_file may say ~/... or the same
+// path in full. Abbreviating the expanded path against the home Observe used
+// gives the ~ form a user writes, is the same file the line's ok / loose /
+// missing is about, and stays one form when the value came from
+// WT_MODEL_TOKEN_FILE or the agent's plist instead of the table.
+func homePath(path, home string) string {
+	if home == "" || home == "/" {
+		return tildePath(path)
+	}
+	if rest, ok := strings.CutPrefix(path, home); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
+		return "~" + rest
+	}
+	return path
+}
+
+// modeSource says where the effective mode came from.
+func modeSource(r modelclient.Resolution) string {
+	switch r.Source {
+	case modelclient.SourceEnvMode:
+		return "from WT_MODEL_MODE"
+	case modelclient.SourceEnvEndpoint:
+		return "from WT_MODEL_URL with a token"
+	case modelclient.SourceStored:
+		return "from config.toml"
+	case modelclient.SourceInferred:
+		return "inferred: a url or token is set"
+	}
+	return ""
+}
+
+// envNames splits State.EnvOverride into the variable names.
+func envNames(st modelsetup.State) []string {
+	if st.EnvOverride == "" {
+		return nil
+	}
+	return strings.Split(st.EnvOverride, ", ")
+}
+
+func hasEnv(st modelsetup.State, name string) bool {
+	for _, n := range envNames(st) {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// tokenLine is the token file and its state, as a word.
+func tokenLine(st modelsetup.State) serverLine {
+	t := st.Token
+	if t.Path == "" {
+		if hasEnv(st, "WT_MODEL_TOKEN") {
+			return serverLine{"token", "from WT_MODEL_TOKEN (not shown)", toneNone}
+		}
+		return serverLine{"token", "none set", toneDim}
+	}
+	path := homePath(t.Path, st.Host.Home)
+	switch {
+	case t.Loose:
+		return serverLine{"token", path + "  loose: chmod 600 " + path, toneBad}
+	case t.Err != "":
+		return serverLine{"token", path + "  problem: " + t.Err, toneBad}
+	case !t.Exists:
+		return serverLine{"token", path + "  missing", toneBad}
+	}
+	return serverLine{"token", path + "  ok", toneNone}
+}
+
+func pairLine(p modelsetup.PairState) serverLine {
+	if p.Err != "" {
+		return serverLine{"pair", "unreadable: " + scrub(p.Err), toneBad}
+	}
+	url := p.URL
+	if url == "" {
+		url = "url unset"
+	}
+	key := "key unset"
+	if p.KeySet {
+		key = "key set"
+	}
+	l := serverLine{"pair", "LiteLLM " + scrub(url) + ", " + key, toneNone}
+	if p.URL == "" || !p.KeySet {
+		l.tone = toneWarn
+	}
+	return l
+}
+
+func agentLines(st modelsetup.State) []serverLine {
+	a := st.Agent
+	var facts []string
+	if !a.Present {
+		facts = append(facts, "no plist")
+	} else {
+		facts = append(facts, "present")
+		if a.Managed {
+			facts = append(facts, "managed by wt")
+		} else {
+			facts = append(facts, "not managed by wt")
+		}
+		if a.Job.Loaded {
+			facts = append(facts, "loaded")
+		} else {
+			facts = append(facts, "not loaded")
+		}
+		if a.Job.Running {
+			facts = append(facts, fmt.Sprintf("running (pid %d)", a.Job.PID))
+		} else {
+			facts = append(facts, "not running")
+		}
+	}
+	lines := []serverLine{{"agent", modelsetup.AgentLabel + ": " + strings.Join(facts, ", "), toneNone}}
+	if a.Err != "" {
+		lines = append(lines, serverLine{"", "problem: " + scrub(a.Err), toneBad})
+	}
+	if l := st.Listener; l.PID != 0 && !l.Ours {
+		lines = append(lines, serverLine{"", fmt.Sprintf("port %d is held by pid %d, not the agent", l.Port, l.PID), toneWarn})
+	}
+	return lines
+}
+
+// serverKindWord names how a ping failed.
+func serverKindWord(k modelsetup.ServerKind) string {
+	switch k {
+	case modelsetup.KindUnauthorized:
+		return "token refused"
+	case modelsetup.KindNotWtModel:
+		return "not a wt-model server"
+	case modelsetup.KindSkew:
+		return "api version differs"
+	case modelsetup.KindSchema:
+		return "schema differs"
+	}
+	return "unreachable"
+}
+
+func serverCheckLine(st modelsetup.State) serverLine {
+	s := st.Server
+	switch {
+	case st.Resolution.Mode == modelclient.ModeNative:
+		return serverLine{"server", "none in native mode", toneDim}
+	case !s.Checked && s.Message != "":
+		return serverLine{"server", "not checked: " + scrub(s.Message), toneDim}
+	case !s.Checked:
+		return serverLine{"server", "not checked: no url or no token", toneDim}
+	case s.OK:
+		return serverLine{"server", fmt.Sprintf("ok: wt-model answers at %s (api %d, schema %d)", scrub(s.URL), s.API, s.Schema), toneNone}
+	}
+	return serverLine{"server", "problem: " + serverKindWord(s.Kind) + ": " + scrub(s.Message), toneBad}
+}
+
+// checkWord is a LiteLLM check's status as a word, and its tone.
+func checkWord(c modelsetup.Check) (string, tone) {
+	switch c.Status {
+	case modelsetup.CheckOK:
+		return "ok", toneNone
+	case modelsetup.CheckWarn:
+		return "warning", toneWarn
+	case modelsetup.CheckFail:
+		return "problem", toneBad
+	}
+	return "skipped", toneDim
+}
+
+func litellmLines(st modelsetup.State) []serverLine {
+	l := st.LiteLLM
+	if !l.Checked {
+		if st.Resolution.Mode != modelclient.ModeLocal {
+			return []serverLine{{"litellm", "checked in local mode only", toneDim}}
+		}
+		return []serverLine{{"litellm", "not checked", toneDim}}
+	}
+	checks := []struct {
+		name string
+		c    modelsetup.Check
+	}{
+		{"reachable", l.Reachable}, {"database", l.Database}, {"key", l.KeyAccepted},
+		{"routes", l.RoutesInSync}, {"restart", l.RestartOwed}, {"port", l.PortMatches}, {"plist mode", l.PlistMode},
+	}
+	var lines []serverLine
+	for i, ch := range checks {
+		word, tn := checkWord(ch.c)
+		text := ch.name + " " + word
+		if ch.c.Detail != "" {
+			text += ": " + scrub(ch.c.Detail)
+		}
+		label := ""
+		if i == 0 {
+			label = "litellm"
+		}
+		lines = append(lines, serverLine{label, text, tn})
+	}
+	// What the checks cannot see, said rather than guessed (the spec's
+	// "LiteLLM: scope and guide").
+	return append(lines, serverLine{"", "the salt key and provider keys are not checked", toneDim})
+}
+
+// serverStatusLines is the status block: the effective mode and where it
+// came from, the url, the token file, the pair, the agent, the server check,
+// the LiteLLM checks, the env-override line and the problems.
+func serverStatusLines(st modelsetup.State) []serverLine {
+	var lines []serverLine
+	r := st.Resolution
+	switch {
+	case r.Mode != "":
+		lines = append(lines, serverLine{"mode", string(r.Mode) + " (" + modeSource(r) + ")", toneNone})
+	case r.Problem != "":
+		lines = append(lines, serverLine{"mode", "problem: " + r.Problem, toneBad})
+	default:
+		lines = append(lines, serverLine{"mode", "unset: choose one below", toneWarn})
+	}
+	url := st.Config.Table.URL
+	if url == "" {
+		url = "none set"
+	}
+	lines = append(lines, serverLine{"url", scrub(url), toneNone})
+	lines = append(lines, tokenLine(st), pairLine(st.Pair))
+	lines = append(lines, agentLines(st)...)
+	lines = append(lines, serverCheckLine(st))
+	lines = append(lines, litellmLines(st)...)
+	if names := envNames(st); len(names) > 0 {
+		lines = append(lines, serverLine{"env", strings.Join(names, ", ") + " set: they override config.toml", toneWarn})
+	}
+	var problems []string
+	if st.Config.TableErr != "" {
+		problems = append(problems, "[model-server]: "+st.Config.TableErr)
+	}
+	problems = append(problems, st.Config.Problems...)
+	for i, p := range problems {
+		label := ""
+		if i == 0 {
+			label = "problems"
+		}
+		lines = append(lines, serverLine{label, scrub(p), toneBad})
+	}
+	return lines
+}
+
+// renderServerLine lays one entry out at width: the label padded to its
+// column and the text flowed between words beside it, continuation lines
+// indented under the text. A terminal too narrow for the column flows the
+// whole entry instead. No line is wider than width.
+func renderServerLine(l serverLine, width int) []string {
+	pad := tuilayout.PadRunes(l.label, serverLabelW)
+	if width <= 0 {
+		return []string{pad + l.text}
+	}
+	if width-serverLabelW < 16 {
+		return flow(strings.Fields(l.label+" "+l.text), " ", width)
+	}
+	text := flow(strings.Fields(l.text), " ", width-serverLabelW)
+	out := make([]string, len(text))
+	for i, t := range text {
+		if i == 0 {
+			out[i] = pad + t
+		} else {
+			out[i] = strings.Repeat(" ", serverLabelW) + t
+		}
+	}
+	return out
+}
+
+// modeChoice is the mode choice: (x) on the chosen one, (-) on local where
+// it cannot be set up.
+func (m *model) modeChoice() []string {
+	st := &m.server
+	var opts []string
+	for _, mode := range serverModes {
+		mark := "( )"
+		switch {
+		case !st.modeAllowed(mode):
+			mark = "(-)"
+		case mode == st.want.Mode:
+			mark = "(x)"
+		}
+		opts = append(opts, mark+" "+string(mode))
+	}
+	var lines []string
+	switch {
+	case m.width <= 0:
+		lines = []string{tuilayout.PadRunes("choose", serverLabelW) + strings.Join(opts, "  ")}
+	case m.width-serverLabelW >= 16:
+		for i, l := range flow(opts, "  ", m.width-serverLabelW) {
+			lead := strings.Repeat(" ", serverLabelW)
+			if i == 0 {
+				lead = tuilayout.PadRunes("choose", serverLabelW)
+			}
+			lines = append(lines, lead+l)
+		}
+	default:
+		lines = flow(opts, "  ", m.width)
+	}
+	if !st.state.Platform.OK {
+		why := "local needs launchd (macOS)"
+		if st.state.Platform.Reason != "" {
+			why += ": " + st.state.Platform.Reason
+		}
+		lines = append(lines, renderServerLine(serverLine{text: why}, m.width)...)
+	}
+	return lines
+}
+
+// serverBody is the tab's body under the tab bar: a status line, the parse
+// error, the status block (when withStatus) and the mode choice, styled. The
+// mode choice is last, so a body cut from its middle (MessageAlone) keeps it.
+func (m *model) serverBody(withStatus bool) string {
+	styles := map[tone]lipgloss.Style{
+		toneNone: lipgloss.NewStyle(),
+		toneDim:  lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim)),
+		toneWarn: lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenWarning)),
+		toneBad:  themes.ErrorStyle(m.theme),
+	}
+	var out []string
+	if s := m.server.status; s != "" {
+		out = append(out, wrapText(s, m.width), "")
+	}
+	if !m.server.loaded {
+		return strings.Join(append(out, wrapText("reading the model server's state", m.width)), "\n")
+	}
+	st := m.server.state
+	if st.Config.ParseErr != "" {
+		// The path on a line of its own, so wrapping never breaks it.
+		msg := "config.toml does not parse:\n" + st.Config.Path + "\n" + scrub(st.Config.ParseErr) + "\nfix the file, then press r"
+		out = append(out, styles[toneBad].Render(wrapText(msg, m.width)), "")
+	}
+	if withStatus {
+		for _, l := range serverStatusLines(st) {
+			for _, line := range renderServerLine(l, m.width) {
+				out = append(out, styles[l.tone].Render(line))
+			}
+		}
+		out = append(out, "")
+	}
+	out = append(out, m.modeChoice()...)
+	return strings.Join(out, "\n")
+}
+
+// serverTabView renders the Model server tab: the tab bar, a blank line, the
+// body and the hint line on the terminal's last line (L3). A body too tall
+// for the terminal loses lines from its middle behind a marker that counts
+// them (L4), keeping the status at the top and the mode choice and the hints
+// at the bottom. A config.toml that does not parse is the one thing to read
+// then: when the whole body does not fit, the status block gives way to it.
+// Before the first WindowSizeMsg it is the tab bar alone.
+func (m *model) serverTabView() string {
+	bar := tabBar(m.theme, TabServer)
+	if m.width <= 0 || m.height <= 0 {
+		return bar
+	}
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	body := "\n" + m.serverBody(true)
+	if m.server.state.Config.ParseErr != "" && lipgloss.Height(bar)+lipgloss.Height(body)+1 > m.height {
+		body = "\n" + m.serverBody(false)
+	}
+	// Blank filler pins the hints to the last line when the body fits.
+	if fill := m.height - lipgloss.Height(bar) - lipgloss.Height(body) - 1; fill > 0 {
+		body += strings.Repeat("\n", fill)
+	}
+	return tuilayout.MessageAlone(bar, body, fitHints(m.width, serverHints), m.width, m.height, dim)
+}

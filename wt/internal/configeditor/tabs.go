@@ -3,7 +3,6 @@ package configeditor
 import (
 	"context"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -154,20 +153,3 @@ func tabBar(theme themes.Theme, current Tab) string {
 	}
 	return bar
 }
-
-// updateServer is the Model server tab's update. For now it only quits and
-// moves on to the next tab; its state and keys come with the tab itself.
-func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if key, ok := msg.(tea.KeyMsg); ok {
-		switch key.String() {
-		case "q", "ctrl+c":
-			return m.quit()
-		case "tab":
-			m.tab = nextTab(m.tab)
-		}
-	}
-	return m, nil
-}
-
-// serverView is the Model server tab's placeholder: the tab bar.
-func (m *model) serverView() string { return tabBar(m.theme, TabServer) }
