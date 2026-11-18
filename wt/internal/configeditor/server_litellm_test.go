@@ -1,6 +1,7 @@
 package configeditor
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -622,5 +623,70 @@ func TestServerTabResultScreenEatsCAndR(t *testing.T) {
 	m = keys(t, m, "esc", "c")
 	if m.server.result != nil || sm.observes != before+1 {
 		t.Errorf("esc then c: result %v, observes %d, want the screen closed and one read", m.server.result != nil, sm.observes-before)
+	}
+}
+
+// TestServerTabReadsTheLiteLLMProbeWhenLocalIsChosen pins that choosing
+// local with the mode keys, after an observation that skipped the LiteLLM
+// probe (the first read of an unset or remote config does), reads the
+// machine again with the probe, exactly as r would, so the k menu can offer
+// create without the user first pressing r. Moving between native and remote
+// asks for no read, and coming back to local after a probed read asks for
+// none either. The fake answers like Observe: the litellm binary and the
+// port check only when the probe is not skipped.
+func TestServerTabReadsTheLiteLLMProbeWhenLocalIsChosen(t *testing.T) {
+	base := installable()
+	base.Resolution = modelclient.Resolution{}
+	base.Config.Table.Mode = ""
+	probed := 0
+	sm := &serverMachine{}
+	deps := sm.deps()
+	observe := deps.Observe
+	deps.Observe = func(ctx context.Context, o modelsetup.ObserveOptions) modelsetup.State {
+		observe(ctx, o)
+		st := base
+		if o.SkipLiteLLMProbe {
+			st.LiteLLMInstall = modelsetup.LiteLLMInstallState{ConfigPath: base.LiteLLMInstall.ConfigPath, ConfigExists: true}
+		} else {
+			probed++
+		}
+		return st
+	}
+	m := newModel(testTheme(), &config.Config{}, nil)
+	m.opts = Options{StartTab: TabServer, Server: deps, Models: newTabMachine(t, "").deps()}
+	m.tab = TabServer
+	m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
+	m = runCmd(t, m, m.Init())
+	if sm.observes != 1 || probed != 0 {
+		t.Fatalf("first read: observes %d probed %d, want one read without the probe", sm.observes, probed)
+	}
+
+	// Among native and remote: no read.
+	for _, c := range []struct {
+		key  string
+		mode modelclient.Mode
+	}{{"right", modelclient.ModeNative}, {"left", modelclient.ModeRemote}, {" ", modelclient.ModeNative}} {
+		m = keys(t, m, c.key)
+		if m.server.want.Mode != c.mode || sm.observes != 1 {
+			t.Fatalf("%q: mode %q observes %d, want %q and no read", c.key, m.server.want.Mode, sm.observes, c.mode)
+		}
+	}
+	next, cmd := m.Update(keyMsg("right")) // local
+	m = next.(*model)
+	if m.server.want.Mode != modelclient.ModeLocal || cmd == nil || !m.server.busy ||
+		!strings.Contains(m.server.status, "re-reading the model server's state") {
+		t.Fatalf("local: mode %q cmd %v busy %v status %q, want a re-read as r starts", m.server.want.Mode, cmd != nil, m.server.busy, m.server.status)
+	}
+	m = runCmd(t, m, cmd)
+	if sm.observes != 2 || probed != 1 || sm.opts[1].SkipLiteLLMProbe {
+		t.Fatalf("local: observes %d probed %d, want a second read with the probe", sm.observes, probed)
+	}
+	if v := flat(plain(keys(t, m, "k"))); !strings.Contains(v, flat(optCreate)) {
+		t.Errorf("k after choosing local does not offer create:\n%s", plain(keys(t, m, "k")))
+	}
+
+	m = keys(t, m, "right", "left") // remote, then local again after a probed read
+	if m.server.want.Mode != modelclient.ModeLocal || sm.observes != 2 {
+		t.Errorf("remote and back: mode %q observes %d, want local and no new read", m.server.want.Mode, sm.observes)
 	}
 }

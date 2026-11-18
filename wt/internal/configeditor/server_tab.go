@@ -136,12 +136,18 @@ type serverTab struct {
 	result *serverResultScreen
 	// menuAt is the menu option the cursor is on.
 	menuAt int
+	// probeSkipped is true when the observation shown was made with
+	// SkipLiteLLMProbe, so it holds no litellm binary or port check: choosing
+	// local then reads again with the probe (the k menu's create needs it).
+	probeSkipped bool
 }
 
 // serverObservedMsg carries one observation.
 type serverObservedMsg struct {
 	gen int
 	st  modelsetup.State
+	// skippedProbe is the observation's SkipLiteLLMProbe option.
+	skippedProbe bool
 }
 
 // serverPlannedMsg carries one plan, or why there is none.
@@ -309,7 +315,7 @@ func (m *model) observeServerCmdWith(opts modelsetup.ObserveOptions) tea.Cmd {
 	m.server.asked, m.server.busy = true, true
 	gen, observe := m.server.gen, m.opts.Server.Observe
 	return func() tea.Msg {
-		return serverObservedMsg{gen: gen, st: observe(context.Background(), opts)}
+		return serverObservedMsg{gen: gen, st: observe(context.Background(), opts), skippedProbe: opts.SkipLiteLLMProbe}
 	}
 }
 
@@ -320,7 +326,7 @@ func (m *model) applyServerObserved(msg serverObservedMsg) tea.Cmd {
 	if msg.gen != st.gen {
 		return nil // a later observation is on its way
 	}
-	st.state, st.loaded, st.busy = msg.st, true, false
+	st.state, st.loaded, st.busy, st.probeSkipped = msg.st, true, false, msg.skippedProbe
 	if st.pending {
 		st.status, st.pending = "", false
 	}
@@ -700,7 +706,14 @@ func (m *model) updateServer(msg tea.Msg) (tea.Model, tea.Cmd) {
 			st.status = "wait: the form does not change while the model server tab is busy"
 			return m, nil
 		}
+		was := st.want.Mode
 		m.updateServerForm(key.String())
+		if st.want.Mode == modelclient.ModeLocal && was != modelclient.ModeLocal && st.probeSkipped {
+			// The read shown skipped the LiteLLM probe (its mode was not
+			// local), so read again with it, exactly as r does.
+			st.status, st.pending = m.cancelServerPlan()+"re-reading the model server's state", true
+			return m, m.observeServerCmd()
+		}
 	case "a":
 		return m, m.startServerPlan()
 	case "k":
