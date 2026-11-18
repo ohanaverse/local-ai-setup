@@ -255,6 +255,7 @@ Recorded after the build (2026-11-18), from the execution ledger. Everything abo
 ### Decisions made during the build
 
 - **Secrets.** `Desired.PastedToken` and `Desired.MasterKey` are `modelsetup.Secret` (redacting under `%v`, `%+v`, `%#v` and JSON; `Reveal()` only at the point of use). `Observe` strips userinfo from a stored url in `State` and reports it as a problem.
+- **Token precedence mirrors the session's `modelclient.ResolveEndpoint`.** `Observe` reads the token the way a session would: `WT_MODEL_TOKEN_FILE` (env) wins and never falls back to the literal; otherwise the config's `token_file` (with `~` expanded) is used unless `WT_MODEL_TOKEN` is set, in which case that literal is used. A token read from a file is trimmed; an env literal is used untrimmed (so a file with a trailing newline and the same text as an env literal are not the same token). Only in `local` mode with nothing set does the local agent's own token file apply, which a session would not do. An inline `[model-server] token` is blanked in `State` (never held) and reported as a problem.
 - **`ServerState` records the pinged url and token source**, and `BuildPlan` treats a check of any other url as not checked; the tab pings the ENTERED url and token before a remote plan.
 - **Tab safeguards added in review:** a `planWant` snapshot taken at `a` (the apply runs it, not later keystrokes); form keys inert while a plan or apply is in flight; prompts (`[y/N]`, default No) visible at every terminal size; a parse error in `config.toml` disables every write path; the clip drops lower-ranked status rows first and marks them; a held quit.
 - **Tolerant tab on a broken `config.toml`:** `wt config` opens with a syntax-broken file and says so with the path; nothing is repaired or moved aside.
@@ -268,4 +269,5 @@ Recorded after the build (2026-11-18), from the execution ledger. Everything abo
 - A plist holding the master key twice is offered Rotate (the menu checks only that a key exists) and refused at apply by `ReplaceMasterKey`, after the backup was written.
 - Create is port 4000 only and does not boot out another plist's label that is already running.
 - The tab's key scrub is a prefix heuristic (`sk-` followed by a long key run, with a word boundary): a raw hex salt key, a token without that prefix and a hyphen-prefixed key are not caught.
+- Pressing `c` or `r` while the pre-plan observation is in flight drops that plan; the status line says so (it begins `planning cancelled; `, then the new read's text).
 - Smaller items stay with the ledger and the review notes (for example a 403 from LiteLLM reads as "key rejected", the `--port=4000` argument form is not recognised, and a listener check on a URL with no port is untested).
