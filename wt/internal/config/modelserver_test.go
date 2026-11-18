@@ -465,6 +465,9 @@ func TestReadModelServerFileNeverQuotesASecretValue(t *testing.T) {
 		"[model-server]\nmode = \"remote\"\ntoken = abcSECRETxyz+/==\n",
 		"[litellm]\napi_key = sk-SECRET-0123456789\n",
 		"[model-server]\ntoken = \"abcSECRET\nmode = \"remote\"\n",
+		// A url typed without quotes may hold credentials (#640).
+		"[model-server]\nurl = admin:SECRET@gpu:8787\n",
+		"[litellm]\nurl = SECRET@litellm:4000\n",
 	} {
 		sessionHome(t, body)
 		f := ReadModelServerFile()
@@ -475,7 +478,7 @@ func TestReadModelServerFileNeverQuotesASecretValue(t *testing.T) {
 		if strings.Contains(msg, "SECRET") {
 			t.Errorf("ParseErr quotes the secret: %q", msg)
 		}
-		if !strings.Contains(msg, "line ") || !(strings.Contains(msg, "token") || strings.Contains(msg, "api_key")) {
+		if !strings.Contains(msg, "line ") || !(strings.Contains(msg, "token") || strings.Contains(msg, "api_key") || strings.Contains(msg, "url")) {
 			t.Errorf("ParseErr %q does not name the line and the key", msg)
 		}
 	}

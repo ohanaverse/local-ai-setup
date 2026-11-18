@@ -137,8 +137,10 @@ func ReadModelServerFile() ModelServerFile {
 }
 
 // secretSafe keeps a TOML error from quoting a secret: when the error sits on
-// a line whose key is a token or a key (token, api_key, *_token, *_key), or
-// the last key parsed is one, the parser's message (which can quote the
+// a line whose key is a token, a key or a url (token, api_key, *_token,
+// *_key, url, *_url: a url typed without quotes may hold credentials, and the
+// parser quotes the token in front of its '@', #640), or the last key parsed
+// is one, the parser's message (which can quote the
 // value, say a base64 token typed without quotes) is replaced by the line
 // number and the key name. Any other error is returned as it is.
 func secretSafe(err error, data []byte) error {
@@ -166,10 +168,12 @@ func secretSafe(err error, data []byte) error {
 	return err
 }
 
-// secretKeyName reports whether a config key's value is a secret.
+// secretKeyName reports whether a config key's value is, or may hold, a
+// secret. A url counts: one can carry userinfo (#640).
 func secretKeyName(k string) bool {
 	k = strings.ToLower(k)
-	return k == "token" || k == "api_key" || strings.HasSuffix(k, "_token") || strings.HasSuffix(k, "_key")
+	return k == "token" || k == "api_key" || strings.HasSuffix(k, "_token") || strings.HasSuffix(k, "_key") ||
+		k == "url" || strings.HasSuffix(k, "_url")
 }
 
 // UpdateModelServer rewrites the [model-server] table under the config lock.

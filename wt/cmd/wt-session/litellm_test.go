@@ -202,6 +202,27 @@ func TestLitellmRestartWaitsAndReports(t *testing.T) {
 	}
 }
 
+// TestLitellmRestartHidesAnAtURL pins the success line's one url rule
+// (#640): a stored pair url holding an '@' (hand-written, or set by an older
+// wt) is printed only as config.ProxyURLHidden, never in part.
+func TestLitellmRestartHidesAnAtURL(t *testing.T) {
+	const url = "http://USERX:PASSX@proxy.test:4000"
+	t.Setenv("WT_LITELLM_RESTART_CMD", "true")
+	t.Cleanup(litellm.StubProxyReadinessForTest(
+		func(context.Context, string, time.Duration) bool { return false },
+		func(context.Context, string, time.Duration) error { return nil },
+	))
+	cfg := litellmTestConfig()
+	cfg.SetLitellmForTest(config.LitellmState{URL: url})
+	var out bytes.Buffer
+	if err := runLitellmRestart(&out, cfg); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if got, want := out.String(), "restarted the LiteLLM proxy at "+config.ProxyURLHidden+"\n"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
+}
+
 // TestLitellmListAndProviders pins the read-only commands' JSON shapes: the
 // "routed" id list and ownership rows of `list --json`, and the per-provider
 // policy of `providers --json` (cloud or not). They are what a script reads

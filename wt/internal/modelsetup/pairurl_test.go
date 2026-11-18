@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	neturl "net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -257,6 +259,29 @@ func TestObservePairErrorWithAnAtIsHidden(t *testing.T) {
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
 	if st.Pair.Err != pairErrHidden || strings.Contains(st.Pair.Err, "USERX") {
 		t.Errorf("Pair.Err = %q, want fixed text with nothing of the url", st.Pair.Err)
+	}
+	// The real error, not an invented one: config.ResolveProxy on a home
+	// whose url is typed without quotes. BurntSushi quotes the token before
+	// the '@' (found "USERX") and not the '@', so this is held at the source.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	cfgPath := filepath.Join(home, "wt-model", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("[litellm]\nurl = USERX:PASSX@hq\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, realErr := config.ResolveProxy()
+	if realErr == nil {
+		t.Fatal("ResolveProxy() on an unquoted url = nil error, want a parse error")
+	}
+	f = obsConfigured(t)
+	f.pairErr = realErr
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if st.Pair.Err == "" || strings.Contains(st.Pair.Err, "USERX") || strings.Contains(st.Pair.Err, "PASSX") {
+		t.Errorf("Pair.Err = %q, want an error with nothing of the url", st.Pair.Err)
 	}
 	f = obsConfigured(t)
 	f.pairErr = errors.New("toml: line 1: bad")

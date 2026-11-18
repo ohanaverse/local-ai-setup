@@ -302,6 +302,40 @@ func TestResolveProxyRefusesABrokenFile(t *testing.T) {
 	})
 }
 
+// TestResolveProxyNeverQuotesAnUnquotedURL pins #640's source fix: a pair url
+// typed without quotes (url = USERX:PASSX@hq) stops the TOML parser, whose
+// message quotes the token in front of the '@' (found "USERX") without the
+// '@' itself, so no '@' heuristic downstream can catch it. Both readers, the
+// wt-model home and the legacy agent-wt table, report the line and the key
+// only.
+func TestResolveProxyNeverQuotesAnUnquotedURL(t *testing.T) {
+	for _, body := range []string{
+		"[litellm]\nurl = USERX:PASSX@hq\n",
+		"[litellm]\nurl = PASSX@litellm:4000\n",
+		"[litellm]\nurl = \"http://USERX:PASSX@hq\n",
+	} {
+		for _, where := range []string{"home", "legacy"} {
+			home := proxyEnv(t, "")
+			if where == "home" {
+				writeProxyHome(t, home, body)
+			} else {
+				must(t, filepath.Join(home, "agent-wt", "config.toml"), body)
+			}
+			_, err := ResolveProxy()
+			if err == nil {
+				t.Fatalf("%s %q: ResolveProxy() = nil error, want a parse error", where, body)
+			}
+			msg := err.Error()
+			if strings.Contains(msg, "USERX") || strings.Contains(msg, "PASSX") {
+				t.Errorf("%s %q: the error quotes the url: %q", where, body, msg)
+			}
+			if !strings.Contains(msg, "line 2") || !strings.Contains(msg, "url") {
+				t.Errorf("%s %q: the error %q does not name the line and the key", where, body, msg)
+			}
+		}
+	}
+}
+
 // TestResolveProxyLegacyNeedsNoMigrations pins the legacy read's contract:
 // readConfigFile only — no Load, no schema migration, no write. The fixture
 // is a config.toml Load would rewrite (its google agent is renamed to agy),

@@ -202,7 +202,7 @@ func readProxyHome(path string) (lit proxyHomeLitellm, present bool, err error) 
 // decodeProxyHome reads and decodes the whole home document at path. exists
 // is false when the file is not there (a fresh home). A file that exists but
 // does not parse is an error, loud: never merge onto a document wt cannot
-// read.
+// read. The error never quotes a url or key value (secretSafe, #640).
 func decodeProxyHome(path string) (doc proxyHomeDoc, exists bool, err error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -212,7 +212,7 @@ func decodeProxyHome(path string) (doc proxyHomeDoc, exists bool, err error) {
 		return doc, false, err
 	}
 	if _, err := toml.Decode(string(data), &doc); err != nil {
-		return doc, false, fmt.Errorf("parse %s: %w", path, err)
+		return doc, false, fmt.Errorf("parse %s: %w", path, secretSafe(err, data))
 	}
 	return doc, true, nil
 }

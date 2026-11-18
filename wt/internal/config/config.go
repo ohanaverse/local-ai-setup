@@ -1435,7 +1435,9 @@ func readConfigFile() (cfg *Config, exists bool, err error) {
 		return nil, false, err
 	}
 	if _, err := toml.Decode(string(data), cfg); err != nil {
-		return nil, false, fmt.Errorf("parse config: %w", err)
+		// secretSafe: never quote a token, key or url value (the legacy
+		// [litellm] table's url may hold credentials, #640).
+		return nil, false, fmt.Errorf("parse config: %w", secretSafe(err, data))
 	}
 	return cfg, true, nil
 }
