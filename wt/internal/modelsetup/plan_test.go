@@ -929,7 +929,8 @@ func TestBuildPlanRotateGuardsTheSaltFallback(t *testing.T) {
 	st := rotateState()
 	st.LiteLLMPlist.HasSaltKey, st.LiteLLMPlist.HasDatabaseURL = false, true
 	p, err := BuildPlan(st, want)
-	mustRefuse(t, p, err, "DATABASE_URL", "LITELLM_SALT_KEY", guide14+"#6-generate-the-keys-file-mode")
+	mustRefuse(t, p, err, "DATABASE_URL", "LITELLM_SALT_KEY", "falls back to the master key",
+		"set LITELLM_SALT_KEY to the current master key's value", guide14+"#6-generate-the-keys-file-mode")
 
 	st.LiteLLMPlist.HasSaltKey = true
 	text := mustPlan(t, st, want).Format()

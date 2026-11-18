@@ -822,8 +822,8 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 	case lp.HasDatabaseURL && !lp.HasSaltKey:
 		// LiteLLM encrypts stored provider credentials with the master key
 		// when no salt key is set: a new one would leave them undecryptable.
-		reasons = append(reasons, reason(path+" sets DATABASE_URL but no LITELLM_SALT_KEY, so LiteLLM encrypts its stored credentials with the master key and a new one would make them unreadable",
-			"keep the master key, or see "+guide14+"#6-generate-the-keys-file-mode before changing either key"))
+		reasons = append(reasons, reason(path+" sets DATABASE_URL but no LITELLM_SALT_KEY, and LiteLLM falls back to the master key when no salt key is set (see its documentation), so a new master key could make its stored credentials unreadable",
+			"first set LITELLM_SALT_KEY to the current master key's value, or confirm the database holds no stored credentials; see "+guide14+"#6-generate-the-keys-file-mode"))
 	}
 	if len(reasons) > 0 {
 		return nil, nil, reasons
