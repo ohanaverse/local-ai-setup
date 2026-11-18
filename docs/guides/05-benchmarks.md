@@ -15,15 +15,15 @@
 
   (one id per line, still subject to the `--family` filter and to the model still being in `registry.toml`.)
 - Backends healthy: the three-port block in Verification answers (oMLX `:8000`, ollama `:11434`, LiteLLM `:4000`). llama.cpp was retired 2026-09-07 — see [provider-artifacts.md](../reference/provider-artifacts.md).
-- llmbench runnable from its directory (`uv run llmbench …` from `/Users/user_name/github/ohanaverse/local-ai-setup/llmbench`; llmbench is not installed globally). Provider lifecycle CLI callable the same way:
-  `uv run llmbench provider isolate <ollama|omlx|omlx-6bit|mtplx|rec|sushi>` (or `isolate mlx_lm_server <target> --draft <draft>`) and `uv run llmbench provider restore` from `/Users/user_name/github/ohanaverse/local-ai-setup/llmbench` (or `uv run --directory llmbench llmbench provider ...` from the repo root — that's how the `benchmarks/` scripts invoke it).
+- llmbench runnable from its directory (`uv run llmbench …` from `~/github/ohanaverse/local-ai-setup/llmbench`; llmbench is not installed globally). Provider lifecycle CLI callable the same way:
+  `uv run llmbench provider isolate <ollama|omlx|omlx-6bit|mtplx|rec|sushi>` (or `isolate mlx_lm_server <target> --draft <draft>`) and `uv run llmbench provider restore` from `~/github/ohanaverse/local-ai-setup/llmbench` (or `uv run --directory llmbench llmbench provider ...` from the repo root — that's how the `benchmarks/` scripts invoke it).
 
 ## TL;DR
 
 <!-- UNVERIFIED — not run end-to-end from this session: the isolate call stops live services and the benchmark run takes minutes and mutates model state. The usage-error paths of the CLI were run live (see Step 1). -->
 
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench
+# from: ~/github/ohanaverse/local-ai-setup/llmbench
 uv run llmbench provider isolate omlx --json
 # → {"provider": "omlx", "model": "Ornith-1.5-35B-A3B-MLX-4bit",
 #    "direct_url": "http://localhost:8000/v1/chat/completions", "ok": true, "error": null}
@@ -41,13 +41,13 @@ uv run --directory llmbench llmbench provider stop rec
 uv run llmbench show-results --latest   # prints summary.md
 ```
 
-Artifacts land in `/Users/user_name/.config/local-ai/benchmarks/<run-id>/` (`summary.md`, `results.json`, `payload.json`; run-id = UTC `YYYYMMDD-HHMMSS` — from `src/llmbench/benchmark/results.py` `write_results`). Note: `llmbench run` calls the same `orchestrate.isolate`/`orchestrate.restore` functions internally, in-process (`src/llmbench/benchmark/isolation.py`) — it isolates before each target and restores in a `finally` block — so the manual isolate is a pre-flight and the manual restore is only needed if you isolated without running, or the run was hard-killed (SIGKILL/SIGTERM) — Ctrl-C still triggers llmbench's restore.
+Artifacts land in `~/.config/local-ai/benchmarks/<run-id>/` (`summary.md`, `results.json`, `payload.json`; run-id = UTC `YYYYMMDD-HHMMSS` — from `src/llmbench/benchmark/results.py` `write_results`). Note: `llmbench run` calls the same `orchestrate.isolate`/`orchestrate.restore` functions internally, in-process (`src/llmbench/benchmark/isolation.py`) — it isolates before each target and restores in a `finally` block — so the manual isolate is a pre-flight and the manual restore is only needed if you isolated without running, or the run was hard-killed (SIGKILL/SIGTERM) — Ctrl-C still triggers llmbench's restore.
 
 ## Steps
 
 ### 1. Isolate one provider
 
-`llmbench provider isolate` stops every *other* local provider, then starts + warms the target (warmup = one `max_tokens: 1` chat request, retried about once a second until the server answers or a wall-clock deadline passes: 600 s for ollama, oMLX and mlx_lm_server, 120 s for mtplx and rec, 400 s for sushi, whose first request loads the pack; an HTTP 400 or 422 repeated ten times in a row with the same body stops the warmup at once with the server's message, since waiting does not change it — a body that carries a request id or timestamp differs each time, so it never matches and the warmup polls to its deadline as before — and a 401 or 403 stops it on the first answer, except for oMLX, which then retries the warmup through `wt warm`). It's the CLI over `src/llmbench/providers/lifecycle/orchestrate.py`; per-provider start/stop/warmup logic lives in one `Backend` subclass per provider under `src/llmbench/providers/lifecycle/backends/` — this is an in-process port of the old `bin/llm-isolate-provider`/`bin/llm-restore-providers` bash scripts (issue #79; both deleted). Safe read-only probes, verified live from `/Users/user_name/github/ohanaverse/local-ai-setup/llmbench`:
+`llmbench provider isolate` stops every *other* local provider, then starts + warms the target (warmup = one `max_tokens: 1` chat request, retried about once a second until the server answers or a wall-clock deadline passes: 600 s for ollama, oMLX and mlx_lm_server, 120 s for mtplx and rec, 400 s for sushi, whose first request loads the pack; an HTTP 400 or 422 repeated ten times in a row with the same body stops the warmup at once with the server's message, since waiting does not change it — a body that carries a request id or timestamp differs each time, so it never matches and the warmup polls to its deadline as before — and a 401 or 403 stops it on the first answer, except for oMLX, which then retries the warmup through `wt warm`). It's the CLI over `src/llmbench/providers/lifecycle/orchestrate.py`; per-provider start/stop/warmup logic lives in one `Backend` subclass per provider under `src/llmbench/providers/lifecycle/backends/` — this is an in-process port of the old `bin/llm-isolate-provider`/`bin/llm-restore-providers` bash scripts (issue #79; both deleted). Safe read-only probes, verified live from `~/github/ohanaverse/local-ai-setup/llmbench`:
 
 ```bash
 uv run llmbench provider isolate            # no arg
@@ -93,7 +93,7 @@ Model names are env-overridable: `LLM_ISOLATE_OLLAMA_MODEL`, `LLM_ISOLATE_OMLX_4
 
 <!-- UNVERIFIED — the commands below with a real target stop services via the internal isolation helper. Probe outputs pasted are live. -->
 
-Built-in workloads (`uv run llmbench list-workloads`, verified live from `/Users/user_name/github/ohanaverse/local-ai-setup/llmbench`):
+Built-in workloads (`uv run llmbench list-workloads`, verified live from `~/github/ohanaverse/local-ai-setup/llmbench`):
 
 ```text
 chat
@@ -111,7 +111,7 @@ Flag semantics (from `uv run llmbench run --help` and `src/llmbench/benchmark/cl
 - `--family <name>` — all registry models in a family. **`--model` and `--family` stack as an AND-filter** (both are applied in `discover_targets`; only `--direct`/`--litellm` are mutually exclusive). Family names come from `family =` in `~/.config/local-ai/registry.toml` — a family name must match that string exactly (no prefix matching), so check the spelling before running. List yours with `grep '^family' ~/.config/local-ai/registry.toml | sort -u`.
 - `--direct` / `--litellm` — scope to one route; default benchmarks BOTH (direct URL + `http://localhost:4000/v1`), meaning every pass issues two requests per target.
 - `--passes N` (default 1), `--cooldown <seconds>` (default 15.0) — sleep between passes, not between routes.
-- `--results-dir <path>` — default `/Users/user_name/.config/local-ai/benchmarks`.
+- `--results-dir <path>` — default `~/.config/local-ai/benchmarks`.
 - Targets come from local providers only (`ollama`, `omlx`, `mlx_lm_server`, `mtplx`, `rec`, `sushi`; llamacpp retired 2026-09-07): OpenRouter rows are out of scope, and cloud-located models (ollama `:cloud`) are skipped unless named with `--model`. Which providers your targets can come from depends on the `[[providers]]` in your registry (`grep -A1 '^\[\[providers\]\]' ~/.config/local-ai/registry.toml`).
 
 ### 3. Multi-pass methodology
@@ -120,7 +120,7 @@ Single-pass numbers wobble (thermal state, cold weights, background system churn
 
 <!-- UNVERIFIED — mutates live services — not driven; see verified error paths. -->
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench
+# from: ~/github/ohanaverse/local-ai-setup/llmbench
 uv run llmbench run --workload chat --family <family> --passes 3
 ```
 
@@ -131,7 +131,7 @@ uv run llmbench run --workload chat --family <family> --passes 3
 <!-- UNVERIFIED — needs a completed run; only the error paths below were run live. -->
 
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench
+# from: ~/github/ohanaverse/local-ai-setup/llmbench
 uv run llmbench show-results --latest        # latest run pointer
 uv run llmbench show-results --run-id 20260829-120000
 ```
@@ -152,7 +152,7 @@ Latest-run pointer: after a run, `cli.py` writes `last_run` / `last_run_dir` int
 
 <!-- UNVERIFIED — each script stops/starts live services around every backend. -->
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup/benchmarks
+# from: ~/github/ohanaverse/local-ai-setup/benchmarks
 ./qwen3.8-benchmark              # single pass, 200 max_tokens (arg 2 = custom prompt)
 ./qwen3.8-benchmark-multi 5 200 30    # 5 passes, 200 max_tokens, 30 s cooldown; one file per pass, no aggregation
 ./ornith-1.5-benchmark           # single pass, three Ornith-1.5-35B variants (ollama, omlx 4-bit, omlx 6-bit)
@@ -162,7 +162,7 @@ Latest-run pointer: after a run, `cli.py` writes `last_run` / `last_run_dir` int
 Results are written to `/tmp/<script>-<timestamp>.md`; archive into `benchmarks/results/` (archived runs already there, e.g. `qwen3.8-benchmark-20260827-084908.md`, `ornith-1.5-benchmark-20260826-224834.md`):
 
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup
+# from: ~/github/ohanaverse/local-ai-setup
 cp /tmp/<script>-<timestamp>.md benchmarks/results/
 ```
 
@@ -198,7 +198,7 @@ Results file exists at the stated path:
 
 <!-- UNVERIFIED — requires a completed benchmark run. -->
 ```bash
-ls /Users/user_name/.config/local-ai/benchmarks/
+ls ~/.config/local-ai/benchmarks/
 # → <YYYYMMDD-HHMMSS>/   (one dir per run; contains summary.md, results.json, payload.json)
 ```
 
@@ -214,17 +214,17 @@ ls /Users/user_name/.config/local-ai/benchmarks/
 - **`mtplx`, `rec` and `sushi` rows are isolated with their own model name.** These three providers take the registry `model_name` as the positional isolate argument (`POSITIONAL_MODEL_PROVIDERS` in `src/llmbench/benchmark/isolation.py`), so the model a row benchmarks is the one served: rec serves one model, and a sushi row warms its own pack by name. A manual `uv run llmbench provider isolate rec <model>` or `isolate sushi <model>` names one explicitly; without a name the backend uses the single registry model for that provider and refuses with several (`model required: registry holds N rec models (…)`). Check with `wt model list`.
 - **Sushi needs the GPU wired limit raised, and keep other clients off it.** `isolate sushi` (and `wt start sushi/…`) refuse early when `iogpu.wired_limit_mb` is below what the pack needs (51,934 MiB for `beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`; the macOS default on a 64 GB Mac, 49,152 MiB, fails), naming the fix `sudo sysctl iogpu.wired_limit_mb=59000` (resets on reboot). You run it; neither tool sets it. The check runs before any other provider is stopped. Sushi's own defaults are one request at a time (`--max-concurrent 1`) and a 300 s stall timeout, and llmbench sends its requests one at a time, so do not point other clients at Sushi during a run. Setup and the model's registration: [02-providers-and-models](02-providers-and-models.md) Step 4. <!-- UNVERIFIED: the `--max-concurrent` and stall defaults are from `sushi serve --help` during the design, not re-run -->
 - **rec needs its key.** The registry's rec row (seeded by `wt model add rec …`) names `auth.secret_ref = "exec:rec auth token"`; `isolate rec` resolves it before stopping anything and returns `ok: false` naming the provider when it cannot. A keyed provider such as rec sends its key on the benchmarks' direct route too (`llmbench run`, `eval run` and `agent run`); the litellm route and key-less providers send none. The key is never printed.
-- **`--run-id` ignores `--results-dir`** — it reads `/Users/user_name/.config/local-ai/benchmarks/<run-id>/summary.md` only.
+- **`--run-id` ignores `--results-dir`** — it reads `~/.config/local-ai/benchmarks/<run-id>/summary.md` only.
 - **Shebang split.** `benchmarks/*` scripts use `#!/usr/bin/env bash` and need bash 4+ (`declare -A`); the `bin/*` bash helpers (`mlx-quantize`, `check-config-dirs-untouched`) use `#!/bin/bash`; `check-links` is Python (`#!/usr/bin/env python3`). Don't normalize one onto the other (this repo's `CLAUDE.md`, `make lint-shell` enforces style). `env bash` finds Homebrew's bash 5.3 only if that formula is installed (`brew install bash`); without it the scripts stop at a guard that names the fix instead of failing obscurely.
-- **Two result homes.** Legacy script output goes to `/tmp/<script>-<timestamp>.md` and should be archived into `/Users/user_name/github/ohanaverse/local-ai-setup/benchmarks/results/`; llmbench runs write under `/Users/user_name/.config/local-ai/benchmarks/<run-id>/` — not inside this repo.
+- **Two result homes.** Legacy script output goes to `/tmp/<script>-<timestamp>.md` and should be archived into `~/github/ohanaverse/local-ai-setup/benchmarks/results/`; llmbench runs write under `~/.config/local-ai/benchmarks/<run-id>/` — not inside this repo.
 - **OpenRouter rows are N/A without an API key** (legacy scripts read `OPENROUTER_API_KEY` from `~/Library/LaunchAgents/local.litellm.proxy.plist`).
-- **Run llmbench from the repo.** llmbench is not installed globally. Always run it with `uv run llmbench …` from `/Users/user_name/github/ohanaverse/local-ai-setup/llmbench`.
+- **Run llmbench from the repo.** llmbench is not installed globally. Always run it with `uv run llmbench …` from `~/github/ohanaverse/local-ai-setup/llmbench`.
 
 ## Going deeper
 
 - Benchmark CLI design (isolation contract, workload spec, results shape): `~/github/ohanaverse/local-ai-setup/docs/superpowers/modelman/specs/2026-09-05-modelman-benchmark-design.md`
-- Provider lifecycle CLI + orchestration, stop/start/warmup per backend: `~/github/ohanaverse/local-ai-setup/llmbench/src/llmbench/providers/lifecycle/` (`cli.py` the `llmbench provider` commands, `orchestrate.py` isolate/stop/stop-all/restore, `backends/` one module per hand-written backend — ollama, omlx, mlx_lm_server — while mtplx, rec and sushi are instances of the generic `backends/process_server.py`, built from `docs/contracts/process-providers.toml`), and `/Users/user_name/github/ohanaverse/local-ai-setup/CLAUDE.md` (Key Gotchas)
-- Legacy benchmark docs + archived numbers: `/Users/user_name/github/ohanaverse/local-ai-setup/benchmarks/README.md`, `.../qwen3.8-benchmark.md`, `.../ornith-1.5-benchmark.md`
+- Provider lifecycle CLI + orchestration, stop/start/warmup per backend: `~/github/ohanaverse/local-ai-setup/llmbench/src/llmbench/providers/lifecycle/` (`cli.py` the `llmbench provider` commands, `orchestrate.py` isolate/stop/stop-all/restore, `backends/` one module per hand-written backend — ollama, omlx, mlx_lm_server — while mtplx, rec and sushi are instances of the generic `backends/process_server.py`, built from `docs/contracts/process-providers.toml`), and `~/github/ohanaverse/local-ai-setup/CLAUDE.md` (Key Gotchas)
+- Legacy benchmark docs + archived numbers: `~/github/ohanaverse/local-ai-setup/benchmarks/README.md`, `.../qwen3.8-benchmark.md`, `.../ornith-1.5-benchmark.md`
 - llmbench source: `~/github/ohanaverse/local-ai-setup/llmbench/src/llmbench/benchmark/` (`cli.py` flags/pointer, `runner.py` target discovery, `results.py` markdown, `isolation.py` in-process lifecycle adapter)
 - Launching `wt` agents against the benchmarked models: [06-wt-agents-and-models](06-wt-agents-and-models.md)
 - Spend/usage data the proxy logs per benchmark request: [07-usage-and-spend](07-usage-and-spend.md)

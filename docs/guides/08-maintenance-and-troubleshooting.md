@@ -55,7 +55,7 @@ Reading it fast:
 Read the plists, not memory. All four launchd jobs carry both keys (verified live on 2026-08-29):
 
 ```bash
-grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.litellm.proxy.plist /Users/user_name/Library/LaunchAgents/sh.brew.omlx.plist
+grep -A1 'RunAtLoad\|KeepAlive' ~/Library/LaunchAgents/local.litellm.proxy.plist ~/Library/LaunchAgents/sh.brew.omlx.plist
 ```
 
 ```text
@@ -94,9 +94,9 @@ Per-backend reference — commands and log paths verified against the live plist
 
 | Backend | Check (§TL;DR) | Restart | Logs |
 |---------|----------------|---------|------|
-| LiteLLM :4000 | `401` curl | `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` | `/Users/user_name/.litellm.err.log` (+ `/Users/user_name/.litellm.log`) |
+| LiteLLM :4000 | `401` curl | `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy` | `~/.litellm.err.log` (+ `~/.litellm.log`) |
 | oMLX :8000 | `200` on `/health` | `omlx restart` or `brew services restart omlx` | `/opt/homebrew/var/log/omlx.log` |
-| Ollama :11434 | `200` on `/api/tags` | relaunch Ollama.app (no plist — launchd does not own it) | `/Users/user_name/.ollama/logs/server.log` |
+| Ollama :11434 | `200` on `/api/tags` | relaunch Ollama.app (no plist — launchd does not own it) | `~/.ollama/logs/server.log` |
 | Postgres 5432 | `pg_isready -h localhost` | `brew services restart postgresql@16` | `/opt/homebrew/var/log/postgresql@16.log` |
 | Redis 6379 | `redis-cli ping` | `brew services restart redis` | `/opt/homebrew/var/log/redis.log` |
 
@@ -109,7 +109,7 @@ Worked on a model you expect on `:4000` but don't see (or a client gets 404/`mod
 **Step 1 — is it in the proxy at all?** Without auth you learn nothing (`401`); pull the master key from the plist env (value stays un-printed) and list model ids:
 
 ```bash
-LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<string>/,""); sub(/<\/string>.*/,""); print}' /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist)
+LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<string>/,""); sub(/<\/string>.*/,""); print}' ~/Library/LaunchAgents/local.litellm.proxy.plist)
 curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $LITELLM_MASTER_KEY" | python3 -c 'import json,sys; [print(m["id"]) for m in json.load(sys.stdin)["data"]]'
 ```
 
@@ -125,7 +125,7 @@ Local-model routes appear only while that model runs — wt writes the route on 
 **Step 2 — does `model_list` in config.yaml carry it?** config.yaml is what the proxy routes from:
 
 ```bash
-grep -n 'model_name:' /Users/user_name/.config/litellm/config.yaml
+grep -n 'model_name:' ~/.config/litellm/config.yaml
 ```
 
 Output is one `<line>:  - model_name: <id>` row per routed model. Example (illustrative — your ids and line numbers will differ):
@@ -184,7 +184,7 @@ A dead backend is a §1/§3 problem, not a config problem — fix the backend fi
 **Step 6 — api_base right?** The row must point the proxy at the right port:
 
 ```bash
-grep -A3 'model_name: <model-id>' /Users/user_name/.config/litellm/config.yaml
+grep -A3 'model_name: <model-id>' ~/.config/litellm/config.yaml
 ```
 
 Example (illustrative — an ollama-served row):
@@ -203,7 +203,7 @@ OpenAI-compatible local backends (omlx, omlx-6bit, mtplx, mlx_lm_server) must ha
 **Step 7 — config.yaml still valid YAML?** A hand-edit typo keeps the proxy in a crash loop (it re-reads only at start):
 
 ```bash
-python3 -c "import yaml;d=yaml.safe_load(open('/Users/user_name/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
+python3 -c "import yaml;d=yaml.safe_load(open('$HOME/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
 ```
 
 Output is one line, `model_list entries: <N>`. A traceback instead means a parse error → fix it by hand (wt refuses to write a file it cannot parse, so `wt litellm sync` cannot repair it); once it parses, `wt litellm sync` rebuilds any wt row you deleted (wt does atomic, comment-preserving writes, guide 04 §1). `<N>` is however many rows `config.yaml` carries — compare it with the number of ids Step 1's authenticated `/v1/models` call returns (pipe that command into `wc -l`); after a restart (Step 8) the two should match.
@@ -249,11 +249,11 @@ Log homes (all from live plists / on-disk checks, 2026-08-29):
 
 | Service | Log file(s) | Notes |
 |---------|-------------|-------|
-| LiteLLM | `/Users/user_name/.litellm.err.log`, `/Users/user_name/.litellm.log` | two files (stderr/stdout); launchd appends — the file only grows |
+| LiteLLM | `~/.litellm.err.log`, `~/.litellm.log` | two files (stderr/stdout); launchd appends — the file only grows |
 | oMLX | `/opt/homebrew/var/log/omlx.log` | single file, both streams; `omlx diagnose` for install/runtime issues |
 | Postgres | `/opt/homebrew/var/log/postgresql@16.log` | single file |
 | Redis | `/opt/homebrew/var/log/redis.log` | single file |
-| Ollama | `/Users/user_name/.ollama/logs/server.log`, `app.log` | app-managed; rotated as `server-1.log` … `server-5.log` |
+| Ollama | `~/.ollama/logs/server.log`, `app.log` | app-managed; rotated as `server-1.log` … `server-5.log` |
 | rec | `/tmp/local-ai-setup-rec.log` (next to `WT_REC_PIDFILE` when set) | written while wt runs `rec serve`; also `~/.local/share/rec/state/launch-server.log` for rec's own launches |
 | Sushi | `/tmp/local-ai-setup-sushi.log` (next to `WT_SUSHI_PIDFILE` when set) | written while wt or llmbench runs `sushi serve` (they share the file); Sushi's own logs are under `~/.sushi/logs` |
 
@@ -277,7 +277,7 @@ launchctl list | grep -E 'litellm|omlx|postgresql|redis'
 Then read the actual error:
 
 ```bash
-tail -50 /Users/user_name/.litellm.err.log
+tail -50 ~/.litellm.err.log
 ```
 
 Most tail traffic on this machine is benign — e.g. the traceback shape below is what an unauthenticated scan/probe produces (every 401 in the health check lands here too) and is *not* a fault:
@@ -354,7 +354,7 @@ bin/update/wt            # rebuild + reinstall from the current checkout
 
 Upgrading wt across #179 (the `wt_managed` route marker)? Read [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* and *Upgrading to discovered local models (#179 Phase B)*, and run `wt litellm sync --dry-run` before the first `wt model add|edit|rm`, `wt model init` or `wt cloud-sync` triggers the first real sync.
 
-**Gotcha (verified on this machine, 2026-08-29):** `go env GOPATH` is `/Users/user_name/.asdf/installs/golang/1.26.7/packages` (asdf-managed), so a fresh binary built without `-o` lands in `…/packages/bin/wt` — but `which -a wt` resolves **only** to `/Users/user_name/.local/bin/wt` (the repeated identical lines in `which -a wt` output are PATH repeats of the same binary, not four installs), because `~/.local/bin` comes first in PATH and the asdf packages `bin` dir carries no `wt` at all (checked: `ls "$(go env GOPATH)/bin/wt"` → `No such file or directory`). A binary built into GOPATH therefore leaves the stale `~/.local/bin/wt` answering `wt` — exactly what guide 06's "the installed binary is STALE" caveat describes, and why `bin/update/wt` goes through `make install` (which copies over the shadowing file) rather than a bare `go build`. If you build by hand instead, build straight over the shadowing copy or delete the stale one, then re-check `which wt`, `wt --version` **and** `ls -la` the file mtime.
+**Gotcha (verified on the author's machine, 2026-08-29):** `go env GOPATH` was `$HOME/.asdf/installs/golang/1.26.7/packages` (asdf-managed), so a fresh binary built without `-o` lands in `…/packages/bin/wt` — but `which -a wt` resolves **only** to `~/.local/bin/wt` (the repeated identical lines in `which -a wt` output are PATH repeats of the same binary, not four installs), because `~/.local/bin` comes first in PATH and the asdf packages `bin` dir carries no `wt` at all (checked: `ls "$(go env GOPATH)/bin/wt"` → `No such file or directory`). A binary built into GOPATH therefore leaves the stale `~/.local/bin/wt` answering `wt` — exactly what guide 06's "the installed binary is STALE" caveat describes, and why `bin/update/wt` goes through `make install` (which copies over the shadowing file) rather than a bare `go build`. If you build by hand instead, build straight over the shadowing copy or delete the stale one, then re-check `which wt`, `wt --version` **and** `ls -la` the file mtime.
 
 Verify — `wt --version` ran live, 2026-08-29:
 
@@ -385,10 +385,10 @@ LiteLLM: Current Version = 1.105.0
 
 Two things upgrade can break (guide 01 §6/§7):
 
-1. **Prisma can be removed or left stale** — a reinstall re-creates the env outright, and an in-place `uv tool upgrade` replaces each package whose version changes (run against a scratch tool on uv 0.12.21, 2026-10-10; not against LiteLLM). The proxy needs `prisma` + `prisma-client-py` (verified present in `/Users/user_name/.local/share/uv/tools/litellm/bin/`) and the client generated from LiteLLM's schema for the Postgres-backed Admin UI. After any `uv tool upgrade` **or** `uv tool install --force --reinstall --python 3.11 'litellm[proxy,extra-proxy]'` (the nuclear fallback, with the extras and Python of guide 01 §1: bare `litellm[proxy]` drops Prisma; `--force`/`--reinstall` flags verified via `uv tool install --help`), re-check:
+1. **Prisma can be removed or left stale** — a reinstall re-creates the env outright, and an in-place `uv tool upgrade` replaces each package whose version changes (run against a scratch tool on uv 0.12.21, 2026-10-10; not against LiteLLM). The proxy needs `prisma` + `prisma-client-py` (verified present in `~/.local/share/uv/tools/litellm/bin/`) and the client generated from LiteLLM's schema for the Postgres-backed Admin UI. After any `uv tool upgrade` **or** `uv tool install --force --reinstall --python 3.11 'litellm[proxy,extra-proxy]'` (the nuclear fallback, with the extras and Python of guide 01 §1: bare `litellm[proxy]` drops Prisma; `--force`/`--reinstall` flags verified via `uv tool install --help`), re-check:
 
    ```bash
-   ls /Users/user_name/.local/share/uv/tools/litellm/bin/ | grep prisma
+   ls ~/.local/share/uv/tools/litellm/bin/ | grep prisma
    ```
 
    ```text
@@ -461,7 +461,7 @@ After any benchmark work (guide 05), make sure the stack was restored. `llmbench
 <!-- UNVERIFIED — restarting live services; not run in this session (this host currently has omlx down on an unrelated Xcode-CLT license gate, which would make a live restore hang/fail for reasons unrelated to this doc). Output below is read from the CLI's source (`src/llmbench/providers/lifecycle/cli.py::restore_cmd`), not captured from a live run: -->
 
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench
+# from: ~/github/ohanaverse/local-ai-setup/llmbench
 uv run llmbench provider restore
 ```
 
@@ -729,7 +729,7 @@ launchctl list | grep litellm   # PID present; middle column 0 (or -15 post-kick
 ```
 
 ```bash
-python3 -c "import yaml;d=yaml.safe_load(open('/Users/user_name/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
+python3 -c "import yaml;d=yaml.safe_load(open('$HOME/.config/litellm/config.yaml'));print('model_list entries:',len(d['model_list']))"
 ```
 
 Expect `model_list entries: <N>`, with `<N>` equal to the number of ids the auth'd `/v1/models` list returns (Steps §2 step 1 piped into `wc -l`) once the proxy has restarted since the last config change.

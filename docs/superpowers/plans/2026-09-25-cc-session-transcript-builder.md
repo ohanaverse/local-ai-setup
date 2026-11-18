@@ -135,7 +135,7 @@ Run (from `litellm-session-logs/`):
 ./03_capture_claude_code.sh cce7a30d-9fc2-46d6-8388-bc4d55df6917
 ```
 
-Expected: `captured session cce7a30d-9fc2-46d6-8388-bc4d55df6917 from /Users/user_name/.claude/projects/-Users-keith-github-ohanaverse-local-ai-setup--worktrees-fix-config-toml-race-143 into session_cc_cce7a30d-9fc2-46d6-8388-bc4d55df6917/` followed by an `ls -lR` inventory containing exactly 6 files:
+Expected: `captured session cce7a30d-9fc2-46d6-8388-bc4d55df6917 from /Users/user_name/.claude/projects/-Users-user_name-github-ohanaverse-local-ai-setup--worktrees-fix-config-toml-race-143 into session_cc_cce7a30d-9fc2-46d6-8388-bc4d55df6917/` followed by an `ls -lR` inventory containing exactly 6 files:
 
 - `capture.json` (~130 bytes)
 - `cce7a30d-9fc2-46d6-8388-bc4d55df6917.jsonl` (282273 bytes)

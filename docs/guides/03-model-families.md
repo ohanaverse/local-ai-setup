@@ -191,7 +191,7 @@ ollama/glm-5.3-flash:cloud
 
 ## Going deeper
 
-- wt README (flags, TUI keys, rotation, config split): `/Users/user_name/github/ohanaverse/local-ai-setup/wt/README.md`
-- wt registry-consumer design (fail-closed load, joined Config, tag/family filter semantics): `/Users/user_name/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`
-- Model registry data model (family/tags/agents, cascading filters): `/Users/user_name/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
+- wt README (flags, TUI keys, rotation, config split): `~/github/ohanaverse/local-ai-setup/wt/README.md`
+- wt registry-consumer design (fail-closed load, joined Config, tag/family filter semantics): `~/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-28-wt-registry-consumer-design.md`
+- Model registry data model (family/tags/agents, cascading filters): `~/github/ohanaverse/local-ai-setup/wt/docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md`
 - Previous/next in this set: [02-providers-and-models](02-providers-and-models.md), [04-litellm-config](04-litellm-config.md)

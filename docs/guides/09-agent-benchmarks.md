@@ -14,7 +14,7 @@ Design rationale, gate taxonomy, and scoring rules: `docs/superpowers/specs/2026
 ## TL;DR
 
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench
+# from: ~/github/ohanaverse/local-ai-setup/llmbench
 uv run llmbench agent list-tasks --root ../benchmarks/tasks
 uv run llmbench agent list-suites --root ../benchmarks/suites
 uv run llmbench agent run --suite ../benchmarks/suites/smoke.toml --dry-run

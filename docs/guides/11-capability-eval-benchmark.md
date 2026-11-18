@@ -17,7 +17,7 @@ Design rationale: `docs/superpowers/specs/2026-09-17-capability-eval-benchmark-d
 ## TL;DR
 
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench
+# from: ~/github/ohanaverse/local-ai-setup/llmbench
 uv run llmbench eval list-categories --root ../benchmarks/tasks/eval
 uv run llmbench eval list-items --category doc_summary --root ../benchmarks/tasks/eval
 uv run llmbench eval run --suite ../benchmarks/suites/eval-sweep.toml \
@@ -63,7 +63,7 @@ There is no `--skip-judge` flag here (unlike `llmbench agent run`): `coding` has
 4. **Dry run first**, as for any suite:
 
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench
+# from: ~/github/ohanaverse/local-ai-setup/llmbench
 uv run llmbench eval run --suite ../benchmarks/suites/eval-sushi-vs-ollama.toml \
     --root ../benchmarks/tasks/eval --dry-run
 ```
@@ -102,7 +102,7 @@ When one engine's answers come out a different shape from another's for the same
 **It does not manage servers.** It sends chat completions to the URL each `--target` names, nothing else: it never starts, stops, isolates or warms a provider, and never reads the registry. Isolate each engine yourself first, and probe one engine at a time. Two 27B-class models resident at once is a memory problem on Apple Silicon, so isolate the next engine (which stops the last one) before probing it, and restore at the end:
 
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench
+# from: ~/github/ohanaverse/local-ai-setup/llmbench
 uv run llmbench provider isolate omlx <omlx-model-a>
 uv run llmbench probe thinking \
     --target <name-a>=http://localhost:8000/v1,<omlx-model-a> \
@@ -124,7 +124,7 @@ uv run llmbench provider restore --unload
 `<omlx-model-…>` is the name omlx serves (its model directory's basename, as `direct_model` in a suite row) and `<mtplx-repo-id>` the repo id mtplx serves under; `wt model list` shows what your registry holds. Illustrative only, as of issue #403 (2026-10): the answer-shape difference there came from the omlx 8-bit build of Qwen3.8-27B and the short thinking from the 4-bit build, so that issue's run took both omlx builds and mtplx's Quality build, with the names `eval-quant-tier.toml` uses:
 
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench (illustrative, issue #403)
+# from: ~/github/ohanaverse/local-ai-setup/llmbench (illustrative, issue #403)
 uv run llmbench provider isolate omlx Qwen3.8-27B-8bit
 uv run llmbench probe thinking --target omlx8=http://localhost:8000/v1,Qwen3.8-27B-8bit --out <results-dir>/omlx8
 uv run llmbench provider isolate omlx Qwen3.8-27B-4bit
@@ -143,7 +143,7 @@ uv run llmbench provider restore --unload
 To see whether a penalty changes an engine's output, repeat the probe against the same target with different values, each into its own `--out` (illustrative; substitute your URL and model):
 
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup/llmbench (illustrative)
+# from: ~/github/ohanaverse/local-ai-setup/llmbench (illustrative)
 for p in 0 1.5; do uv run llmbench probe thinking --target <name>=<base-url>,<model> --presence-penalty "$p" --out <results-dir>/<name>-presence-$p; done
 ```
 

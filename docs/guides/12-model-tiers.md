@@ -20,7 +20,7 @@ Design rationale: `docs/superpowers/specs/2026-10-12-model-tiers-design.md`.
 ## TL;DR
 
 ```bash
-# from: /Users/user_name/github/ohanaverse/local-ai-setup
+# from: ~/github/ohanaverse/local-ai-setup
 uv run --directory modeltiers modeltiers run --dry-run   # fetch, resolve, assign, report; no tiers.toml written
 uv run --directory modeltiers modeltiers run             # the same, then write tiers.toml
 uv run --directory modeltiers modeltiers show            # the tier table, from the file
