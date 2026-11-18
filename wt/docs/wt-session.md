@@ -53,6 +53,10 @@ token file once and give the server the same file (`--token-file`):
 umask 077; head -c 32 /dev/urandom | base64 > ~/.config/agent-wt/remote-model-server.token
 ```
 
+The server side keeps its own copy at `~/.config/wt-model/server.token`; the
+split is explained in
+[../../docs/guides/13-deployment-use-cases.md](../../docs/guides/13-deployment-use-cases.md).
+
 ### Environment overrides
 
 | Variable | Overrides |

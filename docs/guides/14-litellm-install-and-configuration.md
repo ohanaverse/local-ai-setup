@@ -248,11 +248,11 @@ It never installs LiteLLM, Postgres, Redis or Prisma, never touches the salt key
 
 ### 11. Optional: a wt-model LaunchAgent
 
-`wt-model serve` is a foreground process; this runs it at login beside the proxy. Use a token file (mode `0600`) that sessions also name (`token_file` under `[model-server]`, see [13-deployment-use-cases.md](13-deployment-use-cases.md)):
+`wt-model serve` is a foreground process; this runs it at login beside the proxy. This is the file the `wt config` Model server tab manages for `local` mode (`local.wt-model.serve`, token `~/.config/wt-model/server.token`); the tab recognises a plist with that label only when it carries wt's `managed by wt` marker comment, and otherwise reports it as not managed and never overwrites it, so a hand-made plist is yours to maintain. Use a token file (mode `0600`) that sessions also name (`token_file` under `[model-server]`, see [13-deployment-use-cases.md](13-deployment-use-cases.md)):
 
 ```bash
-mkdir -p ~/.config/agent-wt
-umask 077; head -c 32 /dev/urandom | base64 | tr -d '\n=/' > ~/.config/agent-wt/model-server.token
+mkdir -p ~/.config/wt-model
+umask 077; head -c 32 /dev/urandom | base64 | tr -d '\n=/' > ~/.config/wt-model/server.token
 ```
 
 Save as `~/Library/LaunchAgents/local.wt-model.serve.plist`:
@@ -271,7 +271,7 @@ Save as `~/Library/LaunchAgents/local.wt-model.serve.plist`:
         <string>--listen</string>
         <string>127.0.0.1:8787</string>
         <string>--token-file</string>
-        <string>/Users/user_name/.config/agent-wt/model-server.token</string>
+        <string>/Users/user_name/.config/wt-model/server.token</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

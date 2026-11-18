@@ -10,8 +10,8 @@ server. `wt model`, with a space, is the registry command:
 [wt-model.md](wt-model.md).)
 
 ```bash
-wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/agent-wt/model-server.token   # loopback, same machine
-wt-model serve --listen 0.0.0.0:8787 --token-file ~/.config/agent-wt/model-server.token     # reachable from another host
+wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/wt-model/server.token   # loopback, same machine
+wt-model serve --listen 0.0.0.0:8787 --token-file ~/.config/wt-model/server.token     # reachable from another host
 wt-model serve --listen 127.0.0.1:0 --token-file TOKEN --idle-grace 30m        # the kernel picks the port; the banner prints it
 wt-model --version                                                              # wt-model <version>
 ```
@@ -77,8 +77,8 @@ LiteLLM key, so neither is ever open.
 - Create one that nobody else can read:
 
   ```bash
-  mkdir -p ~/.config/agent-wt
-  umask 077; head -c 32 /dev/urandom | base64 > ~/.config/agent-wt/model-server.token
+  mkdir -p ~/.config/wt-model
+  umask 077; head -c 32 /dev/urandom | base64 > ~/.config/wt-model/server.token
   ```
 
 - To rotate, write a new file (the same command), restart `wt-model serve`
