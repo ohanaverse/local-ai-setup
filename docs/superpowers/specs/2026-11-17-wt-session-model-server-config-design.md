@@ -1,6 +1,6 @@
 # wt-session: a stored, editable model-server configuration (`native` | `local` | `remote`)
 
-Status: design, written 2026-11-17 from a conversation with the user (approach A chosen). Not yet approved. Partly supersedes the automatic native fallback of #615 (`2026-11-16-wt-native-launch-without-model-server-design.md`, approach 1): see "Relationship to #615".
+Status: design, written 2026-11-17 from a conversation with the user (approach A chosen). Not yet approved. Partly supersedes the automatic native fallback of #615 (`2026-11-16-wt-native-launch-without-model-server-design.md`, approach 1); the user confirmed that reversal. See "Relationship to #615".
 
 ## Intent
 
@@ -28,13 +28,15 @@ Names are my calls; they extend the existing vocabulary ("native" is already wha
 - `local` is real: one apply generates the token, makes wt-model's LiteLLM pair available, installs and starts a LaunchAgent, waits until the server answers, then stores the mode.
 - Every change is shown as a plan first (what files, what launchd action) and written only after the user confirms.
 - `remote` checks the server (`Ping`) and says exactly what is wrong: unreachable, not a wt-model, wrong token, version skew.
+- For `local`, the tab also checks that LiteLLM is set up correctly for wt-model (reachable, database connected, the pair's key accepted, routes in sync, a restart owed, port and file mode), and says what to fix.
+- The repo has one authoritative guide for installing and configuring LiteLLM and its related components, written so a human or an agent can follow it, and the tool points at it instead of re-implementing it.
 
 ## Non-goals
 
 - No TLS and no tunnelling. A remote wt-model is plain http carrying a bearer token, as today; protecting that link is the user's job.
 - No automatic token distribution to a remote machine. The tab can take a pasted token and write the 0600 file; getting it from the server's machine is manual.
 - No `wt model-server ...` command group now. The setup logic lives in a screen-free package precisely so a CLI can be added later without rework.
-- No management of the user's LiteLLM LaunchAgent (hand-authored; wt only reads it today and keeps doing so).
+- No LiteLLM **installation or general configuration** from the tool: the package, Postgres and Redis, Prisma, provider keys, the admin UI login and the rest of a LiteLLM deployment are out of scope for `wt config` and are covered by a guide (see "LiteLLM: scope and guide"). The tool touches the LiteLLM LaunchAgent only narrowly: it creates a minimal one when none exists and LiteLLM is already installed, and otherwise changes only `LITELLM_MASTER_KEY`.
 - No non-macOS service manager. `local` needs launchd; elsewhere the tab disables it and says why.
 - No change to the wire protocol, the gateway, or Phase 4's plan to move host admin commands.
 - No restarting of wt-model by `bin/update-tools` (a follow-up; the tab gets a manual restart).
@@ -62,6 +64,8 @@ Cost to say plainly: a script or CI job on a machine that has never picked a mod
 - `wt config` opens on `a.hostConfig()` and a possibly nil config plus its error (`cmd/wt-session/commands_config.go`), so the editor is reachable when validation fails. The Models tab takes injected deps (`ModelsDeps`) and runs outside calls in commands; the Agents tab buffers edits and saves with `ctrl+s`.
 - wt-model: `serve` requires `--listen` (no default) and `--token-file` (0600, required even on loopback, read once at startup); `--idle-grace` defaults to 10m. Its LiteLLM pair (`url`, `key_file` plus a 0600 `litellm.key`) lives in `~/.config/wt-model/` and is written by `config.SetProxy`; `serve` exits 1 at startup without it, and reads it once. On this machine the pair is already written.
 - Nothing in the repo writes a LaunchAgent. The LiteLLM plist (`~/Library/LaunchAgents/local.litellm.proxy.plist`) is hand-authored with `RunAtLoad` and `KeepAlive`; wt reads its `EnvironmentVariables` (`internal/litellm/proxyenv.go`, `WT_LITELLM_PLIST`) and kickstarts it. Tests refuse `launchctl` in a test binary through a seam (`internal/litellm/restart.go`).
+- The user's LiteLLM plist holds far more than a master key: `DATABASE_URL`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `OPENROUTER_API_KEY`, `UI_USERNAME`/`UI_PASSWORD`, five size/logging limits, `PATH`, `SoftResourceLimits`, a binary path, a `--config` path and `--port 4000`; it is mode 0644 while holding secrets. The salt key must never change once the database holds encrypted data. Fresh-machine installation is `uv tool install` of `litellm[proxy,extra-proxy]` on Python 3.11 plus Postgres 16 and a Prisma client generation (`bin/update/litellm`, guide 01).
+- wt never edits the LiteLLM plist and reads it only through `litellm.plistEnvironment` (string `EnvironmentVariables`, for `os.environ/NAME` references and `DATABASE_URL`); no code asks for `LITELLM_MASTER_KEY`, so the plist's key and wt-model's pair key agree only by operator discipline. `/health/liveliness` is unauthenticated, so wt's readiness wait does not prove the key is right; `/health/readiness` (unauthenticated) reports `db: connected`; an authenticated `/v1/models` (200 versus 401) is the only key check. wt-model already polls `/v1/models` with the pair key for routing and fails soft (unknown), never reporting a bad key.
 - wt-model starts model processes (ollama, omlx, mtplx, rec, sushi) by binary name, and launchd's default `PATH` is minimal, so a LaunchAgent without a `PATH` could not start them.
 - The client (`internal/modelclient`) never follows redirects, ignores proxy env, and `Ping` classifies `UnreachableError`, `UnauthorizedError` (401), `NotModelServerError`, `SkewError` (API major) and `SchemaError`. Ping needs the token, so a 401 separates a bad token from a wrong address.
 - Style guide: prompts that write config are default-No (P1) and read `/dev/tty` (P3); with no terminal a consent-needing command refuses and names the flag (P4); errors are `wt: ...` once via `reportExit` (M3); a refusal says what is still true (M7); anything printed during the alt screen is lost.
@@ -138,13 +142,26 @@ Per-call seams, no package globals: file system, `launchctl`, `Ping`, a reader f
 **`local` plan**, in this order, config last so a half-applied setup is never pointed at:
 
 1. Token: create `~/.config/wt-model/server.token` (32 random bytes, base64, mode 0600) if absent; keep an existing valid one.
-2. wt-model's LiteLLM pair: keep it if set. Otherwise take `url` and `LITELLM_MASTER_KEY` from the proxy plist's `EnvironmentVariables` (the existing reader) and write them with `config.SetProxy`. If the key cannot be found, the tab asks for it (masked input) rather than failing.
+2. wt-model's LiteLLM pair: keep it if set. Otherwise take `LITELLM_MASTER_KEY` from the proxy plist's `EnvironmentVariables` (the existing plist reader; no code asks for that key today) and the url from the plist's `--port` argument (default `http://localhost:4000`), and write them with `config.SetProxy`. If the key cannot be found, the tab asks for it (masked input) rather than failing.
 3. Port and ownership checks, then the LaunchAgent. If something already listens on the chosen port and it is not this LaunchAgent's own process, refuse, naming the process and offering another port (a hand-started wt-model is not adopted: it would not survive a reboot, and a second bind would loop under `KeepAlive`). A plist already at the target path is overwritten only if it carries wt's marker (an XML comment `managed by wt` naming the label); one without the marker is refused, naming the path. Write `~/Library/LaunchAgents/local.wt-model.serve.plist` with label `local.wt-model.serve`, program arguments `[<wt-model>, serve, --listen, 127.0.0.1:<port>, --token-file, <token>]`, `RunAtLoad` and `KeepAlive` true (the same lifecycle as the LiteLLM agent: both start at login, and wt-model needs LiteLLM only when proxying), log paths under the user's home, and an `EnvironmentVariables` `PATH` captured from the process running the setup (shown in the plan; without it the agent cannot find ollama, omlx, mtplx, rec or sushi). `<wt-model>` is the absolute path of the `wt-model` binary beside the running `wt` (`os.Executable`'s directory), else the first `wt-model` on `PATH`, written as found (not symlink-resolved, so a stable install path survives upgrades); if neither exists the plan fails and names `make install`. Port defaults to 8787 (the documented example) and is editable; the tab refuses a port that is already listening and is not ours.
 4. Load: `launchctl bootout` (ignore not-loaded) then `bootstrap`, or `kickstart -k` when only arguments are unchanged.
 5. Wait for the server: `Ping` until it answers (bounded; progress shown), reporting the classified error on timeout and pointing at the log.
 6. Write `[model-server]` (`mode`, `url = http://127.0.0.1:<port>`, `token_file`).
 
 Re-running `local` with a changed port or token path rewrites the plist and reloads. Changing away from `local` offers step 3's inverse (bootout and remove the plist); it never deletes the token file or the pair.
+
+### LiteLLM: scope and guide
+
+**What the tool does** (option B, chosen by the user, scoped to "wt never installs LiteLLM"), all in `internal/modelsetup`, all shown as a plan first:
+
+- **Observe and check** (read-only, any time, for `local`): proxy reachable (`/health/liveliness`); database connected (`/health/readiness`, informational, since only spend and the admin UI need it); the pair's key accepted (authenticated `/v1/models`: 200 versus 401, reported as "key accepted/rejected", never as proof it is the master key); routes in sync (the proxy's model list against the set wt would write); `config.yaml` newer than the running proxy (restart owed); the plist's `--port` agreeing with the pair's url; the plist's file mode. It cannot judge the salt key or provider keys; the tab says so rather than guessing. Reporting these for a `remote` server would need a new read-only wt-model control endpoint (a wire change) and is not included.
+- **Create when absent.** If no LiteLLM plist exists and a `litellm` binary does, offer a minimal LaunchAgent: label `local.litellm.proxy` (must match what `wt litellm restart` targets), `[litellm, --config <config.yaml>, --port 4000]`, `EnvironmentVariables` with a generated `LITELLM_MASTER_KEY`, a generated `LITELLM_SALT_KEY` and the captured `PATH`, `RunAtLoad`/`KeepAlive`, log paths, mode 0600. No `DATABASE_URL`, UI login or provider keys: the plan says so and points at the guide. If `litellm` or `config.yaml` is missing it refuses naming the guide.
+- **Existing plist: one key, on request.** The tab offers "use the plist's master key" (default: read it into wt-model's pair, no plist edit) or "generate a new master key". The second edits only `EnvironmentVariables.LITELLM_MASTER_KEY` in place (`plutil -replace`, or a plist library, so every other key survives), after a dated backup of the plist, tightens the file to 0600 when the plan says so, writes the same key to wt-model's pair, restarts LiteLLM and wt-model, and lists what else may hold the old key (benchmark scripts that read the plist, other clients). It never touches the salt key, `DATABASE_URL`, provider keys or the UI login, and never replaces the file.
+- A binary (bplist) plist is converted or refused with a clear message; the plan shows the exact key change and nothing else.
+
+**What the guide is.** One guide, `docs/guides/14-litellm-install-and-configuration.md` (number and title a builder's call), written for a human or an agent on a fresh machine and kept free of live state: install LiteLLM (`uv tool install --python 3.11 'litellm[proxy,extra-proxy]'`, why 3.11 and `extra-proxy`), Postgres 16 and database creation, Prisma client generation (migrations run at startup, no `db push`), the seed `config.yaml` and the fact that wt owns it, **an annotated plist listing every `EnvironmentVariables` key and what it is** (master key and salt key generation commands; the salt-key never-change warning and a backup note; UI login; provider keys and how `os.environ/NAME` references resolve; the size/logging limits; `SoftResourceLimits`), file mode 0600, `launchctl bootstrap`, ports and logs, how wt restarts it (`wt litellm restart`, the drain, `WT_LITELLM_RESTART_CMD`, `WT_LITELLM_PLIST`), how `bin/update/litellm` upgrades it, linking the master key to wt-model (`wt-model litellm set`, and a wt-model restart afterwards), verification (liveliness, readiness, the authenticated check, `wt litellm status|list`), what the `wt config` Model server tab will and will not do for it, a wt-model LaunchAgent template, and troubleshooting. It replaces the three drifting plist templates and conflicting restart advice by linking to one source.
+
+**Doc fixes that ride with it** (found by the audit): guide 01's malformed `<key>StandardErrorPath</string>`; the reference doc's `prisma db push` advice against the automatic migrations; the "verified against 1.98.0" headers; hard-coded `/Users/keith` paths in guides 01 and 04; conflicting restart advice in guides 01, 04, 08 and the reference doc (use `wt litellm restart`); the plist's 0600 mode (absent everywhere); and guide 00's and 01's wording that the plist is "owner: you", which changes once the tool can create it and rotate one key.
 
 ### The tab
 
@@ -157,9 +174,11 @@ Re-running `local` with a changed port or token path rewrites the plist and relo
  Pair     LiteLLM http://127.0.0.1:4000             key set
  Agent    local.wt-model.serve: running (pid 4123)
  Status   ✓ wt-model answers: api 1, schema 2
+ LiteLLM  ✓ reachable · db connected · key accepted · 12 routes in sync
+          ! plist is mode 0644 and holds secrets (chmod 600?)
  env      WT_MODEL_URL is set and overrides the url above
  ─────────────────────────────────────────────────────────────
- a apply   c check   s start   x stop   r re-read   tab next
+ a apply   c check   s start   x stop   r re-read   k master key   tab next
 ```
 
 Shown fields depend on the mode. `a` builds the plan and shows its text on a confirm screen (default No); `c` runs `Observe` and a `Ping` without writing; `s`/`x`/`r` start, stop and re-read the LaunchAgent for `local`. Selecting `local` on a non-macOS host is disabled with the reason. The tab joins `tabNames`, gets a `TabModelServer` constant, `Options.StartTab` can open it, and its deps arrive as an injected `ModelServerDeps` like `ModelsDeps`. It uses `themes.ListDelegate`/`ErrorStyle` and `tuilayout` only; nothing prints during the alt screen.
@@ -182,14 +201,16 @@ Per-call seams and a per-package `TestMain` isolating the config home and proces
 
 ### Docs
 
-`wt/CLAUDE.md` ("LiteLLM routing state", "Config"), `docs/wt-session.md`, `docs/wt-model-server.md` (setup now starts with the tab), `docs/guides` 00 and 13, the `wt config` page, the #615 spec (a "superseded in part" note), `docs/internals/packages.md`, and the style guide (a pick-one first-run flow is handled by opening the tab, so no new prompt rule is needed).
+The new LiteLLM guide and the fixes above; `wt/CLAUDE.md` ("LiteLLM routing state", "Config"), `docs/wt-session.md`, `docs/wt-model-server.md` (setup now starts with the tab), `docs/guides` 00 and 13, the `wt config` page, the #615 spec (a "superseded in part" note), `docs/internals/packages.md`, and the style guide (a pick-one first-run flow is handled by opening the tab, so no new prompt rule is needed).
 
 ## Suggested stages (each independently shippable, additive first)
 
-1. `ModelServerState.Mode` + `omitempty`, the tolerant table reader/writer, and `internal/modelsetup` (`Observe`, `Plan`, `Apply`) with its seams. No behaviour change.
+0. **The LiteLLM guide and the doc fixes above.** Documentation only, no code dependency, and the tool's messages will link to it, so it ships first.
+1. `ModelServerState.Mode` + `omitempty`, the tolerant table reader/writer, and `internal/modelsetup` (`Observe` with the LiteLLM checks, `Plan`, `Apply` for the wt-model agent) with its seams. No behaviour change.
 2. The Model server tab in `wt config` (reachable by hand; nothing launches differently yet).
 3. `ResolveMode`, the launch matrix, the first-run gate, `WT_MODEL_MODE`, message rewrites. This is the behaviour change, made after a tab exists to point at.
-4. Docs and `wt/CLAUDE.md` sweep (can ride with each stage).
+4. The LiteLLM plist writer: create-when-absent and the one-key master-key edit (it edits a secrets file, so it is its own stage and its own review).
+5. Docs and `wt/CLAUDE.md` sweep (rides with each stage).
 
 ## Calls I made (not the user's words)
 
@@ -206,7 +227,10 @@ Per-call seams and a per-package `TestMain` isolating the config home and proces
 - A hand-started wt-model on the chosen port is refused, not adopted; a plist is overwritten only when it carries wt's marker.
 - `wt-model` is found beside the running `wt`, else on `PATH`, recorded as found; a missing binary fails the plan naming `make install`.
 - Changing away from `local` offers to remove the LaunchAgent (default keep) and never deletes the token or the pair.
+- LiteLLM scope is option B as the user chose, read as "wt never installs LiteLLM": minimal plist only when none exists and the binary does; otherwise one key; everything else lives in the guide.
+- The guide is stage 0 and a single new guide rather than edits spread over 01, 04 and the reference doc; the LiteLLM checks are local-only (a remote report needs a wire change and is excluded).
+- The key check says "accepted/rejected", never "is the master key".
 
 ## Left to the builder
 
-The LaunchAgent log paths; exact wording of the messages and the tab's keys within the style guide; how the port-in-use probe finds the owning process; how `Observe` reads launchd state (`launchctl print` parsing) and its timeouts; whether the masked key entry reuses an existing text-input helper; the bounded wait's duration; `ModelServerDeps` field names; whether the stage 1 package is split into more files.
+The LaunchAgent log paths; exact wording of the messages and the tab's keys within the style guide; how the port-in-use probe finds the owning process; how `Observe` reads launchd state (`launchctl print` parsing) and its timeouts; whether the masked key entry reuses an existing text-input helper; the bounded wait's duration; `ModelServerDeps` field names; whether the stage 1 package is split into more files; `plutil -replace` versus a plist library for the one-key edit, and bplist handling; the guide's number and exact outline.
