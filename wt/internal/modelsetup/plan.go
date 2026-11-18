@@ -2,7 +2,6 @@ package modelsetup
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -13,38 +12,14 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
-// Secret holds a secret the user typed (a pasted token, a master key). Every
-// printed or marshalled form is the redaction "[redacted]" (empty stays
-// empty, so absence is visible): fmt's %v, %+v, %#v, %s and %q, JSON and
-// text marshalling. Reveal returns the value; Apply and the tab call it only
-// at the point of use, never to log or show it.
-type Secret string
-
-const redacted = "[redacted]"
-
-func (s Secret) redact() string {
-	if s == "" {
-		return ""
-	}
-	return redacted
-}
-
-// String redacts the secret.
-func (s Secret) String() string { return s.redact() }
-
-// GoString redacts the secret for %#v.
-func (s Secret) GoString() string { return strconv.Quote(s.redact()) }
-
-// MarshalJSON redacts the secret.
-func (s Secret) MarshalJSON() ([]byte, error) { return json.Marshal(s.redact()) }
-
-// MarshalText redacts the secret.
-func (s Secret) MarshalText() ([]byte, error) { return []byte(s.redact()), nil }
-
-// Reveal returns the secret itself; call it only where it is used.
-func (s Secret) Reveal() string { return string(s) }
+// Secret holds a secret the user typed (a pasted token, a master key); every
+// printed or marshalled form is "[redacted]". It lives in internal/modelmode;
+// this name is modelsetup's alias.
+type Secret = modelmode.Secret
 
 // Desired is what the user asked for. PastedToken (remote) and MasterKey
 // (local, used only when the pair is unset and the LiteLLM plist has no key)
@@ -82,20 +57,19 @@ const (
 	LiteLLMTighten LiteLLMAction = "tighten"
 )
 
-// StepKind is what one step does.
-type StepKind string
+// StepKind is what one step does. It is modelmode.StepKind.
+type StepKind = modelmode.StepKind
 
 // The steps, in the order a local plan runs them; StepRemovePlist belongs to
-// the native and remote plans' optional agent removal.
+// the native and remote plans' optional agent removal. StepToken and
+// StepConfig — the two kinds the session side writes — are modelmode's.
 const (
-	StepToken       StepKind = "token"
 	StepPair        StepKind = "pair"
 	StepPlist       StepKind = "plist"
 	StepBootout     StepKind = "bootout"
 	StepBootstrap   StepKind = "bootstrap"
 	StepKickstart   StepKind = "kickstart"
 	StepWait        StepKind = "wait"
-	StepConfig      StepKind = "config"
 	StepRemovePlist StepKind = "remove-plist"
 
 	// The LiteLLM steps of a create or rotate plan. A create plan writes the
@@ -109,21 +83,22 @@ const (
 	StepKickstartLiteLLM StepKind = "kickstart-litellm"
 )
 
-// StepAction says how a token or pair step gets its value, so Apply does
-// not have to work it out again. It is a marker, never the value.
-type StepAction string
+// The two step kinds the session side writes, aliased from modelmode.
+const (
+	StepToken  = modelmode.StepToken
+	StepConfig = modelmode.StepConfig
+)
 
-// The actions of token and pair steps.
+// StepAction says how a token or pair step gets its value, so Apply does
+// not have to work it out again. It is a marker, never the value. It is
+// modelmode.StepAction.
+type StepAction = modelmode.StepAction
+
+// The actions of pair steps; the three token actions (tighten, write pasted,
+// replace pasted) are modelmode's.
 const (
 	// ActionGenerateToken writes 32 random bytes, base64, mode 0600.
 	ActionGenerateToken StepAction = "generate-token"
-	// ActionTightenToken chmods a loose token file to 0600, keeping it.
-	ActionTightenToken StepAction = "tighten-token"
-	// ActionWritePastedToken writes Plan.Want.PastedToken to a new file.
-	ActionWritePastedToken StepAction = "write-pasted-token"
-	// ActionReplacePastedToken writes Plan.Want.PastedToken over an existing
-	// file; only a plan whose text says "replace" carries it.
-	ActionReplacePastedToken StepAction = "replace-pasted-token"
 	// ActionPairKeyFromPlist reads LITELLM_MASTER_KEY from the LiteLLM plist
 	// at Step.Path when applied.
 	ActionPairKeyFromPlist StepAction = "pair-key-from-litellm-plist"
@@ -138,16 +113,17 @@ const (
 	ActionWaitLiteLLM StepAction = "wait-litellm"
 )
 
+// The three token actions, aliased from modelmode.
+const (
+	ActionTightenToken       = modelmode.ActionTightenToken
+	ActionWritePastedToken   = modelmode.ActionWritePastedToken
+	ActionReplacePastedToken = modelmode.ActionReplacePastedToken
+)
+
 // Step is one change. Path is the file or plist the step acts on; Value is
 // a non-secret operand (the pair's url, the url waited on); Detail is the
-// line the user confirms.
-type Step struct {
-	Kind   StepKind
-	Path   string
-	Detail string
-	Action StepAction
-	Value  string
-}
+// line the user confirms. It is modelmode.Step.
+type Step = modelmode.Step
 
 // Plan is what BuildPlan decided. Want is the request with every default
 // filled in (Mode, URL, TokenFile and Listen as they will be written); Notes
@@ -165,16 +141,13 @@ type Plan struct {
 }
 
 // RefusalError is a plan that cannot be made. Each reason says what is still
-// true and the way out.
-type RefusalError struct{ Reasons []string }
-
-func (e *RefusalError) Error() string { return strings.Join(e.Reasons, "\n") }
+// true and the way out. It is modelmode.RefusalError.
+type RefusalError = modelmode.RefusalError
 
 // reason builds one refusal reason: the fact, the way out, and that nothing
-// was changed.
-func reason(fact, wayOut string) string {
-	return fact + "; " + wayOut + "; nothing was changed"
-}
+// was changed. It is modelmode.Reason (this package's call sites keep the
+// short name).
+func reason(fact, wayOut string) string { return modelmode.Reason(fact, wayOut) }
 
 // guide14 is the LiteLLM guide a missing master key points at.
 const guide14 = "docs/guides/14-litellm-install-and-configuration.md"
@@ -264,14 +237,6 @@ func (p *Plan) restartNote() {
 	}
 }
 
-// credentialsReason refuses a url (or listen address) holding an '@'
-// anywhere, read as a user:password whatever else it holds: config.toml is
-// not a secret file, so wt never stores one there. The text is fixed: it
-// echoes no part of what was typed (no host, no user, nothing derived).
-func credentialsReason(what string) string {
-	return reason(what+" contains an @ (read as a user:password); wt does not store credentials in config.toml", "use a token file")
-}
-
 // planNative stores only the mode, plus the optional agent removal.
 func planNative(st State, want Desired) (Plan, error) {
 	want.URL, want.TokenFile, want.Listen = "", "", ""
@@ -288,9 +253,9 @@ func planNative(st State, want Desired) (Plan, error) {
 func planRemote(st State, want Desired) (Plan, error) {
 	var reasons []string
 	want.URL = strings.TrimSpace(want.URL)
-	if hasUserinfo(want.URL) {
+	if urlrule.HasUserinfo(want.URL) {
 		// Alone: every other reason may quote the url.
-		return Plan{}, &RefusalError{Reasons: []string{credentialsReason("the url")}}
+		return Plan{}, &RefusalError{Reasons: []string{modelmode.CredentialsReason("the url")}}
 	}
 	if want.URL == "" {
 		reasons = append(reasons, reason("remote mode has no url", "enter the model server's url"))
@@ -398,7 +363,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 	port, perr := strconv.Atoi(portText)
 	switch {
 	case strings.Contains(listen, "@"):
-		reasons = append(reasons, credentialsReason("the listen address"))
+		reasons = append(reasons, modelmode.CredentialsReason("the listen address"))
 	case err != nil || perr != nil || port < 1 || port > 65535:
 		reasons = append(reasons, reason("listen address "+strconv.Quote(listen)+" is not host:port", "enter one like "+DefaultListen))
 	case host != "127.0.0.1" && host != "localhost" && host != "::1":
@@ -485,7 +450,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 		!(want.LiteLLM == LiteLLMUseExistingKey && st.LiteLLMPlist.HasMasterKey) {
 		// Asking for the plist's key re-sets even a set pair (it may hold a
 		// stale key); every other request keeps it.
-		pairKept = "keep wt-model's LiteLLM pair (" + shownURL(st.Pair.URL) + ")"
+		pairKept = "keep wt-model's LiteLLM pair (" + modelmode.ShownURL(st.Pair.URL) + ")"
 	} else {
 		url := liteLLMURL(st, want.LiteLLM)
 		where := pairWhere(st)
@@ -660,7 +625,7 @@ func (p *Plan) keepLocalSetup(st State) {
 		p.Notes = append(p.Notes, "keep the local token file "+tok)
 	}
 	if st.Pair.URL != "" || st.Pair.KeySet {
-		p.Notes = append(p.Notes, "keep wt-model's LiteLLM pair ("+orNone(shownURL(st.Pair.URL))+")")
+		p.Notes = append(p.Notes, "keep wt-model's LiteLLM pair ("+orNone(modelmode.ShownURL(st.Pair.URL))+")")
 	}
 }
 

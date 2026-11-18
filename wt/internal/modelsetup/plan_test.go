@@ -11,6 +11,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 const (
@@ -565,26 +566,6 @@ func TestFormatIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestSecretRedactsEveryPrintedForm pins that a Secret never prints or
-// marshals its value, so a stray %v, %#v, log or JSON dump cannot leak the
-// pasted token or master key; only Reveal returns it.
-func TestSecretRedactsEveryPrintedForm(t *testing.T) {
-	s := Secret(plPasted)
-	txt, _ := s.MarshalText()
-	js, _ := json.Marshal(struct{ S Secret }{s})
-	for _, out := range []string{fmt.Sprint(s), fmt.Sprintf("%v %+v %#v %s %q", s, s, s, s, s), string(txt), string(js)} {
-		if strings.Contains(out, plPasted) || !strings.Contains(out, "[redacted]") {
-			t.Errorf("printed form %q", out)
-		}
-	}
-	if s.Reveal() != plPasted {
-		t.Errorf("Reveal = %q", s.Reveal())
-	}
-	if Secret("").String() != "" {
-		t.Errorf("an empty secret should print empty, so absence stays visible")
-	}
-}
-
 // TestBuildPlanKeepsEachSecretToItsMode pins that a plan carries the master
 // key only in local mode and the pasted token only in remote mode, so a
 // secret typed into the other mode's field never rides along.
@@ -675,7 +656,7 @@ func TestPlanWritesURLIsData(t *testing.T) {
 // TestObserveAndPlanFlagACredentialedURLThatWillBeRewritten runs the real
 // Observe and the real BuildPlan end to end: a stored url with a
 // user:password sets ConfigState.URLHadCredentials (beside the Problems line
-// a person reads) and shows as hiddenURL. A remote plan that keeps the url
+// a person reads) and shows as urlrule.Hidden. A remote plan that keeps the url
 // as the State shows it is refused (the placeholder holds an '@'), so the
 // placeholder is never written; one with a retyped url writes that url over
 // the stored one (Plan.WritesURL), so its credentials are not kept. Those
@@ -685,7 +666,7 @@ func TestObserveAndPlanFlagACredentialedURLThatWillBeRewritten(t *testing.T) {
 	f.configFile.Table.Mode = "remote"
 	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if !st.Config.URLHadCredentials || st.Config.Table.URL != hiddenURL {
+	if !st.Config.URLHadCredentials || st.Config.Table.URL != urlrule.Hidden {
 		t.Fatalf("URLHadCredentials = %t, Table.URL = %q for a url with userinfo", st.Config.URLHadCredentials, st.Config.Table.URL)
 	}
 	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, PastedToken: "tok-NEW"})

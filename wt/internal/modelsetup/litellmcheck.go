@@ -11,6 +11,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 // CheckLiteLLM probes the LiteLLM proxy named by pair and the files that start
@@ -28,7 +29,7 @@ func CheckLiteLLM(ctx context.Context, env Env, pair config.ProxyPair) LiteLLMSt
 		return st
 	}
 	st.Checked = true
-	if hasUserinfo(pair.URL) {
+	if urlrule.HasUserinfo(pair.URL) {
 		// Never requested (#640): a failed request's text can quote the
 		// host it dialled, and the port check would parse the url. Each
 		// check that reads the url says so in fixed words; the file checks

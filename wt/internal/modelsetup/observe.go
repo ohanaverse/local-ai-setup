@@ -15,6 +15,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 // ObserveOptions tunes Observe. ListenPort is the port to look for a
@@ -28,7 +30,7 @@ import (
 // read from CheckTokenFile, so a remote plan's check is about the server the
 // user named. Neither the token nor the url's userinfo goes into State. A
 // url holding an '@' (entered, stored or WT_MODEL_URL) is never pinged: the
-// check reads as not made, with the fixed notCheckedAtURL message.
+// check reads as not made, with the fixed modelmode.NotCheckedAtURL message.
 type ObserveOptions struct {
 	ListenPort     int
 	TokenPaths     []string
@@ -60,9 +62,9 @@ type Platform struct {
 
 // ConfigState is config.toml's [model-server] table as read.
 // URLHadCredentials is true when the stored url held an '@' (read as a
-// user:password), so Observe replaced Table.URL whole with hiddenURL
+// user:password), so Observe replaced Table.URL whole with urlrule.Hidden
 // (Problems says so in words); a plan that writes a url writes a retyped one
-// in its place (hiddenURL itself holds an '@' and is refused), so the
+// in its place (urlrule.Hidden itself holds an '@' and is refused), so the
 // credentials are not kept.
 type ConfigState struct {
 	Path                        string
@@ -274,10 +276,10 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		t := *file.Table
 		t.Token = "" // a secret never goes into State; Problems reports its presence
 		rawURL = t.URL
-		// Only a url with an @ is replaced, whole, by hiddenURL (shownURL
+		// Only a url with an @ is replaced, whole, by urlrule.Hidden (shownURL
 		// leaves any other exactly as written, so an ordinary url never reads
 		// as a change).
-		t.URL = shownURL(t.URL)
+		t.URL = modelmode.ShownURL(t.URL)
 		st.Config.Table = t
 		if file.Table.Token != "" {
 			st.Config.Problems = append(st.Config.Problems, "token under [model-server] is set; move it into a 0600 token_file")
@@ -392,10 +394,10 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	pair, perr := env.Config.Pair()
 	// The pair url is shown like every url here: one holding an '@' is the
 	// fixed placeholder, whole (#640). The pair still reads as present.
-	st.Pair = PairState{URL: shownURL(pair.URL), KeySet: pair.APIKey != ""}
+	st.Pair = PairState{URL: modelmode.ShownURL(pair.URL), KeySet: pair.APIKey != ""}
 	if perr != nil {
 		st.Pair.Err = perr.Error()
-		if hasUserinfo(st.Pair.Err) {
+		if urlrule.HasUserinfo(st.Pair.Err) {
 			st.Pair.Err = pairErrHidden
 		}
 	}
@@ -503,23 +505,23 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			token = readToken(env, &ts)
 		}
 		if token == "" {
-			st.Server.Message = "no token entered for " + shownURL(url)
+			st.Server.Message = "no token entered for " + modelmode.ShownURL(url)
 		}
 	}
 	switch {
-	case hasUserinfo(url):
+	case urlrule.HasUserinfo(url):
 		// Never pinged: modelclient's failure quotes the parsed host, which no
 		// redaction of the typed text can find, and quotes a malformed url whole. The plan refuses the url
 		// anyway; the check reads as not made, in words that hold none of it.
-		st.Server = ServerState{URL: hiddenURL, Message: notCheckedAtURL}
+		st.Server = ServerState{URL: urlrule.Hidden, Message: modelmode.NotCheckedAtURL}
 	case ctx.Err() != nil:
 		st.Server.Message = "not checked: " + ctx.Err().Error()
 	case url != "" && token != "":
 		st.Server = pingServer(ctx, env, modelclient.Endpoint{URL: url, Token: token})
-		st.Server.URL = shownURL(url)
+		st.Server.URL = modelmode.ShownURL(url)
 		// Defence in depth: the url pinged holds no '@' here, but the stored
 		// or entered one beside it may.
-		st.Server.Message = redactCheck(st.Server.Message, url, rawURL, envURL, opts.CheckURL)
+		st.Server.Message = modelmode.RedactCheck(st.Server.Message, url, rawURL, envURL, opts.CheckURL)
 	}
 
 	// LiteLLM checks: only where the local model server is in use.
@@ -545,15 +547,17 @@ func expandHome(path, home string, herr error) (string, error) {
 }
 
 // DefaultLocalTokenPath is where the local plan creates the model server's
-// token: <config home>/wt-model/server.token.
+// token: <config home>/wt-model/server.token. It is
+// modelmode.DefaultLocalTokenPath.
 func DefaultLocalTokenPath(configHome string) string {
-	return filepath.Join(configHome, "wt-model", "server.token")
+	return modelmode.DefaultLocalTokenPath(configHome)
 }
 
 // RemoteTokenPath is the one file a pasted remote token is written to:
-// <config home>/agent-wt/remote-model-server.token.
+// <config home>/agent-wt/remote-model-server.token. It is
+// modelmode.RemoteTokenPath.
 func RemoteTokenPath(configHome string) string {
-	return filepath.Join(configHome, "agent-wt", "remote-model-server.token")
+	return modelmode.RemoteTokenPath(configHome)
 }
 
 // configHome is config's baseConfigHome over the Host seam: XDG_CONFIG_HOME

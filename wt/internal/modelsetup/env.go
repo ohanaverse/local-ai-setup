@@ -27,13 +27,15 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 )
 
 const (
 	// AgentLabel is the model server LaunchAgent's Label.
 	AgentLabel = "local.wt-model.serve"
 	// DefaultListen is the address the model server listens on by default.
-	DefaultListen = "127.0.0.1:8787"
+	// It is modelmode.DefaultListen.
+	DefaultListen = modelmode.DefaultListen
 )
 
 // FS is the file system the setup reads and writes.

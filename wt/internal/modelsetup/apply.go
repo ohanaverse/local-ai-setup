@@ -16,6 +16,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 const (
@@ -43,15 +45,9 @@ const tokenBytes = 32
 // failed with its error. Notes say what a step left behind (a backup's
 // path); Recovery, after a failure that left the LiteLLM plist, wt-model's
 // pair or a running service out of step, says what is true and the exact
-// commands to run by hand. Nothing in it holds a secret.
-type Result struct {
-	Done     []Step
-	Failed   *Step
-	Err      error
-	Warnings []string
-	Notes    []string
-	Recovery string
-}
+// commands to run by hand. Nothing in it holds a secret. It is
+// modelmode.Result.
+type Result = modelmode.Result
 
 // applyRun is what one Apply carries from step to step and nowhere else: the
 // master key a create or rotate step generated (held only after the plist on
@@ -101,13 +97,13 @@ func Apply(ctx context.Context, env Env, p Plan, progress func(string)) Result {
 	var run applyRun
 	for i, s := range p.Steps {
 		if err := ctx.Err(); err != nil {
-			r = r.fail(s, err)
+			r = failed(r, s, err)
 			r.Recovery = run.recovery(env, p, &s)
 			return r
 		}
 		progress(fmt.Sprintf("step %d/%d: %s", i+1, len(p.Steps), stepLabel(s.Kind)))
 		if err := applyStep(ctx, env, p, s, &r, &run); err != nil {
-			r = r.fail(s, err)
+			r = failed(r, s, err)
 			r.Recovery = run.recovery(env, p, &s)
 			return r
 		}
@@ -116,17 +112,20 @@ func Apply(ctx context.Context, env Env, p Plan, progress func(string)) Result {
 	return r
 }
 
-func (r Result) fail(s Step, err error) Result {
+// failed records s and err on a copy of r. It was a method (r.fail); Result
+// is an alias of modelmode.Result now, and methods cannot be declared on an
+// alias of another package's type.
+func failed(r Result, s Step, err error) Result {
 	r.Failed = &s
 	r.Err = fmt.Errorf("%s: %w", stepLabel(s.Kind), err)
 	return r
 }
 
-// stepLabel is the short ASCII name a progress line and an error use.
+// stepLabel is the short ASCII name a progress line and an error use. The
+// two session-side kinds are modelmode's; the rest are the admin steps this
+// package adds.
 func stepLabel(k StepKind) string {
 	switch k {
-	case StepToken:
-		return "token file"
 	case StepPair:
 		return "LiteLLM pair"
 	case StepPlist:
@@ -139,8 +138,6 @@ func stepLabel(k StepKind) string {
 		return "restart the LaunchAgent"
 	case StepWait:
 		return "wait for wt-model"
-	case StepConfig:
-		return "write [model-server]"
 	case StepRemovePlist:
 		return "remove the LaunchAgent plist"
 	case StepLiteLLMPlist:
@@ -153,6 +150,9 @@ func stepLabel(k StepKind) string {
 		return "tighten the LiteLLM plist's mode"
 	case StepKickstartLiteLLM:
 		return "restart LiteLLM"
+	}
+	if l, ok := modelmode.StepLabel(k); ok {
+		return l
 	}
 	return "unknown step"
 }
@@ -245,7 +245,7 @@ func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result, run *app
 		run.litellmRestarted = true
 		return nil
 	case StepConfig:
-		if hasUserinfo(p.Want.URL) {
+		if urlrule.HasUserinfo(p.Want.URL) {
 			return errors.New("the url contains an @ (read as a user:password); wt does not store credentials in config.toml; use a token file; config.toml was not written")
 		}
 		return env.Config.Update(func(t config.ModelServerState) (config.ModelServerState, error) {
