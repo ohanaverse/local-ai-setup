@@ -179,7 +179,7 @@ var cutMarker = regexp.MustCompile(`… \d+ lines not shown …`)
 func assertMessageShown(t *testing.T, name, view, message string, width, height int) {
 	t.Helper()
 	assertFits(t, name, view, width, height)
-	lines := lipgloss.Height(wrapText(message, width))
+	lines := lipgloss.Height(editorkit.WrapText(message, width))
 	cut := 1+lines+1 > height
 	if got := cutMarker.MatchString(view); got != cut {
 		t.Errorf("%s at %dx%d: marker shown = %v, want %v (the message is %d lines):\n%s", name, width, height, got, cut, lines, view)
@@ -1050,7 +1050,7 @@ func TestALongRefusalKeepsItsHintAndThePathsEnd(t *testing.T) {
 				}
 				view = m.View()
 				assertMessageShown(t, "refused removal, "+where, view, status, size[0], size[1])
-				if !strings.Contains(view, "MODEL") && lastLine(view) != fitHints(size[0], modelsHints) {
+				if !strings.Contains(view, "MODEL") && lastLine(view) != editorkit.FitHints(size[0], modelsHints) {
 					t.Errorf("refused removal, %s at %dx%d: the last line should be the key hints:\n%s", where, size[0], size[1], view)
 				}
 				if cutMarker.MatchString(view) {
@@ -1512,23 +1512,6 @@ func TestQuitPromptFitsANarrowTerminal(t *testing.T) {
 		if size[0] >= 80 && view != "You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel\n" {
 			t.Errorf("at %d columns the prompt changed:\n%q", size[0], view)
 		}
-	}
-}
-
-// TestWrapTextWithoutAWidth verifies text is left as written when the width
-// is not known yet (a view drawn before the first WindowSizeMsg), and that a
-// line that fits keeps its own spacing. Wrapping to a width of 0 put one
-// rune on each line.
-func TestWrapTextWithoutAWidth(t *testing.T) {
-	text := "one two  three\n\n/a/path with spaces"
-	if got := wrapText(text, 0); got != text {
-		t.Errorf("wrapText at width 0 = %q, want the text unchanged", got)
-	}
-	if got := wrapText(text, 80); got != text {
-		t.Errorf("wrapText at 80 = %q, want the text unchanged", got)
-	}
-	if got := wrapText("one two  three", 7); got != "one two\nthree" {
-		t.Errorf("wrapText at 7 = %q", got)
 	}
 }
 

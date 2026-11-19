@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -585,12 +586,12 @@ func (m *model) modelFormLayout() modelFormLayout {
 	}
 	var l modelFormLayout
 	if f.err != "" {
-		l.errBlock = themes.ErrorStyle(m.theme).Render(wrapText(f.err, width))
+		l.errBlock = themes.ErrorStyle(m.theme).Render(editorkit.WrapText(f.err, width))
 		l.foot = l.errBlock + "\n"
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	l.head = tabBar(m.theme, TabModels) + "\n" + wrapText(title, width) + "\n"
-	hints := dim.Render(fitHints(m.width, modelFormHints))
+	l.head = tabBar(m.theme, TabModels) + "\n" + editorkit.WrapText(title, width) + "\n"
+	hints := dim.Render(editorkit.FitHints(m.width, modelFormHints))
 	// While the add form's Provider choice is the field being changed, a
 	// line above the key hints says where the provider it lacks is added. It
 	// is a row the fields lose on a short terminal, so it is drawn only
@@ -598,7 +599,7 @@ func (m *model) modelFormLayout() modelFormLayout {
 	// never beside an error, which has its own rule for that below.
 	pairing := ""
 	if f.mode == modelFormAdd && f.cursor == mfProvider && f.err == "" {
-		pairing = dim.Render(fitHints(m.width, modelFormPairingHints)) + "\n"
+		pairing = dim.Render(editorkit.FitHints(m.width, modelFormPairingHints)) + "\n"
 	}
 	l.room = mfCount
 	if m.height <= 0 {

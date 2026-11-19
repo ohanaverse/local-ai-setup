@@ -191,7 +191,7 @@ func (m *model) serverMenuView(bar string, dim lipgloss.Style) string {
 	}
 	var rl []string
 	for _, r := range reasons {
-		for _, l := range strings.Split(wrapText(editorkit.Scrub(r), m.width), "\n") {
+		for _, l := range strings.Split(editorkit.WrapText(editorkit.Scrub(r), m.width), "\n") {
 			rl = append(rl, dim.Render(l))
 		}
 	}
@@ -203,7 +203,7 @@ func (m *model) serverMenuView(bar string, dim lipgloss.Style) string {
 			rl = nil
 		}
 	}
-	return tuilayout.MessageAlone(bar, strings.Join(append(lines, rl...), "\n"), fitHints(m.width, m.serverMenuHints()), m.width, m.height, dim)
+	return tuilayout.MessageAlone(bar, strings.Join(append(lines, rl...), "\n"), editorkit.FitHints(m.width, m.serverMenuHints()), m.width, m.height, dim)
 }
 
 // plistModeLines is the status block's warning for a LiteLLM plist that is
@@ -246,7 +246,7 @@ func newResultScreen(res modelsetup.Result, text string) *serverResultScreen {
 func (r *serverResultScreen) lines(width int, warn, dim lipgloss.Style) []string {
 	var out []string
 	add := func(s string, style lipgloss.Style) {
-		for _, l := range strings.Split(wrapText(s, width), "\n") {
+		for _, l := range strings.Split(editorkit.WrapText(s, width), "\n") {
 			out = append(out, style.Render(l))
 		}
 	}
@@ -311,7 +311,7 @@ func (m *model) serverResultView(bar string, dim lipgloss.Style) string {
 	if scrolls {
 		shown = append(shown, dim.Render(fmt.Sprintf("... lines %d-%d of %d; up/down scroll ...", top+1, end, len(lines))))
 	}
-	return tuilayout.MessageAlone(bar, strings.Join(shown, "\n"), fitHints(m.width, m.serverResultHints(scrolls)), m.width, m.height, dim)
+	return tuilayout.MessageAlone(bar, strings.Join(shown, "\n"), editorkit.FitHints(m.width, m.serverResultHints(scrolls)), m.width, m.height, dim)
 }
 
 // serverResultHints are the result screen's hints.

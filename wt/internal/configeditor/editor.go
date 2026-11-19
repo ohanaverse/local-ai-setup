@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -429,7 +430,7 @@ func (m *model) View() string {
 		return m.deleteView()
 	case phaseQuit:
 		// Wrapped: at 40 columns both lines are wider than the terminal.
-		return wrapText("You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel", m.width) + "\n"
+		return editorkit.WrapText("You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel", m.width) + "\n"
 	default:
 		if m.tab == TabModels {
 			return m.modelsView()

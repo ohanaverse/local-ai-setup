@@ -371,9 +371,9 @@ func renderServerLine(l serverLine, width int) []string {
 		return []string{pad + l.text}
 	}
 	if width-serverLabelW < 16 {
-		return flow(strings.Fields(l.label+" "+l.text), " ", width)
+		return editorkit.Flow(strings.Fields(l.label+" "+l.text), " ", width)
 	}
-	text := flow(strings.Fields(l.text), " ", width-serverLabelW)
+	text := editorkit.Flow(strings.Fields(l.text), " ", width-serverLabelW)
 	out := make([]string, len(text))
 	for i, t := range text {
 		if i == 0 {
@@ -405,7 +405,7 @@ func (m *model) modeChoice() (radios []string, notes [][]string) {
 	case m.width <= 0:
 		lines = []string{tuilayout.PadRunes("choose", serverLabelW) + strings.Join(opts, "  ")}
 	case m.width-serverLabelW >= 16:
-		for i, l := range flow(opts, "  ", m.width-serverLabelW) {
+		for i, l := range editorkit.Flow(opts, "  ", m.width-serverLabelW) {
 			lead := strings.Repeat(" ", serverLabelW)
 			if i == 0 {
 				lead = tuilayout.PadRunes("choose", serverLabelW)
@@ -413,7 +413,7 @@ func (m *model) modeChoice() (radios []string, notes [][]string) {
 			lines = append(lines, lead+l)
 		}
 	default:
-		lines = flow(opts, "  ", m.width)
+		lines = editorkit.Flow(opts, "  ", m.width)
 	}
 	if !st.state.Platform.OK {
 		why := "local needs launchd (macOS)"
@@ -492,20 +492,20 @@ func (m *model) serverBody(room int) string {
 	}
 	var head []string
 	if s := m.server.status; s != "" {
-		head = append(head, strings.Split(wrapText(s, m.width), "\n")...)
+		head = append(head, strings.Split(editorkit.WrapText(s, m.width), "\n")...)
 	}
 	if m.quitPending && m.server.writing {
-		head = append(head, strings.Split(wrapText("wt config quits once this has finished", m.width), "\n")...)
+		head = append(head, strings.Split(editorkit.WrapText("wt config quits once this has finished", m.width), "\n")...)
 	}
 	if !m.server.loaded {
-		return strings.Join(append(head, "", wrapText("reading the model server's state", m.width)), "\n")
+		return strings.Join(append(head, "", editorkit.WrapText("reading the model server's state", m.width)), "\n")
 	}
 	st := m.server.state
 	if st.Config.ParseErr != "" {
 		// The path breaks only after a slash, so wrapping never splits a name.
 		lines := []string{"config.toml does not parse:"}
 		lines = append(lines, editorkit.BreakPath(editorkit.HomePath(st.Config.Path, st.Host.Home, m.home), m.width)...)
-		lines = append(lines, strings.Split(wrapText(editorkit.Scrub(st.Config.ParseErr), m.width), "\n")...)
+		lines = append(lines, strings.Split(editorkit.WrapText(editorkit.Scrub(st.Config.ParseErr), m.width), "\n")...)
 		lines = append(lines, "fix the file, then press r")
 		for _, l := range lines {
 			head = append(head, styles[toneBad].Render(l))
@@ -613,7 +613,7 @@ func (m *model) serverTabView() string {
 	if fill := m.height - lipgloss.Height(bar) - lipgloss.Height(body) - 1; fill > 0 {
 		body += strings.Repeat("\n", fill)
 	}
-	return tuilayout.MessageAlone(bar, body, fitHints(m.width, m.serverHints()), m.width, m.height, dim)
+	return tuilayout.MessageAlone(bar, body, editorkit.FitHints(m.width, m.serverHints()), m.width, m.height, dim)
 }
 
 // serverPromptView is the confirm phase: what the question is about, then
@@ -638,37 +638,9 @@ func (m *model) serverPromptView(bar string, dim lipgloss.Style) string {
 		question = "Save anyway? [y/N]"
 	default:
 		question = "Apply this plan? [y/N]"
-		body := "\n" + wrapIndented(strings.TrimRight(st.planText, "\n"), m.width) + "\n\n" + wrapText(question, m.width)
-		return tuilayout.MessageAlone(bar, body, fitHints(m.width, m.serverHints()), m.width, m.height, dim)
+		body := "\n" + editorkit.WrapIndented(strings.TrimRight(st.planText, "\n"), m.width) + "\n\n" + editorkit.WrapText(question, m.width)
+		return tuilayout.MessageAlone(bar, body, editorkit.FitHints(m.width, m.serverHints()), m.width, m.height, dim)
 	}
-	body := "\n" + wrapText(text, m.width) + "\n\n" + wrapText(question, m.width)
-	return tuilayout.MessageAlone(bar, body, fitHints(m.width, m.serverHints()), m.width, m.height, dim)
-}
-
-// wrapIndented wraps each line of a plan's text by itself, keeping its
-// indent and hanging its continuation lines under the text after the step
-// number or the bullet ("  1. ", "  - "), so the steps stay apart. A
-// terminal too narrow for the hang wraps the line plainly.
-func wrapIndented(text string, width int) string {
-	var out []string
-	for _, line := range strings.Split(text, "\n") {
-		body := strings.TrimLeft(line, " ")
-		lead := strings.Repeat(" ", len(line)-len(body))
-		hang := lead
-		if mark, _, ok := strings.Cut(body, " "); ok && lead != "" && (mark == "-" || strings.HasSuffix(mark, ".")) {
-			hang += strings.Repeat(" ", len(mark)+1)
-		}
-		if width <= 0 || width-len(hang) < 16 {
-			out = append(out, wrapText(line, width))
-			continue
-		}
-		for i, l := range strings.Split(wrapText(body, width-len(hang)), "\n") {
-			if i == 0 {
-				out = append(out, lead+l)
-			} else {
-				out = append(out, hang+l)
-			}
-		}
-	}
-	return strings.Join(out, "\n")
+	body := "\n" + editorkit.WrapText(text, m.width) + "\n\n" + editorkit.WrapText(question, m.width)
+	return tuilayout.MessageAlone(bar, body, editorkit.FitHints(m.width, m.serverHints()), m.width, m.height, dim)
 }

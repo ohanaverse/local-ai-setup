@@ -143,14 +143,6 @@ func middleCut(s string, w int) string {
 	return string(runes[:w-1-tail]) + "…" + string(runes[len(runes)-tail:])
 }
 
-// flow and wrapText are tuilayout's (the launcher wraps a status with the
-// same two), under the names this package's code and tests use.
-func flow(units []string, sep string, width int) []string {
-	return tuilayout.Flow(units, sep, width)
-}
-
-func wrapText(s string, width int) string { return tuilayout.WrapText(s, width) }
-
 // weightsLines is modeladmin.WeightsNote for the tab: the same words, with
 // the path abbreviated and on a line of its own, so that wrapping never
 // breaks it in the middle. Nil for a row with nothing on this machine.
@@ -294,7 +286,7 @@ func (m *model) modelsStatus() string {
 	case m.registryChanged:
 		parts = append(parts, routesPending)
 	}
-	return wrapText(strings.Join(parts, "\n"), m.width)
+	return editorkit.WrapText(strings.Join(parts, "\n"), m.width)
 }
 
 // malformedLine says what the loader tolerated in a row: a malformed fetch or
@@ -358,13 +350,13 @@ func (m *model) modelsDetailLines(sides bool) (id, path []string) {
 	if r.Pairing() && sides {
 		parts = append(parts, "target "+dash(r.Target), "draft "+dash(r.Draft))
 	}
-	id = flow(parts, " · ", m.width)
+	id = editorkit.Flow(parts, " · ", m.width)
 	if line := malformedLine(r); line != "" {
 		// Wrapped between words, like the rest of the block.
-		id = append(id, flow(strings.Fields(line), " ", m.width)...)
+		id = append(id, editorkit.Flow(strings.Fields(line), " ", m.width)...)
 	}
 	if r.Path != "" && !r.Pairing() {
-		path = flow([]string{editorkit.TildePath(r.Path, m.home)}, "", m.width)
+		path = editorkit.Flow([]string{editorkit.TildePath(r.Path, m.home)}, "", m.width)
 	}
 	return id, path
 }
@@ -373,17 +365,6 @@ func (m *model) modelsDetailLines(sides bool) (id, path []string) {
 var modelsHints = []string{
 	"enter edit · n add · d remove · r refresh · / filter · tab next · q quit",
 	"enter · n · d · r · / · tab · q quit",
-}
-
-// fitHints is the fullest of hints that fits width; the last one, cut, when
-// none does.
-func fitHints(width int, hints []string) string {
-	for _, h := range hints {
-		if width <= 0 || utf8.RuneCountInString(h) <= width {
-			return h
-		}
-	}
-	return tuilayout.Clip(hints[len(hints)-1], width)
 }
 
 // modelsFrames are the tab's layouts, fullest first: the tab bar, the status,
@@ -417,7 +398,7 @@ func (m *model) modelsFrames() []tuilayout.ListFrame {
 				out += "\n" + dim.Render(strings.Join(detail, "\n"))
 			}
 			if withHints {
-				out += "\n" + dim.Render(fitHints(m.width, modelsHints))
+				out += "\n" + dim.Render(editorkit.FitHints(m.width, modelsHints))
 			}
 			return out
 		}
@@ -499,7 +480,7 @@ func (m *model) modelsView() string {
 	// middle, behind a marker that counts them, never the hints or its end:
 	// the end is the path of the file to fix (tuilayout.MessageAlone).
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	return tuilayout.MessageAlone(tabBar(m.theme, TabModels), status, fitHints(m.width, modelsHints), m.width, m.height, dim)
+	return tuilayout.MessageAlone(tabBar(m.theme, TabModels), status, editorkit.FitHints(m.width, modelsHints), m.width, m.height, dim)
 }
 
 // applyModels takes a probe's result: the rows replace the table, with the
@@ -747,7 +728,7 @@ func (m *model) modelsRemoveView() string {
 		if weights != "" {
 			parts = append(parts, weights)
 		}
-		return wrapText(strings.Join(parts, gap), m.width)
+		return editorkit.WrapText(strings.Join(parts, gap), m.width)
 	}
 	core := buildCore("\n\n")
 	// Try with less spacing if it still doesn't fit.
@@ -759,7 +740,7 @@ func (m *model) modelsRemoveView() string {
 	}
 
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	hints := fitHints(m.width, modelsHints)
+	hints := editorkit.FitHints(m.width, modelsHints)
 
 	// If the core message fits with room for the closing sentence and hints,
 	// append the closing sentence to the message.
@@ -769,7 +750,7 @@ func (m *model) modelsRemoveView() string {
 	room := m.height - topHeight - coreHeight - hintHeight
 	if room >= 1 {
 		// There's room for the closing sentence between core and hint.
-		core += "\n" + wrapText(closing, m.width)
+		core += "\n" + editorkit.WrapText(closing, m.width)
 	}
 	return tuilayout.MessageAlone(tabBar(m.theme, TabModels), core, hints, m.width, m.height, dim)
 }
