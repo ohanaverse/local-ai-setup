@@ -271,14 +271,14 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 	// rawURL is the configured url as written, kept out of State: it may
 	// carry a user:password. A url with an @ is never pinged (fail closed);
-	// rawURL only feeds redactCheck, which scrubs it from other check text.
+	// rawURL only feeds modelmode.RedactCheck, which scrubs it from other check text.
 	var rawURL string
 	if file.Table != nil {
 		t := *file.Table
 		t.Token = "" // a secret never goes into State; Problems reports its presence
 		rawURL = t.URL
-		// Only a url with an @ is replaced, whole, by urlrule.Hidden (shownURL
-		// leaves any other exactly as written, so an ordinary url never reads
+		// Only a url with an @ is replaced, whole, by urlrule.Hidden
+		// (modelmode.ShownURL leaves any other exactly as written, so an ordinary url never reads
 		// as a change).
 		t.URL = modelmode.ShownURL(t.URL)
 		st.Config.Table = t
