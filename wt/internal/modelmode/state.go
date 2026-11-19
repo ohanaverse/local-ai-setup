@@ -107,8 +107,8 @@ type LocalFallback struct {
 // url holding an '@' (entered, stored or WT_MODEL_URL) is never pinged: the
 // check reads as not made, with the fixed NotCheckedAtURL message.
 //
-// Local is the local fallback a local-mode read may carry; nothing sets it
-// yet (the local pointer plan reads it).
+// Local is the local fallback a local-mode read may carry: modelsetup's
+// Observe sets it from the LaunchAgent's own token file and listen address.
 type ObserveOptions struct {
 	TokenPaths     []string
 	CheckURL       string

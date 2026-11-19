@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
@@ -317,5 +318,45 @@ func TestObserveWithoutAFallbackPingsTheDefaultLocalURL(t *testing.T) {
 	}
 	if !st.Server.Checked {
 		t.Errorf("Server = %+v, want checked", st.Server)
+	}
+}
+
+// TestObserveClassifiesEachPingFailure pins that every ping error type maps to
+// its own ServerKind in State (so the tab can say what is wrong), that a
+// wrapped error classifies like its cause, that a skew or schema failure
+// carries the number the server spoke, and that a good answer carries the
+// API and schema numbers. It guards PingServer, which modelsetup's Observe
+// and its wait step both rely on.
+func TestObserveClassifiesEachPingFailure(t *testing.T) {
+	cases := []struct {
+		name        string
+		err         error
+		want        ServerKind
+		api, schema int
+	}{
+		{"none", nil, KindNone, 1, 3},
+		{"unreachable", &modelping.UnreachableError{Addr: "a", Reason: "refused"}, KindUnreachable, 0, 0},
+		{"unauthorized", &modelping.UnauthorizedError{Addr: "a"}, KindUnauthorized, 0, 0},
+		{"not wt-model", &modelping.NotModelServerError{Addr: "a", Why: "x"}, KindNotWtModel, 0, 0},
+		{"skew", &modelping.SkewError{Addr: "a", Server: 2, Client: 1}, KindSkew, 2, 0},
+		{"schema", &modelping.SchemaError{Addr: "a", Server: 4, Client: 3}, KindSchema, 0, 4},
+		{"wrapped", fmt.Errorf("ctx: %w", &modelping.UnauthorizedError{Addr: "a"}), KindUnauthorized, 0, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := obsConfigured(t)
+			f.pingErr = c.err
+			f.ping = modelapi.Ping{APIMajor: 1, Schema: 3}
+			st := Observe(context.Background(), f.Env(), ObserveOptions{})
+			if !st.Server.Checked || st.Server.Kind != c.want || st.Server.OK != (c.err == nil) {
+				t.Errorf("Server = %+v, want kind %v", st.Server, c.want)
+			}
+			if c.err != nil && st.Server.Message == "" {
+				t.Errorf("no message for %v", c.err)
+			}
+			if st.Server.API != c.api || st.Server.Schema != c.schema {
+				t.Errorf("API/Schema = %d/%d, want %d/%d", st.Server.API, st.Server.Schema, c.api, c.schema)
+			}
+		})
 	}
 }

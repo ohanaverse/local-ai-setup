@@ -18,13 +18,13 @@ import (
 // this name is modelsetup's alias.
 type Secret = modelmode.Secret
 
-// Desired is what the user asked for. PastedToken (remote) and MasterKey
-// (local, used only when the pair is unset and the LiteLLM plist has no key)
-// are Secrets: BuildPlan keeps each only in its own mode's Plan.Want, for
-// Apply, and no step, note, Format text or refusal holds them. LiteLLM is
-// what a local plan does to the LiteLLM LaunchAgent (nothing by default).
 // AdminWant is the admin half of a Desired: what the setup side decides that
-// a session never chooses.
+// a session never chooses. MasterKey (local, used only when the pair is unset
+// and the LiteLLM plist has no key) is a Secret: BuildPlan keeps it only in a
+// local plan's Plan.Admin, for Apply, and no step, note, Format text or
+// refusal holds it (PastedToken, the session half's secret, stays in
+// Plan.Want). LiteLLM is what a local plan does to the LiteLLM LaunchAgent
+// (nothing by default).
 type AdminWant struct {
 	Listen      string
 	MasterKey   Secret
@@ -131,16 +131,13 @@ const (
 // line the user confirms. It is modelmode.Step.
 type Step = modelmode.Step
 
-// Plan is what BuildPlan decided. Want is the request with every default
-// filled in (Mode, URL, TokenFile and Listen as they will be written); Notes
-// say what is left alone and anything else worth knowing; Agent is what a
-// local plan's plist step renders (nil for native and remote). LiteLLM is
-// what a create plan's StepLiteLLMPlist renders, without its keys: Apply
-// generates them when it writes the file, so no plan ever holds one (nil for
-// any plan that does not create).
-// Plan is what BuildPlan decides: the session half — wanted, steps, notes —
-// is modelmode's; the admin half is Admin, plus the agent and LiteLLM specs
-// the admin steps render and apply.
+// Plan is what BuildPlan decides. The session half (Want with Mode, URL and
+// TokenFile as they will be written, the Steps, and the Notes on what is left
+// alone) is modelmode's; Admin is the admin half of the request (Listen as it
+// will be written); Agent is what a local plan's plist step renders (nil for
+// native and remote). LiteLLM is what a create plan's StepLiteLLMPlist
+// renders, without its keys: Apply generates them when it writes the file, so
+// no plan ever holds one (nil for any plan that does not create).
 type Plan struct {
 	modelmode.Plan
 	Admin   AdminWant
@@ -439,40 +436,6 @@ func planLocal(st State, want Desired) (Plan, error) {
 	p.Notes = append(p.Notes, lnotes...)
 	p.AddEnvNote(st.State)
 	return p, nil
-}
-
-// config appends the config step when the stored table differs from Want,
-// else a note that it is kept. It is always the last step.
-func (p *Plan) config(st State) {
-	t := st.Config.Table
-	cur, _ := modelmode.ParseMode(t.Mode)
-	if cur == p.Want.Mode && t.URL == p.Want.URL && modelmode.ExpandIn(t.TokenFile, st.Host.Home) == p.Want.TokenFile {
-		p.Notes = append(p.Notes, "keep [model-server] in "+st.Config.Path+" (already mode = \""+string(p.Want.Mode)+"\")")
-		return
-	}
-	fields := "mode = \"" + string(p.Want.Mode) + "\""
-	if p.Want.URL != "" {
-		fields += ", url = \"" + p.Want.URL + "\""
-	}
-	if p.Want.TokenFile != "" {
-		fields += ", token_file = \"" + p.Want.TokenFile + "\""
-	}
-	var cleared []string
-	if p.Want.URL == "" && t.URL != "" {
-		cleared = append(cleared, "url")
-	}
-	if p.Want.TokenFile == "" && t.TokenFile != "" {
-		cleared = append(cleared, "token_file")
-	}
-	if len(cleared) > 0 {
-		fields += "; clear " + strings.Join(cleared, " and ")
-	}
-	verb := "write"
-	if !st.Config.Exists {
-		verb = "create"
-	}
-	p.Steps = append(p.Steps, Step{Kind: StepConfig, Path: st.Config.Path,
-		Detail: verb + " [model-server] in " + st.Config.Path + ": " + fields})
 }
 
 // leaveAgent handles a wt LaunchAgent when leaving local: removal when asked
