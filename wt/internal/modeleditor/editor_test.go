@@ -38,8 +38,8 @@ func runCmd(t *testing.T, m *model, cmd tea.Cmd) *model {
 
 // TestRunOpensOnTheModelsTabAndProbesAtOnce verifies the Models screen probes
 // the providers as soon as it opens (Init hands the probe to a command next
-// to the loaded config) and draws the Models tab first: there is no other tab
-// to start on, and a screen that waited for a key before probing would open
+// to the loaded config) and draws the Models tab first when no StartTab
+// names Setup: a screen that waited for a key before probing would open
 // empty.
 func TestRunOpensOnTheModelsTabAndProbesAtOnce(t *testing.T) {
 	tm := newTabMachine(t, tabRegistry)
@@ -59,12 +59,13 @@ func TestRunOpensOnTheModelsTabAndProbesAtOnce(t *testing.T) {
 	}
 }
 
-// TestTabBarShowsOnlyModels pins the Models screen's tab bar: the one tab it
-// has, current. Agents and Model server stay in `wt config`.
-func TestTabBarShowsOnlyModels(t *testing.T) {
-	got := tabBar(testTheme(), TabModels)
-	if !strings.Contains(got, "[Models]") || strings.Contains(got, "Agents") || strings.Contains(got, "Model server") {
-		t.Errorf("tab bar = %q, want [Models] alone", got)
+// TestTabBarShowsModelsAndSetup pins the wt-model screen's tab bar: Models
+// and Setup, the current one in brackets. Agents and the Mode tab stay in
+// `wt config`.
+func TestTabBarShowsModelsAndSetup(t *testing.T) {
+	got := tabBar(testTheme(), TabSetup)
+	if !strings.Contains(got, "Models") || !strings.Contains(got, "[Setup]") || strings.Contains(got, "[Models]") || strings.Contains(got, "Agents") {
+		t.Errorf("tab bar = %q, want Models and [Setup]", got)
 	}
 }
 
