@@ -12,7 +12,7 @@ Design rationale: `docs/superpowers/specs/2026-10-12-model-tiers-design.md`.
 
 ## Prerequisites
 
-- `wt` on PATH. `modeltiers` runs one wt command, `wt model list --json`, which only reads.
+- `wt-model` on PATH (`make install` in `wt/` installs it beside `wt`). `modeltiers` runs one wt command, `wt-model model list --json`, which only reads.
 - `uv`, and the package installed: `make install` from the repo root, or `make -C modeltiers install`.
 - Network access to `models.dev`, `openrouter.ai`, `datasets-server.huggingface.co` and `epoch.ai`. No API key is needed.
 - For the evidence commands in steps 4 and 5: `curl`, `jq`, `shasum`, `unzip` and `python3`.
@@ -141,7 +141,7 @@ candidates: 2 (list them with --candidates)
 Two more flags:
 
 - `--offline` fetches nothing and reads each source's newest good snapshot. Every source is then `stale` and the exit code is still 0.
-- `--inventory FILE` reads saved `wt model list --json` output and does not run wt.
+- `--inventory FILE` reads saved `wt-model model list --json` output and does not run wt-model.
 
 ### 2. Read the result
 
@@ -287,7 +287,7 @@ a sample the modeltiers tests pin):
   (added since the last `modeltiers run`), or there is no file or it cannot
   be parsed. The picker never warns about any of these.
 - wt finds a model's entry by `provider_id` and `model_name`, the fields
-  `wt model list --json` gives modeltiers, so a model renamed in the registry
+  `wt-model model list --json` gives modeltiers, so a model renamed in the registry
   reads `-` until the next run.
 - A slot-profile row's TIER is `-`; the line under the table, which lists the
   profile's slots, puts each rated slot model's letter and score (`S44`)
@@ -347,7 +347,7 @@ reason = "<why>"
 
 An `[[alias]]` needs `canonical` and at least one of the four lists. The
 `inventory` pair is exactly the `provider_id` and `model_name` that
-`wt model list --json` prints; ids are exactly as the source spells them,
+`wt-model model list --json` prints; ids are exactly as the source spells them,
 except that an Arena name is written without `(High)`, `(Max)` and the like.
 
 **The rule: an alias needs evidence that identifies the model, and its `note`
@@ -652,6 +652,6 @@ MODELTIERS_OUT="$SCRATCH/tiers.toml" uv run --directory modeltiers modeltiers sh
 - Design spec: `docs/superpowers/specs/2026-10-12-model-tiers-design.md`
 - Module map, test seams and the data files: `modeltiers/CLAUDE.md` (rules) and `modeltiers/docs/internals.md` (detail)
 - The output contract: [`docs/contracts/tiers.sample.toml`](../contracts/tiers.sample.toml)
-- The inventory contract, a sample of what `wt model list --json` prints (rows recorded from one machine; the registry path in it is made up and `size_bytes` and `path` are nulled): [`docs/contracts/model-list.sample.json`](../contracts/model-list.sample.json)
+- The inventory contract, a sample of what `wt-model model list --json` prints (rows recorded from one machine; the registry path in it is made up and `size_bytes` and `path` are nulled): [`docs/contracts/model-list.sample.json`](../contracts/model-list.sample.json)
 - Who owns `tiers.toml` and the snapshot cache: [00-config-map](00-config-map.md)
 - Source: `modeltiers/src/modeltiers/`

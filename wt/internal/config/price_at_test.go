@@ -488,7 +488,7 @@ func TestPriceAtIgnoresARowItCannotRead(t *testing.T) {
 
 // TestTimePriceProblemIsTheValidatorsRefusal pins the words Problem gives
 // for a row that is not applied. They are the registry validator's own (the
-// refusal a write of that model gets), and `wt model list` prints them, so
+// refusal a write of that model gets), and `wt-model model list` prints them, so
 // they are how a user learns why a row they wrote changes nothing: a time
 // written "9:00" reads "start must be HH:MM, got 9:00". A row either flow's
 // sync writes has no problem, and neither has a window that runs past
@@ -553,7 +553,7 @@ output_price_per_million = 75.0
 // hand-written row that breaks a rule does to a registry: nothing, loudly
 // enough. The file still loads (a slip in one row must not stop every wt
 // command), the row is not applied at any instant, the model's price is its
-// flat one, and Model.Malformed names the row and the rule, which `wt model
+// flat one, and Model.Malformed names the row and the rule, which `wt-model model
 // list` prints and the Models tab shows. A readable row beside it is still
 // applied.
 func TestLoadKeepsATimePricesRowTheValidatorRefusesAndNamesIt(t *testing.T) {

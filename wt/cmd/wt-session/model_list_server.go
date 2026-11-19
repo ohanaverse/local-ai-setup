@@ -14,7 +14,38 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/spf13/cobra"
 )
+
+// modelListCmd is `model list` under wt. With --server it lists the model server's
+// catalog as this client session sees it; without, it only points at
+// `wt-model model list`, where the host registry listing moved (exit 1).
+func modelListCmd(a *app) *cobra.Command {
+	var asJSON, fromServer bool
+	c := &cobra.Command{
+		Use:   "list",
+		Short: "List the model server's catalog (--server); the registry listing is wt-model model list",
+		Long: "Without --server this is a pointer: the registry listing is `wt-model model list`.\n\n" +
+			"--server lists the model server's catalog, as a client session sees\n" +
+			"it (MODEL, STATE running|loading|stopped|blocked|unknown, LOC, TIER and the\n" +
+			"client sessions using the model). Its --json is a different document from the\n" +
+			"registry's, described by docs/contracts/model-list.server.sample.json. Needs a\n" +
+			"model server ([model-server] in config.toml, or WT_MODEL_URL).",
+		Example:      "  wt model list --server\n  wt model list --server --json",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			if !fromServer {
+				return movedError("model list", "model list")
+			}
+			return runModelListServer(cmd.Context(), cmd.OutOrStdout(), a, asJSON, stdoutWidth())
+		},
+	}
+	c.Flags().BoolVar(&asJSON, "json", false, "with --server: the catalog as one JSON document")
+	c.Flags().BoolVar(&fromServer, "server", false, "list the model server's catalog (a client session's view)")
+	return c
+}
 
 // modelListServerColumns are the plain table's columns. The last is the
 // number of client sessions using the model.
@@ -24,7 +55,7 @@ var modelListServerColumns = []cli.PlainColumn{
 
 // modelListServerDoc is `wt model list --server --json`: the contract
 // document docs/contracts/model-list.server.sample.json. It is the session's
-// catalog view, NOT the host registry's `wt model list --json` (that is
+// catalog view, NOT the host registry's `wt-model model list --json` (that is
 // docs/contracts/model-list.sample.json, which modeltiers reads).
 type modelListServerDoc struct {
 	Version   int               `json:"version"`

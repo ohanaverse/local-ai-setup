@@ -191,7 +191,7 @@ func cloudSyncCmd(a *app) *cobra.Command {
 			"--yes never deletes on its own: a plan that removes anything (either flow)\n" +
 			"is applied only with --approve-removals and the digest a dry run printed;\n" +
 			"name both, comma-separated, when both flows remove. A model added with\n" +
-			"`wt model add` is marked manual and kept until its source lists it.\n" +
+			"`wt-model model add` is marked manual and kept until its source lists it.\n" +
 			"Local models are never touched.\n\n" +
 			"A flow whose service the registry does not use is skipped, never an error,\n" +
 			"however it was asked for: with no OpenRouter-priced model the openrouter flow\n" +

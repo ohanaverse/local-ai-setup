@@ -53,7 +53,7 @@ var (
 )
 
 // promptStop is promptReplace's twin for stopping an in-use model, and what
-// `wt model rm` asks with too: y/N on the controlling terminal, default No,
+// `wt-model model rm` asks with too: y/N on the controlling terminal, default No,
 // so piped input can never authorise it. The terminal is opened through the
 // openTTY seam, so a test can take it away.
 func promptStop(question string) (bool, error) {

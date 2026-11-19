@@ -1,9 +1,9 @@
 // Pointers for commands that moved to wt-model.
 //
 // A command that moved is not simply deleted: cobra prints the parent's help
-// and exits 0 for an unknown name, so a script running `wt model add … && …`
-// would "succeed" having changed nothing. Each moved command is instead a
-// hidden stub that prints one line and exits 1:
+// and exits 0 for an unknown name, so a script running the old
+// `model add … && …` under wt would "succeed" having changed nothing. Each
+// moved command is instead a hidden stub that prints one line and exits 1:
 //
 //	wt: <old> moved to wt-model — run 'wt-model <new>'; nothing was changed
 //
@@ -35,9 +35,14 @@ const movedAnnotation = "moved to wt-model"
 // wt-model).
 type movedCommand struct{ Old, New string }
 
-// movedCommands is every command registered as a pointer stub. Empty until the
-// wt-model commands they point at exist (rows land with Tasks 37, 38 and 42).
-var movedCommands = []movedCommand{}
+// movedCommands is every command registered as a pointer stub (Task 42 adds
+// the rest).
+var movedCommands = []movedCommand{
+	{"model init", "model init"},
+	{"model add", "model add"},
+	{"model edit", "model edit"},
+	{"model rm", "model rm"},
+}
 
 // movedError is the one wording of a command that moved to wt-model: exit 1, one line, nothing changed.
 // old is the wt command as typed (after "wt "), new the wt-model command that replaces it.

@@ -93,7 +93,7 @@ func read(t *testing.T, path string) string {
 
 func ptr(s string) *string { return &s }
 
-// TestDeriveID pins the ids `wt model add` gives: a local model gets the id
+// TestDeriveID pins the ids `wt-model model add` gives: a local model gets the id
 // wt already routes and keeps history under for that artifact (so
 // registering a model that is on disk does not rename it), and a cloud model
 // gets the provider and the name with each "/" in the name spelled "--", the
@@ -209,7 +209,7 @@ supports_function_calling = true
 	}
 
 	// openrouter is the one cloud provider wt has a default row for, and an
-	// add that names it gets the row too: `wt model add openrouter …` is the
+	// add that names it gets the row too: `wt-model model add openrouter …` is the
 	// first thing a user with a key runs.
 	t.Run("openrouter", func(t *testing.T) {
 		path := scratchRegistry(t, "")
@@ -258,7 +258,7 @@ func TestAddRefusals(t *testing.T) {
 		{"an id with nothing after the slash", func(r *AddRequest) { r.ID = "openrouter/" }, FieldID, "an id is <provider>/<name>"},
 		{"an id with a control character", func(r *AddRequest) { r.ID = "openrouter/a\tb" }, FieldID, "an id is <provider>/<name>"},
 		{"an artifact that is already registered", func(r *AddRequest) { r.ProviderID, r.ModelName, r.ID = "ollama", "gemma4:9b", "ollama/again" }, FieldName,
-			`model "ollama/gemma4:9b" already registers gemma4:9b on ollama`},
+			`model "ollama/gemma4:9b" already registers gemma4:9b on ollama; edit that one (wt-model model edit ollama/gemma4:9b)`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -486,7 +486,7 @@ func TestEditRefusals(t *testing.T) {
 }
 
 // TestRemoveIsAllOrNothing verifies a removal deletes exactly the named rows,
-// and that one unknown id removes none of them: `wt model rm a b` must not
+// and that one unknown id removes none of them: `wt-model model rm a b` must not
 // half-apply and leave the user to work out which rows went.
 func TestRemoveIsAllOrNothing(t *testing.T) {
 	two := baseRegistry + `
@@ -546,7 +546,7 @@ tags = []
 
 // dupRegistry is baseRegistry with a second row under the id
 // "ollama/gemma4:9b", held by openrouter: a registry wt's validation refuses
-// ("duplicate model id") and `wt model edit` / `wt model rm` still open.
+// ("duplicate model id") and `wt-model model edit` / `wt-model model rm` still open.
 const dupRegistry = baseRegistry + `
 [[models]]
 id = "ollama/gemma4:9b"
@@ -627,7 +627,7 @@ func TestADuplicatedIDDoesNotBlockTheOtherRows(t *testing.T) {
 	}
 }
 
-// TestAddAPairing verifies `wt model add mlx_lm_server <target> --draft
+// TestAddAPairing verifies `wt-model model add mlx_lm_server <target> --draft
 // <draft>` writes a pairing row: an id and a model_name that
 // spell the pairing, the target under fetch and the draft under draft — each
 // a repo, or a local_path when it is spelled like a path — and the
@@ -738,8 +738,8 @@ func TestPairingName(t *testing.T) {
 // id would have a space in it, or an empty half, is refused with the way
 // round it, and goes in under --id. Every other derived id comes from a name
 // a provider lists; a pairing's comes from the last segment of a path the
-// user typed, and an id with a space cannot be given to `wt -M`, `wt model
-// edit` or `wt model rm` without quoting it everywhere for ever.
+// user typed, and an id with a space cannot be given to `wt -M`, `wt-model model
+// edit` or `wt-model model rm` without quoting it everywhere for ever.
 func TestAddAPairingWhoseSidesMakeNoUsableID(t *testing.T) {
 	path := scratchRegistry(t, "")
 	var fe *FieldError
@@ -907,7 +907,7 @@ func TestAddCloudModelIsManual(t *testing.T) {
 // TestAddOllamaCloudTagIsCloud verifies an ollama model whose tag ends in
 // :cloud or -cloud is written with location = "cloud" when --location is not
 // given, and that an explicit location and a local tag are left alone.
-// Without the key the row inherits the ollama provider's "local", and wt
+// Without the key the row inherits the ollama provider's "local", and wt-model
 // model list shows a cloud model as a missing local one.
 func TestAddOllamaCloudTagIsCloud(t *testing.T) {
 	path := scratchRegistry(t, baseRegistry)

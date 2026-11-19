@@ -15,7 +15,7 @@ import (
 // or validation error, over every kind of error Load and Validate hand back.
 // Commands used to choose for themselves, and `wt litellm` chose "run
 // `wt config` to repair" for all of them — including a missing registry
-// (whose error already says `wt model init`) and a registry link that leads
+// (whose error already says `wt-model model init`) and a registry link that leads
 // nowhere, neither of which `wt config` can touch (#291). `wt config` edits
 // config.toml, so it is the answer for a config.toml problem and nothing else:
 // a provider or model row that fails validation is registry.toml's, and so is

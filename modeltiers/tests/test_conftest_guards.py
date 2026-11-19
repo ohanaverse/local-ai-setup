@@ -18,7 +18,7 @@ def test_urlopen_is_blocked() -> None:
 
 def test_subprocess_run_is_blocked() -> None:
     with pytest.raises(AssertionError, match="hermetic"):
-        subprocess.run(["wt", "model", "list", "--json"])
+        subprocess.run(["wt-model", "model", "list", "--json"])
 
 
 def test_every_path_is_under_tmp_path(tmp_path: Path) -> None:

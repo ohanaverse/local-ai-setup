@@ -15,129 +15,19 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 )
 
-// writeRegistry is a registry with an ollama and an openrouter provider and
-// one model of each.
-const writeRegistry = `[[providers]]
-id = "ollama"
-name = "Ollama"
-location = "local"
-
-[providers.auth]
-type = "none"
-base_url = "http://localhost:11434"
-
-[[providers]]
-id = "openrouter"
-name = "OpenRouter"
-location = "cloud"
-
-[providers.auth]
-type = "api_key"
-secret_ref = "OPENROUTER_API_KEY"
-base_url = "https://openrouter.ai/api/v1"
-
-[[models]]
-id = "ollama/gemma4:9b"
-family = "gemma4"
-provider_id = "ollama"
-model_name = "gemma4:9b"
-tags = []
-
-[[models]]
-id = "openrouter/a--b"
-family = "f"
-provider_id = "openrouter"
-model_name = "a/b"
-tags = []
-`
-
-// modelHome is a throwaway home whose registry holds content ("" for none).
-// It returns the registry's path.
-func modelHome(t *testing.T, content string) string {
-	t.Helper()
-	home := t.TempDir()
-	withCleanConfigEnv(t, home)
-	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
-	if content != "" {
-		if err := os.MkdirAll(filepath.Dir(registry), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(registry, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return registry
-}
-
-func mustRead(t *testing.T, path string) string {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
-
-// stubOllamaCaps answers the capability lookup and counts its calls.
-func stubOllamaCaps(t *testing.T, info map[string]any, err error) *int {
-	t.Helper()
-	calls := 0
-	old := ollamaCaps
-	ollamaCaps = func(*config.Config, string) (map[string]any, error) {
-		calls++
-		return info, err
-	}
-	t.Cleanup(func() { ollamaCaps = old })
-	return &calls
-}
-
-// stubConfirmRemove answers `wt model rm`'s question and records it.
-func stubConfirmRemove(t *testing.T, answer bool) *string {
-	t.Helper()
-	asked := new(string)
-	old := confirmRemove
-	confirmRemove = func(q string) (bool, error) { *asked = q; return answer, nil }
-	t.Cleanup(func() { confirmRemove = old })
-	return asked
-}
-
-func sp(s string) *string { return &s }
-
-// runWT runs the wt command line in-process and returns stdout+stderr.
-func runWT(t *testing.T, args ...string) (string, error) {
-	t.Helper()
-	return runWTWith(t, testHooks(), args...)
-}
-
-// runWTWith is runWT over an app carrying h (testHooks() is the starting value for a test that overrides other hooks).
-func runWTWith(t *testing.T, h hooks, args ...string) (string, error) {
-	t.Helper()
-	var buf bytes.Buffer
-	root := rootCmdWith(h)
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	if args == nil {
-		// Cobra reads a nil slice as "use os.Args[1:]", the test binary's own
-		// command line.
-		args = []string{}
-	}
-	root.SetArgs(args)
-	err := root.Execute()
-	return buf.String(), err
-}
-
-// TestModelAddOnAFreshMachine verifies the first `wt model add` on a machine
+// TestModelAddOnAFreshMachine verifies the first `wt-model model add` on a machine
 // with no registry: one write creates the file with the model and the default
 // row of its provider, both are named in the output, and the routes are
-// synced exactly once. This is the first thing a new user does after `wt
+// synced exactly once. This is the first thing a new user does after `wt-model
 // model init`, or instead of it.
 func TestModelAddOnAFreshMachine(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, "")
-	stubSeedEnv(t, config.SeedEnv{})
-	syncs := stubRouteSync(t, "")
+	stubSeedEnv(h, config.SeedEnv{})
+	syncs := stubRouteSync(h, "")
 	var out, errOut bytes.Buffer
 	req := modeladmin.AddRequest{ProviderID: "omlx", ModelName: "Qwen3.8-27B-4bit", Fields: modeladmin.Fields{Family: sp("qwen3.8"), Tags: sp("code")}}
-	if err := runModelAdd(&out, &errOut, nil, req); err != nil {
+	if err := h.runModelAdd(&out, &errOut, nil, req); err != nil {
 		t.Fatal(err)
 	}
 	if want := "added model: omlx/Qwen3.8-27B-4bit\nadded provider: omlx\n"; out.String() != want {
@@ -159,12 +49,13 @@ func TestModelAddOnAFreshMachine(t *testing.T) {
 // dropped by LiteLLM.
 func TestModelAddAsksOllamaWhatTheModelCanDo(t *testing.T) {
 	t.Run("capabilities recorded", func(t *testing.T) {
+		h := testHost()
 		registry := modelHome(t, writeRegistry)
-		stubRouteSync(t, "")
-		calls := stubOllamaCaps(t, map[string]any{"supports_function_calling": true, "supports_vision": true}, nil)
+		stubRouteSync(h, "")
+		calls := stubOllamaCaps(h, map[string]any{"supports_function_calling": true, "supports_vision": true}, nil)
 		var out, errOut bytes.Buffer
 		req := modeladmin.AddRequest{ProviderID: "ollama", ModelName: "qwen3:8b", Fields: modeladmin.Fields{Family: sp("qwen3")}}
-		if err := runModelAdd(&out, &errOut, nil, req); err != nil {
+		if err := h.runModelAdd(&out, &errOut, nil, req); err != nil {
 			t.Fatal(err)
 		}
 		if *calls != 1 || errOut.Len() != 0 {
@@ -175,12 +66,13 @@ func TestModelAddAsksOllamaWhatTheModelCanDo(t *testing.T) {
 		}
 	})
 	t.Run("lookup failed", func(t *testing.T) {
+		h := testHost()
 		registry := modelHome(t, writeRegistry)
-		stubRouteSync(t, "")
-		stubOllamaCaps(t, nil, errors.New("`ollama show qwen3:8b` (at http://localhost:11434) failed: exit status 1"))
+		stubRouteSync(h, "")
+		stubOllamaCaps(h, nil, errors.New("`ollama show qwen3:8b` (at http://localhost:11434) failed: exit status 1"))
 		var out, errOut bytes.Buffer
 		req := modeladmin.AddRequest{ProviderID: "ollama", ModelName: "qwen3:8b", Fields: modeladmin.Fields{Family: sp("qwen3")}}
-		if err := runModelAdd(&out, &errOut, nil, req); err != nil {
+		if err := h.runModelAdd(&out, &errOut, nil, req); err != nil {
 			t.Fatalf("a failed lookup must not fail the add: %v", err)
 		}
 		want := "warning: added without model_info.supports_function_calling / supports_vision: `ollama show qwen3:8b` (at http://localhost:11434) failed: exit status 1\n"
@@ -192,11 +84,12 @@ func TestModelAddAsksOllamaWhatTheModelCanDo(t *testing.T) {
 		}
 	})
 	t.Run("an add that is going to be refused does not ask first", func(t *testing.T) {
+		h := testHost()
 		registry := modelHome(t, writeRegistry)
-		calls := stubOllamaCaps(t, nil, errors.New("must not be called"))
+		calls := stubOllamaCaps(h, nil, errors.New("must not be called"))
 		var out, errOut bytes.Buffer
 		req := modeladmin.AddRequest{ProviderID: "ollama", ModelName: "qwen3:8b", Fields: modeladmin.Fields{Family: sp("qwen3"), InputPrice: sp("cheap")}}
-		err := runModelAdd(&out, &errOut, nil, req)
+		err := h.runModelAdd(&out, &errOut, nil, req)
 		if err == nil || !strings.Contains(err.Error(), `input-price must be a number, got "cheap"`) || *calls != 0 {
 			t.Errorf("err = %v, lookups = %d; want the price refused before `ollama show` runs (it can take its whole timeout)", err, *calls)
 		}
@@ -205,12 +98,13 @@ func TestModelAddAsksOllamaWhatTheModelCanDo(t *testing.T) {
 		}
 	})
 	t.Run("not an ollama model", func(t *testing.T) {
+		h := testHost()
 		modelHome(t, writeRegistry)
-		stubRouteSync(t, "")
-		calls := stubOllamaCaps(t, nil, errors.New("must not be called"))
+		stubRouteSync(h, "")
+		calls := stubOllamaCaps(h, nil, errors.New("must not be called"))
 		var out, errOut bytes.Buffer
 		req := modeladmin.AddRequest{ProviderID: "openrouter", ModelName: "c/d", Fields: modeladmin.Fields{Family: sp("f")}}
-		if err := runModelAdd(&out, &errOut, nil, req); err != nil {
+		if err := h.runModelAdd(&out, &errOut, nil, req); err != nil {
 			t.Fatal(err)
 		}
 		if *calls != 0 || errOut.Len() != 0 {
@@ -224,15 +118,16 @@ func TestModelAddAsksOllamaWhatTheModelCanDo(t *testing.T) {
 // each failure is a non-zero exit that leaves the file alone, and each
 // success is followed by exactly one sync.
 func TestModelCommandsThroughTheCommandLine(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, writeRegistry)
-	stubSeedEnv(t, config.SeedEnv{})
-	syncs := stubRouteSync(t, "")
-	stubProbeInventory(t, localmodels.Snapshot{
+	stubSeedEnv(h, config.SeedEnv{})
+	syncs := stubRouteSync(h, "")
+	stubProbeInventory(h, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
 		Entries:   []localmodels.Entry{{ProviderID: "ollama", ModelID: "ollama/gemma4:9b", ModelName: "gemma4:9b", Artifact: "gemma4:9b", Registered: true, ArtifactKnown: true}},
 	})
 
-	out, err := runWT(t, "model", "add", "openrouter", "qwen/qwen3.8-27b", "--family", "qwen3.8", "--tags", "code,design",
+	out, err := runWTModelOn(t, h, "model", "add", "openrouter", "qwen/qwen3.8-27b", "--family", "qwen3.8", "--tags", "code,design",
 		"--input-price", "0.5", "--output-price", "2", "--id", "openrouter/qwen")
 	if err != nil || out != "added model: openrouter/qwen\n" {
 		t.Fatalf("add = %q, %v", out, err)
@@ -241,14 +136,14 @@ func TestModelCommandsThroughTheCommandLine(t *testing.T) {
 		t.Errorf("the added row is not as asked:\n%s", got)
 	}
 
-	out, err = runWT(t, "model", "edit", "openrouter/qwen", "--tags", "", "--output-price", "2.5")
+	out, err = runWTModelOn(t, h, "model", "edit", "openrouter/qwen", "--tags", "", "--output-price", "2.5")
 	if err != nil || out != "updated model: openrouter/qwen\n" {
 		t.Fatalf("edit = %q, %v", out, err)
 	}
 	if got := mustRead(t, registry); !strings.Contains(got, "model_name = \"qwen/qwen3.8-27b\"\nsource = \"manual\"\ntags = []\n\n[models.cost]\ninput_price_per_million = 0.5\noutput_price_per_million = 2.5\n") {
 		t.Errorf("the edit did not change exactly the two fields:\n%s", got)
 	}
-	if out, err = runWT(t, "model", "edit", "openrouter/qwen", "--output-price", "2.5"); err != nil || out != "no change: openrouter/qwen\n" {
+	if out, err = runWTModelOn(t, h, "model", "edit", "openrouter/qwen", "--output-price", "2.5"); err != nil || out != "no change: openrouter/qwen\n" {
 		t.Errorf("a repeated edit = %q, %v; want `no change`", out, err)
 	}
 	if *syncs != 2 {
@@ -267,13 +162,13 @@ func TestModelCommandsThroughTheCommandLine(t *testing.T) {
 		{[]string{"model", "add", "openrouter", "x/y", "--family", "f", "--input-price", "cheap"}, `input-price must be a number, got "cheap"`},
 		{[]string{"model", "add", "openrouter", "x/y", "--family", "f", "--id", "has space"}, `an id is <provider>/<name> with no spaces, got "has space"`},
 		{[]string{"model", "edit", "openrouter/qwen"}, "nothing to change"},
-		{[]string{"model", "edit", "openrouter/nope", "--family", "f"}, "model not found: \"openrouter/nope\" in the registry (`wt model list` shows every id)"},
+		{[]string{"model", "edit", "openrouter/nope", "--family", "f"}, "model not found: \"openrouter/nope\" in the registry (`wt-model model list` shows every id)"},
 		{[]string{"model", "edit", "openrouter/qwen", "--location", "mars"}, `location must be local or cloud, got "mars"`},
 		{[]string{"model", "rm", "openrouter/qwen", "openrouter/nope", "--yes"}, `model not found: "openrouter/nope"`},
 		{[]string{"model", "rm"}, "requires at least 1 arg(s)"},
 	}
 	for _, f := range failures {
-		if _, err := runWT(t, f.args...); err == nil || !strings.Contains(err.Error(), f.want) {
+		if _, err := runWTModelOn(t, h, f.args...); err == nil || !strings.Contains(err.Error(), f.want) {
 			t.Errorf("wt %s: err = %v, want it to contain %q", strings.Join(f.args, " "), err, f.want)
 		}
 	}
@@ -284,8 +179,8 @@ func TestModelCommandsThroughTheCommandLine(t *testing.T) {
 		t.Errorf("syncs = %d, want none for a failed command", *syncs)
 	}
 
-	asked := stubConfirmRemove(t, false)
-	if _, err := runWT(t, "model", "rm", "ollama/gemma4:9b"); err == nil || !strings.Contains(err.Error(), "approval missing: declined; nothing was removed") || exitcode.Of(err) != 3 {
+	asked := stubConfirmRemove(h, false)
+	if _, err := runWTModelOn(t, h, "model", "rm", "ollama/gemma4:9b"); err == nil || !strings.Contains(err.Error(), "approval missing: declined; nothing was removed") || exitcode.Of(err) != 3 {
 		t.Errorf("declined rm: err = %v (exit %d), want a cancellation, exit 3", err, exitcode.Of(err))
 	}
 	if want := "Remove 1 model(s) from the registry (ollama/gemma4:9b)? Weights are not deleted."; *asked != want {
@@ -295,7 +190,7 @@ func TestModelCommandsThroughTheCommandLine(t *testing.T) {
 		t.Error("a declined removal changed the registry")
 	}
 
-	out, err = runWT(t, "model", "rm", "ollama/gemma4:9b", "openrouter/qwen", "ollama/gemma4:9b", "--yes")
+	out, err = runWTModelOn(t, h, "model", "rm", "ollama/gemma4:9b", "openrouter/qwen", "ollama/gemma4:9b", "--yes")
 	want := "removed model: ollama/gemma4:9b\n  still pulled in ollama (`ollama rm gemma4:9b` deletes it)\nremoved model: openrouter/qwen\n"
 	if err != nil || out != want {
 		t.Fatalf("rm = %q, %v\nwant %q", out, err, want)
@@ -308,27 +203,28 @@ func TestModelCommandsThroughTheCommandLine(t *testing.T) {
 	}
 }
 
-// TestModelRmWithoutATerminalNeedsYes verifies `wt model rm` in a script
+// TestModelRmWithoutATerminalNeedsYes verifies `wt-model model rm` in a script
 // (no terminal to ask on) refuses, names --yes and removes nothing, instead
 // of removing unasked or hanging. The terminal is taken away through the
 // openTTY seam, so the refusal is tested on a developer's machine too, where
 // the test run has one.
 func TestModelRmWithoutATerminalNeedsYes(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, writeRegistry)
-	syncs := stubRouteSync(t, "")
-	oldTTY, oldConfirm := openTTY, confirmRemove
-	openTTY = func() (*os.File, error) { return nil, errors.New("no tty") }
-	confirmRemove = promptStop // the real prompt; TestMain fails the seam by default
-	t.Cleanup(func() { openTTY, confirmRemove = oldTTY, oldConfirm })
+	syncs := stubRouteSync(h, "")
+	h.openTTY = func() (*os.File, error) { return nil, errors.New("no tty") }
+	h.confirmRemove = h.realConfirmRemove // the real prompt; testHost fails the seam by default
 
 	var out, errOut bytes.Buffer
-	err := runModelRm(&out, &errOut, nil, []string{"openrouter/a--b"}, false)
+	err := h.runModelRm(&out, &errOut, nil, []string{"openrouter/a--b"}, false)
 	want := "approval missing: pass --yes (there is no terminal to ask); nothing was removed"
 	if err == nil || err.Error() != want || exitcode.Of(err) != 3 {
 		t.Fatalf("err = %v (exit %d), want %q and exit 3", err, exitcode.Of(err), want)
 	}
-	if line := reportLine(err); line != "wt: "+want+"\n" {
-		t.Errorf("reported %q, want one line", line)
+	var line bytes.Buffer
+	exitcode.Report("wt-model", err, &line)
+	if line.String() != "wt-model: "+want+"\n" {
+		t.Errorf("reported %q, want one line", line.String())
 	}
 	if got := mustRead(t, registry); got != writeRegistry || *syncs != 0 || out.Len() != 0 {
 		t.Errorf("a refused removal must change nothing: syncs = %d, stdout = %q", *syncs, out.String())
@@ -340,10 +236,11 @@ func TestModelRmWithoutATerminalNeedsYes(t *testing.T) {
 // a bad row is one of the ways to repair a registry, and it must not need a
 // registry that already loads.
 func TestModelRmStillWorksWhenTheConfigDoesNotLoad(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, writeRegistry)
-	stubRouteSync(t, "")
+	stubRouteSync(h, "")
 	var out, errOut bytes.Buffer
-	if err := runModelRm(&out, &errOut, nil, []string{"ollama/gemma4:9b"}, true); err != nil {
+	if err := h.runModelRm(&out, &errOut, nil, []string{"ollama/gemma4:9b"}, true); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != "removed model: ollama/gemma4:9b\n" {
@@ -354,50 +251,21 @@ func TestModelRmStillWorksWhenTheConfigDoesNotLoad(t *testing.T) {
 	}
 }
 
-// redirectedRegistry is a throwaway home whose registry lives under scratch/,
-// away from the default registry path, with the default config.yaml beside
-// it holding an empty model_list. WT_LITELLM_CONFIG is unset, the route sync
-// is the real one and ollama answers its probe with nothing pulled, so the
-// sync has no provider to warn about. It returns the registry's path and the
-// default config.yaml's.
-func redirectedRegistry(t *testing.T, content string) (registry, defaultYAML string) {
-	t.Helper()
-	home := t.TempDir()
-	registry = filepath.Join(home, "scratch", "registry.toml")
-	defaultYAML = filepath.Join(home, ".config", "litellm", "config.yaml")
-	for path, body := range map[string]string{registry: content, defaultYAML: "model_list: []\n"} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("WT_REGISTRY", registry)
-	t.Setenv("WT_LITELLM_CONFIG", "")
-	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
-	t.Setenv("OPENROUTER_API_KEY", "sk-test-not-a-key")
-	realRouteSync(t)
-	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
-	return registry, defaultYAML
-}
-
 // TestModelWritesUnderARedirectedRegistry is the scratch-registry safety
 // test for add, edit and rm. With the registry redirected the write always
 // succeeds. LiteLLM's config.yaml follows neither registry variable, so
 // unnamed, the default file must not be touched and the user is told why;
 // named, that file is the one synced. The exit status is 0 either way.
 func TestModelWritesUnderARedirectedRegistry(t *testing.T) {
-	setup := func(t *testing.T) (registry, defaultYAML string) {
-		registry, defaultYAML = redirectedRegistry(t, writeRegistry)
-		stubSeedEnv(t, config.SeedEnv{})
-		return registry, defaultYAML
+	setup := func(t *testing.T) (h *host, registry, defaultYAML string) {
+		h = testHost()
+		registry, defaultYAML = redirectedRegistry(t, h, writeRegistry)
+		stubSeedEnv(h, config.SeedEnv{})
+		return h, registry, defaultYAML
 	}
 	verbs := []struct {
 		name string
-		run  func(out, errOut *bytes.Buffer) error
+		run  func(h *host, out, errOut *bytes.Buffer) error
 		in   string // what the registry holds afterwards
 		out  string // and what it no longer does
 		// routes are the model_names the synced config.yaml must hold, and
@@ -405,21 +273,21 @@ func TestModelWritesUnderARedirectedRegistry(t *testing.T) {
 		routes  []string
 		noRoute string
 	}{
-		{"add", func(out, errOut *bytes.Buffer) error {
-			return runModelAdd(out, errOut, nil, modeladmin.AddRequest{ProviderID: "openrouter", ModelName: "c/d", Fields: modeladmin.Fields{Family: sp("f")}})
+		{"add", func(h *host, out, errOut *bytes.Buffer) error {
+			return h.runModelAdd(out, errOut, nil, modeladmin.AddRequest{ProviderID: "openrouter", ModelName: "c/d", Fields: modeladmin.Fields{Family: sp("f")}})
 		}, `id = "openrouter/c--d"`, "", []string{"openrouter/a--b", "openrouter/c--d"}, ""},
-		{"edit", func(out, errOut *bytes.Buffer) error {
-			return runModelEdit(out, errOut, "openrouter/a--b", modeladmin.Fields{Family: sp("renamed")})
+		{"edit", func(h *host, out, errOut *bytes.Buffer) error {
+			return h.runModelEdit(out, errOut, "openrouter/a--b", modeladmin.Fields{Family: sp("renamed")})
 		}, `family = "renamed"`, "", []string{"openrouter/a--b"}, "openrouter/c--d"},
-		{"rm", func(out, errOut *bytes.Buffer) error {
-			return runModelRm(out, errOut, nil, []string{"openrouter/a--b"}, true)
+		{"rm", func(h *host, out, errOut *bytes.Buffer) error {
+			return h.runModelRm(out, errOut, nil, []string{"openrouter/a--b"}, true)
 		}, `id = "ollama/gemma4:9b"`, `id = "openrouter/a--b"`, nil, "openrouter/a--b"},
 	}
 	for _, v := range verbs {
 		t.Run(v.name+": config.yaml not named", func(t *testing.T) {
-			registry, defaultYAML := setup(t)
+			h, registry, defaultYAML := setup(t)
 			var out, errOut bytes.Buffer
-			if err := v.run(&out, &errOut); err != nil {
+			if err := v.run(h, &out, &errOut); err != nil {
 				t.Fatalf("the registry write succeeded, so the command must too: %v", err)
 			}
 			got := mustRead(t, registry)
@@ -437,14 +305,14 @@ func TestModelWritesUnderARedirectedRegistry(t *testing.T) {
 			}
 		})
 		t.Run(v.name+": config.yaml named", func(t *testing.T) {
-			registry, defaultYAML := setup(t)
+			h, registry, defaultYAML := setup(t)
 			named := filepath.Join(t.TempDir(), "scratch-config.yaml")
 			if err := os.WriteFile(named, []byte("model_list: []\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("WT_LITELLM_CONFIG", named)
 			var out, errOut bytes.Buffer
-			if err := v.run(&out, &errOut); err != nil {
+			if err := v.run(h, &out, &errOut); err != nil {
 				t.Fatal(err)
 			}
 			if errOut.Len() != 0 {
@@ -480,11 +348,12 @@ func TestModelWritesUnderARedirectedRegistry(t *testing.T) {
 // just answered "yes, remove these" must not then be told one of them was
 // never there. Nothing is removed, and no sync runs.
 func TestModelRmRefusesAnUnknownIdBeforeItAsks(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, writeRegistry)
-	syncs := stubRouteSync(t, "")
-	asked := stubConfirmRemove(t, true)
-	_, err := runWT(t, "model", "rm", "openrouter/a--b", "openrouter/nope")
-	if want := "model not found: \"openrouter/nope\" in the registry (`wt model list` shows every id)"; err == nil || err.Error() != want {
+	syncs := stubRouteSync(h, "")
+	asked := stubConfirmRemove(h, true)
+	_, err := runWTModelOn(t, h, "model", "rm", "openrouter/a--b", "openrouter/nope")
+	if want := "model not found: \"openrouter/nope\" in the registry (`wt-model model list` shows every id)"; err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
 	}
 	if *asked != "" {
@@ -495,22 +364,22 @@ func TestModelRmRefusesAnUnknownIdBeforeItAsks(t *testing.T) {
 	}
 }
 
-// TestModelRmCommandRunsWhenTheConfigDidNotLoad runs `wt model rm` through
-// its command with a config load error on the app, as newApp leaves it (an
+// TestModelRmCommandRunsWhenTheConfigDidNotLoad runs `wt-model model rm` through
+// its command with a config load error on the host, as loadHost leaves it (an
 // empty Config standing in for the one that could not be read). The command
 // must go to the registry itself and not judge the ids by that empty Config:
 // removing a row is one way to repair a registry wt cannot load, and without
 // the command's own nil-the-config step every id would be "not found".
 func TestModelRmCommandRunsWhenTheConfigDidNotLoad(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, writeRegistry)
-	stubRouteSync(t, "")
-	old := probeInventory
-	probeInventory = func(*config.Config) localmodels.Snapshot {
+	stubRouteSync(h, "")
+	h.probeInventory = func(*config.Config) localmodels.Snapshot {
 		t.Error("the providers were probed over a config that did not load")
 		return localmodels.Snapshot{}
 	}
-	t.Cleanup(func() { probeInventory = old })
-	c := modelRmCmd(&app{hostSet: true, hostCfg: &config.Config{DefaultTag: "code"}, hostLoadErr: errors.New("config.toml: not valid TOML")})
+	h.hostSet, h.hostCfg, h.hostLoadErr = true, &config.Config{DefaultTag: "code"}, errors.New("config.toml: not valid TOML")
+	c := modelRmCmd(h)
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
@@ -528,7 +397,7 @@ func TestModelRmCommandRunsWhenTheConfigDidNotLoad(t *testing.T) {
 
 // dupWriteRegistry is writeRegistry with a second row under the id
 // "ollama/gemma4:9b", held by openrouter: wt's validation refuses it
-// ("duplicate model id"), and `wt model edit` and `wt model rm` are the
+// ("duplicate model id"), and `wt-model model edit` and `wt-model model rm` are the
 // commands still let in to repair it.
 const dupWriteRegistry = writeRegistry + `
 [[models]]
@@ -544,16 +413,17 @@ func dupIDRefusal(registry string) string {
 	return `model "ollama/gemma4:9b" is in the registry twice (providers ollama, openrouter); wt cannot tell which one you mean — fix the entry in ` + registry
 }
 
-// TestModelEditRefusesAnIDTheRegistryHoldsTwice runs `wt model edit` on an
+// TestModelEditRefusesAnIDTheRegistryHoldsTwice runs `wt-model model edit` on an
 // id two registry rows carry: it fails (exit 1) naming both providers and
 // the file to repair, leaves the registry byte for byte as it was, and runs
 // no route sync. Before this the edit silently changed the first row — the
 // user could not choose the row, and was told "updated model" about an id
 // that names two.
 func TestModelEditRefusesAnIDTheRegistryHoldsTwice(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, dupWriteRegistry)
-	syncs := stubRouteSync(t, "")
-	out, err := runWT(t, "model", "edit", "ollama/gemma4:9b", "--tags", "code")
+	syncs := stubRouteSync(h, "")
+	out, err := runWTModelOn(t, h, "model", "edit", "ollama/gemma4:9b", "--tags", "code")
 	if want := dupIDRefusal(registry); err == nil || err.Error() != want {
 		t.Fatalf("err:\n got %v\nwant %s", err, want)
 	}
@@ -571,7 +441,7 @@ func TestModelEditRefusesAnIDTheRegistryHoldsTwice(t *testing.T) {
 	}
 	// The row beside the duplicate is still editable: the repair commands
 	// must keep working on the rows that are not the problem.
-	if _, err := runWT(t, "model", "edit", "openrouter/a--b", "--tags", "code"); err != nil {
+	if _, err := runWTModelOn(t, h, "model", "edit", "openrouter/a--b", "--tags", "code"); err != nil {
 		t.Errorf("edit of a row with its own id: %v", err)
 	}
 	if *syncs != 1 {
@@ -579,22 +449,23 @@ func TestModelEditRefusesAnIDTheRegistryHoldsTwice(t *testing.T) {
 	}
 }
 
-// TestModelRmRefusesAnIDTheRegistryHoldsTwice runs `wt model rm` with an id
+// TestModelRmRefusesAnIDTheRegistryHoldsTwice runs `wt-model model rm` with an id
 // two registry rows carry, alone and beside a good id: it is refused before
 // the confirmation question — as an id that is not there is — with nothing
 // removed, the registry byte for byte as it was, and no route sync. Before
 // this the first row was removed, whichever provider's it was, and the
 // command reported the id as gone while the other row still held it.
 func TestModelRmRefusesAnIDTheRegistryHoldsTwice(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, dupWriteRegistry)
-	syncs := stubRouteSync(t, "")
-	asked := stubConfirmRemove(t, true)
+	syncs := stubRouteSync(h, "")
+	asked := stubConfirmRemove(h, true)
 	for _, args := range [][]string{
 		{"model", "rm", "ollama/gemma4:9b"},
 		{"model", "rm", "ollama/gemma4:9b", "--yes"},
 		{"model", "rm", "openrouter/a--b", "ollama/gemma4:9b", "--yes"},
 	} {
-		out, err := runWT(t, args...)
+		out, err := runWTModelOn(t, h, args...)
 		if want := dupIDRefusal(registry); err == nil || err.Error() != want {
 			t.Fatalf("%v: err:\n got %v\nwant %s", args, err, want)
 		}
@@ -620,10 +491,11 @@ func TestModelRmRefusesAnIDTheRegistryHoldsTwice(t *testing.T) {
 // one. The removal path that runs on a config that does not load is the one
 // a user repairing a registry is most likely to be on.
 func TestModelRmRefusesADuplicatedIDWhenTheConfigDidNotLoad(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, dupWriteRegistry)
-	syncs := stubRouteSync(t, "")
+	syncs := stubRouteSync(h, "")
 	var out, errOut bytes.Buffer
-	err := runModelRm(&out, &errOut, nil, []string{"openrouter/a--b", "ollama/gemma4:9b"}, true)
+	err := h.runModelRm(&out, &errOut, nil, []string{"openrouter/a--b", "ollama/gemma4:9b"}, true)
 	if want := dupIDRefusal(registry); err == nil || err.Error() != want {
 		t.Fatalf("err:\n got %v\nwant %s", err, want)
 	}
@@ -632,14 +504,15 @@ func TestModelRmRefusesADuplicatedIDWhenTheConfigDidNotLoad(t *testing.T) {
 	}
 }
 
-// TestModelAddOfADuplicatedIDStillSaysItExists verifies `wt model add` of an
+// TestModelAddOfADuplicatedIDStillSaysItExists verifies `wt-model model add` of an
 // id the registry already holds twice answers "already exists", as for an id
 // it holds once: the add is not looking for a row, so "wt cannot tell which
 // one you mean" would be the wrong thing to say.
 func TestModelAddOfADuplicatedIDStillSaysItExists(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, dupWriteRegistry)
-	syncs := stubRouteSync(t, "")
-	_, err := runWT(t, "model", "add", "openrouter", "x/y", "--family", "f", "--id", "ollama/gemma4:9b")
+	syncs := stubRouteSync(h, "")
+	_, err := runWTModelOn(t, h, "model", "add", "openrouter", "x/y", "--family", "f", "--id", "ollama/gemma4:9b")
 	if !errors.Is(err, config.ErrModelExists) || errors.Is(err, config.ErrModelAmbiguous) {
 		t.Fatalf("err = %v, want config.ErrModelExists", err)
 	}
@@ -648,16 +521,17 @@ func TestModelAddOfADuplicatedIDStillSaysItExists(t *testing.T) {
 	}
 }
 
-// TestModelAddAPairing verifies `wt model add mlx_lm_server <target> --draft
+// TestModelAddAPairing verifies `wt-model model add mlx_lm_server <target> --draft
 // <draft>` registers the pairing and prints the llmbench command that starts
 // it, since wt has no engine for one, and that --draft on any other provider
 // is refused. Without the command the user has a registry row and no way to
 // find out how to run it.
 func TestModelAddAPairing(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, writeRegistry)
-	stubSeedEnv(t, config.SeedEnv{})
-	stubRouteSync(t, "")
-	out, err := runWT(t, "model", "add", "mlx_lm_server", "mlx-community/Qwen3.8-27B-4bit", "--draft", "mlx-community/Qwen3.8-4B-4bit", "--family", "qwen3.8")
+	stubSeedEnv(h, config.SeedEnv{})
+	stubRouteSync(h, "")
+	out, err := runWTModelOn(t, h, "model", "add", "mlx_lm_server", "mlx-community/Qwen3.8-27B-4bit", "--draft", "mlx-community/Qwen3.8-4B-4bit", "--family", "qwen3.8")
 	want := "added model: mlx_lm_server/Qwen3.8-27B-4bit+draft-Qwen3.8-4B-4bit\n" +
 		"start it with: llmbench provider isolate --solo mlx_lm_server mlx-community/Qwen3.8-27B-4bit --draft mlx-community/Qwen3.8-4B-4bit\n" +
 		"added provider: mlx_lm_server\n"
@@ -670,7 +544,7 @@ func TestModelAddAPairing(t *testing.T) {
 	}
 	// The command names the sides as the row holds them: trimmed.
 	var out2, errOut2 bytes.Buffer
-	if err := runModelAdd(&out2, &errOut2, nil, modeladmin.AddRequest{ProviderID: "mlx_lm_server", ModelName: " org/T ", Draft: " ~/d/D ", Fields: modeladmin.Fields{Family: sp("f")}}); err != nil {
+	if err := h.runModelAdd(&out2, &errOut2, nil, modeladmin.AddRequest{ProviderID: "mlx_lm_server", ModelName: " org/T ", Draft: " ~/d/D ", Fields: modeladmin.Fields{Family: sp("f")}}); err != nil {
 		t.Fatal(err)
 	}
 	if want := "added model: mlx_lm_server/T+draft-D\nstart it with: llmbench provider isolate --solo mlx_lm_server org/T --draft ~/d/D\n"; out2.String() != want {
@@ -690,7 +564,7 @@ func TestModelAddAPairing(t *testing.T) {
 		t.Fatal(err)
 	}
 	absT, absD := filepath.Join(cwd, "T"), filepath.Join(filepath.Dir(cwd), "D")
-	out, err = runWT(t, "model", "add", "mlx_lm_server", "./T", "--draft", "../D/", "--family", "f", "--id", "mlx_lm_server/relative")
+	out, err = runWTModelOn(t, h, "model", "add", "mlx_lm_server", "./T", "--draft", "../D/", "--family", "f", "--id", "mlx_lm_server/relative")
 	if want := "added model: mlx_lm_server/relative\nstart it with: llmbench provider isolate --solo mlx_lm_server " + absT + " --draft " + absD + "\n"; err != nil || out != want {
 		t.Errorf("add with ./ and ../ sides = %q, %v\nwant %q", out, err, want)
 	}
@@ -699,17 +573,17 @@ func TestModelAddAPairing(t *testing.T) {
 	}
 	// The same two directories spelled the same way again are the same
 	// pairing, since both spellings are compared as the paths they name.
-	if _, err := runWT(t, "model", "add", "mlx_lm_server", "./T/", "--draft", "../work/../D", "--family", "f", "--id", "mlx_lm_server/again"); err == nil || !strings.Contains(err.Error(), "already registers this pairing") {
+	if _, err := runWTModelOn(t, h, "model", "add", "mlx_lm_server", "./T/", "--draft", "../work/../D", "--family", "f", "--id", "mlx_lm_server/again"); err == nil || !strings.Contains(err.Error(), "already registers this pairing") {
 		t.Errorf("the same ./ and ../ sides again: err = %v, want it refused as the same pairing", err)
 	}
 	// A side with no such prefix is a repo id even when a directory of that
 	// name is here; the add says what it took it for, on stderr, and how to
 	// register the directory instead. A repo id that is no directory here
 	// (every add above) gets no note.
-	out, err = runWT(t, "model", "add", "mlx_lm_server", "quant/Big-4bit", "--draft", "org/D", "--family", "f")
+	out, err = runWTModelOn(t, h, "model", "add", "mlx_lm_server", "quant/Big-4bit", "--draft", "org/D", "--family", "f")
 	if want := "added model: mlx_lm_server/Big-4bit+draft-D\n" +
 		"start it with: llmbench provider isolate --solo mlx_lm_server quant/Big-4bit --draft org/D\n" +
-		"note: quant/Big-4bit is also a directory here; it was registered as a Hugging Face repo — to register the directory, run `wt model rm mlx_lm_server/Big-4bit+draft-D` and add the pairing again with ./quant/Big-4bit\n"; err != nil || out != want {
+		"note: quant/Big-4bit is also a directory here; it was registered as a Hugging Face repo — to register the directory, run `wt-model model rm mlx_lm_server/Big-4bit+draft-D` and add the pairing again with ./quant/Big-4bit\n"; err != nil || out != want {
 		t.Errorf("add of a bare relative directory = %q, %v\nwant %q", out, err, want)
 	}
 	if got := mustRead(t, registry); !strings.Contains(got, "[models.fetch]\nrepo = \"quant/Big-4bit\"\n") {
@@ -721,7 +595,7 @@ func TestModelAddAPairing(t *testing.T) {
 		{"model", "add", "mlx_lm_server", "org/target", "--family", "f"},
 		{"model", "add", "ollama", "qwen3:8b", "--family", "f", "--draft", "org/d"},
 	} {
-		if _, err := runWT(t, args...); err == nil || !strings.Contains(err.Error(), "--draft") {
+		if _, err := runWTModelOn(t, h, args...); err == nil || !strings.Contains(err.Error(), "--draft") {
 			t.Errorf("wt %s: err = %v, want a refusal about --draft", strings.Join(args, " "), err)
 		}
 	}
@@ -730,18 +604,19 @@ func TestModelAddAPairing(t *testing.T) {
 	}
 }
 
-// TestModelEditAndRmOfAPairing verifies a pairing `wt model add` wrote is
+// TestModelEditAndRmOfAPairing verifies a pairing `wt-model model add` wrote is
 // edited and removed like any model: `edit` changes the metadata it is given
 // and leaves [models.fetch] and [models.draft] byte for byte (llmbench starts
 // the server from those two tables), and `rm` names both sides as untouched,
 // since wt deletes no weights and a local directory the user quantized for
 // hours is one of them.
 func TestModelEditAndRmOfAPairing(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, writeRegistry)
-	stubSeedEnv(t, config.SeedEnv{})
-	stubRouteSync(t, "")
+	stubSeedEnv(h, config.SeedEnv{})
+	stubRouteSync(h, "")
 	const id = "mlx_lm_server/T-4bit+draft-D-4bit"
-	if _, err := runWT(t, "model", "add", "mlx_lm_server", "/quant/T-4bit", "--draft", "~/models/D-4bit", "--family", "qwen3.8"); err != nil {
+	if _, err := runWTModelOn(t, h, "model", "add", "mlx_lm_server", "/quant/T-4bit", "--draft", "~/models/D-4bit", "--family", "qwen3.8"); err != nil {
 		t.Fatal(err)
 	}
 	const sides = "[models.fetch]\nlocal_path = \"/quant/T-4bit\"\n\n[models.draft]\nlocal_path = \"~/models/D-4bit\"\n"
@@ -749,7 +624,7 @@ func TestModelEditAndRmOfAPairing(t *testing.T) {
 	if !strings.Contains(added, sides) {
 		t.Fatalf("the pairing's two sides are not in the registry:\n%s", added)
 	}
-	out, err := runWT(t, "model", "edit", id, "--tags", "code", "--family", "qwen")
+	out, err := runWTModelOn(t, h, "model", "edit", id, "--tags", "code", "--family", "qwen")
 	if err != nil || out != "updated model: "+id+"\n" {
 		t.Fatalf("edit = %q, %v", out, err)
 	}
@@ -758,7 +633,7 @@ func TestModelEditAndRmOfAPairing(t *testing.T) {
 	if got := mustRead(t, registry); got != want || !strings.Contains(got, sides) {
 		t.Errorf("registry after the edit =\n%s\nwant only family and tags changed:\n%s", got, want)
 	}
-	out, err = runWT(t, "model", "rm", id, "--yes")
+	out, err = runWTModelOn(t, h, "model", "rm", id, "--yes")
 	if want := "removed model: " + id + "\n  target /quant/T-4bit and draft ~/models/D-4bit are untouched\n"; err != nil || out != want {
 		t.Errorf("rm = %q, %v\nwant %q", out, err, want)
 	}
@@ -767,30 +642,31 @@ func TestModelEditAndRmOfAPairing(t *testing.T) {
 	}
 }
 
-// TestModelEditSourceFlag runs `wt model edit --source manual` on an
-// openrouter row and checks the registry holds the mark, and that `wt model
-// add` has no --source flag (add sets manual itself). The flag is how a user
+// TestModelEditSourceFlag runs `wt-model model edit --source manual` on an
+// openrouter row and checks the registry holds the mark, and that `wt-model
+// model add` has no --source flag (add sets manual itself). The flag is how a user
 // protects a model added before cloud-sync learned the mark; offering it on
 // add too would let a sync-owned row be created already curated by hand.
 func TestModelEditSourceFlag(t *testing.T) {
+	h := testHost()
 	registry := modelHome(t, dupWriteRegistry)
-	stubRouteSync(t, "")
-	if _, err := runWT(t, "model", "edit", "openrouter/a--b", "--source", "manual"); err != nil {
+	stubRouteSync(h, "")
+	if _, err := runWTModelOn(t, h, "model", "edit", "openrouter/a--b", "--source", "manual"); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustRead(t, registry); !strings.Contains(got, `source = "manual"`) {
 		t.Errorf("registry has no source = \"manual\":\n%s", got)
 	}
-	if _, err := runWT(t, "model", "add", "openrouter", "x/y", "--family", "f", "--source", "manual"); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+	if _, err := runWTModelOn(t, h, "model", "add", "openrouter", "x/y", "--family", "f", "--source", "manual"); err == nil || !strings.Contains(err.Error(), "unknown flag") {
 		t.Errorf("model add --source: err = %v, want an unknown-flag error", err)
 	}
 }
 
-// runEditCmd runs `wt model edit` through cobra, the way a user types it, so
+// runEditCmd runs `wt-model model edit` through cobra, the way a user types it, so
 // the flag parsing is part of what is tested.
-func runEditCmd(t *testing.T, args ...string) (stdout string, err error) {
+func runEditCmd(t *testing.T, h *host, args ...string) (stdout string, err error) {
 	t.Helper()
-	cmd := modelEditCmd(nil)
+	cmd := modelEditCmd(h)
 	var out bytes.Buffer
 	cmd.SetArgs(args)
 	cmd.SetOut(&out)
@@ -807,10 +683,11 @@ func runEditCmd(t *testing.T, args ...string) (stdout string, err error) {
 // removes them; the two flags together are refused; and a refused value (a
 // flag wt sets itself) is named and writes nothing.
 func TestModelEditServeArgFlags(t *testing.T) {
-	registry, _ := redirectedRegistry(t, writeRegistry)
-	stubSeedEnv(t, config.SeedEnv{})
+	h := testHost()
+	registry, _ := redirectedRegistry(t, h, writeRegistry)
+	stubSeedEnv(h, config.SeedEnv{})
 	var out, errOut bytes.Buffer
-	if err := runModelAdd(&out, &errOut, nil, modeladmin.AddRequest{ProviderID: "mtplx", ModelName: "Org/T", Fields: modeladmin.Fields{Family: sp("f")}}); err != nil {
+	if err := h.runModelAdd(&out, &errOut, nil, modeladmin.AddRequest{ProviderID: "mtplx", ModelName: "Org/T", Fields: modeladmin.Fields{Family: sp("f")}}); err != nil {
 		t.Fatal(err)
 	}
 	read := func() []string {
@@ -825,10 +702,10 @@ func TestModelEditServeArgFlags(t *testing.T) {
 		"separate values": {"mtplx/Org/T", "--serve-arg", "--profile", "--serve-arg", "turbo"},
 		"equals form":     {"mtplx/Org/T", "--serve-arg=--profile", "--serve-arg=turbo"},
 	} {
-		if _, err := runEditCmd(t, "mtplx/Org/T", "--clear-serve-args"); err != nil {
+		if _, err := runEditCmd(t, h, "mtplx/Org/T", "--clear-serve-args"); err != nil {
 			t.Fatal(err)
 		}
-		stdout, err := runEditCmd(t, args...)
+		stdout, err := runEditCmd(t, h, args...)
 		if err != nil || !slices.Equal(read(), []string{"--profile", "turbo"}) {
 			t.Errorf("%s: err = %v, serve_args = %v, want [--profile turbo]", name, err, read())
 		}
@@ -837,17 +714,17 @@ func TestModelEditServeArgFlags(t *testing.T) {
 		}
 	}
 
-	if stdout, err := runEditCmd(t, "mtplx/Org/T", "--clear-serve-args"); err != nil || read() != nil || !strings.Contains(stdout, "note: serve_args apply") {
+	if stdout, err := runEditCmd(t, h, "mtplx/Org/T", "--clear-serve-args"); err != nil || read() != nil || !strings.Contains(stdout, "note: serve_args apply") {
 		t.Errorf("--clear-serve-args: err = %v, serve_args = %v, output %q", err, read(), stdout)
 	}
-	if _, err := runEditCmd(t, "mtplx/Org/T", "--serve-arg", "--x", "--clear-serve-args"); err == nil || !strings.Contains(err.Error(), "contradict") {
+	if _, err := runEditCmd(t, h, "mtplx/Org/T", "--serve-arg", "--x", "--clear-serve-args"); err == nil || !strings.Contains(err.Error(), "contradict") {
 		t.Errorf("both flags: err = %v, want them refused as contradictory", err)
 	}
 	before := mustRead(t, registry)
-	if _, err := runEditCmd(t, "mtplx/Org/T", "--serve-arg=--port", "--serve-arg=9"); err == nil || !strings.Contains(err.Error(), "serve_args names --port, which wt sets itself") || mustRead(t, registry) != before {
+	if _, err := runEditCmd(t, h, "mtplx/Org/T", "--serve-arg=--port", "--serve-arg=9"); err == nil || !strings.Contains(err.Error(), "serve_args names --port, which wt sets itself") || mustRead(t, registry) != before {
 		t.Errorf("an owned flag: err = %v, registry changed: %v", err, mustRead(t, registry) != before)
 	}
-	if _, err := runEditCmd(t, "mtplx/Org/T"); err == nil || !strings.Contains(err.Error(), "--serve-arg") {
+	if _, err := runEditCmd(t, h, "mtplx/Org/T"); err == nil || !strings.Contains(err.Error(), "--serve-arg") {
 		t.Errorf("no change given: err = %v, want the message to name --serve-arg", err)
 	}
 }
@@ -888,12 +765,13 @@ func writeAgentsToml(t *testing.T, registry string) string {
 func TestSushiAddListsSushiForClaudeAndPi(t *testing.T) {
 	sushi := modeladmin.AddRequest{ProviderID: "sushi", ModelName: "beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw", Fields: modeladmin.Fields{Family: sp("qwen3.8")}}
 	t.Run("sushi add", func(t *testing.T) {
+		h := testHost()
 		registry := modelHome(t, "")
-		stubSeedEnv(t, config.SeedEnv{})
-		stubRouteSync(t, "")
+		stubSeedEnv(h, config.SeedEnv{})
+		stubRouteSync(h, "")
 		cfgPath := writeAgentsToml(t, registry)
 		var out, errOut bytes.Buffer
-		if err := runModelAdd(&out, &errOut, nil, sushi); err != nil {
+		if err := h.runModelAdd(&out, &errOut, nil, sushi); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.Contains(out.String(), "added sushi to supported_providers of: claude\n") || errOut.Len() != 0 {
@@ -908,19 +786,20 @@ func TestSushiAddListsSushiForClaudeAndPi(t *testing.T) {
 		}
 	})
 	t.Run("second sushi add changes nothing", func(t *testing.T) {
+		h := testHost()
 		registry := modelHome(t, "")
-		stubSeedEnv(t, config.SeedEnv{})
-		stubRouteSync(t, "")
+		stubSeedEnv(h, config.SeedEnv{})
+		stubRouteSync(h, "")
 		cfgPath := writeAgentsToml(t, registry)
 		var out, errOut bytes.Buffer
-		if err := runModelAdd(&out, &errOut, nil, sushi); err != nil {
+		if err := h.runModelAdd(&out, &errOut, nil, sushi); err != nil {
 			t.Fatal(err)
 		}
 		before := mustRead(t, cfgPath)
 		out.Reset()
 		other := sushi
 		other.ModelName = "beamster/Other-Pack"
-		if err := runModelAdd(&out, &errOut, nil, other); err != nil {
+		if err := h.runModelAdd(&out, &errOut, nil, other); err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(out.String(), "supported_providers") || mustRead(t, cfgPath) != before {
@@ -928,13 +807,14 @@ func TestSushiAddListsSushiForClaudeAndPi(t *testing.T) {
 		}
 	})
 	t.Run("another provider", func(t *testing.T) {
+		h := testHost()
 		registry := modelHome(t, "")
-		stubSeedEnv(t, config.SeedEnv{})
-		stubRouteSync(t, "")
+		stubSeedEnv(h, config.SeedEnv{})
+		stubRouteSync(h, "")
 		cfgPath := writeAgentsToml(t, registry)
 		var out, errOut bytes.Buffer
 		req := modeladmin.AddRequest{ProviderID: "omlx", ModelName: "Qwen3.8-27B-4bit", Fields: modeladmin.Fields{Family: sp("qwen3.8")}}
-		if err := runModelAdd(&out, &errOut, nil, req); err != nil {
+		if err := h.runModelAdd(&out, &errOut, nil, req); err != nil {
 			t.Fatal(err)
 		}
 		if mustRead(t, cfgPath) != agentsToml {
@@ -942,11 +822,12 @@ func TestSushiAddListsSushiForClaudeAndPi(t *testing.T) {
 		}
 	})
 	t.Run("no config.toml", func(t *testing.T) {
+		h := testHost()
 		modelHome(t, "")
-		stubSeedEnv(t, config.SeedEnv{})
-		stubRouteSync(t, "")
+		stubSeedEnv(h, config.SeedEnv{})
+		stubRouteSync(h, "")
 		var out, errOut bytes.Buffer
-		if err := runModelAdd(&out, &errOut, nil, sushi); err != nil {
+		if err := h.runModelAdd(&out, &errOut, nil, sushi); err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(out.String(), "supported_providers") || errOut.Len() != 0 {

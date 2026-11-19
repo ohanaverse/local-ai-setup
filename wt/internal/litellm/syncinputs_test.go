@@ -284,7 +284,7 @@ func TestMissingProviderWarningsOrderAndTheLineAlreadySaid(t *testing.T) {
 	}}
 	line := func(id, models string) string {
 		return "provider \"" + id + "\" has no [[providers]] row in " + config.RegistryPath() + ", so wt cannot route " + models +
-			"; add the row (`wt model init` adds the default ones) or fix the provider_id"
+			"; add the row (`wt-model model init` adds the default ones) or fix the provider_id"
 	}
 	got := missingProviderWarnings(cfg, nil)
 	want := []string{line("zeta", "zeta/a, zeta/c"), line("corp", "corp/b"), line("omlx", "omlx/d")}

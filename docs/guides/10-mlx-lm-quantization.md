@@ -4,8 +4,8 @@
 
 Two independent features, both built on the same `mlx_lm.*` tooling bundled inside the omlx Homebrew keg:
 
-- **Local quantization** — `bin/mlx-quantize` wraps `mlx_lm.convert`/`dynamic_quant`/`dwq`; move the output directory into omlx's model directory and `wt model add omlx <directory name> --family <family>` (Step 2), which is the way `wt start` can load it; or leave it where it is and record it as a `local_path` on the `omlx` provider by hand-editing `registry.toml` — a `local_path` entry is one of the few things wt has no command for, and wt lists it but cannot start it from there. wt never runs these tools itself.
-- **`mlx_lm_server` speculative decoding** — a target model + a same-tokenizer draft model served together via `mlx_lm.server --draft-model`, registered with `wt model add mlx_lm_server <target> --draft <draft>` (Step 3), started by llmbench (Step 4) and routed through LiteLLM like any other local provider — wt registers and routes a pairing but has no engine to start one.
+- **Local quantization** — `bin/mlx-quantize` wraps `mlx_lm.convert`/`dynamic_quant`/`dwq`; move the output directory into omlx's model directory and `wt-model model add omlx <directory name> --family <family>` (Step 2), which is the way `wt start` can load it; or leave it where it is and record it as a `local_path` on the `omlx` provider by hand-editing `registry.toml` — a `local_path` entry is one of the few things wt has no command for, and wt lists it but cannot start it from there. wt never runs these tools itself.
+- **`mlx_lm_server` speculative decoding** — a target model + a same-tokenizer draft model served together via `mlx_lm.server --draft-model`, registered with `wt-model model add mlx_lm_server <target> --draft <draft>` (Step 3), started by llmbench (Step 4) and routed through LiteLLM like any other local provider — wt registers and routes a pairing but has no engine to start one.
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ bin/mlx-quantize convert --model mlx-community/some-model -q --mlx-path /tmp/som
 #   Next: register it. Either hand-edit registry.toml — add an [[models]] entry
 #   with provider_id = "omlx" and a [models.fetch] local_path = "/tmp/some-model-4bit"
 #   (absolute path) — or move it into omlx's model directory and run
-#   wt model add omlx <directory name> --family <family>.
+#   wt-model model add omlx <directory name> --family <family>.
 #   See docs/guides/10-mlx-lm-quantization.md.
 
 uv run --directory llmbench llmbench provider isolate mlx_lm_server org/target-repo --draft org/draft-repo --json
@@ -48,25 +48,25 @@ bin/mlx-quantize dwq --model <hf-repo-or-local-path> [--mlx-path <out-dir>]
 
 ### 2. Register a local-path model (feature 1)
 
-Register a `local_path`-sourced omlx model by hand-editing `registry.toml`. This is one of the few entries wt has no command for: `wt model add` takes a model by the name its provider lists, and this one is in a directory of your own. (The other way is to move the directory into omlx's model directory, `~/.omlx/models/` by default, and run `wt model add omlx <directory name> --family <family>`; no `local_path` is needed then.) wt keeps the key, shows the path in `wt model list`, and takes the model's presence from a stat of it. wt does not start it from there: `wt start` loads an omlx model by the name omlx lists, so a `local_path` directory outside omlx's model directory answers `<id> is not on disk — pull or download it first`. To run the model through wt, use the other way (move the directory into omlx's model directory and `wt model add` it). The block:
+Register a `local_path`-sourced omlx model by hand-editing `registry.toml`. This is one of the few entries wt has no command for: `wt-model model add` takes a model by the name its provider lists, and this one is in a directory of your own. (The other way is to move the directory into omlx's model directory, `~/.omlx/models/` by default, and run `wt-model model add omlx <directory name> --family <family>`; no `local_path` is needed then.) wt keeps the key, shows the path in `wt-model model list`, and takes the model's presence from a stat of it. wt does not start it from there: `wt start` loads an omlx model by the name omlx lists, so a `local_path` directory outside omlx's model directory answers `<id> is not on disk — pull or download it first`. To run the model through wt, use the other way (move the directory into omlx's model directory and `wt-model model add` it). The block:
 
 ```toml
 [[models]]
 id = "omlx/<name>"            # e.g. "omlx/some-model-4bit"
 family = "<existing-family>"
 provider_id = "omlx"
-model_name = "<name>"         # basename you'll recognize in wt model list
+model_name = "<name>"         # basename you'll recognize in wt-model model list
 location = "local"
 
 [models.fetch]
 local_path = "/tmp/some-model-4bit"   # absolute path to Step 1's output directory
 ```
 
-Then `wt litellm sync`, because no tool saw the hand edit. `wt model list` shows the entry with its PATH, and STATUS from a stat of that path. To load it, serve the directory with omlx (its model directory is where omlx looks) and run `wt start <id>` — there is no separate routing step: a local model is routed while it runs. From there it's usable through `wt` and `llmbench` exactly like any other omlx model.
+Then `wt litellm sync`, because no tool saw the hand edit. `wt-model model list` shows the entry with its PATH, and STATUS from a stat of that path. To load it, serve the directory with omlx (its model directory is where omlx looks) and run `wt start <id>` — there is no separate routing step: a local model is routed while it runs. From there it's usable through `wt` and `llmbench` exactly like any other omlx model.
 
 ### 3. Register a target+draft pairing (feature 2)
 
-Add the pairing with `wt model add mlx_lm_server <target> --draft <draft> --family <family>`, where each of `<target>` and `<draft>` is an HF repo id or a local path (e.g. Step 1's output). A side is taken for a local path only when it starts with `/`, `~`, `./` or `../` — anything else is a repo id, a bare `mlx_model` or `out/Big-4bit` included — so give Step 1's output as an absolute path or one under `~`; a `./` or `../` path is stored as the absolute path it names from the directory the command ran in ([wt-model.md](../../wt/docs/wt-model.md) has the details). It writes one `[[models]]` block whose `[models.fetch]` names the target and whose `[models.draft]` names the draft, each as a `repo` or a `local_path`, and prints the command that starts the pairing. The block it writes:
+Add the pairing with `wt-model model add mlx_lm_server <target> --draft <draft> --family <family>`, where each of `<target>` and `<draft>` is an HF repo id or a local path (e.g. Step 1's output). A side is taken for a local path only when it starts with `/`, `~`, `./` or `../` — anything else is a repo id, a bare `mlx_model` or `out/Big-4bit` included — so give Step 1's output as an absolute path or one under `~`; a `./` or `../` path is stored as the absolute path it names from the directory the command ran in ([wt-model.md](../../wt/docs/wt-model.md) has the details). It writes one `[[models]]` block whose `[models.fetch]` names the target and whose `[models.draft]` names the draft, each as a `repo` or a `local_path`, and prints the command that starts the pairing. The block it writes:
 
 ```toml
 [[models]]
@@ -91,7 +91,7 @@ The id convention `<target-basename>+draft-<draft-basename>` reads clearly in wt
 uv run --directory llmbench llmbench provider isolate mlx_lm_server <target> --draft <draft>
 ```
 
-`wt model add` and `wt start` print this command with `--solo` (`… provider isolate --solo mlx_lm_server <target> --draft <draft>`), which leaves the other local providers running; without `--solo` the others are stopped first, which is what a benchmark wants.
+`wt-model model add` and `wt start` print this command with `--solo` (`… provider isolate --solo mlx_lm_server <target> --draft <draft>`), which leaves the other local providers running; without `--solo` the others are stopped first, which is what a benchmark wants.
 
 Unlike ollama/omlx, **`mlx_lm_server` has no baked-in default pairing** — you must always pass the target and draft explicitly (`<target>` positional + `--draft <draft>` — note `--draft` is a flag, not a second positional, since the port from the old bash isolation helper — or `LLM_ISOLATE_MLXLM_MODEL`/`LLM_ISOLATE_MLXLM_DRAFT_MODEL`). This isolates on port 8001, backgrounded with a pidfile at `/tmp/local-ai-setup-mlx-lm-server.pid` (log at `/tmp/local-ai-setup-mlx-lm-server.log`) — not a LaunchAgent, since a plist would bake in one fixed pairing and defeat sweeping many pairings per session.
 
@@ -116,7 +116,7 @@ Confirms `mlx_lm_server` was stopped, port 8001 closed, pidfile removed — `llm
 
 ## Gotchas
 
-- **wt never deletes a `local_path` artifact.** A directory from `mlx_lm.convert`/`dwq` is yours (possibly hours of GPU time): `wt model rm` removes the registry entry and prints the path. Clean up failed experiments with a manual `rm -rf`.
+- **wt never deletes a `local_path` artifact.** A directory from `mlx_lm.convert`/`dwq` is yours (possibly hours of GPU time): `wt-model model rm` removes the registry entry and prints the path. Clean up failed experiments with a manual `rm -rf`.
 - **No default target/draft pairing exists anywhere in this repo.** Every `mlx_lm_server` isolate call — manual or from `llmbench` — must supply both sides; there's no fallback to guess from.
 - **`mlx_lm_server` is one-model-per-process**, unlike ollama (single daemon, any model) or omlx (one daemon, both 4-bit/6-bit variants). Sweeping multiple pairings in one benchmark run restarts the process between them.
 - **The omlx keg version drifts on `brew upgrade omlx`.** `bin/mlx-quantize` and the `llmbench provider isolate` lifecycle backends (`src/llmbench/providers/lifecycle/binaries.py`) resolve `mlx_lm.*` by globbing the keg and taking the newest match — never hardcode a version path.

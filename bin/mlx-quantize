@@ -10,7 +10,7 @@
 # never reimplements or validates mlx-lm's own flag surface, which would
 # only drift out of sync with upstream. wt deliberately does not run
 # these tools itself ("register-only") — this script, then moving its output directory into omlx's model
-# directory and `wt model add omlx <dir> ...` (guide 10; a hand-written
+# directory and `wt-model model add omlx <dir> ...` (guide 10; a hand-written
 # registry.toml local_path entry is the other route), is the whole workflow.
 #
 # Usage:
@@ -76,5 +76,5 @@ echo "Output written to: $out_dir"
 echo "Next: register it. Either hand-edit registry.toml — add an [[models]] entry"
 echo "with provider_id = \"omlx\" and a [models.fetch] local_path = \"$out_dir\""
 echo "(absolute path) — or move it into omlx's model directory and run"
-echo "wt model add omlx <directory name> --family <family>."
+echo "wt-model model add omlx <directory name> --family <family>."
 echo "See docs/guides/10-mlx-lm-quantization.md."

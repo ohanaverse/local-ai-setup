@@ -352,7 +352,7 @@ func TestPath(t *testing.T) {
 }
 
 // First-run experience: when no config file exists, Load must return a usable
-// default Config (not an error). registry.toml must exist (`wt model init`
+// default Config (not an error). registry.toml must exist (`wt-model model init`
 // creates it); with an empty registry, Load returns an empty catalog.
 func TestLoad_FileNotExist(t *testing.T) {
 	tmp := t.TempDir()

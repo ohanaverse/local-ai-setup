@@ -24,7 +24,7 @@ func TestDiscoveredModelIDPinned(t *testing.T) {
 	}
 }
 
-// TestSeedableProviderIDsPinned pins which providers `wt model init` can seed,
+// TestSeedableProviderIDsPinned pins which providers `wt-model model init` can seed,
 // and their order (local first, then cloud).
 func TestSeedableProviderIDsPinned(t *testing.T) {
 	want := []string{"ollama", "omlx", "mlx_lm_server", "mtplx", "rec", "sushi", "openrouter"}

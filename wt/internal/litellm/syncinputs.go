@@ -91,7 +91,7 @@ func missingProviderWarnings(cfg *config.Config, said []string) []string {
 		if slices.ContainsFunc(said, func(w string) bool { return strings.HasPrefix(w, covered) }) {
 			continue
 		}
-		warnings = append(warnings, fmt.Sprintf("provider %q has no [[providers]] row in %s, so wt cannot route %s; add the row (`wt model init` adds the default ones) or fix the provider_id",
+		warnings = append(warnings, fmt.Sprintf("provider %q has no [[providers]] row in %s, so wt cannot route %s; add the row (`wt-model model init` adds the default ones) or fix the provider_id",
 			id, config.RegistryPath(), strings.Join(models[id], ", ")))
 	}
 	return warnings

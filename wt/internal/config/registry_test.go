@@ -104,7 +104,7 @@ func TestLoad_JoinsRegistry(t *testing.T) {
 
 // TestLoad_FailsClosedWithoutRegistry asserts Load() errors when
 // registry.toml is absent — wrapping ErrRegistryMissing and pointing at
-// `wt model init`, the command that creates one — so wt never silently runs
+// `wt-model model init`, the command that creates one — so wt never silently runs
 // with zero providers/models, and never sends the user to a tool that is
 // being retired.
 func TestLoad_FailsClosedWithoutRegistry(t *testing.T) {
@@ -116,11 +116,30 @@ func TestLoad_FailsClosedWithoutRegistry(t *testing.T) {
 	if !errors.Is(err, ErrRegistryMissing) {
 		t.Errorf("error should wrap ErrRegistryMissing, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "seed it with `wt model init`") {
-		t.Errorf("error should point at `wt model init`, got: %v", err)
+	if !strings.Contains(err.Error(), "seed it with `wt-model model init`") {
+		t.Errorf("error should point at `wt-model model init`, got: %v", err)
 	}
 	if strings.Contains(err.Error(), "modelman") {
 		t.Errorf("error still names modelman: %v", err)
+	}
+}
+
+// TestMissingRegistryNamesWtModelInit pins that a missing registry's error
+// names `wt-model model init` and never the retired `model init` under wt:
+// the session binary prints this line too, so it must name the binary that
+// has the command (wt's `model init` is now a pointer stub). Every
+// `model init` in the message must be the wt-model one.
+func TestMissingRegistryNamesWtModelInit(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected an error when registry.toml is missing")
+	}
+	if !strings.Contains(err.Error(), "seed it with `wt-model model init`") {
+		t.Errorf("error = %v, want it to say seed it with `wt-model model init`", err)
+	}
+	if all, wtModel := strings.Count(err.Error(), "model init"), strings.Count(err.Error(), "wt-model model init"); all != wtModel {
+		t.Errorf("error = %v names model init under wt, which only points elsewhere now", err)
 	}
 }
 

@@ -16,7 +16,7 @@ type saveMsg struct {
 //
 // It goes through PatchSave rather than a whole-file Save: cfg is the
 // snapshot the editor loaded when it opened, which may be stale by the time
-// the user saves (a Load migration or `wt model add` run in the meantime —
+// the user saves (a Load migration or `wt-model model add` run in the meantime —
 // issue #143). PatchSave re-reads config.toml fresh under the lock and only
 // overwrites the fields the editor owns, so a concurrent change to any other
 // field survives.

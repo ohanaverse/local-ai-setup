@@ -791,6 +791,17 @@ func TestMtplxStartAppendsTheRowsServeArgs(t *testing.T) {
 	}
 }
 
+// TestServeArgsErrorNamesWtModelEdit pins the repair a refused serve_args
+// start prints: `wt-model model edit <id> --clear-serve-args`, the command that
+// exists, never the retired `model edit` under wt (now a pointer stub).
+func TestServeArgsErrorNamesWtModelEdit(t *testing.T) {
+	got := (&ServeArgsError{ModelID: "mtplx/Org--Model", Problems: []string{"empty argument"}}).Error()
+	want := "model mtplx/Org--Model: empty argument; fix serve_args in the registry (`wt-model model edit mtplx/Org--Model --clear-serve-args` removes it)"
+	if got != want {
+		t.Errorf("Error() =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
 // TestMtplxStartRefusesUnusableServeArgsBeforeSpawning verifies a row whose
 // serve_args cannot be used stops the start with *ServeArgsError naming the
 // problem, before the port is checked and before anything is spawned: a flag

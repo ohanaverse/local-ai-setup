@@ -54,7 +54,7 @@ automatic route updates from `wt start`/`wt stop`) write `config.yaml` and then
 restart the proxy after a change. Every one of them then waits up to 30s for
 `/health/liveliness` before it is done, when a LiteLLM URL is configured and a
 pre-probe before the restart was not refused: `wt litellm sync` and the
-commands that run it after a registry write (`wt cloud-sync`, `wt model
+commands that run it after a registry write (`wt cloud-sync`, `wt-model model
 add|edit|rm|init`, the Models tab of `wt-model model`) before they return (#382),
 and the automatic route updates from the host's `wt stop <provider>`/`--all`
 and the model server's start and stop jobs, before wt exits or hands the
@@ -164,7 +164,7 @@ defaulted (it always comes from `-A` or the agent+command picker).
 | `--replace` | With `-M`, start the model even if it means stopping a running one. |
 | `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within flag). |
 | `-F <family>`, `--family <family>` | Filter the model list by model family (comma-delimited, OR within flag). |
-| `--cwd` | Launch in the current directory, inside a git repository or not; skip the worktree picker. Standing in the repository root it warns and proceeds (a terminal with any warning is asked one default-yes question first; a no ends the run with exit 3). The agent+command picker still appears when `-A` is omitted. With `-A` and no `-M`, wt launches directly when exactly one model is launchable; otherwise the model picker appears. It takes no value: with `--cwd`, a first argument before `--` that names an existing directory (`claude-wt --cwd ~/proj`) is refused, since it would reach the agent as its first argument (claude's prompt) while the launch ran in the current directory. `cd` into the directory first, or pass the path after `--`. A `shell` command's bare name found on `$PATH` is not refused (`shell-wt --cwd wt model list` beside a `wt/` directory). |
+| `--cwd` | Launch in the current directory, inside a git repository or not; skip the worktree picker. Standing in the repository root it warns and proceeds (a terminal with any warning is asked one default-yes question first; a no ends the run with exit 3). The agent+command picker still appears when `-A` is omitted. With `-A` and no `-M`, wt launches directly when exactly one model is launchable; otherwise the model picker appears. It takes no value: with `--cwd`, a first argument before `--` that names an existing directory (`claude-wt --cwd ~/proj`) is refused, since it would reach the agent as its first argument (claude's prompt) while the launch ran in the current directory. `cd` into the directory first, or pass the path after `--`. A `shell` command's bare name found on `$PATH` is not refused (`shell-wt --cwd wt worktrees --plain` beside a `wt/` directory). |
 | `--new` | Accepted and ignored (kept for old scripts): a name that does not exist yet is created and said so either way. A no-op for an existing name; a usage error without `-W` or with `--cwd`/`--root`. |
 | `--root` | Launch in the repository's primary checkout, from anywhere (also from a linked worktree or subdirectory); skips the worktree picker and accepts the root warning, though any other warning still asks. Exclusive with `--cwd` and `-W`. |
 | `--others keep\|stop` | When a local start loads a model beside other providers' models: keep them, or stop the ones wt can stop (default: ask; when stdin is not a terminal keep and warn). Read by `wt start`, `wt smoke` and a `-M` launch. |

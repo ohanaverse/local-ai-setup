@@ -720,7 +720,7 @@ func manual(e *Entry) { e.Source = "manual" }
 // ollama cloud model: the page does not list it, yet it is neither a removal
 // nor a stray tag, it is reported as kept, and it stays out of the count the
 // mass-removal guard weighs. Removing it would delete a free model the user
-// added with `wt model add` and `ollama rm` its tag.
+// added with `wt-model model add` and `ollama rm` its tag.
 func TestPlanKeepsAManualEntryOffThePage(t *testing.T) {
 	entries := []Entry{cloudEntry("beam:cloud", manual), cloudEntry("old:cloud"), cloudEntry("keep:cloud")}
 	plan := PlanCatalog(entries, catalogOf(cm("keep")), []string{"beam:cloud", "old:cloud", "keep:cloud"}, nil)
@@ -807,7 +807,7 @@ func TestCatalogPlanFormatShowsManualLines(t *testing.T) {
 }
 
 // TestPlanManualEntryWithNoCatalogNameUnderAnUnpublishedTagIsNotDuplicated
-// pins the realistic hand-added case: `wt model add ollama beam:cloud` leaves
+// pins the realistic hand-added case: `wt-model model add ollama beam:cloud` leaves
 // no catalog_name, and when the page later lists beam under a different
 // published tag the sync must not add a second row for the same model beside
 // the kept one (two routed rows for one model, the kept one never matching).

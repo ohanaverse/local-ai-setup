@@ -86,7 +86,7 @@ func TestLoadReadsServeArgsAndToleratesAMalformedOne(t *testing.T) {
 }
 
 // TestServeArgsProblems pins the one judge of serve_args (the loader, the
-// writer, `wt model add|edit` and a start all ask it): usable on an mtplx
+// writer, `wt-model model add|edit` and a start all ask it): usable on an mtplx
 // model, refused for each flag wt sets itself, alone or as --flag=value, for
 // an empty element, and for a provider that takes none (rec, a provider with
 // no spec, an unknown id). The first problem is what the writer and the CLI

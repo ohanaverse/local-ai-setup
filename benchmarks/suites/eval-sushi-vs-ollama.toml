@@ -9,7 +9,7 @@
 #   - install the wt built from this change and add the registry rows from
 #     guide 02 Step 4 BEFORE loading this suite: a row naming an unknown
 #     model fails load_suite. Register the pack with
-#     wt model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>
+#     wt-model model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>
 #     which gives it the id this suite's sushi row names.
 #
 # Run notes:

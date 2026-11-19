@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-// modelListFixture is `wt model list --json`'s contract fixture at the
+// modelListFixture is `wt-model model list --json`'s contract fixture at the
 // monorepo root: one document in the shape the command prints. modeltiers
 // reads its inventory from that command and from nothing else, and its tests
 // read this same file (modeltiers/tests/conftest.py, INVENTORY), so the tests
@@ -160,7 +160,7 @@ func readModelListFixture(t *testing.T) []byte {
 	return raw
 }
 
-// modelRowKeys returns, for a `wt model list --json` document, the keys some
+// modelRowKeys returns, for a `wt-model model list --json` document, the keys some
 // row carries and the keys every row carries.
 func modelRowKeys(t *testing.T, raw []byte) (some, every []string) {
 	t.Helper()
@@ -190,7 +190,7 @@ func modelRowKeys(t *testing.T, raw []byte) (some, every []string) {
 
 // TestModelListFixtureMatchesTheDocumentTypes pins the shared fixture
 // (docs/contracts/model-list.sample.json) to modelListJSON and modelListRow,
-// the two types `wt model list --json` encodes, in both directions: every key
+// the two types `wt-model model list --json` encodes, in both directions: every key
 // the fixture's document and rows carry is one the types write, with the JSON
 // type they write it as, and every key the types always write is in the
 // fixture's document and in each of its rows. An omitempty key (target,
@@ -251,9 +251,9 @@ func TestModelListFixtureMatchesTheDocumentTypes(t *testing.T) {
 // fixture describing a shape modeltiers no longer receives.
 func TestModelListJSONOutputMatchesTheFixture(t *testing.T) {
 	cfg, snap := modelListServeArgsConfig()
-	stubProbeInventory(t, snap)
+	probe := probeOf(snap)
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, cfg, true, 80); err != nil {
+	if err := runModelList(&out, &errOut, probe, cfg, true, 80); err != nil {
 		t.Fatal(err)
 	}
 	checkJSONShape(t, "output", out.Bytes(), reflect.TypeFor[modelListJSON]())

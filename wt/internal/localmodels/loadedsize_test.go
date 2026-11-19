@@ -49,7 +49,7 @@ func TestOllamaLoadedKeepsSizes(t *testing.T) {
 // TestInventoryOllamaLoadedSizeFromPs pins the two ollama figures apart: the
 // /api/ps size is what a loaded model holds in memory (Entry.LoadedSize), the
 // /api/tags size is the download on disk (Entry.Size). Swapping them would
-// tell a user an ollama model holds its file size in memory, or `wt model
+// tell a user an ollama model holds its file size in memory, or `wt-model model
 // list` would print a memory figure as the size on disk. A model that is only
 // pulled holds no memory, so its LoadedSize stays 0.
 func TestInventoryOllamaLoadedSizeFromPs(t *testing.T) {

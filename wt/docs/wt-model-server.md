@@ -8,7 +8,8 @@ somewhere else needs no registry of its own. It has `wt-model serve`,
 forwards with ([Proxy url and key](#proxy-url-and-key)), `wt-model setup`,
 the Setup tab ([below](#wt-model-setup)), and `wt-model model`, the Models
 tab ([below](#wt-model-model)). (This page is the server.
-`wt model …`, with a space, is the registry command group:
+`wt-model model …` is the registry command group, and `wt model …` in wt
+only points there (`wt model list --server` aside):
 [wt-model.md](wt-model.md).)
 
 ```bash
@@ -211,16 +212,16 @@ tab"); bare `wt model` prints only `wt: model moved to wt-model — run
 'wt-model model'; nothing was changed` and exits 1.
 
 - It needs a terminal. Without one it exits 1 and names the commands that
-  need none: `wt model list`, `wt model add`, `wt model edit` and `wt model
+  need none: `wt-model model list`, `wt-model model add`, `wt-model model edit` and `wt-model model
   rm`.
 - Each saved form and each removal is written to `registry.toml` at once.
   The LiteLLM routes are synced once, when the screen closes, and only if it
   wrote the registry (also when it ended with an error, since the write
-  already happened). The sync prints what `wt model add|edit|rm` print after
+  already happened). The sync prints what `wt-model model add|edit|rm` print after
   their write, its warning on stderr; it never changes the exit code.
 - With the registry redirected (`WT_REGISTRY`) and nothing naming
   `config.yaml` (`WT_LITELLM_CONFIG`), that sync refuses to write the real
-  routes and says so on stderr, as `wt model add|edit|rm` do.
+  routes and says so on stderr, as `wt-model model add|edit|rm` do.
 
 ## Endpoints
 
@@ -406,7 +407,7 @@ shutdown kills it.
   opens every inference path and every model LiteLLM routes. The gateway does
   not tell clients apart or limit which models a client may call.
 - **The client uses no environment proxy.** The control and gateway calls ignore `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so the bearer token and the prompts go straight to the `[model-server]` url and never to a third party. A session machine that can reach the server only through a proxy cannot use it.
-- Config is read per request, job and scan, so `wt model …` and `wt cloud-sync`
+- Config is read per request, job and scan, so `wt-model model …` and `wt cloud-sync`
   edits show without a restart.
 
 ## Wire contract

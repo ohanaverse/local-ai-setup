@@ -91,7 +91,7 @@ func (c *Config) ProxySource() ProxySource { return c.proxySource }
 // file), nil when it resolved. The pair is then empty — never the legacy
 // values (fail closed) — and only the commands that use the pair fail on it
 // (`wt-model serve`, a proxy restart or probe); every other host command
-// loads normally, so a loose key file never blocks `wt model list`.
+// loads normally, so a loose key file never blocks `wt-model model list`.
 func (c *Config) ProxyErr() error { return c.proxyErr }
 
 // SetLitellmForTest overrides the [litellm] routing state.
@@ -443,7 +443,7 @@ type Model struct {
 	// registry's [models.fetch] table, and [models.draft] for the draft half
 	// of an mlx_lm_server pairing. wt reads them here — to show a local_path
 	// and to name the pairing in a hint; llmbench acts on them — and writes
-	// them only when `wt model add` registers a pairing (modeladmin.Add). Nothing
+	// them only when `wt-model model add` registers a pairing (modeladmin.Add). Nothing
 	// encodes a Model back into the registry (RegistryDoc is patch-shaped),
 	// so decoding two more keys cannot change what a write touches.
 	// Neither can fail a load: a malformed one reads as absent
@@ -547,7 +547,7 @@ func (a *ServeArgs) UnmarshalTOML(v any) error {
 // ServeArgsProblems names why args cannot be the serve_args of a model of
 // providerID, as phrases for a person: nil when they can, or when there are
 // none. It is the one judge the loader (Model.Malformed), the registry writer
-// (validateModelRow), `wt model add|edit` and a start all ask. The provider
+// (validateModelRow), `wt-model model add|edit` and a start all ask. The provider
 // must take serve_args at all (provider.AcceptsServeArgs), no element may be
 // empty, and none may be a flag wt sets itself (ProcessSpec.OwnedFlags), alone
 // or as `--flag=value` or an abbreviation of it (mtplx's argparse takes
@@ -612,7 +612,7 @@ var artifactFields = []struct {
 // local_path that is not a string reads as absent while the other key is
 // still read. An empty table is an empty artifact, and any other key (files,
 // quantizations, one wt does not model) is ignored. What was tolerated is
-// recorded in Malformed, which `wt model list` prints (Model.Malformed); every
+// recorded in Malformed, which `wt-model model list` prints (Model.Malformed); every
 // other command stays quiet. The registry writer names a malformed value too:
 // validateArtifact refuses a row it touches.
 func (a *ModelArtifact) UnmarshalTOML(v any) error {
@@ -853,7 +853,7 @@ var SushiAgents = []string{"claude", "pi"}
 // does not name it. A stock config.toml has no sushi entry, and without one
 // `wt smoke` and the pickers report no agent supports the model; deriving it
 // here covers a pack registered by the `wt-model model` Models screen, by hand, or
-// on a restored registry, where `wt model add` never ran. Nothing is written.
+// on a restored registry, where `wt-model model add` never ran. Nothing is written.
 // An agent config.toml does not name is skipped, and so is one with no
 // supported_providers at all (an empty list is its own validation error). To
 // keep sushi away from an agent, remove the registry's sushi models.
@@ -1217,7 +1217,7 @@ func RegistryFixHint(err error) string {
 
 // LoadFixHint is the repair to name after a config load or validation error,
 // or "" when there is nothing to add (nil, and a missing registry, whose
-// error already says to run `wt model init` — a hint would name a second
+// error already says to run `wt-model model init` — a hint would name a second
 // repair beside it). A registry problem — the file, the link to it, or a
 // provider or model row in it — gets RegistryFixHint's wording. Everything
 // else (a config.toml that does not parse, default_tag, an agent entry) is

@@ -1,6 +1,6 @@
-// wt model add / edit / rm — the commands that change the registry's model
-// rows. Each does one locked registry write (internal/modeladmin) and then
-// one LiteLLM route sync.
+// wt-model model add / edit / rm — the commands that change the registry's
+// model rows. Each does one locked registry write (internal/modeladmin) and
+// then one LiteLLM route sync.
 package main
 
 import (
@@ -19,18 +19,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/spf13/cobra"
-)
-
-// Test seams: production asks ollama and the user's terminal; cmd/wt-session's
-// TestMain stubs both.
-var (
-	// ollamaCaps is the best-effort capability lookup an add of an ollama
-	// model runs before it writes.
-	ollamaCaps = modeladmin.OllamaCapabilities
-	// confirmRemove asks before `wt model rm` removes rows: the y/N prompt
-	// `wt stop` asks with, on the controlling terminal, so piped input can
-	// never authorise a removal.
-	confirmRemove = promptStop
 )
 
 // modelFieldFlags registers the flags that carry a model's editable fields
@@ -71,7 +59,7 @@ func modelFieldFlags(c *cobra.Command) func() modeladmin.Fields {
 	}
 }
 
-func modelAddCmd(a *app) *cobra.Command {
+func modelAddCmd(h *host) *cobra.Command {
 	var id, draft string
 	c := &cobra.Command{
 		Use:   "add <provider> <name> --family <family>",
@@ -80,16 +68,16 @@ func modelAddCmd(a *app) *cobra.Command {
 			"<name> is the model as its provider lists it: an ollama tag (qwen3:8b), the\n" +
 			"name of an omlx model directory, an mtplx org/name, or a cloud provider's\n" +
 			"model id. wt downloads nothing: pull or download a local model with its\n" +
-			"provider's own tool, before or after adding it (`wt model list` shows what\n" +
-			"is on disk and not yet registered as STATUS new).\n\n" +
+			"provider's own tool, before or after adding it (`wt-model model list`\n" +
+			"shows what is on disk and not yet registered as STATUS new).\n\n" +
 			"The id is <provider-family>/<name> for a local provider — the id wt already\n" +
 			"lists a discovered model under — and <provider>/<name> with each \"/\" in the\n" +
 			"name written \"--\" for any other provider. --id overrides it, with an id\n" +
 			"of that shape: <provider>/<name>, no spaces. The id, the provider and the\n" +
 			"name cannot be changed afterwards.\n\n" +
 			"An mtplx model may carry --serve-arg flags for `mtplx serve` (repeat the flag,\n" +
-			"one argument each: --serve-arg --profile --serve-arg turbo); see `wt model\n" +
-			"edit --help`.\n\n" +
+			"one argument each: --serve-arg --profile --serve-arg turbo); see\n" +
+			"`wt-model model edit --help`.\n\n" +
 			"A missing default provider row (ollama, omlx, mlx_lm_server, mtplx, rec,\n" +
 			"sushi, openrouter) is added in the same write; a provider wt has no default\n" +
 			"row for must have its [[providers]] block in registry.toml first. For an\n" +
@@ -105,9 +93,9 @@ func modelAddCmd(a *app) *cobra.Command {
 			"--id for the second.\n\n" +
 			"The LiteLLM routes are synced once afterwards; a sync that cannot run is a\n" +
 			"warning, and the exit status is still 0.",
-		Example: "  wt model add ollama qwen3:8b --family qwen3 --tags code\n" +
-			"  wt model add openrouter qwen/qwen3.8-27b --family qwen3.8 --input-price 0.5 --output-price 2\n" +
-			"  wt model add mlx_lm_server mlx-community/Qwen3.8-27B-4bit --draft mlx-community/Qwen3.8-4B-4bit --family qwen3.8",
+		Example: "  wt-model model add ollama qwen3:8b --family qwen3 --tags code\n" +
+			"  wt-model model add openrouter qwen/qwen3.8-27b --family qwen3.8 --input-price 0.5 --output-price 2\n" +
+			"  wt-model model add mlx_lm_server mlx-community/Qwen3.8-27B-4bit --draft mlx-community/Qwen3.8-4B-4bit --family qwen3.8",
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 	}
@@ -128,8 +116,8 @@ func modelAddCmd(a *app) *cobra.Command {
 				return err
 			}
 		}
-		cfg, _ := a.hostConfig()
-		return runModelAdd(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, req)
+		cfg, _ := h.hostConfig()
+		return h.runModelAdd(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, req)
 	}
 	return c
 }
@@ -174,10 +162,10 @@ func repoThatIsADirectory(sides ...string) []string {
 	return found
 }
 
-// runModelAdd implements `wt model add`. cfg is the config as loaded (an
-// empty one when there is no registry yet; a test may pass nil); it is read
-// only for the ollama address.
-func runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRequest) error {
+// runModelAdd implements `wt-model model add` over h's seams. cfg is the
+// config as loaded (an empty one when there is no registry yet; a test may
+// pass nil); it is read only for the ollama address.
+func (h *host) runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRequest) error {
 	// What can be refused without the registry is refused first: a mistyped
 	// price must not wait on `ollama show`, up to its timeout when the
 	// daemon is down.
@@ -188,13 +176,13 @@ func runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRe
 	if modeladmin.UsesOllama(req.ProviderID) {
 		// Before the write: the registry's apply function must not run a
 		// command.
-		info, err := ollamaCaps(cfg, req.ModelName)
+		info, err := h.ollamaCaps(cfg, req.ModelName)
 		if err != nil {
 			warnings = append(warnings, "added without model_info.supports_function_calling / supports_vision: "+err.Error())
 		}
 		req.ModelInfo = info
 	}
-	res, err := modeladmin.Add(req, seedEnv())
+	res, err := modeladmin.Add(req, h.seedEnv())
 	if err != nil {
 		return err
 	}
@@ -205,7 +193,7 @@ func runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRe
 		// what the registry holds.
 		fmt.Fprintf(out, "start it with: %s\n", catalog.PairingStartCommand(strings.TrimSpace(req.ModelName), strings.TrimSpace(req.Draft)))
 		for _, side := range repoThatIsADirectory(req.ModelName, req.Draft) {
-			fmt.Fprintf(errOut, "note: %s is also a directory here; it was registered as a Hugging Face repo — to register the directory, run `wt model rm %s` and add the pairing again with ./%s\n", side, res.ID, side)
+			fmt.Fprintf(errOut, "note: %s is also a directory here; it was registered as a Hugging Face repo — to register the directory, run `wt-model model rm %s` and add the pairing again with ./%s\n", side, res.ID, side)
 		}
 	}
 	for _, p := range res.ProvidersAdded {
@@ -216,7 +204,7 @@ func runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRe
 	}
 	warnings = append(warnings, res.Warnings...)
 	warnings = append(warnings, enableSushiForAgents(out, req.ProviderID)...)
-	return syncAndWarn(out, errOut, warnings)
+	return h.syncAndWarn(out, errOut, warnings)
 }
 
 // enableSushiForAgents lists sushi in config.SushiAgents' supported_providers
@@ -239,12 +227,12 @@ func enableSushiForAgents(out io.Writer, providerID string) []string {
 }
 
 // syncAndWarn runs the one route sync that follows a registry write
-// (litellm.SyncAndWarn), reading the syncRoutesAfterWrite seam per call.
-func syncAndWarn(out, errOut io.Writer, w []string) error {
-	return litellm.SyncAndWarn(out, errOut, w, syncRoutesAfterWrite)
+// (litellm.SyncAndWarn), with h's syncRoutesAfterWrite seam.
+func (h *host) syncAndWarn(out, errOut io.Writer, w []string) error {
+	return litellm.SyncAndWarn(out, errOut, w, h.syncRoutesAfterWrite)
 }
 
-func modelEditCmd(_ *app) *cobra.Command {
+func modelEditCmd(h *host) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "edit <id> [flags]",
 		Short: "Change a registry model's family, tags, location or prices",
@@ -262,7 +250,7 @@ func modelEditCmd(_ *app) *cobra.Command {
 			"An id that more than one registry row carries is refused: wt cannot tell\n" +
 			"which row is meant, and the message names the file to repair.\n\n" +
 			"The LiteLLM routes are synced once when something changed.",
-		Example:      "  wt model edit ollama/qwen3:8b --tags code,design\n  wt model edit openrouter/qwen--qwen3.8-27b --output-price 2.5",
+		Example:      "  wt-model model edit ollama/qwen3:8b --tags code,design\n  wt-model model edit openrouter/qwen--qwen3.8-27b --output-price 2.5",
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 	}
@@ -288,12 +276,13 @@ func modelEditCmd(_ *app) *cobra.Command {
 			cmd.SilenceUsage = false
 			return errors.New("nothing to change: pass at least one of --family, --tags, --location, --source, --serve-arg, --clear-serve-args or a price flag")
 		}
-		return runModelEdit(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], f)
+		return h.runModelEdit(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], f)
 	}
 	return c
 }
 
-func runModelEdit(out, errOut io.Writer, id string, f modeladmin.Fields) error {
+// runModelEdit implements `wt-model model edit` over h's route sync.
+func (h *host) runModelEdit(out, errOut io.Writer, id string, f modeladmin.Fields) error {
 	changed, err := modeladmin.Edit(id, f)
 	if err != nil {
 		return unknownModelHint(err)
@@ -308,7 +297,7 @@ func runModelEdit(out, errOut io.Writer, id string, f modeladmin.Fields) error {
 		// change is not a different server: it applies from the next start.
 		fmt.Fprintf(out, "note: serve_args apply the next time %s starts; a server already running keeps the flags it started with\n", id)
 	}
-	return syncAndWarn(out, errOut, nil)
+	return h.syncAndWarn(out, errOut, nil)
 }
 
 // unknownModelHint says where the ids are when one was not found. Any other
@@ -316,12 +305,12 @@ func runModelEdit(out, errOut io.Writer, id string, f modeladmin.Fields) error {
 // (config.ErrModelAmbiguous) already names the file to repair.
 func unknownModelHint(err error) error {
 	if errors.Is(err, config.ErrModelNotFound) {
-		return fmt.Errorf("%w in the registry (`wt model list` shows every id)", err)
+		return fmt.Errorf("%w in the registry (`wt-model model list` shows every id)", err)
 	}
 	return err
 }
 
-func modelRmCmd(a *app) *cobra.Command {
+func modelRmCmd(h *host) *cobra.Command {
 	var yes bool
 	c := &cobra.Command{
 		Use:   "rm <id>...",
@@ -329,30 +318,30 @@ func modelRmCmd(a *app) *cobra.Command {
 		Long: "Remove one or more models from the registry. Nothing else is touched: wt\n" +
 			"never deletes weights, and it prints where each removed model's are so you\n" +
 			"can delete them yourself. A local model that is still on disk shows up\n" +
-			"again in `wt model list` as STATUS new.\n\n" +
+			"again in `wt-model model list` as STATUS new.\n\n" +
 			"It asks for confirmation on the terminal; --yes skips it. When one id is\n" +
 			"not in the registry, or is the id of more than one row, nothing is\n" +
 			"removed.\n\n" +
 			"The LiteLLM routes are synced once afterwards.",
-		Example:      "  wt model rm ollama/qwen3:8b\n  wt model rm openrouter/a--b openrouter/c--d --yes",
+		Example:      "  wt-model model rm ollama/qwen3:8b\n  wt-model model rm openrouter/a--b openrouter/c--d --yes",
 		Args:         cobra.MinimumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, loadErr := a.hostConfig()
+			cfg, loadErr := h.hostConfig()
 			if loadErr != nil {
 				cfg = nil // the removal may be the repair; only the weights lines are lost
 			}
-			return runModelRm(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, args, yes)
+			return h.runModelRm(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, args, yes)
 		},
 	}
 	c.Flags().BoolVar(&yes, "yes", false, "do not ask for confirmation")
 	return c
 }
 
-// runModelRm implements `wt model rm`. cfg is nil when the config did not
-// load; the rows are then removed without the lines that say where their
-// weights are.
-func runModelRm(out, errOut io.Writer, cfg *config.Config, ids []string, yes bool) error {
+// runModelRm implements `wt-model model rm` over h's seams. cfg is nil when
+// the config did not load; the rows are then removed without the lines that
+// say where their weights are.
+func (h *host) runModelRm(out, errOut io.Writer, cfg *config.Config, ids []string, yes bool) error {
 	ids = uniqueInOrder(ids)
 	// Where the weights are is learned before the write: afterwards the rows
 	// are gone, and a local model's path comes from the probe.
@@ -373,7 +362,7 @@ func runModelRm(out, errOut io.Writer, cfg *config.Config, ids []string, yes boo
 			return slices.Contains(ids, m.ID) && err == nil && loc == config.LocationLocal
 		})
 		if local {
-			for _, r := range modeladmin.Rows(cfg, probeInventory(cfg)) {
+			for _, r := range modeladmin.Rows(cfg, h.probeInventory(cfg)) {
 				if r.Registered && slices.Contains(ids, r.ID) {
 					notes[r.ID] = modeladmin.WeightsNote(r)
 				}
@@ -381,7 +370,7 @@ func runModelRm(out, errOut io.Writer, cfg *config.Config, ids []string, yes boo
 		}
 	}
 	if !yes {
-		ok, err := confirmRemove(fmt.Sprintf("Remove %d model(s) from the registry (%s)? Weights are not deleted.", len(ids), strings.Join(ids, ", ")))
+		ok, err := h.confirmRemove(fmt.Sprintf("Remove %d model(s) from the registry (%s)? Weights are not deleted.", len(ids), strings.Join(ids, ", ")))
 		if err != nil {
 			return cli.NoTerminalRefusal(err, "--yes", "nothing was removed")
 		}
@@ -398,7 +387,7 @@ func runModelRm(out, errOut io.Writer, cfg *config.Config, ids []string, yes boo
 			fmt.Fprintf(out, "  %s\n", note)
 		}
 	}
-	return syncAndWarn(out, errOut, nil)
+	return h.syncAndWarn(out, errOut, nil)
 }
 
 // uniqueInOrder drops repeated ids, keeping the order they were given in: an

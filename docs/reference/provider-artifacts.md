@@ -217,7 +217,7 @@ the plist is installed, `launchctl unload` it by hand:
 - **Local-path artifact ownership (shared with the `omlx` provider's
   `local_path` support):** a directory produced by `bin/mlx-quantize` or
   hand-run `mlx_lm.convert`/`dwq` is user-produced. wt never deletes weights:
-  `wt model rm <id>`, or `d` on its row in the Models tab of `wt-model model`,
+  `wt-model model rm <id>`, or `d` on its row in the Models tab of `wt-model model`,
   removes the registry entry, prints where the weights are and touches no
   file on disk.
   Cleanup of an abandoned experiment is a manual `rm -rf`.
@@ -239,7 +239,7 @@ the plist is installed, `launchctl unload` it by hand:
   commit it), `state/` (instance and launch locks, a launch log), plus
   `releases/` and `clients/`. The key also ends up in the LiteLLM route's
   `api_key` (`wt litellm sync`), so the live `config.yaml` holds it too.
-- **wt never deletes any of it**: `wt model rm rec/flint` removes the
+- **wt never deletes any of it**: `wt-model model rm rec/flint` removes the
   registry entry only, and no wt command touches `~/.local/share/rec`.
   `rec uninstall` (it asks; `-y` skips the question) removes rec, its models
   and its settings; that is the one cleanup.
@@ -281,7 +281,7 @@ the plist is installed, `launchctl unload` it by hand:
   is 75.9 GB: 49.5 GB of safetensors, 47,213 MiB resident when loaded, plus a
   32 GB `ngram_table.bin` streamed from the SSD and never resident), `logs/`
   (Sushi's own logs) and `pi/`.
-- **wt never deletes any of it**: `wt model rm sushi/beamster/…` removes the
+- **wt never deletes any of it**: `wt-model model rm sushi/beamster/…` removes the
   registry entry only, and no wt command touches `~/.sushi`. Removing a pack
   is `rm -rf` of its directory under `~/.sushi/models`.
 - Registry: `[[providers]] id = "sushi"` with

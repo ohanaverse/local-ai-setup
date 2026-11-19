@@ -58,9 +58,9 @@ func modelListSnapshot() localmodels.Snapshot {
 // bordered table of these rows is over 150 columns wide and wraps into an
 // unreadable grid.
 func TestModelListFitsEightyColumns(t *testing.T) {
-	stubProbeInventory(t, modelListSnapshot())
+	probe := probeOf(modelListSnapshot())
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, modelListConfig(), false, 80); err != nil {
+	if err := runModelList(&out, &errOut, probe, modelListConfig(), false, 80); err != nil {
 		t.Fatal(err)
 	}
 	want := strings.Join([]string{
@@ -91,7 +91,7 @@ func TestModelListFitsEightyColumns(t *testing.T) {
 			t.Errorf("model id %s is missing or cut", m.ID)
 		}
 	}
-	if got := errOut.String(); got != "(PATH not shown at this width; `wt model list --json` has every column)\n" {
+	if got := errOut.String(); got != "(PATH not shown at this width; `wt-model model list --json` has every column)\n" {
 		t.Errorf("stderr = %q, want the note naming the dropped column", got)
 	}
 }
@@ -99,12 +99,12 @@ func TestModelListFitsEightyColumns(t *testing.T) {
 // TestModelListDropsSizeBeforeItCutsAnId verifies that at 60 columns SIZE
 // goes too, because keeping it would leave MODEL under 20 columns, and that
 // at 40 the five kept columns stay whole with every id on a line of its own.
-// The id is what the user copies into `wt model edit` or `wt -M`, so it is
+// The id is what the user copies into `wt-model model edit` or `wt -M`, so it is
 // moved, never cut.
 func TestModelListDropsSizeBeforeItCutsAnId(t *testing.T) {
-	stubProbeInventory(t, modelListSnapshot())
+	probe := probeOf(modelListSnapshot())
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, modelListConfig(), false, 60); err != nil {
+	if err := runModelList(&out, &errOut, probe, modelListConfig(), false, 60); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "SIZE") || !strings.Contains(errOut.String(), "SIZE and PATH not shown") {
@@ -114,7 +114,7 @@ func TestModelListDropsSizeBeforeItCutsAnId(t *testing.T) {
 		t.Errorf("at 60 columns a short id is not beside its cells:\n%s", out.String())
 	}
 	out.Reset()
-	if err := runModelList(&out, &errOut, modelListConfig(), false, 40); err != nil {
+	if err := runModelList(&out, &errOut, probe, modelListConfig(), false, 40); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(out.String(), "\n")
@@ -132,12 +132,12 @@ func TestModelListDropsSizeBeforeItCutsAnId(t *testing.T) {
 }
 
 // TestModelListWithoutAWidthLimit verifies that into a pipe (width 0) every
-// column is printed and every model is one line, so `wt model list | grep`
+// column is printed and every model is one line, so `wt-model model list | grep`
 // works and the path is there to cut out.
 func TestModelListWithoutAWidthLimit(t *testing.T) {
-	stubProbeInventory(t, modelListSnapshot())
+	probe := probeOf(modelListSnapshot())
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, modelListConfig(), false, 0); err != nil {
+	if err := runModelList(&out, &errOut, probe, modelListConfig(), false, 0); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
@@ -160,9 +160,9 @@ func TestModelListWithoutAWidthLimit(t *testing.T) {
 // array (never null), and each probed provider's status. Scripts read this;
 // the text table drops columns to fit.
 func TestModelListJSON(t *testing.T) {
-	stubProbeInventory(t, modelListSnapshot())
+	probe := probeOf(modelListSnapshot())
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, modelListConfig(), true, 80); err != nil {
+	if err := runModelList(&out, &errOut, probe, modelListConfig(), true, 80); err != nil {
 		t.Fatal(err)
 	}
 	var doc struct {
@@ -214,22 +214,22 @@ func TestModelListJSON(t *testing.T) {
 // with no local model prints one line that says so and names the command
 // that adds one, not a lone header row.
 func TestModelListWithNothingToList(t *testing.T) {
-	stubProbeInventory(t, localmodels.Snapshot{})
+	probe := probeOf(localmodels.Snapshot{})
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, &config.Config{}, false, 80); err != nil {
+	if err := runModelList(&out, &errOut, probe, &config.Config{}, false, 80); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(out.String(), "no models: ") || !strings.Contains(out.String(), "`wt model add`") || strings.Contains(out.String(), "MODEL") {
-		t.Errorf("out = %q, want a one-line note naming `wt model add`, and no table", out.String())
+	if !strings.HasPrefix(out.String(), "no models: ") || !strings.Contains(out.String(), "`wt-model model add`") || strings.Contains(out.String(), "MODEL") {
+		t.Errorf("out = %q, want a one-line note naming `wt-model model add`, and no table", out.String())
 	}
 	// No provider was probed, so nothing was looked for: the line must point
-	// at `wt model init`, not claim the machine has no local model.
-	if !strings.Contains(out.String(), "wt model init") || strings.Contains(out.String(), "was found") {
+	// at `wt-model model init`, not claim the machine has no local model.
+	if !strings.Contains(out.String(), "wt-model model init") || strings.Contains(out.String(), "was found") {
 		t.Errorf("out = %q, want the no-provider-row line", out.String())
 	}
 	out.Reset()
-	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
-	if err := runModelList(&out, &errOut, &config.Config{}, false, 80); err != nil {
+	probe = probeOf(localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
+	if err := runModelList(&out, &errOut, probe, &config.Config{}, false, 80); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "no local model was found on this machine") {
@@ -261,14 +261,14 @@ func TestModelListKeepsSizeWhenEveryIdIsShort(t *testing.T) {
 			{ID: "ollama/gemma4:9b", Family: "gemma4", ProviderID: "ollama", ModelName: "gemma4:9b"},
 		},
 	}
-	stubProbeInventory(t, localmodels.Snapshot{
+	probe := probeOf(localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
 			{ProviderID: "ollama", ModelID: "ollama/gemma4:9b", ModelName: "gemma4:9b", Artifact: "gemma4:9b", Registered: true, ArtifactKnown: true, Size: 5_800_000_000},
 		},
 	})
 	var wide bytes.Buffer
-	if err := runModelList(&wide, &bytes.Buffer{}, cfg, false, 0); err != nil {
+	if err := runModelList(&wide, &bytes.Buffer{}, probe, cfg, false, 0); err != nil {
 		t.Fatal(err)
 	}
 	// The six columns without PATH: the full line less its last cell.
@@ -278,13 +278,13 @@ func TestModelListKeepsSizeWhenEveryIdIsShort(t *testing.T) {
 		t.Fatalf("fixture: unexpected full header %q", header)
 	}
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, cfg, false, need); err != nil {
+	if err := runModelList(&out, &errOut, probe, cfg, false, need); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "SIZE") || !strings.Contains(out.String(), "5.8 GB") {
 		t.Errorf("at %d columns, exactly what six columns need:\n%s\nwant SIZE kept", need, out.String())
 	}
-	if got := errOut.String(); got != "(PATH not shown at this width; `wt model list --json` has every column)\n" {
+	if got := errOut.String(); got != "(PATH not shown at this width; `wt-model model list --json` has every column)\n" {
 		t.Errorf("stderr = %q, want only PATH named as dropped", got)
 	}
 	for _, line := range strings.Split(out.String(), "\n") {
@@ -294,7 +294,7 @@ func TestModelListKeepsSizeWhenEveryIdIsShort(t *testing.T) {
 	}
 	out.Reset()
 	errOut.Reset()
-	if err := runModelList(&out, &errOut, cfg, false, need-1); err != nil {
+	if err := runModelList(&out, &errOut, probe, cfg, false, need-1); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "SIZE") || !strings.Contains(errOut.String(), "SIZE and PATH not shown") {
@@ -302,15 +302,15 @@ func TestModelListKeepsSizeWhenEveryIdIsShort(t *testing.T) {
 	}
 }
 
-// TestModelListCommandGate runs `wt model list` through cobra to pin which
+// TestModelListCommandGate runs `wt-model model list` through cobra to pin which
 // error stops it. A registry with a gap in it (the config loads, Validate
 // fails) is what the list exists to show, so it must still print; only a
 // registry that could not be loaded at all refuses. Swapping the gate to the
 // validation error would take away the one command for diagnosing that gap.
 func TestModelListCommandGate(t *testing.T) {
-	stubProbeInventory(t, modelListSnapshot())
-	run := func(a *app) (string, error) {
-		c := modelListCmd(a)
+	run := func(h *host) (string, error) {
+		stubProbeInventory(h, modelListSnapshot())
+		c := modelListCmd(h)
 		var out bytes.Buffer
 		c.SetOut(&out)
 		c.SetErr(&bytes.Buffer{})
@@ -318,18 +318,22 @@ func TestModelListCommandGate(t *testing.T) {
 		err := c.Execute()
 		return out.String(), err
 	}
-	out, err := run(&app{hostSet: true, hostCfg: modelListConfig(), hostCfgErr: errors.New(`model "corp/x": provider_id "corp" names no provider row`)})
+	h := testHost()
+	h.hostSet, h.hostCfg, h.hostCfgErr = true, modelListConfig(), errors.New(`model "corp/x": provider_id "corp" names no provider row`)
+	out, err := run(h)
 	if err != nil || !strings.Contains(out, "ollama/gemma4:9b") {
 		t.Errorf("a config that loads but does not validate: err = %v, out =\n%s\nwant the listing", err, out)
 	}
 	loadErr := errors.New("registry.toml: toml: line 3: expected a value")
-	out, err = run(&app{hostSet: true, hostCfg: &config.Config{}, hostCfgErr: loadErr, hostLoadErr: loadErr})
+	h = testHost()
+	h.hostSet, h.hostCfg, h.hostCfgErr, h.hostLoadErr = true, &config.Config{}, loadErr, loadErr
+	out, err = run(h)
 	if err == nil || !strings.Contains(err.Error(), "expected a value") || out != "" {
 		t.Errorf("a config that did not load: err = %v, out = %q; want the load error and no listing", err, out)
 	}
 }
 
-// TestModelListListsARowWithAMalformedFetch runs `wt model list --json` over
+// TestModelListListsARowWithAMalformedFetch runs `wt-model model list --json` over
 // a registry file whose rows carry a fetch or draft that is not a table, as a
 // hand edit leaves one. The registry must load and each row must be listed,
 // its path or its pairing side simply not known: this listing is where the
@@ -366,21 +370,18 @@ draft = 7
 repo = ["org/T"]
 `
 	modelHome(t, registry)
-	stubProbeInventory(t, localmodels.Snapshot{
+	h := testHost()
+	stubProbeInventory(h, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
 			{ProviderID: "omlx", ModelID: "omlx/slip", ModelName: "slip-4bit", Registered: true, ArtifactKnown: true},
 			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/T+draft-D", ModelName: "T+draft-D", Registered: true},
 		},
 	})
-	a, err := newApp()
-	if err != nil {
-		t.Fatal(err)
+	if _, err := h.hostConfig(); err != nil {
+		t.Fatalf("the registry did not load: %v", err)
 	}
-	if hostLoadErrOf(a) != nil {
-		t.Fatalf("the registry did not load: %v", hostLoadErrOf(a))
-	}
-	c := modelListCmd(a)
+	c := modelListCmd(h)
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&bytes.Buffer{})
@@ -475,7 +476,7 @@ model_name = "T+draft-D"
 func runModelListOver(t *testing.T, registry string, asJSON bool) (stdout, stderr, path string) {
 	t.Helper()
 	path = modelHome(t, registry)
-	stubProbeInventory(t, localmodels.Snapshot{
+	probe := probeOf(localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
 			{ProviderID: "omlx", ModelID: "omlx/z\x1bslip", ModelName: "slip-4bit", Registered: true, ArtifactKnown: true},
@@ -483,15 +484,12 @@ func runModelListOver(t *testing.T, registry string, asJSON bool) (stdout, stder
 			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/T+draft-D", ModelName: "T+draft-D", Registered: true},
 		},
 	})
-	a, err := newApp()
+	cfg, err := testHost().hostConfig()
 	if err != nil {
-		t.Fatal(err)
-	}
-	if hostLoadErrOf(a) != nil {
-		t.Fatalf("the registry did not load: %v", hostLoadErrOf(a))
+		t.Fatalf("the registry did not load: %v", err)
 	}
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, hostCfgOf(a), asJSON, 0); err != nil {
+	if err := runModelList(&out, &errOut, probe, cfg, asJSON, 0); err != nil {
 		t.Fatalf("runModelList = %v, want nil: a malformed fetch is a note, not a failure", err)
 	}
 	return out.String(), errOut.String(), path
@@ -592,9 +590,9 @@ func TestModelListIsQuietOnAWellFormedRegistry(t *testing.T) {
 		}
 	}
 	// Rows built in memory, with tags and discovered models: the same holds.
-	stubProbeInventory(t, modelListSnapshot())
+	probe := probeOf(modelListSnapshot())
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, modelListConfig(), true, 0); err != nil {
+	if err := runModelList(&out, &errOut, probe, modelListConfig(), true, 0); err != nil {
 		t.Fatal(err)
 	}
 	if errOut.Len() != 0 || strings.Count(out.String(), `"malformed": []`) != 6 {
@@ -683,9 +681,9 @@ func modelListServeArgsConfig() (*config.Config, localmodels.Snapshot) {
 // table has no column for them. A model with none gets no key and no line.
 func TestModelListShowsServeArgs(t *testing.T) {
 	cfg, snap := modelListServeArgsConfig()
-	stubProbeInventory(t, snap)
+	probe := probeOf(snap)
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, cfg, true, 80); err != nil {
+	if err := runModelList(&out, &errOut, probe, cfg, true, 80); err != nil {
 		t.Fatal(err)
 	}
 	var doc struct {
@@ -711,7 +709,7 @@ func TestModelListShowsServeArgs(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runModelList(&out, &errOut, cfg, false, 0); err != nil {
+	if err := runModelList(&out, &errOut, probe, cfg, false, 0); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "mtplx/Org/Tuned-4bit: serve_args --profile turbo\n") || strings.Count(out.String(), "serve_args") != 1 {
@@ -730,7 +728,46 @@ func TestNoteMalformedSaysARefusedServeArgsIsNotReadAsAbsent(t *testing.T) {
 	var errOut bytes.Buffer
 	noteMalformed(&errOut, cfg)
 	got := errOut.String()
-	if strings.Contains(got, "absent") || !strings.Contains(got, "refuses this model") || !strings.Contains(got, "--clear-serve-args") {
+	if strings.Contains(got, "absent") || !strings.Contains(got, "refuses this model") || !strings.Contains(got, "`wt-model model edit mtplx/Org/M --clear-serve-args`") {
 		t.Errorf("note = %q, want a refused-start line and no \"absent\"", got)
+	}
+}
+
+// TestModelListNeedsNoModelServer runs `wt-model model list --json` through
+// the real tree on a machine with no [model-server] table and no WT_MODEL_*
+// variable: it lists the registry's model all the same. The host listing is
+// what modeltiers runs for its whole inventory, on the machine that holds the
+// registry, so it must never need the session client or a model server.
+func TestModelListNeedsNoModelServer(t *testing.T) {
+	modelHome(t, `[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+
+[providers.auth]
+type = "api_key"
+secret_ref = "OPENROUTER_API_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[[models]]
+id = "openrouter/a--b"
+family = "f"
+provider_id = "openrouter"
+model_name = "a/b"
+tags = []
+`)
+	for _, v := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN", "WT_MODEL_MODE"} {
+		t.Setenv(v, "")
+	}
+	out, err := runWTModel(t, "model", "list", "--json")
+	if err != nil {
+		t.Fatalf("wt-model model list --json = %v, want success with no model server:\n%s", err, out)
+	}
+	var doc modelListJSON
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not one model list document: %v\n%s", err, out)
+	}
+	if len(doc.Models) != 1 || doc.Models[0].ID != "openrouter/a--b" {
+		t.Errorf("models = %+v, want the registry's one model", doc.Models)
 	}
 }

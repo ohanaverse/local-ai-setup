@@ -76,7 +76,7 @@ func TestProtectedPathsExpandsBareHome(t *testing.T) {
 // TestProtectedPathsRelativeFailsClosed verifies a relative local_path
 // (fetch or draft) is an error naming the model, the value and the fix
 // ("write it as an absolute path"), from any working directory. Why: no tool
-// agrees on what a relative local_path is relative to (wt model add makes it
+// agrees on what a relative local_path is relative to (wt-model model add makes it
 // absolute, llmbench resolves it from its own cwd, modeladmin from wt's), so
 // cleanup cannot know which directory to protect: it fails closed.
 func TestProtectedPathsRelativeFailsClosed(t *testing.T) {

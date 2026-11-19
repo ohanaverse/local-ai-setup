@@ -726,7 +726,7 @@ func TestCloudSyncOllamaRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 // Every pending plan is refused (the ollama flow's with exit 5, as "no longer the
 // plan that was approved"), no ollama command runs, and no registry.toml is
 // left behind: an empty one would make every later command load an empty
-// registry instead of saying that there is none and naming `wt model init`.
+// registry instead of saying that there is none and naming `wt-model model init`.
 // The ollama-only half starts from a registry with no ollama model, whose
 // plan is all additions and so reads the same when made again from nothing:
 // it is the ollama provider row, gone with the file, that makes it another

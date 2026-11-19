@@ -49,7 +49,7 @@ type Row struct {
 	ModelName  string
 	Tags       []string
 	// Location is "local" or "cloud", or "" for a registry row whose location
-	// does not resolve (a gap the user repairs with `wt model edit`).
+	// does not resolve (a gap the user repairs with `wt-model model edit`).
 	Location   string
 	Registered bool
 	Status     Status
@@ -178,7 +178,7 @@ func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
 	// A registry id is taken: a discovered artifact that would be listed
 	// under one (a row omlx/Foo whose model_name is something else, beside an
 	// on-disk Foo) is left out, as internal/catalog leaves it out of the
-	// pickers. Two rows with one id would make `wt model rm <id>` and the
+	// pickers. Two rows with one id would make `wt-model model rm <id>` and the
 	// Models tab's cursor, which both go by id, act on the wrong one.
 	taken := map[string]bool{}
 	for _, m := range cfg.Models {

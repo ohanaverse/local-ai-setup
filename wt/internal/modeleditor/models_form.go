@@ -126,7 +126,7 @@ func (f *modelForm) editable(field int) bool {
 // formProviders are the providers an add can choose: every registry provider
 // and the ones wt can seed a row for when a model names them (openrouter
 // among them), without mlx_lm_server — its model is a target+draft pairing,
-// which takes two artifacts: `wt model add mlx_lm_server <target> --draft
+// which takes two artifacts: `wt-model model add mlx_lm_server <target> --draft
 // <draft>` adds one, and the form has no field for a draft.
 func formProviders(cfg *config.Config) []string {
 	ids := []string{}
@@ -498,8 +498,9 @@ var modelFormHints = []string{
 // provider there would otherwise find it missing and nothing that says how a
 // pairing is added.
 var modelFormPairingHints = []string{
-	"a pairing: wt model add mlx_lm_server <target> --draft <draft>",
-	"wt model add mlx_lm_server T --draft D",
+	"a pairing: wt-model model add mlx_lm_server <target> --draft <draft>",
+	"wt-model model add mlx_lm_server T --draft D",
+	"wt-model model add mlx_lm_server …",
 }
 
 // formWindow chooses which of a form's n fields are drawn in room rows: count

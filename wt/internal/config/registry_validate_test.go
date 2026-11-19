@@ -235,7 +235,7 @@ repo = 7
 // a model with no location of its own inherits its provider's, so a provider
 // with none (or a mistyped one) makes the model unusable. A write that leaves
 // a touched model in that state is refused; a provider row added in the same
-// write counts, which is what lets `wt model add` seed and add at once.
+// write counts, which is what lets `wt-model model add` seed and add at once.
 func TestUpdateRegistryValidatesAModelAgainstItsProviderRow(t *testing.T) {
 	const gaps = docRegistry + `
 [[providers]]
@@ -337,7 +337,7 @@ model_name = "old"
 // is in the file exactly as it was (the registry here is in the writer's
 // own layout, as a registry wt has written once is), when another key of
 // its model is patched and when its cost table is. Before #322 the
-// validator refused such a row, so every `wt model edit` of that model and
+// validator refused such a row, so every `wt-model model edit` of that model and
 // every `wt cloud-sync` with a change for it stopped with "start must be
 // before end".
 func TestUpdateRegistryKeepsAWindowPastMidnightByteForByte(t *testing.T) {

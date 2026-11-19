@@ -46,15 +46,15 @@ func TestOneErrorLineThroughTheRealTree(t *testing.T) {
 		code  int
 		usage bool // the usage block is shown before the line
 	}{
-		"unknown flag on a leaf":   {[]string{"litellm", "status", "--bogus"}, 1, false},
-		"bad arg count on a leaf":  {[]string{"litellm", "status", "extra"}, 1, false},
-		"unknown flag on the root": {[]string{"--bogus"}, 1, true},
-		"error from the root RunE": {[]string{"-A", "nosuch"}, 1, false},
-		"error from a leaf RunE":   {[]string{"model", "rm", "nosuch/nosuch", "--yes"}, 1, false},
-		"smoke usage mistake":      {[]string{"smoke", "--tools", "--cwd"}, 1, true},
-		"smoke bad arg count":      {[]string{"smoke", "a", "b"}, 1, true},
-		"stop bad arg count":       {[]string{"stop", "a", "b"}, 1, true},
-		"model edit usage mistake": {[]string{"model", "edit", "nosuch/nosuch"}, 1, true},
+		"unknown flag on a leaf":           {[]string{"litellm", "status", "--bogus"}, 1, false},
+		"bad arg count on a leaf":          {[]string{"litellm", "status", "extra"}, 1, false},
+		"unknown flag on the root":         {[]string{"--bogus"}, 1, true},
+		"error from the root RunE":         {[]string{"-A", "nosuch"}, 1, false},
+		"error from a leaf RunE":           {[]string{"model", "rm", "nosuch/nosuch", "--yes"}, 1, false},
+		"smoke usage mistake":              {[]string{"smoke", "--tools", "--cwd"}, 1, true},
+		"smoke bad arg count":              {[]string{"smoke", "a", "b"}, 1, true},
+		"stop bad arg count":               {[]string{"stop", "a", "b"}, 1, true},
+		"pointer swallows a usage mistake": {[]string{"model", "edit", "nosuch/nosuch"}, 1, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, code := runRoot(t, tc.args...)

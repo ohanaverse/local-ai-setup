@@ -441,8 +441,8 @@ func TestLaunchRunsBesideABrokenRegistry(t *testing.T) {
 // TestStatsFamilyNoNoteWithoutARegistry pins `wt stats --family` on a
 // session-only machine: no model server answers and there is no registry at
 // the default path, so the families come from each id's prefix and no note
-// says the configuration "did not load" (it would send the user to `wt model
-// init`, building host state the split keeps off a session machine). A
+// says the configuration "did not load" (it would send the user to `wt-model
+// model init`, building host state the split keeps off a session machine). A
 // registry that exists and does not load still gets its note
 // (TestStatsFamilyNoteNamesTheRepairThatWorks).
 func TestStatsFamilyNoNoteWithoutARegistry(t *testing.T) {
@@ -459,7 +459,7 @@ func TestStatsFamilyNoNoteWithoutARegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, stderr := runStats(t, a, "--family", "qwen")
-	if strings.Contains(stderr, "did not load") || strings.Contains(stderr, "wt model init") {
+	if strings.Contains(stderr, "did not load") || strings.Contains(stderr, "model init") {
 		t.Errorf("stderr = %q, want no registry note on a machine with no registry", stderr)
 	}
 }

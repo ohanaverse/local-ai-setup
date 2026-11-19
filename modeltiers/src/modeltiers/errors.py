@@ -10,7 +10,7 @@ class ConfigError(ModelTiersError):
 
 
 class InventoryError(ModelTiersError):
-    """`wt model list --json` could not be run or read."""
+    """`wt-model model list --json` could not be run or read."""
 
 
 class FetchError(ModelTiersError):

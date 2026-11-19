@@ -304,14 +304,14 @@ To add another model (e.g., a different qwen3.8 quantization):
 1. Edit `benchmarks/qwen3.8-benchmark`
 2. Add an entry to the `DIRECT_URLS`, `DIRECT_MODELS` and `LITELLM_MODELS` associative arrays
 3. Add the key to `ISOLATE_ID` (the `llmbench provider` id that isolates it) and to both `for backend in` loops
-4. Give the model a LiteLLM route: register it (`wt model add`) and run `wt litellm sync` while it is running, or start it through wt. Don't hand-add the row to `~/.config/litellm/config.yaml` — wt builds the managed rows from `registry.toml` plus live probes ([00-config-map](../docs/guides/00-config-map.md))
+4. Give the model a LiteLLM route: register it (`wt-model model add`) and run `wt litellm sync` while it is running, or start it through wt. Don't hand-add the row to `~/.config/litellm/config.yaml` — wt builds the managed rows from `registry.toml` plus live probes ([00-config-map](../docs/guides/00-config-map.md))
 
 For a totally new provider (say, vLLM), add it to:
 - `DIRECT_URLS`, `DIRECT_MODELS`, `LITELLM_MODELS`
 - `ISOLATE_ID` and both `for backend in` loops
 - llmbench: a `Backend` with the provider's start/stop/warmup in `llmbench/src/llmbench/providers/lifecycle/backends/`, registered in `BACKENDS` (see the `wt-adding-a-benchmark-backend` skill). The script has no service-management code of its own; `isolate_one` calls `llmbench provider isolate`.
 
-For a new OpenRouter model, add its slug to the `OPENROUTER_MODELS` array in the script and register the model (`wt model add`): wt routes every configured cloud model, so the next `wt litellm sync` (or `wt start`) writes its `openrouter/<slug>` row — don't hand-add it to `~/.config/litellm/config.yaml`. The OpenRouter loop tests each model both directly and via LiteLLM automatically.
+For a new OpenRouter model, add its slug to the `OPENROUTER_MODELS` array in the script and register the model (`wt-model model add`): wt routes every configured cloud model, so the next `wt litellm sync` (or `wt start`) writes its `openrouter/<slug>` row — don't hand-add it to `~/.config/litellm/config.yaml`. The OpenRouter loop tests each model both directly and via LiteLLM automatically.
 
 ---
 

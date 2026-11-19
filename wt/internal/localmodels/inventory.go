@@ -253,7 +253,7 @@ func (s *source) matchArtifact(artifact, modelName string) bool {
 // ownDirectory reports whether the directory matched to a registered model
 // is that model's own. matchArtifact goes by leaf name, so a model registered
 // as org-a/Name can be matched to org-b/Name; a path wt prints is a path
-// someone may delete, and that one would send the reader of `wt model rm` to
+// someone may delete, and that one would send the reader of `wt-model model rm` to
 // another organization's weights (closed issue #266). The check sits here, at
 // the match, so that Entry.Path is safe for every consumer rather than for
 // the ones that remember to ask.

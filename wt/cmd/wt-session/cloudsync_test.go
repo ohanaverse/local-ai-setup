@@ -304,7 +304,7 @@ func TestCloudSyncCommandRefusals(t *testing.T) {
 		}
 	}
 
-	broken := &app{hostSet: true, hostCfg: &config.Config{}, hostLoadErr: fmt.Errorf("%w at /x/registry.toml — seed it with `wt model init`", config.ErrRegistryMissing)}
+	broken := &app{hostSet: true, hostCfg: &config.Config{}, hostLoadErr: fmt.Errorf("%w at /x/registry.toml — seed it with `wt-model model init`", config.ErrRegistryMissing)}
 	err := run(broken, "--dry-run")
 	if err == nil || !strings.HasPrefix(err.Error(), "config error: model registry not found") || strings.Contains(err.Error(), "wt config") {
 		t.Errorf("with an unloadable config: err = %v, want the config error with no second repair", err)
@@ -861,7 +861,7 @@ func TestCloudSyncRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 // that changed when the registry is gone by the time of the write (removed
 // while the user reads the question). Nothing is applied, and no registry.toml
 // is left behind: an empty one would make every later command load an empty
-// registry instead of saying that there is none and naming `wt model init`.
+// registry instead of saying that there is none and naming `wt-model model init`.
 func TestCloudSyncRefusedPlanDoesNotCreateARegistry(t *testing.T) {
 	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
 	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})

@@ -72,7 +72,7 @@ func rowByID(t *testing.T, rows []Row, id string) Row {
 
 // TestRowsListEveryModelWithItsStatus verifies one row per registry model
 // and per discovered model, each with the status, running state, path and
-// size the spec gives it. This table is all `wt model list` and the Models
+// size the spec gives it. This table is all `wt-model model list` and the Models
 // tab show; a row left out here is a model the user cannot see, edit or
 // remove.
 func TestRowsListEveryModelWithItsStatus(t *testing.T) {
@@ -163,7 +163,7 @@ func TestRowsMarkAnUntrustedProbe(t *testing.T) {
 	}
 }
 
-// TestWeightsNote verifies what `wt model rm` tells the user is left behind
+// TestWeightsNote verifies what `wt-model model rm` tells the user is left behind
 // for each kind of row. wt never deletes weights, so this line is the only
 // thing between a removed row and tens of gigabytes nobody remembers.
 func TestWeightsNote(t *testing.T) {
@@ -327,7 +327,7 @@ func TestRowsPairADuplicatedIDByProvider(t *testing.T) {
 // TestRowsNeverListTwoRowsWithOneID verifies a discovered artifact whose id
 // a registry row already holds is left out: a row omlx/Foo whose model_name
 // matches nothing on disk, beside an on-disk Foo, would otherwise be listed
-// twice under omlx/Foo, once missing and once new. `wt model rm omlx/Foo`
+// twice under omlx/Foo, once missing and once new. `wt-model model rm omlx/Foo`
 // and the Models tab both act on a row by its id.
 func TestRowsNeverListTwoRowsWithOneID(t *testing.T) {
 	cfg := &config.Config{
@@ -358,7 +358,7 @@ func TestRowsNeverListTwoRowsWithOneID(t *testing.T) {
 // TestRowsCarryWhatIsMalformedInTheRegistryRow verifies a row carries the
 // phrases for its model's malformed fetch or draft (config.Model.Malformed),
 // an empty list for a well-formed registry row and for a discovered one, and
-// that the record changes nothing else about the row. `wt model list` prints
+// that the record changes nothing else about the row. `wt-model model list` prints
 // them and the Models tab is built on the same rows; without them a
 // hand-typed `fetch = "~/models/x"` just reads "missing", with no hint why.
 func TestRowsCarryWhatIsMalformedInTheRegistryRow(t *testing.T) {

@@ -1,5 +1,5 @@
-// wt model list — every registry model and every discovered local model,
-// with live status. Read-only.
+// wt-model model list — every registry model and every discovered local
+// model, with live status. Read-only.
 package main
 
 import (
@@ -17,14 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// probeInventory is a test seam for the host commands (model list, served,
-// litellm sync, the Models screen (`wt-model model`), model rm): production probes
-// the live local-model inventory. cmd/wt-session's TestMain stubs it to
-// localmodels.OnDiskSnapshotForTest so no test dials the developer's real
-// ollama/omlx/mtplx servers, and tests that need a verdict stub it with their
-// own snapshot. No session path reads it (the boundary test).
-var probeInventory = localmodels.Inventory
-
 // modelListColumns are the text listing's columns. SIZE and PATH are the two
 // a narrow terminal gives up (fitModelList).
 var modelListColumns = []cli.PlainColumn{
@@ -32,8 +24,8 @@ var modelListColumns = []cli.PlainColumn{
 	{Head: "SIZE", Right: true}, {Head: "PATH"},
 }
 
-func modelListCmd(a *app) *cobra.Command {
-	var asJSON, fromServer bool
+func modelListCmd(h *host) *cobra.Command {
+	var asJSON bool
 	c := &cobra.Command{
 		Use:   "list",
 		Short: "List every registry model and every local model found on this machine",
@@ -53,34 +45,25 @@ func modelListCmd(a *app) *cobra.Command {
 			"has the same in each model's \"malformed\" array. A cost.time_prices row that\n" +
 			"breaks the registry's rules (an unknown timezone, a time that is not HH:MM)\n" +
 			"is named the same way: the model picker does not apply such a row.\n\n" +
-			"--server lists the model server's catalog instead, as a client session sees\n" +
-			"it (MODEL, STATE running|loading|stopped|blocked|unknown, LOC, TIER and the\n" +
-			"client sessions using the model). Its --json is a different document from the\n" +
-			"registry's, described by docs/contracts/model-list.server.sample.json. Needs a\n" +
-			"model server ([model-server] in config.toml, or WT_MODEL_URL).",
-		Example:      "  wt model list\n  wt model list --json\n  wt model list --server\n  wt model list --server --json",
+			"The model server's catalog as a client session sees it is `wt model list --server`, on the session machine.",
+		Example:      "  wt-model model list\n  wt-model model list --json",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if fromServer {
-				cmd.SilenceUsage, cmd.SilenceErrors = true, true
-				return runModelListServer(cmd.Context(), cmd.OutOrStdout(), a, asJSON, stdoutWidth())
-			}
 			// The load error only: a registry with a gap in it (a model
 			// whose provider has no row) is exactly what this list is for.
-			cfg, loadErr := a.hostConfig()
+			cfg, loadErr := h.hostConfig()
 			if loadErr != nil {
-				return configError(loadErr)
+				return config.ConfigError(loadErr)
 			}
-			return runModelList(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, asJSON, stdoutWidth())
+			return runModelList(cmd.OutOrStdout(), cmd.ErrOrStderr(), h.probeInventory, cfg, asJSON, h.stdoutWidth())
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "machine-readable output, with size_bytes and path for every row")
-	c.Flags().BoolVar(&fromServer, "server", false, "list the model server's catalog (a client session's view) instead of the registry")
 	return c
 }
 
-// modelListJSON is `wt model list --json`'s one document.
+// modelListJSON is `wt-model model list --json`'s one document.
 type modelListJSON struct {
 	Registry string         `json:"registry"`
 	Models   []modelListRow `json:"models"`
@@ -113,8 +96,10 @@ type modelListRow struct {
 	Malformed []string `json:"malformed"`
 }
 
-func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width int) error {
-	snap := probeInventory(cfg)
+// runModelList prints the listing for cfg from one round of probe (the
+// host's probeInventory seam) at width (0: no limit).
+func runModelList(out, errOut io.Writer, probe func(*config.Config) localmodels.Snapshot, cfg *config.Config, asJSON bool, width int) error {
+	snap := probe(cfg)
 	rows := modeladmin.Rows(cfg, snap)
 	if asJSON {
 		doc := modelListJSON{Registry: config.RegistryPath(), Models: []modelListRow{}, Providers: map[string]string{}}
@@ -148,10 +133,10 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 		// Only a provider the registry calls local is probed: with none,
 		// nothing was looked for, and "none found" would say otherwise.
 		if len(snap.Providers) == 0 {
-			fmt.Fprintln(out, "no models: the registry has none, and no local provider row to look for models with (`wt model init` adds them; `wt model add` registers a model)")
+			fmt.Fprintln(out, "no models: the registry has none, and no local provider row to look for models with (`wt-model model init` adds them; `wt-model model add` registers a model)")
 			return nil
 		}
-		fmt.Fprintln(out, "no models: the registry has none, and no local model was found on this machine (add one with `wt model add`)")
+		fmt.Fprintln(out, "no models: the registry has none, and no local model was found on this machine (add one with `wt-model model add`)")
 		return nil
 	}
 	cols, cells, dropped := fitModelList(rows, width)
@@ -165,7 +150,7 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 		}
 	}
 	if dropped != "" {
-		fmt.Fprintf(errOut, "(%s not shown at this width; `wt model list --json` has every column)\n", dropped)
+		fmt.Fprintf(errOut, "(%s not shown at this width; `wt-model model list --json` has every column)\n", dropped)
 	}
 	noteMalformed(errOut, cfg)
 	return nil
@@ -196,7 +181,7 @@ func noteMalformed(errOut io.Writer, cfg *config.Config) {
 			fmt.Fprintf(errOut, "%s: %s; wt reads it as absent (%s)\n", cli.VisibleID(m.ID), strings.Join(problems, ", "), hint)
 		}
 		if len(refused) > 0 {
-			fmt.Fprintf(errOut, "%s: %s; `wt start` refuses this model until it is fixed (%s, or `wt model edit %s --clear-serve-args`)\n",
+			fmt.Fprintf(errOut, "%s: %s; `wt start` refuses this model until it is fixed (%s, or `wt-model model edit %s --clear-serve-args`)\n",
 				cli.VisibleID(m.ID), strings.Join(refused, ", "), hint, cli.VisibleID(m.ID))
 		}
 	}

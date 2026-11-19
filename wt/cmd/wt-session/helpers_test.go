@@ -454,7 +454,7 @@ func TestConfigErrorForAMissingRegistryNamesModelInit(t *testing.T) {
 	}
 	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
 	want := "config error: model registry not found at " + registry +
-		" — seed it with `wt model init`"
+		" — seed it with `wt-model model init`"
 	if got := configError(loadErr).Error(); got != want {
 		t.Errorf("configError =\n  %q\nwant\n  %q", got, want)
 	}

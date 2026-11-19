@@ -298,7 +298,7 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 	// A model whose only row breaks a rule (a time written "9:00", which is
 	// not "HH:MM") has one price: its flat one, with no mark, under a plain
 	// COST heading. A mark there would promise a change that never comes;
-	// `wt model list` is where the row is named.
+	// `wt-model model list` is where the row is named.
 	odd := timedTableRows(deepseekDear)[:1]
 	odd[0].Model.Cost.TimePrices[0].Windows = []config.CostWindow{{Days: []string{"mon"}, Start: "9:00", End: "17:00"}}
 	odd[0] = odd[0].pricedAt(deepseekDear)

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -54,14 +53,13 @@ func execOn(c *cobra.Command, args ...string) (string, error) {
 }
 
 // TestHostCommandsStillLoadTheRegistry pins R3 and R17: after the flip the
-// host commands of this binary (`model list` and its --json, `model add`,
-// `cloud-sync --dry-run`, `litellm list`, `served`, `warm`, `stop
-// <provider>`) still read registry.toml, through app.hostConfig() and never
-// through the model server, even with a model server configured, and behave
-// as they did before it: each one's output or error equals the pre-flip
-// function's over config.Load()'s config, newApp itself reads no registry,
-// and `wt model list --json` still has the shape of model-list.sample.json
-// (modeltiers reads that document as its whole inventory). A host command
+// host commands of this binary (`cloud-sync --dry-run`, `litellm list`,
+// `served`, `warm`, `stop <provider>`) still read registry.toml, through
+// app.hostConfig() and never through the model server, even with a model
+// server configured, and behave as they did before it: each one's output or
+// error equals the pre-flip function's over config.Load()'s config, and
+// newApp itself reads no registry (`model list --json` and `model add` moved
+// to wt-model, whose tests pin model-list.sample.json). A host command
 // moved onto the session config would see no models and silently plan,
 // route or stop nothing.
 func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
@@ -85,30 +83,6 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 		noRegistry bool
 	}
 	for _, tc := range []hostCase{
-		{name: "model list", build: modelCmd, args: []string{"list"},
-			before: func(t *testing.T, cfg *config.Config) (string, error) {
-				var out, errOut bytes.Buffer
-				err := runModelList(&out, &errOut, cfg, false, stdoutWidth())
-				return out.String() + errOut.String(), err
-			},
-			check: func(t *testing.T, out string) {
-				if !strings.Contains(out, "openrouter/vendor--gpt") {
-					t.Errorf("the registry's model is not listed:\n%s", out)
-				}
-			}},
-		{name: "model list --json", build: modelCmd, args: []string{"list", "--json"},
-			check: func(t *testing.T, out string) {
-				checkJSONShape(t, "output", []byte(out), reflect.TypeFor[modelListJSON]())
-				if !strings.Contains(out, `"openrouter/vendor--gpt"`) {
-					t.Errorf("the registry's model is not in the document:\n%s", out)
-				}
-			}},
-		{name: "model add", build: modelCmd, args: []string{"add", "openrouter", "vendor/new", "--family", "f"},
-			check: func(t *testing.T, out string) {
-				if !strings.Contains(out, "added model: openrouter/vendor--new") {
-					t.Errorf("output = %q, want the added model", out)
-				}
-			}},
 		{name: "cloud-sync --dry-run", build: cloudSyncCmd, args: []string{"--only", "openrouter", "--dry-run"},
 			before: func(t *testing.T, cfg *config.Config) (string, error) {
 				var out bytes.Buffer
@@ -148,7 +122,6 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f, _ := hostHome(t, cloudSyncRegistry)
 			stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-			stubSeedEnv(t, config.SeedEnv{})
 			stubRouteSync(t, "")
 			var stopped []string
 			oldStop := stopProvider
@@ -202,7 +175,6 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 		build func(a *app) *cobra.Command
 		args  []string
 	}{
-		{"model list", modelCmd, []string{"list"}},
 		{"cloud-sync", cloudSyncCmd, []string{"--dry-run"}},
 		{"served", servedCmd, []string{"omlx"}},
 		{"warm", warmCmd, []string{"omlx", "m"}},

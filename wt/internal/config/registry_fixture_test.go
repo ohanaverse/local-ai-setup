@@ -32,7 +32,7 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Errorf("openrouter provider decoded wrong: %+v", openrouter)
 	}
 	// The native provider's location must match what the writers emit
-	// (`wt model init`'s agent rows, wt's migrate.go) — a fixture pinned to
+	// (`wt-model model init`'s agent rows, wt's migrate.go) — a fixture pinned to
 	// a shape no writer produces lets location-keyed logic pass CI while
 	// breaking on real registries.
 	if agy.ID != "agy" || agy.Auth.Type != "native" || agy.Location != LocationCloud {
@@ -44,7 +44,7 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Errorf("pinned-cloud provider decoded wrong: %+v", pinned)
 	}
 
-	// The mlx_lm_server provider must decode with the shape `wt model
+	// The mlx_lm_server provider must decode with the shape `wt-model model
 	// init`'s default row has (auth.type "none", OpenAI-compatible
 	// base_url, location "local") — a fixture pinned to a shape no writer
 	// produces lets location-keyed logic pass CI while breaking on real

@@ -84,7 +84,7 @@ func TestWtModelModelSyncsRoutesOnceOnExit(t *testing.T) {
 
 // TestWtModelModelExitSyncUnderARedirectedRegistry is the scratch-registry
 // safety test for `wt-model model`: the Models tab writes the registry, and
-// the sync that follows on exit obeys the same rule as `wt model add`.
+// the sync that follows on exit obeys the same rule as `wt-model model add`.
 // LiteLLM's config.yaml follows neither registry variable, so with the
 // registry redirected and config.yaml not named, the default file is not
 // touched and the user is told why; named, that file is the one synced. The

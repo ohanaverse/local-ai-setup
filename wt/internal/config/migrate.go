@@ -434,7 +434,7 @@ func upsertAgent(cfg *Config, name string, providers []string, defaultProvider s
 // as it is now (lockedApply), written only when something changed, so a
 // concurrent `wt config` save is not reverted.
 //
-// `wt model add` calls it after the provider's registry row exists: an agent
+// `wt-model model add` calls it after the provider's registry row exists: an agent
 // naming a provider the registry lacks fails validation on the next Load.
 // It runs on an add, not on every Load, so a user who removes a provider from
 // an agent keeps it removed until they register another of its models.

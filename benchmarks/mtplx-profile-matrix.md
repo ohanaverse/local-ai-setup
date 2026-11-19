@@ -12,7 +12,7 @@ throughput benchmark: it counts refusals and guard actions, and checks that the 
 For each round and each profile (interleaved: `sustained-1`, `turbo-1`, `stable-1`,
 `sustained-2`, ...):
 
-1. `wt model edit <model> --serve-arg --profile --serve-arg <profile>` (none for `sustained`,
+1. `wt-model model edit <model> --serve-arg --profile --serve-arg <profile>` (none for `sustained`,
    which is what wt starts), then `wt stop mtplx`, so every run begins with a cold server.
 2. Resets a small scratch repo: a `median` that is wrong for even lengths, with four `unittest`
    tests, two of which fail. The **heavy** task adds `notes/`, five files of seeded filler

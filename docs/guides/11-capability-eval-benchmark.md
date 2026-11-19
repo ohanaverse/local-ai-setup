@@ -58,7 +58,7 @@ There is no `--skip-judge` flag here (unlike `llmbench agent run`): `coding` has
 `benchmarks/suites/eval-sushi-vs-ollama.toml` compares the Sushi `beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw` pack with `ollama/qwen3.8:27b-mlx` on the same categories. Set it up in this order:
 
 1. **Raise the GPU wired limit.** `sudo sysctl iogpu.wired_limit_mb=59000` (you run it; it resets on reboot). wt and llmbench refuse to start Sushi below 51,934 MiB and never set it themselves. See [02-providers-and-models](02-providers-and-models.md) Step 4.
-2. **Install Sushi and pull the pack, then register it with the wt that knows Sushi, before the suite is loaded.** A row naming an unknown model fails `load_suite`. `wt model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>` gives the pack the id the suite's sushi row names, `sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`; the other row needs `ollama/qwen3.8:27b-mlx` pulled and registered.
+2. **Install Sushi and pull the pack, then register it with the wt that knows Sushi, before the suite is loaded.** A row naming an unknown model fails `load_suite`. `wt-model model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>` gives the pack the id the suite's sushi row names, `sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`; the other row needs `ollama/qwen3.8:27b-mlx` pulled and registered.
 3. **The judge route.** The shipped suite sets `[judge] route = "claude-cli"` with `model = "claude-opus-5-5"`, so the judge runs on your Claude subscription and needs no judge API key; run `claude auth login` first if you have not (see the `claude-cli` notes under Gotchas). To judge through a metered API instead, set `route` to `"openrouter"` or `"litellm"` and set `model` to match, because the model is passed through as written: for openrouter use `model = "anthropic/claude-opus-5"`, as `eval-sweep.toml` does; for litellm use a `model_name` your proxy's `config.yaml` serves. `--dry-run` does not call the judge, so a wrong judge model only shows up when the run reaches judging.
 4. **Dry run first**, as for any suite:
 
@@ -121,7 +121,7 @@ uv run llmbench probe thinking \
 uv run llmbench provider restore --unload
 ```
 
-`<omlx-model-…>` is the name omlx serves (its model directory's basename, as `direct_model` in a suite row) and `<mtplx-repo-id>` the repo id mtplx serves under; `wt model list` shows what your registry holds. Illustrative only, as of issue #403 (2026-10): the answer-shape difference there came from the omlx 8-bit build of Qwen3.8-27B and the short thinking from the 4-bit build, so that issue's run took both omlx builds and mtplx's Quality build, with the names `eval-quant-tier.toml` uses:
+`<omlx-model-…>` is the name omlx serves (its model directory's basename, as `direct_model` in a suite row) and `<mtplx-repo-id>` the repo id mtplx serves under; `wt-model model list` shows what your registry holds. Illustrative only, as of issue #403 (2026-10): the answer-shape difference there came from the omlx 8-bit build of Qwen3.8-27B and the short thinking from the 4-bit build, so that issue's run took both omlx builds and mtplx's Quality build, with the names `eval-quant-tier.toml` uses:
 
 ```bash
 # from: ~/github/ohanaverse/local-ai-setup/llmbench (illustrative, issue #403)

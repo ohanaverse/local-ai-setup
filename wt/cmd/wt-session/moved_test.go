@@ -24,13 +24,15 @@ func TestMovedErrorIsOneLineExitOne(t *testing.T) {
 }
 
 // conditionalMoves are pointers that are not stubs from movedCommands: a live
-// command that points at wt-model only in some shape (bare `wt model`). Task 37
-// adds `model list`, 4d-ii adds `stop`.
+// command that points at wt-model only in some shape (bare `wt model`, and
+// `wt model list` without --server). 4d-ii adds `stop`.
 var conditionalMoves = []struct {
 	args     []string
 	old, new string
 }{
 	{[]string{"model"}, "model", "model"},
+	{[]string{"model", "list"}, "model list", "model list"},
+	{[]string{"model", "list", "--json"}, "model list", "model list"},
 }
 
 // TestMovedCommandsPointAtWtModel is the one table test of every moved-command
@@ -80,12 +82,11 @@ func TestMovedCommandsPointAtWtModel(t *testing.T) {
 
 // TestMovedStubsAreHiddenAndAnnotated checks every movedCommands row is
 // registered in the real tree as a hidden, flag-parsing-off stub carrying the
-// moved annotation (which TestNoWtCommandIsHidden skips on). While the table
-// is empty (4a-i) it skips: TestAddMovedStubsFindsOrAddsTheParent runs the stub
-// through a scratch root meanwhile.
+// moved annotation (which TestNoWtCommandIsHidden skips on). An empty table
+// fails: the test would check nothing.
 func TestMovedStubsAreHiddenAndAnnotated(t *testing.T) {
 	if len(movedCommands) == 0 {
-		t.Skip("movedCommands is empty until Tasks 37, 38 and 42 add rows")
+		t.Fatal("movedCommands is empty; the test is vacuous")
 	}
 	root := rootCmdWith(testHooks())
 	for _, m := range movedCommands {

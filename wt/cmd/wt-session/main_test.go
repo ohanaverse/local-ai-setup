@@ -347,7 +347,7 @@ func TestCwdDotIsToldToDropIt(t *testing.T) {
 // TestCwdPassesACommandThatSharesADirectorysName pins the shell side of
 // #392's guard: a command agent's first word is the program to run, and a
 // bare name found on PATH runs that program whatever the current directory
-// holds. `shell-wt --cwd wt model list` from the monorepo root, beside its
+// holds. `shell-wt --cwd wt worktrees --plain` from the monorepo root, beside its
 // `wt/` directory, must run wt, not be refused as --cwd's value. A model
 // agent gets no such pass: its first word is never a program.
 func TestCwdPassesACommandThatSharesADirectorysName(t *testing.T) {

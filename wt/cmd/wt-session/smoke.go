@@ -551,7 +551,7 @@ func resolveSmokeModelRemote(ctx context.Context, ms *modelSession, cfg *config.
 			"model %q cannot be smoke-tested right now (no agent supports it, or its route is not set up — check `wt litellm status` on the model server host)", modelID)
 	}
 	if len(cands) == 0 {
-		return smokeTarget{}, nil, fmt.Errorf("the model server has no models to test; add one on the server host with wt model add, or pull a local one there")
+		return smokeTarget{}, nil, fmt.Errorf("the model server has no models to test; add one on the server host with wt-model model add, or pull a local one there")
 	}
 	models := make([]config.Model, len(cands))
 	for i, c := range cands {

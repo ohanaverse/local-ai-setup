@@ -55,8 +55,8 @@ type Policy struct {
 	V1Base     bool
 }
 
-// Seed is the default registry row wt adds for a provider (`wt model init`,
-// `wt model add`), and what makes wt notice the provider is installed.
+// Seed is the default registry row wt adds for a provider (`wt-model model init`,
+// `wt-model model add`), and what makes wt notice the provider is installed.
 type Seed struct {
 	Name      string
 	Location  string   // "local" or "cloud"

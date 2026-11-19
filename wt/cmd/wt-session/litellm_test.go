@@ -109,7 +109,7 @@ func TestLitellmSyncUsesLiveInventory(t *testing.T) {
 }
 
 // TestLitellmSyncWaitsForTheProxy pins #379 at the command: `wt litellm
-// sync` (which `wt cloud-sync`, `wt model add|edit|rm|init` and the Models tab
+// sync` (which `wt cloud-sync`, `wt-model model add|edit|rm|init` and the Models tab
 // run after a registry write) waited for nothing after its restart, so it
 // returned while the proxy still refused connections. With a proxy listening
 // at the [litellm] url, the restart — the WT_LITELLM_RESTART_CMD override
@@ -691,7 +691,7 @@ func TestLitellmStateCommandsFailOnAnUnreadableProxyConfig(t *testing.T) {
 
 // validationOnlyApp builds an app via newApp() in a temp XDG dir whose registry
 // has a model pointing at a missing provider: Load succeeds but Validate fails
-// (a row whose provider has no row; `wt model init` seeds one for a provider
+// (a row whose provider has no row; `wt-model model init` seeds one for a provider
 // it has a default for, any other is a hand edit of registry.toml).
 func validationOnlyApp(t *testing.T) (*app, string) {
 	t.Helper()
@@ -1465,7 +1465,7 @@ general_settings:
 	}{
 		{"provider row without a location", noLocation, `provider "omlx" could not be probed (its registry entry has no location)` + tail, nil},
 		{"providers empty", noProviders, `provider "omlx" could not be probed (the registry has models for it but no provider entry)` + tail,
-			[]string{`provider "ollama" has no [[providers]] row in ` + config.RegistryPath() + ", so wt cannot route ollama/gemma:9b; add the row (`wt model init` adds the default ones) or fix the provider_id"}},
+			[]string{`provider "ollama" has no [[providers]] row in ` + config.RegistryPath() + ", so wt cannot route ollama/gemma:9b; add the row (`wt-model model init` adds the default ones) or fix the provider_id"}},
 		{"provider row with a mistyped location", badLocation, `provider "omlx" could not be probed (its registry entry has location "Local"; expected "local" or "cloud")` + tail, nil},
 		{"model with a mistyped location of its own", badModelLocation, `provider "omlx" could not be probed (model "omlx/reg" has location "Local"; expected "local" or "cloud")` + tail, nil},
 	} {
@@ -1872,7 +1872,7 @@ func TestLitellmSyncWarnsAboutAProviderWithNoRow(t *testing.T) {
 		config.Model{ID: "corp/a", ProviderID: "corp", ModelName: "a", Location: config.LocationCloud},
 		config.Model{ID: "corp/b", ProviderID: "corp", ModelName: "b"},
 	)
-	want := `provider "corp" has no [[providers]] row in ` + config.RegistryPath() + ", so wt cannot route corp/a, corp/b; add the row (`wt model init` adds the default ones) or fix the provider_id"
+	want := `provider "corp" has no [[providers]] row in ` + config.RegistryPath() + ", so wt cannot route corp/a, corp/b; add the row (`wt-model model init` adds the default ones) or fix the provider_id"
 	for _, dryRun := range []bool{true, false} {
 		litellmEnv(t, "model_list: []\n")
 		stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})

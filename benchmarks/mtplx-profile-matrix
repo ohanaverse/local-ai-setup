@@ -2,7 +2,7 @@
 # mtplx-profile-matrix — does an mtplx --profile change how a Claude Code slot copes with memory?
 #
 # Built for #393 (mtplx answers 507 "insufficient memory" on Claude Code's prefill). For each
-# round and each profile it sets the model's `serve_args` (wt model edit --serve-arg), restarts
+# round and each profile it sets the model's `serve_args` (wt-model model edit --serve-arg), restarts
 # mtplx cold, runs two Claude Code turns non-interactively through a slot profile, and records
 # the refusals, mtplx's memory-guard actions, request timings and whether the tests passed.
 # Profiles are interleaved (sustained-1, turbo-1, stable-1, sustained-2, ...) so drift in the
@@ -65,20 +65,20 @@ log() { echo "[$(date +%H:%M:%S)] $*"; }
 
 cleanup() {
     log "cleaning up: clearing serve_args, stopping mtplx"
-    run wt model edit "$MODEL" --clear-serve-args > /dev/null 2>&1
+    run wt-model model edit "$MODEL" --clear-serve-args > /dev/null 2>&1
     run wt stop mtplx > /dev/null 2>&1
 }
 
 preflight() {
     log "prerequisite (not checked): a running wt-model serve, configured as [model-server] in ~/.config/agent-wt/config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE) — the turns launch wt --cwd -A claude, which refuses without one"
-    command -v wt > /dev/null && command -v claude > /dev/null || { echo "wt and claude must be on PATH"; exit 1; }
+    command -v wt > /dev/null && command -v wt-model > /dev/null && command -v claude > /dev/null || { echo "wt, wt-model and claude must be on PATH"; exit 1; }
     local busy
-    busy=$(wt model list 2> /dev/null | awk 'NR>1 && ($5=="run" || $5=="load") {print $1}')
+    busy=$(wt-model model list 2> /dev/null | awk 'NR>1 && ($5=="run" || $5=="load") {print $1}')
     if [ -n "$busy" ]; then
         echo "these local models are loaded; unload them first so the measurement is clean:"
         echo "$busy"; exit 1
     fi
-    wt model list 2> /dev/null | grep -q "^$MODEL " || { echo "$MODEL is not in the registry"; exit 1; }
+    wt-model model list 2> /dev/null | grep -q "^$MODEL " || { echo "$MODEL is not in the registry"; exit 1; }
     wt profile list 2> /dev/null | grep -q "$SLOT_PROFILE ok" || { echo "$SLOT_PROFILE is not an ok slot profile (wt profile list)"; exit 1; }
     log "free memory: $(memory_pressure 2> /dev/null | tail -1)"
 }
@@ -150,8 +150,8 @@ EOF
 # set_condition: sustained is what wt starts (its --model-id makes mtplx skip the per-model
 # profile promotion); any other profile is passed through serve_args.
 set_condition() {
-    run wt model edit "$MODEL" --clear-serve-args > /dev/null 2>&1
-    [ "$1" = sustained ] || run wt model edit "$MODEL" --serve-arg --profile --serve-arg "$1"
+    run wt-model model edit "$MODEL" --clear-serve-args > /dev/null 2>&1
+    [ "$1" = sustained ] || run wt-model model edit "$MODEL" --serve-arg --profile --serve-arg "$1"
 }
 
 size() { [ -f "$1" ] && stat -f %z "$1" || echo 0; }

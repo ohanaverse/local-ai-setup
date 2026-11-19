@@ -14,8 +14,18 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/spf13/cobra"
 )
+
+// probeInventory is a test seam for the host code still in wt-session
+// (litellm sync and the after-write route sync, until they move in 4b/4c):
+// production probes the live local-model inventory. cmd/wt-session's TestMain
+// stubs it to localmodels.OnDiskSnapshotForTest so no test dials the
+// developer's real ollama/omlx/mtplx servers, and tests that need a verdict
+// stub it with their own snapshot. No session path reads it (the boundary
+// test).
+var probeInventory = localmodels.Inventory
 
 func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
 	return litellm.RunSync(out, errOut, cfg, probeInventory, asJSON, dryRun)

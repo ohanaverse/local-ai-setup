@@ -119,27 +119,27 @@ class FakeRun:
 
 
 def test_run_wt_runs_exactly_model_list_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    done = subprocess.CompletedProcess(["wt"], 0, stdout=INVENTORY.read_text(), stderr="")
+    done = subprocess.CompletedProcess(["wt-model"], 0, stdout=INVENTORY.read_text(), stderr="")
     fake = FakeRun(done)
     monkeypatch.setattr(subprocess, "run", fake)
     assert json.loads(inventory.run_wt())["registry"].endswith("registry.toml")
-    assert fake.calls == [["wt", "model", "list", "--json"]]
+    assert fake.calls == [["wt-model", "model", "list", "--json"]]
 
 
 def test_wt_not_on_path_is_an_inventory_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(subprocess, "run", FakeRun(FileNotFoundError("wt")))
-    with pytest.raises(InventoryError, match="wt is not on PATH"):
+    monkeypatch.setattr(subprocess, "run", FakeRun(FileNotFoundError("wt-model")))
+    with pytest.raises(InventoryError, match="wt-model is not on PATH"):
         inventory.run_wt()
 
 
 def test_wt_failing_is_an_inventory_error_with_its_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
-    done = subprocess.CompletedProcess(["wt"], 1, stdout="", stderr="registry.toml: bad\n")
+    done = subprocess.CompletedProcess(["wt-model"], 1, stdout="", stderr="registry.toml: bad\n")
     monkeypatch.setattr(subprocess, "run", FakeRun(done))
     with pytest.raises(InventoryError, match="exited 1: registry.toml: bad"):
         inventory.run_wt()
 
 
 def test_wt_hanging_is_an_inventory_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(subprocess, "run", FakeRun(subprocess.TimeoutExpired("wt", 60)))
+    monkeypatch.setattr(subprocess, "run", FakeRun(subprocess.TimeoutExpired("wt-model", 60)))
     with pytest.raises(InventoryError, match="gave no answer"):
         inventory.run_wt()

@@ -15,7 +15,7 @@ start and stop needs all of them.
      has no LiteLLM mapping`, and the picker refuses the row as "(not in
      LiteLLM)"). A native provider (`auth.type = "native"`) is not in the
      table: it never routes through LiteLLM.
-   - `Seed` is the default `[[providers]]` row `wt model init` and `wt model
+   - `Seed` is the default `[[providers]]` row `wt-model model init` and `wt-model model
      add` write, and `Seed.Command` the binary whose presence on PATH means
      "installed". Leave it nil for a provider wt has no default for; its row
      is then a hand edit of `registry.toml` (guide 02, Step 2).

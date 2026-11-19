@@ -1,4 +1,4 @@
-"""The wt inventory: `wt model list --json`, or a saved copy of its output."""
+"""The wt inventory: `wt-model model list --json`, or a saved copy of its output."""
 
 import json
 import subprocess
@@ -10,15 +10,15 @@ from modeltiers import configfile
 from modeltiers.errors import InventoryError
 from modeltiers.records import Inventory, InventoryRow
 
-# Returns the stdout of `wt model list --json`, or raises InventoryError.
+# Returns the stdout of `wt-model model list --json`, or raises InventoryError.
 RunWt = Callable[[], str]
 
-WT_COMMAND = ("wt", "model", "list", "--json")
+WT_COMMAND = ("wt-model", "model", "list", "--json")
 WT_TIMEOUT_SECONDS = 60
 
 
 def run_wt() -> str:
-    """Run `wt model list --json`, the only wt command modeltiers ever runs."""
+    """Run `wt-model model list --json`, the only wt command modeltiers ever runs."""
     command = " ".join(WT_COMMAND)
     try:
         done = subprocess.run(
@@ -30,7 +30,9 @@ def run_wt() -> str:
             timeout=WT_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as exc:
-        raise InventoryError("wt is not on PATH; install it or pass --inventory FILE") from exc
+        raise InventoryError(
+            "wt-model is not on PATH; install it (make install) or pass --inventory FILE"
+        ) from exc
     except subprocess.TimeoutExpired as exc:
         raise InventoryError(f"`{command}` gave no answer in {WT_TIMEOUT_SECONDS} s") from exc
     if done.returncode != 0:
@@ -92,7 +94,7 @@ def parse_inventory(text: str) -> Inventory:
 
 
 def load_inventory(*, path: Path | None, run_wt: RunWt) -> Inventory:
-    """Read `path` when given (and never run wt), else run wt."""
+    """Read `path` when given (and never run wt-model), else run wt-model."""
     if path is None:
         return parse_inventory(run_wt())
     return parse_inventory(configfile.read_text(path, "inventory", InventoryError))

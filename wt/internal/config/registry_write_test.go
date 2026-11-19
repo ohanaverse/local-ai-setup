@@ -54,7 +54,7 @@ func setFamily(id, family string) func(*RegistryDoc) error {
 
 // TestUpdateRegistryWritesAPatch is the write path end to end: a patch lands
 // in the file, wt's own reader sees it, and the rest of the file is as it
-// was. If this breaks, `wt model edit` reports success and changes nothing.
+// was. If this breaks, `wt-model model edit` reports success and changes nothing.
 func TestUpdateRegistryWritesAPatch(t *testing.T) {
 	path := scratchRegistry(t, docRegistry)
 	changed, err := UpdateRegistry(setFamily("ollama/beta", "renamed"))
@@ -81,7 +81,7 @@ func TestUpdateRegistryWritesAPatch(t *testing.T) {
 // promise on the cross-language fixture: a patch that asks for the values a
 // row already has — on the row with integer prices, an empty tags array and a
 // model_info table — writes nothing, so the bytes and the modification time
-// are untouched. A no-op that rewrote the file would make every `wt model
+// are untouched. A no-op that rewrote the file would make every `wt-model model
 // init` look like a change to whatever watches it: an open editor would
 // report the file changed on disk, and a dotfiles repository a new diff.
 func TestUpdateRegistryNoOpLeavesTheFileByteIdentical(t *testing.T) {
@@ -176,7 +176,7 @@ tags = ["code"]
 
 // TestUpdateRegistryCreatesAMissingRegistry pins the first-run case: no
 // file, no directory. A successful apply creates both, the file private
-// (0600), even when it adds nothing — which is how `wt model init` leaves a
+// (0600), even when it adds nothing — which is how `wt-model model init` leaves a
 // registry behind on a machine with nothing installed.
 func TestUpdateRegistryCreatesAMissingRegistry(t *testing.T) {
 	path := scratchRegistry(t, "")

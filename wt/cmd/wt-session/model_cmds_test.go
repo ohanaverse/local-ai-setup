@@ -817,13 +817,14 @@ func TestNoHelpTextNamesModelman(t *testing.T) {
 	}
 }
 
-// TestHelpNamesSushiWhereItListsProviders pins the three help texts that
-// enumerate the providers wt seeds or stops (`wt model init`, `wt model add`
-// and `wt stop`): each must name sushi. Without it a built-in provider added
-// later is silently missing from the help the way sushi was.
+// TestHelpNamesSushiWhereItListsProviders pins the help text of wt's that
+// enumerates the providers it stops (`wt stop`): it must name sushi. Without
+// it a built-in provider added later is silently missing from the help the
+// way sushi was. The `wt-model model init|add` half of this check is
+// cmd/wt-model's test of the same name.
 func TestHelpNamesSushiWhereItListsProviders(t *testing.T) {
 	root := rootCmdWith(testHooks())
-	for _, path := range [][]string{{"model", "init"}, {"model", "add"}, {"stop"}} {
+	for _, path := range [][]string{{"stop"}} {
 		c, _, err := root.Find(path)
 		if err != nil || c == nil || c.Name() != path[len(path)-1] {
 			t.Fatalf("command %v not found: %v", path, err)

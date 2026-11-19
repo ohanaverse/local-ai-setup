@@ -4,7 +4,7 @@
 
 `shell-wt` is the worktree launcher for executing a single command with arguments. Unlike other `*-wt` wrappers, it does not launch an AI agent. Instead, it presents the worktree/branch picker, changes into the chosen directory, and executes a command. With no command, it opens an interactive `bash` in the chosen directory.
 
-Because it has no model layer, `shell-wt` works on a fresh machine without a model registry; model-driven agents still need one (`wt model init` creates `registry.toml`). Shell metacharacters (`|`, `>`, `&&`, etc.) are not interpreted as shell syntax — the arguments are passed to the command verbatim as argv, with no shell and no quoting step. To run pipelines or redirections, use an explicit shell: `shell-wt -- bash -lc 'cmd1 | cmd2'`.
+Because it has no model layer, `shell-wt` works on a fresh machine without a model registry; model-driven agents still need one (`wt-model model init` creates `registry.toml` on the machine that runs wt-model). Shell metacharacters (`|`, `>`, `&&`, etc.) are not interpreted as shell syntax — the arguments are passed to the command verbatim as argv, with no shell and no quoting step. To run pipelines or redirections, use an explicit shell: `shell-wt -- bash -lc 'cmd1 | cmd2'`.
 
 ## Installation
 
@@ -48,7 +48,7 @@ first word need the `--`:
   taken to name (it takes no value, #392): `shell-wt --cwd ./scripts` exits
   with `--cwd takes no value: "./scripts" is a directory; …`. A bare name
   found on `$PATH` is the command whatever the directory holds:
-  `shell-wt --cwd wt model list` beside a `wt/` directory runs `wt`.
+  `shell-wt --cwd wt worktrees --plain` beside a `wt/` directory runs `wt`.
 
 A `--` placed after such a word does not help (`shell-wt models -- x` is
 still refused): put it before the command.

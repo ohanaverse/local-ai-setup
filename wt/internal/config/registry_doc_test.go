@@ -321,7 +321,7 @@ local_path = "/models/alpha"
 }
 
 // TestRemoveModelReturnsTheRow pins RemoveModel: the row is gone from the
-// document and handed back whole, because `wt model rm` never deletes weights
+// document and handed back whole, because `wt-model model rm` never deletes weights
 // and has to print where they are from the row it just removed. It also pins
 // what a removal or an unset leaves behind: `models = []` after the last row
 // goes, and the empty table after a table's last key is unset. That is
@@ -472,7 +472,7 @@ base_url = "http://localhost:8003/v1"
 // top-level key" from the other side: on an empty registry the operations
 // create `providers` and `models`, at their places, and nothing else. A new
 // top-level key is a file wt's own writer refuses to touch again
-// (ErrRegistryTopLevel, #247): every later registry write (`wt model
+// (ErrRegistryTopLevel, #247): every later registry write (`wt-model model
 // init|add|edit|rm`, `wt cloud-sync`) would stop on the registry wt just
 // wrote, while the typed reader went on loading it without a word.
 func TestOperationsCreateOnlyTheKnownTopLevelKeys(t *testing.T) {

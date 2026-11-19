@@ -142,14 +142,14 @@ Present here but absent from `:4000`? config.yaml changed since the proxy last s
 **Step 3 — is the model on disk and running?** Ask wt's live inventory:
 
 ```bash
-wt model list
+wt-model model list
 ```
 
 Read the row for the id. STATUS `ok` means on disk, `missing` means the registry names it and no probe finds it, `new` means on disk with no registry entry (`unknown`: the provider could not be asked). RUNNING `run` or `load` means the model is serving (`load`: omlx is still loading it), which is what a local model's route depends on. Routing itself is recorded nowhere but `config.yaml`, and `wt litellm list` reads it back. What to do, by kind of model:
 
 - **Local model** (omlx/mtplx/mlx_lm_server): its route exists only while it runs, so an on-disk model with no route is simply a stopped model. Start it — the route appears: `wt start <model-id>` (an `mlx_lm_server` pairing: Step 9). A model that is running with no route was started outside wt: launching it through wt, or `wt start <model-id>`, writes the route (Step 10). A model *missing from wt's picker* is a different question: wt lists only what its live probes of ollama/omlx/mtplx find — plus a running `mlx_lm_server` pairing, which has no artifact scan (a stopped one is not listed) — so a local model that is not on disk is not listed at all — download it with the provider's own tool (`ollama pull`, `hf download` into omlx's model directory, `mtplx pull` — [02-providers-and-models](02-providers-and-models.md) Step 5). Run `wt -A <agent>` and read the STATUS/RUNNING columns: a non-running local model on disk is a start row, and a model with no registry entry is listed as `new` (hidden while `-T`/`-F` is set).
 - **Ollama model**: routed while it is *pulled* — `ollama list` must show it (and the daemon must be answering, or `wt litellm sync` leaves ollama's routes alone with a warning; a daemon that refuses the connection gets its local routes removed). A pulled ollama model with no route usually means no sync has run since the pull: run `wt litellm sync`. Launching the model through wt, or `wt start <model-id>`, also writes the route once the model is running (Step 10); `wt litellm sync` stays the fix for a client that reaches the proxy without wt.
-- **Cloud model** (openrouter, or `location = "cloud"`): there is nothing to download or start — wt routes a cloud model whenever `registry.toml` configures it, so a missing route means no sync has run since it was added (a hand edit of `registry.toml`; `wt model add` syncs for itself) or the last sync could not build its row. `wt litellm sync --dry-run` tells them apart: `<model-id>: would route` for the first, a per-id error for the second (a `secret_ref` that `resolved empty`, or an empty `model_name`). If the id is not in the plan at all, its provider has no LiteLLM mapping (check `wt litellm providers`) — such a model is never routed.
+- **Cloud model** (openrouter, or `location = "cloud"`): there is nothing to download or start — wt routes a cloud model whenever `registry.toml` configures it, so a missing route means no sync has run since it was added (a hand edit of `registry.toml`; `wt-model model add` syncs for itself) or the last sync could not build its row. `wt litellm sync --dry-run` tells them apart: `<model-id>: would route` for the first, a per-id error for the second (a `secret_ref` that `resolved empty`, or an empty `model_name`). If the id is not in the plan at all, its provider has no LiteLLM mapping (check `wt litellm providers`) — such a model is never routed.
 
 **Step 4 — give it a route.** There is no per-model routing command (`wt litellm expose` was removed in #179). A route comes from the registry plus the model's live state, so the two moves are a start and a sync:
 
@@ -163,7 +163,7 @@ wt litellm sync                         # write it (restarts the proxy only if c
 wt: <model-id> is running
 ```
 
-A *cloud* model that is not in `registry.toml` cannot be routed by wt at all — add it first (guide 02). A *local* model needs no registry entry: one that is on disk is started by its discovered id `<family>/<artifact>` (`wt model list` shows them as `new`), and is routed under that id — only an `mlx_lm_server` pairing must be registered. For a local model, starting it is the durable fix: the next sync removes a stopped omlx/mtplx/mlx_lm_server model's route again.
+A *cloud* model that is not in `registry.toml` cannot be routed by wt at all — add it first (guide 02). A *local* model needs no registry entry: one that is on disk is started by its discovered id `<family>/<artifact>` (`wt-model model list` shows them as `new`), and is routed under that id — only an `mlx_lm_server` pairing must be registered. For a local model, starting it is the durable fix: the next sync removes a stopped omlx/mtplx/mlx_lm_server model's route again.
 
 Bad ids refuse instead — `wt: unknown model "<id>"` on stderr, exit 1 — meaning the id from Steps 1–3 never existed; fix the id, not the config.
 
@@ -298,7 +298,7 @@ rec doctor                                       # rec's own hardware and instal
 tail -50 /tmp/local-ai-setup-rec.log             # what the last wt-started rec printed
 ```
 
-- `rec auth token` fails: wt stops the start before spawning anything, and `wt model list` shows rec `partial` rather than down. wt cannot start rec until that command works (a fresh install without a key is the likely case); fix it with rec's own tools (`rec doctor`), then retry.
+- `rec auth token` fails: wt stops the start before spawning anything, and `wt-model model list` shows rec `partial` rather than down. wt cannot start rec until that command works (a fresh install without a key is the likely case); fix it with rec's own tools (`rec doctor`), then retry.
 - `rec status` says ready with another `endpoint` than `http://127.0.0.1:11500/v1`, or with a model other than `flint`: another rec owns the machine (one instance per machine); `wt start` asks before replacing it (`--replace` answers yes), or stop it with `rec stop`.
 - The start sits on "waiting for the model to load": loading takes some seconds with the port closed; the start fails with the log's tail if `rec serve` exits during the load.
 
@@ -317,7 +317,7 @@ ls ~/.sushi/models/beamster/                    # the pack directory on disk
 - **`iogpu.wired_limit_mb is <n> MiB but <pack> needs about <n> MiB resident; raise it with: sudo sysctl iogpu.wired_limit_mb=59000 (resets on reboot)`.** The macOS default (75% of RAM, 49,152 MiB on a 64 GB Mac) is below the 51,934 MiB the shipped pack needs. Run the `sudo sysctl` yourself; wt and llmbench only read the limit and never set it. It resets on every reboot, so run it again after one. `llmbench provider isolate sushi` refuses before it stops anything too, in its own words: `sushi: the GPU wired limit is <n> MiB but <pack> needs about <n> MiB (1.1 x its safetensors); raise the GPU wired limit with `sudo sysctl iogpu.wired_limit_mb=59000` (resets on reboot)`.
 - **`port 12345 is in use by another process — stop it before starting this model`** (`PortBusyError`): something holds the port and wt cannot tell it is a Sushi it started. Also what a second `wt start` meets while the first is still loading the pack: until the pack is listed loaded, Sushi is not Running although its port is open. Wait for the first start to finish.
 - **`sushi at port 12345 was not started by wt; stop it yourself`** (from `wt stop sushi`): a Sushi that answers on the port has no pidfile wt can verify, i.e. you started it by hand. wt signals nothing it cannot identify; stop it yourself. wt also cannot see a hand-started server's flags, so with the pack loaded `wt start` is a no-op that warns that a long prompt may be refused or truncated, and `llmbench provider isolate sushi` refuses it. `llmbench provider stop sushi` of such a server says `sushi: a server answers on port 12345 that was not started by llmbench or wt (no verified pidfile at /tmp/local-ai-setup-sushi.pid); stop it yourself` and leaves it running.
-- **`<model> is not listed by sushi at <url> (it lists: <ids>); register the pack's exact id as model_name`**: the registry's `model_name` is not an id Sushi serves. Copy one of the listed ids (`beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`) into `model_name`, or `wt model rm` and `wt model add sushi <org>/<dir> --family <family>` again. A request with an unknown id that reaches Sushi anyway is answered `503 No default model configured`, not a 404.
+- **`<model> is not listed by sushi at <url> (it lists: <ids>); register the pack's exact id as model_name`**: the registry's `model_name` is not an id Sushi serves. Copy one of the listed ids (`beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`) into `model_name`, or `wt-model model rm` and `wt-model model add sushi <org>/<dir> --family <family>` again. A request with an unknown id that reaches Sushi anyway is answered `503 No default model configured`, not a 404.
 - **`/v1/models does not list <model> as loaded`** (the end of the start): Sushi answered the warmup but the pack is not loaded, so the load failed. Read `tail -50 /tmp/local-ai-setup-sushi.log` and Sushi's own logs in `~/.sushi/logs`.
 - **A failed warmup that reads like a memory refusal** (the error or the log tail mentions `out of memory`, `not enough memory`, `failed to allocate`, `wired limit`, `iogpu` and a few similar phrases) gets the wired-limit fix appended. wt adds a new line with `sudo sysctl iogpu.wired_limit_mb=59000 (resets on reboot)`; llmbench appends `; raise the GPU wired limit with `sudo sysctl iogpu.wired_limit_mb=59000` (resets on reboot)`. Check `sysctl -n iogpu.wired_limit_mb` first, then that no other large model is still resident.
 - **`wt: skipping the memory check (<why>)`**: wt could not measure (pack directory unreadable, no `*.safetensors`, sysctl unreadable) and went on without the check. It is not an error; if the start then fails in the warmup, the memory-refusal hint above applies.
@@ -343,14 +343,14 @@ bin/update-tools --check      # what is installed, and whether anything is newer
 bin/update-tools --dry-run    # exactly what a real run would execute
 ```
 
-**wt** — `bin/update/wt`. Rebuilds and reinstalls over the PATH copy (`~/.local/bin/wt`) through `make -C wt install`, which is not just a `go build`: it builds `wt/bin/wt-session`, `wt/bin/wt` (the same binary under two names) and `wt/bin/wt-model`, re-seals each ad-hoc code signature, copies `bin/*` into `~/.local/bin`, and **re-seals each copy again**. An install that predates the `wt-model`/`wt-session` split (only `~/.local/bin/wt` exists there) gains `wt-session` and `wt-model` with one `make -C wt install`. Both seals matter — a stale or drifted signature is rejected by AMFI with "Taskgated Invalid Signature" and the binary is SIGKILLed on launch (exit 137), and a copied binary needs its own seal because `cp` does not reproduce one AMFI accepts. The script deliberately does **not** `git pull`: this checkout is shared with wt's own worktrees, and an unattended pull that moves `main` under a working tree is not something an update script should spring. Pass `--pull` to opt in.
+**wt** — `bin/update/wt`. Rebuilds and reinstalls over the PATH copy (`~/.local/bin/wt`) through `make -C wt install`, which is not just a `go build`: it builds `wt/bin/wt-session`, `wt/bin/wt` (the same binary under two names) and `wt/bin/wt-model`, re-seals each ad-hoc code signature, copies `bin/*` into `~/.local/bin`, and **re-seals each copy again**. An install that predates the `wt-model`/`wt-session` split (only `~/.local/bin/wt` exists there) gains `wt-session` and `wt-model` with one `make -C wt install`; until then `bin/update/wt --check` reads it as stale and names each missing binary, `wt-model` included (modeltiers reads its inventory through `wt-model model list --json`, so an install without it is not current). Both seals matter — a stale or drifted signature is rejected by AMFI with "Taskgated Invalid Signature" and the binary is SIGKILLed on launch (exit 137), and a copied binary needs its own seal because `cp` does not reproduce one AMFI accepts. The script deliberately does **not** `git pull`: this checkout is shared with wt's own worktrees, and an unattended pull that moves `main` under a working tree is not something an update script should spring. Pass `--pull` to opt in.
 
 ```bash
 bin/update/wt --check    # installed version, and whether any source file is newer
 bin/update/wt            # rebuild + reinstall from the current checkout
 ```
 
-Upgrading wt across #179 (the `wt_managed` route marker)? Read [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* and *Upgrading to discovered local models (#179 Phase B)*, and run `wt litellm sync --dry-run` before the first `wt model add|edit|rm`, `wt model init` or `wt cloud-sync` triggers the first real sync.
+Upgrading wt across #179 (the `wt_managed` route marker)? Read [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* and *Upgrading to discovered local models (#179 Phase B)*, and run `wt litellm sync --dry-run` before the first `wt-model model add|edit|rm`, `wt-model model init` or `wt cloud-sync` triggers the first real sync.
 
 **Gotcha (verified on the author's machine, 2026-08-29):** `go env GOPATH` was `$HOME/.asdf/installs/golang/1.26.7/packages` (asdf-managed), so a fresh binary built without `-o` lands in `…/packages/bin/wt` — but `which -a wt` resolves **only** to `~/.local/bin/wt` (the repeated identical lines in `which -a wt` output are PATH repeats of the same binary, not four installs), because `~/.local/bin` comes first in PATH and the asdf packages `bin` dir carries no `wt` at all (checked: `ls "$(go env GOPATH)/bin/wt"` → `No such file or directory`). A binary built into GOPATH therefore leaves the stale `~/.local/bin/wt` answering `wt` — exactly what guide 06's "the installed binary is STALE" caveat describes, and why `bin/update/wt` goes through `make install` (which copies over the shadowing file) rather than a bare `go build`. If you build by hand instead, build straight over the shadowing copy or delete the stale one, then re-check `which wt`, `wt --version` **and** `ls -la` the file mtime.
 
@@ -481,13 +481,13 @@ directory is gone; that is expected. Each thing it did:
 
 | modelman | Now |
 |---|---|
-| TUI (`a`, `e`, `d` keys) | `wt-model model` (the Models tab), or `wt model add\|edit\|rm` |
-| `start` with no argument | `wt model list` |
+| TUI (`a`, `e`, `d` keys) | `wt-model model` (the Models tab), or `wt-model model add\|edit\|rm` |
+| `start` with no argument | `wt-model model list` |
 | `start <id>`, `stop <id>` | `wt start <id>`, `wt stop <id>` |
 | `stop --all` | `wt stop --all`, and for a running `mlx_lm_server` pairing, which wt does not stop, `uv run --directory llmbench llmbench provider stop mlx_lm_server` |
 | `start <mlx_lm_server pairing>` | `uv run --directory llmbench llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>`, then `wt litellm sync` to route it |
 | `stop <mlx_lm_server pairing>` | `uv run --directory llmbench llmbench provider stop mlx_lm_server`, then `wt litellm sync` to drop its route |
-| `sync` | `wt model init` for provider rows; nothing for state — wt probes disk and servers each time |
+| `sync` | `wt-model model init` for provider rows; nothing for state — wt probes disk and servers each time |
 | `refresh-prices`, `ollama-catalog sync` | `wt cloud-sync` |
 | `usage report` | `wt stats` |
 | `usage report --days N`, the Markdown report, its Reconciliation sections and "Last wt launch" line | dropped — `wt stats --window 1d\|7d\|30d`, `wt stats --json` ([07-usage-and-spend](07-usage-and-spend.md)) |
@@ -495,7 +495,7 @@ directory is gone; that is expected. Each thing it did:
 | `benchmark …`, `provider …` | `uv run --directory llmbench llmbench …`, `… llmbench provider …` |
 | `migrate`, `delete-family`, TUI `r` (download, delete), `l`, `s` | dropped — download with the provider's own tool (guide 02 Step 5); `wt start` and `wt stop` cover `l` and `s` (`wt litellm on\|off`, which covered routing, are retired stubs since 2026-11-15: every session routes through the model server) |
 
-**Where each command runs.** The table's registry commands are host commands: `wt model …`, `wt cloud-sync`, `wt litellm …`, `wt served`/`wt warm`, `wt stop <provider>`/`wt stop --all` and the Models tab of `wt-model model` read and write `registry.toml`, LiteLLM's `config.yaml` and `slot-profiles.toml` on the machine they run on — run them where `wt-model serve` runs ([13-deployment-use-cases](13-deployment-use-cases.md)). Everything else is a session command and runs anywhere a model server is configured under `[model-server]`: a launch, `wt start`/`wt stop <model>`, `wt job`, `wt smoke`, `wt model list --server`, `wt stats` and the cleanup commands ([wt-session.md](../../wt/docs/wt-session.md), "Host commands"). Interim limit: until the admin commands move to `wt-model` (the split's Phase 4) they still run in this same `wt` binary; the proxy url/key is the `~/.config/wt-model/` home's now (set with `wt-model litellm set --url URL --api-key KEY`), the `[litellm]` table of `config.toml` its read-only fallback — recorded in [wt-session.md](../../wt/docs/wt-session.md) "Interim limits".
+**Where each command runs.** The table's registry commands are host commands: `wt-model model …`, `wt cloud-sync`, `wt litellm …`, `wt served`/`wt warm`, `wt stop <provider>`/`wt stop --all` and the Models tab of `wt-model model` read and write `registry.toml`, LiteLLM's `config.yaml` and `slot-profiles.toml` on the machine they run on — run them where `wt-model serve` runs ([13-deployment-use-cases](13-deployment-use-cases.md)). Everything else is a session command and runs anywhere a model server is configured under `[model-server]`: a launch, `wt start`/`wt stop <model>`, `wt job`, `wt smoke`, `wt model list --server`, `wt stats` and the cleanup commands ([wt-session.md](../../wt/docs/wt-session.md), "Host commands"). Interim limit: the model registry commands already run in `wt-model` (`wt-model model …`; `wt model init|add|edit|rm` only point there), but until the other admin commands move to `wt-model` (the split's Phase 4) `wt cloud-sync`, `wt litellm …`, `wt served`/`wt warm` and `wt stop <provider>`/`--all` still run in the `wt` binary; the proxy url/key is the `~/.config/wt-model/` home's now (set with `wt-model litellm set --url URL --api-key KEY`), the `[litellm]` table of `config.toml` its read-only fallback — recorded in [wt-session.md](../../wt/docs/wt-session.md) "Interim limits".
 
 llmbench is not installed on `PATH`. Where wt prints a command that starts
 with `llmbench provider …` (the start hint of a stopped pairing, the text of
@@ -553,7 +553,7 @@ ls ~/.config/local-ai/benchmarks/latest.toml    # llmbench's latest-run pointers
 - **No `registry.toml`** (a machine that never ran `modelman migrate`):
   modelman's `config.yaml` and `families/` are the only record of your
   models, and nothing imports them any more. Read the model names out of
-  them and add each with `wt model add`
+  them and add each with `wt-model model add`
   ([02-providers-and-models](02-providers-and-models.md) Step 1) before you
   delete the two.
 - **`wt litellm status` prints `url: (unset)` and you do route through
@@ -573,7 +573,7 @@ ls ~/.config/local-ai/benchmarks/latest.toml    # llmbench's latest-run pointers
   routing switch to turn on: every session routes through the model server
   ([wt-session.md](../../wt/docs/wt-session.md)), and `wt litellm on` is a
   retired stub that exits 1. If wt then stops with
-  `config error: agent "agy": unknown provider "agy"`, run `wt model init`:
+  `config error: agent "agy": unknown provider "agy"`, run `wt-model model init`:
   that command adds the provider row the ensured `agy` agent needs to
   `registry.toml`. The key is on the command
   line, the only form wt offers, so it lands in your shell history: start

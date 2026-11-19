@@ -221,7 +221,7 @@ type ServeArgsError struct {
 }
 
 func (e *ServeArgsError) Error() string {
-	return fmt.Sprintf("model %s: %s; fix serve_args in the registry (`wt model edit %s --clear-serve-args` removes it)", e.ModelID, strings.Join(e.Problems, ", "), e.ModelID)
+	return fmt.Sprintf("model %s: %s; fix serve_args in the registry (`wt-model model edit %s --clear-serve-args` removes it)", e.ModelID, strings.Join(e.Problems, ", "), e.ModelID)
 }
 
 // PortBusyError means the provider's port still answers when a fresh server
