@@ -66,7 +66,7 @@ func TestOneErrorLineThroughTheWtModelTree(t *testing.T) {
 }
 
 // TestWtModelServesServedAndWarm pins that wt-model's root adds `served` and
-// `warm`, visible, with served's --json: `wt served` and `wt warm` point
+// `warm`, visible, with served's --json: `served` and `warm` under `wt` point
 // users here and llmbench's bridge calls these names, so the root dropping
 // either must fail here and not only on a machine.
 func TestWtModelServesServedAndWarm(t *testing.T) {

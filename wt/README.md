@@ -101,7 +101,7 @@ Beyond launching, `wt` has subcommands; `wt --help` lists them. Each has a refer
 | `wt remove <worktree-path-or-branch>...` | Removes named worktrees and branches through the same engine, re-checking each; `--dry-run` first | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-remove-arguments-output-and-exit-codes) |
 | `wt rescue <worktree-path-or-branch>` | Copies a worktree's local-only work into a new branch and worktree before you remove it | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-rescue-keep-work-before-it-is-lost) |
 | `wt restore-root` | Moves the root's branch and uncommitted work into a worktree and puts the root back on the default branch | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-restore-root-move-the-roots-branch-into-a-worktree) |
-| `wt start`, `wt stop`, `wt served`, `wt warm` | Start and stop local models | [docs/wt-start-stop.md](docs/wt-start-stop.md) |
+| `wt start`, `wt stop`, `wt-model served`, `wt-model warm` | Start and stop local models; list what a server serves, load an omlx model | [docs/wt-start-stop.md](docs/wt-start-stop.md) |
 | `wt job` | Show or cancel a model server job | [docs/wt-job.md](docs/wt-job.md) |
 | `wt smoke` | One-shot prompt through every agent eligible for a model | [docs/wt-smoke.md](docs/wt-smoke.md) |
 | `wt-model model …`, `wt model list --server`, `wt config` | Registry and preferences | [docs/wt-model.md](docs/wt-model.md), [docs/wt-config.md](docs/wt-config.md) |

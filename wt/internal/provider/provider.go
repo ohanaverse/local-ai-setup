@@ -103,7 +103,7 @@ type FamilySpec struct {
 	// RoutesFollowArtifact: a pulled model is served on request, so its
 	// route exists while the artifact does, not while it is loaded.
 	RoutesFollowArtifact bool
-	// Served: the server reports what it serves (`wt served`).
+	// Served: the server reports what it serves (`wt-model served`).
 	Served bool
 	// ServedOnly: the family's probe is GET /v1/models alone; wt lists no
 	// artifacts for it.

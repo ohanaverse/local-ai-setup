@@ -13,8 +13,8 @@ import (
 )
 
 // The tests below moved here from cmd/wt-session's model_cmds_test.go with
-// `wt served` and `wt warm`, which are now `wt-model served` and
-// `wt-model warm`.
+// `served` and `warm`, which ran under `wt` before phase 4 stage 2 and are
+// now `wt-model served` and `wt-model warm`.
 
 // omlxServer is a keyed omlx with two models in its pool and B loaded: /health
 // gives the counts to anyone, /v1/models/status says which only to the key.

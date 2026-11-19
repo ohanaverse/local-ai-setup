@@ -310,7 +310,7 @@ def test_restore_4bit_raises_lifecycle_error_when_it_never_comes_back():
 def test_warm_asks_wt_when_omlx_refuses_the_keyless_warmup():
     """#256: an omlx with an API key refuses llmbench's keyless warmup, and
     llmbench resolves no secret_ref — wt does. So the refusal hands the
-    warmup to `wt warm omlx <model>`, which sends the registry's key."""
+    warmup to `wt-model warm omlx <model>`, which sends the registry's key."""
     from llmbench.providers.lifecycle.backends.base import StartPlan
     from llmbench.providers.lifecycle.probe import WarmupRefusedError
 

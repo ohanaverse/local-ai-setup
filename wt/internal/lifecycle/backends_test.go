@@ -252,7 +252,7 @@ func TestDefaultEnvRegistersBackends(t *testing.T) {
 }
 
 // keyedOmlx is an omlx started with --api-key: every /v1 request without the
-// key is refused 401, as omlx 0.7.0 does (#256) — the chat completion `wt warm`
+// key is refused 401, as omlx 0.7.0 does (#256) — the chat completion `wt-model warm`
 // sends and the POST /v1/models/{id}/load a start sends alike. It counts POSTs.
 type keyedOmlx struct {
 	*httptest.Server
@@ -344,7 +344,7 @@ func TestOmlxStartWithWrongKeySaysTheKeyWasRefused(t *testing.T) {
 	}
 }
 
-// TestWarmLoadsAModelIntoARunningOmlx covers the engine behind `wt warm`,
+// TestWarmLoadsAModelIntoARunningOmlx covers the engine behind `wt-model warm`,
 // which llmbench calls when its own keyless warmup is refused: the request
 // names the directory basename and carries the registry's key; nothing is
 // started or stopped. Any provider but omlx is refused — the others take no

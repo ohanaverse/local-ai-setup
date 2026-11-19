@@ -499,7 +499,7 @@ recently used when a load does not fit.
   - It cannot see **which** models are loaded while the pool is partly loaded
     (some loaded, some not), which is the usual state once the pool holds
     more than one model. Those models do not read as running in the picker,
-    `wt served` (which exits 1), or `wt stop`.
+    `wt-model served` (which exits 1), or `wt stop`.
   - A second start therefore normally asks "cannot tell whether omlx is
     already serving a model"; `--replace` skips the question. The prompt
     names models only when every model in the pool is loaded. wt cannot
@@ -645,7 +645,12 @@ not read.
    `wt smoke`): running local models; the exit flows hide in-use models,
    `wt stop` shows them.
 
-## `wt served <provider>`
+## `wt-model served <provider>`
+
+A host command: it runs where `wt-model` runs, reading the registry there.
+Under `wt`, `served` (its name before phase 4 stage 2) only points here and
+exits 1.
+
 
 Prints the model ids the provider's server is serving now, one per line, as
 the server names them; `--json` prints `{"provider": …, "served": […]}`. It
@@ -665,7 +670,10 @@ loads on request, so it has no "serving now".
 It is a diagnostic: it answers with the key the registry names, so it works
 where a keyless probe of a partly loaded omlx pool is refused.
 
-## `wt warm <provider> <model>`
+## `wt-model warm <provider> <model>`
+
+A host command too; under `wt`, `warm` only points here and exits 1.
+
 
 Loads a model into an **omlx** server that is already running, with one
 one-token request — the warmup step of `wt start` by itself. Nothing is
