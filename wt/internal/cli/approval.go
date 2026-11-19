@@ -1,6 +1,7 @@
 // Package cli holds the command-line helpers both wt binaries use: approval
 // refusals, y/N questions on the terminal, the plain table. A session-safe
-// leaf: it imports exitcode and the terminal libraries only.
+// leaf: it imports exitcode and the terminal libraries only (x/term, and
+// lipgloss for the plain table's widths).
 package cli
 
 import (

@@ -67,6 +67,9 @@ func movedStub(name string, m movedCommand) *cobra.Command {
 func addMovedStubs(root *cobra.Command, table []movedCommand) {
 	for _, m := range table {
 		words := strings.Fields(m.Old)
+		if len(words) == 0 {
+			panic("moved command row has an empty Old")
+		}
 		parent := root
 		for _, w := range words[:len(words)-1] {
 			next := childNamed(parent, w)
@@ -84,10 +87,11 @@ func addMovedStubs(root *cobra.Command, table []movedCommand) {
 	}
 }
 
-// childNamed is parent's direct subcommand whose name is exactly name, or nil.
+// childNamed is parent's direct subcommand answering to name (its own name or
+// an alias, the way cobra's Find resolves it), or nil.
 func childNamed(parent *cobra.Command, name string) *cobra.Command {
 	for _, c := range parent.Commands() {
-		if c.Name() == name {
+		if c.Name() == name || c.HasAlias(name) {
 			return c
 		}
 	}
