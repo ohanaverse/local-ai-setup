@@ -6,11 +6,14 @@
 package configeditor
 
 import (
+	"os"
+
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -60,6 +63,11 @@ type model struct {
 	status      string // shown above the list
 	saving      bool   // prevents duplicate save dispatches
 	cfgErr      error  // captured at construction for the initial loadedMsg
+
+	// home is the home directory paths are abbreviated against when the
+	// observed state names none (Options.UserHome, read once in Run); empty
+	// writes every path in full.
+	home string
 
 	// cachedStatusBlock caches the rendered status block to avoid double rendering
 	// and re-creating lipgloss.Style on every call.
@@ -149,7 +157,7 @@ func (m *model) statusBlock() string {
 	// by the width alone went on drawing the status of the first render — at
 	// a width that never changed, "save failed: ..." was never shown.
 	if m.cachedStatusWidth != m.width || m.cachedStatusText != m.status {
-		m.cachedStatusBlock = lipgloss.NewStyle().Width(m.width).Render(m.status)
+		m.cachedStatusBlock = editorkit.StatusBlock(m.status, m.width)
 		m.cachedStatusWidth, m.cachedStatusText = m.width, m.status
 	}
 	return m.cachedStatusBlock
@@ -422,7 +430,7 @@ func (m *model) View() string {
 		return m.deleteView()
 	case phaseQuit:
 		// Wrapped: at 40 columns both lines are wider than the terminal.
-		return wrapText("You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel", m.width) + "\n"
+		return editorkit.WrapText("You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel", m.width) + "\n"
 	default:
 		if m.tab == TabModels {
 			return m.modelsView()
@@ -449,6 +457,19 @@ func (m *model) resizeFormInputs() {
 	m.agDefaultProviderInput.Width = w
 }
 
+// resolveHome is the home directory f names: os.UserHomeDir when f is nil,
+// and "" (no path is abbreviated) when it cannot be read.
+func resolveHome(f func() (string, error)) string {
+	if f == nil {
+		f = os.UserHomeDir
+	}
+	home, err := f()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
 // Run starts the config editor TUI with the config already loaded by the
 // caller. A non-nil cfgErr is surfaced as a status message so the user can
 // repair the config without the CLI exiting early. The Result says whether
@@ -460,6 +481,7 @@ func Run(theme themes.Theme, cfg *config.Config, cfgErr error, o Options, opts .
 	o.Models = o.Models.withDefaults()
 	o.Server = o.Server.withDefaults()
 	m.opts, m.tab = o, o.StartTab
+	m.home = resolveHome(o.UserHome)
 	allOpts := append([]tea.ProgramOption{tea.WithAltScreen()}, opts...)
 	p := tea.NewProgram(m, allOpts...)
 	_, err := p.Run()

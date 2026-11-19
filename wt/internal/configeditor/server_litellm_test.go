@@ -609,7 +609,7 @@ func TestServerTabResultScreenEatsCAndR(t *testing.T) {
 	before := sm.observes
 	for _, k := range []string{"c", "r"} {
 		m = keys(t, m, k)
-		if m.server.result == nil || !strings.Contains(m.server.result.recovery, "cp -p "+tlBackup) {
+		if m.server.result == nil || !strings.Contains(m.server.result.Recovery, "cp -p "+tlBackup) {
 			t.Fatalf("%s closed the result screen or lost its Recovery (status %q)", k, m.server.status)
 		}
 		if !strings.Contains(flat(plain(m)), flat("cp -p "+tlBackup)) || !strings.Contains(flat(plain(m)), flat(tlBackup+" (it holds")) {

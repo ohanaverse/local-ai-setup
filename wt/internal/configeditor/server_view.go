@@ -2,10 +2,10 @@ package configeditor
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -81,69 +81,6 @@ func (m *model) serverHints() []string {
 	}
 }
 
-// serverLabelW is the width of a status line's label column ("problems"
-// and two spaces).
-const serverLabelW = 10
-
-// tone is how a status line is coloured; the words on it always say the
-// same (V2), so a terminal without colour loses nothing.
-type tone int
-
-const (
-	toneNone tone = iota
-	toneDim
-	toneWarn
-	toneBad
-)
-
-// serverLine is one entry of the status block: a label (empty for a
-// continuation entry under the previous label), its text and its tone.
-type serverLine struct {
-	label, text string
-	tone        tone
-}
-
-// userinfoRE finds a user:password in a url inside free text, through the
-// last @ before the host: a password may hold an @ itself.
-var userinfoRE = regexp.MustCompile(`://[^/\s]*@`)
-
-// keyRE finds a LiteLLM-style key (sk- and a long run of key characters) that
-// does not continue a longer word: group 1 is the character before it (RE2
-// has no lookbehind), kept by the replacement.
-var keyRE = regexp.MustCompile(`(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}`)
-
-// scrub takes any url userinfo and any sk- key out of text the tab draws:
-// Observe already strips them from what it stores, but a message a dep
-// composed may still carry one, and nothing the tab shows may hold a
-// credential.
-//
-// Deliberately greedy: an @ anywhere before the first / or space ends the
-// userinfo, so "https://h:1?x=a@b" loses its host too. That errs on the safe
-// side (a credential is never shown); TestScrubTakesTheHostWithAnAtInTheQuery
-// pins it.
-func scrub(s string) string {
-	return keyRE.ReplaceAllString(userinfoRE.ReplaceAllString(s, "://"), "${1}sk-<hidden>")
-}
-
-// homePath writes a path under home with ~ for the home.
-//
-// The token file is shown in this one form whatever the config wrote: Observe
-// hands back the expanded path (State.Token.Path), which is the file a
-// session reads, while [model-server] token_file may say ~/... or the same
-// path in full. Abbreviating the expanded path against the home Observe used
-// gives the ~ form a user writes, is the same file the line's ok / loose /
-// missing is about, and stays one form when the value came from
-// WT_MODEL_TOKEN_FILE or the agent's plist instead of the table.
-func homePath(path, home string) string {
-	if home == "" || home == "/" {
-		return tildePath(path)
-	}
-	if rest, ok := strings.CutPrefix(path, home); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
-		return "~" + rest
-	}
-	return path
-}
-
 // modeSource says where the effective mode came from.
 func modeSource(r modelclient.Resolution) string {
 	switch r.Source {
@@ -177,29 +114,29 @@ func hasEnv(st modelsetup.State, name string) bool {
 }
 
 // tokenLine is the token file and its state, as a word.
-func tokenLine(st modelsetup.State) serverLine {
+func tokenLine(st modelsetup.State, home string) editorkit.Line {
 	t := st.Token
 	if t.Path == "" {
 		if hasEnv(st, "WT_MODEL_TOKEN") {
-			return serverLine{"token", "from WT_MODEL_TOKEN (not shown)", toneNone}
+			return editorkit.Line{Label: "token", Text: "from WT_MODEL_TOKEN (not shown)", Tone: editorkit.ToneNone}
 		}
-		return serverLine{"token", "none set", toneDim}
+		return editorkit.Line{Label: "token", Text: "none set", Tone: editorkit.ToneDim}
 	}
-	path := homePath(t.Path, st.Host.Home)
+	path := editorkit.HomePath(t.Path, st.Host.Home, home)
 	switch {
 	case t.Loose:
-		return serverLine{"token", path + "  loose: chmod 600 " + path, toneBad}
+		return editorkit.Line{Label: "token", Text: path + "  loose: chmod 600 " + path, Tone: editorkit.ToneBad}
 	case t.Err != "":
-		return serverLine{"token", path + "  problem: " + t.Err, toneBad}
+		return editorkit.Line{Label: "token", Text: path + "  problem: " + t.Err, Tone: editorkit.ToneBad}
 	case !t.Exists:
-		return serverLine{"token", path + "  missing", toneBad}
+		return editorkit.Line{Label: "token", Text: path + "  missing", Tone: editorkit.ToneBad}
 	}
-	return serverLine{"token", path + "  ok", toneNone}
+	return editorkit.Line{Label: "token", Text: path + "  ok", Tone: editorkit.ToneNone}
 }
 
-func pairLine(p modelsetup.PairState) serverLine {
+func pairLine(p modelsetup.PairState) editorkit.Line {
 	if p.Err != "" {
-		return serverLine{"pair", "unreadable: " + scrub(p.Err), toneBad}
+		return editorkit.Line{Label: "pair", Text: "unreadable: " + editorkit.Scrub(p.Err), Tone: editorkit.ToneBad}
 	}
 	url := p.URL
 	switch {
@@ -215,14 +152,14 @@ func pairLine(p modelsetup.PairState) serverLine {
 	if p.KeySet {
 		key = "key set"
 	}
-	l := serverLine{"pair", "LiteLLM " + scrub(url) + ", " + key, toneNone}
+	l := editorkit.Line{Label: "pair", Text: "LiteLLM " + editorkit.Scrub(url) + ", " + key, Tone: editorkit.ToneNone}
 	if p.URL == "" || !p.KeySet {
-		l.tone = toneWarn
+		l.Tone = editorkit.ToneWarn
 	}
 	return l
 }
 
-func agentLines(st modelsetup.State) []serverLine {
+func agentLines(st modelsetup.State) []editorkit.Line {
 	a := st.Agent
 	var facts []string
 	if !a.Present {
@@ -245,12 +182,12 @@ func agentLines(st modelsetup.State) []serverLine {
 			facts = append(facts, "not running")
 		}
 	}
-	lines := []serverLine{{"agent", modelsetup.AgentLabel + ": " + strings.Join(facts, ", "), toneNone}}
+	lines := []editorkit.Line{{Label: "agent", Text: modelsetup.AgentLabel + ": " + strings.Join(facts, ", "), Tone: editorkit.ToneNone}}
 	if a.Err != "" {
-		lines = append(lines, serverLine{"", "problem: " + scrub(a.Err), toneBad})
+		lines = append(lines, editorkit.Line{Label: "", Text: "problem: " + editorkit.Scrub(a.Err), Tone: editorkit.ToneBad})
 	}
 	if l := st.Listener; l.PID != 0 && !l.Ours {
-		lines = append(lines, serverLine{"", fmt.Sprintf("port %d is held by pid %d, not the agent", l.Port, l.PID), toneWarn})
+		lines = append(lines, editorkit.Line{Label: "", Text: fmt.Sprintf("port %d is held by pid %d, not the agent", l.Port, l.PID), Tone: editorkit.ToneWarn})
 	}
 	return lines
 }
@@ -270,21 +207,21 @@ func serverKindWord(k modelsetup.ServerKind) string {
 	return "unreachable"
 }
 
-func serverCheckLine(st modelsetup.State) serverLine {
+func serverCheckLine(st modelsetup.State) editorkit.Line {
 	s := st.Server
 	switch {
 	case st.Resolution.Mode == modelclient.ModeNative:
-		return serverLine{"server", "none in native mode", toneDim}
+		return editorkit.Line{Label: "server", Text: "none in native mode", Tone: editorkit.ToneDim}
 	case !s.Checked && s.Message != "":
 		// A message that already says so (a url with an '@', a cancelled
 		// read) is not prefixed twice.
-		return serverLine{"server", "not checked: " + scrub(strings.TrimPrefix(s.Message, "not checked: ")), toneDim}
+		return editorkit.Line{Label: "server", Text: "not checked: " + editorkit.Scrub(strings.TrimPrefix(s.Message, "not checked: ")), Tone: editorkit.ToneDim}
 	case !s.Checked:
-		return serverLine{"server", "not checked: " + missingForCheck(st), toneDim}
+		return editorkit.Line{Label: "server", Text: "not checked: " + missingForCheck(st), Tone: editorkit.ToneDim}
 	case s.OK:
-		return serverLine{"server", fmt.Sprintf("ok: wt-model answers at %s (api %d, schema %d)", scrub(s.URL), s.API, s.Schema), toneNone}
+		return editorkit.Line{Label: "server", Text: fmt.Sprintf("ok: wt-model answers at %s (api %d, schema %d)", editorkit.Scrub(s.URL), s.API, s.Schema), Tone: editorkit.ToneNone}
 	}
-	return serverLine{"server", "problem: " + serverKindWord(s.Kind) + ": " + scrub(s.Message), toneBad}
+	return editorkit.Line{Label: "server", Text: "problem: " + serverKindWord(s.Kind) + ": " + editorkit.Scrub(s.Message), Tone: editorkit.ToneBad}
 }
 
 // missingForCheck says what a check of the server lacked: the url, the token
@@ -305,25 +242,25 @@ func missingForCheck(st modelsetup.State) string {
 }
 
 // checkWord is a LiteLLM check's status as a word, and its tone.
-func checkWord(c modelsetup.Check) (string, tone) {
+func checkWord(c modelsetup.Check) (string, editorkit.Tone) {
 	switch c.Status {
 	case modelsetup.CheckOK:
-		return "ok", toneNone
+		return "ok", editorkit.ToneNone
 	case modelsetup.CheckWarn:
-		return "warning", toneWarn
+		return "warning", editorkit.ToneWarn
 	case modelsetup.CheckFail:
-		return "problem", toneBad
+		return "problem", editorkit.ToneBad
 	}
-	return "skipped", toneDim
+	return "skipped", editorkit.ToneDim
 }
 
-func litellmLines(st modelsetup.State) []serverLine {
+func litellmLines(st modelsetup.State) []editorkit.Line {
 	l := st.LiteLLM
 	if !l.Checked {
 		if st.Resolution.Mode != modelclient.ModeLocal {
-			return []serverLine{{"litellm", "checked in local mode only", toneDim}}
+			return []editorkit.Line{{Label: "litellm", Text: "checked in local mode only", Tone: editorkit.ToneDim}}
 		}
-		return []serverLine{{"litellm", "not checked", toneDim}}
+		return []editorkit.Line{{Label: "litellm", Text: "not checked", Tone: editorkit.ToneDim}}
 	}
 	checks := []struct {
 		name string
@@ -332,57 +269,57 @@ func litellmLines(st modelsetup.State) []serverLine {
 		{"reachable", l.Reachable}, {"database", l.Database}, {"key", l.KeyAccepted},
 		{"routes", l.RoutesInSync}, {"restart", l.RestartOwed}, {"port", l.PortMatches}, {"plist mode", l.PlistMode},
 	}
-	var lines []serverLine
+	var lines []editorkit.Line
 	for i, ch := range checks {
 		word, tn := checkWord(ch.c)
 		text := ch.name + " " + word
 		if ch.c.Detail != "" {
-			text += ": " + scrub(ch.c.Detail)
+			text += ": " + editorkit.Scrub(ch.c.Detail)
 		}
 		label := ""
 		if i == 0 {
 			label = "litellm"
 		}
-		lines = append(lines, serverLine{label, text, tn})
+		lines = append(lines, editorkit.Line{Label: label, Text: text, Tone: tn})
 	}
 	// What the checks cannot see, said rather than guessed (the spec's
 	// "LiteLLM: scope and guide").
-	return append(lines, serverLine{"", "the salt key and provider keys are not checked", toneDim})
+	return append(lines, editorkit.Line{Label: "", Text: "the salt key and provider keys are not checked", Tone: editorkit.ToneDim})
 }
 
 // serverStatusLines is the status block: the effective mode and where it
 // came from, the url, the token file, the pair, the agent, the server check,
 // the LiteLLM checks, the env-override line and the problems.
-func serverStatusLines(st modelsetup.State) []serverLine {
-	var lines []serverLine
+func serverStatusLines(st modelsetup.State, home string) []editorkit.Line {
+	var lines []editorkit.Line
 	r := st.Resolution
 	switch {
 	case r.Mode != "":
-		lines = append(lines, serverLine{"mode", string(r.Mode) + " (" + modeSource(r) + ")", toneNone})
+		lines = append(lines, editorkit.Line{Label: "mode", Text: string(r.Mode) + " (" + modeSource(r) + ")", Tone: editorkit.ToneNone})
 	case st.Config.ParseErr != "":
 		// The banner above says why, once.
-		lines = append(lines, serverLine{"mode", "unknown: config.toml is not readable", toneWarn})
+		lines = append(lines, editorkit.Line{Label: "mode", Text: "unknown: config.toml is not readable", Tone: editorkit.ToneWarn})
 	case r.Problem != "":
-		lines = append(lines, serverLine{"mode", "problem: " + scrub(r.Problem), toneBad})
+		lines = append(lines, editorkit.Line{Label: "mode", Text: "problem: " + editorkit.Scrub(r.Problem), Tone: editorkit.ToneBad})
 	default:
-		lines = append(lines, serverLine{"mode", "unset: choose one below", toneWarn})
+		lines = append(lines, editorkit.Line{Label: "mode", Text: "unset: choose one below", Tone: editorkit.ToneWarn})
 	}
 	url := st.Config.Table.URL
 	if url == "" {
 		url = "none set"
 	}
-	lines = append(lines, serverLine{"url", scrub(url), toneNone})
+	lines = append(lines, editorkit.Line{Label: "url", Text: editorkit.Scrub(url), Tone: editorkit.ToneNone})
 	pair := pairLine(st.Pair)
 	if st.Config.ParseErr != "" {
-		pair = serverLine{"pair", "not read", toneDim}
+		pair = editorkit.Line{Label: "pair", Text: "not read", Tone: editorkit.ToneDim}
 	}
-	lines = append(lines, tokenLine(st), pair)
+	lines = append(lines, tokenLine(st, home), pair)
 	lines = append(lines, agentLines(st)...)
 	lines = append(lines, serverCheckLine(st))
 	lines = append(lines, litellmLines(st)...)
-	lines = append(lines, plistModeLines(st)...)
+	lines = append(lines, plistModeLines(st, home)...)
 	if names := envNames(st); len(names) > 0 {
-		lines = append(lines, serverLine{"env", strings.Join(names, ", ") + " set: they override config.toml", toneWarn})
+		lines = append(lines, editorkit.Line{Label: "env", Text: strings.Join(names, ", ") + " set: they override config.toml", Tone: editorkit.ToneWarn})
 	}
 	var problems []string
 	if st.Config.TableErr != "" {
@@ -397,33 +334,9 @@ func serverStatusLines(st modelsetup.State) []serverLine {
 		if i == 0 {
 			label = "problems"
 		}
-		lines = append(lines, serverLine{label, scrub(p), toneBad})
+		lines = append(lines, editorkit.Line{Label: label, Text: editorkit.Scrub(p), Tone: editorkit.ToneBad})
 	}
 	return lines
-}
-
-// renderServerLine lays one entry out at width: the label padded to its
-// column and the text flowed between words beside it, continuation lines
-// indented under the text. A terminal too narrow for the column flows the
-// whole entry instead. No line is wider than width.
-func renderServerLine(l serverLine, width int) []string {
-	pad := tuilayout.PadRunes(l.label, serverLabelW)
-	if width <= 0 {
-		return []string{pad + l.text}
-	}
-	if width-serverLabelW < 16 {
-		return flow(strings.Fields(l.label+" "+l.text), " ", width)
-	}
-	text := flow(strings.Fields(l.text), " ", width-serverLabelW)
-	out := make([]string, len(text))
-	for i, t := range text {
-		if i == 0 {
-			out[i] = pad + t
-		} else {
-			out[i] = strings.Repeat(" ", serverLabelW) + t
-		}
-	}
-	return out
 }
 
 // modeChoice is the mode choice: (x) on the chosen one, (-) on local where
@@ -441,30 +354,16 @@ func (m *model) modeChoice() (radios []string, notes [][]string) {
 		}
 		opts = append(opts, mark+" "+string(mode))
 	}
-	var lines []string
-	switch {
-	case m.width <= 0:
-		lines = []string{tuilayout.PadRunes("choose", serverLabelW) + strings.Join(opts, "  ")}
-	case m.width-serverLabelW >= 16:
-		for i, l := range flow(opts, "  ", m.width-serverLabelW) {
-			lead := strings.Repeat(" ", serverLabelW)
-			if i == 0 {
-				lead = tuilayout.PadRunes("choose", serverLabelW)
-			}
-			lines = append(lines, lead+l)
-		}
-	default:
-		lines = flow(opts, "  ", m.width)
-	}
+	lines := editorkit.ChoiceLines("choose", opts, m.width)
 	if !st.state.Platform.OK {
 		why := "local needs launchd (macOS)"
 		if st.state.Platform.Reason != "" {
 			why += ": " + st.state.Platform.Reason
 		}
-		notes = append(notes, renderServerLine(serverLine{text: why}, m.width))
+		notes = append(notes, editorkit.RenderLine(editorkit.Line{Text: why}, m.width))
 		if st.want.Mode == modelclient.ModeLocal {
 			// No option is marked: say why rather than leave the choice blank.
-			notes = append(notes, renderServerLine(serverLine{text: "local is set but cannot run here; choose native or remote"}, m.width))
+			notes = append(notes, editorkit.RenderLine(editorkit.Line{Text: "local is set but cannot run here; choose native or remote"}, m.width))
 		}
 	}
 	return lines, notes
@@ -483,74 +382,16 @@ func (m *model) serverFieldLines() []string {
 		}
 		view := st.fields[f].View()
 		if f == sfURL {
-			view = scrub(view)
+			view = editorkit.Scrub(view)
 		}
-		lines = append(lines, tuilayout.PadRunes(label, serverLabelW)+view)
+		lines = append(lines, tuilayout.PadRunes(label, editorkit.LabelW)+view)
 	}
 	return lines
-}
-
-// breakPath splits a path into lines no wider than width, breaking only
-// after a "/"; a segment wider than the width on its own is cut at the width.
-func breakPath(path string, width int) []string {
-	if width <= 0 || len(path) <= width {
-		return []string{path}
-	}
-	var segs []string
-	for rest := path; rest != ""; {
-		i := strings.IndexByte(rest, '/')
-		if i < 0 {
-			segs, rest = append(segs, rest), ""
-			continue
-		}
-		segs, rest = append(segs, rest[:i+1]), rest[i+1:]
-	}
-	var out []string
-	cur := ""
-	for _, seg := range segs {
-		for len(seg) > width {
-			if cur != "" {
-				out, cur = append(out, cur), ""
-			}
-			out, seg = append(out, seg[:width]), seg[width:]
-		}
-		if len(cur)+len(seg) > width {
-			out, cur = append(out, cur), ""
-		}
-		cur += seg
-	}
-	if cur != "" {
-		out = append(out, cur)
-	}
-	return out
 }
 
 // statusDropOrder is the order a terminal too short gives up status rows:
 // first entry first. The mode and the server are the last to go.
 var statusDropOrder = []string{"litellm", "agent", "env", "pair", "token", "url", "problems", "server", "mode"}
-
-// statusGroup is one status row with its continuation lines, rendered: the
-// unit that is kept or dropped whole.
-type statusGroup struct {
-	label string
-	lines []string
-}
-
-// serverStatusGroups lays the status block out as one group per labelled
-// row (an entry without a label belongs to the row before it).
-func serverStatusGroups(st modelsetup.State, width int, styles map[tone]lipgloss.Style) []statusGroup {
-	var groups []statusGroup
-	for _, l := range serverStatusLines(st) {
-		if l.label != "" || len(groups) == 0 {
-			groups = append(groups, statusGroup{label: l.label})
-		}
-		g := &groups[len(groups)-1]
-		for _, line := range renderServerLine(l, width) {
-			g.lines = append(g.lines, styles[l.tone].Render(line))
-		}
-	}
-	return groups
-}
 
 // serverBody is the tab's body under the tab bar, in at most room lines: a
 // status line, the parse error, the status block and the mode choice, styled.
@@ -560,34 +401,29 @@ func serverStatusGroups(st modelsetup.State, width int, styles map[tone]lipgloss
 // If that is still too tall the blank lines go, then the middle of the
 // banner and status text.
 func (m *model) serverBody(room int) string {
-	styles := map[tone]lipgloss.Style{
-		toneNone: lipgloss.NewStyle(),
-		toneDim:  lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim)),
-		toneWarn: lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenWarning)),
-		toneBad:  themes.ErrorStyle(m.theme),
-	}
+	styles := editorkit.Styles(m.theme)
 	var head []string
 	if s := m.server.status; s != "" {
-		head = append(head, strings.Split(wrapText(s, m.width), "\n")...)
+		head = append(head, strings.Split(editorkit.WrapText(s, m.width), "\n")...)
 	}
 	if m.quitPending && m.server.writing {
-		head = append(head, strings.Split(wrapText("wt config quits once this has finished", m.width), "\n")...)
+		head = append(head, strings.Split(editorkit.WrapText("wt config quits once this has finished", m.width), "\n")...)
 	}
 	if !m.server.loaded {
-		return strings.Join(append(head, "", wrapText("reading the model server's state", m.width)), "\n")
+		return strings.Join(append(head, "", editorkit.WrapText("reading the model server's state", m.width)), "\n")
 	}
 	st := m.server.state
 	if st.Config.ParseErr != "" {
 		// The path breaks only after a slash, so wrapping never splits a name.
 		lines := []string{"config.toml does not parse:"}
-		lines = append(lines, breakPath(homePath(st.Config.Path, st.Host.Home), m.width)...)
-		lines = append(lines, strings.Split(wrapText(scrub(st.Config.ParseErr), m.width), "\n")...)
+		lines = append(lines, editorkit.BreakPath(editorkit.HomePath(st.Config.Path, st.Host.Home, m.home), m.width)...)
+		lines = append(lines, strings.Split(editorkit.WrapText(editorkit.Scrub(st.Config.ParseErr), m.width), "\n")...)
 		lines = append(lines, "fix the file, then press r")
 		for _, l := range lines {
-			head = append(head, styles[toneBad].Render(l))
+			head = append(head, styles[editorkit.ToneBad].Render(l))
 		}
 	}
-	groups := serverStatusGroups(st, m.width, styles)
+	groups := editorkit.Groups(serverStatusLines(st, m.home), m.width, styles)
 	radios, notes := m.modeChoice()
 	var fieldLines []string
 	if fields := m.serverFieldLines(); len(fields) > 0 {
@@ -595,72 +431,8 @@ func (m *model) serverBody(room int) string {
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 
-	dropped := map[string]bool{}
-	keepNotes := len(notes)
-	build := func(seps bool) []string {
-		var out []string
-		sep := func() {
-			if seps {
-				out = append(out, "")
-			}
-		}
-		out = append(out, head...)
-		if len(head) > 0 {
-			sep()
-		}
-		kept := 0
-		for _, g := range groups {
-			if !dropped[g.label] {
-				out = append(out, g.lines...)
-				kept++
-			}
-		}
-		if n := len(groups) - kept; n > 0 {
-			word := "rows"
-			if n == 1 {
-				word = "row"
-			}
-			out = append(out, dim.Render(fmt.Sprintf("... %d status %s not shown ...", n, word)))
-		}
-		if len(groups) > 0 {
-			sep()
-		}
-		out = append(out, radios...)
-		for _, n := range notes[:keepNotes] {
-			out = append(out, n...)
-		}
-		return append(out, fieldLines...)
-	}
-	out := build(true)
-	for _, label := range statusDropOrder {
-		if len(out) <= room {
-			break
-		}
-		for _, g := range groups {
-			if g.label == label {
-				dropped[label] = true
-			}
-		}
-		out = build(true)
-	}
-	// The notes under the mode choice explain it; they go, whole and last
-	// first, only once every status row has.
-	for len(out) > room && keepNotes > 0 {
-		keepNotes--
-		out = build(true)
-	}
-	if len(out) > room {
-		out = build(false)
-	}
-	if over := len(out) - room; over > 0 && len(head) > 2 {
-		// Last resort: the middle of the banner or status text, keeping its
-		// first line and the line that says what to do. The mode choice is
-		// never touched.
-		cut := min(over+1, len(head)-2)
-		head = append(append(append([]string{}, head[:1]...), dim.Render(fmt.Sprintf("... %d lines not shown ...", cut))), head[len(head)-(len(head)-1-cut):]...)
-		out = build(false)
-	}
-	return strings.Join(out, "\n")
+	b := editorkit.Body{Head: head, Groups: groups, Choice: radios, Notes: notes, Fields: fieldLines}
+	return strings.Join(editorkit.FitBody(b, room, statusDropOrder, dim), "\n")
 }
 
 // serverTabView renders the Model server tab: the tab bar, a blank line, the
@@ -689,7 +461,7 @@ func (m *model) serverTabView() string {
 	if fill := m.height - lipgloss.Height(bar) - lipgloss.Height(body) - 1; fill > 0 {
 		body += strings.Repeat("\n", fill)
 	}
-	return tuilayout.MessageAlone(bar, body, fitHints(m.width, m.serverHints()), m.width, m.height, dim)
+	return tuilayout.MessageAlone(bar, body, editorkit.FitHints(m.width, m.serverHints()), m.width, m.height, dim)
 }
 
 // serverPromptView is the confirm phase: what the question is about, then
@@ -709,42 +481,11 @@ func (m *model) serverPromptView(bar string, dim lipgloss.Style) string {
 		question = "Remove the LaunchAgent? [y/N]"
 	case promptSaveAnyway:
 		s := st.state.Server
-		text = "The check of " + scrub(s.URL) + " failed: " + serverKindWord(s.Kind) + ": " + scrub(s.Message) +
+		text = "The check of " + editorkit.Scrub(s.URL) + " failed: " + serverKindWord(s.Kind) + ": " + editorkit.Scrub(s.Message) +
 			". The server may be off; y stores the setup unchecked."
 		question = "Save anyway? [y/N]"
 	default:
-		question = "Apply this plan? [y/N]"
-		body := "\n" + wrapIndented(strings.TrimRight(st.planText, "\n"), m.width) + "\n\n" + wrapText(question, m.width)
-		return tuilayout.MessageAlone(bar, body, fitHints(m.width, m.serverHints()), m.width, m.height, dim)
+		return editorkit.PlanPromptView(bar, st.planText, "Apply this plan? [y/N]", m.serverHints(), m.width, m.height, dim)
 	}
-	body := "\n" + wrapText(text, m.width) + "\n\n" + wrapText(question, m.width)
-	return tuilayout.MessageAlone(bar, body, fitHints(m.width, m.serverHints()), m.width, m.height, dim)
-}
-
-// wrapIndented wraps each line of a plan's text by itself, keeping its
-// indent and hanging its continuation lines under the text after the step
-// number or the bullet ("  1. ", "  - "), so the steps stay apart. A
-// terminal too narrow for the hang wraps the line plainly.
-func wrapIndented(text string, width int) string {
-	var out []string
-	for _, line := range strings.Split(text, "\n") {
-		body := strings.TrimLeft(line, " ")
-		lead := strings.Repeat(" ", len(line)-len(body))
-		hang := lead
-		if mark, _, ok := strings.Cut(body, " "); ok && lead != "" && (mark == "-" || strings.HasSuffix(mark, ".")) {
-			hang += strings.Repeat(" ", len(mark)+1)
-		}
-		if width <= 0 || width-len(hang) < 16 {
-			out = append(out, wrapText(line, width))
-			continue
-		}
-		for i, l := range strings.Split(wrapText(body, width-len(hang)), "\n") {
-			if i == 0 {
-				out = append(out, lead+l)
-			} else {
-				out = append(out, hang+l)
-			}
-		}
-	}
-	return strings.Join(out, "\n")
+	return editorkit.PromptView(bar, text, question, m.serverHints(), m.width, m.height, dim)
 }

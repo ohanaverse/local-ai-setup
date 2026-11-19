@@ -158,6 +158,7 @@ func runCmd(t *testing.T, m *model, cmd tea.Cmd) *model {
 func serverEditor(t *testing.T, sm *serverMachine, width, height int) *model {
 	t.Helper()
 	m := newModel(testTheme(), &config.Config{}, nil)
+	m.home = testUserHome
 	m.opts = Options{StartTab: TabServer, Server: sm.deps(), Models: newTabMachine(t, "").deps()}
 	m.tab = TabServer
 	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
@@ -1301,15 +1302,6 @@ func TestServerTabPlansTheSnapshotTakenAtA(t *testing.T) {
 	}
 }
 
-// TestScrubTakesUserinfoThroughTheLastAt pins carry-forward 4: a password
-// with an @ in it is taken out whole, not up to its first @.
-func TestScrubTakesUserinfoThroughTheLastAt(t *testing.T) {
-	got := scrub("see https://me:p@ss@gpu.example:8787/x and http://a@b/ or mailto me@host")
-	if want := "see https://gpu.example:8787/x and http://b/ or mailto me@host"; got != want {
-		t.Errorf("scrub = %q, want %q", got, want)
-	}
-}
-
 // TestServerTabScrubsTheResolutionProblem pins carry-forward 5: the mode
 // resolution's problem text is scrubbed like every other free text the tab
 // draws.
@@ -1437,11 +1429,11 @@ func TestServerTabSourceNeverFormatsAPlanWithV(t *testing.T) {
 // and an Apply whose failure is the fixed refusal, no screen (the view, the
 // prefilled remote form's save-anyway question and refusal, the applied
 // result) shows any piece of the hostile url. Free-text Warnings carrying a
-// hostile url raw with a plain user:password are hidden by the tab's own
-// scrub too, which is defence in depth only: it keys on "://" and the first
+// hostile url raw with a plain user:password are hidden by editorkit.Scrub
+// too, which is defence in depth only: it keys on "://" and the first
 // '/', so "ftp://u:p//@h", "http://u:p@PASS/x@h" and a schemeless
 // "user:pa://ss@host" keep a piece (modelsetup never hands the tab such
-// text; the scrub was not widened, since a greedy '@' rule would also eat
+// text; editorkit.Scrub was not widened, since a greedy '@' rule would also eat
 // the placeholder's '@').
 func TestServerTabNeverRendersAPieceOfAnAtURL(t *testing.T) {
 	const checkHiddenText = "the check failed; the url contains an @ so the error text is hidden"

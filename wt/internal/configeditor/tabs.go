@@ -3,8 +3,8 @@ package configeditor
 import (
 	"context"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
@@ -40,6 +40,10 @@ type Options struct {
 	// Server are the functions the Model server tab reaches the machine
 	// through. Run fills in the real ones for any left nil.
 	Server ServerDeps
+	// UserHome is the home directory paths are abbreviated against when the
+	// observed state names none; nil means os.UserHomeDir. It is read once,
+	// in Run.
+	UserHome func() (string, error)
 }
 
 // ServerDeps are the Model server tab's ways out of the program. Each is
@@ -138,18 +142,5 @@ var tabNames = []string{"Agents", "Models", "Model server"}
 // (and in the accent colour, where there is colour) so that it reads as
 // current on a terminal without any.
 func tabBar(theme themes.Theme, current Tab) string {
-	active := lipgloss.NewStyle().Foreground(theme.Token(themes.TokenAccent)).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(theme.Token(themes.TokenDim))
-	bar := ""
-	for i, name := range tabNames {
-		if i > 0 {
-			bar += "  "
-		}
-		if Tab(i) == current {
-			bar += active.Render("[" + name + "]")
-		} else {
-			bar += dim.Render(" " + name + " ")
-		}
-	}
-	return bar
+	return editorkit.TabBar(theme, tabNames, int(current))
 }

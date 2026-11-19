@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -178,7 +179,7 @@ var cutMarker = regexp.MustCompile(`… \d+ lines not shown …`)
 func assertMessageShown(t *testing.T, name, view, message string, width, height int) {
 	t.Helper()
 	assertFits(t, name, view, width, height)
-	lines := lipgloss.Height(wrapText(message, width))
+	lines := lipgloss.Height(editorkit.WrapText(message, width))
 	cut := 1+lines+1 > height
 	if got := cutMarker.MatchString(view); got != cut {
 		t.Errorf("%s at %dx%d: marker shown = %v, want %v (the message is %d lines):\n%s", name, width, height, got, cut, lines, view)
@@ -329,6 +330,7 @@ func modelsEditor(t *testing.T, tm *tabMachine, width, height int) *model {
 	t.Helper()
 	cfg, _ := tm.deps().Load()
 	m := newModel(testTheme(), cfg, nil)
+	m.home = testUserHome
 	m.opts = Options{StartTab: TabModels, Models: tm.deps(), Server: (&serverMachine{}).deps()}
 	m.tab = TabModels
 	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
@@ -408,6 +410,7 @@ func TestTabKeySwitchesTabsAndProbesOnce(t *testing.T) {
 	tm := newTabMachine(t, tabRegistry)
 	cfg, _ := tm.deps().Load()
 	m := newModel(testTheme(), cfg, nil)
+	m.home = testUserHome
 	m.opts = Options{Models: tm.deps(), Server: (&serverMachine{}).deps()}
 	m = send(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = send(t, m, loadedMsg{cfg: cfg})
@@ -551,11 +554,11 @@ func TestModelsTabFitsTheTerminal(t *testing.T) {
 		// 13 lines at 40 columns as the prompt is written; the blank lines
 		// are what a 12-line terminal gives up.
 		{name: "remove prompt for a long id", registry: tabLongRegistry, bare: true, longPath: tabLongWeights, set: longPrompt,
-			want: []string{"Remove " + tabLongID + " from the registry? [y/N]", "weights are still at", tildePath(tabLongWeights), closing}},
+			want: []string{"Remove " + tabLongID + " from the registry? [y/N]", "weights are still at", editorkit.TildePath(tabLongWeights, testUserHome), closing}},
 		// Two lines more: at 40x12 the closing sentence goes too, never a
 		// line of the path (TestRemovePromptGivesUpLinesBeforeThePath).
 		{name: "remove prompt for a long id and a long path", registry: tabLongRegistry, bare: true, longPath: tabLongerWeights, set: longPrompt,
-			want: []string{"Remove " + tabLongID + " from the registry? [y/N]", "weights are still at", tildePath(tabLongerWeights)}},
+			want: []string{"Remove " + tabLongID + " from the registry? [y/N]", "weights are still at", editorkit.TildePath(tabLongerWeights, testUserHome)}},
 		// bubbles draws the filter's input where the table's header was.
 		{name: "filter being typed", registry: tabRegistry, bare: true, set: typing("q", "w"), want: []string{"qw"}},
 		{name: "filter applied", registry: tabRegistry, set: typing("q", "w", "enter")},
@@ -712,8 +715,8 @@ func TestRemovePromptGivesUpLinesBeforeThePath(t *testing.T) {
 	}
 	question := flat("Remove " + tabLongID + " from the registry? [y/N]")
 	// The path is wrapped at width, so check for its last segment.
-	longWeightsEnd := flat(strings.TrimPrefix(tildePath(tabLongWeights), "/"))
-	longerWeightsEnd := flat(strings.TrimPrefix(tildePath(tabLongerWeights), "/"))
+	longWeightsEnd := flat(strings.TrimPrefix(editorkit.TildePath(tabLongWeights, testUserHome), "/"))
+	longerWeightsEnd := flat(strings.TrimPrefix(editorkit.TildePath(tabLongerWeights, testUserHome), "/"))
 
 	// The blank lines go first: everything else is still said.
 	view := prompt(t, tabLongWeights, 40, 12)
@@ -1047,7 +1050,7 @@ func TestALongRefusalKeepsItsHintAndThePathsEnd(t *testing.T) {
 				}
 				view = m.View()
 				assertMessageShown(t, "refused removal, "+where, view, status, size[0], size[1])
-				if !strings.Contains(view, "MODEL") && lastLine(view) != fitHints(size[0], modelsHints) {
+				if !strings.Contains(view, "MODEL") && lastLine(view) != editorkit.FitHints(size[0], modelsHints) {
 					t.Errorf("refused removal, %s at %dx%d: the last line should be the key hints:\n%s", where, size[0], size[1], view)
 				}
 				if cutMarker.MatchString(view) {
@@ -1174,6 +1177,7 @@ func TestModelsTabFilterNarrowsTheTable(t *testing.T) {
 func TestAgentsFilterNarrowsTheList(t *testing.T) {
 	cfg := &config.Config{Agents: []config.Agent{{Name: "claude"}, {Name: "pi"}}}
 	m := newModel(testTheme(), cfg, nil)
+	m.home = testUserHome
 	m = send(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = stillCursors(send(t, m, loadedMsg{cfg: cfg}))
 	all := len(m.list.VisibleItems())
@@ -1508,23 +1512,6 @@ func TestQuitPromptFitsANarrowTerminal(t *testing.T) {
 		if size[0] >= 80 && view != "You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel\n" {
 			t.Errorf("at %d columns the prompt changed:\n%q", size[0], view)
 		}
-	}
-}
-
-// TestWrapTextWithoutAWidth verifies text is left as written when the width
-// is not known yet (a view drawn before the first WindowSizeMsg), and that a
-// line that fits keeps its own spacing. Wrapping to a width of 0 put one
-// rune on each line.
-func TestWrapTextWithoutAWidth(t *testing.T) {
-	text := "one two  three\n\n/a/path with spaces"
-	if got := wrapText(text, 0); got != text {
-		t.Errorf("wrapText at width 0 = %q, want the text unchanged", got)
-	}
-	if got := wrapText(text, 80); got != text {
-		t.Errorf("wrapText at 80 = %q, want the text unchanged", got)
-	}
-	if got := wrapText("one two  three", 7); got != "one two\nthree" {
-		t.Errorf("wrapText at 7 = %q", got)
 	}
 }
 

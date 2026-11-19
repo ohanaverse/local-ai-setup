@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -210,8 +211,8 @@ func (m *model) openModelForm(row *modeladmin.Row) {
 	for field := range f.text {
 		// The value goes in before the suggestions: bubbles v1.0.0 panics on
 		// the accept key when SetValue follows a matched suggestion.
-		f.text[field] = newTextInput(values[field], "")
-		// No "> " prompt: the label is beside it, and renderFormFields marks
+		f.text[field] = editorkit.NewTextInput(values[field], "")
+		// No "> " prompt: the label is beside it, and editorkit.RenderFormFields marks
 		// the focused row.
 		f.text[field].Prompt = ""
 	}
@@ -253,7 +254,7 @@ func (m *model) focusModelField() {
 }
 
 // modelFieldRoom is how many columns field's value has beside its label:
-// renderFormFields draws "> Label: " in front of it, which is four columns
+// editorkit.RenderFormFields draws "> Label: " in front of it, which is four columns
 // past the label's runes.
 func (m *model) modelFieldRoom(field int) int {
 	return max(m.width-utf8.RuneCountInString(modelFormLabels[field])-4, 4)
@@ -585,12 +586,12 @@ func (m *model) modelFormLayout() modelFormLayout {
 	}
 	var l modelFormLayout
 	if f.err != "" {
-		l.errBlock = themes.ErrorStyle(m.theme).Render(wrapText(f.err, width))
+		l.errBlock = themes.ErrorStyle(m.theme).Render(editorkit.WrapText(f.err, width))
 		l.foot = l.errBlock + "\n"
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	l.head = tabBar(m.theme, TabModels) + "\n" + wrapText(title, width) + "\n"
-	hints := dim.Render(fitHints(m.width, modelFormHints))
+	l.head = tabBar(m.theme, TabModels) + "\n" + editorkit.WrapText(title, width) + "\n"
+	hints := dim.Render(editorkit.FitHints(m.width, modelFormHints))
 	// While the add form's Provider choice is the field being changed, a
 	// line above the key hints says where the provider it lacks is added. It
 	// is a row the fields lose on a short terminal, so it is drawn only
@@ -598,7 +599,7 @@ func (m *model) modelFormLayout() modelFormLayout {
 	// never beside an error, which has its own rule for that below.
 	pairing := ""
 	if f.mode == modelFormAdd && f.cursor == mfProvider && f.err == "" {
-		pairing = dim.Render(fitHints(m.width, modelFormPairingHints)) + "\n"
+		pairing = dim.Render(editorkit.FitHints(m.width, modelFormPairingHints)) + "\n"
 	}
 	l.room = mfCount
 	if m.height <= 0 {
@@ -658,7 +659,7 @@ func (m *model) modelFormView() string {
 		return tuilayout.MessageAlone(tabBar(m.theme, TabModels), l.errBlock, modelFormErrorHint, width, m.height, dim)
 	}
 	first, count, above, below := formWindow(f.cursor, mfCount, l.room)
-	var fields []formField
+	var fields []editorkit.FormField
 	for field := first; field < first+count; field++ {
 		value := f.value(field)
 		switch {
@@ -675,11 +676,11 @@ func (m *model) modelFormView() string {
 		default:
 			value = endCut(value, m.modelFieldRoom(field))
 		}
-		fields = append(fields, formField{modelFormLabels[field], value, field == f.cursor})
+		fields = append(fields, editorkit.FormField{Label: modelFormLabels[field], Value: value, Focus: field == f.cursor})
 	}
-	// renderFormFields ends every row with a newline; the last one's goes,
+	// editorkit.RenderFormFields ends every row with a newline; the last one's goes,
 	// so that clipping does not pad an empty line under the fields.
-	rows := tuilayout.Clip(strings.TrimRight(renderFormFields(m.theme, fields), "\n"), width)
+	rows := tuilayout.Clip(strings.TrimRight(editorkit.RenderFormFields(m.theme, fields), "\n"), width)
 	if above {
 		rows = dim.Render(fmt.Sprintf("  ↑ %d more", first)) + "\n" + rows
 	}

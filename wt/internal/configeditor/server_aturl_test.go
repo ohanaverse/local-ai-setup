@@ -144,7 +144,7 @@ func TestServerTabNeverPingsAStoredCredentialedURL(t *testing.T) {
 }
 
 // atPairURLs are wt-model pair urls holding an '@' (issue #640): schemeless
-// (which the tab's "://" scrub cannot see), with a scheme, and a password
+// (which editorkit.Scrub's "://" rule cannot see), with a scheme, and a password
 // holding '/'. Each carries USERQ or PASSQ, which no fixed text holds.
 var atPairURLs = []string{
 	"USERQ:PASSQ@litellm:4000",
@@ -249,16 +249,16 @@ func TestServerTabNeverShowsOrRequestsAnAtPairURL(t *testing.T) {
 // TestPairLineHidesAnAtURLItWasHanded pins the pair row's own defence: a
 // PairState whose url holds an '@' (one Observe would never hand over, but
 // a dep composed by hand could) is drawn as the placeholder, whole, even
-// when it has no "://" for the tab's scrub to find; a plain url is drawn as
+// when it has no "://" for editorkit.Scrub to find; a plain url is drawn as
 // it was.
 func TestPairLineHidesAnAtURLItWasHanded(t *testing.T) {
 	for _, raw := range atPairURLs {
 		l := pairLine(modelsetup.PairState{URL: raw, KeySet: true})
-		if l.text != "LiteLLM "+modelclient.HiddenURL+", key set" {
-			t.Errorf("%q: pair row %q", raw, l.text)
+		if l.Text != "LiteLLM "+modelclient.HiddenURL+", key set" {
+			t.Errorf("%q: pair row %q", raw, l.Text)
 		}
 	}
-	if l := pairLine(modelsetup.PairState{URL: "http://localhost:4000", KeySet: true}); l.text != "LiteLLM http://localhost:4000, key set" {
-		t.Errorf("plain pair row %q", l.text)
+	if l := pairLine(modelsetup.PairState{URL: "http://localhost:4000", KeySet: true}); l.Text != "LiteLLM http://localhost:4000, key set" {
+		t.Errorf("plain pair row %q", l.Text)
 	}
 }

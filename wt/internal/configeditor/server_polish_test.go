@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
@@ -45,7 +46,7 @@ func TestServerTabParseErrorPathIsAbbreviatedAndBreaksAtSlashes(t *testing.T) {
 			t.Errorf("width %d: the home is not abbreviated:\n%s", size[0], v)
 		}
 		lines := strings.Split(v, "\n")
-		for _, seg := range strings.Split(strings.TrimPrefix(homePath(st.Config.Path, "/Users/dev"), "~/"), "/") {
+		for _, seg := range strings.Split(strings.TrimPrefix(editorkit.HomePath(st.Config.Path, "/Users/dev", ""), "~/"), "/") {
 			found := false
 			for _, l := range lines {
 				if strings.Contains(l, seg) {
@@ -55,24 +56,6 @@ func TestServerTabParseErrorPathIsAbbreviatedAndBreaksAtSlashes(t *testing.T) {
 			if len(seg)+1 <= size[0] && !found {
 				t.Errorf("width %d: the segment %q is split across lines:\n%s", size[0], seg, v)
 			}
-		}
-	}
-}
-
-// TestBreakPathNeverSplitsASegmentThatFits pins breakPath: it breaks only
-// after a slash, and cuts a segment only when it alone is wider than the width.
-func TestBreakPathNeverSplitsASegmentThatFits(t *testing.T) {
-	got := breakPath("~/aaaa/bbbb/cccc/dddd", 12)
-	want := []string{"~/aaaa/bbbb/", "cccc/dddd"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("breakPath = %q, want %q", got, want)
-	}
-	if got := breakPath("~/"+strings.Repeat("x", 30), 10); len(got) < 3 {
-		t.Errorf("a segment wider than the width must still be cut: %q", got)
-	}
-	for _, l := range breakPath("~/"+strings.Repeat("x", 30)+"/y", 10) {
-		if len(l) > 10 {
-			t.Errorf("line %q wider than 10", l)
 		}
 	}
 }
@@ -144,7 +127,7 @@ func TestServerTabClippedViewKeepsRadiosHintsAndWholeRows(t *testing.T) {
 			}
 			lines := strings.Split(v, "\n")
 			for i, l := range lines {
-				if strings.HasPrefix(l, strings.Repeat(" ", serverLabelW)) && strings.TrimSpace(l) != "" && i > 0 {
+				if strings.HasPrefix(l, strings.Repeat(" ", editorkit.LabelW)) && strings.TrimSpace(l) != "" && i > 0 {
 					if prev := strings.TrimSpace(lines[i-1]); prev == "" || strings.Contains(prev, "not shown") {
 						t.Errorf("%s at %dx%d: orphan continuation line %q after %q:\n%s", name, size[0], size[1], l, lines[i-1], v)
 					}
@@ -236,15 +219,6 @@ func TestServerTabCancelsAPlanWhenCOrRReadsAgain(t *testing.T) {
 	}
 }
 
-// TestScrubTakesTheHostWithAnAtInTheQuery pins a deliberate choice: an @ in
-// a url's query makes scrub read everything before it as userinfo, so the
-// host goes too. That errs on the safe side of showing a credential.
-func TestScrubTakesTheHostWithAnAtInTheQuery(t *testing.T) {
-	if got, want := scrub("https://h:1?x=a@b"), "https://b"; got != want {
-		t.Errorf("scrub = %q, want %q", got, want)
-	}
-}
-
 // TestServerTabNamesWhatACheckIsMissing pins that a server that was not
 // checked says which of the url and the token is missing.
 func TestServerTabNamesWhatACheckIsMissing(t *testing.T) {
@@ -262,7 +236,7 @@ func TestServerTabNamesWhatACheckIsMissing(t *testing.T) {
 		{"token only", tok, "not checked: no url"},
 		{"neither", none, "not checked: no url and no token"},
 	} {
-		got := serverCheckLine(c.st).text
+		got := serverCheckLine(c.st).Text
 		if got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
@@ -312,23 +286,6 @@ func TestServerTabPromptsStayVisibleAtEverySize(t *testing.T) {
 					t.Errorf("%q at %dx%d: %q follows the question", c.prompt, size[0], size[1], l)
 				}
 			}
-		}
-	}
-}
-
-// TestScrubHidesKeysWithoutMangling pins that scrub hides a real-shaped
-// sk- key after any separator, and leaves a word that merely contains sk-.
-func TestScrubHidesKeysWithoutMangling(t *testing.T) {
-	key := "sk-" + strings.Repeat("ab12", 16)
-	for _, pre := range []string{"", "=", " ", `"`, ":"} {
-		got := scrub(pre + key + " end")
-		if strings.Contains(got, "ab12") || !strings.HasPrefix(got, pre+"sk-<hidden>") {
-			t.Errorf("prefix %q: key not hidden or prefix lost: %q", pre, got)
-		}
-	}
-	for _, keep := range []string{"mask-rcnn-large-v2-xxxxxxxxxxxxxxxx", "models/task-runner-abcdefghijklmnop"} {
-		if got := scrub(keep); got != keep {
-			t.Errorf("scrub mangled %q into %q", keep, got)
 		}
 	}
 }
