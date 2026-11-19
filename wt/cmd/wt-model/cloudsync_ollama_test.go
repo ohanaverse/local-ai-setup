@@ -25,11 +25,10 @@ type fakeOllama struct {
 	calls []string
 }
 
-func stubOllama(t *testing.T, tags ...string) *fakeOllama {
+func stubOllama(t *testing.T, h *host, tags ...string) *fakeOllama {
 	t.Helper()
 	fake := &fakeOllama{tags: tags, fail: map[string]string{}}
-	old := ollamaCLI
-	ollamaCLI = func(_ context.Context, origin string, args ...string) (string, string, error) {
+	h.ollamaCLI = func(_ context.Context, origin string, args ...string) (string, string, error) {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		command := strings.Join(args, " ")
@@ -46,7 +45,6 @@ func stubOllama(t *testing.T, tags ...string) *fakeOllama {
 		}
 		return out, "", nil
 	}
-	t.Cleanup(func() { ollamaCLI = old })
 	return fake
 }
 
@@ -61,12 +59,13 @@ func (f *fakeOllama) changes() []string {
 	return out
 }
 
-// TestOllamaSeamFailsClosed pins TestMain: with nothing stubbed, no test in
+// TestOllamaSeamFailsClosed pins testHost: with nothing stubbed, no test in
 // this package runs the developer's ollama. An unstubbed ollama-flow test fails
 // with "not stubbed" instead of pulling a model onto, or removing one from,
 // the machine it runs on.
 func TestOllamaSeamFailsClosed(t *testing.T) {
-	if _, _, err := ollamaCLI(context.Background(), testOllamaOrigin, "pull", "x:cloud"); err == nil || !strings.Contains(err.Error(), "not stubbed") {
+	h := testHost()
+	if _, _, err := h.ollamaCLI(context.Background(), testOllamaOrigin, "pull", "x:cloud"); err == nil || !strings.Contains(err.Error(), "not stubbed") {
 		t.Errorf("ollamaCLI err = %v, want a not-stubbed failure", err)
 	}
 }
@@ -75,21 +74,22 @@ func TestOllamaSeamFailsClosed(t *testing.T) {
 // that is not one: the tag is already gone. Anything else is an error that
 // carries what ollama said, and `ollama pull` has no such exception.
 func TestOllamaRemoveReadsNotFoundAsDone(t *testing.T) {
-	ollama := stubOllama(t)
+	h := testHost()
+	ollama := stubOllama(t, h)
 	ollama.fail["rm gone:cloud"] = "Error: model 'gone:cloud' not found"
 	ollama.fail["rm locked:cloud"] = "Error: permission denied"
 	ollama.fail["pull missing:cloud"] = "Error: pull model manifest: file does not exist"
 	ctx := context.Background()
-	if err := ollamaRemove(ctx, testOllamaOrigin, "gone:cloud"); err != nil {
+	if err := h.ollamaRemove(ctx, testOllamaOrigin, "gone:cloud"); err != nil {
 		t.Errorf("rm of a tag that is not there: err = %v, want none", err)
 	}
-	if err := ollamaRemove(ctx, testOllamaOrigin, "locked:cloud"); err == nil || err.Error() != "`ollama rm locked:cloud` failed: Error: permission denied" {
+	if err := h.ollamaRemove(ctx, testOllamaOrigin, "locked:cloud"); err == nil || err.Error() != "`ollama rm locked:cloud` failed: Error: permission denied" {
 		t.Errorf("rm that failed: err = %v", err)
 	}
-	if err := ollamaPull(ctx, testOllamaOrigin, "missing:cloud"); err == nil || err.Error() != "`ollama pull missing:cloud` failed: Error: pull model manifest: file does not exist" {
+	if err := h.ollamaPull(ctx, testOllamaOrigin, "missing:cloud"); err == nil || err.Error() != "`ollama pull missing:cloud` failed: Error: pull model manifest: file does not exist" {
 		t.Errorf("pull that failed: err = %v", err)
 	}
-	if err := ollamaPull(ctx, testOllamaOrigin, "fine:cloud"); err != nil {
+	if err := h.ollamaPull(ctx, testOllamaOrigin, "fine:cloud"); err != nil {
 		t.Errorf("pull that worked: err = %v", err)
 	}
 	want := []string{"rm gone:cloud", "rm locked:cloud", "pull missing:cloud", "pull fine:cloud"}
@@ -102,19 +102,20 @@ func TestOllamaRemoveReadsNotFoundAsDone(t *testing.T) {
 // output shapes: the header and blank lines are skipped, and a size or date
 // with spaces in it does not bleed into the name.
 func TestOllamaTagsReadsTheNameColumn(t *testing.T) {
-	old := ollamaCLI
-	t.Cleanup(func() { ollamaCLI = old })
-	ollamaCLI = func(context.Context, string, ...string) (string, string, error) {
+	h := testHost()
+	old := h.ollamaCLI
+	t.Cleanup(func() { h.ollamaCLI = old })
+	h.ollamaCLI = func(context.Context, string, ...string) (string, string, error) {
 		return "NAME                 ID      SIZE  MODIFIED\nglm-5.3:cloud  abc  -  2 days ago\nornith-1.5:35b  def  20 GB  1 week ago\n\n", "", nil
 	}
-	tags, err := ollamaTags(context.Background(), testOllamaOrigin)
+	tags, err := h.ollamaTags(context.Background(), testOllamaOrigin)
 	if want := []string{"glm-5.3:cloud", "ornith-1.5:35b"}; err != nil || !reflect.DeepEqual(tags, want) {
 		t.Errorf("ollamaTags = (%q, %v), want %q", tags, err, want)
 	}
-	ollamaCLI = func(context.Context, string, ...string) (string, string, error) {
+	h.ollamaCLI = func(context.Context, string, ...string) (string, string, error) {
 		return "", "", errors.New("the ollama command is not installed (not on PATH)")
 	}
-	if _, err := ollamaTags(context.Background(), testOllamaOrigin); err == nil || err.Error() != "the ollama command is not installed (not on PATH)" {
+	if _, err := h.ollamaTags(context.Background(), testOllamaOrigin); err == nil || err.Error() != "the ollama command is not installed (not on PATH)" {
 		t.Errorf("ollamaTags with no ollama: err = %v", err)
 	}
 }
@@ -126,6 +127,7 @@ func TestOllamaTagsReadsTheNameColumn(t *testing.T) {
 // does not manage. It also pins that stdout and stderr come back apart, and
 // that a missing ollama is said plainly.
 func TestRealOllamaCLIPinsTheDaemon(t *testing.T) {
+	h := testHost()
 	bin := t.TempDir()
 	script := "#!/bin/sh\necho \"host=$OLLAMA_HOST args=$*\"\necho \"to stderr\" >&2\n[ \"$1\" = rm ] && exit 3\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(bin, "ollama"), []byte(script), 0o755); err != nil {
@@ -134,15 +136,15 @@ func TestRealOllamaCLIPinsTheDaemon(t *testing.T) {
 	t.Setenv("PATH", bin)
 	t.Setenv("OLLAMA_HOST", "http://elsewhere.invalid:1")
 
-	stdout, stderr, err := realOllamaCLI(context.Background(), "http://127.0.0.1:11999", "pull", "x:cloud")
+	stdout, stderr, err := h.realOllamaCLI(context.Background(), "http://127.0.0.1:11999", "pull", "x:cloud")
 	if err != nil || stdout != "host=http://127.0.0.1:11999 args=pull x:cloud\n" || stderr != "to stderr\n" {
 		t.Errorf("realOllamaCLI = (%q, %q, %v)", stdout, stderr, err)
 	}
-	if _, _, err := realOllamaCLI(context.Background(), "http://127.0.0.1:11999", "rm", "x:cloud"); err == nil {
+	if _, _, err := h.realOllamaCLI(context.Background(), "http://127.0.0.1:11999", "rm", "x:cloud"); err == nil {
 		t.Error("a non-zero exit was not an error")
 	}
 	t.Setenv("PATH", t.TempDir())
-	if _, _, err := realOllamaCLI(context.Background(), "http://127.0.0.1:11999", "list"); err == nil || err.Error() != "the ollama command is not installed (not on PATH)" {
+	if _, _, err := h.realOllamaCLI(context.Background(), "http://127.0.0.1:11999", "list"); err == nil || err.Error() != "the ollama command is not installed (not on PATH)" {
 		t.Errorf("with no ollama on PATH: err = %v", err)
 	}
 }
@@ -155,24 +157,25 @@ func TestRealOllamaCLIPinsTheDaemon(t *testing.T) {
 // escapes would reach the terminal. One line comes back: the last one that
 // says anything, which is where ollama puts its error.
 func TestOllamaFailureIsOneCleanLine(t *testing.T) {
-	ollama := stubOllama(t)
+	h := testHost()
+	ollama := stubOllama(t, h)
 	progress := "pulling manifest \n\x1b[?25lpulling manifest \r\x1b[1G\x1b[K"
 	ollama.fail["pull glm-5.3:cloud"] = progress + "Error: pull model manifest: file does not exist\n\n"
 	ollama.fail["rm stuck:cloud"] = "Warning: something\nError: permission denied\n"
 	ollama.fail["rm quiet:cloud"] = "\x1b[?25h\n \n"
 	ollama.fail["list"] = "Warning: something\r\nError: could not connect to ollama server\r\n"
 	ctx := context.Background()
-	if err := ollamaPull(ctx, testOllamaOrigin, "glm-5.3:cloud"); err == nil || err.Error() != "`ollama pull glm-5.3:cloud` failed: Error: pull model manifest: file does not exist" {
+	if err := h.ollamaPull(ctx, testOllamaOrigin, "glm-5.3:cloud"); err == nil || err.Error() != "`ollama pull glm-5.3:cloud` failed: Error: pull model manifest: file does not exist" {
 		t.Errorf("pull: err = %q", err)
 	}
-	if err := ollamaRemove(ctx, testOllamaOrigin, "stuck:cloud"); err == nil || err.Error() != "`ollama rm stuck:cloud` failed: Error: permission denied" {
+	if err := h.ollamaRemove(ctx, testOllamaOrigin, "stuck:cloud"); err == nil || err.Error() != "`ollama rm stuck:cloud` failed: Error: permission denied" {
 		t.Errorf("rm: err = %q", err)
 	}
 	// Nothing readable on stderr: why the command failed stands in.
-	if err := ollamaRemove(ctx, testOllamaOrigin, "quiet:cloud"); err == nil || err.Error() != "`ollama rm quiet:cloud` failed: exit status 1" {
+	if err := h.ollamaRemove(ctx, testOllamaOrigin, "quiet:cloud"); err == nil || err.Error() != "`ollama rm quiet:cloud` failed: exit status 1" {
 		t.Errorf("rm with only escapes on stderr: err = %q", err)
 	}
-	if _, err := ollamaTags(ctx, testOllamaOrigin); err == nil || err.Error() != "Error: could not connect to ollama server" {
+	if _, err := h.ollamaTags(ctx, testOllamaOrigin); err == nil || err.Error() != "Error: could not connect to ollama server" {
 		t.Errorf("list: err = %q", err)
 	}
 }
@@ -184,21 +187,22 @@ func TestOllamaFailureIsOneCleanLine(t *testing.T) {
 // Otherwise wt would print "removed <tag>" and exit 0 for a tag that is
 // still pulled.
 func TestOllamaRemoveNotFoundMustNameTheTag(t *testing.T) {
-	ollama := stubOllama(t)
+	h := testHost()
+	ollama := stubOllama(t, h)
 	ollama.fail["rm gone:cloud"] = "pulling\nError: model 'gone:cloud' not found\n"
 	ollama.fail["rm Mixed:cloud"] = "Error: Model 'mixed:cloud' Not Found"
 	ollama.fail["rm kept:cloud"] = "Error: 404 page not found"
 	ollama.fail["rm other:cloud"] = "Error: model 'different:cloud' not found"
 	ctx := context.Background()
 	for _, tag := range []string{"gone:cloud", "Mixed:cloud"} {
-		if err := ollamaRemove(ctx, testOllamaOrigin, tag); err != nil {
+		if err := h.ollamaRemove(ctx, testOllamaOrigin, tag); err != nil {
 			t.Errorf("rm %s, which ollama says is not there: err = %v, want none", tag, err)
 		}
 	}
-	if err := ollamaRemove(ctx, testOllamaOrigin, "kept:cloud"); err == nil || err.Error() != "`ollama rm kept:cloud` failed: Error: 404 page not found" {
+	if err := h.ollamaRemove(ctx, testOllamaOrigin, "kept:cloud"); err == nil || err.Error() != "`ollama rm kept:cloud` failed: Error: 404 page not found" {
 		t.Errorf("rm answered by a 404 page: err = %v, want a failure", err)
 	}
-	if err := ollamaRemove(ctx, testOllamaOrigin, "other:cloud"); err == nil {
+	if err := h.ollamaRemove(ctx, testOllamaOrigin, "other:cloud"); err == nil {
 		t.Error("rm answered with another model's not-found was read as done")
 	}
 }
@@ -210,21 +214,22 @@ func TestOllamaRemoveNotFoundMustNameTheTag(t *testing.T) {
 // reasonable. A tag whose rm timed out is never read as removed, whatever
 // was on stderr by then.
 func TestOllamaTimeoutIsSaidAsOne(t *testing.T) {
-	old := ollamaCLI
-	t.Cleanup(func() { ollamaCLI = old })
-	ollamaCLI = func(ctx context.Context, _ string, args ...string) (string, string, error) {
+	h := testHost()
+	old := h.ollamaCLI
+	t.Cleanup(func() { h.ollamaCLI = old })
+	h.ollamaCLI = func(ctx context.Context, _ string, args ...string) (string, string, error) {
 		<-ctx.Done()
 		return "", "pulling manifest \nError: model '" + args[len(args)-1] + "' not found\n", errors.New("signal: killed")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if err := ollamaPull(ctx, testOllamaOrigin, "slow:cloud"); err == nil || err.Error() != "`ollama pull slow:cloud` timed out after 10m (wt's own limit)" {
+	if err := h.ollamaPull(ctx, testOllamaOrigin, "slow:cloud"); err == nil || err.Error() != "`ollama pull slow:cloud` timed out after 10m (wt's own limit)" {
 		t.Errorf("pull: err = %q", err)
 	}
-	if err := ollamaRemove(ctx, testOllamaOrigin, "slow:cloud"); err == nil || err.Error() != "`ollama rm slow:cloud` timed out after 1m (wt's own limit)" {
+	if err := h.ollamaRemove(ctx, testOllamaOrigin, "slow:cloud"); err == nil || err.Error() != "`ollama rm slow:cloud` timed out after 1m (wt's own limit)" {
 		t.Errorf("rm: err = %q", err)
 	}
-	if _, err := ollamaTags(ctx, testOllamaOrigin); err == nil || err.Error() != "timed out after 30s (wt's own limit)" {
+	if _, err := h.ollamaTags(ctx, testOllamaOrigin); err == nil || err.Error() != "timed out after 30s (wt's own limit)" {
 		t.Errorf("list: err = %q", err)
 	}
 }
@@ -236,19 +241,20 @@ func TestOllamaTimeoutIsSaidAsOne(t *testing.T) {
 // lives, with the registry already written and the routes not yet synced.
 // The stand-in here is a shell script whose child sleeps; nothing real runs.
 func TestRealOllamaCLITimeoutIsNotHeldByAChild(t *testing.T) {
+	h := testHost()
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "ollama"), []byte("#!/bin/sh\n/bin/sleep 4\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
-	oldDelay := ollamaWaitDelay
-	ollamaWaitDelay = 300 * time.Millisecond
-	t.Cleanup(func() { ollamaWaitDelay = oldDelay })
+	oldDelay := h.ollamaWaitDelay
+	h.ollamaWaitDelay = 300 * time.Millisecond
+	t.Cleanup(func() { h.ollamaWaitDelay = oldDelay })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, _, err := realOllamaCLI(ctx, "http://127.0.0.1:11999", "pull", "x:cloud")
+	_, _, err := h.realOllamaCLI(ctx, "http://127.0.0.1:11999", "pull", "x:cloud")
 	if took := time.Since(start); err == nil || took > 2*time.Second {
 		t.Errorf("realOllamaCLI returned after %s with err = %v; want an error within the limit plus the wait delay", took.Round(10*time.Millisecond), err)
 	}

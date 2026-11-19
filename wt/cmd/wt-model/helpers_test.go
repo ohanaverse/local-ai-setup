@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -24,9 +26,9 @@ import (
 // the probe reads on-disk state only, no ollama is run, nothing is seeded
 // from PATH, stdin is no terminal, the Models screen cannot open and a
 // registry write's route sync reports that it was not stubbed, no terminal
-// opens and a removal's question fails unanswered, and stdout is
-// no terminal (width 0, so a table does not depend on where `go test` was
-// started). A test replaces the fields it exercises; each test owns its
+// opens and a removal's question fails unanswered, cloud-sync fetches no
+// page, runs no ollama and asks nothing, and stdout is no terminal (width 0,
+// so a table does not depend on where `go test` was started). A test replaces the fields it exercises; each test owns its
 // host, so nothing is shared between parallel tests.
 func testHost() *host {
 	h := newHost()
@@ -44,6 +46,19 @@ func testHost() *host {
 	h.stdoutWidth = func() int { return 0 }
 	h.modeleditorRun = func(themes.Theme, *config.Config, error, modeleditor.Options) (modeleditor.Result, error) {
 		return modeleditor.Result{}, errors.New("the Models screen is not stubbed in this test")
+	}
+	// `wt-model cloud-sync` seams: no test may fetch a public page, run the
+	// developer's ollama (a pull or an rm there changes their machine), or
+	// open the terminal to ask. Tests use stubCloudFetch and stubConfirm
+	// (cloudsync_test.go) and stubOllama (cloudsync_ollama_test.go).
+	h.cloudFetch = func(_ context.Context, url string) ([]byte, error) {
+		return nil, errors.New("cloudFetch not stubbed in this test: " + url)
+	}
+	h.ollamaCLI = func(_ context.Context, _ string, args ...string) (string, string, error) {
+		return "", "", errors.New("ollamaCLI not stubbed in this test: ollama " + strings.Join(args, " "))
+	}
+	h.confirmCloudSync = func(string) (bool, error) {
+		return false, errors.New("confirmCloudSync not stubbed in this test")
 	}
 	return h
 }

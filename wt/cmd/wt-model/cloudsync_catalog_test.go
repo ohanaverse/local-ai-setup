@@ -99,12 +99,13 @@ ollama: warning: ollama cloud entries disagree on subscription pricing; new entr
 // for, and nothing changed — the registry byte-identical, and ollama asked
 // only for its list, pinned to the provider row's address.
 func TestCloudSyncOllamaDryRun(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, ollamaPages())
-	ollama := stubOllama(t, ollamaPulled...)
-	synced := stubRouteSync(t, "")
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, ollamaPages())
+	ollama := stubOllama(t, h, ollamaPulled...)
+	synced := stubRouteSync(h, "")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true, dryRun: true})
 	want := strings.ReplaceAll(ollamaPlanText, "DIGEST", digestIn(t, stdout))
 	if stdout != want || stderr != "" || code != 0 {
 		t.Errorf("stdout:\n%s\nstderr: %q, exit %d\nwant stdout:\n%s", stdout, stderr, code, want)
@@ -124,21 +125,22 @@ func TestCloudSyncOllamaDryRun(t *testing.T) {
 // retired stub and the stray one, every command pinned to the provider row's
 // address; and the routes are synced once, at the end.
 func TestCloudSyncOllamaApplyUnderTheApprovedDigest(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	fetches := stubCloudFetch(t, ollamaPages())
-	ollama := stubOllama(t, ollamaPulled...)
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	fetches := stubCloudFetch(t, h, ollamaPages())
+	ollama := stubOllama(t, h, ollamaPulled...)
 	var order []string
-	old := syncRoutesAfterWrite
-	syncRoutesAfterWrite = func(out, _ io.Writer) string {
+	old := h.syncRoutesAfterWrite
+	h.syncRoutesAfterWrite = func(out, _ io.Writer) string {
 		order = append(order, fmt.Sprintf("sync after %d ollama commands", len(ollama.calls)))
 		fmt.Fprintln(out, "ollama/glm-5.3:cloud: routed")
 		return ""
 	}
-	t.Cleanup(func() { syncRoutesAfterWrite = old })
+	t.Cleanup(func() { h.syncRoutesAfterWrite = old })
 
-	dry, _, _ := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true})
+	dry, _, _ := runCS(t, h, cfg, cloudSyncOpts{ollama: true, dryRun: true})
 	ollama.calls = nil
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, yes: true, approve: digestIn(t, dry)})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true, yes: true, approve: digestIn(t, dry)})
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q\nstdout:\n%s", code, stderr, stdout)
 	}
@@ -181,7 +183,7 @@ func TestCloudSyncOllamaApplyUnderTheApprovedDigest(t *testing.T) {
 	ollama.tags = []string{"deepseek-v4-pro:cloud", "qwen3:8b", "glm-5.3:cloud", "gemma4:cloud", "kimi-k3:1t-cloud", "gpt-oss:120b-cloud"}
 	ollama.calls, order = nil, nil
 	before := len(fetches.all())
-	stdout, stderr, code = runCS(t, cfg, cloudSyncOpts{ollama: true, yes: true})
+	stdout, stderr, code = runCS(t, h, cfg, cloudSyncOpts{ollama: true, yes: true})
 	if code != 0 || stderr != "" || !strings.Contains(stdout, "ollama: Unchanged prices: 5\n") || len(ollama.changes()) != 0 || len(order) != 0 || mustRead(t, path) != text {
 		t.Errorf("a second run was not a no-op: exit %d, stderr %q, ollama %q, syncs %q\n%s", code, stderr, ollama.changes(), order, stdout)
 	}
@@ -201,6 +203,7 @@ func TestCloudSyncOllamaApplyUnderTheApprovedDigest(t *testing.T) {
 // command's own error (the last line main prints) says the ollama flow
 // changed nothing and why.
 func TestCloudSyncOllamaChangesNothingAndSaysWhy(t *testing.T) {
+	h := testHost()
 	massRegistry := cloudSyncRegistry + `
 [[models]]
 id = "ollama/retired2:cloud"
@@ -266,7 +269,7 @@ tags = []
 			if registry == "" {
 				registry = cloudSyncRegistry
 			}
-			path, cfg := cloudSyncHome(t, registry)
+			path, cfg := cloudSyncHome(t, h, registry)
 			saved := filepath.Join(os.TempDir(), "ollama-pricing-20261007-090000.html")
 			if tc.code == 3 {
 				// A file of that name from a run in the same second, readable
@@ -275,15 +278,15 @@ tags = []
 					t.Fatal(err)
 				}
 			}
-			stubCloudFetch(t, tc.pages)
-			ollama := stubOllama(t, ollamaPulled...)
+			stubCloudFetch(t, h, tc.pages)
+			ollama := stubOllama(t, h, ollamaPulled...)
 			if tc.listFail != "" {
 				ollama.fail["list"] = tc.listFail
 			}
-			synced := stubRouteSync(t, "")
+			synced := stubRouteSync(h, "")
 			tc.opts.ollama = true
 
-			stdout, stderr, final, code := runCSFinal(t, cfg, tc.opts)
+			stdout, stderr, final, code := runCSFinal(t, h, cfg, tc.opts)
 			if want := "cloud-sync: the ollama flow changed nothing: " + map[int]string{
 				2: "an input could not be read", 3: "the pricing page changed shape", 4: "mass removal refused", 5: "removals not approved",
 			}[tc.code]; final != want {
@@ -325,11 +328,12 @@ tags = []
 // may be it is removed. An outage must never be read as "these models are
 // gone".
 func TestCloudSyncOllamaWithTheLibraryDown(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, map[string]string{cloudsync.PricingURL: ollamaPage})
-	stubOllama(t, "deepseek-v4-pro:cloud", "glm-5.3:9b-cloud", "stray:cloud")
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.PricingURL: ollamaPage})
+	stubOllama(t, h, "deepseek-v4-pro:cloud", "glm-5.3:9b-cloud", "stray:cloud")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true, dryRun: true})
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
@@ -357,18 +361,19 @@ func TestCloudSyncOllamaWithTheLibraryDown(t *testing.T) {
 // applied. --force is an answer to one question only (is this many removals
 // right?) and the digest is still needed.
 func TestCloudSyncOllamaForceAppliesAMassRemoval(t *testing.T) {
+	h := testHost()
 	registry := strings.Replace(cloudSyncRegistry, "id = \"ollama/deepseek-v4-pro:cloud\"", "id = \"ollama/also-retired:cloud\"", 1)
 	registry = strings.Replace(registry, "model_name = \"deepseek-v4-pro:cloud\"", "model_name = \"also-retired:cloud\"", 1)
-	path, cfg := cloudSyncHome(t, registry)
-	stubCloudFetch(t, ollamaPages())
-	ollama := stubOllama(t)
-	stubRouteSync(t, "")
+	path, cfg := cloudSyncHome(t, h, registry)
+	stubCloudFetch(t, h, ollamaPages())
+	ollama := stubOllama(t, h)
+	stubRouteSync(h, "")
 
-	dry, _, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true})
+	dry, _, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true, dryRun: true})
 	if code != 0 {
 		t.Fatalf("a dry run of a mass removal exits %d, want 0: it only prints", code)
 	}
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, yes: true, force: true, approve: digestIn(t, dry)})
+	_, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true, yes: true, force: true, approve: digestIn(t, dry)})
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
@@ -387,13 +392,14 @@ func TestCloudSyncOllamaForceAppliesAMassRemoval(t *testing.T) {
 // is applied and its routes synced; and when the openrouter fetch fails (1) in a
 // run whose ollama flow is refused, the exit status is still the ollama flow's.
 func TestCloudSyncFlowsAreIndependent(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
 	pages := bothPages()
-	stubCloudFetch(t, pages)
-	ollama := stubOllama(t, ollamaPulled...)
-	synced := stubRouteSync(t, "")
+	stubCloudFetch(t, h, pages)
+	ollama := stubOllama(t, h, ollamaPulled...)
+	synced := stubRouteSync(h, "")
 
-	stdout, _, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, ollama: true, yes: true})
+	stdout, _, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, ollama: true, yes: true})
 	if code != 5 || !strings.HasSuffix(stdout, "openrouter: refreshed 1 model(s); 1 price(s) changed\n") {
 		t.Errorf("exit %d, want 5 with the prices applied; stdout ends %q", code, stdout[max(0, len(stdout)-80):])
 	}
@@ -409,7 +415,7 @@ func TestCloudSyncFlowsAreIndependent(t *testing.T) {
 	}
 
 	delete(pages, cloudsync.OpenRouterModelsURL)
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, ollama: true, yes: true})
+	_, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, ollama: true, yes: true})
 	if code != 5 || !strings.HasPrefix(stderr, "openrouter: error: could not read OpenRouter's prices: HTTP 404") {
 		t.Errorf("exit %d, stderr %q; want the ollama flow's 5 over the openrouter flow's 1", code, stderr)
 	}
@@ -423,10 +429,11 @@ func TestCloudSyncFlowsAreIndependent(t *testing.T) {
 // model nobody saw in the plan could be removed from the registry and from
 // ollama.
 func TestCloudSyncOllamaRefusesAPlanThatChangedUnderTheLock(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, ollamaPages())
-	ollama := stubOllama(t, ollamaPulled...)
-	synced := stubRouteSync(t, "")
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, ollamaPages())
+	ollama := stubOllama(t, h, ollamaPulled...)
+	synced := stubRouteSync(h, "")
 	raced := cloudSyncRegistry + `
 [[models]]
 id = "ollama/late:cloud"
@@ -435,13 +442,13 @@ provider_id = "ollama"
 model_name = "late:cloud"
 location = "cloud"
 `
-	stubConfirm(t, true, nil, func() {
+	stubConfirm(t, h, true, nil, func() {
 		if err := os.WriteFile(path, []byte(raced), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	})
 
-	_, stderr, final, code := runCSFinal(t, cfg, cloudSyncOpts{ollama: true})
+	_, stderr, final, code := runCSFinal(t, h, cfg, cloudSyncOpts{ollama: true})
 	want := "ollama: error: the registry changed after the plan was printed, so this is no longer the plan that was approved; nothing was changed — run it again\n"
 	if code != 5 || stderr != want {
 		t.Errorf("exit %d, stderr %q\nwant exit 5, stderr %q", code, stderr, want)
@@ -458,14 +465,14 @@ location = "cloud"
 
 	// A change that leaves the plan as it was (a local model added) is not a
 	// reason to refuse, and the other program's row survives the write.
-	path, cfg = cloudSyncHome(t, cloudSyncRegistry)
+	path, cfg = cloudSyncHome(t, h, cloudSyncRegistry)
 	harmless := cloudSyncRegistry + "\n[[models]]\nid = \"ollama/late:7b\"\nfamily = \"late\"\nprovider_id = \"ollama\"\nmodel_name = \"late:7b\"\nlocation = \"local\"\n"
-	stubConfirm(t, true, nil, func() {
+	stubConfirm(t, h, true, nil, func() {
 		if err := os.WriteFile(path, []byte(harmless), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	})
-	if _, stderr, code = runCS(t, cfg, cloudSyncOpts{ollama: true}); code != 0 || stderr != "" {
+	if _, stderr, code = runCS(t, h, cfg, cloudSyncOpts{ollama: true}); code != 0 || stderr != "" {
 		t.Fatalf("with an unrelated row added: exit %d, stderr %q", code, stderr)
 	}
 	if text := mustRead(t, path); !strings.Contains(text, "ollama/late:7b") || !strings.Contains(text, "ollama/glm-5.3:cloud") || strings.Contains(text, "retired") {
@@ -484,16 +491,17 @@ location = "cloud"
 // failed is named too, with what that leaves (an entry in the registry that
 // is not routed) and that running the command again retries it.
 func TestCloudSyncOllamaCLIFailuresExit1AndTheRestStillRuns(t *testing.T) {
-	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, ollamaPages())
-	ollama := stubOllama(t, ollamaPulled...)
+	h := testHost()
+	_, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, ollamaPages())
+	ollama := stubOllama(t, h, ollamaPulled...)
 	ollama.fail["pull gemma4:cloud"] = "Error: pull model manifest: 401 unauthorized"
 	ollama.fail["rm retired:cloud"] = "Error: model 'retired:cloud' not found"
 	ollama.fail["rm stray:cloud"] = "Error: permission denied"
-	synced := stubRouteSync(t, "")
-	stubConfirm(t, true, nil, nil)
+	synced := stubRouteSync(h, "")
+	stubConfirm(t, h, true, nil, nil)
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true})
 	wantErr := "ollama: error: `ollama pull gemma4:cloud` failed: Error: pull model manifest: 401 unauthorized\n" +
 		"ollama:   gemma4:cloud is in the registry but not pulled, so it is not routed; run `wt cloud-sync` again to retry the pull\n" +
 		"ollama: error: `ollama rm stray:cloud` failed: Error: permission denied\n" +
@@ -524,12 +532,13 @@ var noOllamaRegistry = cloudSyncRegistry[strings.Index(cloudSyncRegistry, "[[pro
 // A run that "failed" every time for want of a provider nobody uses would
 // teach people to ignore the exit status.
 func TestCloudSyncSkipsOllamaOnARegistryWithoutOllama(t *testing.T) {
-	path, cfg := cloudSyncHome(t, noOllamaRegistry)
-	got := stubCloudFetch(t, bothPages())
-	ollama := stubOllama(t)
-	synced := stubRouteSync(t, "")
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, noOllamaRegistry)
+	got := stubCloudFetch(t, h, bothPages())
+	ollama := stubOllama(t, h)
+	synced := stubRouteSync(h, "")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, ollama: true, yes: true})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, ollama: true, yes: true})
 	wantTail := "ollama: no ollama provider in the registry; nothing to mirror\n" +
 		"openrouter: refreshed 1 model(s); 1 price(s) changed\n"
 	if code != 0 || stderr != "" || !strings.HasSuffix(stdout, wantTail) {
@@ -554,6 +563,7 @@ func TestCloudSyncSkipsOllamaOnARegistryWithoutOllama(t *testing.T) {
 // an error: a script that runs `wt cloud-sync --only ollama --yes` on every
 // machine must not fail on the ones that have no ollama.
 func TestCloudSyncSkipsOllamaHoweverItIsAskedFor(t *testing.T) {
+	h := testHost()
 	const skip = "ollama: no ollama provider in the registry; nothing to mirror\n"
 	for _, tc := range []struct {
 		args []string
@@ -574,13 +584,13 @@ func TestCloudSyncSkipsOllamaHoweverItIsAskedFor(t *testing.T) {
 		{[]string{"--dry-run", "--approve-removals", "abc"}, false},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
-			path, cfg := cloudSyncHome(t, noOllamaRegistry)
-			got := stubCloudFetch(t, bothPages())
-			ollama := stubOllama(t)
-			asked := stubConfirm(t, true, nil, nil)
-			synced := stubRouteSync(t, "")
+			path, cfg := cloudSyncHome(t, h, noOllamaRegistry)
+			got := stubCloudFetch(t, h, bothPages())
+			ollama := stubOllama(t, h)
+			asked := stubConfirm(t, h, true, nil, nil)
+			synced := stubRouteSync(h, "")
 
-			cmd := cloudSyncCmd(&app{hostSet: true, hostCfg: cfg})
+			cmd := cloudSyncCmd(hostOn(h, cfg, nil))
 			var out, errOut bytes.Buffer
 			cmd.SetArgs(tc.args)
 			cmd.SetOut(&out)
@@ -635,19 +645,20 @@ tags = []
 // without it stopping for want of a terminal, restarting the LiteLLM proxy,
 // or reporting an error for services it does not use.
 func TestCloudSyncWithNeitherProviderDoesNothing(t *testing.T) {
+	h := testHost()
 	for name, o := range map[string]cloudSyncOpts{
 		"plain":     {openrouter: true, ollama: true},
 		"--yes":     {openrouter: true, ollama: true, yes: true},
 		"--dry-run": {openrouter: true, ollama: true, dryRun: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			path, cfg := cloudSyncHome(t, neitherRegistry)
-			got := stubCloudFetch(t, bothPages())
-			ollama := stubOllama(t, ollamaPulled...)
-			asked := stubConfirm(t, true, nil, nil)
-			synced := stubRouteSync(t, "")
+			path, cfg := cloudSyncHome(t, h, neitherRegistry)
+			got := stubCloudFetch(t, h, bothPages())
+			ollama := stubOllama(t, h, ollamaPulled...)
+			asked := stubConfirm(t, h, true, nil, nil)
+			synced := stubRouteSync(h, "")
 
-			stdout, stderr, final, code := runCSFinal(t, cfg, o)
+			stdout, stderr, final, code := runCSFinal(t, h, cfg, o)
 			want := "openrouter: no OpenRouter-priced model in the registry; nothing to refresh\n" +
 				"ollama: no ollama provider in the registry; nothing to mirror\n"
 			if stdout != want || stderr != "" || final != "" || code != 0 {
@@ -678,6 +689,7 @@ func TestCloudSyncWithNeitherProviderDoesNothing(t *testing.T) {
 // the same. An entry that is there twice and that the plan leaves alone does
 // not stop the flow.
 func TestCloudSyncOllamaRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
+	h := testHost()
 	block := func(id string) string {
 		start := strings.Index(cloudSyncRegistry, "[[models]]\nid = \""+id+"\"")
 		end := start + strings.Index(cloudSyncRegistry[start+1:], "[[models]]") + 1
@@ -691,12 +703,12 @@ func TestCloudSyncOllamaRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 			"--yes":     {ollama: true, yes: true, approve: "000000000000"},
 		} {
 			t.Run(id+" "+name, func(t *testing.T) {
-				path, cfg := cloudSyncHome(t, registry)
-				stubCloudFetch(t, ollamaPages())
-				ollama := stubOllama(t, ollamaPulled...)
-				asked := stubConfirm(t, true, nil, nil)
-				synced := stubRouteSync(t, "")
-				stdout, stderr, final, code := runCSFinal(t, cfg, o)
+				path, cfg := cloudSyncHome(t, h, registry)
+				stubCloudFetch(t, h, ollamaPages())
+				ollama := stubOllama(t, h, ollamaPulled...)
+				asked := stubConfirm(t, h, true, nil, nil)
+				synced := stubRouteSync(h, "")
+				stdout, stderr, final, code := runCSFinal(t, h, cfg, o)
 				want := "ollama: error: nothing was changed: model \"" + id + "\" is in the registry twice (providers ollama, ollama); " +
 					"wt cannot tell which one you mean — fix the entry in " + path + "\n"
 				if stderr != want || stdout != "" || code != 1 || final != "cloud-sync: a step failed; see the error lines above" {
@@ -712,10 +724,10 @@ func TestCloudSyncOllamaRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 	// The local model twice: no ollama plan touches it, so the ollama flow
 	// is planned as ever.
 	registry := cloudSyncRegistry + "\n" + block("ollama/qwen3:8b")
-	_, cfg := cloudSyncHome(t, registry)
-	stubCloudFetch(t, ollamaPages())
-	stubOllama(t, ollamaPulled...)
-	if stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true}); code != 0 || stderr != "" || !strings.HasPrefix(stdout, "ollama: ollama.com/pricing: 5 models") {
+	_, cfg := cloudSyncHome(t, h, registry)
+	stubCloudFetch(t, h, ollamaPages())
+	stubOllama(t, h, ollamaPulled...)
+	if stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true, dryRun: true}); code != 0 || stderr != "" || !strings.HasPrefix(stdout, "ollama: ollama.com/pricing: 5 models") {
 		t.Errorf("with an untouched id duplicated: exit %d, stderr %q, stdout:\n%s", code, stderr, stdout)
 	}
 }
@@ -732,6 +744,7 @@ func TestCloudSyncOllamaRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 // it is the ollama provider row, gone with the file, that makes it another
 // plan.
 func TestCloudSyncRefusedPlansDoNotCreateARegistry(t *testing.T) {
+	h := testHost()
 	const ollamaStale = "ollama: error: the registry changed after the plan was printed, so this is no longer the plan that was approved; nothing was changed — run it again\n"
 	const openrouterStale = "openrouter: error: the registry changed after the plan was printed; no price was changed — run it again\n"
 	onlyProvider := cloudSyncRegistry[:strings.Index(cloudSyncRegistry, "[[providers]]\nid = \"openrouter\"")]
@@ -745,17 +758,17 @@ func TestCloudSyncRefusedPlansDoNotCreateARegistry(t *testing.T) {
 		{"both flows", cloudSyncRegistry, cloudSyncOpts{openrouter: true, ollama: true}, openrouterStale + ollamaStale},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path, cfg := cloudSyncHome(t, tc.registry)
-			stubCloudFetch(t, bothPages())
-			ollama := stubOllama(t)
-			synced := stubRouteSync(t, "")
-			stubConfirm(t, true, nil, func() {
+			path, cfg := cloudSyncHome(t, h, tc.registry)
+			stubCloudFetch(t, h, bothPages())
+			ollama := stubOllama(t, h)
+			synced := stubRouteSync(h, "")
+			stubConfirm(t, h, true, nil, func() {
 				if err := os.Remove(path); err != nil {
 					t.Fatal(err)
 				}
 			})
 
-			_, stderr, code := runCS(t, cfg, tc.opts)
+			_, stderr, code := runCS(t, h, cfg, tc.opts)
 			if stderr != tc.stderr || code != 5 {
 				t.Errorf("stderr = %q, exit %d\nwant %q and exit 5", stderr, code, tc.stderr)
 			}
@@ -775,17 +788,18 @@ func TestCloudSyncRefusedPlansDoNotCreateARegistry(t *testing.T) {
 // route sync at the end. Run with a terminal and no --yes, so the question
 // is the gate (the digest is for the run nobody watches).
 func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
+	h := testHost()
 	both := cloudSyncOpts{openrouter: true, ollama: true}
 	start := func(t *testing.T, pages map[string]string) (string, *config.Config, *fakeOllama, *int) {
-		path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-		stubCloudFetch(t, pages)
-		return path, cfg, stubOllama(t, ollamaPulled...), stubRouteSync(t, "")
+		path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+		stubCloudFetch(t, h, pages)
+		return path, cfg, stubOllama(t, h, ollamaPulled...), stubRouteSync(h, "")
 	}
 
 	t.Run("approved: one question, both applied, one sync", func(t *testing.T) {
 		path, cfg, ollama, synced := start(t, bothPages())
-		asked := stubConfirm(t, true, nil, nil)
-		stdout, stderr, code := runCS(t, cfg, both)
+		asked := stubConfirm(t, h, true, nil, nil)
+		stdout, stderr, code := runCS(t, h, cfg, both)
 		if code != 0 || stderr != "" || *asked != 1 || *synced != 1 {
 			t.Fatalf("exit %d, stderr %q, asked %d, syncs %d; want exit 0, one question, one sync\n%s", code, stderr, *asked, *synced, stdout)
 		}
@@ -806,8 +820,8 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 
 	t.Run("declined: both flows say so, nothing changes, exit 0", func(t *testing.T) {
 		path, cfg, ollama, synced := start(t, bothPages())
-		stubConfirm(t, false, nil, nil)
-		stdout, stderr, code := runCS(t, cfg, both)
+		stubConfirm(t, h, false, nil, nil)
+		stdout, stderr, code := runCS(t, h, cfg, both)
 		if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "openrouter: not applied (declined)\nollama: not applied (declined)\n") {
 			t.Errorf("exit %d, stderr %q, stdout ends %q", code, stderr, stdout[max(0, len(stdout)-90):])
 		}
@@ -818,8 +832,8 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 
 	t.Run("no terminal: both flows say so, nothing changes, exit 1", func(t *testing.T) {
 		path, cfg, ollama, synced := start(t, bothPages())
-		noTerminal(t)
-		_, stderr, code := runCS(t, cfg, both)
+		noTerminal(h)
+		_, stderr, code := runCS(t, h, cfg, both)
 		want := "openrouter: error: not applied: there is no terminal to confirm on — rerun with --yes to apply without asking\n" +
 			"ollama: error: not applied: there is no terminal to confirm on — rerun with --yes to apply without asking\n"
 		if code != 1 || stderr != want {
@@ -832,13 +846,13 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 
 	t.Run("the openrouter plan went stale, the ollama flow is applied: exit 1", func(t *testing.T) {
 		path, cfg, ollama, synced := start(t, bothPages())
-		stubConfirm(t, true, nil, func() {
+		stubConfirm(t, h, true, nil, func() {
 			raced := strings.Replace(cloudSyncRegistry, "input_price_per_million = 2.5", "input_price_per_million = 7", 1)
 			if err := os.WriteFile(path, []byte(raced), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		})
-		stdout, stderr, code := runCS(t, cfg, both)
+		stdout, stderr, code := runCS(t, h, cfg, both)
 		if want := "openrouter: error: the registry changed after the plan was printed; no price was changed — run it again\n"; code != 1 || stderr != want {
 			t.Errorf("exit %d, stderr %q\nwant exit 1, stderr %q", code, stderr, want)
 		}
@@ -853,13 +867,13 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 
 	t.Run("the ollama plan went stale, the prices are applied: exit 5", func(t *testing.T) {
 		path, cfg, ollama, synced := start(t, bothPages())
-		stubConfirm(t, true, nil, func() {
+		stubConfirm(t, h, true, nil, func() {
 			raced := cloudSyncRegistry + "\n[[models]]\nid = \"ollama/late:cloud\"\nfamily = \"late\"\nprovider_id = \"ollama\"\nmodel_name = \"late:cloud\"\nlocation = \"cloud\"\n"
 			if err := os.WriteFile(path, []byte(raced), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		})
-		stdout, stderr, code := runCS(t, cfg, both)
+		stdout, stderr, code := runCS(t, h, cfg, both)
 		if code != 5 || !strings.HasPrefix(stderr, "ollama: error: the registry changed after the plan was printed") {
 			t.Errorf("exit %d, stderr %q; want the ollama flow's 5", code, stderr)
 		}
@@ -875,8 +889,8 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 
 	t.Run("OpenRouter is down, the ollama flow is applied: exit 1", func(t *testing.T) {
 		path, cfg, ollama, synced := start(t, ollamaPages())
-		asked := stubConfirm(t, true, nil, nil)
-		stdout, stderr, code := runCS(t, cfg, both)
+		asked := stubConfirm(t, h, true, nil, nil)
+		stdout, stderr, code := runCS(t, h, cfg, both)
 		if want := "openrouter: error: could not read OpenRouter's prices: HTTP 404; no price was changed\n"; code != 1 || stderr != want || *asked != 1 {
 			t.Errorf("exit %d, asked %d, stderr %q\nwant exit 1, one question, stderr %q", code, *asked, stderr, want)
 		}
@@ -895,13 +909,14 @@ func TestCloudSyncBothFlowsInOneRun(t *testing.T) {
 // but its list, the routes are not synced, and the exit status is 0 (the
 // user's answer is not a failure).
 func TestCloudSyncOllamaDeclinedChangesNothing(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, ollamaPages())
-	ollama := stubOllama(t, ollamaPulled...)
-	synced := stubRouteSync(t, "")
-	asked := stubConfirm(t, false, nil, nil)
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, ollamaPages())
+	ollama := stubOllama(t, h, ollamaPulled...)
+	synced := stubRouteSync(h, "")
+	asked := stubConfirm(t, h, false, nil, nil)
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true})
 	if *asked != 1 || code != 0 || stderr != "" || !strings.HasSuffix(stdout, "ollama: not applied (declined)\n") {
 		t.Errorf("asked %d, exit %d, stderr %q, stdout ends %q", *asked, code, stderr, stdout[max(0, len(stdout)-60):])
 	}
@@ -916,13 +931,14 @@ func TestCloudSyncOllamaDeclinedChangesNothing(t *testing.T) {
 // for the run nobody is watching; with a person at the terminal, the person
 // is the gate.
 func TestCloudSyncOllamaAsksWhenADigestComesWithoutYes(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, ollamaPages())
-	stubOllama(t, ollamaPulled...)
-	stubRouteSync(t, "")
-	asked := stubConfirm(t, true, nil, nil)
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, ollamaPages())
+	stubOllama(t, h, ollamaPulled...)
+	stubRouteSync(h, "")
+	asked := stubConfirm(t, h, true, nil, nil)
 
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, approve: "000000000000"})
+	_, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true, approve: "000000000000"})
 	if *asked != 1 || code != 0 || stderr != "" {
 		t.Fatalf("asked %d, exit %d, stderr %q; want one question and the plan applied", *asked, code, stderr)
 	}
@@ -939,12 +955,13 @@ func TestCloudSyncOllamaAsksWhenADigestComesWithoutYes(t *testing.T) {
 // keeps the old prices and lacks the new models until some other command
 // happens to sync.
 func TestCloudSyncFinishesAnInterruptedRun(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, ollamaPages())
-	ollama := stubOllama(t, ollamaPulled...)
-	stubRouteSync(t, "")
-	stubConfirm(t, true, nil, nil)
-	if _, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true}); code != 0 {
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, ollamaPages())
+	ollama := stubOllama(t, h, ollamaPulled...)
+	stubRouteSync(h, "")
+	stubConfirm(t, h, true, nil, nil)
+	if _, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true}); code != 0 {
 		t.Fatalf("the first run: exit %d, stderr %q", code, stderr)
 	}
 	written := mustRead(t, path)
@@ -952,8 +969,8 @@ func TestCloudSyncFinishesAnInterruptedRun(t *testing.T) {
 	// As if that run had died before any ollama command and before its
 	// sync: ollama is as it was, the registry is as the run left it.
 	ollama.calls = nil
-	synced := stubRouteSync(t, "")
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true})
+	synced := stubRouteSync(h, "")
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true})
 	if code != 0 || stderr != "" || !strings.Contains(stdout, "ollama: updated 0, added 0 and removed 0 model(s)\n") {
 		t.Fatalf("exit %d, stderr %q\n%s", code, stderr, stdout)
 	}
@@ -977,17 +994,18 @@ func TestCloudSyncFinishesAnInterruptedRun(t *testing.T) {
 // nor the reverse. The broken flow's error names the row, and the exit
 // status is 1.
 func TestCloudSyncWritesEachFlowAloneWhenARowWouldNotLoad(t *testing.T) {
+	h := testHost()
 	both := cloudSyncOpts{openrouter: true, ollama: true}
 
 	t.Run("a broken ollama entry: openrouter applied, ollama not", func(t *testing.T) {
 		broken := strings.Replace(cloudSyncRegistry, "family = \"deepseek\"\n", "", 1)
-		path, cfg := cloudSyncHome(t, broken)
-		stubCloudFetch(t, bothPages())
-		ollama := stubOllama(t, ollamaPulled...)
-		synced := stubRouteSync(t, "")
-		stubConfirm(t, true, nil, nil)
+		path, cfg := cloudSyncHome(t, h, broken)
+		stubCloudFetch(t, h, bothPages())
+		ollama := stubOllama(t, h, ollamaPulled...)
+		synced := stubRouteSync(h, "")
+		stubConfirm(t, h, true, nil, nil)
 
-		stdout, stderr, code := runCS(t, cfg, both)
+		stdout, stderr, code := runCS(t, h, cfg, both)
 		want := "ollama: error: the ollama flow's changes were not written: invalid registry entry: model \"ollama/deepseek-v4-pro:cloud\": family is required\n"
 		if code != 1 || stderr != want {
 			t.Errorf("exit %d, stderr %q\nwant exit 1, stderr %q", code, stderr, want)
@@ -1004,13 +1022,13 @@ func TestCloudSyncWritesEachFlowAloneWhenARowWouldNotLoad(t *testing.T) {
 
 	t.Run("a broken OpenRouter model: ollama applied, openrouter not", func(t *testing.T) {
 		broken := strings.Replace(cloudSyncRegistry, "family = \"gpt\"\n", "", 1)
-		path, cfg := cloudSyncHome(t, broken)
-		stubCloudFetch(t, bothPages())
-		ollama := stubOllama(t, ollamaPulled...)
-		synced := stubRouteSync(t, "")
-		stubConfirm(t, true, nil, nil)
+		path, cfg := cloudSyncHome(t, h, broken)
+		stubCloudFetch(t, h, bothPages())
+		ollama := stubOllama(t, h, ollamaPulled...)
+		synced := stubRouteSync(h, "")
+		stubConfirm(t, h, true, nil, nil)
 
-		stdout, stderr, code := runCS(t, cfg, both)
+		stdout, stderr, code := runCS(t, h, cfg, both)
 		want := "openrouter: error: the price changes were not written: invalid registry entry: model \"openrouter/vendor--gpt\": family is required\n"
 		if code != 1 || stderr != want {
 			t.Errorf("exit %d, stderr %q\nwant exit 1, stderr %q", code, stderr, want)
@@ -1030,17 +1048,18 @@ func TestCloudSyncWritesEachFlowAloneWhenARowWouldNotLoad(t *testing.T) {
 // file and ollama.com/pricing is not fetched (the library tag lookups still
 // are). It is how a repaired parser is tried against the page that broke it.
 func TestCloudSyncOllamaReadsASavedPage(t *testing.T) {
-	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
+	h := testHost()
+	_, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
 	saved := filepath.Join(t.TempDir(), "saved.html")
 	if err := os.WriteFile(saved, []byte(ollamaPage), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pages := ollamaPages()
 	delete(pages, cloudsync.PricingURL)
-	got := stubCloudFetch(t, pages)
-	stubOllama(t, ollamaPulled...)
+	got := stubCloudFetch(t, h, pages)
+	stubOllama(t, h, ollamaPulled...)
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true, htmlFile: saved})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true, dryRun: true, htmlFile: saved})
 	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "ollama: ollama.com/pricing: 5 models") {
 		t.Errorf("exit %d, stderr %q, stdout:\n%s", code, stderr, stdout)
 	}
@@ -1084,17 +1103,18 @@ func TestSaveFailedHTMLNeverWritesThroughALink(t *testing.T) {
 // Such a row stops the ollama flow before it fetches or runs anything
 // (exit 2), dry run included.
 func TestCloudSyncOllamaRefusesABaseURLThatNamesNoDaemon(t *testing.T) {
+	h := testHost()
 	for _, base := range []string{"/v1", "/", " ", "not a url", "127.0.0.1:11999", "ftp://127.0.0.1:11434"} {
 		for name, o := range map[string]cloudSyncOpts{"dry run": {dryRun: true}, "--yes": {yes: true, approve: "000000000000"}} {
 			t.Run(base+" "+name, func(t *testing.T) {
 				registry := strings.Replace(cloudSyncRegistry, `base_url = "http://127.0.0.1:11434"`, `base_url = "`+base+`"`, 1)
-				path, cfg := cloudSyncHome(t, registry)
-				fetches := stubCloudFetch(t, ollamaPages())
-				ollama := stubOllama(t, ollamaPulled...)
-				synced := stubRouteSync(t, "")
+				path, cfg := cloudSyncHome(t, h, registry)
+				fetches := stubCloudFetch(t, h, ollamaPages())
+				ollama := stubOllama(t, h, ollamaPulled...)
+				synced := stubRouteSync(h, "")
 				o.ollama = true
 
-				stdout, stderr, final, code := runCSFinal(t, cfg, o)
+				stdout, stderr, final, code := runCSFinal(t, h, cfg, o)
 				if code != 2 || stdout != "" || final != "cloud-sync: the ollama flow changed nothing: an input could not be read" ||
 					!strings.HasPrefix(stderr, "ollama: error: the ollama provider row's base_url names no daemon") ||
 					!strings.HasSuffix(stderr, "set auth.base_url to http://host:port; nothing was changed\n") || strings.Count(stderr, "\n") != 1 {
@@ -1114,14 +1134,15 @@ func TestCloudSyncOllamaRefusesABaseURLThatNamesNoDaemon(t *testing.T) {
 // up: that sends the user to start a daemon when what is missing is the
 // program.
 func TestCloudSyncOllamaSaysWhenOllamaIsNotInstalled(t *testing.T) {
-	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, ollamaPages())
-	old := ollamaCLI
-	ollamaCLI = realOllamaCLI
-	t.Cleanup(func() { ollamaCLI = old })
+	h := testHost()
+	_, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, ollamaPages())
+	old := h.ollamaCLI
+	h.ollamaCLI = h.realOllamaCLI
+	t.Cleanup(func() { h.ollamaCLI = old })
 	t.Setenv("PATH", t.TempDir())
 
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{ollama: true, dryRun: true})
+	_, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true, dryRun: true})
 	want := "ollama: error: could not run `ollama list` against " + testOllamaOrigin + ": the ollama command is not installed (not on PATH); nothing was changed\n"
 	if code != 2 || stderr != want {
 		t.Errorf("exit %d, stderr %q\nwant exit 2, stderr %q", code, stderr, want)

@@ -1,25 +1,8 @@
 package main
 
 import (
-	"io"
-
-	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/spf13/cobra"
 )
-
-// syncRoutesAfterWrite runs the one LiteLLM route sync that follows a
-// registry write (`wt cloud-sync`'s) and returns a warning for the user, or
-// "" when the routes are in step. A seam: unstubbed, a test that writes the
-// registry would go on to probe the developer's providers and rewrite their
-// config.yaml.
-var syncRoutesAfterWrite = realSyncRoutesAfterWrite
-
-// realSyncRoutesAfterWrite reloads the config (the registry just changed) and
-// reconciles the routes exactly as `wt litellm sync` does
-// (litellm.SyncAfterWrite, with the probeInventory seam).
-func realSyncRoutesAfterWrite(out, errOut io.Writer) string {
-	return litellm.SyncAfterWrite(out, errOut, probeInventory)
-}
 
 // modelCmd is the `wt model` group: bare, it prints where the Models screen
 // moved (`wt-model model`, movedError); list (model_list_server.go: --server

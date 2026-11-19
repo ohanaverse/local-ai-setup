@@ -122,13 +122,3 @@ func (h *host) runModelInit(out, errOut io.Writer, asJSON bool) error {
 	}
 	return nil
 }
-
-// withRegistryHint is err with the repair config names for it, when it names
-// one (a copy of cmd/wt-session's, which `wt cloud-sync` uses until it moves
-// here and this package keeps one).
-func withRegistryHint(err error) error {
-	if hint := config.RegistryFixHint(err); hint != "" {
-		return fmt.Errorf("%w (%s)", err, hint)
-	}
-	return err
-}

@@ -102,8 +102,9 @@ const openRouterBody = `{"data": [{"id": "vendor/gpt", "pricing": {"prompt": "0.
 const sameOpenRouterBody = `{"data": [{"id": "vendor/gpt", "pricing": {"prompt": "0.0000025", "completion": "0.00001"}}]}`
 
 // cloudSyncHome gives the test its own home with registry as its registry,
-// and returns the registry path and the loaded config.
-func cloudSyncHome(t *testing.T, registry string) (string, *config.Config) {
+// sets h's clock to cloudSyncClock, and returns the registry path and the
+// loaded config.
+func cloudSyncHome(t *testing.T, h *host, registry string) (string, *config.Config) {
 	t.Helper()
 	path := modelHome(t, registry)
 	// Where a refused pricing page is saved.
@@ -112,9 +113,7 @@ func cloudSyncHome(t *testing.T, registry string) (string, *config.Config) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	old := cloudSyncNow
-	cloudSyncNow = func() time.Time { return cloudSyncClock }
-	t.Cleanup(func() { cloudSyncNow = old })
+	h.cloudSyncNow = func() time.Time { return cloudSyncClock }
 	return path, cfg
 }
 
@@ -130,12 +129,12 @@ func (f *fetched) all() []string {
 	return slices.Clone(f.urls)
 }
 
-// stubCloudFetch serves pages by URL. A URL with no page is an HTTP 404.
-func stubCloudFetch(t *testing.T, pages map[string]string) *fetched {
+// stubCloudFetch makes h serve pages by URL. A URL with no page is an HTTP
+// 404.
+func stubCloudFetch(t *testing.T, h *host, pages map[string]string) *fetched {
 	t.Helper()
 	rec := &fetched{}
-	old := cloudFetch
-	cloudFetch = func(_ context.Context, url string) ([]byte, error) {
+	h.cloudFetch = func(_ context.Context, url string) ([]byte, error) {
 		rec.mu.Lock()
 		rec.urls = append(rec.urls, url)
 		rec.mu.Unlock()
@@ -145,65 +144,67 @@ func stubCloudFetch(t *testing.T, pages map[string]string) *fetched {
 		}
 		return []byte(page), nil
 	}
-	t.Cleanup(func() { cloudFetch = old })
 	return rec
 }
 
-// stubConfirm answers the confirmation and counts how often it was asked.
+// stubConfirm answers h's confirmation and counts how often it was asked.
 // before, when not nil, runs first: it plays whatever happens to the machine
 // while the user reads the plan.
-func stubConfirm(t *testing.T, answer bool, err error, before func()) *int {
+func stubConfirm(t *testing.T, h *host, answer bool, err error, before func()) *int {
 	t.Helper()
 	asked := 0
-	old := confirmCloudSync
-	confirmCloudSync = func(string) (bool, error) {
+	h.confirmCloudSync = func(string) (bool, error) {
 		asked++
 		if before != nil {
 			before()
 		}
 		return answer, err
 	}
-	t.Cleanup(func() { confirmCloudSync = old })
 	return &asked
 }
 
-func runCS(t *testing.T, cfg *config.Config, o cloudSyncOpts) (stdout, stderr string, code int) {
+func runCS(t *testing.T, h *host, cfg *config.Config, o cloudSyncOpts) (stdout, stderr string, code int) {
 	t.Helper()
-	stdout, stderr, _, code = runCSFinal(t, cfg, o)
+	stdout, stderr, _, code = runCSFinal(t, h, cfg, o)
 	return stdout, stderr, code
 }
 
 // runCSFinal is runCS with the command's error text as well: the one line
-// main prints, after "wt: ", when the run did not exit 0.
-func runCSFinal(t *testing.T, cfg *config.Config, o cloudSyncOpts) (stdout, stderr, final string, code int) {
+// main prints, after "wt-model: ", when the run did not exit 0.
+func runCSFinal(t *testing.T, h *host, cfg *config.Config, o cloudSyncOpts) (stdout, stderr, final string, code int) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	if err := runCloudSync(context.Background(), &out, &errOut, cfg, o); err != nil {
+	if err := h.runCloudSync(context.Background(), &out, &errOut, cfg, o); err != nil {
 		final, code = err.Error(), exitcode.Of(err)
 	}
 	return out.String(), errOut.String(), final, code
 }
 
-// noTerminal takes the controlling terminal away, as under an agent's shell
-// or cron, and puts the real prompt behind confirmCloudSync (TestMain fails
+// noTerminal takes h's controlling terminal away, as under an agent's shell
+// or cron, and puts the real prompt behind confirmCloudSync (testHost fails
 // that seam by default).
-func noTerminal(t *testing.T) {
-	t.Helper()
-	oldTTY, oldConfirm := openTTY, confirmCloudSync
-	openTTY = func() (*os.File, error) { return nil, errors.New("open /dev/tty: device not configured") }
-	confirmCloudSync = promptCloudSync
-	t.Cleanup(func() { openTTY, confirmCloudSync = oldTTY, oldConfirm })
+func noTerminal(h *host) {
+	h.openTTY = func() (*os.File, error) { return nil, errors.New("open /dev/tty: device not configured") }
+	h.confirmCloudSync = h.promptCloudSync
 }
 
-// TestCloudSyncSeamsFailClosed pins TestMain: with nothing stubbed, a
+// hostOn sets h's host config to cfg and loadErr, as a loaded host would
+// hold them, and returns h.
+func hostOn(h *host, cfg *config.Config, loadErr error) *host {
+	h.hostSet, h.hostCfg, h.hostLoadErr = true, cfg, loadErr
+	return h
+}
+
+// TestCloudSyncSeamsFailClosed pins testHost: with nothing stubbed, a
 // cloud-sync test reaches neither the network nor a terminal. A test that
 // forgot a stub fails with "not stubbed" instead of fetching a public page
 // from whatever machine it runs on.
 func TestCloudSyncSeamsFailClosed(t *testing.T) {
-	if _, err := cloudFetch(context.Background(), cloudsync.OpenRouterModelsURL); err == nil || !strings.Contains(err.Error(), "not stubbed") {
+	h := testHost()
+	if _, err := h.cloudFetch(context.Background(), cloudsync.OpenRouterModelsURL); err == nil || !strings.Contains(err.Error(), "not stubbed") {
 		t.Errorf("cloudFetch err = %v, want a not-stubbed failure", err)
 	}
-	if ok, err := confirmCloudSync("?"); ok || err == nil {
+	if ok, err := h.confirmCloudSync("?"); ok || err == nil {
 		t.Errorf("confirmCloudSync = (%v, %v), want a refusal with an error", ok, err)
 	}
 }
@@ -276,15 +277,16 @@ func TestSelectFlows(t *testing.T) {
 // stray argument, and a config that could not be loaded, which gets the same
 // repair hint every other command gives.
 func TestCloudSyncCommandRefusals(t *testing.T) {
-	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	run := func(a *app, args ...string) error {
-		cmd := cloudSyncCmd(a)
+	h := testHost()
+	_, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	run := func(h *host, args ...string) error {
+		cmd := cloudSyncCmd(h)
 		cmd.SetArgs(args)
 		cmd.SetOut(new(bytes.Buffer))
 		cmd.SetErr(new(bytes.Buffer))
 		return cmd.Execute()
 	}
-	ok := &app{hostSet: true, hostCfg: cfg}
+	ok := hostOn(h, cfg, nil)
 	for _, tc := range []struct {
 		args []string
 		want string
@@ -300,11 +302,11 @@ func TestCloudSyncCommandRefusals(t *testing.T) {
 	} {
 		err := run(ok, tc.args...)
 		if err == nil || err.Error() != tc.want || exitcode.Of(err) != 1 {
-			t.Errorf("wt cloud-sync %v: err = %v (exit %d), want %q and exit 1", tc.args, err, exitcode.Of(err), tc.want)
+			t.Errorf("wt-model cloud-sync %v: err = %v (exit %d), want %q and exit 1", tc.args, err, exitcode.Of(err), tc.want)
 		}
 	}
 
-	broken := &app{hostSet: true, hostCfg: &config.Config{}, hostLoadErr: fmt.Errorf("%w at /x/registry.toml — seed it with `wt-model model init`", config.ErrRegistryMissing)}
+	broken := hostOn(testHost(), &config.Config{}, fmt.Errorf("%w at /x/registry.toml — seed it with `wt-model model init`", config.ErrRegistryMissing))
 	err := run(broken, "--dry-run")
 	if err == nil || !strings.HasPrefix(err.Error(), "config error: model registry not found") || strings.Contains(err.Error(), "wt config") {
 		t.Errorf("with an unloadable config: err = %v, want the config error with no second repair", err)
@@ -315,12 +317,13 @@ func TestCloudSyncCommandRefusals(t *testing.T) {
 // `id: old -> new` under the openrouter: prefix, and nothing else — the registry
 // byte-identical, no lock file beside it, no question asked, no route sync.
 func TestCloudSyncOpenRouterDryRun(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	got := stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-	asked := stubConfirm(t, true, nil, nil)
-	synced := stubRouteSync(t, "")
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	got := stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+	asked := stubConfirm(t, h, true, nil, nil)
+	synced := stubRouteSync(h, "")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
 	want := "openrouter: openrouter.ai: 1 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
 		"openrouter: Price updates (1):\n" +
 		"openrouter:   openrouter/vendor--gpt: 2.5/-/10 -> 3/-/15\n" +
@@ -347,12 +350,13 @@ func TestCloudSyncOpenRouterDryRun(t *testing.T) {
 // many moved, the routes are synced exactly once (LiteLLM gets a route's
 // prices only through a sync, #179), and nothing was asked.
 func TestCloudSyncOpenRouterApply(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-	asked := stubConfirm(t, false, nil, nil)
-	synced := stubRouteSync(t, "")
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+	asked := stubConfirm(t, h, false, nil, nil)
+	synced := stubRouteSync(h, "")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "openrouter: refreshed 1 model(s); 1 price(s) changed\n") {
 		t.Fatalf("stdout = %q\nstderr = %q, exit %d", stdout, stderr, code)
 	}
@@ -372,11 +376,12 @@ func TestCloudSyncOpenRouterApply(t *testing.T) {
 // rewritten, and the routes are not synced: a sync can restart the LiteLLM
 // proxy under running agents, and no route changed.
 func TestCloudSyncStampOnlyRunSkipsTheRouteSync(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: sameOpenRouterBody})
-	synced := stubRouteSync(t, "")
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: sameOpenRouterBody})
+	synced := stubRouteSync(h, "")
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "openrouter: Unchanged prices: 1\nopenrouter: refreshed 1 model(s); 0 price(s) changed\n") {
 		t.Fatalf("stdout = %q\nstderr = %q, exit %d", stdout, stderr, code)
 	}
@@ -404,14 +409,15 @@ func TestCloudSyncStampOnlyRunSkipsTheRouteSync(t *testing.T) {
 // a run of "no OpenRouter match" warnings for every model. The command's own
 // error, the last line main prints, points back at those lines.
 func TestCloudSyncOpenRouterFailuresExit1(t *testing.T) {
+	h := testHost()
 	for name, pages := range map[string]map[string]string{
 		"could not read OpenRouter's prices: HTTP 404":                                {},
 		"could not read OpenRouter's prices: OpenRouter response missing 'data' list": {cloudsync.OpenRouterModelsURL: `{"error": "rate limited"}`},
 	} {
-		path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-		stubCloudFetch(t, pages)
-		synced := stubRouteSync(t, "")
-		stdout, stderr, final, code := runCSFinal(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+		path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+		stubCloudFetch(t, h, pages)
+		synced := stubRouteSync(h, "")
+		stdout, stderr, final, code := runCSFinal(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 		if want := "openrouter: error: " + name + "; no price was changed\n"; stderr != want || stdout != "" || code != 1 {
 			t.Errorf("stdout = %q, stderr = %q, exit %d\nwant stderr %q and exit 1", stdout, stderr, code, want)
 		}
@@ -428,11 +434,12 @@ func TestCloudSyncOpenRouterFailuresExit1(t *testing.T) {
 // has only ollama models: the openrouter flow says there is nothing to refresh
 // and makes no request (#151: nothing to fetch, nothing to warn about).
 func TestCloudSyncWithNoOpenRouterModelFetchesNothing(t *testing.T) {
+	h := testHost()
 	registry := cloudSyncRegistry[:strings.Index(cloudSyncRegistry, "[[models]]\nid = \"openrouter/vendor--gpt\"")] +
 		cloudSyncRegistry[strings.Index(cloudSyncRegistry, "[[models]]\nid = \"ollama/deepseek-v4-pro:cloud\""):]
-	path, cfg := cloudSyncHome(t, registry)
-	got := stubCloudFetch(t, nil)
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	path, cfg := cloudSyncHome(t, h, registry)
+	got := stubCloudFetch(t, h, nil)
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	if stdout != "openrouter: no OpenRouter-priced model in the registry; nothing to refresh\n" || stderr != "" || code != 0 {
 		t.Errorf("stdout = %q, stderr = %q, exit %d", stdout, stderr, code)
 	}
@@ -448,18 +455,19 @@ func TestCloudSyncWithNoOpenRouterModelFetchesNothing(t *testing.T) {
 // runs the real prompt with the terminal taken away, so the message is the
 // one a user gets, not one the test supplied.
 func TestCloudSyncAsksOnceAndTakesNoForAnAnswer(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-	synced := stubRouteSync(t, "")
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+	synced := stubRouteSync(h, "")
 
-	asked := stubConfirm(t, false, nil, nil)
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true})
+	asked := stubConfirm(t, h, false, nil, nil)
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true})
 	if *asked != 1 || code != 0 || stderr != "" || !strings.HasSuffix(stdout, "openrouter: not applied (declined)\n") {
 		t.Errorf("declined: asked %d, exit %d, stdout %q, stderr %q", *asked, code, stdout, stderr)
 	}
 
-	noTerminal(t)
-	_, stderr, code = runCS(t, cfg, cloudSyncOpts{openrouter: true})
+	noTerminal(h)
+	_, stderr, code = runCS(t, h, cfg, cloudSyncOpts{openrouter: true})
 	if want := "openrouter: error: not applied: there is no terminal to confirm on — rerun with --yes to apply without asking\n"; stderr != want || code != 1 {
 		t.Errorf("no terminal: stderr = %q, exit %d; want %q and exit 1", stderr, code, want)
 	}
@@ -470,9 +478,9 @@ func TestCloudSyncAsksOnceAndTakesNoForAnAnswer(t *testing.T) {
 	// A plan with nothing in it is not asked about. A fetch that matched no
 	// model refreshed nothing, so it writes nothing: a stamp here would tell
 	// the stale-price notice that prices are fresh when none was read.
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: `{"data": []}`})
-	asked = stubConfirm(t, true, nil, nil)
-	stdout, _, code = runCS(t, cfg, cloudSyncOpts{openrouter: true})
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: `{"data": []}`})
+	asked = stubConfirm(t, h, true, nil, nil)
+	stdout, _, code = runCS(t, h, cfg, cloudSyncOpts{openrouter: true})
 	if *asked != 0 || code != 0 || !strings.Contains(stdout, "openrouter: warning: No OpenRouter match for openrouter/vendor--gpt (vendor/gpt)\n") {
 		t.Errorf("a plan that matches no model: asked %d time(s), exit %d; want no question, exit 0 and the no-match warning\n%s", *asked, code, stdout)
 	}
@@ -488,6 +496,7 @@ func TestCloudSyncAsksOnceAndTakesNoForAnAnswer(t *testing.T) {
 // are all "no". A sync that deletes models must never be approved by
 // accident.
 func TestPromptCloudSyncAsksOnTheTerminalAndDefaultsToNo(t *testing.T) {
+	h := testHost()
 	for _, tc := range []struct {
 		typed string
 		want  bool
@@ -499,8 +508,8 @@ func TestPromptCloudSyncAsksOnTheTerminalAndDefaultsToNo(t *testing.T) {
 			t.Fatal(err)
 		}
 		tty, user := os.NewFile(uintptr(fds[0]), "tty"), os.NewFile(uintptr(fds[1]), "user")
-		old := openTTY
-		openTTY = func() (*os.File, error) { return tty, nil }
+		old := h.openTTY
+		h.openTTY = func() (*os.File, error) { return tty, nil }
 		shown := make(chan string, 1)
 		go func() {
 			// The user reads the question, types the answer and leaves.
@@ -510,8 +519,8 @@ func TestPromptCloudSyncAsksOnTheTerminalAndDefaultsToNo(t *testing.T) {
 			_ = user.Close()
 			shown <- string(buf[:n])
 		}()
-		got, err := promptCloudSync("Apply these changes?")
-		openTTY = old
+		got, err := h.promptCloudSync("Apply these changes?")
+		h.openTTY = old
 		if err != nil || got != tc.want {
 			t.Errorf("typed %q: promptCloudSync = (%v, %v), want (%v, nil)", tc.typed, got, err, tc.want)
 		}
@@ -527,17 +536,18 @@ func TestPromptCloudSyncAsksOnTheTerminalAndDefaultsToNo(t *testing.T) {
 // "<id>: …" between openrouter: and ollama: lines reads as a third flow, or as
 // part of the one above it.
 func TestCloudSyncPrefixesTheRouteSyncsLines(t *testing.T) {
-	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-	old := syncRoutesAfterWrite
-	syncRoutesAfterWrite = func(out, errOut io.Writer) string {
+	h := testHost()
+	_, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+	old := h.syncRoutesAfterWrite
+	h.syncRoutesAfterWrite = func(out, errOut io.Writer) string {
 		fmt.Fprintln(out, "openrouter/vendor--gpt: routed")
 		fmt.Fprintln(errOut, "openrouter/other: secret_ref \"X\" resolved empty")
 		return "LiteLLM routes not synced: one or more models could not be applied"
 	}
-	t.Cleanup(func() { syncRoutesAfterWrite = old })
+	t.Cleanup(func() { h.syncRoutesAfterWrite = old })
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	if code != 0 || !strings.HasSuffix(stdout, "openrouter: refreshed 1 model(s); 1 price(s) changed\nroutes: openrouter/vendor--gpt: routed\n") {
 		t.Errorf("exit %d (a sync that warns does not fail the run); stdout:\n%s", code, stdout)
 	}
@@ -554,17 +564,18 @@ func TestCloudSyncPrefixesTheRouteSyncsLines(t *testing.T) {
 // would now be applied is not what was approved, so nothing is applied and
 // the run says to run it again. The other writer's change survives.
 func TestCloudSyncOpenRouterRefusesWhenTheRegistryChangedAfterThePlan(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-	synced := stubRouteSync(t, "")
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+	synced := stubRouteSync(h, "")
 	raced := strings.Replace(cloudSyncRegistry, "input_price_per_million = 2.5", "input_price_per_million = 7", 1)
-	stubConfirm(t, true, nil, func() {
+	stubConfirm(t, h, true, nil, func() {
 		if err := os.WriteFile(path, []byte(raced), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	})
 
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true})
+	_, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true})
 	if want := "openrouter: error: the registry changed after the plan was printed; no price was changed — run it again\n"; stderr != want || code != 1 {
 		t.Errorf("stderr = %q, exit %d; want %q and exit 1", stderr, code, want)
 	}
@@ -580,12 +591,13 @@ func TestCloudSyncOpenRouterRefusesWhenTheRegistryChangedAfterThePlan(t *testing
 // nothing. A write that skipped the bad row silently would leave a price
 // stale with nothing saying why.
 func TestCloudSyncReportsARefusedRegistryWrite(t *testing.T) {
+	h := testHost()
 	broken := strings.Replace(cloudSyncRegistry, "family = \"gpt\"\n", "", 1)
-	path, cfg := cloudSyncHome(t, broken)
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-	synced := stubRouteSync(t, "")
+	path, cfg := cloudSyncHome(t, h, broken)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+	synced := stubRouteSync(h, "")
 
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	_, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	want := "openrouter: error: registry.toml was not changed: invalid registry entry: model \"openrouter/vendor--gpt\": family is required\n"
 	if stderr != want || code != 1 {
 		t.Errorf("stderr = %q, exit %d\nwant %q and exit 1", stderr, code, want)
@@ -602,23 +614,24 @@ func TestCloudSyncReportsARefusedRegistryWrite(t *testing.T) {
 // named file is the one synced. This is what keeps a trial run against a
 // copy of the registry from rewriting the real proxy's routes.
 func TestCloudSyncUnderARedirectedRegistry(t *testing.T) {
+	h := testHost()
 	setup := func(t *testing.T) (registry, defaultYAML string, cfg *config.Config) {
-		registry, defaultYAML = redirectedRegistry(t, cloudSyncRegistry)
+		registry, defaultYAML = redirectedRegistry(t, h, cloudSyncRegistry)
 		t.Setenv("WT_TEST_OPENROUTER_KEY", "sk-test-not-a-real-key")
-		stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+		stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 		cfg, err := config.Load()
 		if err != nil {
 			t.Fatal(err)
 		}
 		// realRouteSync probes nothing; say instead that every provider
 		// answered, so the sync has no probe failure to warn about.
-		probeInventory = localmodels.OnDiskSnapshotForTest
+		h.probeInventory = localmodels.OnDiskSnapshotForTest
 		return registry, defaultYAML, cfg
 	}
 
 	t.Run("config.yaml not named: registry written, routes refused, exit 0", func(t *testing.T) {
 		registry, defaultYAML, cfg := setup(t)
-		_, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+		_, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 		if code != 0 {
 			t.Fatalf("exit %d; the registry write succeeded, so the command must too. stderr: %s", code, stderr)
 		}
@@ -642,7 +655,7 @@ func TestCloudSyncUnderARedirectedRegistry(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("WT_LITELLM_CONFIG", named)
-		stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+		stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 		if code != 0 || stderr != "" {
 			t.Fatalf("exit %d, stderr %q", code, stderr)
 		}
@@ -670,6 +683,7 @@ func TestCloudSyncUnderARedirectedRegistry(t *testing.T) {
 // must be able to run `wt cloud-sync` from a script without it failing for
 // want of a terminal or restarting the proxy.
 func TestCloudSyncWithNoOpenRouterPricedModelDoesNothingHoweverItIsRun(t *testing.T) {
+	h := testHost()
 	registry := cloudSyncRegistry[:strings.Index(cloudSyncRegistry, "[[models]]\nid = \"openrouter/vendor--gpt\"")] +
 		cloudSyncRegistry[strings.Index(cloudSyncRegistry, "[[models]]\nid = \"ollama/deepseek-v4-pro:cloud\""):]
 	for name, o := range map[string]cloudSyncOpts{
@@ -678,12 +692,12 @@ func TestCloudSyncWithNoOpenRouterPricedModelDoesNothingHoweverItIsRun(t *testin
 		"--yes":     {openrouter: true, yes: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			path, cfg := cloudSyncHome(t, registry)
-			got := stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-			asked := stubConfirm(t, true, nil, nil)
-			synced := stubRouteSync(t, "")
+			path, cfg := cloudSyncHome(t, h, registry)
+			got := stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+			asked := stubConfirm(t, h, true, nil, nil)
+			synced := stubRouteSync(h, "")
 
-			stdout, stderr, final, code := runCSFinal(t, cfg, o)
+			stdout, stderr, final, code := runCSFinal(t, h, cfg, o)
 			if stdout != "openrouter: no OpenRouter-priced model in the registry; nothing to refresh\n" || stderr != "" || final != "" || code != 0 {
 				t.Errorf("stdout = %q, stderr = %q, error %q, exit %d; want the one skip line and exit 0", stdout, stderr, final, code)
 			}
@@ -713,6 +727,7 @@ func TestCloudSyncWithNoOpenRouterPricedModelDoesNothingHoweverItIsRun(t *testin
 // row says false), nothing is printed about the key, and a write leaves it
 // in the file, because wt never deletes a key it does not model.
 func TestCloudSyncRefreshesOnlyTheOpenRouterProvidersModels(t *testing.T) {
+	h := testHost()
 	const relay = `[[providers]]
 id = "relay"
 name = "Relay"
@@ -734,13 +749,13 @@ tags = []
 `
 
 	t.Run("another cloud provider's model, marked true: not refreshed", func(t *testing.T) {
-		path, cfg := cloudSyncHome(t, relay)
+		path, cfg := cloudSyncHome(t, h, relay)
 		if len(cfg.Models) != 1 || cfg.OpenRouterPriced(cfg.Models[0]) {
 			t.Fatalf("config.OpenRouterPriced is true for a model of provider relay (%d models)", len(cfg.Models))
 		}
-		got := stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-		synced := stubRouteSync(t, "")
-		stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+		got := stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+		synced := stubRouteSync(h, "")
+		stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 		if stdout != "openrouter: no OpenRouter-priced model in the registry; nothing to refresh\n" || stderr != "" || code != 0 {
 			t.Errorf("stdout = %q, stderr = %q, exit %d", stdout, stderr, code)
 		}
@@ -755,10 +770,10 @@ tags = []
 		if strings.Count(text, "openrouter_priced = ") != 2 {
 			t.Fatal("the fixture does not carry the key on both provider rows")
 		}
-		path, cfg := cloudSyncHome(t, text)
-		got := stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-		synced := stubRouteSync(t, "")
-		stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+		path, cfg := cloudSyncHome(t, h, text)
+		got := stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+		synced := stubRouteSync(h, "")
+		stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 		const want = "openrouter: openrouter.ai: 1 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
 			"openrouter: Price updates (1):\n" +
 			"openrouter:   openrouter/vendor--gpt: 2.5/-/10 -> 3/-/15\n" +
@@ -797,6 +812,7 @@ tags = []
 // which names a model and what is wrong with it). A run that matched a model
 // does not print it.
 func TestCloudSyncSaysWhenNoModelCouldBeRefreshed(t *testing.T) {
+	h := testHost()
 	const line = "openrouter: no model could be refreshed, so nothing is stamped and wt's stale-pricing notice is not cleared; " +
 		"the warnings above say why for each model\n"
 	for name, body := range map[string]string{
@@ -804,10 +820,10 @@ func TestCloudSyncSaysWhenNoModelCouldBeRefreshed(t *testing.T) {
 		"OpenRouter prices the model at -1":  `{"data": [{"id": "vendor/gpt", "pricing": {"prompt": "-1", "completion": "-1"}}]}`,
 	} {
 		for _, o := range []cloudSyncOpts{{openrouter: true, dryRun: true}, {openrouter: true, yes: true}} {
-			path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-			stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: body})
-			synced := stubRouteSync(t, "")
-			stdout, stderr, code := runCS(t, cfg, o)
+			path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+			stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: body})
+			synced := stubRouteSync(h, "")
+			stdout, stderr, code := runCS(t, h, cfg, o)
 			if code != 0 || stderr != "" || !strings.HasSuffix(stdout, "\n"+line) || !strings.Contains(stdout, "openrouter: warning: ") {
 				t.Errorf("%s (%+v): exit %d, stderr %q, stdout:\n%s\nwant exit 0, the model's warning, and last the line\n%s", name, o, code, stderr, stdout, line)
 			}
@@ -817,9 +833,9 @@ func TestCloudSyncSaysWhenNoModelCouldBeRefreshed(t *testing.T) {
 		}
 	}
 
-	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-	if stdout, _, _ := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true}); strings.Contains(stdout, "no model could be refreshed") {
+	_, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+	if stdout, _, _ := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, dryRun: true}); strings.Contains(stdout, "no model could be refreshed") {
 		t.Errorf("a run that matched a model says none could be refreshed:\n%s", stdout)
 	}
 }
@@ -831,6 +847,7 @@ func TestCloudSyncSaysWhenNoModelCouldBeRefreshed(t *testing.T) {
 // changes that the apply then refuses, and the apply must refuse before it
 // asks. Both say the same line, which names the model and the file to fix.
 func TestCloudSyncRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
+	h := testHost()
 	start := strings.Index(cloudSyncRegistry, "[[models]]\nid = \"openrouter/vendor--gpt\"")
 	end := strings.Index(cloudSyncRegistry, "[[models]]\nid = \"ollama/deepseek-v4-pro:cloud\"")
 	registry := cloudSyncRegistry[:end] + cloudSyncRegistry[start:end] + cloudSyncRegistry[end:]
@@ -840,11 +857,11 @@ func TestCloudSyncRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 		"--yes":     {openrouter: true, yes: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			path, cfg := cloudSyncHome(t, registry)
-			stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-			asked := stubConfirm(t, true, nil, nil)
-			synced := stubRouteSync(t, "")
-			stdout, stderr, code := runCS(t, cfg, o)
+			path, cfg := cloudSyncHome(t, h, registry)
+			stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+			asked := stubConfirm(t, h, true, nil, nil)
+			synced := stubRouteSync(h, "")
+			stdout, stderr, code := runCS(t, h, cfg, o)
 			want := "openrouter: error: no price was changed: model \"openrouter/vendor--gpt\" is in the registry twice (providers openrouter, openrouter); " +
 				"wt cannot tell which one you mean — fix the entry in " + path + "\n"
 			if stderr != want || stdout != "" || code != 1 {
@@ -863,16 +880,17 @@ func TestCloudSyncRefusesADuplicatedModelIDBeforeThePlan(t *testing.T) {
 // is left behind: an empty one would make every later command load an empty
 // registry instead of saying that there is none and naming `wt-model model init`.
 func TestCloudSyncRefusedPlanDoesNotCreateARegistry(t *testing.T) {
-	path, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-	synced := stubRouteSync(t, "")
-	stubConfirm(t, true, nil, func() {
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+	synced := stubRouteSync(h, "")
+	stubConfirm(t, h, true, nil, func() {
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
 	})
 
-	_, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true})
+	_, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true})
 	if want := "openrouter: error: the registry changed after the plan was printed; no price was changed — run it again\n"; stderr != want || code != 1 {
 		t.Errorf("stderr = %q, exit %d; want %q and exit 1", stderr, code, want)
 	}
@@ -929,6 +947,7 @@ tags = []
 // reported an update each time the clock had crossed a window, and each one
 // rewrote LiteLLM's config and could restart the proxy under running agents.
 func TestCloudSyncTimeOfDayPricesDoNotFollowTheClock(t *testing.T) {
+	h := testHost()
 	// The fixture was fetched on a Friday at 14:06 UTC, in deepseek's cheap
 	// window. In its dear window OpenRouter serves the same list with that
 	// model's three top-level prices doubled, and nothing else different.
@@ -944,18 +963,18 @@ func TestCloudSyncTimeOfDayPricesDoNotFollowTheClock(t *testing.T) {
 	}
 	dear := strings.Replace(cheap, cheapTop, dearTop, 1)
 
-	path, _ := cloudSyncHome(t, timeOfDayRegistry)
-	synced := stubRouteSync(t, "")
+	path, _ := cloudSyncHome(t, h, timeOfDayRegistry)
+	synced := stubRouteSync(h, "")
 	run := func(body string, now time.Time, o cloudSyncOpts) string {
 		t.Helper()
-		stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: body})
-		cloudSyncNow = func() time.Time { return now }
+		stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: body})
+		h.cloudSyncNow = func() time.Time { return now }
 		cfg, err := config.Load()
 		if err != nil {
 			t.Fatalf("config.Load: %v", err)
 		}
 		o.openrouter = true
-		stdout, stderr, code := runCS(t, cfg, o)
+		stdout, stderr, code := runCS(t, h, cfg, o)
 		if stderr != "" || code != 0 {
 			t.Fatalf("stdout = %q\nstderr = %q, exit %d", stdout, stderr, code)
 		}
@@ -1018,6 +1037,7 @@ func TestCloudSyncTimeOfDayPricesDoNotFollowTheClock(t *testing.T) {
 // should be: the file keeps its bytes and the proxy is not restarted under
 // running agents.
 func TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone(t *testing.T) {
+	h := testHost()
 	// timeOfDayRegistry as that earlier sync left it: both models at their
 	// dearest level, no time_prices row.
 	dearStored := strings.Replace(timeOfDayRegistry,
@@ -1041,16 +1061,16 @@ func TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone(t *testing.T) {
 	t.Setenv("WT_LITELLM_CONFIG", yaml)
 	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
 	t.Setenv("WT_TEST_OPENROUTER_KEY", "sk-test-not-a-real-key")
-	realRouteSync(t)
+	realRouteSync(t, h)
 	t.Setenv("WT_LITELLM_RESTART_CMD", "touch "+marker)
 	// realRouteSync probes nothing; say instead that every provider
 	// answered, so the sync has no probe failure to warn about.
-	probeInventory = localmodels.OnDiskSnapshotForTest
+	h.probeInventory = localmodels.OnDiskSnapshotForTest
 
 	// The routes as that earlier sync left them. Writing them restarts the
 	// proxy, which is how this test knows the marker would show a restart.
 	var said bytes.Buffer
-	if warning := syncRoutesAfterWrite(&said, &said); warning != "" {
+	if warning := h.syncRoutesAfterWrite(&said, &said); warning != "" {
 		t.Fatalf("the first route sync warned: %s\n%s", warning, said.String())
 	}
 	routes := mustRead(t, yaml)
@@ -1065,15 +1085,15 @@ func TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: string(raw)})
-	old := cloudSyncNow
-	cloudSyncNow = func() time.Time { return time.Date(2026, 10, 9, 14, 6, 0, 0, time.UTC) }
-	t.Cleanup(func() { cloudSyncNow = old })
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: string(raw)})
+	old := h.cloudSyncNow
+	h.cloudSyncNow = func() time.Time { return time.Date(2026, 10, 9, 14, 6, 0, 0, time.UTC) }
+	t.Cleanup(func() { h.cloudSyncNow = old })
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	const want = "openrouter: openrouter.ai: 2 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
 		"openrouter: Price updates (2):\n" +
 		"openrouter:   openrouter/deepseek--deepseek-v4-pro-0813: 1.32/0.044/3.96 -> 1.32/0.044/3.96 (openrouter 0.66/0.022/1.98 mon-fri 00:00-01:00 04:00-06:00 10:00-24:00, sat-sun 00:00-24:00)\n" +
@@ -1102,6 +1122,7 @@ func TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone(t *testing.T) {
 // after this warning; if the warning ever became a failing exit, an agent
 // following it would apply a plan the run had refused.
 func TestCloudSyncUnreadableScheduleIsAWarningNotAFailure(t *testing.T) {
+	h := testHost()
 	// deepseek's windows leave half of each day unpriced; hy3 has one price.
 	const body = `{"data": [
 		{"id": "deepseek/deepseek-v4-pro-0813", "pricing": {"prompt": "0.00000066", "completion": "0.00000198", "overrides": [
@@ -1109,10 +1130,10 @@ func TestCloudSyncUnreadableScheduleIsAWarningNotAFailure(t *testing.T) {
 		]}},
 		{"id": "tencent/hy3", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
 	]}`
-	path, cfg := cloudSyncHome(t, timeOfDayRegistry)
-	synced := stubRouteSync(t, "")
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: body})
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	path, cfg := cloudSyncHome(t, h, timeOfDayRegistry)
+	synced := stubRouteSync(h, "")
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: body})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	const want = "openrouter: openrouter.ai: 2 OpenRouter-priced models in the registry (prices are input/cached/output per million tokens)\n" +
 		"openrouter: Price updates (1):\n" +
 		"openrouter:   openrouter/tencent--hy3: no cost -> 1/-/2\n" +
@@ -1149,5 +1170,51 @@ func TestGraduatedClause(t *testing.T) {
 	}
 	if got, want := graduatedClause(2), "; graduated 2 manual model(s) to curated"; got != want {
 		t.Errorf("graduatedClause(2) = %q, want %q", got, want)
+	}
+}
+
+// TestWtModelServesCloudSync pins the move (phase 4 stage 2, PR 4b): wt-model's
+// root registers cloud-sync, visible in help, with every flag it had in wt,
+// and its help names the binary that runs it. A flag lost in the move would
+// turn a reviewed `--approve-removals` run into a usage error.
+func TestWtModelServesCloudSync(t *testing.T) {
+	cmd, _, err := rootCmdWith(fakeDeps, testHost()).Find([]string{"cloud-sync"})
+	if err != nil || cmd == nil || cmd.Name() != "cloud-sync" {
+		t.Fatalf("Find(cloud-sync) = %v, %v; want the cloud-sync command", cmd, err)
+	}
+	if cmd.Hidden {
+		t.Error("cloud-sync is hidden; it must show in wt-model's help")
+	}
+	for _, name := range []string{"only", "dry-run", "yes", "html", "approve-removals", "force"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Errorf("wt-model cloud-sync has no --%s", name)
+		}
+	}
+	wantExample := "  wt-model cloud-sync --dry-run\n  wt-model cloud-sync --yes --approve-removals 0bcc560b956e\n  wt-model cloud-sync --only openrouter --yes"
+	if cmd.Example != wantExample {
+		t.Errorf("Example = %q, want %q", cmd.Example, wantExample)
+	}
+	if !strings.Contains(cmd.Long, "`wt-model model add` is marked manual and kept until its source lists it.") {
+		t.Errorf("Long does not name `wt-model model add` as what marks a model manual:\n%s", cmd.Long)
+	}
+}
+
+// TestCloudSyncExitLinesNameWtModel pins the last stderr line a script and the
+// wt-cloud-sync skill branch on, as wt-model's main prints it: the codes are
+// unchanged by the move and the prefix is the binary's own.
+func TestCloudSyncExitLinesNameWtModel(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		code int
+		line string
+	}{
+		{flowOutcome{code: 3}.exitError(flowOllama), 3, "wt-model: cloud-sync: the ollama flow changed nothing: the pricing page changed shape\n"},
+		{flowOutcome{code: 5}.exitError(flowOpenRouter), 5, "wt-model: cloud-sync: the openrouter flow changed nothing: removals not approved\n"},
+		{(&cloudSyncOutcome{failed: true}).err(), 1, "wt-model: cloud-sync: a step failed; see the error lines above\n"},
+	} {
+		var b bytes.Buffer
+		if code := exitcode.Report("wt-model", tc.err, &b); code != tc.code || b.String() != tc.line {
+			t.Errorf("Report(%v) = %d, %q; want %d, %q", tc.err, code, b.String(), tc.code, tc.line)
+		}
 	}
 }

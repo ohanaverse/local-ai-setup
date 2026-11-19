@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -47,23 +49,49 @@ type seams struct {
 	// modeleditorRun opens the Models screen; a seam because it needs a
 	// terminal.
 	modeleditorRun func(theme themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error)
+
+	// The `wt-model cloud-sync` seams (cloudsync*.go). testHost makes the
+	// fetch, the ollama CLI and the confirmation fail closed, so no test
+	// reaches the network, a terminal or the developer's ollama.
+
+	// cloudFetch GETs one public page: OpenRouter's model list,
+	// ollama.com/pricing, an ollama.com/library tags page.
+	cloudFetch func(ctx context.Context, url string) ([]byte, error)
+	// confirmCloudSync asks the one question that covers both printed plans
+	// (h.promptCloudSync).
+	confirmCloudSync func(question string) (bool, error)
+	// cloudSyncNow is the clock the stamps and the saved-page name read.
+	cloudSyncNow func() time.Time
+	// ollamaCLI runs the ollama command against the daemon at origin and
+	// returns what it printed (h.realOllamaCLI).
+	ollamaCLI func(ctx context.Context, origin string, args ...string) (stdout, stderr string, err error)
+	// ollamaWaitDelay bounds what a time limit leaves open. The limit kills
+	// the command wt-model started; if that was a wrapper script, the process
+	// it started in turn lives on holding the output pipes, and without this
+	// Run would wait for it to exit, however long that takes.
+	ollamaWaitDelay time.Duration
 }
 
 // newHost is the host of a real run: every seam is the real function.
 func newHost() *host {
 	h := &host{seams: seams{
-		probeInventory: localmodels.Inventory,
-		seedEnv:        config.DefaultSeedEnv,
-		ollamaCaps:     modeladmin.OllamaCapabilities,
-		openTTY:        func() (*os.File, error) { return os.OpenFile("/dev/tty", os.O_RDWR, 0) },
-		stdinTTY:       cli.IsStdinTTY,
-		stdoutWidth:    cli.StdoutWidth,
+		probeInventory:  localmodels.Inventory,
+		seedEnv:         config.DefaultSeedEnv,
+		ollamaCaps:      modeladmin.OllamaCapabilities,
+		openTTY:         func() (*os.File, error) { return os.OpenFile("/dev/tty", os.O_RDWR, 0) },
+		stdinTTY:        cli.IsStdinTTY,
+		stdoutWidth:     cli.StdoutWidth,
+		cloudFetch:      realCloudFetch,
+		cloudSyncNow:    time.Now,
+		ollamaWaitDelay: defaultOllamaWaitDelay,
 		modeleditorRun: func(theme themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error) {
 			return modeleditor.Run(theme, cfg, cfgErr, o)
 		},
 	}}
 	h.syncRoutesAfterWrite = h.realSyncRoutesAfterWrite
 	h.confirmRemove = h.realConfirmRemove
+	h.confirmCloudSync = h.promptCloudSync
+	h.ollamaCLI = h.realOllamaCLI
 	return h
 }
 

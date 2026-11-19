@@ -88,26 +88,6 @@ func TestMain(m *testing.M) {
 	// "not a terminal" so a table does not depend on where `go test` was
 	// started.
 	stdoutWidth = func() int { return 0 }
-	// Registry-write seam (`wt cloud-sync`'s): no test may go on from a
-	// registry write to the real route sync (which probes providers and can
-	// restart the proxy). Tests call stubRouteSync, and realRouteSync for the
-	// sync itself.
-	syncRoutesAfterWrite = func(io.Writer, io.Writer) string {
-		return "syncRoutesAfterWrite not stubbed in this test"
-	}
-	// `wt cloud-sync` seams: no test may fetch a public page, run the
-	// developer's ollama (a pull or an rm there changes their machine), or
-	// open the terminal to ask. Tests use stubCloudFetch and stubConfirm
-	// (cloudsync_test.go) and stubOllama (cloudsync_ollama_test.go).
-	cloudFetch = func(_ context.Context, url string) ([]byte, error) {
-		return nil, errors.New("cloudFetch not stubbed in this test: " + url)
-	}
-	ollamaCLI = func(_ context.Context, _ string, args ...string) (string, string, error) {
-		return "", "", errors.New("ollamaCLI not stubbed in this test: ollama " + strings.Join(args, " "))
-	}
-	confirmCloudSync = func(string) (bool, error) {
-		return false, errors.New("confirmCloudSync not stubbed in this test")
-	}
 	// The readiness half of the proxy restart a route sync makes (#379): the
 	// restart itself is the test's WT_LITELLM_RESTART_CMD, but the probe
 	// before it and the wait after it would reach whatever answers at the

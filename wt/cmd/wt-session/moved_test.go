@@ -45,6 +45,7 @@ var wantMoved = []movedCommand{
 	{"model rm", "model rm"},
 	{"served", "served"},
 	{"warm", "warm"},
+	{"cloud-sync", "cloud-sync"},
 }
 
 // explicitMoves are argument rows written out by hand (not derived from
@@ -57,6 +58,9 @@ var explicitMoves = []struct {
 	{[]string{"served", "omlx"}, "served", "served"},
 	{[]string{"warm", "omlx", "m"}, "warm", "warm"},
 	{[]string{"model", "add", "omlx", "m", "--family", "f"}, "model add", "model add"},
+	// cloud-sync's own flags reach the pointer unparsed: a reviewed
+	// `--approve-removals` run changes nothing under wt.
+	{[]string{"cloud-sync", "--only", "ollama", "--yes", "--approve-removals", "0bcc560b956e"}, "cloud-sync", "cloud-sync"},
 }
 
 // TestMovedCommandsPointAtWtModel is the one table test of every moved-command

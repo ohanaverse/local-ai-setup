@@ -31,7 +31,7 @@ type allowedFileOps struct {
 // with the reason still true. A new entry needs the same justification:
 // removing user data belongs in internal/removal.
 var fileOpAllowed = map[string]allowedFileOps{
-	"cmd/wt-session/cloudsync_catalog.go":   {1, "saveFailedHTML: removes a same-named stale page in TMPDIR before writing a refused pricing page (O_EXCL)"},
+	"cmd/wt-model/cloudsync_catalog.go":     {1, "saveFailedHTML: removes a same-named stale page in TMPDIR before writing a refused pricing page (O_EXCL)"},
 	"internal/config/config.go":             {2, "atomic config write: removes its own temp file, renames it over the target"},
 	"internal/config/fortest.go":            {1, "test helper's scratch config dir (RemoveAll of a temp dir it made)"},
 	"internal/gittest/gittest.go":           {1, "test helper's scratch template dirs (RemoveAll of MkdirTemp dirs it created)"},

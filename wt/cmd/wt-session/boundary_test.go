@@ -164,7 +164,7 @@ var boundaryBannedPkgs = map[string]bool{
 //     the test checks separately.
 //   - main.go:main:lifecycle.WaitPendingRoutes — main is the process exit of
 //     every command, the host ones (`wt stop <provider>`, `litellm sync`,
-//     `cloud-sync`, …) included, and a host route write's proxy restart must
+//     …) included, and a host route write's proxy restart must
 //     finish before the process does. A session writes no route, so the wait
 //     returns at once for it.
 var boundaryAllowed = map[string]bool{

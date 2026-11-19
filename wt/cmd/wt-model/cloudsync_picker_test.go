@@ -248,6 +248,7 @@ func paintedWeek(t *testing.T, pricing map[string]any) (week []listedPrice, time
 // window cut at the wrong side of midnight, a cheaper level stored as the
 // model's own price, or a prompt-size tier taken for a schedule.
 func TestThePickerShowsThePriceOpenRouterChargesNow(t *testing.T) {
+	h := testHost()
 	raw, err := os.ReadFile("../../internal/cloudsync/testdata/openrouter_models.json")
 	if err != nil {
 		t.Fatal(err)
@@ -271,11 +272,11 @@ func TestThePickerShowsThePriceOpenRouterChargesNow(t *testing.T) {
 	// The sync runs once, on a Friday at 14:06 UTC, when the response's
 	// top-level prices are those of deepseek's cheap window and of the hy
 	// models' dear one. Nothing below may depend on that hour.
-	_, cfg := cloudSyncHome(t, pickerRegistry)
-	stubRouteSync(t, "")
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: body})
-	cloudSyncNow = func() time.Time { return time.Date(2026, 10, 9, 14, 6, 0, 0, time.UTC) }
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	_, cfg := cloudSyncHome(t, h, pickerRegistry)
+	stubRouteSync(h, "")
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: body})
+	h.cloudSyncNow = func() time.Time { return time.Date(2026, 10, 9, 14, 6, 0, 0, time.UTC) }
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	if stderr != "" || code != 0 || !strings.HasSuffix(stdout, "openrouter: refreshed 6 model(s); 6 price(s) changed\n") {
 		t.Fatalf("the sync: exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
 	}

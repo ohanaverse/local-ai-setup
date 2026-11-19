@@ -216,8 +216,8 @@ type app struct {
 // hostConfig is the host's config: config.Load (config.toml and the
 // registry), read once, on first use, and cached; the error is config.Load's
 // alone. Only the host commands read it (R3:
-// `served`, `warm`, `stop <provider>|--all`, `cloud-sync`, `litellm`, `wt
-// config`, `stats`' registry note) and protectedPaths
+// `served`, `warm`, `stop <provider>|--all`, `litellm`, `wt config`,
+// `stats`' registry note) and protectedPaths
 // (R10): a session path reads sessionCfg, never the registry. The returned
 // config is never nil: an empty default stands in when the load failed, as
 // newApp's did before the flip, so a command that tolerates a load error
