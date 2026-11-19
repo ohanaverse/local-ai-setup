@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// modelListCmd is `wt model list`. With --server it lists the model server's
+// modelListCmd is `model list` under wt. With --server it lists the model server's
 // catalog as this client session sees it; without, it only points at
 // `wt-model model list`, where the host registry listing moved (exit 1).
 func modelListCmd(a *app) *cobra.Command {

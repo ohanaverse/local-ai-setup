@@ -125,9 +125,10 @@ func TestLoad_FailsClosedWithoutRegistry(t *testing.T) {
 }
 
 // TestMissingRegistryNamesWtModelInit pins that a missing registry's error
-// names `wt-model model init` and never the retired `wt model init`: the
-// session binary prints this line too, so it must name the binary that has
-// the command (wt's `model init` is now a pointer stub).
+// names `wt-model model init` and never the retired `model init` under wt:
+// the session binary prints this line too, so it must name the binary that
+// has the command (wt's `model init` is now a pointer stub). Every
+// `model init` in the message must be the wt-model one.
 func TestMissingRegistryNamesWtModelInit(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	_, err := Load()
@@ -137,8 +138,8 @@ func TestMissingRegistryNamesWtModelInit(t *testing.T) {
 	if !strings.Contains(err.Error(), "seed it with `wt-model model init`") {
 		t.Errorf("error = %v, want it to say seed it with `wt-model model init`", err)
 	}
-	if strings.Contains(err.Error(), "`wt model init`") {
-		t.Errorf("error = %v still names `wt model init`, which only points elsewhere now", err)
+	if all, wtModel := strings.Count(err.Error(), "model init"), strings.Count(err.Error(), "wt-model model init"); all != wtModel {
+		t.Errorf("error = %v names model init under wt, which only points elsewhere now", err)
 	}
 }
 

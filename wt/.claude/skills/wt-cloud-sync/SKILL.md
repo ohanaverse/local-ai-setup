@@ -160,7 +160,7 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      that stays: the rest of the line says whether it was priced from its
      base or kept at its current price, and why. It removes nothing and
      needs no approval. A suffix OpenRouter dropped is not detected: that
-     row stays until the user runs `wt model rm`.
+     row stays until the user runs `wt-model model rm`.
    - `Note: a model OpenRouter serves under another name …` under
      `Registry removals` means an alias or a redirect id may be among the
      ids: show the user each one before the yes.
@@ -168,7 +168,7 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      sync is leaving alone; `Graduated (manual -> curated)` lines are
      ones the source now lists. Neither needs a decision. A model the user
      says they added by hand and sees under `Registry removals` is one to
-     protect: `wt model edit <id> --source manual`, then a new dry run.
+     protect: `wt-model model edit <id> --source manual`, then a new dry run.
    - A non-zero exit here is 1, 2 or 3 from the table below (a dry run never
      exits 4 or 5). Nothing was changed.
 2. **Ask.** Get the user's go-ahead for the whole of both plans. List every
@@ -213,7 +213,7 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
    sync` first: the route sync is the last thing a run does.
 5. **Families.** A new entry's family is derived (an existing ollama entry
    with the same name stem, else the stem itself). Ask whether any should
-   change, and change it with `wt model edit <id> --family <name>`, which
+   change, and change it with `wt-model model edit <id> --family <name>`, which
    syncs the routes itself. Not a hand edit.
 
 To run one flow: `--only openrouter` or `--only ollama`. `--html` with

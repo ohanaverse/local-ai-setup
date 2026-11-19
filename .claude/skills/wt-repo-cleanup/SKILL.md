@@ -70,7 +70,7 @@ Bringing the default branch up to date with origin, and the old discard/stash/re
 | Problem | What to do |
 |---|---|
 | `wt worktrees --help` shows the launcher help | Old `wt`; install the current one (`make install` in the local-ai-setup repo). |
-| `notes` says the registry could not be read; `wt remove` refuses | wt will not remove while it cannot read its model registry; relay the note (`wt model init` seeds it). |
+| `notes` says the registry could not be read; `wt remove` refuses | wt will not remove while it cannot read its model registry; relay the note (`wt-model model init` seeds it). |
 | Origin rows `less_sure`, reason `pr_unknown` or `not_checked` | Install `gh` and run `gh auth login`; a non-GitHub origin never proves its branches. |
 | A new branch reads `less_sure`, reason `fresh_branch` | Younger than `--min-age` (default 10m), so never proven merged. Wait, or ask the user before lowering it (`--min-age 1m` at the lowest). |
 | A row cannot be removed | It has a `hard_stop`; no flag overrides it. |

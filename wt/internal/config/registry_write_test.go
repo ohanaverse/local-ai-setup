@@ -81,7 +81,7 @@ func TestUpdateRegistryWritesAPatch(t *testing.T) {
 // promise on the cross-language fixture: a patch that asks for the values a
 // row already has — on the row with integer prices, an empty tags array and a
 // model_info table — writes nothing, so the bytes and the modification time
-// are untouched. A no-op that rewrote the file would make every `wt model
+// are untouched. A no-op that rewrote the file would make every `wt-model model
 // init` look like a change to whatever watches it: an open editor would
 // report the file changed on disk, and a dotfiles repository a new diff.
 func TestUpdateRegistryNoOpLeavesTheFileByteIdentical(t *testing.T) {

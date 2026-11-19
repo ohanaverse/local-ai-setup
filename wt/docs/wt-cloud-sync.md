@@ -78,12 +78,12 @@ fetched for, changed or warned about, whatever its name is.
 
   A suffix OpenRouter has dropped, while its base is still listed, is **not**
   detected: wt cannot tell it from a routing suffix it never lists, and the
-  row stays at its price. Remove such a row with `wt model rm`.
+  row stays at its price. Remove such a row with `wt-model model rm`.
 - **An alias or a redirect id has no `:`** to tell it from a model that is
   gone, so it is planned as a removal like one. The plan text says so under
   `Registry removals` (a `Note:` line, outside what the digest covers), and
   the approval is the check: look at each id before approving it, and protect
-  one OpenRouter still serves under another name with `wt model edit <id>
+  one OpenRouter still serves under another name with `wt-model model edit <id>
   --source manual`.
 - A model OpenRouter lists with no price (`warning: No pricing data for …`), or lists with a
   price that is negative or not a number (`warning: Could not use
@@ -109,7 +109,7 @@ fetched for, changed or warned about, whatever its name is.
   it refreshed, register it under the `openrouter` provider
   (`provider_id = "openrouter"`); it is then also reached through
   OpenRouter. To keep it where it is, set its price yourself:
-  `wt model edit <id> --input-price … --output-price …`
+  `wt-model model edit <id> --input-price … --output-price …`
   ([wt-model.md](wt-model.md)).
 
 #### A model OpenRouter prices by time of day
@@ -341,7 +341,7 @@ route sync) LiteLLM's routes.
   model id.
 - **A new entry's family** is that of an existing ollama entry with the same
   name stem, else the stem itself. Change it afterwards with
-  `wt model edit <id> --family <name>` ([wt-model.md](wt-model.md)).
+  `wt-model model edit <id> --family <name>` ([wt-model.md](wt-model.md)).
 - **A new entry's subscription** price and period are the ones every
   existing ollama cloud entry shares. If they disagree it gets none, and the
   plan says `warning: ollama cloud entries disagree on subscription pricing;
@@ -387,7 +387,7 @@ finished (exit 0). This is never an error, however the flow was asked for.
 - The ollama rule holds for `--only ollama`, `--html`,
   `--approve-removals` and `--force` too; with no `ollama` row the `--html`
   file is not even opened. `wt cloud-sync` never adds a provider row:
-  `wt model init` does, for one on a machine where `ollama` is on `PATH`
+  `wt-model model init` does, for one on a machine where `ollama` is on `PATH`
   ([wt-model.md](wt-model.md)).
 - With neither, the command prints the two lines and nothing else: it asks
   nothing, writes nothing and syncs no route.
@@ -491,7 +491,7 @@ own digest in it. Naming only one applies that flow and refuses the other.
 
 A model that is free, or new, may not be on the source a flow mirrors: an
 ollama cloud model missing from ollama.com/pricing (for example
-`ollama.com/library/beam`), an OpenRouter model not listed. `wt model add`
+`ollama.com/library/beam`), an OpenRouter model not listed. `wt-model model add`
 marks such a cloud model `source = "manual"` (any `openrouter` model, any
 ollama model with `--location cloud` or a cloud tag), and for as long as it
 is manual `cloud-sync`:
@@ -505,7 +505,7 @@ is manual `cloud-sync`:
   disappears. Wt assumes a free model that has been priced does not go back.
 
 For models already in the registry (added before this), mark them first:
-`wt model edit <id> --source manual` (see [wt-model.md](wt-model.md)).
+`wt-model model edit <id> --source manual` (see [wt-model.md](wt-model.md)).
 Otherwise the next sync lists them under `Registry removals`, where you can
 decline.
 
@@ -581,7 +581,7 @@ the error lines above` for 1.
   its time limit. See [Failure and recovery](#failure-and-recovery).
 - a usage error; a `config.toml` or registry that could not be loaded; a
   missing registry (``model registry not found at <path> — seed it with
-  `wt model init` ``).
+  `wt-model model init` ``).
 
 **Exit 2** — an input could not be read. Each line ends `nothing was
 changed`:
@@ -752,7 +752,7 @@ reads them. For every model, the picker's COST column uses the price **in force 
   for the new ones.
 - **Only the picker follows the clock.** LiteLLM's route, and so any spend
   LiteLLM computes from it, uses the model's own price at every hour, and
-  `wt model list` shows no price at all.
+  `wt-model model list` shows no price at all.
 
 ### A row you write by hand
 
@@ -795,12 +795,12 @@ installed wt has this change.
 
 A row that breaks one of these rules is still loaded, and it is **not
 applied**, whole, at any hour: the picker shows the model's own price, and
-no `~` unless another row of the model applies. `wt model list` names the
+no `~` unless another row of the model applies. `wt-model model list` names the
 row and the rule on stderr; for a time written `9:00`, which is not
 `HH:MM`: `<id>: cost.time_prices[0]: windows[0]: start must be HH:MM, got
 9:00; wt reads it as absent (fix the entry in <registry>)`. The Models tab
 of `wt-model model` shows the same under the selected model. wt also refuses to
-write that model's entry until the row is fixed: `wt model edit`, a save
+write that model's entry until the row is fixed: `wt-model model edit`, a save
 in the Models tab of `wt-model model`, or a `wt cloud-sync` with a change for that model is
 refused with `invalid registry entry: model "<id>": cost: time_prices[0]:
 windows[0]: start must be HH:MM, got 9:00`, and nothing is written.
@@ -831,7 +831,7 @@ Running `wt cloud-sync` clears it as long as the openrouter flow matches at
 least one model. When it matches none, every model of the `openrouter`
 provider has a `warning:` that says why (a `model_name` OpenRouter does not
 list, most often); correct the name, or remove the model
-(`wt model rm <id>`), and the notice goes with the last of them.
+(`wt-model model rm <id>`), and the notice goes with the last of them.
 
 The notice watches the models of the `openrouter` provider only. A model
 under any other cloud provider neither raises it nor clears it, and the

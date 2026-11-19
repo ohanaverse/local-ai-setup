@@ -211,16 +211,16 @@ tab"); bare `wt model` prints only `wt: model moved to wt-model — run
 'wt-model model'; nothing was changed` and exits 1.
 
 - It needs a terminal. Without one it exits 1 and names the commands that
-  need none: `wt model list`, `wt model add`, `wt model edit` and `wt model
+  need none: `wt-model model list`, `wt-model model add`, `wt-model model edit` and `wt-model model
   rm`.
 - Each saved form and each removal is written to `registry.toml` at once.
   The LiteLLM routes are synced once, when the screen closes, and only if it
   wrote the registry (also when it ended with an error, since the write
-  already happened). The sync prints what `wt model add|edit|rm` print after
+  already happened). The sync prints what `wt-model model add|edit|rm` print after
   their write, its warning on stderr; it never changes the exit code.
 - With the registry redirected (`WT_REGISTRY`) and nothing naming
   `config.yaml` (`WT_LITELLM_CONFIG`), that sync refuses to write the real
-  routes and says so on stderr, as `wt model add|edit|rm` do.
+  routes and says so on stderr, as `wt-model model add|edit|rm` do.
 
 ## Endpoints
 

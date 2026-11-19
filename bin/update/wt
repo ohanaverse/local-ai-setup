@@ -3,8 +3,8 @@
 #
 # Why this is a rebuild rather than a download: wt is not published anywhere —
 # the checkout beside this script IS the source of truth. `make install` in
-# wt/ is the right entry point and not a shortcut: it builds to wt/bin/wt-session and a copy, wt/bin/wt,
-# re-seals the ad-hoc code signature, then copies bin/* into ~/.local/bin and
+# wt/ is the right entry point and not a shortcut: it builds to wt/bin/wt-session,
+# a copy wt/bin/wt, and wt/bin/wt-model, re-seals the ad-hoc code signature, then copies bin/* into ~/.local/bin and
 # re-seals the copy again. Both seals matter. A stale or drifted signature is
 # rejected by AMFI with "Taskgated Invalid Signature" and the binary is
 # SIGKILLed on launch (exit 137) — and the copy needs its own seal because
@@ -51,33 +51,40 @@ done
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 WT_DIR="$REPO_ROOT/wt"
 INSTALLED="$HOME/.local/bin/wt"
-# `make install` puts the same binary down under two names, wt-session and wt.
-# Neither name present is "not on this machine" (the update-common contract);
-# one name missing is an incomplete install — a pre-split one has only wt —
-# and reads as stale, not absent: the rebuild below adds the missing name and
-# a --check run reports it.
+# `make install` puts the same binary down under two names, wt-session and wt,
+# and the model server and host-admin binary beside them, wt-model.
+# None of the three present is "not on this machine" (the update-common
+# contract); one missing is an incomplete install — a pre-split one has only
+# wt, and modeltiers needs wt-model on PATH — and reads as stale, not absent:
+# the rebuild below adds the missing names and a --check run reports them.
 INSTALLED_SESSION="$HOME/.local/bin/wt-session"
+INSTALLED_MODEL="$HOME/.local/bin/wt-model"
 
-if [ ! -x "$INSTALLED" ] && [ ! -x "$INSTALLED_SESSION" ]; then
-    update_finish not-installed "no binary at $INSTALLED or $INSTALLED_SESSION (run: make -C wt install)"
+if [ ! -x "$INSTALLED" ] && [ ! -x "$INSTALLED_SESSION" ] && [ ! -x "$INSTALLED_MODEL" ]; then
+    update_finish not-installed "no binary at $INSTALLED, $INSTALLED_SESSION or $INSTALLED_MODEL (run: make -C wt install)"
 fi
 
-# The two names are the same binary: read the version and judge staleness
-# against whichever is present.
+# The three are built together from one checkout: read the version and judge
+# staleness against the first present of wt, wt-session and wt-model.
 INSTALLED_BIN="$INSTALLED"
 [ -x "$INSTALLED_BIN" ] || INSTALLED_BIN="$INSTALLED_SESSION"
+[ -x "$INSTALLED_BIN" ] || INSTALLED_BIN="$INSTALLED_MODEL"
 installed_version=$("$INSTALLED_BIN" --version 2> /dev/null || echo unknown)
 update_note "installed: $installed_version ($INSTALLED_BIN)"
 
-MISSING_NAME=""
-if [ ! -x "$INSTALLED" ]; then
-    MISSING_NAME="$INSTALLED"
-elif [ ! -x "$INSTALLED_SESSION" ]; then
-    MISSING_NAME="$INSTALLED_SESSION"
-fi
-if [ -n "$MISSING_NAME" ]; then
-    update_note "stale: no binary at $MISSING_NAME"
-fi
+# MISSING_NAMES is a space-joined list of the absent paths, in the order wt,
+# wt-session, wt-model; none of them holds a space ($HOME/.local/bin/...).
+MISSING_NAMES=""
+MISSING_PATHS=""
+MISSING_BASES=""
+for name in "$INSTALLED" "$INSTALLED_SESSION" "$INSTALLED_MODEL"; do
+    if [ ! -x "$name" ]; then
+        MISSING_NAMES="${MISSING_NAMES:+$MISSING_NAMES }$name"
+        MISSING_PATHS="${MISSING_PATHS:+$MISSING_PATHS, }$name"
+        MISSING_BASES="${MISSING_BASES:+$MISSING_BASES, }$(basename "$name")"
+        update_note "stale: no binary at $name"
+    fi
+done
 
 # Staleness is "a source file is newer than the installed binary" — the
 # honest check for a binary with no version stamp that moves with the source.
@@ -97,8 +104,8 @@ else
 fi
 
 if [ "$UPDATE_CHECK" -eq 1 ]; then
-    if [ -n "$MISSING_NAME" ]; then
-        update_finish stale "$installed_version installed, no binary at $MISSING_NAME (run: make -C wt install)"
+    if [ -n "$MISSING_NAMES" ]; then
+        update_finish stale "$installed_version installed, no binary at $MISSING_PATHS (run: make -C wt install)"
     fi
     if [ -n "$stale_src" ]; then
         update_finish stale "$installed_version installed, $(basename "$stale_src") is newer"
@@ -122,8 +129,8 @@ fi
 new_version=$("$INSTALLED_BIN" --version 2> /dev/null || echo unknown)
 update_note "installed: $new_version"
 
-if [ -n "$MISSING_NAME" ]; then
-    update_finish updated "$installed_version -> $new_version (added $(basename "$MISSING_NAME"))"
+if [ -n "$MISSING_NAMES" ]; then
+    update_finish updated "$installed_version -> $new_version (added $MISSING_BASES)"
 fi
 if [ -n "$stale_src" ]; then
     update_finish updated "$installed_version -> $new_version"

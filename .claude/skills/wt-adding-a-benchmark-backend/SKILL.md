@@ -99,13 +99,13 @@ spawn argv, a stop argv, a pidfile, a log and a readiness check is:
    basename to `_FAKE_BINARIES` in `tests/conftest.py` and to the
    parametrized list in `tests/providers/lifecycle/test_hermeticity.py`.
 5. **Update the registry.** Add a provider entry to
-   `~/.config/local-ai/registry.toml` (by hand, or with `wt model init` once wt
+   `~/.config/local-ai/registry.toml` (by hand, or with `wt-model model init` once wt
    seeds its row) and
    add the provider id to `DEFAULT_PROVIDER_IDS` in
    `src/llmbench/registry.py` (`LOCAL_PROVIDERS =
    set(DEFAULT_PROVIDER_IDS)` in `src/llmbench/benchmark/runner.py`) — a
    backend missing from that set is silently skipped by `llmbench run` —
-   and, if `wt model init` should seed the provider's row, give the provider
+   and, if `wt-model model init` should seed the provider's row, give the provider
    a `Seed` in `wt/internal/provider/table.go` (see the `wt-adding-a-provider`
    skill in `wt/.claude/skills/`).
 6. **Update the drift trip-wire.** `tests/benchmark/test_isolation.py`'s

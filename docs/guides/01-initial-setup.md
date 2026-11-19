@@ -64,10 +64,10 @@ echo "model_list: []" > ~/.config/litellm/config.yaml   # FRESH MACHINE ONLY —
 ollama pull qwen3.8:27b-mlx
 
 # 4. registry + start a model (which routes it through LiteLLM)
-# wt needs ~/.config/local-ai/registry.toml. `wt model init` creates it when it is missing, with a
+# wt needs ~/.config/local-ai/registry.toml. `wt-model model init` creates it when it is missing, with a
 # provider row for each local tool it finds on PATH (ollama, omlx, mtplx); it never changes a row that exists.
 # (needs `wt` on PATH — `make install` from the repo root.)
-wt model init
+wt-model model init
 wt start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it needs no `[[models]]` entry: with the `ollama` provider row in registry.toml, a pulled model starts by its `ollama/<name:tag>` id). No routing step: the start writes the model_list entry and restarts the proxy; a pulled ollama model stays routed after a stop
 
 # 5. Restart the LiteLLM LaunchAgent (wt already restarted it after the sync — this is only needed if that restart was skipped or failed; it lets a request in flight finish, then waits for the proxy to answer when a LiteLLM url is configured — guide 14 section 10)

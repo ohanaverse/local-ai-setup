@@ -1,9 +1,9 @@
 // Pointers for commands that moved to wt-model.
 //
 // A command that moved is not simply deleted: cobra prints the parent's help
-// and exits 0 for an unknown name, so a script running `wt model add … && …`
-// would "succeed" having changed nothing. Each moved command is instead a
-// hidden stub that prints one line and exits 1:
+// and exits 0 for an unknown name, so a script running the old
+// `model add … && …` under wt would "succeed" having changed nothing. Each
+// moved command is instead a hidden stub that prints one line and exits 1:
 //
 //	wt: <old> moved to wt-model — run 'wt-model <new>'; nothing was changed
 //

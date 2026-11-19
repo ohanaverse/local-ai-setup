@@ -223,7 +223,7 @@ func runLaunchPath(
 // --cwd's value, which the flag does not take, and is refused. A command
 // agent's first word is the program to run, and a bare name that resolves
 // on PATH runs that program whatever the current directory holds
-// (`shell-wt --cwd wt model list` beside a `wt/` directory), so it is
+// (`shell-wt --cwd wt worktrees --plain` beside a `wt/` directory), so it is
 // passed on. The current directory itself gets its own advice: there is
 // nothing to cd into.
 func refuseCwdValue(agent, word string) error {

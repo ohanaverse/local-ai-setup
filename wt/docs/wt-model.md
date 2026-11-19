@@ -1,18 +1,22 @@
-# `wt model …`
+# `wt-model model …`
 
 The models in the registry (`~/.config/local-ai/registry.toml`): list them,
-add, edit and remove them. wt never downloads a model and never deletes
-weights; it registers what a provider already has, or will have.
+add, edit and remove them. The commands are `wt-model model …`, run on the
+machine that runs wt-model; under `wt` the same subcommand names (`model
+init`, `model list`, `model add`, `model edit`, `model rm`, their names
+before phase 4 stage 2) print a one-line pointer here and exit 1, and only
+`wt model list --server` stays in wt. wt never downloads a model and never
+deletes weights; it registers what a provider already has, or will have.
 
 ```bash
-wt-model model             # the Models tab, on the host (needs a terminal); see below
-wt model list [--json]     # every registry model, and every local model found on this machine
+wt-model model                    # the Models tab, on the host (needs a terminal); see below
+wt-model model list [--json]      # every registry model, and every local model found on this machine
 wt model list --server [--json]   # the model server's catalog, as a client session sees it
-wt model init [--json]     # create the registry if it is missing; add the default provider rows
-wt model add <provider> <name> --family F [--tags a,b] [--location local|cloud] [price flags] [--id ID]
-wt model edit <id> [--family F] [--tags a,b] [--location local|cloud] [--source manual|curated] [price flags]
-wt model rm <id>... [--yes]
-wt model add mlx_lm_server <target> --draft <draft> --family F   # a target+draft pairing
+wt-model model init [--json]      # create the registry if it is missing; add the default provider rows
+wt-model model add <provider> <name> --family F [--tags a,b] [--location local|cloud] [price flags] [--id ID]
+wt-model model edit <id> [--family F] [--tags a,b] [--location local|cloud] [--source manual|curated] [price flags]
+wt-model model rm <id>... [--yes]
+wt-model model add mlx_lm_server <target> --draft <draft> --family F   # a target+draft pairing
 ```
 
 Each of the three writing commands makes one locked write of the registry and
@@ -27,7 +31,7 @@ Bare `wt model` opens nothing: it prints `wt: model moved to wt-model — run
 'wt-model model'; nothing was changed` and exits 1. The Models tab it used to
 open is `wt-model model` ([below](#the-models-tab-wt-model-model)).
 
-## `wt model list [--json]`
+## `wt-model model list [--json]`
 
 One row per registry model, then one per local model a provider has that the
 registry does not (`STATUS new`), from one live probe of the providers.
@@ -100,7 +104,7 @@ cannot be read at all stops it.
 
 ### `wt model list --server [--json]`
 
-With `--server`, `wt model list` reads the model server's catalog
+With `--server`, `wt-model model list` reads the model server's catalog
 (`[model-server]` in `config.toml`, or `WT_MODEL_URL`) instead of the
 registry: the models a client session can launch or start, in the server's
 order, with their state. Nothing is read from the registry and no provider is
@@ -127,10 +131,10 @@ action, `block_reason`, tier, price, client session count);
 command fails it prints `{"version": 1, "error": {"message": "…", "code":
 "…"}}` on stdout instead, writes nothing to stderr and exits 1.
 
-## `wt model init [--json]`
+## `wt-model model init [--json]`
 
 Creates the registry when it is missing and adds the provider rows wt needs
-and the registry lacks. It never changes a row that exists. `wt model init
+and the registry lacks. It never changes a row that exists. `wt-model model init
 --help` lists which rows, and why. The `sushi` row is written when the `sushi`
 command is on PATH:
 
@@ -148,13 +152,13 @@ base_url = "http://127.0.0.1:12345/v1"
 
 It has no `protocols` and no `secret_ref`.
 
-## `wt model add <provider> <name> --family <family>`
+## `wt-model model add <provider> <name> --family <family>`
 
 `<name>` is the model as its provider lists it: an ollama tag (`qwen3:8b`), the
 name of an omlx model directory, an mtplx `org/name`, a Sushi pack `org/pack`
 (`beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`, written to `model_name`
 exactly as given), or a cloud provider's model id. Pull or download a local model with its provider's own tool, before
-or after adding it; `wt model list` shows what is on disk and unregistered as
+or after adding it; `wt-model model list` shows what is on disk and unregistered as
 `STATUS new`.
 
 | Flag | Meaning |
@@ -178,7 +182,7 @@ registering a model does not rename it. For any other provider it is
 `<provider>/<name>` with each `/` in the name written `--`
 (`openrouter/qwen--qwen3.8-27b`). The id, the provider and the name cannot be
 changed afterwards: usage history, rotation and launch profiles key on the id.
-`wt model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>`
+`wt-model model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>`
 registers `sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`, the id
 llmbench's `eval-sushi-vs-ollama` suite names; only a cloud id spells its slash
 `--`.
@@ -186,7 +190,7 @@ llmbench's `eval-sushi-vs-ollama` suite names; only a cloud id spells its slash
 In the same write wt adds the default provider row the model needs when it is
 missing — for ollama, omlx, mtplx, rec, sushi and openrouter (openrouter's holds no key,
 only `auth.secret_ref = "OPENROUTER_API_KEY"`, the environment variable wt
-reads the key from) — and any other row `wt model init` would add. A provider
+reads the key from) — and any other row `wt-model model init` would add. A provider
 wt has no default row for is refused: add its `[[providers]]` block to
 `registry.toml` first. A second entry for an artifact that is already
 registered is refused too. A value that cannot be used is refused before
@@ -203,7 +207,7 @@ provider, a Sushi pack included: a `model_info` table (such as
 ### An mlx_lm_server pairing
 
 An mlx_lm_server model is a target and a draft served together by
-`mlx_lm.server --draft-model`. `wt model add mlx_lm_server <target> --draft
+`mlx_lm.server --draft-model`. `wt-model model add mlx_lm_server <target> --draft
 <draft> --family <family>` registers one: each side is a Hugging Face repo
 (`org/name`) or a local path (starting `/`, `~`, `./` or `../`), written to the
 row's `[models.fetch]` and `[models.draft]`. Anything else is taken for a
@@ -236,7 +240,7 @@ llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>
 (from the repository: `uv run --directory llmbench llmbench provider isolate
 --solo …`; `--solo` leaves the other local providers running; a path with a
 space in it is printed quoted, so the line can be pasted). A pairing is a
-row of `wt model list` and of the Models tab with `STATUS -`, since no probe
+row of `wt-model model list` and of the Models tab with `STATUS -`, since no probe
 can enumerate it; its family, tags and prices are edited like any model's,
 and the tab's form does not create one.
 
@@ -248,17 +252,17 @@ was started with:
 
 - With exactly one pairing registered, anything served on the mlx_lm_server
   port marks that pairing `run` — a different, unregistered pairing started
-  with `llmbench provider isolate` included. `wt model add mlx_lm_server`
+  with `llmbench provider isolate` included. `wt-model model add mlx_lm_server`
   makes this case easy to reach: one add, and the registry has exactly one.
 - A pairing whose name is the end of a served repo id reads `run` as well.
 - With two or more registered and no name matching, `RUNNING` is `?`.
 
 wt shows the state and syncs the pairing's LiteLLM route by it, as it did
-before this command existed; `wt model add`, `edit` and `rm` decide nothing by
+before this command existed; `wt-model model add`, `edit` and `rm` decide nothing by
 it. When it matters which pairing is up, check
 `/tmp/local-ai-setup-mlx-lm-server.log` or the server's `/v1/models`.
 
-## `wt model edit <id> [flags]`
+## `wt-model model edit <id> [flags]`
 
 Changes the fields named by the flags, and nothing else in the row: every
 other key (off-peak prices, `model_info`, `fetch`, keys wt does not know) is
@@ -279,7 +283,7 @@ the ones wt passes itself; repeat it, **one argv element per flag**, so a flag
 and its value are two: `--serve-arg --profile --serve-arg turbo` (or
 `--serve-arg=--profile --serve-arg=turbo`). `--clear-serve-args` removes them.
 They are stored as `serve_args = ["--profile", "turbo"]` on the model's row,
-and `wt model add mtplx … --serve-arg …` writes them with the row.
+and `wt-model model add mtplx … --serve-arg …` writes them with the row.
 
 - **mtplx models only.** Any other provider refuses them, naming the provider.
 - **wt's own flags are refused**, alone or as `--flag=value`: `--model`,
@@ -291,7 +295,7 @@ and `wt model add mtplx … --serve-arg …` writes them with the row.
   was started with, so a changed `serve_args` does not make it a different
   server; the edit says so. `wt stop` then `wt start` picks them up.
 - **A row whose `serve_args` is unusable** (hand-edited: not an array of
-  strings, or one of wt's flags) loads, `wt model list` names the problem like
+  strings, or one of wt's flags) loads, `wt-model model list` names the problem like
   any other malformed value, and `wt start` of that model stops before
   spawning, naming the row, rather than ignoring it.
 - **`--model-id` and turbo.** wt always passes `--model-id <name>`, which makes
@@ -320,18 +324,18 @@ wt: model "ollama/qwen3:8b" is in the registry twice (providers ollama, openrout
 Give one of the rows another id, or delete it, by hand. The rows beside it,
 each with an id of its own, are edited as usual.
 
-## `wt model rm <id>... [--yes]`
+## `wt-model model rm <id>... [--yes]`
 
 Removes the rows from the registry, and nothing else: it prints where each
 removed model's weights are, because wt deletes none. A local model that is
-still on disk shows up again in `wt model list` as `STATUS new`. It asks on
+still on disk shows up again in `wt-model model list` as `STATUS new`. It asks on
 the terminal first (`--yes` skips; with no terminal and no `--yes` it refuses,
 removing nothing, with `approval missing: pass --yes (there is no terminal to
 ask); nothing was removed` and exit 3).
 When one id is not in the registry, none is removed.
 
 An id that more than one registry row carries is refused in the same way,
-before the question and with the message `wt model edit` gives: none of the
+before the question and with the message `wt-model model edit` gives: none of the
 ids named is removed, whichever of them it is. Removing one of two rows that
 share an id is a hand edit — only there can you see which row is which.
 
@@ -344,15 +348,15 @@ share an id is a hand edit — only there can you see which row is which.
   takes the model's presence from a stat of it.
 - `[[families]]` display names. wt reads only each model's `family`.
 - The two sides of an mlx_lm_server pairing that is already registered: no
-  command changes a row's `[models.fetch]` or `[models.draft]`. (`wt model
+  command changes a row's `[models.fetch]` or `[models.draft]`. (`wt-model model
   add mlx_lm_server … --draft …` writes them once; to change a side, remove
   the pairing and add it again, or edit the two tables.)
 - Two `[[models]]` rows with one id. Every launch refuses such a registry
-  (`duplicate model id`), and `wt model edit`, `wt model rm` and the Models
-  tab refuse the id rather than pick a row; `wt model list` and the tab still
+  (`duplicate model id`), and `wt-model model edit`, `wt-model model rm` and the Models
+  tab refuse the id rather than pick a row; `wt-model model list` and the tab still
   show both rows, each with its provider's status.
 - A `fetch` or `draft` that is not a table (or whose `repo` or `local_path`
-  is not a string). wt lists the row, and refuses to write it — `wt model
+  is not a string). wt lists the row, and refuses to write it — `wt-model model
   edit` and the form say `fetch must be a table` — until the value is fixed.
 
 Run `wt litellm sync` after a hand edit: no tool saw it.
@@ -360,10 +364,10 @@ Run `wt litellm sync` after a hand edit: no tool saw it.
 ## The Models tab (`wt-model model`)
 
 `wt-model model` opens it on the host that holds the registry, the screen's
-one tab; it needs a terminal (without one it exits 1 and names `wt model
+one tab; it needs a terminal (without one it exits 1 and names `wt-model model
 list`, `add`, `edit` and `rm`). Bare `wt model` only points here.
 
-The same rows as `wt model list`, as a table: FAMILY, MODEL, LOC, STATUS,
+The same rows as `wt-model model list`, as a table: FAMILY, MODEL, LOC, STATUS,
 RUNNING, SIZE. On a narrow terminal it gives up SIZE, then LOC, then FAMILY —
 never MODEL, STATUS or RUNNING. When an id is still too long for the MODEL
 column it loses its middle to an ellipsis
@@ -377,7 +381,7 @@ and draft); and the path of its weights on a line of its own, written from
 pairing's target and draft before its key hints and the id.
 
 A row whose `fetch` or `draft` is malformed in `registry.toml` has one more
-line under its id, in the words `wt model list` prints on stderr: `fetch is
+line under its id, in the words `wt-model model list` prints on stderr: `fetch is
 not a table; read as absent`. wt reads such a value as absent, which is why
 the row has no path, or reads `missing` when its weights are there. A
 `cost.time_prices` row that breaks a rule is on that line too
@@ -401,7 +405,7 @@ first probe is still out.
 
 ### The form
 
-`n`, and `enter`, open a form with the fields `wt model add` and `wt model
+`n`, and `enter`, open a form with the fields `wt-model model add` and `wt-model model
 edit` take: Provider, Model name, Family, Tags, Location, the three
 per-token prices, and the subscription price and period.
 
@@ -417,7 +421,7 @@ per-token prices, and the subscription price and period.
 Provider offers every provider in the registry and the ones wt adds a row
 for by itself (ollama, omlx, mtplx, openrouter), but not mlx_lm_server: its
 model is a target+draft pairing, which takes two artifacts and is added on
-the command line (`wt model add mlx_lm_server <target> --draft <draft>`,
+the command line (`wt-model model add mlx_lm_server <target> --draft <draft>`,
 above). While the add form's cursor is on Provider, a dim line above the key
 hints names that command (a shorter spelling at 40 columns; on a terminal too
 short to spare the row it is left out). `enter` on a pairing row opens the form like any other, to edit its
@@ -425,7 +429,7 @@ family, tags, location and prices; its target and draft are not fields, and a
 save leaves `[models.fetch]` and `[models.draft]` as they are. When editing, and when registering a `new` row, the provider
 and the model name are fixed, and the title names the id. An edit writes only
 the fields you changed; saving an untouched form writes nothing and says `no
-change`. Adding an ollama model runs the `ollama show` lookup `wt model add`
+change`. Adding an ollama model runs the `ollama show` lookup `wt-model model add`
 runs, after the values have been checked; if it fails the model is added
 without its capabilities and the status says so.
 
@@ -434,7 +438,7 @@ key hints and the cursor on that field. Two refusals are about the registry
 row, not about a field, and move nothing; nothing is written and no sync is
 owed:
 
-- an id that more than one row carries — the message `wt model edit` gives
+- an id that more than one row carries — the message `wt-model model edit` gives
   (`model "<id>" is in the registry twice (providers A, B); wt cannot tell
   which one you mean — fix the entry in <registry path>`). The form opens on
   the row under the cursor, but wt will not choose a row to write;
@@ -467,7 +471,7 @@ quit typed while a change is still being written waits for it, on this tab
 (the form's title says `saving, then quitting...`). A
 removal the registry refuses is reported and the table is read again: nothing
 is written and no sync is owed. An id that more than one row carries is
-refused that way, with the message `wt model rm` gives (`model "<id>" is in
+refused that way, with the message `wt-model model rm` gives (`model "<id>" is in
 the registry twice (providers A, B); wt cannot tell which one you mean — fix
 the entry in <registry path>`); both rows are listed, and the cursor stays on
 the one it was on. If wt is

@@ -553,7 +553,7 @@ output_price_per_million = 75.0
 // hand-written row that breaks a rule does to a registry: nothing, loudly
 // enough. The file still loads (a slip in one row must not stop every wt
 // command), the row is not applied at any instant, the model's price is its
-// flat one, and Model.Malformed names the row and the rule, which `wt model
+// flat one, and Model.Malformed names the row and the rule, which `wt-model model
 // list` prints and the Models tab shows. A readable row beside it is still
 // applied.
 func TestLoadKeepsATimePricesRowTheValidatorRefusesAndNamesIt(t *testing.T) {

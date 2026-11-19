@@ -43,8 +43,8 @@ func realRouteSync(t *testing.T) {
 
 // TestModelCommandGroup pins the `wt model` group as cobra serves it: bare
 // `wt model` points at `wt-model model` (TestBareWtModelPointsAtWtModel), an
-// unknown word under it is an error rather than a worktree name, `wt model
-// init` is the pointer stub (TestMovedCommandsPointAtWtModel; the command
+// unknown word under it is an error rather than a worktree name, `model
+// init` under it is the pointer stub (TestMovedCommandsPointAtWtModel; the command
 // itself is TestModelCommandGroupOnWtModel in cmd/wt-model), and the removed
 // `wt models` keeps its own message.
 func TestModelCommandGroup(t *testing.T) {
@@ -58,7 +58,7 @@ func TestModelCommandGroup(t *testing.T) {
 		t.Errorf("wt model bogus: err = %v, want an unknown-command error", err)
 	}
 	if _, err = runWT(t, "model", "init", "extra"); err == nil || !strings.Contains(err.Error(), "run 'wt-model model init'") {
-		t.Errorf("wt model init extra: err = %v, want the pointer to wt-model model init", err)
+		t.Errorf("model init extra under wt: err = %v, want the pointer to wt-model model init", err)
 	}
 	if _, err = runWT(t, "models"); err == nil || !strings.Contains(err.Error(), "wt models is removed") {
 		t.Errorf("wt models: err = %v, want the removed-subcommand message", err)

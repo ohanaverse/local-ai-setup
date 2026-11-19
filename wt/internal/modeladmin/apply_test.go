@@ -738,7 +738,7 @@ func TestPairingName(t *testing.T) {
 // id would have a space in it, or an empty half, is refused with the way
 // round it, and goes in under --id. Every other derived id comes from a name
 // a provider lists; a pairing's comes from the last segment of a path the
-// user typed, and an id with a space cannot be given to `wt -M`, `wt model
+// user typed, and an id with a space cannot be given to `wt -M`, `wt-model model
 // edit` or `wt-model model rm` without quoting it everywhere for ever.
 func TestAddAPairingWhoseSidesMakeNoUsableID(t *testing.T) {
 	path := scratchRegistry(t, "")
@@ -907,7 +907,7 @@ func TestAddCloudModelIsManual(t *testing.T) {
 // TestAddOllamaCloudTagIsCloud verifies an ollama model whose tag ends in
 // :cloud or -cloud is written with location = "cloud" when --location is not
 // given, and that an explicit location and a local tag are left alone.
-// Without the key the row inherits the ollama provider's "local", and wt
+// Without the key the row inherits the ollama provider's "local", and wt-model
 // model list shows a cloud model as a missing local one.
 func TestAddOllamaCloudTagIsCloud(t *testing.T) {
 	path := scratchRegistry(t, baseRegistry)

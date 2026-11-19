@@ -48,7 +48,7 @@ func serverListRig(t *testing.T) (*app, *fakeModelServer) {
 	return a, f
 }
 
-// runModelListCmd runs `wt model list args…`, returning stdout, stderr and the error.
+// runModelListCmd runs `model list args…` under wt, returning stdout, stderr and the error.
 func runModelListCmd(t *testing.T, a *app, args ...string) (string, string, error) {
 	t.Helper()
 	var out, errOut bytes.Buffer
@@ -185,8 +185,8 @@ func TestModelListServerPlainColumns(t *testing.T) {
 	}
 }
 
-// TestModelListWithoutServerIsAPointer pins the one rule of `wt model list`
-// after the registry listing moved to wt-model: without --server it does
+// TestModelListWithoutServerIsAPointer pins the one rule of `model list`
+// under wt after the registry listing moved to wt-model: without --server it does
 // nothing but point there, exit 1, so a script still running the old command
 // fails loudly instead of reading an empty inventory; --server stays the
 // session's catalog view (the three tests above).

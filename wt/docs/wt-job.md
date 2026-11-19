@@ -46,7 +46,7 @@ and with `--cancel` as
 ## Failure and recovery
 
 - **Unknown job.** The server keeps finished jobs only for a while and forgets
-  them all on a restart. Check the model itself with `wt model list`; start
+  them all on a restart. Check the model itself with `wt model list --server`; start
   it again with `wt start ID` (a start for a model whose start job is still
   running joins that job).
 - **Server unreachable.** Exit 1 with the server's address and what to fix
