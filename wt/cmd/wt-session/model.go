@@ -26,28 +26,10 @@ var seedEnv = config.DefaultSeedEnv
 var syncRoutesAfterWrite = realSyncRoutesAfterWrite
 
 // realSyncRoutesAfterWrite reloads the config (the registry just changed) and
-// reconciles the routes exactly as `wt litellm sync` does. It never fails the
-// command that wrote the registry: the write succeeded, and a sync that could
-// not run is a warning. No LiteLLM setup at all (no config.yaml) is not even
-// that. A redirected registry with no WT_LITELLM_CONFIG is refused by the
-// sync (litellm.ErrRegistryRedirected), and the refusal is the warning.
+// reconciles the routes exactly as `wt litellm sync` does
+// (litellm.SyncAfterWrite, with the probeInventory seam).
 func realSyncRoutesAfterWrite(out, errOut io.Writer) string {
-	if _, err := os.Stat(litellm.DefaultPath()); os.IsNotExist(err) {
-		// No LiteLLM here: nothing to sync, and no reason to probe providers.
-		return ""
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return "LiteLLM routes not synced: " + err.Error()
-	}
-	err = runLitellmSync(out, errOut, cfg, false, false)
-	switch {
-	case err == nil, errors.Is(err, litellm.ErrMissing):
-		return ""
-	case errors.Is(err, litellm.ErrRegistryRedirected):
-		return err.Error()
-	}
-	return "LiteLLM routes not synced: " + err.Error()
+	return litellm.SyncAfterWrite(out, errOut, probeInventory)
 }
 
 // modelCmd is the `wt model` group: bare, it opens `wt config` on the Models

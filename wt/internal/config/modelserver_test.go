@@ -89,6 +89,34 @@ token_file = "/t"
 	}
 }
 
+// TestPatchSaveNeverWritesASynthesizedAgent proves an editor save that hands
+// back every in-memory agent (the synthesized AllProviders ones included)
+// writes only the agents config.toml held, so a session save never turns a
+// synthesized all-providers agent into a real entry.
+func TestPatchSaveNeverWritesASynthesizedAgent(t *testing.T) {
+	path := sessionHome(t, "default_tag = \"code\"\n\n[[agents]]\nname = \"codex\"\nsupported_providers = [\"openrouter\"]\n")
+	cfg, err := LoadSession("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := cfg.AgentByName("claude"); err != nil || !a.AllProviders {
+		t.Fatalf("claude = %+v, %v", a, err)
+	}
+	if err := cfg.PatchSave(func(fresh *Config) { fresh.Agents = cfg.Agents }); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `name = "codex"`) {
+		t.Errorf("codex agent lost:\n%s", raw)
+	}
+	if strings.Contains(string(raw), `name = "claude"`) || strings.Contains(string(raw), `name = 'claude'`) {
+		t.Errorf("synthesized agent was written:\n%s", raw)
+	}
+}
+
 // TestLoadSessionMigratesAgentRefsInMemory proves the legacy google reference
 // reads as agy while the file on disk stays untouched.
 func TestLoadSessionMigratesAgentRefsInMemory(t *testing.T) {

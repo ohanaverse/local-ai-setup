@@ -9,6 +9,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modeview"
 )
 
 // TestServerTabParseErrorSaysTheErrorOnce pins that a config.toml that does
@@ -236,7 +237,7 @@ func TestServerTabNamesWhatACheckIsMissing(t *testing.T) {
 		{"token only", tok, "not checked: no url"},
 		{"neither", none, "not checked: no url and no token"},
 	} {
-		got := serverCheckLine(c.st).Text
+		got := modeview.ServerCheckLine(c.st.State).Text
 		if got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}

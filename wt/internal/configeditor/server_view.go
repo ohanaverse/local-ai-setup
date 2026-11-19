@@ -8,6 +8,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modeview"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
@@ -81,59 +82,6 @@ func (m *model) serverHints() []string {
 	}
 }
 
-// modeSource says where the effective mode came from.
-func modeSource(r modelclient.Resolution) string {
-	switch r.Source {
-	case modelclient.SourceEnvMode:
-		return "from WT_MODEL_MODE"
-	case modelclient.SourceEnvEndpoint:
-		return "from WT_MODEL_URL with a token"
-	case modelclient.SourceStored:
-		return "from config.toml"
-	case modelclient.SourceInferred:
-		return "inferred: a url or token is set"
-	}
-	return ""
-}
-
-// envNames splits State.EnvOverride into the variable names.
-func envNames(st modelsetup.State) []string {
-	if st.EnvOverride == "" {
-		return nil
-	}
-	return strings.Split(st.EnvOverride, ", ")
-}
-
-func hasEnv(st modelsetup.State, name string) bool {
-	for _, n := range envNames(st) {
-		if n == name {
-			return true
-		}
-	}
-	return false
-}
-
-// tokenLine is the token file and its state, as a word.
-func tokenLine(st modelsetup.State, home string) editorkit.Line {
-	t := st.Token
-	if t.Path == "" {
-		if hasEnv(st, "WT_MODEL_TOKEN") {
-			return editorkit.Line{Label: "token", Text: "from WT_MODEL_TOKEN (not shown)", Tone: editorkit.ToneNone}
-		}
-		return editorkit.Line{Label: "token", Text: "none set", Tone: editorkit.ToneDim}
-	}
-	path := editorkit.HomePath(t.Path, st.Host.Home, home)
-	switch {
-	case t.Loose:
-		return editorkit.Line{Label: "token", Text: path + "  loose: chmod 600 " + path, Tone: editorkit.ToneBad}
-	case t.Err != "":
-		return editorkit.Line{Label: "token", Text: path + "  problem: " + t.Err, Tone: editorkit.ToneBad}
-	case !t.Exists:
-		return editorkit.Line{Label: "token", Text: path + "  missing", Tone: editorkit.ToneBad}
-	}
-	return editorkit.Line{Label: "token", Text: path + "  ok", Tone: editorkit.ToneNone}
-}
-
 func pairLine(p modelsetup.PairState) editorkit.Line {
 	if p.Err != "" {
 		return editorkit.Line{Label: "pair", Text: "unreadable: " + editorkit.Scrub(p.Err), Tone: editorkit.ToneBad}
@@ -192,55 +140,6 @@ func agentLines(st modelsetup.State) []editorkit.Line {
 	return lines
 }
 
-// serverKindWord names how a ping failed.
-func serverKindWord(k modelsetup.ServerKind) string {
-	switch k {
-	case modelsetup.KindUnauthorized:
-		return "token refused"
-	case modelsetup.KindNotWtModel:
-		return "not a wt-model server"
-	case modelsetup.KindSkew:
-		return "api version differs"
-	case modelsetup.KindSchema:
-		return "schema differs"
-	}
-	return "unreachable"
-}
-
-func serverCheckLine(st modelsetup.State) editorkit.Line {
-	s := st.Server
-	switch {
-	case st.Resolution.Mode == modelclient.ModeNative:
-		return editorkit.Line{Label: "server", Text: "none in native mode", Tone: editorkit.ToneDim}
-	case !s.Checked && s.Message != "":
-		// A message that already says so (a url with an '@', a cancelled
-		// read) is not prefixed twice.
-		return editorkit.Line{Label: "server", Text: "not checked: " + editorkit.Scrub(strings.TrimPrefix(s.Message, "not checked: ")), Tone: editorkit.ToneDim}
-	case !s.Checked:
-		return editorkit.Line{Label: "server", Text: "not checked: " + missingForCheck(st), Tone: editorkit.ToneDim}
-	case s.OK:
-		return editorkit.Line{Label: "server", Text: fmt.Sprintf("ok: wt-model answers at %s (api %d, schema %d)", editorkit.Scrub(s.URL), s.API, s.Schema), Tone: editorkit.ToneNone}
-	}
-	return editorkit.Line{Label: "server", Text: "problem: " + serverKindWord(s.Kind) + ": " + editorkit.Scrub(s.Message), Tone: editorkit.ToneBad}
-}
-
-// missingForCheck says what a check of the server lacked: the url, the token
-// or both. A local server's url is the agent's listen address, never missing.
-func missingForCheck(st modelsetup.State) string {
-	noURL := st.Resolution.Mode != modelclient.ModeLocal && st.Config.Table.URL == "" && st.Server.URL == "" && !hasEnv(st, "WT_MODEL_URL")
-	t := st.Token
-	noToken := !(t.Path != "" && t.Exists && t.Err == "") && !hasEnv(st, "WT_MODEL_TOKEN")
-	switch {
-	case noURL && noToken:
-		return "no url and no token"
-	case noURL:
-		return "no url"
-	case noToken:
-		return "no token"
-	}
-	return "no url or no token"
-}
-
 // checkWord is a LiteLLM check's status as a word, and its tone.
 func checkWord(c modelsetup.Check) (string, editorkit.Tone) {
 	switch c.Status {
@@ -291,52 +190,20 @@ func litellmLines(st modelsetup.State) []editorkit.Line {
 // came from, the url, the token file, the pair, the agent, the server check,
 // the LiteLLM checks, the env-override line and the problems.
 func serverStatusLines(st modelsetup.State, home string) []editorkit.Line {
-	var lines []editorkit.Line
-	r := st.Resolution
-	switch {
-	case r.Mode != "":
-		lines = append(lines, editorkit.Line{Label: "mode", Text: string(r.Mode) + " (" + modeSource(r) + ")", Tone: editorkit.ToneNone})
-	case st.Config.ParseErr != "":
-		// The banner above says why, once.
-		lines = append(lines, editorkit.Line{Label: "mode", Text: "unknown: config.toml is not readable", Tone: editorkit.ToneWarn})
-	case r.Problem != "":
-		lines = append(lines, editorkit.Line{Label: "mode", Text: "problem: " + editorkit.Scrub(r.Problem), Tone: editorkit.ToneBad})
-	default:
-		lines = append(lines, editorkit.Line{Label: "mode", Text: "unset: choose one below", Tone: editorkit.ToneWarn})
-	}
-	url := st.Config.Table.URL
-	if url == "" {
-		url = "none set"
-	}
-	lines = append(lines, editorkit.Line{Label: "url", Text: editorkit.Scrub(url), Tone: editorkit.ToneNone})
+	lines := []editorkit.Line{modeview.ModeLine(st.State), modeview.URLLine(st.State)}
 	pair := pairLine(st.Pair)
 	if st.Config.ParseErr != "" {
 		pair = editorkit.Line{Label: "pair", Text: "not read", Tone: editorkit.ToneDim}
 	}
-	lines = append(lines, tokenLine(st, home), pair)
+	lines = append(lines, modeview.TokenLine(st.State, home), pair)
 	lines = append(lines, agentLines(st)...)
-	lines = append(lines, serverCheckLine(st))
+	lines = append(lines, modeview.ServerCheckLine(st.State))
 	lines = append(lines, litellmLines(st)...)
 	lines = append(lines, plistModeLines(st, home)...)
-	if names := envNames(st); len(names) > 0 {
-		lines = append(lines, editorkit.Line{Label: "env", Text: strings.Join(names, ", ") + " set: they override config.toml", Tone: editorkit.ToneWarn})
+	if env, ok := modeview.EnvLine(st.State); ok {
+		lines = append(lines, env)
 	}
-	var problems []string
-	if st.Config.TableErr != "" {
-		problems = append(problems, "[model-server]: "+st.Config.TableErr)
-	}
-	if st.Config.RestErr != "" {
-		problems = append(problems, "config.toml: "+st.Config.RestErr)
-	}
-	problems = append(problems, st.Config.Problems...)
-	for i, p := range problems {
-		label := ""
-		if i == 0 {
-			label = "problems"
-		}
-		lines = append(lines, editorkit.Line{Label: label, Text: editorkit.Scrub(p), Tone: editorkit.ToneBad})
-	}
-	return lines
+	return append(lines, modeview.ProblemLines(st.State)...)
 }
 
 // modeChoice is the mode choice: (x) on the chosen one, (-) on local where
@@ -481,7 +348,7 @@ func (m *model) serverPromptView(bar string, dim lipgloss.Style) string {
 		question = "Remove the LaunchAgent? [y/N]"
 	case promptSaveAnyway:
 		s := st.state.Server
-		text = "The check of " + editorkit.Scrub(s.URL) + " failed: " + serverKindWord(s.Kind) + ": " + editorkit.Scrub(s.Message) +
+		text = "The check of " + editorkit.Scrub(s.URL) + " failed: " + modeview.KindWord(s.Kind) + ": " + editorkit.Scrub(s.Message) +
 			". The server may be off; y stores the setup unchecked."
 		question = "Save anyway? [y/N]"
 	default:
