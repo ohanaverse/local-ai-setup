@@ -374,8 +374,8 @@ func (m *model) modelsDetailLines(sides bool) (id, path []string) {
 
 // modelsHints are the tab's key hints, fullest first.
 var modelsHints = []string{
-	"enter edit · n add · d remove · r refresh · / filter · tab next · q quit",
-	"enter · n · d · r · / · tab · q quit",
+	"enter edit · n add · d remove · r refresh · / filter · q quit",
+	"enter · n · d · r · / · q quit",
 }
 
 // modelsFrames are the tab's layouts, fullest first: the tab bar, the status,

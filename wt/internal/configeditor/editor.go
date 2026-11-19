@@ -373,15 +373,6 @@ func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// refuseHeldQuit calls off the discard a held quit carried: the agent edits
-// it was going to discard are still there and still unsaved, and go back to
-// being asked about.
-func (m *model) refuseHeldQuit() {
-	if m.discardHeld {
-		m.discardHeld, m.dirty = false, true
-	}
-}
-
 func (m *model) View() string {
 	if !m.ready {
 		return "Loading config..."
