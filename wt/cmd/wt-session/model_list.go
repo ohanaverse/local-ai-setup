@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
@@ -26,9 +27,9 @@ var probeInventory = localmodels.Inventory
 
 // modelListColumns are the text listing's columns. SIZE and PATH are the two
 // a narrow terminal gives up (fitModelList).
-var modelListColumns = []plainColumn{
-	{head: "MODEL"}, {head: "FAMILY"}, {head: "LOC"}, {head: "STATUS"}, {head: "RUNNING"},
-	{head: "SIZE", right: true}, {head: "PATH"},
+var modelListColumns = []cli.PlainColumn{
+	{Head: "MODEL"}, {Head: "FAMILY"}, {Head: "LOC"}, {Head: "STATUS"}, {Head: "RUNNING"},
+	{Head: "SIZE", Right: true}, {Head: "PATH"},
 }
 
 func modelListCmd(a *app) *cobra.Command {
@@ -154,13 +155,13 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 		return nil
 	}
 	cols, cells, dropped := fitModelList(rows, width)
-	fmt.Fprintln(out, renderPlainTable(cols, cells, width))
+	fmt.Fprintln(out, cli.RenderPlainTable(cols, cells, width))
 	// serve_args has no column: a registered mtplx model that carries any
 	// is named under the table, one line each.
 	for _, r := range rows {
 		if len(r.ServeArgs) > 0 {
 			// Registry text, like the id: no control sequence may reach the terminal.
-			fmt.Fprintf(out, "%s: serve_args %s\n", visibleID(r.ID), visibleID(strings.Join(r.ServeArgs, " ")))
+			fmt.Fprintf(out, "%s: serve_args %s\n", cli.VisibleID(r.ID), cli.VisibleID(strings.Join(r.ServeArgs, " ")))
 		}
 	}
 	if dropped != "" {
@@ -192,18 +193,18 @@ func noteMalformed(errOut io.Writer, cfg *config.Config) {
 		refused := m.ServeArgsRefused()
 		problems := slices.DeleteFunc(m.Malformed(), func(p string) bool { return slices.Contains(refused, p) })
 		if len(problems) > 0 {
-			fmt.Fprintf(errOut, "%s: %s; wt reads it as absent (%s)\n", visibleID(m.ID), strings.Join(problems, ", "), hint)
+			fmt.Fprintf(errOut, "%s: %s; wt reads it as absent (%s)\n", cli.VisibleID(m.ID), strings.Join(problems, ", "), hint)
 		}
 		if len(refused) > 0 {
 			fmt.Fprintf(errOut, "%s: %s; `wt start` refuses this model until it is fixed (%s, or `wt model edit %s --clear-serve-args`)\n",
-				visibleID(m.ID), strings.Join(refused, ", "), hint, visibleID(m.ID))
+				cli.VisibleID(m.ID), strings.Join(refused, ", "), hint, cli.VisibleID(m.ID))
 		}
 	}
 }
 
 // modelListMinKey is the least width the MODEL column is given before SIZE
 // is dropped to make room: enough for a short id beside its cells. A longer
-// id goes on a line of its own (renderPlainTable), never cut.
+// id goes on a line of its own (cli.RenderPlainTable), never cut.
 const modelListMinKey = 20
 
 // fitModelList picks the columns that fit width (0: no limit) and returns
@@ -212,14 +213,14 @@ const modelListMinKey = 20
 // modelListMinKey columns, or all it needs when every id is shorter than
 // that. The five columns that say what a row is are never
 // dropped. dropped names what was left out, "" when nothing was.
-func fitModelList(rows []modeladmin.Row, width int) (cols []plainColumn, cells [][]string, dropped string) {
+func fitModelList(rows []modeladmin.Row, width int) (cols []cli.PlainColumn, cells [][]string, dropped string) {
 	full := make([][]string, len(rows))
 	for i, r := range rows {
 		// The family is the registry's text and the path a directory's name:
 		// like the id, neither may carry a control sequence to the terminal.
 		full[i] = []string{
-			visibleID(r.ID), dash(visibleID(r.Family)), dash(r.Location), string(r.Status), r.Running,
-			tuilayout.FormatSize(r.Size), dash(visibleID(r.Path)),
+			cli.VisibleID(r.ID), cli.Dash(cli.VisibleID(r.Family)), cli.Dash(r.Location), string(r.Status), r.Running,
+			tuilayout.FormatSize(r.Size), cli.Dash(cli.VisibleID(r.Path)),
 		}
 	}
 	take := func(keep int) {
@@ -233,20 +234,13 @@ func fitModelList(rows []modeladmin.Row, width int) (cols []plainColumn, cells [
 	if width <= 0 {
 		return cols, cells, ""
 	}
-	if key, rest := plainTableWidth(cols, cells); key+rest <= width {
+	if key, rest := cli.PlainTableWidth(cols, cells); key+rest <= width {
 		return cols, cells, ""
 	}
 	take(6)
-	if key, rest := plainTableWidth(cols, cells); min(key, modelListMinKey)+rest <= width {
+	if key, rest := cli.PlainTableWidth(cols, cells); min(key, modelListMinKey)+rest <= width {
 		return cols, cells, "PATH"
 	}
 	take(5)
 	return cols, cells, "SIZE and PATH"
-}
-
-func dash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }

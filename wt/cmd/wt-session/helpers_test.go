@@ -342,7 +342,7 @@ func TestPickerSkippedOutsideTTY(t *testing.T) {
 	home := t.TempDir()
 	writeEmptyRegistry(t, home)
 
-	// Pipe stdin from /dev/null so isStdinTTY returns false.
+	// Pipe stdin from /dev/null so cli.IsStdinTTY returns false.
 	devnull, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatalf("open /dev/null: %v", err)

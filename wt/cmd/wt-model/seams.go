@@ -2,9 +2,8 @@ package main
 
 import (
 	"io"
-	"os"
 
-	"github.com/charmbracelet/x/term"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -45,7 +44,7 @@ func newHost() *host {
 		probeInventory: localmodels.Inventory,
 		seedEnv:        config.DefaultSeedEnv,
 		ollamaCaps:     modeladmin.OllamaCapabilities,
-		stdinTTY:       func() bool { return term.IsTerminal(os.Stdin.Fd()) },
+		stdinTTY:       cli.IsStdinTTY,
 		modeleditorRun: func(theme themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error) {
 			return modeleditor.Run(theme, cfg, cfgErr, o)
 		},

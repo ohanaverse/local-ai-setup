@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
@@ -11,7 +12,7 @@ import (
 
 // errCancelled is a "no" at the one launch question: nothing launched. Like
 // every declined prompt it exits 3 (C9) and says so on one line.
-var errCancelled = declined("nothing was launched")
+var errCancelled = cli.Declined("nothing was launched")
 
 // rootClaimRelease removes this session's claim on the repository root. It is
 // set by holdLaunch and called through releaseRootClaim.

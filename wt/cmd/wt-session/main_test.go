@@ -1058,7 +1058,8 @@ func TestRootHelpListsModelSubcommands(t *testing.T) {
 // accidental Hidden: true. Cobra's own "__"-prefixed shell-completion
 // plumbing is hidden by design and skipped, as are stubs carrying
 // removedCmdAnnotation (a removed command that only says what replaced it,
-// e.g. `wt litellm expose` after #179) — those must stay out of help.
+// e.g. `wt litellm expose` after #179, and every moved-to-wt-model pointer
+// stub moved.go registers from movedCommands) — those must stay out of help.
 func TestNoWtCommandIsHidden(t *testing.T) {
 	root := rootCmdWith(testHooks())
 	if len(root.Commands()) == 0 {

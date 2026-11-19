@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
@@ -35,8 +36,8 @@ type cliAnswerer struct {
 // noTerminalReplace is P4's refusal for the replace question: what the start
 // would do, the flag that consents, and what did not happen.
 func noTerminalReplace(what string) error {
-	return exitcode.New(exitApprovalMissing,
-		fmt.Errorf("approval missing: %s; pass --replace to go ahead (%s); nothing was started", what, errNoTerminal), false)
+	return exitcode.New(cli.ExitApprovalMissing,
+		fmt.Errorf("approval missing: %s; pass --replace to go ahead (%s); nothing was started", what, cli.ErrNoTerminal), false)
 }
 
 // Replace asks whether the start may stop what occupies the slot: the models
@@ -106,8 +107,8 @@ func (a *cliAnswerer) Others(ctx context.Context, p modelapi.Problem) ([]string,
 func (a *cliAnswerer) ConfirmInUse(ctx context.Context, p modelapi.Problem) (bool, error) {
 	f, err := a.tty()
 	if err != nil {
-		return false, exitcode.New(exitApprovalMissing,
-			fmt.Errorf("approval missing: %s; pass --yes to go ahead (%s); nothing was stopped", p.Message, errNoTerminal), false)
+		return false, exitcode.New(cli.ExitApprovalMissing,
+			fmt.Errorf("approval missing: %s; pass --yes to go ahead (%s); nothing was stopped", p.Message, cli.ErrNoTerminal), false)
 	}
 	defer f.Close()
 	if _, err := fmt.Fprintf(f, "%s; stop it anyway? [y/N] ", p.Message); err != nil {
@@ -120,7 +121,7 @@ func (a *cliAnswerer) ConfirmInUse(ctx context.Context, p modelapi.Problem) (boo
 // "cancelled — <what is still true>", never "declined" (that stays the
 // answered no's word), with a decline's outcome (C9 exit 3, nothing changed).
 func cancelledQuestion(still string) error {
-	return exitcode.New(exitApprovalMissing, errors.New("cancelled — "+still), false)
+	return exitcode.New(cli.ExitApprovalMissing, errors.New("cancelled — "+still), false)
 }
 
 // askOnTTY reads an answer with read, raced against ctx: the read on the

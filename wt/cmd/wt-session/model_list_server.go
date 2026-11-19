@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
@@ -17,8 +18,8 @@ import (
 
 // modelListServerColumns are the plain table's columns. The last is the
 // number of client sessions using the model.
-var modelListServerColumns = []plainColumn{
-	{head: "MODEL"}, {head: "STATE"}, {head: "LOC"}, {head: "TIER"}, {head: "CLIENT SESSIONS", right: true},
+var modelListServerColumns = []cli.PlainColumn{
+	{Head: "MODEL"}, {Head: "STATE"}, {Head: "LOC"}, {Head: "TIER"}, {Head: "CLIENT SESSIONS", Right: true},
 }
 
 // modelListServerDoc is `wt model list --server --json`: the contract
@@ -91,9 +92,9 @@ func runModelListServer(ctx context.Context, out io.Writer, a *app, asJSON bool,
 	}
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
-		cells[i] = []string{visibleID(r.ID), dash(visibleID(r.State)), dash(visibleID(r.Location)), dash(visibleID(r.Tier)), strconv.Itoa(r.Sessions)}
+		cells[i] = []string{cli.VisibleID(r.ID), cli.Dash(cli.VisibleID(r.State)), cli.Dash(cli.VisibleID(r.Location)), cli.Dash(cli.VisibleID(r.Tier)), strconv.Itoa(r.Sessions)}
 	}
-	fmt.Fprintln(out, renderPlainTable(modelListServerColumns, cells, width))
+	fmt.Fprintln(out, cli.RenderPlainTable(modelListServerColumns, cells, width))
 	return nil
 }
 

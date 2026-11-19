@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"io"
 	"net/http"
@@ -105,15 +106,7 @@ func realCloudFetch(ctx context.Context, url string) ([]byte, error) {
 // names the flag that applies without asking. The terminal is opened through
 // openTTY (launch.go), the seam a test takes it away with.
 func promptCloudSync(question string) (bool, error) {
-	f, err := openTTY()
-	if err != nil {
-		return false, errors.New("there is no terminal to confirm on — rerun with --yes to apply without asking")
-	}
-	defer f.Close()
-	if _, err := fmt.Fprintf(f, "%s [y/N] ", question); err != nil {
-		return false, err
-	}
-	return askYesNo(f)
+	return cli.AskOnTTY(openTTY, question, errors.New("there is no terminal to confirm on — rerun with --yes to apply without asking"))
 }
 
 // cloudSyncOpts is the parsed command line.

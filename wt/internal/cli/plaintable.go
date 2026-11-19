@@ -1,6 +1,7 @@
-// The borderless, width-aware text table `wt stats` and `wt model list`
-// print. One renderer, so the two listings cannot drift apart.
-package main
+// The borderless, width-aware text table `wt stats`, `wt model list --server`
+// and `wt-model model list` print. One renderer, so the listings cannot drift
+// apart.
+package cli
 
 import (
 	"strings"
@@ -8,22 +9,22 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// plainColumn is one column of a plain table: its heading, and whether its
+// PlainColumn is one column of a plain table: its heading, and whether its
 // cells are right-aligned (numbers) or left-aligned (text).
-type plainColumn struct {
-	head  string
-	right bool
+type PlainColumn struct {
+	Head  string
+	Right bool
 }
 
 // plainGap separates two columns.
 const plainGap = "  "
 
-// plainTableWidth is what renderPlainTable needs to print every row on one
+// PlainTableWidth is what RenderPlainTable needs to print every row on one
 // line: key is the first column at its widest cell, rest is every other
 // column at its widest with the gaps between them (the gap after the key
 // included). A caller that can drop columns compares key+rest, or rest plus
 // the least key width it will accept, with the terminal's width.
-func plainTableWidth(cols []plainColumn, rows [][]string) (key, rest int) {
+func PlainTableWidth(cols []PlainColumn, rows [][]string) (key, rest int) {
 	widths := plainWidths(cols, rows)
 	return widths[0], plainRest(widths)
 }
@@ -37,10 +38,10 @@ func plainRest(widths []int) (rest int) {
 	return rest
 }
 
-func plainWidths(cols []plainColumn, rows [][]string) []int {
+func plainWidths(cols []PlainColumn, rows [][]string) []int {
 	widths := make([]int, len(cols))
 	for i, c := range cols {
-		widths[i] = lipgloss.Width(c.head)
+		widths[i] = lipgloss.Width(c.Head)
 	}
 	for _, r := range rows {
 		for i, c := range r {
@@ -50,7 +51,7 @@ func plainWidths(cols []plainColumn, rows [][]string) []int {
 	return widths
 }
 
-// renderPlainTable lays rows out without borders, each column sized to its
+// RenderPlainTable lays rows out without borders, each column sized to its
 // widest cell. The first column is the row's key (a model id): it is never
 // truncated, because it is what a reader copies into another command.
 //
@@ -63,12 +64,12 @@ func plainWidths(cols []plainColumn, rows [][]string) []int {
 //
 // When the other columns alone are wider than the terminal, the lines are
 // longer than the terminal and it wraps them; a caller that can drop columns
-// does so first (plainTableWidth). No line ends in a space.
-func renderPlainTable(cols []plainColumn, rows [][]string, width int) string {
+// does so first (PlainTableWidth). No line ends in a space.
+func RenderPlainTable(cols []PlainColumn, rows [][]string, width int) string {
 	widths := plainWidths(cols, rows)
 	rest := plainRest(widths)
 	if width > 0 && widths[0]+rest > width {
-		widths[0] = max(width-rest, lipgloss.Width(cols[0].head))
+		widths[0] = max(width-rest, lipgloss.Width(cols[0].Head))
 	}
 
 	var b strings.Builder
@@ -79,7 +80,7 @@ func renderPlainTable(cols []plainColumn, rows [][]string, width int) string {
 		first := widths[0]
 		if len(c) > 1 {
 			first += len(plainGap)
-			if cols[1].right {
+			if cols[1].Right {
 				first += widths[1] - lipgloss.Width(c[1])
 			}
 		}
@@ -95,12 +96,12 @@ func renderPlainTable(cols []plainColumn, rows [][]string, width int) string {
 				l.WriteString(strings.Repeat(" ", first-lipgloss.Width(key)))
 			} else {
 				l.WriteString(plainGap)
-				if cols[j].right {
+				if cols[j].Right {
 					l.WriteString(strings.Repeat(" ", pad))
 				}
 			}
 			l.WriteString(c[j])
-			if !cols[j].right {
+			if !cols[j].Right {
 				l.WriteString(strings.Repeat(" ", pad))
 			}
 		}
@@ -108,7 +109,7 @@ func renderPlainTable(cols []plainColumn, rows [][]string, width int) string {
 	}
 	heads := make([]string, len(cols))
 	for i, c := range cols {
-		heads[i] = c.head
+		heads[i] = c.Head
 	}
 	line(heads)
 	for _, r := range rows {

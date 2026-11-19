@@ -13,6 +13,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
@@ -56,7 +57,7 @@ func stillUnlessTyped(err error, still string) error {
 // stdin is redirected, a script is never asked (#424).
 func interactiveTTY() (*os.File, error) {
 	if !stdinTTY() {
-		return nil, errNoTerminal
+		return nil, cli.ErrNoTerminal
 	}
 	return openTTY()
 }
@@ -170,11 +171,11 @@ func (a *stopAnswerer) ConfirmInUse(ctx context.Context, p modelapi.Problem) (bo
 	}
 	f, err := a.tty()
 	if err != nil {
-		why := errNoTerminal.Error()
-		if !errors.Is(err, errNoTerminal) {
+		why := cli.ErrNoTerminal.Error()
+		if !errors.Is(err, cli.ErrNoTerminal) {
 			why = "could not open the terminal: " + err.Error()
 		}
-		return false, exitcode.New(exitApprovalMissing,
+		return false, exitcode.New(cli.ExitApprovalMissing,
 			fmt.Errorf("approval missing: %s; pass --yes to stop it anyway (%s); nothing was stopped", what, why), false)
 	}
 	defer f.Close()
@@ -247,7 +248,7 @@ func runStopRemote(ctx context.Context, out io.Writer, ms *modelSession, arg str
 		fmt.Fprintf(osStderr, "wt: %s: %v\n", cleanup.Flatten(id), err)
 		failed++
 		var det *modelclient.DetachedError
-		if exitcode.Of(err) == exitApprovalMissing {
+		if exitcode.Of(err) == cli.ExitApprovalMissing {
 			declinedN++ // declined, or approval missing: nothing changed
 		}
 		if errors.As(err, &det) {
@@ -266,7 +267,7 @@ func runStopRemote(ctx context.Context, out io.Writer, ms *modelSession, arg str
 	if failed > 0 {
 		code := 2
 		if stopped == 0 && declinedN == failed {
-			code = exitApprovalMissing // nothing changed: nothing stopped, every stop declined
+			code = cli.ExitApprovalMissing // nothing changed: nothing stopped, every stop declined
 		}
 		return exitcode.New(code, fmt.Errorf("%d of %d stops failed", failed, len(ids)), false)
 	}

@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 )
 
@@ -42,15 +42,7 @@ var osStderr io.Writer = os.Stderr
 // stdin: the non-TUI path routinely runs with a piped stdin, and a piped
 // answer must never be able to authorise stopping a running model.
 func promptReplace(question string) (bool, error) {
-	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return false, errNoTerminal
-	}
-	defer f.Close()
-	if _, err := fmt.Fprintf(f, "%s [y/N] ", question); err != nil {
-		return false, err
-	}
-	return askYesNo(f)
+	return cli.AskOnTTY(func() (*os.File, error) { return os.OpenFile("/dev/tty", os.O_RDWR, 0) }, question, cli.ErrNoTerminal)
 }
 
 // askYesNo reads one line from r and applies the confirm rule: only an
@@ -58,7 +50,7 @@ func promptReplace(question string) (bool, error) {
 // a refusal. It is the parse half of promptReplace, split out so tests can
 // drive it without a terminal.
 func askYesNo(r io.Reader) (bool, error) {
-	return askYesNoDefault(r, false)
+	return cli.ReadYesNo(r, false)
 }
 
 // askReplace resolves a replacement question: with a TTY it asks on
@@ -67,7 +59,7 @@ func askYesNo(r io.Reader) (bool, error) {
 // guessing.
 func askReplace(question string) (bool, error) {
 	if !stdinTTY() {
-		return false, errNoTerminal
+		return false, cli.ErrNoTerminal
 	}
 	return confirmReplace(question)
 }

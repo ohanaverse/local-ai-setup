@@ -12,7 +12,7 @@ import (
 )
 
 // stdinTTY is a test seam wrapping the real TTY check, mirroring cmd/wt-session's
-// isStdinTTY/stdinTTY pattern. PromptRun's r/w are injected for tests, but
+// stdinTTY seam over cli.IsStdinTTY. PromptRun's r/w are injected for tests, but
 // TTY-ness is a property of the real process's stdin, not of whatever
 // io.Reader a test passes in — so it needs its own seam rather than
 // inferring TTY-ness from r.

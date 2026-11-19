@@ -223,7 +223,7 @@ go vet ./...       # Vet
 | `cmd/wt-session/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
 | `cmd/wt-session/app.go` | Shared dependency struct: loads and validates config, the active theme and `profiles.toml` once (no model discovery) |
 | `cmd/wt-session/commands.go` | Subcommand constructors: `rotate` (debug helper) |
-| `cmd/wt-session/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `borderStyle`, `renderTable`, guard helpers (`checkGuardStatus`, `removeGuard`), `isStdinTTY`, `configError`, `pickerNeedsTTYError` |
+| `cmd/wt-session/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `borderStyle`, `renderTable`, guard helpers (`checkGuardStatus`, `removeGuard`), the `stdinTTY` seam (over `cli.IsStdinTTY`), `configError`, `pickerNeedsTTYError` |
 | `cmd/wt-session/launch.go` | Non-TUI launch helpers: `runAgentCmd`, `applyProfileForLaunch`; the launch on the model server is `launch_remote.go` |
 | `internal/config/` | Config loading, model registry types (joined from `registry.toml`), validation, secrets, legacy migration |
 | `internal/rotation/` | Tag-based model rotation with snapshot-based model set and persistent state |
