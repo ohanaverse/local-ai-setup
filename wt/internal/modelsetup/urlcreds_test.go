@@ -11,8 +11,21 @@ import (
 )
 
 // The url-rule property tests over the session half (plan, apply, observe)
-// live in internal/modelmode's urlcreds_test.go; this file keeps the two
-// surfaces only modelsetup builds: Apply's Recovery and the local plan.
+// live in internal/modelmode's urlcreds_test.go; this file keeps the
+// surfaces modelsetup builds itself: its Apply loop, its Observe, and the
+// plans it formats (local, and native/remote through its plan hook).
+
+// The local plan's fixture: where wt-model is found and the LiteLLM pair url.
+const (
+	atBinary  = "/Users/user_name/.local/bin/wt-model"
+	atPairURL = "http://localhost:4000"
+)
+
+// atPlanTexts are fixed texts of the plans' own (the fixture's paths and
+// urls, never a piece of the hostile url) that hold short words a hostile
+// url's tokens match ("http", "8787", "path"); they are taken out of a
+// plan's Format, longest first, before it is searched, like benign.test:9.
+var atPlanTexts = []string{atPairURL, "http://" + DefaultListen, DefaultListen, "PATH="}
 
 // hostileAtURLs feed TestNoPieceOfAnAtURLReachesAnyOutput: every earlier
 // bypass of the span-cutting design, with distinctive user and password
@@ -92,29 +105,79 @@ func modelclientUnreachable(raw string) error {
 	return &modelclient.UnreachableError{Addr: addr, Reason: reason}
 }
 
-// atURLSurfaces runs raw through the outputs only modelsetup builds and
-// returns each by name: Apply's Recovery after a config step whose url holds
-// the '@', and Plan.Format of a local plan built from a State that observed
-// the stored url (pinged as written, its failure quoting the parsed host).
-// modelmode's copy covers every session-side surface.
+// atURLSurfaces runs raw through the outputs modelsetup builds itself and
+// returns each by name: Apply's own loop (its error, progress lines and
+// Recovery) after a config step whose url holds the '@'; modelsetup.Observe
+// (which adds the pair and LiteLLM reads) of a stored, an entered and an
+// env url, each pinged as written, its failure quoting the parsed host; and
+// Plan.Format of the remote and native plans (through modelsetup's plan
+// hook) and of the local plan (planLocal and its notes) built from the
+// State that observed the stored url. The local plan's fixture has a
+// wt-model binary on PATH and the pair set, so it plans; a refusal there is
+// an error, never a silently missing surface. modelmode's copy covers the
+// session-side surfaces.
 func atURLSurfaces(t *testing.T, raw string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
+	pingErr := modelclientUnreachable(raw)
 
 	f := apEnv(t)
-	r, _ := apply(t, f, Plan{Plan: modelmode.Plan{Want: modelmode.Desired{Mode: modelclient.ModeRemote, URL: raw, TokenFile: plRemoteTok}, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}})
+	r, lines := apply(t, f, Plan{Plan: modelmode.Plan{Want: modelmode.Desired{Mode: modelclient.ModeRemote, URL: raw, TokenFile: plRemoteTok}, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}})
 	if r.Failed == nil || f.called("Config.Update") {
 		t.Errorf("%q: Apply wrote config.toml (Failed %+v)", raw, r.Failed)
 	}
+	if r.Err == nil {
+		t.Errorf("%q: Apply gave no error", raw)
+	} else {
+		out["Apply error"] = r.Err.Error()
+	}
 	out["Apply recovery"] = r.Recovery
+	out["Apply lines"] = strings.Join(lines, "\n")
 
+	// A stored url, pinged as written, on a host where the local plan can
+	// be built: wt-model on PATH and the LiteLLM pair set.
 	f = obsConfigured(t)
 	f.configFile.Table.Mode, f.configFile.Table.URL = "remote", raw
-	f.pingErr = modelclientUnreachable(raw)
+	f.pingErr = pingErr
+	f.paths["wt-model"] = atBinary
+	f.pair.URL, f.pair.APIKey = atPairURL, obsFakeKey
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}); err == nil {
-		out["Format local"] = p.Format()
+	out["stored: Server.URL"] = st.Server.URL
+	out["stored: Server.Message"] = st.Server.Message
+	out["stored: Config.Table.URL"] = st.Config.Table.URL
+	out["stored: Problems"] = strings.Join(st.Config.Problems, "\n")
+	for _, want := range []Desired{
+		{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "benign.test:9", PastedToken: plPasted, SaveUnchecked: true}},
+		{Desired: modelmode.Desired{Mode: modelclient.ModeNative}},
+		{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}},
+	} {
+		p, err := BuildPlan(st, want)
+		if err != nil {
+			t.Errorf("%q: the %s plan refused, so its Format is not checked: %v", raw, want.Mode, err)
+			continue
+		}
+		got := strings.ReplaceAll(p.Format(), "benign.test:9", "")
+		for _, fixed := range atPlanTexts {
+			got = strings.ReplaceAll(got, fixed, "")
+		}
+		out["Format "+string(want.Mode)] = got
 	}
+
+	// An entered url with a token, its check failing.
+	f = obsConfigured(t)
+	f.pingErr = pingErr
+	st = Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")}})
+	out["entered: Server.URL"] = st.Server.URL
+	out["entered: Server.Message"] = st.Server.Message
+
+	// WT_MODEL_URL, its check failing.
+	f = obsConfigured(t)
+	f.configFile.Table.Mode, f.configFile.Table.URL = "remote", ""
+	f.env["WT_MODEL_URL"] = raw
+	f.pingErr = pingErr
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	out["env: Server.URL"] = st.Server.URL
+	out["env: Server.Message"] = st.Server.Message
 	return out
 }
 
