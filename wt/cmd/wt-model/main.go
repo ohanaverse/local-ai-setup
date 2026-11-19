@@ -24,6 +24,12 @@ var version = "0.1.0"
 // rootCmd builds the wt-model command tree; mk supplies the server's
 // dependencies.
 func rootCmd(mk depsFactory) *cobra.Command {
+	return rootCmdWith(mk, newHost())
+}
+
+// rootCmdWith is rootCmd over a given host: tests hand in one whose seams
+// reach nothing on the machine.
+func rootCmdWith(mk depsFactory, h *host) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "wt-model",
 		Short:         "Serve wt's models and administer the registry, routes and this machine's setup",
@@ -34,7 +40,6 @@ func rootCmd(mk depsFactory) *cobra.Command {
 	root.SetVersionTemplate("wt-model {{.Version}}\n")
 	// One host config for the whole tree: every admin command reads the
 	// registry through the same h.
-	h := &host{}
 	root.AddCommand(serveCmd(mk), litellmCmd(), modelCmd(h))
 	return root
 }

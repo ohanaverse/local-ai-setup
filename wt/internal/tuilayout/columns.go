@@ -157,7 +157,7 @@ func fitColumns(l *list.Model, width int) {
 // the one blank line under the header, or the headings stand two columns
 // right of their cells. TitleRoom and Fit count on exactly this title bar, so
 // every table-backed list is styled here and nowhere else: the launcher's
-// pickers and the Models tab of `wt config` cannot drift apart.
+// pickers and the Models screen (`wt-model model`) cannot drift apart.
 func StyleTableTitle(l *list.Model, dim lipgloss.TerminalColor) {
 	l.Styles.Title = lipgloss.NewStyle().Foreground(dim)
 	l.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 0)

@@ -18,17 +18,18 @@ import (
 // tab reaches the machine the same way the commands do.
 func TestWtModelModelOpensTheModelsTab(t *testing.T) {
 	modelHome(t, writeRegistry)
-	stubStdinTTY(t, true)
-	call := stubModelEditor(t, modeleditor.Result{}, nil)
-	syncs := stubRouteSync(t, "")
+	h := testHost()
+	h.stdinTTY = func() bool { return true }
+	call := stubModelEditor(h, modeleditor.Result{}, nil)
+	syncs := stubRouteSync(h, "")
 	// Each seam is given an answer no real function would give, and the
 	// functions the tab was handed are then asked: non-nil alone would pass
 	// localmodels.Inventory handed over directly, and the tab would probe
 	// the developer's providers under this package's tests.
-	stubProbeInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{{ModelID: "marker/probe"}}})
-	stubSeedEnv(t, config.SeedEnv{OnPath: onPath("marker-seed")})
-	stubOllamaCaps(t, map[string]any{"marker_caps": true}, nil)
-	if _, _, err := execWTModel(t, "model"); err != nil {
+	stubProbeInventory(h, localmodels.Snapshot{Entries: []localmodels.Entry{{ModelID: "marker/probe"}}})
+	stubSeedEnv(h, config.SeedEnv{OnPath: onPath("marker-seed")})
+	stubOllamaCaps(h, map[string]any{"marker_caps": true}, nil)
+	if _, _, err := execWTModel(t, h, "model"); err != nil {
 		t.Fatal(err)
 	}
 	if !call.called || call.opts.StartTab != modeleditor.TabModels {
@@ -59,23 +60,24 @@ func TestWtModelModelOpensTheModelsTab(t *testing.T) {
 // would restart the proxy once for every model added in a sitting.
 func TestWtModelModelSyncsRoutesOnceOnExit(t *testing.T) {
 	modelHome(t, writeRegistry)
-	stubStdinTTY(t, true)
+	h := testHost()
+	h.stdinTTY = func() bool { return true }
 
-	stubModelEditor(t, modeleditor.Result{}, nil)
-	syncs := stubRouteSync(t, "")
-	if _, _, err := execWTModel(t, "model"); err != nil || *syncs != 0 {
+	stubModelEditor(h, modeleditor.Result{}, nil)
+	syncs := stubRouteSync(h, "")
+	if _, _, err := execWTModel(t, h, "model"); err != nil || *syncs != 0 {
 		t.Errorf("nothing changed: err = %v, syncs = %d; want no sync", err, *syncs)
 	}
-	stubModelEditor(t, modeleditor.Result{RegistryChanged: true}, nil)
-	syncs = stubRouteSync(t, "LiteLLM routes not synced: proxy config is read-only")
-	_, errOut, err := execWTModel(t, "model")
+	stubModelEditor(h, modeleditor.Result{RegistryChanged: true}, nil)
+	syncs = stubRouteSync(h, "LiteLLM routes not synced: proxy config is read-only")
+	_, errOut, err := execWTModel(t, h, "model")
 	if err != nil || *syncs != 1 || !strings.Contains(errOut, "warning: LiteLLM routes not synced: proxy config is read-only") {
 		t.Errorf("registry changed: err = %v, syncs = %d, stderr = %q; want one sync and its warning", err, *syncs, errOut)
 	}
 
-	stubModelEditor(t, modeleditor.Result{RegistryChanged: true}, errors.New("terminal went away"))
-	syncs = stubRouteSync(t, "")
-	if _, _, err := execWTModel(t, "model"); err == nil || *syncs != 1 {
+	stubModelEditor(h, modeleditor.Result{RegistryChanged: true}, errors.New("terminal went away"))
+	syncs = stubRouteSync(h, "")
+	if _, _, err := execWTModel(t, h, "model"); err == nil || *syncs != 1 {
 		t.Errorf("screen failed after a write: err = %v, syncs = %d; want the error and still one sync", err, *syncs)
 	}
 }
@@ -88,17 +90,18 @@ func TestWtModelModelSyncsRoutesOnceOnExit(t *testing.T) {
 // touched and the user is told why; named, that file is the one synced. The
 // exit status is 0 either way: the registry change was made.
 func TestWtModelModelExitSyncUnderARedirectedRegistry(t *testing.T) {
-	setup := func(t *testing.T) (registry, defaultYAML string) {
-		registry, defaultYAML = redirectedRegistry(t, writeRegistry)
-		stubStdinTTY(t, true)
+	setup := func(t *testing.T) (h *host, registry, defaultYAML string) {
+		h = testHost()
+		registry, defaultYAML = redirectedRegistry(t, h, writeRegistry)
+		h.stdinTTY = func() bool { return true }
 		// The screen itself needs a terminal; what it reports is a registry
 		// its Models tab wrote.
-		stubModelEditor(t, modeleditor.Result{RegistryChanged: true}, nil)
-		return registry, defaultYAML
+		stubModelEditor(h, modeleditor.Result{RegistryChanged: true}, nil)
+		return h, registry, defaultYAML
 	}
 	t.Run("config.yaml not named", func(t *testing.T) {
-		registry, defaultYAML := setup(t)
-		out, errOut, err := execWTModel(t, "model")
+		h, registry, defaultYAML := setup(t)
+		out, errOut, err := execWTModel(t, h, "model")
 		if err != nil {
 			t.Fatalf("the registry was written, so the command must exit 0: %v", err)
 		}
@@ -113,13 +116,13 @@ func TestWtModelModelExitSyncUnderARedirectedRegistry(t *testing.T) {
 		}
 	})
 	t.Run("config.yaml named", func(t *testing.T) {
-		_, defaultYAML := setup(t)
+		h, _, defaultYAML := setup(t)
 		scratchYAML := filepath.Join(t.TempDir(), "config.yaml")
 		if err := os.WriteFile(scratchYAML, []byte("model_list: []\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("WT_LITELLM_CONFIG", scratchYAML)
-		out, errOut, err := execWTModel(t, "model")
+		out, errOut, err := execWTModel(t, h, "model")
 		if err != nil || strings.Contains(out+errOut, "warning") {
 			t.Fatalf("wt-model model = %q, %q, %v; want a clean sync", out, errOut, err)
 		}
@@ -137,9 +140,10 @@ func TestWtModelModelExitSyncUnderARedirectedRegistry(t *testing.T) {
 // is needed (and which commands work without one).
 func TestWtModelModelWithoutATerminalSaysSo(t *testing.T) {
 	modelHome(t, writeRegistry)
-	stubStdinTTY(t, false)
-	call := stubModelEditor(t, modeleditor.Result{}, nil)
-	_, _, err := execWTModel(t, "model")
+	h := testHost()
+	h.stdinTTY = func() bool { return false }
+	call := stubModelEditor(h, modeleditor.Result{}, nil)
+	_, _, err := execWTModel(t, h, "model")
 	if err == nil || !strings.HasPrefix(err.Error(), "wt-model model needs a terminal") {
 		t.Errorf("err = %v, want it to say wt-model model needs a terminal", err)
 	}
@@ -151,9 +155,10 @@ func TestWtModelModelWithoutATerminalSaysSo(t *testing.T) {
 // TestBareWtModelStillPrintsHelp pins bare `wt-model`: cobra's help, naming
 // every command (model included) under the new root Short, and no screen.
 func TestBareWtModelStillPrintsHelp(t *testing.T) {
-	stubStdinTTY(t, true)
-	call := stubModelEditor(t, modeleditor.Result{}, nil)
-	out, _, err := execWTModel(t)
+	h := testHost()
+	h.stdinTTY = func() bool { return true }
+	call := stubModelEditor(h, modeleditor.Result{}, nil)
+	out, _, err := execWTModel(t, h)
 	if err != nil {
 		t.Fatalf("bare wt-model: %v", err)
 	}

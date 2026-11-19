@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -19,28 +20,42 @@ import (
 // testmain_test.go): the Models screen and its route sync moved here, and
 // their tests with them.
 
+// testHost is a host whose seams reach nothing on the developer's machine:
+// the probe reads on-disk state only, no ollama is run, nothing is seeded
+// from PATH, stdin is no terminal, the Models screen cannot open and a
+// registry write's route sync reports that it was not stubbed. A test
+// replaces the fields it exercises; each test owns its host, so nothing is
+// shared between parallel tests.
+func testHost() *host {
+	h := newHost()
+	h.probeInventory = localmodels.OnDiskSnapshotForTest
+	h.ollamaCaps = func(*config.Config, string) (map[string]any, error) {
+		return nil, errors.New("ollamaCaps not stubbed in this test")
+	}
+	h.seedEnv = func() config.SeedEnv { return config.SeedEnv{} }
+	h.syncRoutesAfterWrite = func(io.Writer, io.Writer) string {
+		return "syncRoutesAfterWrite not stubbed in this test"
+	}
+	h.stdinTTY = func() bool { return false }
+	h.modeleditorRun = func(themes.Theme, *config.Config, error, modeleditor.Options) (modeleditor.Result, error) {
+		return modeleditor.Result{}, errors.New("the Models screen is not stubbed in this test")
+	}
+	return h
+}
+
 // execWTModel runs `wt-model <args>` over the real root tree (as main builds
-// it) with the two streams separate, and returns them with the command's
-// error.
-func execWTModel(t *testing.T, args ...string) (stdout, stderr string, err error) {
+// it) on host h, with the two streams separate, and returns them with the
+// command's error.
+func execWTModel(t *testing.T, h *host, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	asWTModel(t)
-	cmd := rootCmd(fakeDeps)
+	cmd := rootCmdWith(fakeDeps, h)
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
 	err = cmd.ExecuteContext(t.Context())
 	return out.String(), errOut.String(), err
-}
-
-// stubStdinTTY makes wt-model see a terminal on stdin (tty true) or none,
-// until the test ends.
-func stubStdinTTY(t *testing.T, tty bool) {
-	t.Helper()
-	old := stdinTTY
-	stdinTTY = func() bool { return tty }
-	t.Cleanup(func() { stdinTTY = old })
 }
 
 // editorCall records one run of the Models screen.
@@ -51,31 +66,25 @@ type editorCall struct {
 	opts   modeleditor.Options
 }
 
-// stubModelEditor replaces the Models screen (which needs a terminal) with
+// stubModelEditor replaces h's Models screen (which needs a terminal) with
 // one that records how it was opened and returns res and err.
-func stubModelEditor(t *testing.T, res modeleditor.Result, err error) *editorCall {
-	t.Helper()
+func stubModelEditor(h *host, res modeleditor.Result, err error) *editorCall {
 	call := &editorCall{}
-	old := modeleditorRun
-	modeleditorRun = func(_ themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error) {
+	h.modeleditorRun = func(_ themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error) {
 		*call = editorCall{called: true, cfg: cfg, cfgErr: cfgErr, opts: o}
 		return res, err
 	}
-	t.Cleanup(func() { modeleditorRun = old })
 	return call
 }
 
-// stubRouteSync replaces the route sync that follows a registry write with
-// one that records its calls and returns warning.
-func stubRouteSync(t *testing.T, warning string) *int {
-	t.Helper()
+// stubRouteSync replaces h's route sync with one that records its calls and
+// returns warning.
+func stubRouteSync(h *host, warning string) *int {
 	calls := 0
-	old := syncRoutesAfterWrite
-	syncRoutesAfterWrite = func(io.Writer, io.Writer) string {
+	h.syncRoutesAfterWrite = func(io.Writer, io.Writer) string {
 		calls++
 		return warning
 	}
-	t.Cleanup(func() { syncRoutesAfterWrite = old })
 	return &calls
 }
 
@@ -83,42 +92,30 @@ func stubRouteSync(t *testing.T, warning string) *int {
 // It stays off the machine: no provider is probed (an empty inventory) and
 // the proxy restart is `true`. The caller decides which config.yaml, if any,
 // the sync can reach.
-func realRouteSync(t *testing.T) {
+func realRouteSync(t *testing.T, h *host) {
 	t.Helper()
-	old := syncRoutesAfterWrite
-	syncRoutesAfterWrite = realSyncRoutesAfterWrite
-	t.Cleanup(func() { syncRoutesAfterWrite = old })
-	stubProbeInventory(t, localmodels.Snapshot{})
+	h.syncRoutesAfterWrite = h.realSyncRoutesAfterWrite
+	stubProbeInventory(h, localmodels.Snapshot{})
 	t.Setenv("WT_LITELLM_RESTART_CMD", "true")
 }
 
-// stubProbeInventory makes the host commands see snap for the duration of a
-// test; the seam is restored on cleanup.
-func stubProbeInventory(t *testing.T, snap localmodels.Snapshot) {
-	t.Helper()
-	old := probeInventory
-	probeInventory = func(*config.Config) localmodels.Snapshot { return snap }
-	t.Cleanup(func() { probeInventory = old })
+// stubProbeInventory makes h see snap as the inventory.
+func stubProbeInventory(h *host, snap localmodels.Snapshot) {
+	h.probeInventory = func(*config.Config) localmodels.Snapshot { return snap }
 }
 
-// stubSeedEnv makes an add seed for the machine env describes.
-func stubSeedEnv(t *testing.T, env config.SeedEnv) {
-	t.Helper()
-	old := seedEnv
-	seedEnv = func() config.SeedEnv { return env }
-	t.Cleanup(func() { seedEnv = old })
+// stubSeedEnv makes an add through h seed for the machine env describes.
+func stubSeedEnv(h *host, env config.SeedEnv) {
+	h.seedEnv = func() config.SeedEnv { return env }
 }
 
-// stubOllamaCaps answers the capability lookup and counts its calls.
-func stubOllamaCaps(t *testing.T, info map[string]any, err error) *int {
-	t.Helper()
+// stubOllamaCaps answers h's capability lookup and counts its calls.
+func stubOllamaCaps(h *host, info map[string]any, err error) *int {
 	calls := 0
-	old := ollamaCaps
-	ollamaCaps = func(*config.Config, string) (map[string]any, error) {
+	h.ollamaCaps = func(*config.Config, string) (map[string]any, error) {
 		calls++
 		return info, err
 	}
-	t.Cleanup(func() { ollamaCaps = old })
 	return &calls
 }
 
@@ -202,7 +199,7 @@ func mustRead(t *testing.T, path string) string {
 // is the real one and ollama answers its probe with nothing pulled, so the
 // sync has no provider to warn about. It returns the registry's path and the
 // default config.yaml's.
-func redirectedRegistry(t *testing.T, content string) (registry, defaultYAML string) {
+func redirectedRegistry(t *testing.T, h *host, content string) (registry, defaultYAML string) {
 	t.Helper()
 	home := t.TempDir()
 	registry = filepath.Join(home, "scratch", "registry.toml")
@@ -221,7 +218,7 @@ func redirectedRegistry(t *testing.T, content string) (registry, defaultYAML str
 	t.Setenv("WT_LITELLM_CONFIG", "")
 	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
 	t.Setenv("OPENROUTER_API_KEY", "sk-test-not-a-key")
-	realRouteSync(t)
-	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
+	realRouteSync(t, h)
+	stubProbeInventory(h, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
 	return registry, defaultYAML
 }

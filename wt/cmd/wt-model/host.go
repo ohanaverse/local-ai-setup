@@ -9,6 +9,9 @@ import (
 // (cmd/wt-session's app.hostConfig, trimmed to what wt-model needs): built
 // once in rootCmd and handed to every command that reads the registry.
 type host struct {
+	// seams are the per-call test hooks; see seams.go.
+	seams
+
 	// hostCfg is config.toml and registry.toml through config.Load, read on
 	// first use and cached; never nil once hostSet (a stand-in when the load
 	// failed). hostLoadErr is config.Load's error alone; hostCfgErr is that

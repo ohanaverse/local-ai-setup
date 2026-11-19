@@ -13,40 +13,50 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
-// The package-var seams of wt-model's admin commands (the documented
-// migrating exception to per-call seams): each is swapped by a test and
-// stubbed for the whole package in TestMain, so no test reaches the
-// developer's providers, PATH, ollama, terminal or config.yaml.
+// seams are the hooks of wt-model's admin commands, carried per call on the
+// host (rootCmd builds one) so parallel tests cannot leak stub state into
+// each other. newHost fills them with the real functions; a test builds its
+// host with testHost, whose seams reach nothing on the developer's machine.
+type seams struct {
+	// probeInventory is one inventory round of the local providers
+	// (localmodels.Inventory).
+	probeInventory func(*config.Config) localmodels.Snapshot
+	// seedEnv describes the machine a registry write seeds provider rows
+	// for: the configured agents, the providers they list, and what is on
+	// PATH.
+	seedEnv func() config.SeedEnv
+	// ollamaCaps is the best-effort capability lookup an add of an ollama
+	// model makes (modeladmin.OllamaCapabilities).
+	ollamaCaps func(*config.Config, string) (map[string]any, error)
+	// syncRoutesAfterWrite runs the one LiteLLM route sync that follows a
+	// registry write and returns a warning for the user, or "" when the
+	// routes are in step.
+	syncRoutesAfterWrite func(out, errOut io.Writer) string
+	// stdinTTY reports whether stdin is a terminal.
+	stdinTTY func() bool
+	// modeleditorRun opens the Models screen; a seam because it needs a
+	// terminal.
+	modeleditorRun func(theme themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error)
+}
 
-// probeInventory is one inventory round of the local providers
-// (localmodels.Inventory).
-var probeInventory = localmodels.Inventory
-
-// seedEnv describes the machine a registry write seeds provider rows for:
-// the configured agents, the providers they list, and what is on PATH.
-var seedEnv = config.DefaultSeedEnv
-
-// ollamaCaps is the best-effort capability lookup an add of an ollama model
-// makes (modeladmin.OllamaCapabilities).
-var ollamaCaps = modeladmin.OllamaCapabilities
+// newHost is the host of a real run: every seam is the real function.
+func newHost() *host {
+	h := &host{seams: seams{
+		probeInventory: localmodels.Inventory,
+		seedEnv:        config.DefaultSeedEnv,
+		ollamaCaps:     modeladmin.OllamaCapabilities,
+		stdinTTY:       func() bool { return term.IsTerminal(os.Stdin.Fd()) },
+		modeleditorRun: func(theme themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error) {
+			return modeleditor.Run(theme, cfg, cfgErr, o)
+		},
+	}}
+	h.syncRoutesAfterWrite = h.realSyncRoutesAfterWrite
+	return h
+}
 
 // realSyncRoutesAfterWrite reloads the config (the registry just changed) and
 // reconciles the routes exactly as `wt litellm sync` does
-// (litellm.SyncAfterWrite, with the probeInventory seam).
-func realSyncRoutesAfterWrite(out, errOut io.Writer) string {
-	return litellm.SyncAfterWrite(out, errOut, probeInventory)
-}
-
-// syncRoutesAfterWrite runs the one LiteLLM route sync that follows a
-// registry write and returns a warning for the user, or "" when the routes
-// are in step. A seam: unstubbed, a test that writes the registry would go on
-// to probe the developer's providers and rewrite their config.yaml.
-var syncRoutesAfterWrite = realSyncRoutesAfterWrite
-
-// stdinTTY reports whether stdin is a terminal.
-var stdinTTY = func() bool { return term.IsTerminal(os.Stdin.Fd()) }
-
-// modeleditorRun opens the Models screen; a seam because it needs a terminal.
-var modeleditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error) {
-	return modeleditor.Run(theme, cfg, cfgErr, o)
+// (litellm.SyncAfterWrite, with the host's probeInventory seam).
+func (h *host) realSyncRoutesAfterWrite(out, errOut io.Writer) string {
+	return litellm.SyncAfterWrite(out, errOut, h.probeInventory)
 }
