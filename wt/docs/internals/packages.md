@@ -20,8 +20,8 @@ What each file of `cmd/wt-session` and each package under `internal/` holds, in 
 | `cmd/wt-session/launch.go` | `runAgentCmd` (every plain launch claims the worktree the agent runs in here through `rootclaim.HoldLaunch`, released on every exit; `runSlotAgentCmd` in `slot_launch.go` is the slot twin) and its `runTail` (`End`, `PriceNote`), `applyProfileForLaunch`; the launch itself is `launch_remote.go` (`launchFilteredRemote`, `launchCommand`) |
 | `cmd/wt-session/stats.go` | `wt stats` — read-only report: the survey table over `survey.jsonl`, then the usage table |
 | `cmd/wt-session/stats_usage.go` | `wt stats`' usage half: `collectUsage` (launches from `usage.jsonl` joined with LiteLLM spend), `buildUsageRows`, the `querySpend` and `stdoutWidth` seams |
-| `cmd/wt-session/stats_usage_table.go` | `renderUsageTable` — the usage table's cells, laid out by `renderPlainTable` |
-| `cmd/wt-session/plain_table.go` | `renderPlainTable` — the one borderless, width-aware text table (`wt stats`, `wt model list`): the first column is the row's key and is never truncated |
+| `cmd/wt-session/stats_usage_table.go` | `renderUsageTable` — the usage table's cells, laid out by `cli.RenderPlainTable` |
+| `internal/cli/plaintable.go`, `text.go` | `RenderPlainTable`/`PlainTableWidth` — the one borderless, width-aware text table (`wt stats`, `wt model list`, `wt model list --server`): the first column is the row's key and is never truncated; `Dash` (an empty cell as `-`) and `VisibleID` (control and invisible characters in an id spelled out) |
 | `cmd/wt-session/stats_json.go` | `wt stats --json` — `buildStatsJSON`, one document built from the same rows as the tables |
 | `cmd/wt-session/model_cmds.go` | `wt start` / `wt stop` / `wt served` / `wt warm` |
 | `cmd/wt-session/exitprompt.go` | **deleted** (Task 304) — was the exit prompt's glue in `cmd/wt-session` |

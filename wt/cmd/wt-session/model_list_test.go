@@ -249,24 +249,6 @@ func TestModelListSpellsOutControlCharacters(t *testing.T) {
 	}
 }
 
-// TestPlainTableAlignsBothKindsOfColumn verifies the renderer the usage and
-// model listings share: text columns are padded on the right, number columns
-// on the left, and no line ends in a space. A table that padded numbers on
-// the right would misalign every SIZE and SPEND value.
-func TestPlainTableAlignsBothKindsOfColumn(t *testing.T) {
-	cols := []plainColumn{{head: "KEY"}, {head: "TEXT"}, {head: "NUM", right: true}, {head: "LAST"}}
-	got := renderPlainTable(cols, [][]string{{"a", "long text", "7", "x"}, {"bb", "t", "1234", ""}}, 0)
-	want := "KEY  TEXT        NUM  LAST\n" +
-		"a    long text     7  x\n" +
-		"bb   t          1234"
-	if got != want {
-		t.Errorf("table =\n%s\nwant\n%s", got, want)
-	}
-	if key, rest := plainTableWidth(cols, [][]string{{"a", "long text", "7", "x"}}); key != 3 || rest != 2+9+2+3+2+4 {
-		t.Errorf("plainTableWidth = %d, %d; want 3 and 22", key, rest)
-	}
-}
-
 // TestModelListKeepsSizeWhenEveryIdIsShort verifies SIZE is dropped only
 // when the table really does not fit: with ids all shorter than the 20
 // columns MODEL is otherwise guaranteed, the six columns fit a terminal

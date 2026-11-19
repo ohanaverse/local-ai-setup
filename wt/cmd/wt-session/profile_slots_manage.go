@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -388,7 +389,7 @@ func (r candidateReport) write(w io.Writer, asJSON bool) error {
 			fmt.Fprintf(w, "stale sources: %s\n", strings.Join(r.stale, ", "))
 		}
 	} else if r.genRaw != "" {
-		fmt.Fprintf(w, "tiers.toml: generated %s (not a timestamp, so its age is not shown)\n", visibleID(r.genRaw))
+		fmt.Fprintf(w, "tiers.toml: generated %s (not a timestamp, so its age is not shown)\n", cli.VisibleID(r.genRaw))
 		if len(r.stale) > 0 {
 			fmt.Fprintf(w, "stale sources: %s\n", strings.Join(r.stale, ", "))
 		}
