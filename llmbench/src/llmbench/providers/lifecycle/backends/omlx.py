@@ -120,8 +120,8 @@ class OmlxBackend(Backend):
         An omlx started with an API key answers 401 to a keyless chat
         completion. The key is the registry omlx provider's auth.secret_ref,
         which only wt-model and wt resolve, so the refusal hands this one step
-        to wt-model rather than teach llmbench to resolve secrets. An omlx with no key —
-        or one that allows unauthenticated inference — never gets here.
+        to wt-model rather than teach llmbench to resolve secrets. An omlx with
+        no key — or one that allows unauthenticated inference — never gets here.
         """
         try:
             super().warm(plan)
@@ -159,16 +159,15 @@ class OmlxBackend(Backend):
         omlx`, `wt stop omlx/<name>`): a keyed omlx refuses keyless management
         calls, and only they resolve the key. A DOWN omlx serves nothing, so
         wt-model's "no usable answer" is not an error there — but the same
-        message covers a
-        server that is UP and would not say (mixed pool counts, a status call
-        it refuses), and that is not "nothing loaded": warming beside
+        message covers a server that is UP and would not say (mixed pool
+        counts, a status call it refuses), and that is not "nothing loaded": warming beside
         occupants nobody could list is the silent RAM sharing this teardown
         exists to prevent, so that one is a warning.
         """
         try:
             loaded = wt_bridge.served("omlx")
         except wt_bridge.WtBridgeError as exc:
-            return None if _omlx_is_down() else f"could not ask wt what omlx serves: {exc}"
+            return None if _omlx_is_down() else f"could not ask wt-model what omlx serves: {exc}"
         others = [name for name in loaded if name != keep]
         if not others:
             return None

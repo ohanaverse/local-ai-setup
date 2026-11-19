@@ -38,8 +38,9 @@ def _msg(proc: subprocess.CompletedProcess[str], fallback: str) -> str:
     """One clean line for the user from wt's or wt-model's output.
 
     cobra prints `Error: <msg>`, wt its own `wt: <msg>` and wt-model
-    `wt-model: <msg>`; drop blank lines, strip those prefixes, de-duplicate and join with "; ". Only wt's
-    own output is used (never argv), so no api key can leak through here.
+    `wt-model: <msg>`; drop blank lines, strip those prefixes, de-duplicate
+    and join with "; ". Only their own output is used (never argv), so no
+    api key can leak through here.
     """
     raw = (proc.stderr or "").strip() or (proc.stdout or "").strip()
     lines: list[str] = []

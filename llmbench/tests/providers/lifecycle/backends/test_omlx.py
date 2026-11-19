@@ -448,7 +448,7 @@ def test_replace_own_occupant_raises_when_an_running_omlx_will_not_say_what_it_s
             return_value=False,
         ),
         patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
-        pytest.raises(LifecycleError, match="could not ask wt what omlx serves"),
+        pytest.raises(LifecycleError, match="could not ask wt-model what omlx serves"),
     ):
         OMLX_4BIT.replace_own_occupant(plan)
     wt_stop.assert_not_called()

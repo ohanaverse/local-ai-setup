@@ -651,10 +651,9 @@ A host command: it runs where `wt-model` runs, reading the registry there.
 Under `wt`, `served` (its name before phase 4 stage 2) only points here and
 exits 1.
 
-
 Prints the model ids the provider's server is serving now, one per line, as
 the server names them; `--json` prints `{"provider": …, "served": […]}`. It
-answers for `omlx`, `mtplx` and `mlx_lm_server` — the same probe `wt start`,
+answers for `omlx`, `mtplx`, `mlx_lm_server`, `rec` and `sushi` — the same probe `wt start`,
 `wt stop` and the pickers act on. Ollama is not answered for: a pulled model
 loads on request, so it has no "serving now".
 
@@ -673,7 +672,6 @@ where a keyless probe of a partly loaded omlx pool is refused.
 ## `wt-model warm <provider> <model>`
 
 A host command too; under `wt`, `warm` only points here and exits 1.
-
 
 Loads a model into an **omlx** server that is already running, with one
 one-token request — the warmup step of `wt start` by itself. Nothing is
