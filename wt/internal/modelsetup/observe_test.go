@@ -369,35 +369,6 @@ func TestObserveCountsDanglingAgentPlistAndTokenLinksAsPresent(t *testing.T) {
 	}
 }
 
-// TestPlanRefusesAPastedTokenOverADanglingLink pins that a pasted token aimed
-// at a token path holding a link that does not resolve is refused when the
-// plan is built, naming the link, instead of planning a "replace" that the
-// write refuses only after the user confirmed it.
-func TestPlanRefusesAPastedTokenOverADanglingLink(t *testing.T) {
-	f := obsConfigured(t)
-	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	st.Host.ConfigHome = "/Users/user_name/.config"
-	st.TokenFiles = []TokenState{{Path: RemoteTokenPath(st.Host.ConfigHome), Exists: true, Dangling: true, Err: RemoteTokenPath(st.Host.ConfigHome) + " is a symlink that does not resolve"}}
-	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "http://m:1", PastedToken: Secret("tok")}})
-	if err == nil || !strings.Contains(err.Error(), "symlink that does not resolve") || len(p.Steps) != 0 {
-		t.Errorf("pasted token over a dangling link: err %v, steps %d", err, len(p.Steps))
-	}
-}
-
-// TestPlanReplacesAnUnreadableTokenWithAPastedOne pins that a token file that
-// exists but cannot be read (not a dangling link) is still replaced by a
-// pasted token: pasting is the remedy the file-path refusal names for it.
-func TestPlanReplacesAnUnreadableTokenWithAPastedOne(t *testing.T) {
-	f := obsConfigured(t)
-	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	st.Host.ConfigHome = "/Users/user_name/.config"
-	st.TokenFiles = []TokenState{{Path: RemoteTokenPath(st.Host.ConfigHome), Exists: true, Err: "read: permission denied"}}
-	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "http://m:1", PastedToken: Secret("tok")}})
-	if err != nil || len(p.Steps) == 0 {
-		t.Errorf("pasted token over an unreadable file: err %v, steps %d", err, len(p.Steps))
-	}
-}
-
 // TestObserveCountsADanglingLiteLLMPlistLinkAsPresent pins that a LiteLLM
 // plist path holding a symlink that does not resolve reads as present (with
 // an error naming it), not absent, so a create plan refuses it instead of

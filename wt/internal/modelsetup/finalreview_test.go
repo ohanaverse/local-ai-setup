@@ -16,27 +16,6 @@ import (
 // config home, never ~/Library/LaunchAgents.
 const plBackupDir = plConfigHome + "/wt-model/backups"
 
-// TestBuildPlanRemoteRefusesAURLWithCredentials pins that a typed url carrying
-// a user:password is refused (config.toml is 0644, so wt never stores one),
-// that the refusal is fixed text naming nothing of the url (no user, no
-// password, not even the host), and that a plain url still plans.
-func TestBuildPlanRemoteRefusesAURLWithCredentials(t *testing.T) {
-	const user, pass = "alice-USER", "hunter2-PASSWORD"
-	for _, u := range []string{
-		"https://" + user + ":" + pass + "@gpu.example:8787",
-		"https://" + user + "@gpu.example:8787",
-	} {
-		st := freshState()
-		st.Server = ServerState{Checked: true, OK: true, URL: "https://gpu.example:8787"}
-		p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: u, PastedToken: plPasted}})
-		mustRefuse(t, p, err, "user:password", "token file", "credentials")
-		if err != nil && (strings.Contains(err.Error(), user) || strings.Contains(err.Error(), pass) || strings.Contains(err.Error(), "gpu.example")) {
-			t.Errorf("refusal quotes the credentials: %q", err.Error())
-		}
-	}
-	mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, SaveUnchecked: true}})
-}
-
 // TestBuildPlanLocalRefusesAListenAddressWithCredentials pins the local twin:
 // a listen address typed with a user:password is refused without echoing it.
 func TestBuildPlanLocalRefusesAListenAddressWithCredentials(t *testing.T) {

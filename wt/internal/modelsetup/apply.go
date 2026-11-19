@@ -78,7 +78,7 @@ type WaitError struct {
 }
 
 func (e *WaitError) Error() string {
-	why := serverFailure(ServerState{Kind: e.Kind, Message: e.Message})
+	why := modelmode.ServerFailure(ServerState{Kind: e.Kind, Message: e.Message})
 	return fmt.Sprintf("wt-model did not answer at %s within %s: %s; see %s", e.URL, e.Timeout, why, e.Log)
 }
 

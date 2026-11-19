@@ -1,0 +1,4 @@
+set up mode local in 1 step:
+  1. create [model-server] in /Users/user_name/.config/agent-wt/config.toml: mode = "local", url = "http://127.0.0.1:8787", token_file = "/Users/user_name/.config/wt-model/server.token"
+left alone and notes:
+  - run `wt-model setup` to set up wt-model on this machine
