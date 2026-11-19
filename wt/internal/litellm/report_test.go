@@ -11,6 +11,10 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
+// TestSyncAndWarnPrintsTheSyncLinesThenEveryWarning checks that SyncAndWarn
+// prints the sync's stdout lines first, then every warning on stderr (the
+// caller's warnings first, the sync's own last), because a registry write
+// must never hide that its route sync failed.
 func TestSyncAndWarnPrintsTheSyncLinesThenEveryWarning(t *testing.T) {
 	var out, errOut bytes.Buffer
 	sync := func(o, _ io.Writer) string { fmt.Fprintln(o, "synced"); return "LiteLLM routes not synced: x" }
@@ -25,6 +29,9 @@ func TestSyncAndWarnPrintsTheSyncLinesThenEveryWarning(t *testing.T) {
 	}
 }
 
+// TestSyncAfterWriteSkipsAMachineWithoutLiteLLM checks that SyncAfterWrite
+// returns "" and never probes providers when config.yaml is absent, so
+// `wt model` writes on a machine without LiteLLM neither warn nor probe.
 func TestSyncAfterWriteSkipsAMachineWithoutLiteLLM(t *testing.T) {
 	t.Setenv("WT_LITELLM_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
 	probed := false
