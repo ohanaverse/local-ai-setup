@@ -4,20 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 )
-
-// newTextInput builds a textinput.Model pre-filled with value and the given
-// placeholder.
-func newTextInput(value, placeholder string) textinput.Model {
-	inp := textinput.New()
-	inp.SetValue(value)
-	inp.Placeholder = placeholder
-	return inp
-}
 
 // enterAgentForm transitions the model into the agent edit/add form.
 func enterAgentForm(m *model, ag config.Agent, isNew bool) {
@@ -27,10 +18,10 @@ func enterAgentForm(m *model, ag config.Agent, isNew bool) {
 	m.formCursor = 0
 	m.agEdit = ag
 
-	m.agName = newTextInput(ag.Name, "Name")
+	m.agName = editorkit.NewTextInput(ag.Name, "Name")
 	m.agName.Focus()
-	m.agProvidersInput = newTextInput(config.TagsToString(ag.SupportedProviders), "Supported Providers")
-	m.agDefaultProviderInput = newTextInput(ag.DefaultProvider, "Default Provider")
+	m.agProvidersInput = editorkit.NewTextInput(config.TagsToString(ag.SupportedProviders), "Supported Providers")
+	m.agDefaultProviderInput = editorkit.NewTextInput(ag.DefaultProvider, "Default Provider")
 	m.refreshAgentInstalled()
 }
 
@@ -146,16 +137,16 @@ func (m *model) agentFormView() string {
 		}
 	}
 
-	fields := []formField{
-		{"Name", m.agName.View(), m.formCursor == 0},
-		{"Supported Providers", m.agProvidersInput.View(), m.formCursor == 1},
-		{"Default Provider", m.agDefaultProviderInput.View(), m.formCursor == 2},
-		{"Installed", installedStr, m.formCursor == 3},
+	fields := []editorkit.FormField{
+		{Label: "Name", Value: m.agName.View(), Focus: m.formCursor == 0},
+		{Label: "Supported Providers", Value: m.agProvidersInput.View(), Focus: m.formCursor == 1},
+		{Label: "Default Provider", Value: m.agDefaultProviderInput.View(), Focus: m.formCursor == 2},
+		{Label: "Installed", Value: installedStr, Focus: m.formCursor == 3},
 	}
 
 	var b strings.Builder
 	b.WriteString(title + "\n\n")
-	b.WriteString(renderFormFields(m.theme, fields))
+	b.WriteString(editorkit.RenderFormFields(m.theme, fields))
 	if m.formError != "" {
 		b.WriteString("\n" + m.formError + "\n")
 	}

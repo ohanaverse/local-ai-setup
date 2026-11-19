@@ -211,8 +211,8 @@ func (m *model) openModelForm(row *modeladmin.Row) {
 	for field := range f.text {
 		// The value goes in before the suggestions: bubbles v1.0.0 panics on
 		// the accept key when SetValue follows a matched suggestion.
-		f.text[field] = newTextInput(values[field], "")
-		// No "> " prompt: the label is beside it, and renderFormFields marks
+		f.text[field] = editorkit.NewTextInput(values[field], "")
+		// No "> " prompt: the label is beside it, and editorkit.RenderFormFields marks
 		// the focused row.
 		f.text[field].Prompt = ""
 	}
@@ -254,7 +254,7 @@ func (m *model) focusModelField() {
 }
 
 // modelFieldRoom is how many columns field's value has beside its label:
-// renderFormFields draws "> Label: " in front of it, which is four columns
+// editorkit.RenderFormFields draws "> Label: " in front of it, which is four columns
 // past the label's runes.
 func (m *model) modelFieldRoom(field int) int {
 	return max(m.width-utf8.RuneCountInString(modelFormLabels[field])-4, 4)
@@ -659,7 +659,7 @@ func (m *model) modelFormView() string {
 		return tuilayout.MessageAlone(tabBar(m.theme, TabModels), l.errBlock, modelFormErrorHint, width, m.height, dim)
 	}
 	first, count, above, below := formWindow(f.cursor, mfCount, l.room)
-	var fields []formField
+	var fields []editorkit.FormField
 	for field := first; field < first+count; field++ {
 		value := f.value(field)
 		switch {
@@ -676,11 +676,11 @@ func (m *model) modelFormView() string {
 		default:
 			value = endCut(value, m.modelFieldRoom(field))
 		}
-		fields = append(fields, formField{modelFormLabels[field], value, field == f.cursor})
+		fields = append(fields, editorkit.FormField{Label: modelFormLabels[field], Value: value, Focus: field == f.cursor})
 	}
-	// renderFormFields ends every row with a newline; the last one's goes,
+	// editorkit.RenderFormFields ends every row with a newline; the last one's goes,
 	// so that clipping does not pad an empty line under the fields.
-	rows := tuilayout.Clip(strings.TrimRight(renderFormFields(m.theme, fields), "\n"), width)
+	rows := tuilayout.Clip(strings.TrimRight(editorkit.RenderFormFields(m.theme, fields), "\n"), width)
 	if above {
 		rows = dim.Render(fmt.Sprintf("  ↑ %d more", first)) + "\n" + rows
 	}

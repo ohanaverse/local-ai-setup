@@ -209,7 +209,7 @@ func (m *model) ensureServerInputs() {
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	for f := range st.fields {
-		in := newTextInput("", serverFieldHints[f])
+		in := editorkit.NewTextInput("", serverFieldHints[f])
 		in.Prompt = ""
 		in.PlaceholderStyle = dim
 		if f == sfPaste || f == sfMaster {
