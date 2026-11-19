@@ -4,11 +4,9 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -29,57 +27,6 @@ var probeInventory = localmodels.Inventory
 
 func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
 	return litellm.RunSync(out, errOut, cfg, probeInventory, asJSON, dryRun)
-}
-
-func runLitellmList(out io.Writer, asJSON bool) error {
-	f, err := litellm.Open(litellm.DefaultPath())
-	if err != nil {
-		return err
-	}
-	rows := f.Rows()
-	ids := make([]string, 0, len(rows))
-	type rowJSON struct {
-		ID      string `json:"id"`
-		Managed bool   `json:"managed"`
-	}
-	jrows := make([]rowJSON, 0, len(rows))
-	for _, r := range rows {
-		ids = append(ids, r.ID)
-		jrows = append(jrows, rowJSON{r.ID, r.Managed})
-	}
-	if asJSON {
-		return json.NewEncoder(out).Encode(map[string]any{"routed": ids, "rows": jrows})
-	}
-	// A wt row prints as its bare id, as list always has, so `grep -x <id>`
-	// keeps working; only a hand-written row carries a marker.
-	for _, r := range rows {
-		if r.Managed {
-			fmt.Fprintln(out, r.ID)
-		} else {
-			fmt.Fprintf(out, "%s\t(hand-written)\n", r.ID)
-		}
-	}
-	return nil
-}
-
-func runLitellmProviders(out io.Writer, asJSON bool) error {
-	provs := litellm.Providers()
-	if asJSON {
-		doc := map[string]map[string]map[string]bool{"providers": {}}
-		for id, cloud := range provs {
-			doc["providers"][id] = map[string]bool{"cloud": cloud}
-		}
-		return json.NewEncoder(out).Encode(doc)
-	}
-	ids := make([]string, 0, len(provs))
-	for id := range provs {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		fmt.Fprintf(out, "%s cloud=%v\n", id, provs[id])
-	}
-	return nil
 }
 
 // runLitellmStatus is `wt litellm status`: the shared status body
@@ -106,7 +53,7 @@ func litellmCmd(a *app) *cobra.Command {
 		Use:   "litellm",
 		Short: "Manage LiteLLM routes for registry models, and the proxy url and key",
 	}
-	var syncJSON, listJSON, provJSON, syncDryRun bool
+	var syncJSON, syncDryRun bool
 	syncC := &cobra.Command{
 		Use: "sync", Short: "Make LiteLLM routes match the registry's cloud models and the running (or pulled ollama) local models", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -119,16 +66,6 @@ func litellmCmd(a *app) *cobra.Command {
 	}
 	syncC.Flags().BoolVar(&syncJSON, "json", false, "machine-readable output")
 	syncC.Flags().BoolVar(&syncDryRun, "dry-run", false, "print the route plan and the probe warnings the real sync would report; change nothing (does not report litellm_settings fixes)")
-	listC := &cobra.Command{
-		Use: "list", Short: "List routed model ids from config.yaml", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error { return runLitellmList(cmd.OutOrStdout(), listJSON) },
-	}
-	listC.Flags().BoolVar(&listJSON, "json", false, "machine-readable output")
-	provC := &cobra.Command{
-		Use: "providers", Short: "List providers with a LiteLLM mapping", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error { return runLitellmProviders(cmd.OutOrStdout(), provJSON) },
-	}
-	provC.Flags().BoolVar(&provJSON, "json", false, "machine-readable output")
 	// status and set carry no config gate (ruling 8): they reach only the
 	// proxy pair — the wt-model home and its legacy fallback — so a broken
 	// registry or config.toml cannot lock the user out of the one surface
@@ -180,7 +117,7 @@ func litellmCmd(a *app) *cobra.Command {
 		},
 	}
 	c.AddCommand(
-		syncC, listC, provC, statusC, setC, restartC,
+		syncC, statusC, setC, restartC,
 		removedLitellmCmd("expose"), removedLitellmCmd("unexpose"),
 		retiredLitellmToggleCmd("on"), retiredLitellmToggleCmd("off"),
 	)

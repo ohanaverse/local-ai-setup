@@ -241,31 +241,6 @@ func TestLitellmRestartHidesAnAtURL(t *testing.T) {
 	}
 }
 
-// TestLitellmListAndProviders pins the read-only commands' JSON shapes: the
-// "routed" id list and ownership rows of `list --json`, and the per-provider
-// policy of `providers --json` (cloud or not). They are what a script reads
-// to learn what the proxy serves; a renamed key breaks it.
-func TestLitellmListAndProviders(t *testing.T) {
-	litellmEnv(t, "model_list:\n  - model_name: a/b\n    litellm_params: {model: x}\n")
-	var out bytes.Buffer
-	if err := runLitellmList(&out, true); err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(out.String()) != `{"routed":["a/b"],"rows":[{"id":"a/b","managed":false}]}` {
-		t.Fatalf("list = %s", out.String())
-	}
-	out.Reset()
-	if err := runLitellmProviders(&out, true); err != nil {
-		t.Fatal(err)
-	}
-	var got struct {
-		Providers map[string]struct{ Cloud bool } `json:"providers"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil || !got.Providers["openrouter"].Cloud || got.Providers["ollama"].Cloud {
-		t.Fatalf("providers = %s (%v)", out.String(), err)
-	}
-}
-
 // TestLitellmSyncRefusesOnConfigError pins that sync refuses when the
 // registry failed to LOAD (a.loadErr), like every sibling command.
 // (Validation-only errors are covered by TestLitellmSyncWorksOnValidationOnlyError.)
@@ -1046,50 +1021,6 @@ func TestLitellmSyncDryRunReportsProbeWarnings(t *testing.T) {
 	}
 	if actions["ollama/gemma:9b"] != "unrouted" || actions["openrouter/x"] != "routed" {
 		t.Fatalf("outcomes = %+v, want gemma unrouted and openrouter/x routed", real.Outcomes)
-	}
-}
-
-// TestLitellmListTextOutput pins list's human-readable output: one line per
-// row, a wt row as its bare id (so `wt litellm list | grep -x <id>` and the
-// guides' "list of routed ids" still hold) and a hand-written row as
-// "id<TAB>(hand-written)". A user reads the marker to tell which rows are
-// their own; a missing one misleads them about which rows wt may rewrite or
-// remove.
-func TestLitellmListTextOutput(t *testing.T) {
-	litellmEnv(t, `model_list:
-  - model_name: ollama/gemma:9b
-    litellm_params: {model: ollama_chat/gemma:9b}
-    model_info: {wt_managed: true}
-  - model_name: hand/alias
-    litellm_params: {model: openrouter/x}
-`)
-	var out bytes.Buffer
-	if err := runLitellmList(&out, false); err != nil {
-		t.Fatal(err)
-	}
-	const want = "ollama/gemma:9b\nhand/alias\t(hand-written)\n"
-	if got := out.String(); got != want {
-		t.Fatalf("list = %q, want %q", got, want)
-	}
-}
-
-// TestLitellmListJSONRows pins list's ownership rows next to the older
-// "routed" id list, which stays for scripts that already read it.
-func TestLitellmListJSONRows(t *testing.T) {
-	litellmEnv(t, `model_list:
-  - model_name: ollama/gemma:9b
-    litellm_params: {model: ollama_chat/gemma:9b}
-    model_info: {wt_managed: true}
-  - model_name: hand/alias
-    litellm_params: {model: openrouter/x}
-`)
-	var out bytes.Buffer
-	if err := runLitellmList(&out, true); err != nil {
-		t.Fatal(err)
-	}
-	const want = `{"routed":["ollama/gemma:9b","hand/alias"],"rows":[{"id":"ollama/gemma:9b","managed":true},{"id":"hand/alias","managed":false}]}`
-	if got := strings.TrimSpace(out.String()); got != want {
-		t.Fatalf("list = %s\nwant   %s", got, want)
 	}
 }
 

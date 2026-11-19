@@ -1,27 +1,33 @@
-// `wt-model litellm` — the set|status twins of `wt litellm`'s proxy pair
-// commands. The pair wt-model's gateway forwards to LiteLLM with lives in the
-// wt-model config home: `set` is its one writer (config.SetProxy) and
-// `status` resolves it home-first against the legacy [litellm] fallback
-// (config.ResolveProxy). Command definitions are per-binary (each help names
-// its own binary); the documents are shared config code (WriteProxyStatus,
-// MaskKey, ProxyFallbackNote), so the twins cannot diverge.
+// `wt-model litellm` — the route commands moved from `wt litellm` in phase 4
+// stage 2 (list, providers), beside the set|status twins of `wt litellm`'s
+// proxy pair commands. list and providers read only LiteLLM's config.yaml and
+// the provider policy table, never the registry. The pair wt-model's gateway
+// forwards to LiteLLM with lives in the wt-model config home: `set` is its one
+// writer (config.SetProxy) and `status` resolves it home-first against the
+// legacy [litellm] fallback (config.ResolveProxy). Command definitions are
+// per-binary (each help names its own binary); the documents are shared
+// config code (WriteProxyStatus, MaskKey, ProxyFallbackNote), so the twins
+// cannot diverge.
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/spf13/cobra"
 )
 
-// litellmCmd is `wt-model litellm`: set and show the LiteLLM proxy url and
-// key.
+// litellmCmd is `wt-model litellm`: list the routes and the mapped
+// providers, and set and show the LiteLLM proxy url and key.
 func litellmCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "litellm",
-		Short: "Manage the LiteLLM proxy url and key",
+		Short: "Manage LiteLLM routes for registry models, and the proxy url and key",
 	}
 	var statusJSON bool
 	statusC := &cobra.Command{
@@ -88,7 +94,48 @@ Exit codes:
 	}
 	setC.Flags().StringVar(&setURL, "url", "", "LiteLLM proxy base URL")
 	setC.Flags().StringVar(&setKey, "api-key", "", "LiteLLM proxy API key")
-	c.AddCommand(statusC, setC)
+	var listJSON bool
+	listC := &cobra.Command{
+		Use:   "list",
+		Short: "List routed model ids from config.yaml",
+		Long: `Read LiteLLM's config.yaml (WT_LITELLM_CONFIG, default
+~/.config/litellm/config.yaml) and print one routed model id per line; a row
+wt did not write is printed as ` + "`<id><TAB>(hand-written)`" + `. Reads no registry.
+
+Flags:
+  --json   print one JSON document (docs/contracts/litellm-cli.sample.json)
+
+Exit codes:
+  0  done
+  1  any failure`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runLitellmList(cmd.OutOrStdout(), listJSON)
+		},
+	}
+	listC.Flags().BoolVar(&listJSON, "json", false, "print one JSON document (docs/contracts/litellm-cli.sample.json)")
+	var provJSON bool
+	provC := &cobra.Command{
+		Use:   "providers",
+		Short: "List providers with a LiteLLM mapping",
+		Long: `Print every provider id wt has a LiteLLM mapping for and whether it is a
+cloud provider. Reads no registry.
+
+Flags:
+  --json   print one JSON document (docs/contracts/litellm-cli.sample.json)
+
+Exit codes:
+  0  done
+  1  any failure`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runLitellmProviders(cmd.OutOrStdout(), provJSON)
+		},
+	}
+	provC.Flags().BoolVar(&provJSON, "json", false, "print one JSON document (docs/contracts/litellm-cli.sample.json)")
+	c.AddCommand(statusC, setC, listC, provC)
 	return c
 }
 
@@ -108,5 +155,60 @@ func runLitellmSet(out io.Writer, url, key *string) error {
 		return err
 	}
 	fmt.Fprintln(out, "litellm: updated")
+	return nil
+}
+
+// runLitellmList is `wt-model litellm list`: the routed ids of config.yaml,
+// a hand-written row marked. It reads no registry.
+func runLitellmList(out io.Writer, asJSON bool) error {
+	f, err := litellm.Open(litellm.DefaultPath())
+	if err != nil {
+		return err
+	}
+	rows := f.Rows()
+	ids := make([]string, 0, len(rows))
+	type rowJSON struct {
+		ID      string `json:"id"`
+		Managed bool   `json:"managed"`
+	}
+	jrows := make([]rowJSON, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+		jrows = append(jrows, rowJSON{r.ID, r.Managed})
+	}
+	if asJSON {
+		return json.NewEncoder(out).Encode(map[string]any{"routed": ids, "rows": jrows})
+	}
+	// A wt row prints as its bare id, as list always has, so `grep -x <id>`
+	// keeps working; only a hand-written row carries a marker.
+	for _, r := range rows {
+		if r.Managed {
+			fmt.Fprintln(out, r.ID)
+		} else {
+			fmt.Fprintf(out, "%s\t(hand-written)\n", r.ID)
+		}
+	}
+	return nil
+}
+
+// runLitellmProviders is `wt-model litellm providers`: every provider with a
+// LiteLLM mapping and whether it is a cloud provider. It reads no registry.
+func runLitellmProviders(out io.Writer, asJSON bool) error {
+	provs := litellm.Providers()
+	if asJSON {
+		doc := map[string]map[string]map[string]bool{"providers": {}}
+		for id, cloud := range provs {
+			doc["providers"][id] = map[string]bool{"cloud": cloud}
+		}
+		return json.NewEncoder(out).Encode(doc)
+	}
+	ids := make([]string, 0, len(provs))
+	for id := range provs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		fmt.Fprintf(out, "%s cloud=%v\n", id, provs[id])
+	}
 	return nil
 }

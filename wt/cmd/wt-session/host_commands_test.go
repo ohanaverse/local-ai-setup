@@ -119,13 +119,12 @@ func execOn(c *cobra.Command, args ...string) (string, error) {
 }
 
 // TestHostCommandsStillLoadTheRegistry pins R3 and R17: after the flip the
-// host commands of this binary (`litellm list`, `stop <provider>`) still
-// read registry.toml, through
-// app.hostConfig() and never through the model server, even with a model
+// host commands of this binary (`stop <provider>`) still read registry.toml,
+// through app.hostConfig() and never through the model server, even with a model
 // server configured, and behave as they did before it: each one's output or
 // error equals the pre-flip function's over config.Load()'s config, and
 // newApp itself reads no registry (`model list --json`, `model add`,
-// `served`, `warm` and `cloud-sync` moved to wt-model, whose tests pin
+// `served`, `warm`, `cloud-sync` and `litellm list` moved to wt-model, whose tests pin
 // model-list.sample.json and the moved host commands). A host command
 // moved onto the session config would see no models and silently plan,
 // route or stop nothing.
@@ -145,12 +144,8 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 		// before returns what the pre-flip function says for the same input.
 		before func(t *testing.T, cfg *config.Config) (string, error)
 		check  func(t *testing.T, out string)
-		// noRegistry: the command reads no registry at all (litellm list
-		// reads config.yaml only), so hostConfig is not expected to run.
-		noRegistry bool
 	}
 	for _, tc := range []hostCase{
-		{name: "litellm list", build: litellmCmd, args: []string{"list"}, noRegistry: true},
 		{name: "stop provider", build: stopCmd, args: []string{"ollama", "--yes"},
 			before: func(t *testing.T, cfg *config.Config) (string, error) {
 				var out bytes.Buffer
@@ -201,7 +196,7 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 			if tc.check != nil {
 				tc.check(t, out)
 			}
-			if !tc.noRegistry && !a.hostSet {
+			if !a.hostSet {
 				t.Error("the command did not read the registry through hostConfig")
 			}
 			if reqs := f.reqs(); len(reqs) != 0 {
