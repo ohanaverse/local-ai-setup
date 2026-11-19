@@ -10,8 +10,8 @@ import (
 // Helpers that wt's registry-write tests defined (model_write_test.go, which
 // moved to cmd/wt-model with `wt-model model init|add|edit|rm`) and that the
 // tests still here use: a throwaway home with a registry, a file read, a run
-// of the real command tree, and a redirected registry for cloud-sync's
-// scratch-registry safety test.
+// of the real command tree. (The redirected-registry helper moved to
+// cmd/wt-model with cloud-sync.)
 
 // writeRegistry is a registry with an ollama and an openrouter provider and
 // one model of each.
