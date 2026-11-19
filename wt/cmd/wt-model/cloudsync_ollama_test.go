@@ -237,7 +237,7 @@ func TestOllamaTimeoutIsSaidAsOne(t *testing.T) {
 // TestRealOllamaCLITimeoutIsNotHeldByAChild pins that wt's time limit holds
 // when `ollama` on PATH is a wrapper script: the limit kills the script, but
 // the command it started lives on holding the output pipes, and waiting for
-// those to close would keep `wt cloud-sync` hung for as long as that child
+// those to close would keep `wt-model cloud-sync` hung for as long as that child
 // lives, with the registry already written and the routes not yet synced.
 // The stand-in here is a shell script whose child sleeps; nothing real runs.
 func TestRealOllamaCLITimeoutIsNotHeldByAChild(t *testing.T) {

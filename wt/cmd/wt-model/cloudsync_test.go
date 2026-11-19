@@ -680,7 +680,7 @@ func TestCloudSyncUnderARedirectedRegistry(t *testing.T) {
 // openrouter provider row, with no model under it) gets the one "nothing to
 // refresh" line and exit 0: nothing fetched, nothing asked, no lock file, the
 // registry byte-identical, no route sync. A machine that uses only ollama
-// must be able to run `wt cloud-sync` from a script without it failing for
+// must be able to run `wt-model cloud-sync` from a script without it failing for
 // want of a terminal or restarting the proxy.
 func TestCloudSyncWithNoOpenRouterPricedModelDoesNothingHoweverItIsRun(t *testing.T) {
 	h := testHost()

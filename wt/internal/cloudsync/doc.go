@@ -1,4 +1,4 @@
-// Package cloudsync is the pure core of `wt cloud-sync`: it turns what two
+// Package cloudsync is the pure core of `wt-model cloud-sync`: it turns what two
 // public services publish into changes to registry.toml.
 //
 //   - The openrouter flow: OpenRouter's model list (ParseOpenRouter, PlanPrices) refreshes
@@ -20,6 +20,6 @@
 // confirmation and the exit codes.
 //
 // ParsePricing is the only code that knows the pricing page's HTML shape:
-// when ollama changes the page, `wt cloud-sync` exits 3 and saves the raw
+// when ollama changes the page, `wt-model cloud-sync` exits 3 and saves the raw
 // HTML, and the repair is there and in testdata/ollama_pricing.html.
 package cloudsync

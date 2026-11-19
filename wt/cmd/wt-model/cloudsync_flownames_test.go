@@ -42,7 +42,7 @@ func TestCloudSyncFlowsAreNamedForTheirProviders(t *testing.T) {
 		"openrouter: Unchanged prices: 0\n" +
 		"ollama: no ollama provider in the registry; nothing to mirror\n"
 	if err != nil || out != want {
-		t.Errorf("wt cloud-sync --dry-run: err = %v, output:\n%s\nwant:\n%s", err, out, want)
+		t.Errorf("wt-model cloud-sync --dry-run: err = %v, output:\n%s\nwant:\n%s", err, out, want)
 	}
 	if out, err := run("--only", "openrouter", "--dry-run"); err != nil || !strings.HasPrefix(out, "openrouter: ") || strings.Contains(out, "ollama: ") {
 		t.Errorf("--only openrouter: err = %v, output:\n%s\nwant the openrouter lines alone", err, out)

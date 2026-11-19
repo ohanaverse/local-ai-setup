@@ -10,7 +10,7 @@ import (
 
 // Error is an error that says which status the process exits with. Every
 // command exits 1 on an error; a few carry a code that means something to a
-// caller (`wt cloud-sync`'s 2 to 5, a picker launch's agent status), so they
+// caller (`wt-model cloud-sync`'s 2 to 5, a picker launch's agent status), so they
 // wrap their error with New and main reads the code back with Of. The
 // message is what Report prints after the binary's prefix, unless the error
 // is quiet: then Report prints nothing.

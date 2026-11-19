@@ -173,7 +173,7 @@ func TestRenderTableShowsALoadingModelAsLoad(t *testing.T) {
 }
 
 // timedTableRows is a picker holding the two kinds of time-priced model wt
-// knows, with the rows `wt cloud-sync` stores for each, and one model with a
+// knows, with the rows `wt-model cloud-sync` stores for each, and one model with a
 // single price: an openrouter model whose flat price is its dear level and
 // whose row is the cheap one (deepseek's real schedule: dear on weekdays
 // 01:00-04:00 and 06:00-10:00 UTC), and an ollama cloud model with ollama's

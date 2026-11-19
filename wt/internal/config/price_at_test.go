@@ -10,7 +10,7 @@ import (
 
 func pf(v float64) *float64 { return &v }
 
-// offpeakPrice is the row `wt cloud-sync`'s ollama flow writes: ollama's
+// offpeakPrice is the row `wt-model cloud-sync`'s ollama flow writes: ollama's
 // off-peak window, outside 12:00 to 18:00 UTC on weekdays and all day at
 // weekends.
 func offpeakPrice(in, cache, out *float64) TimePrice {

@@ -633,7 +633,7 @@ func TestRemoteTailPrintsThePriceNoticeFromTheLoadedCatalog(t *testing.T) {
 	}
 	glm := config.Model{ID: "openrouter/glm-5.3"}
 	out, fetched := run(&modelapi.Pricing{Updated: "2026-11-01T00:00:00Z"}, "summary line", glm)
-	if want := "\nsummary line\nwt: token pricing last refreshed 2026-11-01 — run 'wt cloud-sync'\n"; out != want || fetched != 0 {
+	if want := "\nsummary line\nwt: token pricing last refreshed 2026-11-01 — run 'wt-model cloud-sync'\n"; out != want || fetched != 0 {
 		t.Errorf("stale stamp: out %q (%d extra catalog fetches), want %q and none", out, fetched, want)
 	}
 	if out, _ := run(&modelapi.Pricing{Updated: "2026-11-15T00:00:00Z"}, "summary line", glm); strings.Contains(out, "cloud-sync") {

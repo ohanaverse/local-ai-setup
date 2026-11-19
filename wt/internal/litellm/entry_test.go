@@ -298,7 +298,7 @@ func TestBuildEntrySecretRefEmptyIsAnError(t *testing.T) {
 
 // TestPricingInfoReadsOnlyTheFlatPrices pins what a route's model_info is
 // priced from: the cost table's flat prices, never a cost.time_prices row.
-// `wt cloud-sync` stores a model's time-of-day schedule as such rows (#322)
+// `wt-model cloud-sync` stores a model's time-of-day schedule as such rows (#322)
 // and its dearest level as the flat price, so the route carries that level
 // whenever the sync ran, and a sync that changes only the rows leaves
 // config.yaml as it was (no proxy restart).

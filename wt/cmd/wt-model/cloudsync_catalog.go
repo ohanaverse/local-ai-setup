@@ -97,7 +97,7 @@ func (h *host) planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *c
 	// included): it is skipped, never an error. A new entry would be a row
 	// with provider_id "ollama", which the registry writer refuses without
 	// the provider row, and there is no daemon address to pin the CLI to.
-	// `wt cloud-sync` never seeds the row.
+	// `wt-model cloud-sync` never seeds the row.
 	if !hasOllamaProvider(providers) {
 		fmt.Fprintln(out, "ollama: no ollama provider in the registry; nothing to mirror")
 		return nil
@@ -232,7 +232,7 @@ func (h *host) runOllamaWork(ctx context.Context, out, errOut io.Writer, origin 
 	for _, tag := range done.Pulls {
 		if err := h.ollamaPull(ctx, origin, tag); err != nil {
 			fmt.Fprintf(errOut, "ollama: error: %v\n", err)
-			fmt.Fprintf(errOut, "ollama:   %s is in the registry but not pulled, so it is not routed; run `wt cloud-sync` again to retry the pull\n", tag)
+			fmt.Fprintf(errOut, "ollama:   %s is in the registry but not pulled, so it is not routed; run `wt-model cloud-sync` again to retry the pull\n", tag)
 			res.failed = true
 			continue
 		}

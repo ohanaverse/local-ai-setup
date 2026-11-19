@@ -1306,7 +1306,7 @@ func TestLastPriceRefresh(t *testing.T) {
 }
 
 // TestOpenRouterPricedModel pins the rule the stale-pricing notice and
-// `wt cloud-sync`'s openrouter flow share (#151, simplified in #322): the
+// `wt-model cloud-sync`'s openrouter flow share (#151, simplified in #322): the
 // notice is only worth printing when some model's price comes from
 // OpenRouter, which is a model whose provider_id is "openrouter". Ollama
 // cloud models (priced by ollama.com), native agent models and the models of

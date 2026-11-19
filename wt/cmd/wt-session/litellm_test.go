@@ -109,7 +109,7 @@ func TestLitellmSyncUsesLiveInventory(t *testing.T) {
 }
 
 // TestLitellmSyncWaitsForTheProxy pins #379 at the command: `wt litellm
-// sync` (which `wt cloud-sync`, `wt-model model add|edit|rm|init` and the Models tab
+// sync` (which `wt-model cloud-sync`, `wt-model model add|edit|rm|init` and the Models tab
 // run after a registry write) waited for nothing after its restart, so it
 // returned while the proxy still refused connections. With a proxy listening
 // at the [litellm] url, the restart — the WT_LITELLM_RESTART_CMD override

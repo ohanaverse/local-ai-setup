@@ -37,7 +37,7 @@ func TestModelCommandGroup(t *testing.T) {
 }
 
 // TestRegistryWriteGuardIsArmedHere pins that this test binary, whose tests
-// reach config.UpdateRegistry through `wt cloud-sync`, cannot write the
+// reach config.UpdateRegistry through `wt-model cloud-sync`, cannot write the
 // developer's real registry: TestMain must have called
 // config.IsolateConfigHomeForTest. Without it one test that unsets
 // XDG_CONFIG_HOME would seed provider rows into the registry on the machine

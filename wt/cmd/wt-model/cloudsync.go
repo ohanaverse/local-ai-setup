@@ -463,7 +463,7 @@ func pendingFlows(active map[string]bool) []string {
 	return names
 }
 
-// runCloudSync is `wt cloud-sync`: plan both flows with no lock held, print
+// runCloudSync is `wt-model cloud-sync`: plan both flows with no lock held, print
 // both plans, gate, apply both in one registry write, run the ollama flow's
 // ollama work, sync the routes once. The flows are independent: one that
 // fails or is refused does not stop the other. (That is also the one case

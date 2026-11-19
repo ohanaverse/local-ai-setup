@@ -9,28 +9,28 @@ import (
 )
 
 // priceStaleAfter is how old the newest OpenRouter price may be before the
-// notice fires. Refreshing is manual (`wt cloud-sync`), so the notice is the
+// notice fires. Refreshing is manual (`wt-model cloud-sync`), so the notice is the
 // only reminder; a week keeps it from nagging on every launch.
 const priceStaleAfter = 7 * 24 * time.Hour
 
 // PriceNotice renders the post-run stale-pricing notice (issue #69), or ""
 // when pricing is fresh: refreshed within the last seven days. wt only
-// prints the reminder; refreshing is the user's to run (`wt cloud-sync`).
+// prints the reminder; refreshing is the user's to run (`wt-model cloud-sync`).
 // last and present are config.Config.LastPriceRefresh's answer. The date is
 // shown in now's time zone.
 func PriceNotice(last time.Time, present bool, now time.Time) string {
 	if !present {
-		return "wt: token pricing has never been refreshed — run 'wt cloud-sync'"
+		return "wt: token pricing has never been refreshed — run 'wt-model cloud-sync'"
 	}
 	if now.Sub(last) <= priceStaleAfter {
 		return ""
 	}
-	return fmt.Sprintf("wt: token pricing last refreshed %s — run 'wt cloud-sync'", last.In(now.Location()).Format("2006-01-02"))
+	return fmt.Sprintf("wt: token pricing last refreshed %s — run 'wt-model cloud-sync'", last.In(now.Location()).Format("2006-01-02"))
 }
 
 // PriceNoticeFromCatalog is PriceNotice over the model server's catalog: p is
 // Catalog.Pricing, which is present exactly when some model is priced from
-// OpenRouter, so nil is silence (`wt cloud-sync` would have nothing to
+// OpenRouter, so nil is silence (`wt-model cloud-sync` would have nothing to
 // refresh, #151). A pricing with no stamp, or one that is not a time, reads
 // as never refreshed. now is the server's clock (modelclient's Now): the
 // stamp is the server's, so its age is measured on the same clock (R16).

@@ -503,7 +503,7 @@ func TestCloudSyncOllamaCLIFailuresExit1AndTheRestStillRuns(t *testing.T) {
 
 	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{ollama: true})
 	wantErr := "ollama: error: `ollama pull gemma4:cloud` failed: Error: pull model manifest: 401 unauthorized\n" +
-		"ollama:   gemma4:cloud is in the registry but not pulled, so it is not routed; run `wt cloud-sync` again to retry the pull\n" +
+		"ollama:   gemma4:cloud is in the registry but not pulled, so it is not routed; run `wt-model cloud-sync` again to retry the pull\n" +
 		"ollama: error: `ollama rm stray:cloud` failed: Error: permission denied\n" +
 		"ollama:   stray:cloud is left pulled; the next run lists it as a stray tag — start again from --dry-run, since the removal digest may have changed\n"
 	if code != 1 || stderr != wantErr {
@@ -524,7 +524,7 @@ func TestCloudSyncOllamaCLIFailuresExit1AndTheRestStillRuns(t *testing.T) {
 var noOllamaRegistry = cloudSyncRegistry[strings.Index(cloudSyncRegistry, "[[providers]]\nid = \"openrouter\""):strings.Index(cloudSyncRegistry, "[[models]]\nid = \"ollama/deepseek-v4-pro:cloud\"")]
 
 // TestCloudSyncSkipsOllamaOnARegistryWithoutOllama pins the plain
-// `wt cloud-sync` on a machine that has no ollama provider row, which is
+// `wt-model cloud-sync` on a machine that has no ollama provider row, which is
 // every machine that uses only OpenRouter, and the command the stale-price
 // notice tells its user to run. There is no catalog to mirror, so the
 // ollama flow says so and is skipped: the prices are refreshed, nothing is
@@ -558,9 +558,9 @@ func TestCloudSyncSkipsOllamaOnARegistryWithoutOllama(t *testing.T) {
 // ollama provider row has no catalog, whoever asks: the flow prints the one
 // nothing-to-mirror line on stdout and contributes exit 0. Nothing is fetched
 // from ollama.com, the --html file is not even opened, no ollama command
-// runs, and the registry is byte-identical. `wt cloud-sync` is two syncs, one
+// runs, and the registry is byte-identical. `wt-model cloud-sync` is two syncs, one
 // per provider, and a sync whose provider the registry does not use is never
-// an error: a script that runs `wt cloud-sync --only ollama --yes` on every
+// an error: a script that runs `wt-model cloud-sync --only ollama --yes` on every
 // machine must not fail on the ones that have no ollama.
 func TestCloudSyncSkipsOllamaHoweverItIsAskedFor(t *testing.T) {
 	h := testHost()
@@ -636,7 +636,7 @@ source = "curated"
 tags = []
 `
 
-// TestCloudSyncWithNeitherProviderDoesNothing pins `wt cloud-sync` on a
+// TestCloudSyncWithNeitherProviderDoesNothing pins `wt-model cloud-sync` on a
 // registry that uses neither ollama nor OpenRouter, however it is run (plain,
 // --yes, --dry-run): the two skip lines, exit 0, and nothing else at all — no
 // page fetched, no ollama command, no question, no registry write and no

@@ -225,7 +225,7 @@ func TestApproveAndForceAreAcceptedWithOnlyOpenrouter(t *testing.T) {
 		cmd.SetOut(new(bytes.Buffer))
 		cmd.SetErr(new(bytes.Buffer))
 		if err := cmd.Execute(); err != nil {
-			t.Errorf("wt cloud-sync --only openrouter %v: %v", flags, err)
+			t.Errorf("wt-model cloud-sync --only openrouter %v: %v", flags, err)
 		}
 	}
 }

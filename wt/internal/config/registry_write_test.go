@@ -442,7 +442,7 @@ func TestUpdateRegistryGivesUpAfterThreeAttempts(t *testing.T) {
 // TestUpdateRegistrySerializesConcurrentWriters pins the lock: eight writers
 // at once each add one model and all eight are in the file. Without the flock
 // two of them read the same bytes and the second rename drops the first's
-// model — the lost update `wt cloud-sync` beside an open `wt config` would hit.
+// model — the lost update `wt-model cloud-sync` beside an open `wt config` would hit.
 func TestUpdateRegistrySerializesConcurrentWriters(t *testing.T) {
 	path := scratchRegistry(t, docRegistry)
 	var wg sync.WaitGroup

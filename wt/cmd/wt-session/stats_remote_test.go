@@ -199,7 +199,7 @@ func TestPriceNoticeFromCatalog(t *testing.T) {
 	if got := remotePriceNote(t, nil, 0); got != "" {
 		t.Errorf("no OpenRouter-priced model printed %q", got)
 	}
-	if got := remotePriceNote(t, &modelapi.Pricing{}, 0); got != "wt: token pricing has never been refreshed — run 'wt cloud-sync'\n" {
+	if got := remotePriceNote(t, &modelapi.Pricing{}, 0); got != "wt: token pricing has never been refreshed — run 'wt-model cloud-sync'\n" {
 		t.Errorf("never refreshed printed %q", got)
 	}
 }
@@ -298,7 +298,7 @@ func TestRemoteLaunchPrintsThePriceNoticeAfterTheSummary(t *testing.T) {
 			if n := strings.Count(out, "token pricing last refreshed"); n != tc.want {
 				t.Errorf("notice printed %d times, want %d:\n%s", n, tc.want, out)
 			}
-			if tc.want == 1 && !strings.HasSuffix(strings.TrimRight(out, "\n"), "run 'wt cloud-sync'") {
+			if tc.want == 1 && !strings.HasSuffix(strings.TrimRight(out, "\n"), "run 'wt-model cloud-sync'") {
 				t.Errorf("the notice is not last, after the summary:\n%s", out)
 			}
 		})

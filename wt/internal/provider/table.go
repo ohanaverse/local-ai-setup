@@ -13,7 +13,7 @@ const MtplxPort = 8003
 // as its key: the name OpenRouter's own tools and this repo's LiteLLM setup use.
 const OpenRouterKeyEnv = "OPENROUTER_API_KEY"
 
-// The ids of the two providers `wt cloud-sync` syncs, named once so the
+// The ids of the two providers `wt-model cloud-sync` syncs, named once so the
 // command and the pure core that plans against them do not spell them.
 const (
 	IDOllama     = "ollama"
