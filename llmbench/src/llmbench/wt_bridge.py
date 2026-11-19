@@ -123,7 +123,7 @@ _NOT_CONFIGURED_REFUSALS = (
 # mode choice, not those keys).
 _NOT_CONFIGURED_HINT = (
     "; stopping a model needs a model server: choose local or remote in wt "
-    "config (Model server tab), or set WT_MODEL_URL and WT_MODEL_TOKEN_FILE"
+    "config (Mode tab), or set WT_MODEL_URL and WT_MODEL_TOKEN_FILE"
 )
 
 

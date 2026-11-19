@@ -212,7 +212,7 @@ def test_stop_not_configured_refusal_hints_at_the_model_server_settings(
     refused and benchmark isolation fails. When the refusal is wt's
     not-configured one (its pinned leads, on either output stream),
     stop()'s failure output must carry the hint that names the settings —
-    a local or remote mode chosen in wt config (Model server tab), or
+    a local or remote mode chosen in wt config (Mode tab), or
     WT_MODEL_URL and WT_MODEL_TOKEN_FILE — right for an unset mode and for
     native mode alike (native ignores a url and token_file in config.toml,
     so the hint never tells the user to set them there); any other refusal
@@ -231,7 +231,7 @@ def test_stop_not_configured_refusal_hints_at_the_model_server_settings(
             line = line[len(prefix) :]
     assert line in msg  # wt's own line is kept
     for name in (
-        "choose local or remote in wt config (Model server tab)",
+        "choose local or remote in wt config (Mode tab)",
         "WT_MODEL_URL",
         "WT_MODEL_TOKEN_FILE",
     ):

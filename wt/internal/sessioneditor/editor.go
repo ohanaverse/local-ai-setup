@@ -345,6 +345,7 @@ func (m *model) showQuitSaveFailure() {
 		return
 	}
 	m.quitting = false
+	m.result = Result{} // the quit that carried the run-setup answer is off
 	m.phase, m.tab = phaseList, TabAgents
 }
 
@@ -362,6 +363,10 @@ func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.leave()
 		case "c", "C", "esc":
+			// The quit is off, and so is the run-setup answer it carried
+			// (a y on the offer after local was applied): a later quit
+			// must not run `wt-model setup` the user has since declined.
+			m.result = Result{}
 			m.phase = phaseList
 			m.quitting = false
 			return m, nil

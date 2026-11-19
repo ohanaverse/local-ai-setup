@@ -801,7 +801,7 @@ row and the rule on stderr; for a time written `9:00`, which is not
 9:00; wt reads it as absent (fix the entry in <registry>)`. The Models tab
 of `wt-model model` shows the same under the selected model. wt also refuses to
 write that model's entry until the row is fixed: `wt model edit`, a save
-in `wt config`, or a `wt cloud-sync` with a change for that model is
+in the Models tab of `wt-model model`, or a `wt cloud-sync` with a change for that model is
 refused with `invalid registry entry: model "<id>": cost: time_prices[0]:
 windows[0]: start must be HH:MM, got 9:00`, and nothing is written.
 

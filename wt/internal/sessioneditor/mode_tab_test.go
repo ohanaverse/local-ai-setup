@@ -1389,6 +1389,25 @@ func TestModeTabOffersToRunWtModelSetupWhenOnPath(t *testing.T) {
 	}
 }
 
+// TestCancelledQuitDropsTheRunSetupAnswer pins that a y on the run-setup offer
+// is only an answer once the quit it starts happens: with unsaved agent edits
+// the quit prompt comes first, and cancelling it must clear the answer, or a
+// later plain quit would run `wt-model setup` the user never confirmed.
+func TestCancelledQuitDropsTheRunSetupAnswer(t *testing.T) {
+	m, _ := applyLocal(t, onPath)
+	m.dirty = true
+	next, _ := m.Update(keyMsg("y"))
+	m = next.(*model)
+	if m.phase != phaseQuit {
+		t.Fatalf("phase = %d, want the unsaved-changes prompt", m.phase)
+	}
+	next, _ = m.Update(keyMsg("c"))
+	m = next.(*model)
+	if m.result != (Result{}) {
+		t.Errorf("result after cancelling the quit = %+v, want the zero Result", m.result)
+	}
+}
+
 // TestModeTabRunSetupIsDefaultNo pins P1 on the run-setup question: n, esc
 // and enter decline (no quit, no result) and leave the pointer as the
 // status.
