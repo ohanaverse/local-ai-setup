@@ -325,7 +325,7 @@ def test_warmup_stops_when_the_same_request_error_repeats():
     ):
         warmup("http://x/chat", "org/repo", health_url="http://x/health", timeout=600.0)
     assert urlopen.chats["n"] == 10
-    # Not the key refusal: omlx's backend answers that one by trying `wt warm`, which a 400 would not fix.
+    # Not the key refusal: omlx's backend answers that one by trying `wt-model warm`, which a 400 would not fix.
     assert not isinstance(excinfo.value, WarmupRefusedError)
 
 

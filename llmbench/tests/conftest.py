@@ -57,11 +57,13 @@ _real_subprocess_run = subprocess.run
 # `mlx_lm.server` would tear down or spawn a real multi-GB local model
 # an agent may be using mid-request (`rec stop` / `rec serve` likewise:
 # rec is installed on the developer's machine; `sushi serve`, also
-# installed there, loads a 46 GB pack; `wt warm` would load one; `claude`
+# installed there, loads a 46 GB pack; `wt-model warm` would load one; `claude`
 # would spend the developer's real subscription (the eval judge's claude-cli
 # route). Fake-CLI tests must therefore name their stand-in script anything
 # but `claude`.
-_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "rec", "sushi", "ollama", "wt", "claude"})
+_FAKE_BINARIES = frozenset(
+    {"launchctl", "omlx", "mtplx", "rec", "sushi", "ollama", "wt", "wt-model", "claude"}
+)
 _FAKE_BINARY_PREFIXES = ("mlx_lm.",)
 
 

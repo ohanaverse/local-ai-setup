@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,12 +53,13 @@ func execOn(c *cobra.Command, args ...string) (string, error) {
 
 // TestHostCommandsStillLoadTheRegistry pins R3 and R17: after the flip the
 // host commands of this binary (`cloud-sync --dry-run`, `litellm list`,
-// `served`, `warm`, `stop <provider>`) still read registry.toml, through
+// `stop <provider>`) still read registry.toml, through
 // app.hostConfig() and never through the model server, even with a model
 // server configured, and behave as they did before it: each one's output or
 // error equals the pre-flip function's over config.Load()'s config, and
-// newApp itself reads no registry (`model list --json` and `model add` moved
-// to wt-model, whose tests pin model-list.sample.json). A host command
+// newApp itself reads no registry (`model list --json`, `model add`, `served`
+// and `warm` moved to wt-model, whose tests pin model-list.sample.json and
+// the moved host commands). A host command
 // moved onto the session config would see no models and silently plan,
 // route or stop nothing.
 func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
@@ -99,14 +99,6 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 				}
 			}},
 		{name: "litellm list", build: litellmCmd, args: []string{"list"}, noRegistry: true},
-		{name: "served", build: servedCmd, args: []string{"nosuch"},
-			before: func(t *testing.T, cfg *config.Config) (string, error) {
-				return "", runServed(&bytes.Buffer{}, cfg, &http.Client{}, "nosuch", false)
-			}},
-		{name: "warm", build: warmCmd, args: []string{"ollama", "m"},
-			before: func(t *testing.T, cfg *config.Config) (string, error) {
-				return "", runWarm(context.Background(), &bytes.Buffer{}, cfg, "ollama", "m")
-			}},
 		{name: "stop provider", build: stopCmd, args: []string{"ollama", "--yes"},
 			before: func(t *testing.T, cfg *config.Config) (string, error) {
 				var out bytes.Buffer
@@ -176,8 +168,6 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 		args  []string
 	}{
 		{"cloud-sync", cloudSyncCmd, []string{"--dry-run"}},
-		{"served", servedCmd, []string{"omlx"}},
-		{"warm", warmCmd, []string{"omlx", "m"}},
 	} {
 		t.Run("broken registry/"+tc.name, func(t *testing.T) {
 			f, path := hostHome(t, cloudSyncRegistry)

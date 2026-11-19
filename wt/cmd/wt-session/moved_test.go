@@ -35,6 +35,30 @@ var conditionalMoves = []struct {
 	{[]string{"model", "list", "--json"}, "model list", "model list"},
 }
 
+// wantMoved is every command that must be a moved stub, written out by hand
+// rather than read from movedCommands: deleting a production row then fails
+// the tests below instead of deleting the test row with it.
+var wantMoved = []movedCommand{
+	{"model init", "model init"},
+	{"model add", "model add"},
+	{"model edit", "model edit"},
+	{"model rm", "model rm"},
+	{"served", "served"},
+	{"warm", "warm"},
+}
+
+// explicitMoves are argument rows written out by hand (not derived from
+// movedCommands) that must reach a pointer, with real-looking arguments.
+var explicitMoves = []struct {
+	args     []string
+	old, new string
+}{
+	{[]string{"served", "omlx", "--json", "x"}, "served", "served"},
+	{[]string{"served", "omlx"}, "served", "served"},
+	{[]string{"warm", "omlx", "m"}, "warm", "warm"},
+	{[]string{"model", "add", "omlx", "m", "--family", "f"}, "model add", "model add"},
+}
+
 // TestMovedCommandsPointAtWtModel is the one table test of every moved-command
 // pointer: through the real tree each prints exactly the one pointer line,
 // exits 1 and leaves registry.toml and config.toml byte-for-byte unchanged.
@@ -49,6 +73,9 @@ func TestMovedCommandsPointAtWtModel(t *testing.T) {
 		rows = append(rows, row{append(strings.Fields(m.Old), "--json", "x"), m.Old, m.New})
 	}
 	for _, c := range conditionalMoves {
+		rows = append(rows, row{c.args, c.old, c.new})
+	}
+	for _, c := range explicitMoves {
 		rows = append(rows, row{c.args, c.old, c.new})
 	}
 	if len(rows) == 0 {
@@ -80,20 +107,36 @@ func TestMovedCommandsPointAtWtModel(t *testing.T) {
 	}
 }
 
-// TestMovedStubsAreHiddenAndAnnotated checks every movedCommands row is
-// registered in the real tree as a hidden, flag-parsing-off stub carrying the
-// moved annotation (which TestNoWtCommandIsHidden skips on). An empty table
-// fails: the test would check nothing.
+// TestMovedStubsAreHiddenAndAnnotated checks every movedCommands row, and
+// every hand-written wantMoved row, is registered in the real tree as a
+// hidden, flag-parsing-off stub carrying the moved annotation (which
+// TestNoWtCommandIsHidden skips on), and that movedCommands holds each
+// wantMoved row. An empty table fails: the test would check nothing.
 func TestMovedStubsAreHiddenAndAnnotated(t *testing.T) {
 	if len(movedCommands) == 0 {
 		t.Fatal("movedCommands is empty; the test is vacuous")
 	}
+	for _, w := range wantMoved {
+		found := false
+		for _, m := range movedCommands {
+			if m == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("movedCommands lacks %+v", w)
+		}
+	}
 	root := rootCmdWith(testHooks())
-	for _, m := range movedCommands {
+	for _, m := range append(append([]movedCommand{}, movedCommands...), wantMoved...) {
 		words := strings.Fields(m.Old)
 		c, _, err := root.Find(words)
 		if err != nil || c == nil || c.Name() != words[len(words)-1] {
-			t.Errorf("%s: not found (got %v, %v)", m.Old, c, err)
+			got := "<nil>"
+			if c != nil {
+				got = c.CommandPath()
+			}
+			t.Errorf("%s: not found (got %s, %v)", m.Old, got, err)
 			continue
 		}
 		if !c.Hidden || !c.DisableFlagParsing || !c.SilenceUsage || c.Annotations[removedCmdAnnotation] != "moved to wt-model" {

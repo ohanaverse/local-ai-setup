@@ -478,7 +478,7 @@ func TestInventoryShowsAKeyedFamilyPartialNotDown(t *testing.T) {
 	}
 }
 
-// TestServedIDsSushiReturnsOnlyLoadedPacks pins what `wt served sushi` and the
+// TestServedIDsSushiReturnsOnlyLoadedPacks pins what `wt-model served sushi` and the
 // route sync are given: sushi lists every pack, and only the one whose entry
 // says loaded is serving. An unloaded pack and a loading one are not.
 func TestServedIDsSushiReturnsOnlyLoadedPacks(t *testing.T) {

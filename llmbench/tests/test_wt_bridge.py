@@ -1,4 +1,4 @@
-"""The wt bridge: `wt warm`, `wt served` and `wt stop`, llmbench's calls into wt."""
+"""The wt bridge: `wt-model warm`, `wt-model served` and `wt stop`, llmbench's calls into wt."""
 
 import subprocess
 
@@ -13,11 +13,11 @@ def _cp(stdout="", returncode=0, stderr=""):
 
 @pytest.fixture
 def wt_on_path(monkeypatch):
-    monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: "/usr/local/bin/wt")
+    monkeypatch.setattr(wt_bridge.shutil, "which", lambda name: f"/usr/local/bin/{name}")
 
 
 def test_warm_runs_wt_warm_and_reports_its_failure(monkeypatch, wt_on_path):
-    """`wt warm <provider> <model>` is the keyed warmup llmbench cannot do
+    """`wt-model warm <provider> <model>` is the keyed warmup llmbench cannot do
     itself (#256). A failure raises with wt's own line, which names the fix,
     and the timeout outlasts wt's warmup budget."""
     seen = []
@@ -30,7 +30,7 @@ def test_warm_runs_wt_warm_and_reports_its_failure(monkeypatch, wt_on_path):
     monkeypatch.setattr(wt_bridge.subprocess, "run", run)
 
     wt_bridge.warm("omlx", "Qwen-4bit")
-    assert seen == [(["wt", "warm", "omlx", "Qwen-4bit"], wt_bridge.WARM_TIMEOUT)]
+    assert seen == [(["wt-model", "warm", "omlx", "Qwen-4bit"], wt_bridge.WARM_TIMEOUT)]
     assert wt_bridge.WARM_TIMEOUT > 600
 
     result["cp"] = _cp(returncode=1, stderr="Error: x wants an API key\nwt: x wants an API key\n")
@@ -48,12 +48,12 @@ def test_warm_without_wt_on_path(monkeypatch):
     ("exc", "want", "message"),
     [
         (
-            subprocess.TimeoutExpired(cmd=["wt"], timeout=630),
+            subprocess.TimeoutExpired(cmd=["wt-model"], timeout=630),
             wt_bridge.WtBridgeTimeoutError,
-            "wt warm timed out after 630s",
+            "wt-model warm timed out after 630s",
         ),
-        (FileNotFoundError("wt"), wt_bridge.WtNotFoundError, "wt not found on PATH"),
-        (PermissionError("denied"), wt_bridge.WtBridgeError, "wt warm could not run"),
+        (FileNotFoundError("wt-model"), wt_bridge.WtNotFoundError, "wt-model not found on PATH"),
+        (PermissionError("denied"), wt_bridge.WtBridgeError, "wt-model warm could not run"),
     ],
     ids=["timeout", "vanished", "not-executable"],
 )
@@ -70,6 +70,34 @@ def test_warm_turns_a_subprocess_failure_into_a_bridge_error(
     monkeypatch.setattr(wt_bridge.subprocess, "run", run)
     with pytest.raises(want, match=message):
         wt_bridge.warm("omlx", "Qwen-4bit")
+
+
+# The two binaries are looked up separately: warm and served need wt-model,
+# stop still runs wt, so a machine with only wt installed fails the first two
+# with a wt-model message and still stops a model.
+def test_warm_and_served_need_wt_model_on_path(monkeypatch):
+    monkeypatch.setattr(
+        wt_bridge.shutil, "which", lambda name: "/usr/local/bin/wt" if name == "wt" else None
+    )
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        return _cp()
+
+    monkeypatch.setattr(wt_bridge.subprocess, "run", run)
+    with pytest.raises(wt_bridge.WtNotFoundError, match="^wt-model not found on PATH"):
+        wt_bridge.warm("omlx", "m")
+    with pytest.raises(wt_bridge.WtNotFoundError, match="^wt-model not found on PATH"):
+        wt_bridge.served("omlx")
+    wt_bridge.stop("omlx/m")
+    assert seen == [["wt", "stop", "omlx/m", "--yes"]]
+
+
+# wt-model prints its refusals as `wt-model: <msg>`; _msg strips that prefix
+# as it strips wt's own.
+def test_msg_strips_the_wt_model_prefix():
+    assert wt_bridge._msg(_cp(returncode=1, stderr="wt-model: x\n"), "f") == "x"
 
 
 def test_msg_falls_back_when_wt_printed_nothing():
@@ -132,7 +160,7 @@ def test_msg_is_one_clean_line_and_never_shows_argv(stdout, stderr, want):
 
 
 def test_served_lists_the_models_wt_reports(monkeypatch, wt_on_path):
-    """`wt served <provider>` prints one served model id per line; a provider
+    """`wt-model served <provider>` prints one served model id per line; a provider
     that is down (exit 1) raises, so a caller can tell "nothing loaded" from
     "could not ask"."""
     seen = []
@@ -144,7 +172,7 @@ def test_served_lists_the_models_wt_reports(monkeypatch, wt_on_path):
 
     monkeypatch.setattr(wt_bridge.subprocess, "run", run)
     assert wt_bridge.served("omlx") == ["Qwen3.6-35B-A3B-6bit", "Qwen3.8-27B-8bit"]
-    assert seen == [["wt", "served", "omlx"]]
+    assert seen == [["wt-model", "served", "omlx"]]
 
     result["cp"] = _cp(returncode=1, stderr="wt: omlx gave no usable answer\n")
     with pytest.raises(wt_bridge.WtBridgeError, match="^omlx gave no usable answer$"):

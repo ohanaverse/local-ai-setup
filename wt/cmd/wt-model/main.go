@@ -39,7 +39,7 @@ func rootCmdWith(mk depsFactory, h *host) *cobra.Command {
 	root.SetVersionTemplate("wt-model {{.Version}}\n")
 	// One host config for the whole tree: every admin command reads the
 	// registry through the same h.
-	root.AddCommand(serveCmd(mk), litellmCmd(), modelCmd(h), setupCmd(h))
+	root.AddCommand(serveCmd(mk), litellmCmd(), modelCmd(h), setupCmd(h), servedCmd(h), warmCmd(h))
 	silenceUsageOnError(root)
 	return root
 }

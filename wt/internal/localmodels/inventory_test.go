@@ -879,7 +879,7 @@ func onlyHost(t *testing.T, host string, srv *httptest.Server) *http.Client {
 }
 
 // TestInventorySeesAnMtplxOnThePortWtServesItOn verifies the inventory and
-// `wt served` find an mtplx the registry gives no port for where `wt start`
+// `wt-model served` find an mtplx the registry gives no port for where `wt start`
 // put it (#348). Asking port 80 instead, the picker listed a serving model as
 // not running and offered to start it again, `wt stop` had nothing to stop,
 // and a route sync read the refused connection as a server that is down and

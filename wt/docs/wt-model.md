@@ -19,6 +19,9 @@ wt-model model rm <id>... [--yes]
 wt-model model add mlx_lm_server <target> --draft <draft> --family F   # a target+draft pairing
 ```
 
+`wt-model served` and `wt-model warm` (what a provider serves, and loading a model
+before a run) also live in `wt-model`; see [wt-start-stop.md](wt-start-stop.md).
+
 Each of the three writing commands makes one locked write of the registry and
 then syncs the LiteLLM routes once. The exit code is 0 when the write
 succeeded, even if the sync could only warn; it is 1 for a value that cannot

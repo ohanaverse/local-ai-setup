@@ -41,6 +41,10 @@ import pytest
         # the test fails without starting anything.
         ["/Users/nobody/.local/bin/sushi", "serve"],
         ["/Users/nobody/.local/bin/sushi", "--llmbench-hermetic-no-such-flag"],
+        # `wt-model warm` would load a model on the developer's machine, where
+        # wt-model is installed: a flag it rejects, plus a path that does not exist.
+        ["wt-model", "--llmbench-hermetic-no-such-flag"],
+        ["/Users/nobody/.local/bin/wt-model", "warm", "omlx", "m"],
         # The eval judge's claude-cli route would spend the real subscription.
         ["claude", "-p", "--model", "opus"],
         ["/Users/nobody/.local/bin/claude", "auth", "status"],

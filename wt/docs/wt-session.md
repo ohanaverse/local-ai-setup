@@ -240,8 +240,8 @@ These run with no model server configured:
 These act on the machine they run on, reading `registry.toml` (and
 `config.yaml`) there, never the model server: `wt-model model
 init|add|edit|rm`, `wt-model model list` (the registry listing; `--json` is
-what modeltiers reads), `wt cloud-sync`, `wt litellm sync|list|providers|status|set|restart`, `wt
-served`, `wt warm`, `wt stop <provider>` and `wt stop --all`, and `wt-model
+what modeltiers reads), `wt cloud-sync`, `wt litellm sync|list|providers|status|set|restart`,
+`wt-model served`, `wt-model warm`, `wt stop <provider>` and `wt stop --all`, and `wt-model
 model` (the Models tab). `wt worktrees` and `wt remove` read the registry too,
 for the model artifacts they must never delete; with no registry at the
 default path there is nothing to protect.
