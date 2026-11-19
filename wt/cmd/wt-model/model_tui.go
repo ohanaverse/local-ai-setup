@@ -10,7 +10,8 @@ import (
 )
 
 // modelCmd is `wt-model model`: bare, it opens the Models screen on its
-// Models tab, which needs a terminal.
+// Models tab, which needs a terminal; init, list, add, edit and rm work
+// without one.
 func modelCmd(h *host) *cobra.Command {
 	c := &cobra.Command{
 		Use:          "model",
@@ -19,12 +20,12 @@ func modelCmd(h *host) *cobra.Command {
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !h.stdinTTY() {
-				return errors.New("wt-model model needs a terminal to open the Models tab; without one use `wt-model model list`, `wt model add`, `wt model edit` or `wt model rm`")
+				return errors.New("wt-model model needs a terminal to open the Models tab; without one use `wt-model model list`, `wt-model model add`, `wt-model model edit` or `wt-model model rm`")
 			}
 			return runModelEditor(cmd.OutOrStdout(), cmd.ErrOrStderr(), h, modeleditor.TabModels)
 		},
 	}
-	c.AddCommand(modelListCmd(h))
+	c.AddCommand(modelInitCmd(h), modelListCmd(h), modelAddCmd(h), modelEditCmd(h), modelRmCmd(h))
 	return c
 }
 
@@ -45,7 +46,7 @@ func runModelEditor(out, errOut io.Writer, h *host, start modeleditor.Tab) error
 		Setup:    modeleditor.SetupDepsFromEnv(h.setupEnv()),
 	})
 	if res.RegistryChanged {
-		// What `wt model add|edit|rm` run after their write: the sync's own
+		// What `wt-model model add|edit|rm` run after their write: the sync's own
 		// lines, then its warning on stderr. It never fails.
 		_ = litellm.SyncAndWarn(out, errOut, nil, h.syncRoutesAfterWrite)
 	}

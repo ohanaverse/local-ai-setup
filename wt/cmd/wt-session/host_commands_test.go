@@ -84,12 +84,6 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 		noRegistry bool
 	}
 	for _, tc := range []hostCase{
-		{name: "model add", build: modelCmd, args: []string{"add", "openrouter", "vendor/new", "--family", "f"},
-			check: func(t *testing.T, out string) {
-				if !strings.Contains(out, "added model: openrouter/vendor--new") {
-					t.Errorf("output = %q, want the added model", out)
-				}
-			}},
 		{name: "cloud-sync --dry-run", build: cloudSyncCmd, args: []string{"--only", "openrouter", "--dry-run"},
 			before: func(t *testing.T, cfg *config.Config) (string, error) {
 				var out bytes.Buffer
@@ -129,7 +123,6 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f, _ := hostHome(t, cloudSyncRegistry)
 			stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-			stubSeedEnv(t, config.SeedEnv{})
 			stubRouteSync(t, "")
 			var stopped []string
 			oldStop := stopProvider

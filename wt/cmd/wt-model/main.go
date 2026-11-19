@@ -35,13 +35,30 @@ func rootCmdWith(mk depsFactory, h *host) *cobra.Command {
 		Short:         "Serve wt's models and administer the registry, routes and this machine's setup",
 		Version:       version,
 		SilenceErrors: true,
-		SilenceUsage:  true,
 	}
 	root.SetVersionTemplate("wt-model {{.Version}}\n")
 	// One host config for the whole tree: every admin command reads the
 	// registry through the same h.
 	root.AddCommand(serveCmd(mk), litellmCmd(), modelCmd(h), setupCmd(h))
+	silenceUsageOnError(root)
 	return root
+}
+
+// silenceUsageOnError sets SilenceUsage on every runnable subcommand: an
+// error such a command returns is a failure to report, not a usage mistake,
+// and main prints it as the one "wt-model:" line (style guide M3). A command
+// that shows usage for its own usage mistakes turns it back on in its RunE
+// (`wt-model model edit`). It is a walk, not a literal on each command, so a
+// new subcommand cannot forget it (cmd/wt-session's is the same walk). The
+// root is left out: SilenceUsage on it would silence every subcommand,
+// including the usage block `wt-model model edit` asks for.
+func silenceUsageOnError(root *cobra.Command) {
+	for _, c := range root.Commands() {
+		if c.Runnable() {
+			c.SilenceUsage = true
+		}
+		silenceUsageOnError(c)
+	}
 }
 
 func main() {

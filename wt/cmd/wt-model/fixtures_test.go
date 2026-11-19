@@ -10,9 +10,11 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
-// The helpers below came with `wt-model model list` and its tests from
-// cmd/wt-session (Task 37). modelHome, withCleanConfigEnv, mustRead and
-// stubProbeInventory were already here (helpers_test.go).
+// The helpers below came with `wt-model model list` (Task 37) and
+// `wt-model model init|add|edit|rm` (Task 38) and their tests from
+// cmd/wt-session. modelHome, withCleanConfigEnv, mustRead, writeRegistry,
+// redirectedRegistry, onPath and the stub* helpers of the host's other seams
+// were already here (helpers_test.go).
 
 // probeOf is an inventory probe that always sees snap: what runModelList is
 // handed in a test in place of the host's probeInventory seam.
@@ -25,8 +27,18 @@ func probeOf(snap localmodels.Snapshot) func(*config.Config) localmodels.Snapsho
 // error.
 func runWTModel(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	return runWTModelOn(t, testHost(), args...)
+}
+
+// runWTModelOn is runWTModel over host h, for a test that stubs h's seams
+// first. Each call is a new command line, as a new process would be: h's
+// cached host config is dropped first, so a run after one that wrote the
+// registry reads the registry as it is now.
+func runWTModelOn(t *testing.T, h *host, args ...string) (string, error) {
+	t.Helper()
 	asWTModel(t)
-	cmd := rootCmdWith(fakeDeps, testHost())
+	h.hostSet = false
+	cmd := rootCmdWith(fakeDeps, h)
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
@@ -51,3 +63,12 @@ func jsonKeySet(t *testing.T, raw []byte) []string {
 	slices.Sort(keys)
 	return keys
 }
+
+// stubConfirmRemove answers h's `wt-model model rm` question and records it.
+func stubConfirmRemove(h *host, answer bool) *string {
+	asked := new(string)
+	h.confirmRemove = func(q string) (bool, error) { *asked = q; return answer, nil }
+	return asked
+}
+
+func sp(s string) *string { return &s }

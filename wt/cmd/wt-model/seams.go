@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"os"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -31,6 +32,12 @@ type seams struct {
 	// registry write and returns a warning for the user, or "" when the
 	// routes are in step.
 	syncRoutesAfterWrite func(out, errOut io.Writer) string
+	// openTTY opens the controlling terminal a question is asked on.
+	openTTY func() (*os.File, error)
+	// confirmRemove asks before `wt-model model rm` removes rows: a y/N
+	// prompt on the controlling terminal (realConfirmRemove), so piped input
+	// can never authorise a removal.
+	confirmRemove func(question string) (bool, error)
 	// stdinTTY reports whether stdin is a terminal.
 	stdinTTY func() bool
 	// stdoutWidth is the terminal's width in columns, or 0 when stdout is
@@ -48,6 +55,7 @@ func newHost() *host {
 		probeInventory: localmodels.Inventory,
 		seedEnv:        config.DefaultSeedEnv,
 		ollamaCaps:     modeladmin.OllamaCapabilities,
+		openTTY:        func() (*os.File, error) { return os.OpenFile("/dev/tty", os.O_RDWR, 0) },
 		stdinTTY:       cli.IsStdinTTY,
 		stdoutWidth:    cli.StdoutWidth,
 		modeleditorRun: func(theme themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error) {
@@ -55,7 +63,15 @@ func newHost() *host {
 		},
 	}}
 	h.syncRoutesAfterWrite = h.realSyncRoutesAfterWrite
+	h.confirmRemove = h.realConfirmRemove
 	return h
+}
+
+// realConfirmRemove asks question on the terminal h.openTTY opens (read per
+// call, so a test that takes the terminal away reaches the real refusal):
+// cli.ErrNoTerminal when there is none.
+func (h *host) realConfirmRemove(question string) (bool, error) {
+	return cli.AskOnTTY(h.openTTY, question, cli.ErrNoTerminal)
 }
 
 // realSyncRoutesAfterWrite reloads the config (the registry just changed) and

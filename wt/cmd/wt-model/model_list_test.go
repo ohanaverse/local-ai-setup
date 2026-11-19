@@ -99,7 +99,7 @@ func TestModelListFitsEightyColumns(t *testing.T) {
 // TestModelListDropsSizeBeforeItCutsAnId verifies that at 60 columns SIZE
 // goes too, because keeping it would leave MODEL under 20 columns, and that
 // at 40 the five kept columns stay whole with every id on a line of its own.
-// The id is what the user copies into `wt model edit` or `wt -M`, so it is
+// The id is what the user copies into `wt-model model edit` or `wt -M`, so it is
 // moved, never cut.
 func TestModelListDropsSizeBeforeItCutsAnId(t *testing.T) {
 	probe := probeOf(modelListSnapshot())

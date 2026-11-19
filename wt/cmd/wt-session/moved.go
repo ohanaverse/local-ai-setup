@@ -35,9 +35,14 @@ const movedAnnotation = "moved to wt-model"
 // wt-model).
 type movedCommand struct{ Old, New string }
 
-// movedCommands is every command registered as a pointer stub. Empty until the
-// wt-model commands they point at exist (rows land with Tasks 37, 38 and 42).
-var movedCommands = []movedCommand{}
+// movedCommands is every command registered as a pointer stub (Task 42 adds
+// the rest).
+var movedCommands = []movedCommand{
+	{"model init", "model init"},
+	{"model add", "model add"},
+	{"model edit", "model edit"},
+	{"model rm", "model rm"},
+}
 
 // movedError is the one wording of a command that moved to wt-model: exit 1, one line, nothing changed.
 // old is the wt command as typed (after "wt "), new the wt-model command that replaces it.
