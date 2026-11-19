@@ -62,7 +62,7 @@ location = "local"
 local_path = "/tmp/some-model-4bit"   # absolute path to Step 1's output directory
 ```
 
-Then `wt litellm sync`, because no tool saw the hand edit. `wt-model model list` shows the entry with its PATH, and STATUS from a stat of that path. To load it, serve the directory with omlx (its model directory is where omlx looks) and run `wt start <id>` — there is no separate routing step: a local model is routed while it runs. From there it's usable through `wt` and `llmbench` exactly like any other omlx model.
+Then `wt-model litellm sync`, because no tool saw the hand edit. `wt-model model list` shows the entry with its PATH, and STATUS from a stat of that path. To load it, serve the directory with omlx (its model directory is where omlx looks) and run `wt start <id>` — there is no separate routing step: a local model is routed while it runs. From there it's usable through `wt` and `llmbench` exactly like any other omlx model.
 
 ### 3. Register a target+draft pairing (feature 2)
 
@@ -97,7 +97,7 @@ Unlike ollama/omlx, **`mlx_lm_server` has no baked-in default pairing** — you 
 
 ### 5. Route and use it
 
-The isolated pairing is live on port 8001; provided the pairing is registered (Step 3 — `mlx_lm_server` is never discovered, so an unregistered pairing gets no row and no route), `wt litellm sync` then adds its route, so it shows up in `wt`'s model picker with `api_base http://localhost:8001/v1`, same as any other local provider. `llmbench run` sweeps `mlx_lm_server` targets like any other local provider too — isolation resolves the pairing from the registry automatically.
+The isolated pairing is live on port 8001; provided the pairing is registered (Step 3 — `mlx_lm_server` is never discovered, so an unregistered pairing gets no row and no route), `wt-model litellm sync` then adds its route, so it shows up in `wt`'s model picker with `api_base http://localhost:8001/v1`, same as any other local provider. `llmbench run` sweeps `mlx_lm_server` targets like any other local provider too — isolation resolves the pairing from the registry automatically.
 
 ## Verification
 

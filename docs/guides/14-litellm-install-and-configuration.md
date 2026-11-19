@@ -2,7 +2,7 @@
 
 > Use this to: install the LiteLLM proxy and its database on a fresh macOS machine, write its LaunchAgent plist (every key explained), start it, link its master key to `wt-model`, verify it, restart and upgrade it, and fix the common failures. wt never installs LiteLLM; this guide is the authority a human or an agent follows.
 >
-> Verified against: LiteLLM 1.109.1 (`litellm --version`) on 2026-11-17. Behaviour of `wt litellm restart`, `bin/update/litellm` and the plist reader taken from their source (`wt/internal/litellm/restart.go`, `proxyenv.go`, `bin/update/litellm`); the install steps were not re-run on a fresh machine for this guide.
+> Verified against: LiteLLM 1.109.1 (`litellm --version`) on 2026-11-17. Behaviour of `wt-model litellm restart`, `bin/update/litellm` and the plist reader taken from their source (`wt/internal/litellm/restart.go`, `proxyenv.go`, `bin/update/litellm`); the install steps were not re-run on a fresh machine for this guide.
 
 Paths below use `/Users/user_name` for your home directory; substitute your own. `launchd` does not expand `~` or `$HOME` inside a plist, so a plist always carries absolute paths.
 
@@ -71,11 +71,11 @@ mkdir -p ~/.config/litellm
 echo "model_list: []" > ~/.config/litellm/config.yaml
 ```
 
-Do not `touch` an empty file: LiteLLM fails to start on it, while `model_list: []` is a valid empty config. From here **wt owns this file**: `wt litellm sync` (and `wt start`/`stop`, `wt-model cloud-sync`) rewrites `model_list` to match the registry and the running local models. Edit only the proxy-only sections (for example `general_settings`) by hand; what is safe to edit is in [04-litellm-config.md](04-litellm-config.md). `WT_LITELLM_CONFIG` redirects the path wt writes. Optional Redis wiring goes under `general_settings` (`coordination_redis`, see the reference doc above).
+Do not `touch` an empty file: LiteLLM fails to start on it, while `model_list: []` is a valid empty config. From here **wt owns this file**: `wt-model litellm sync` (and `wt start`/`stop`, `wt-model cloud-sync`) rewrites `model_list` to match the registry and the running local models. Edit only the proxy-only sections (for example `general_settings`) by hand; what is safe to edit is in [04-litellm-config.md](04-litellm-config.md). `WT_LITELLM_CONFIG` redirects the path wt writes. Optional Redis wiring goes under `general_settings` (`coordination_redis`, see the reference doc above).
 
 ### 5. The plist
 
-Save as `~/Library/LaunchAgents/local.litellm.proxy.plist`. The Label **must** be `local.litellm.proxy`: `wt litellm restart` targets that job, and wt reads the proxy's environment from that file name.
+Save as `~/Library/LaunchAgents/local.litellm.proxy.plist`. The Label **must** be `local.litellm.proxy`: `wt-model litellm restart` targets that job, and wt reads the proxy's environment from that file name.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -142,7 +142,7 @@ Every `<key>` is followed by a value element of its own: `StandardErrorPath` tak
 |---|---|---|
 | `Label` | The launchd job name; wt kickstarts `gui/<uid>/local.litellm.proxy` | Yes, exactly this |
 | `ProgramArguments` | The `litellm` binary, `--config <absolute config.yaml>`, `--port 4000` | Yes; 4000 is the port wt and the guides assume |
-| `RunAtLoad` / `KeepAlive` | Start at login; relaunch when it exits (this is how a restart comes back) | Yes for `wt litellm restart` to work |
+| `RunAtLoad` / `KeepAlive` | Start at login; relaunch when it exits (this is how a restart comes back) | Yes for `wt-model litellm restart` to work |
 | `StandardOutPath` / `StandardErrorPath` | Log files (`~/.litellm.log`, `~/.litellm.err.log`). Lines carry only `HH:MM:SS`, no date | Recommended |
 | `SoftResourceLimits.NumberOfFiles` | Open-file limit; launchd's default is low for a proxy holding many connections | Recommended |
 | `EnvironmentVariables.PATH` | Where the proxy finds helper binaries | Yes (launchd's default PATH is minimal) |
@@ -197,10 +197,10 @@ To reload after an edit to a plist already loaded, `launchctl bootout gui/$(id -
 ### 9. Restart and upgrade
 
 ```bash
-wt litellm restart
+wt-model litellm restart
 ```
 
-This sends the proxy one SIGTERM and waits for it to finish a request in flight (up to **3 minutes**), then launchd starts it again. The port refuses connections for the whole drain; past 3 minutes the proxy is killed, the in-flight request is cut off with a notice, and launchd starts it again. wt then waits up to 30 s for the proxy to answer, but only when a LiteLLM url is configured (wt-model's pair, or the `[litellm]` table's read-only fallback); with no pair yet — the state at this point of a fresh install, since section 10 writes it — the restart is made and not waited for, and the command says so. If the job is not running, or `launchctl` finds no pid, wt runs the forced `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`, which kills after 5 seconds. Set `WT_LITELLM_RESTART_CMD` to run your own command instead (for a proxy not under that LaunchAgent). Prefer `wt litellm restart` over a bare `kickstart -k` whenever an agent might be mid-request.
+This sends the proxy one SIGTERM and waits for it to finish a request in flight (up to **3 minutes**), then launchd starts it again. The port refuses connections for the whole drain; past 3 minutes the proxy is killed, the in-flight request is cut off with a notice, and launchd starts it again. wt then waits up to 30 s for the proxy to answer, but only when a LiteLLM url is configured (wt-model's pair, or the `[litellm]` table's read-only fallback); with no pair yet — the state at this point of a fresh install, since section 10 writes it — the restart is made and not waited for, and the command says so. If the job is not running, or `launchctl` finds no pid, wt runs the forced `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`, which kills after 5 seconds. Set `WT_LITELLM_RESTART_CMD` to run your own command instead (for a proxy not under that LaunchAgent). Prefer `wt-model litellm restart` over a bare `kickstart -k` whenever an agent might be mid-request.
 
 Upgrade with the repo script, never a bare `uv tool upgrade` (the Prisma client and the running process would both go stale):
 
@@ -230,13 +230,13 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:4000/health/liveliness
 curl -s http://localhost:4000/health/readiness                                        # no key; shows "db":"connected"
 curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer <master key>" http://localhost:4000/v1/models
 wt litellm status        # proxy url, whether wt's key is set (never printed)
-wt litellm list          # the model ids currently routed (live state: run it, do not copy it)
+wt-model litellm list    # the model ids currently routed (live state: run it, do not copy it)
 ```
 
 - Liveliness only proves the process is up, not that your key is right.
 - Readiness reports the database; if `db` is not connected, check `DATABASE_URL`, Postgres and `~/.litellm.err.log`.
 - `/v1/models` is the only key check: **200** means the key is accepted, **401** means the key you sent differs from the plist's `LITELLM_MASTER_KEY`.
-- An empty `model_list` returns an empty list: that is fine before `wt litellm sync`.
+- An empty `model_list` returns an empty list: that is fine before `wt-model litellm sync`.
 
 ## What `wt-model setup` does for LiteLLM
 
@@ -260,7 +260,7 @@ wt litellm list          # the model ids currently routed (live state: run it, d
 
 The plan refuses first when the LiteLLM job is not loaded (`kickstart` cannot start one); it names the `launchctl bootstrap` command to load it.
 
-Both restarts are `kickstart -k`: a request in flight through LiteLLM or wt-model is cut at once (unlike `wt litellm restart`, which lets it finish), and the plan says so. Rotate when no agent is mid-request. To restore the old plist by hand: `cp -p <backup> ~/Library/LaunchAgents/local.litellm.proxy.plist && chmod 600 ~/Library/LaunchAgents/local.litellm.proxy.plist` (the result names the backup).
+Both restarts are `kickstart -k`: a request in flight through LiteLLM or wt-model is cut at once (unlike `wt-model litellm restart`, which lets it finish), and the plan says so. Rotate when no agent is mid-request. To restore the old plist by hand: `cp -p <backup> ~/Library/LaunchAgents/local.litellm.proxy.plist && chmod 600 ~/Library/LaunchAgents/local.litellm.proxy.plist` (the result names the backup).
 
 Anything else that holds the old master key stops working once LiteLLM restarts: other clients and scripts that send it, a `[litellm]` `api_key` in `~/.config/agent-wt/config.toml` if one is set there, and copies of the plist (the backup keeps the old key; remove it once the new key works). Rotation never touches the salt key, `DATABASE_URL`, provider keys or the UI login.
 
@@ -336,7 +336,7 @@ This plist carries no "managed by wt" marker, so wt's local-mode setup treats it
 | `Unable to find Prisma binaries` / run `prisma generate` | Wrong Python, or the client is stale after an upgrade. Reinstall on Python 3.11, then run section 3's generate. |
 | Proxy hangs at startup or the UI login fails | No Postgres, a wrong `DATABASE_URL`, or SQLite. Check `pg_isready` and the readiness `db` field. |
 | `launchctl bootstrap` fails (`Input/output error`) | The plist is malformed or already loaded. Run `plutil -lint`; `bootout` first if loaded. |
-| Port 4000 refuses connections for up to ~3 minutes after `wt litellm restart` | The drain waiting on a request in flight. Watch `~/.litellm.log`; normal. |
+| Port 4000 refuses connections for up to ~3 minutes after `wt-model litellm restart` | The drain waiting on a request in flight. Watch `~/.litellm.log`; normal. |
 | `/v1/models` returns 401 | Wrong bearer. Compare the key with the plist's `LITELLM_MASTER_KEY`; update wt-model with `wt-model litellm set` and restart it. |
 | wt-model returns auth errors after you rotated the master key | wt-model reads the pair once. Restart it. |
 | Stored provider keys fail to decrypt | `LITELLM_SALT_KEY` changed. Restore the original; there is no recovery otherwise. |
@@ -346,7 +346,7 @@ This plist carries no "managed by wt" marker, so wt's local-mode setup treats it
 
 ## Going deeper
 
-- Proxy config, `wt litellm sync`, the Admin UI: [04-litellm-config.md](04-litellm-config.md)
+- Proxy config, `wt-model litellm sync`, the Admin UI: [04-litellm-config.md](04-litellm-config.md)
 - Restarts, upgrades, log triage: [08-maintenance-and-troubleshooting.md](08-maintenance-and-troubleshooting.md)
 - Redis and the Admin UI setup history: [litellm-admin-ui-setup.md](../reference/litellm-admin-ui-setup.md) (it no longer recommends `prisma db push`; section 3 here is the schema procedure)
 - wt-model server, its token and the pair: [wt-model-server.md](../../wt/docs/wt-model-server.md); layouts: [13-deployment-use-cases.md](13-deployment-use-cases.md)

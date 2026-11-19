@@ -124,8 +124,8 @@ spawn argv, a stop argv, a pidfile, a log and a readiness check is:
 8. **Route it through LiteLLM.** Never edit
    `~/.config/litellm/config.yaml` by hand: `wt` owns that file and derives
    the routes from `registry.toml` plus live probes. Once the model is in
-   the registry and running, run `wt litellm sync` and confirm the route
-   with `wt litellm list`.
+   the registry and running, run `wt-model litellm sync` and confirm the route
+   with `wt-model litellm list`.
 9. **Smoke test:** `./benchmarks/qwen3.8-benchmark 30` and
    `uv run llmbench provider isolate <new-backend>` (from `llmbench/`, or
    `uv run --directory llmbench llmbench provider isolate <new-backend>`

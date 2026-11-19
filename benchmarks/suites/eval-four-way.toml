@@ -14,7 +14,7 @@
 # unknown model fails load_suite; guide 02 Step 4 for rec and mtplx), and have
 # LiteLLM answering with the ollama model in its model_list: a route = "litellm"
 # row sends the registry model id to the proxy, which fails that row mid-sweep
-# when the route is missing (wt litellm list shows what is routed).
+# when the route is missing (wt-model litellm list shows what is routed).
 #
 # Run notes:
 #   - Start with samples = 1 (judge quota; see below), then raise it.

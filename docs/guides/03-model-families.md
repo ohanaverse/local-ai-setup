@@ -28,7 +28,7 @@ It prints the number of `[[models]]` entries in your registry; anything ≥2 is 
 ```bash
 wt-model model edit <id> --family <name> --tags code,design   # family and tags (or: `wt-model model`, then enter on the row)
 "${EDITOR:-vi}" ~/.config/local-ai/registry.toml          # a [[families]] display name is the one hand edit here
-wt litellm sync --dry-run                          # read-only: `config error: parse …` if the file is no longer valid TOML
+wt-model litellm sync --dry-run                           # read-only: `config error: parse …` if the file is no longer valid TOML
 ```
 
 ```bash

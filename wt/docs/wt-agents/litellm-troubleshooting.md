@@ -198,7 +198,7 @@ litellm_settings:
 
 Applied 2026-08-31; copilot verified green with `ollama/glm-5.3-flash:cloud`
 after `drop_params`. Note: `~/.config/litellm/config.yaml` is written by
-wt (`wt litellm ...`) — wt preserves hand-written sections and comments, and
+wt (`wt-model litellm ...`) — wt preserves hand-written sections and comments, and
 re-enforces `drop_params` on every write.
 
 ### copilot — `responses` wire drops leading characters (fix in wt: WIRE_API=completions)
@@ -277,12 +277,12 @@ satisfies `EnsureSettings`'s "has this key at all" guard and is left exactly
 as-is on every future write — it will keep crashing under copilot until one
 of:
 
-- deleting that row from `config.yaml` by hand and running `wt litellm sync`
+- deleting that row from `config.yaml` by hand and running `wt-model litellm sync`
   (which re-adds it fresh, picking up the wider default, as long as the
   model is a cloud model or a running local one), or
 - a hand edit of that row's `additional_drop_params` to add
   `frequency_penalty`/`presence_penalty`, then restart the proxy
-  (`wt litellm sync`, or the `launchctl kickstart` fallback in the Ops
+  (`wt-model litellm sync`, or the `launchctl kickstart` fallback in the Ops
   notes below).
 
 Verify with a direct curl probe (expect a normal `chat.completion`, not a
@@ -398,7 +398,7 @@ wt.
 - The proxy loads `~/.config/litellm/config.yaml` **only at startup** — after
   editing it, restart the proxy (locally: `kill <pid>` +
   `nohup litellm --config ~/.config/litellm/config.yaml --port 4000
-  >> ~/.litellm.log 2>> ~/.litellm.err.log &`. `wt litellm sync` restarts the proxy for you (`WT_LITELLM_RESTART_CMD`, else launchctl kickstart) — see
+  >> ~/.litellm.log 2>> ~/.litellm.err.log &`. `wt-model litellm sync` restarts the proxy for you (`WT_LITELLM_RESTART_CMD`, else launchctl kickstart) — see
   [README · LiteLLM proxy lifecycle](README.md#litellm-proxy-lifecycle)).
 - The litellm key for probes lives in the `wt-model` home's key file
   (`~/.config/wt-model/litellm.key`; the `[litellm].api_key` of wt's

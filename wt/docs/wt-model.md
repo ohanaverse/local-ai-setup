@@ -362,7 +362,7 @@ share an id is a hand edit — only there can you see which row is which.
   is not a string). wt lists the row, and refuses to write it — `wt-model model
   edit` and the form say `fetch must be a table` — until the value is fixed.
 
-Run `wt litellm sync` after a hand edit: no tool saw it.
+Run `wt-model litellm sync` after a hand edit: no tool saw it.
 
 ## The Models tab (`wt-model model`)
 
@@ -479,7 +479,7 @@ the registry twice (providers A, B); wt cannot tell which one you mean — fix
 the entry in <registry path>`); both rows are listed, and the cursor stays on
 the one it was on. If wt is
 killed before the sync, the next `wt start`, `wt stop` or launch through
-LiteLLM repairs the routes, and `wt litellm sync` does it at once. A sync that
+LiteLLM repairs the routes, and `wt-model litellm sync` does it at once. A sync that
 leaves `config.yaml` unchanged does not restart the proxy.
 
 What the last action said stays above the table until the next key. On a

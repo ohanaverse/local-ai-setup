@@ -119,9 +119,9 @@ server's start and stop jobs do on its host.
   something else started — gets only its own missing route: that write
   removes no route and never replaces a hand-written row whose name is not
   a registry model id (one named like a registry id is adopted as wt's own
-  row, as `wt litellm sync` does — guide 04,
+  row, as `wt-model litellm sync` does — guide 04,
   `docs/guides/04-litellm-config.md`, Gotchas). Stale routes are left to the
-  next start, stop or `wt litellm sync`.
+  next start, stop or `wt-model litellm sync`.
 - Cloud or unknown id: exits 1.
 
 ## `wt stop [model|provider]`
@@ -504,7 +504,7 @@ recently used when a load does not fit.
     already serving a model"; `--replace` skips the question. The prompt
     names models only when every model in the pool is loaded. wt cannot
     predict or report what omlx unloads.
-  - `wt litellm sync` leaves omlx routes as they are, with a warning, while
+  - `wt-model litellm sync` leaves omlx routes as they are, with a warning, while
     the pool is partly loaded. The route of a model omlx unloaded stays
     until the pool is empty or fully loaded.
   - `wt stop <omlx model>` usually ends at `model "<id>" is not running`
@@ -520,7 +520,7 @@ recently used when a load does not fit.
 - A load wt does not perform is not covered: an agent that dials omlx
   directly and names a model that is not loaded makes omlx load it, and
   possibly evict another, with no prompt. The routes are corrected by
-  `wt litellm sync`; a launch writes no route itself (a running model the
+  `wt-model litellm sync`; a launch writes no route itself (a running model the
   model server knows to be unrouted is started there first, which writes it).
 
 ## A launch on the model server (`[model-server]`)

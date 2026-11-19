@@ -211,8 +211,8 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      removals are real. `--force` does not replace the digest.
    - With exit 2 to 5 the `openrouter:` flow may still have been applied in the
      same run. Read its lines before telling the user that nothing changed.
-4. **Check the routes:** `wt litellm list`. After a `routes: warning:`, an
-   exit 1, or a run that was interrupted (Ctrl-C, a crash), run `wt litellm
+4. **Check the routes:** `wt-model litellm list`. After a `routes: warning:`, an
+   exit 1, or a run that was interrupted (Ctrl-C, a crash), run `wt-model litellm
    sync` first: the route sync is the last thing a run does.
 5. **Families.** A new entry's family is derived (an existing ollama entry
    with the same name stem, else the stem itself). Ask whether any should

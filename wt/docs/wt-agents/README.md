@@ -22,8 +22,8 @@ are added and removed automatically by
 ```bash
 wt-model litellm set --url URL --api-key KEY   # the proxy pair the gateway forwards with (the ~/.config/wt-model/ home)
 wt litellm status                              # url + api_key_set
-wt litellm sync [--dry-run]                    # route every registry cloud model + every running (or pulled ollama) local model
-wt litellm list                                # routed ids in config.yaml (hand-written rows marked)
+wt-model litellm sync [--dry-run]              # route every registry cloud model + every running (or pulled ollama) local model
+wt-model litellm list                          # routed ids in config.yaml (hand-written rows marked)
 ```
 
 Native models (`claude/native`, `copilot/native`) are always shown and do not
@@ -49,11 +49,11 @@ still parsed and kept on save, read by nothing, and a true value prints one
 note per process. `wt litellm on` / `wt litellm off` are hidden stubs that
 exit 1.
 
-**wt owns reconciliation.** `wt litellm sync` (and the
+**wt owns reconciliation.** `wt-model litellm sync` (and the
 automatic route updates from `wt start`/`wt stop`) write `config.yaml` and then
 restart the proxy after a change. Every one of them then waits up to 30s for
 `/health/liveliness` before it is done, when a LiteLLM URL is configured and a
-pre-probe before the restart was not refused: `wt litellm sync` and the
+pre-probe before the restart was not refused: `wt-model litellm sync` and the
 commands that run it after a registry write (`wt-model cloud-sync`, `wt-model model
 add|edit|rm|init`, the Models tab of `wt-model model`) before they return (#382),
 and the automatic route updates from the host's `wt stop <provider>`/`--all`
@@ -82,7 +82,7 @@ what it prints:
 - When launchd reports no pid for the job (it is not running, or there is no
   `launchctl`), wt runs the forced command directly.
 
-`wt litellm restart` makes this restart on its own: the same drain, then the
+`wt-model litellm restart` makes this restart on its own: the same drain, then the
 wait for the proxy to answer again (up to 30s). It exits 1 when the restart
 fails or the proxy does not answer, and `bin/update/litellm` runs it after an
 upgrade.
@@ -91,7 +91,7 @@ The forced command is `launchctl kickstart -k
 gui/$(id -u)/local.litellm.proxy`: launchd sends SIGTERM and kills the proxy 5
 seconds later, cutting off any request still in flight. It is the manual
 restart for a proxy that is stuck, and what `bin/update/litellm` falls back to
-with a wt too old to have `wt litellm restart`. A command set in
+with no wt-model on PATH that has `litellm restart`. A command set in
 `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`) replaces
 all of the above: wt runs it as given, with a 30s limit, and neither looks up
 nor signals the proxy.
@@ -103,12 +103,12 @@ row whose provider's probe did not succeed — it leaves the id's route as it is
 (`model "<id>" is in the registry twice (providers A, B); its route is left
 as it is — fix the entry in <registry path>`).
 If a model was added by hand or the restart failed, restart the proxy
-manually. `wt litellm restart` lets a request in flight finish first; the
+manually. `wt-model litellm restart` lets a request in flight finish first; the
 forced restart cuts it off after 5 seconds, and is for a proxy that does not
 exit on its own:
 
 ```bash
-wt litellm restart
+wt-model litellm restart
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy   # forced
 ```
 
