@@ -297,7 +297,8 @@ func (m *model) serverObserveOptions() modelsetup.ObserveOptions {
 // key goes in only while it is asked for.
 func (m *model) serverDesired() modelsetup.Desired {
 	st := &m.server
-	d := modelsetup.Desired{Mode: st.want.Mode}
+	var d modelsetup.Desired
+	d.Mode = st.want.Mode
 	switch st.want.Mode {
 	case modelclient.ModeLocal:
 		d.Listen, d.TokenFile = st.value(sfListen), st.value(sfLocalToken)

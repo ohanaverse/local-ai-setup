@@ -336,7 +336,7 @@ func applyPair(env Env, p Plan, s Step) error {
 		}
 		key = strings.TrimSpace(v)
 	case ActionPairKeyEntered:
-		key = strings.TrimSpace(p.Want.MasterKey.Reveal())
+		key = strings.TrimSpace(p.Admin.MasterKey.Reveal())
 		if key == "" {
 			return errors.New("no master key was entered")
 		}

@@ -363,7 +363,7 @@ func TestObserveCountsDanglingAgentPlistAndTokenLinksAsPresent(t *testing.T) {
 		t.Errorf("dangling token link: %+v", tk)
 	}
 	st.Host.ConfigHome = "/Users/user_name/.config"
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, TokenFile: obsTokenPath})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal, TokenFile: obsTokenPath}})
 	if err == nil || !strings.Contains(err.Error(), obsAgentPath) || !strings.Contains(err.Error(), obsTokenPath) || len(p.Steps) != 0 {
 		t.Errorf("plan over dangling links: err %v, steps %d", err, len(p.Steps))
 	}
@@ -378,7 +378,7 @@ func TestPlanRefusesAPastedTokenOverADanglingLink(t *testing.T) {
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
 	st.Host.ConfigHome = "/Users/user_name/.config"
 	st.TokenFiles = []TokenState{{Path: RemoteTokenPath(st.Host.ConfigHome), Exists: true, Dangling: true, Err: RemoteTokenPath(st.Host.ConfigHome) + " is a symlink that does not resolve"}}
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: "http://m:1", PastedToken: Secret("tok")})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "http://m:1", PastedToken: Secret("tok")}})
 	if err == nil || !strings.Contains(err.Error(), "symlink that does not resolve") || len(p.Steps) != 0 {
 		t.Errorf("pasted token over a dangling link: err %v, steps %d", err, len(p.Steps))
 	}
@@ -392,7 +392,7 @@ func TestPlanReplacesAnUnreadableTokenWithAPastedOne(t *testing.T) {
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
 	st.Host.ConfigHome = "/Users/user_name/.config"
 	st.TokenFiles = []TokenState{{Path: RemoteTokenPath(st.Host.ConfigHome), Exists: true, Err: "read: permission denied"}}
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: "http://m:1", PastedToken: Secret("tok")})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "http://m:1", PastedToken: Secret("tok")}})
 	if err != nil || len(p.Steps) == 0 {
 		t.Errorf("pasted token over an unreadable file: err %v, steps %d", err, len(p.Steps))
 	}
@@ -414,7 +414,7 @@ func TestObserveCountsADanglingLiteLLMPlistLinkAsPresent(t *testing.T) {
 		t.Fatalf("dangling plist link: %+v", lp)
 	}
 	st.Host.ConfigHome = "/Users/user_name/.config"
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 	if err == nil || !strings.Contains(err.Error(), "already exists") || len(p.Steps) != 0 {
 		t.Errorf("create over a dangling link: err %v, steps %d", err, len(p.Steps))
 	}

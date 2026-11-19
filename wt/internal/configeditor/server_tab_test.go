@@ -110,7 +110,8 @@ func (sm *serverMachine) deps() ServerDeps {
 			}
 			p := sm.plan
 			if p.Want.Mode == "" {
-				p.Want = want
+				p.Want = want.Desired
+				p.Admin = want.AdminWant
 			}
 			return p, nil
 		},
@@ -583,10 +584,10 @@ func noKeyState() modelsetup.State {
 
 // okPlan is a two-step plan for the confirm screen.
 func okPlan() modelsetup.Plan {
-	return modelsetup.Plan{Steps: []modelsetup.Step{
+	return modelsetup.Plan{Plan: modelmode.Plan{Steps: []modelsetup.Step{
 		{Kind: modelsetup.StepToken, Detail: "create the token file /Users/dev/.config/wt-model/server.token"},
 		{Kind: modelsetup.StepConfig, Detail: "write [model-server] in /Users/dev/.config/agent-wt/config.toml: mode = \"local\""},
-	}}
+	}}}
 }
 
 // hintLine is the view's last line: the key hints.
@@ -1016,7 +1017,7 @@ func TestServerTabMasksThePastedTokenAndTheKey(t *testing.T) {
 		t.Errorf("the confirm screen shows the master key")
 	}
 	m = keys(t, m, "y")
-	if sm.applied[0].Want.MasterKey.Reveal() != "sk-MASTER-SECRET" {
+	if sm.applied[0].Admin.MasterKey.Reveal() != "sk-MASTER-SECRET" {
 		t.Errorf("the master key did not reach Apply")
 	}
 	if m.server.fields[sfMaster].Value() != "" || strings.Contains(plain(m), "MASTER-SECRET") {
@@ -1231,7 +1232,7 @@ func TestServerTabRealPlanNeverShowsTheSecrets(t *testing.T) {
 	sm = &serverMachine{states: []modelsetup.State{local}, build: true}
 	m = keys(t, serverEditor(t, sm, 120, 50), "down", "down", "down", "sk-FAKE-SECRET", "esc", "a")
 	p, err = modelsetup.BuildPlan(sm.planned[0], sm.desired[0])
-	if err != nil || p.Want.MasterKey.Reveal() != "sk-FAKE-SECRET" {
+	if err != nil || p.Admin.MasterKey.Reveal() != "sk-FAKE-SECRET" {
 		t.Fatalf("real local plan: err %v, or the key did not reach Want", err)
 	}
 	if m.server.phase != serverConfirm || strings.Contains(plain(m), "FAKE-SECRET") || strings.Contains(p.Format(), "FAKE-SECRET") {

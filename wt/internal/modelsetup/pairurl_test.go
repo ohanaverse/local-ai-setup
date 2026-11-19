@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 )
 
 // wantNotCheckedPairAtURL pins the fixed text every LiteLLM network check
@@ -58,28 +59,28 @@ type pairScenario struct {
 func pairScenarios() []pairScenario {
 	ap := func(t *testing.T) *fakeEnv { return apEnv(t) }
 	return []pairScenario{
-		{"local keep", baseState, Desired{Mode: modelclient.ModeLocal}, ap},
-		{"local use-existing-key", baseState, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey}, ap},
+		{"local keep", baseState, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}, ap},
+		{"local use-existing-key", baseState, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMUseExistingKey}}, ap},
 		{"local entered key", func() State {
 			st := baseState()
 			st.LiteLLMPlist.HasMasterKey = false
 			st.Pair.KeySet = false
 			return st
-		}, Desired{Mode: modelclient.ModeLocal, MasterKey: plMasterKey}, ap},
+		}, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{MasterKey: plMasterKey}}, ap},
 		{"tighten", func() State { st := baseState(); st.LiteLLMPlist.Mode = 0o644; return st },
-			Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMTighten}, func(t *testing.T) *fakeEnv {
+			Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMTighten}}, func(t *testing.T) *fakeEnv {
 				f := apEnv(t)
 				f.modes[plLiteLLM] = 0o644
 				return f
 			}},
-		{"create", createState, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate}, func(t *testing.T) *fakeEnv {
+		{"create", createState, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}}, func(t *testing.T) *fakeEnv {
 			f := apEnv(t)
 			liteLLMUp(f, 77)
 			return f
 		}},
-		{"rotate", rotateState, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}, rotEnv},
-		{"native", baseState, Desired{Mode: modelclient.ModeNative}, ap},
-		{"remote", baseState, Desired{Mode: modelclient.ModeRemote, URL: "gpu.example:8787", PastedToken: plPasted, SaveUnchecked: true}, ap},
+		{"rotate", rotateState, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}, rotEnv},
+		{"native", baseState, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeNative}}, ap},
+		{"remote", baseState, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "gpu.example:8787", PastedToken: plPasted, SaveUnchecked: true}}, ap},
 	}
 }
 
@@ -305,7 +306,7 @@ func TestPlainPairURLIsShownAndCheckedAsBefore(t *testing.T) {
 		}
 		b := baseState()
 		b.Pair = st.Pair
-		p := mustPlan(t, b, Desired{Mode: modelclient.ModeLocal})
+		p := mustPlan(t, b, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 		if !strings.Contains(p.Format(), "keep wt-model's LiteLLM pair ("+raw+")") {
 			t.Errorf("%q: keep note missing:\n%s", raw, p.Format())
 		}

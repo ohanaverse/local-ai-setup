@@ -16,6 +16,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 )
 
 // apPlistKey is the LITELLM_MASTER_KEY the fake LiteLLM plist holds.
@@ -102,7 +103,7 @@ func apply(t *testing.T, f *fakeEnv, p Plan) (Result, []string) {
 // pins that a bootout of a job that is not loaded does not fail the apply.
 func TestApplyRunsStepsInOrderAndWritesConfigLast(t *testing.T) {
 	f := apEnv(t)
-	p := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal})
+	p := mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	r, lines := apply(t, f, p)
 	if r.Err != nil || r.Failed != nil {
 		t.Fatalf("Apply: failed %+v err %v", r.Failed, r.Err)
@@ -145,7 +146,7 @@ func TestApplyRunsStepsInOrderAndWritesConfigLast(t *testing.T) {
 	f.bootoutErr = errors.New("Boot-out failed: 3: No such process")
 	st := baseState()
 	st.Listener = ListenerState{Port: 8788}
-	p = mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, Listen: "127.0.0.1:8788"})
+	p = mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{Listen: "127.0.0.1:8788"}})
 	r, _ = apply(t, f, p)
 	if r.Err != nil {
 		t.Fatalf("bootout of an unloaded job failed the apply: %v", r.Err)
@@ -163,7 +164,9 @@ func TestApplyRunsStepsInOrderAndWritesConfigLast(t *testing.T) {
 // stops the apply at that step, names it, lists what ran, and never calls
 // Config.Update, so the stored mode never points at a broken server.
 func TestApplyStopsAtTheFirstFailureAndLeavesConfigUntouched(t *testing.T) {
-	plan := func() Plan { return mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}) }
+	plan := func() Plan {
+		return mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
+	}
 
 	f := apEnv(t)
 	f.bootstrapErr = errors.New("Bootstrap failed: 5: Input/output error")
@@ -211,7 +214,7 @@ func TestApplyStopsAtTheFirstFailureAndLeavesConfigUntouched(t *testing.T) {
 // keeping a valid token never touches the file.
 func TestApplyWritesTheTokenFile0600AndKeepsAnExistingOne(t *testing.T) {
 	f := apEnv(t)
-	r, _ := apply(t, f, mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}))
+	r, _ := apply(t, f, mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}))
 	if r.Err != nil {
 		t.Fatalf("Apply: %v", r.Err)
 	}
@@ -228,7 +231,7 @@ func TestApplyWritesTheTokenFile0600AndKeepsAnExistingOne(t *testing.T) {
 	st := freshState()
 	st.Token = TokenState{Path: plLocalTok, Exists: true}
 	st.TokenFiles = []TokenState{{Path: plRemoteTok}}
-	p := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
+	p := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if _, ok := stepOf(p, StepToken); ok {
 		t.Fatalf("plan has a token step: %v", kinds(p))
 	}
@@ -247,7 +250,7 @@ func TestApplyTightensALooseTokenFile(t *testing.T) {
 	f.files[plLocalTok], f.modes[plLocalTok] = []byte("keep-me\n"), 0o644
 	st := baseState()
 	st.Token.Loose = true
-	r, _ := apply(t, f, mustPlan(t, st, Desired{Mode: modelclient.ModeLocal}))
+	r, _ := apply(t, f, mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}))
 	if r.Err != nil {
 		t.Fatalf("Apply: %v", r.Err)
 	}
@@ -273,7 +276,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	st := Observe(ctx, f.Env(), ObserveOptions{})
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
@@ -285,7 +288,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 	}
 
 	st = Observe(ctx, f.Env(), ObserveOptions{})
-	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
+	p, err = BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if err != nil {
 		t.Fatalf("second BuildPlan: %v", err)
 	}
@@ -311,7 +314,7 @@ func TestApplyWaitTimesOutAndPointsAtTheLog(t *testing.T) {
 	f.pingErr = &modelclient.UnauthorizedError{Addr: "http://127.0.0.1:8787"}
 	start := f.now
 	began := time.Now()
-	r, _ := apply(t, f, mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}))
+	r, _ := apply(t, f, mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}))
 	if time.Since(began) > 5*time.Second {
 		t.Errorf("the wait slept for real")
 	}
@@ -348,7 +351,7 @@ func TestApplyWaitTimesOutAndPointsAtTheLog(t *testing.T) {
 	f = apEnv(t)
 	unreach := &modelclient.UnreachableError{Addr: "http://127.0.0.1:8787", Reason: "refused"}
 	f.pingErrs = []error{unreach, unreach, unreach}
-	if r, _ = apply(t, f, mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal})); r.Err != nil {
+	if r, _ = apply(t, f, mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})); r.Err != nil {
 		t.Fatalf("Apply: %v", r.Err)
 	}
 	if !f.called("Config.Update") {
@@ -361,7 +364,7 @@ func TestApplyWaitTimesOutAndPointsAtTheLog(t *testing.T) {
 // never appears in any call, line or result, and that an identical token
 // already on disk is not rewritten.
 func TestApplyRemoteWritesThePastedTokenBeforeTheConfig(t *testing.T) {
-	want := Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}
+	want := Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}}
 	f := apEnv(t)
 	p := mustPlan(t, freshState(), want)
 	r, lines := apply(t, f, p)
@@ -415,7 +418,7 @@ func TestApplyReadsTheLiteLLMKeyOnlyInThePairStep(t *testing.T) {
 	f := apEnv(t)
 	var reads []string
 	var lines []string
-	r := Apply(context.Background(), f.Env(), mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}), func(s string) {
+	r := Apply(context.Background(), f.Env(), mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}), func(s string) {
 		lines = append(lines, s)
 		reads = append(reads, fmt.Sprint(f.called("LiteLLM.PlistVar")))
 	})
@@ -441,7 +444,7 @@ func TestApplyReadsTheLiteLLMKeyOnlyInThePairStep(t *testing.T) {
 	// A plist with no key fails the pair step without writing the pair.
 	f = apEnv(t)
 	delete(f.plistVars, "LITELLM_MASTER_KEY")
-	r, _ = apply(t, f, mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}))
+	r, _ = apply(t, f, mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}))
 	if r.Failed == nil || r.Failed.Kind != StepPair || f.called("Config.SetPair") {
 		t.Errorf("missing key: Failed = %+v, Err = %v", r.Failed, r.Err)
 	}
@@ -450,7 +453,7 @@ func TestApplyReadsTheLiteLLMKeyOnlyInThePairStep(t *testing.T) {
 	f = apEnv(t)
 	st := freshState()
 	st.LiteLLMPlist.HasMasterKey = false
-	r, lines = apply(t, f, mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, MasterKey: plMasterKey}))
+	r, lines = apply(t, f, mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{MasterKey: plMasterKey}}))
 	if r.Err != nil {
 		t.Fatalf("Apply: %v", r.Err)
 	}
@@ -514,12 +517,12 @@ func TestControlStartStopRestart(t *testing.T) {
 // never disturb a running agent.
 func TestApplyNeverCallsLaunchctlWhenThePlanHasNoLaunchdSteps(t *testing.T) {
 	plans := map[string]Plan{
-		"native": mustPlan(t, baseState(), Desired{Mode: modelclient.ModeNative}),
-		"remote": mustPlan(t, freshState(), Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}),
+		"native": mustPlan(t, baseState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeNative}}),
+		"remote": mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}}),
 	}
 	st := baseState()
 	st.Token.Loose = true
-	plans["tighten"] = mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
+	plans["tighten"] = mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	for name, p := range plans {
 		f := apEnv(t)
 		f.files[plLocalTok], f.modes[plLocalTok] = []byte("tok\n"), 0o644
@@ -544,7 +547,7 @@ func TestApplyNeverCallsLaunchctlWhenThePlanHasNoLaunchdSteps(t *testing.T) {
 // the apply instead of being skipped, and the config after it never runs.
 func TestApplyFailsAnUnknownStepKind(t *testing.T) {
 	f := apEnv(t)
-	p := Plan{Want: Desired{Mode: modelclient.ModeNative}, Steps: []Step{{Kind: "mystery"}, {Kind: StepConfig}}}
+	p := Plan{Plan: modelmode.Plan{Want: modelmode.Desired{Mode: modelclient.ModeNative}, Steps: []Step{{Kind: "mystery"}, {Kind: StepConfig}}}}
 	r, _ := apply(t, f, p)
 	if r.Failed == nil || r.Failed.Kind != "mystery" || r.Err == nil || f.called("Config.Update") {
 		t.Errorf("Failed = %+v, Err = %v, calls %q", r.Failed, r.Err, f.mutations())
@@ -613,7 +616,7 @@ func backupsOf(f *fakeEnv, path string) []string {
 func TestApplyRotateKeepsTheBackupAndTightensTheMode(t *testing.T) {
 	f := rotEnv(t)
 	old := append([]byte(nil), f.files[plLiteLLM]...)
-	p := mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+	p := mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}})
 	r, lines := apply(t, f, p)
 	if r.Err != nil {
 		t.Fatalf("Apply: %v (recovery %q)", r.Err, r.Recovery)
@@ -662,7 +665,7 @@ func TestApplyRotateKeepsTheBackupAndTightensTheMode(t *testing.T) {
 
 	// A second rotation in the same second keeps both backups.
 	first := b[0]
-	p = mustPlan(t, func() State { st := rotateState(); st.LiteLLMPlist.Mode = 0o600; return st }(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+	p = mustPlan(t, func() State { st := rotateState(); st.LiteLLMPlist.Mode = 0o600; return st }(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}})
 	if r, _ = apply(t, f, p); r.Err != nil {
 		t.Fatalf("second Apply: %v", r.Err)
 	}
@@ -679,7 +682,7 @@ func TestApplyRotateKeepsTheBackupAndTightensTheMode(t *testing.T) {
 // the exact commands to run by hand.
 func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 	plan := func() Plan {
-		return mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+		return mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}})
 	}
 	cases := map[string]struct {
 		set    func(f *fakeEnv)
@@ -753,7 +756,7 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 	f = rotEnv(t)
 	f.modes[plLiteLLM] = 0o644
 	p := plan()
-	r, _ = apply(t, f, Plan{Want: p.Want, Steps: append(append([]Step{}, p.Steps[:2]...), Step{Kind: StepChmod, Path: "/nope"}), Notes: p.Notes, Agent: p.Agent})
+	r, _ = apply(t, f, Plan{Plan: modelmode.Plan{Want: p.Want, Steps: append(append([]Step{}, p.Steps[:2]...), Step{Kind: StepChmod, Path: "/nope"}), Notes: p.Notes}, Admin: p.Admin, Agent: p.Agent})
 	if r.Failed == nil || r.Failed.Kind != StepChmod || f.called("Config.SetPair") {
 		t.Fatalf("chmod: Failed = %+v", r.Failed)
 	}
@@ -771,7 +774,7 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 func TestApplyCreateWritesThePlistLoadsItAndPairsTheSameKey(t *testing.T) {
 	f := apEnv(t)
 	liteLLMUp(f, 77)
-	p := mustPlan(t, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	p := mustPlan(t, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 	r, lines := apply(t, f, p)
 	if r.Err != nil {
 		t.Fatalf("Apply: %v", r.Err)
@@ -862,7 +865,7 @@ func TestApplyCreateWritesThePlistLoadsItAndPairsTheSameKey(t *testing.T) {
 // crash-loops on bind), or LiteLLM rejects the new key, the pair is never
 // written and the Result says what answered and how to finish or abandon.
 func TestApplyCreateRefusesAnAnswerFromAnotherProcess(t *testing.T) {
-	p := mustPlan(t, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	p := mustPlan(t, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 	f := apEnv(t)
 	liteLLMUp(f, 77)
 	f.listeners[4000] = 99
@@ -901,7 +904,7 @@ func TestApplyRotateNeverWritesTheKeyAtALooseMode(t *testing.T) {
 		f.modes[plLiteLLM] = c.from
 		st := rotateState()
 		st.LiteLLMPlist.Mode = c.from
-		r, _ := apply(t, f, mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}))
+		r, _ := apply(t, f, mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}))
 		if r.Err != nil {
 			t.Fatalf("%04o: %v", c.from, r.Err)
 		}
@@ -933,7 +936,7 @@ func TestApplyRotateWaitsForLiteLLMWithTheNewKey(t *testing.T) {
 	f := rotEnv(t)
 	f.getReplies = nil
 	f.getStatus = 502
-	r, _ := apply(t, f, mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}))
+	r, _ := apply(t, f, mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}))
 	if r.Failed == nil || r.Failed.Kind != StepWait || r.Failed.Action != ActionWaitLiteLLM {
 		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
 	}
@@ -959,7 +962,7 @@ func TestApplyBootoutWaitsUntilTheLabelIsGone(t *testing.T) {
 	plan := func() Plan {
 		st := baseState()
 		st.Listener = ListenerState{Port: 8788}
-		return mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, Listen: "127.0.0.1:8788"})
+		return mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{Listen: "127.0.0.1:8788"}})
 	}
 	f := apEnv(t)
 	f.files[plLocalTok], f.modes[plLocalTok] = []byte("tok\n"), 0o600
@@ -1009,7 +1012,7 @@ func TestApplyBootoutWaitsUntilTheLabelIsGone(t *testing.T) {
 // (the old definition is the one to restart) still recommends kickstart.
 func TestApplyRecoveryAfterABootoutTimeoutBootstrapsTheNewAgent(t *testing.T) {
 	plan := func() Plan {
-		p := mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+		p := mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}})
 		spec := plSpec()
 		p.Agent = &spec
 		var steps []Step
@@ -1044,7 +1047,7 @@ func TestApplyRecoveryAfterABootoutTimeoutBootstrapsTheNewAgent(t *testing.T) {
 	// The wt-model kickstart failing keeps the kickstart advice.
 	f = rotEnv(t)
 	f.kickstartErr[AgentLabel] = errors.New("Could not find service")
-	r, _ = apply(t, f, mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}))
+	r, _ = apply(t, f, mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}))
 	if r.Failed == nil || r.Failed.Kind != StepKickstart || !strings.Contains(r.Recovery, "kickstart -k gui/501/"+AgentLabel) {
 		t.Errorf("kickstart failure: Failed = %+v, Recovery %q", r.Failed, r.Recovery)
 	}
@@ -1071,10 +1074,10 @@ func TestNoPlanOrResultTextContainsAKey(t *testing.T) {
 		r2 := rotEnv(t)
 		r2.kickstartErr["local.litellm.proxy"] = errors.New("boom")
 		return []run{
-			{"create", c, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate}, nil},
-			{"create down", c2, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate}, nil},
-			{"rotate", rotEnv(t), rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}, nil},
-			{"rotate restart fails", r2, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}, nil},
+			{"create", c, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}}, nil},
+			{"create down", c2, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}}, nil},
+			{"rotate", rotEnv(t), rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}, nil},
+			{"rotate restart fails", r2, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}, nil},
 		}
 	}
 	for _, c := range mk() {
@@ -1122,7 +1125,7 @@ func TestNoPlanOrResultTextContainsAKey(t *testing.T) {
 // nothing and leaves the pair alone, instead of renaming a regular file over
 // the link with new keys in it.
 func TestApplyCreateCountsADanglingSymlinkAsPresent(t *testing.T) {
-	p := mustPlan(t, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	p := mustPlan(t, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 	f := apEnv(t)
 	liteLLMUp(f, 77)
 	f.dangling = map[string]bool{plLiteLLM: true}

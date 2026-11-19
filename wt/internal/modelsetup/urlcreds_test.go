@@ -125,7 +125,7 @@ func TestBuildPlanRemoteRefusesASchemelessURLWithCredentials(t *testing.T) {
 		} {
 			st := freshState()
 			st.Server = server
-			p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: raw, PastedToken: plPasted, SaveUnchecked: true})
+			p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: raw, PastedToken: plPasted, SaveUnchecked: true}})
 			if err == nil {
 				t.Errorf("%q planned:\n%s", raw, p.Format())
 				continue
@@ -136,7 +136,7 @@ func TestBuildPlanRemoteRefusesASchemelessURLWithCredentials(t *testing.T) {
 		}
 	}
 	for _, raw := range plainURLs {
-		mustPlan(t, freshState(), Desired{Mode: modelclient.ModeRemote, URL: raw, PastedToken: plPasted, SaveUnchecked: true})
+		mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: raw, PastedToken: plPasted, SaveUnchecked: true}})
 	}
 }
 
@@ -199,8 +199,7 @@ func TestApplyConfigRefusesASchemelessURLWithCredentials(t *testing.T) {
 	want := "the url contains an @ (read as a user:password); wt does not store credentials in config.toml; use a token file; config.toml was not written"
 	for _, raw := range everyCredentialedURL() {
 		f := apEnv(t)
-		p := Plan{Want: Desired{Mode: modelclient.ModeRemote, URL: raw, TokenFile: plRemoteTok},
-			Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}
+		p := Plan{Plan: modelmode.Plan{Want: modelmode.Desired{Mode: modelclient.ModeRemote, URL: raw, TokenFile: plRemoteTok}, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}}
 		r, lines := apply(t, f, p)
 		if r.Failed == nil || r.Failed.Kind != StepConfig || f.called("Config.Update") {
 			t.Errorf("%q: Failed = %+v, Config.Update called %t", raw, r.Failed, f.called("Config.Update"))
@@ -230,25 +229,21 @@ func TestHiddenURLIsNeverWrittenToConfig(t *testing.T) {
 	if st.Config.Table.URL != urlrule.Hidden || !st.Config.URLHadCredentials {
 		t.Fatalf("Config = %+v, want the url hidden and flagged", st.Config)
 	}
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, PastedToken: "tok-NEW", SaveUnchecked: true})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, PastedToken: "tok-NEW", SaveUnchecked: true}})
 	mustRefuse(t, p, err, "user:password", "token file")
 	a := apEnv(t)
-	r, _ := apply(t, a, Plan{Want: Desired{Mode: modelclient.ModeRemote, URL: urlrule.Hidden, TokenFile: plRemoteTok},
-		Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}})
+	r, _ := apply(t, a, Plan{Plan: modelmode.Plan{Want: modelmode.Desired{Mode: modelclient.ModeRemote, URL: urlrule.Hidden, TokenFile: plRemoteTok}, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}})
 	if r.Failed == nil || a.called("Config.Update") {
 		t.Errorf("Apply wrote the placeholder: Failed %+v", r.Failed)
 	}
-	for _, want := range []Desired{
-		{Mode: modelclient.ModeRemote, URL: "gpu.example:8787", PastedToken: "tok-NEW", SaveUnchecked: true},
-		{Mode: modelclient.ModeNative},
-	} {
+	for _, want := range []Desired{{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "gpu.example:8787", PastedToken: "tok-NEW", SaveUnchecked: true}}, {Desired: modelmode.Desired{Mode: modelclient.ModeNative}}} {
 		p := mustPlan(t, st, want)
 		if strings.Contains(p.Format(), "hidden") || p.Want.URL == urlrule.Hidden {
 			t.Errorf("%s plan carries the placeholder:\n%s", want.Mode, p.Format())
 		}
 		a := apEnv(t)
 		a.configFile.Table = &config.ModelServerState{Mode: "remote", URL: "https://USERX:PASSX@gpu.example:8787/"}
-		if r, _ := apply(t, a, Plan{Want: p.Want, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}); r.Failed != nil {
+		if r, _ := apply(t, a, Plan{Plan: modelmode.Plan{Want: p.Want, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}, Admin: p.Admin}); r.Failed != nil {
 			t.Fatalf("%s: apply failed: %v", want.Mode, r.Err)
 		}
 		if got := a.configFile.Table.URL; got != p.Want.URL || strings.Contains(got, "hidden") {
@@ -262,7 +257,7 @@ func TestHiddenURLIsNeverWrittenToConfig(t *testing.T) {
 // byte-identical to what was typed or stored.
 func TestPlainURLsPassUntouched(t *testing.T) {
 	for _, raw := range plainURLs {
-		p := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeRemote, URL: raw, PastedToken: plPasted, SaveUnchecked: true})
+		p := mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: raw, PastedToken: plPasted, SaveUnchecked: true}})
 		if p.Want.URL != raw || !strings.Contains(p.Format(), `url = "`+raw+`"`) {
 			t.Errorf("%q: plan Want.URL %q, Format:\n%s", raw, p.Want.URL, p.Format())
 		}
@@ -389,15 +384,14 @@ func atURLSurfaces(t *testing.T, raw string) map[string]string {
 	out := map[string]string{}
 	pingErr := modelclientUnreachable(raw)
 
-	if p, err := BuildPlan(freshState(), Desired{Mode: modelclient.ModeRemote, URL: raw, PastedToken: plPasted, SaveUnchecked: true}); err == nil {
+	if p, err := BuildPlan(freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: raw, PastedToken: plPasted, SaveUnchecked: true}}); err == nil {
 		t.Errorf("%q planned:\n%s", raw, p.Format())
 	} else {
 		out["BuildPlan refusal"] = err.Error()
 	}
 
 	f := apEnv(t)
-	r, lines := apply(t, f, Plan{Want: Desired{Mode: modelclient.ModeRemote, URL: raw, TokenFile: plRemoteTok},
-		Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}})
+	r, lines := apply(t, f, Plan{Plan: modelmode.Plan{Want: modelmode.Desired{Mode: modelclient.ModeRemote, URL: raw, TokenFile: plRemoteTok}, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}})
 	if r.Failed == nil || f.called("Config.Update") {
 		t.Errorf("%q: Apply wrote config.toml (Failed %+v)", raw, r.Failed)
 	}
@@ -420,17 +414,13 @@ func atURLSurfaces(t *testing.T, raw string) map[string]string {
 	if st.Config.Table.URL != "" && !st.Config.URLHadCredentials {
 		t.Errorf("%q: URLHadCredentials = false", raw)
 	}
-	for _, want := range []Desired{
-		{Mode: modelclient.ModeRemote, URL: "benign.test:9", PastedToken: plPasted, SaveUnchecked: true},
-		{Mode: modelclient.ModeNative},
-		{Mode: modelclient.ModeLocal},
-	} {
+	for _, want := range []Desired{{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "benign.test:9", PastedToken: plPasted, SaveUnchecked: true}}, {Desired: modelmode.Desired{Mode: modelclient.ModeNative}}, {Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}} {
 		if p, err := BuildPlan(st, want); err == nil {
 			out["Format "+string(want.Mode)] = strings.ReplaceAll(p.Format(), "benign.test:9", "")
 		}
 	}
 	// The url the form prefills (the State's) is refused, never written.
-	if p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, TokenFile: obsTokenPath, SaveUnchecked: true}); err == nil {
+	if p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, TokenFile: obsTokenPath, SaveUnchecked: true}}); err == nil {
 		t.Errorf("%q: a plan of the observed url %q was not refused:\n%s", raw, st.Config.Table.URL, p.Format())
 	} else {
 		out["prefill refusal"] = err.Error()

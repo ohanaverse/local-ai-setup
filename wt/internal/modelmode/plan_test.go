@@ -66,3 +66,32 @@ func TestStepLabelKnowsOnlyTheSessionKinds(t *testing.T) {
 		}
 	}
 }
+
+// TestFormatNamesEveryStepAndNote pins Format's exact words: the mode, the
+// step count in singular and plural, the numbered steps and the notes
+// section — the admin goldens and the editor's plan screen both render it.
+func TestFormatNamesEveryStepAndNote(t *testing.T) {
+	if got := (Plan{Want: Desired{Mode: ModeNative}}).Format(); got != "nothing to change for mode native\n" {
+		t.Errorf("empty: %q", got)
+	}
+	if got := (Plan{Want: Desired{Mode: ModeRemote}, Steps: []Step{{Detail: "a"}, {Detail: "b"}}, Notes: []string{"n"}}).Format(); got != "set up mode remote in 2 steps:\n  1. a\n  2. b\nleft alone and notes:\n  - n\n" {
+		t.Errorf("two steps: %q", got)
+	}
+	if got := (Plan{Want: Desired{Mode: ModeRemote}, Steps: []Step{{Detail: "a"}}}).Format(); got != "set up mode remote in 1 step:\n  1. a\n" {
+		t.Errorf("one step: %q", got)
+	}
+}
+
+// TestWritesURLNeedsAConfigStepAndAURL pins WritesURL: a plan writes the url
+// only when it has a config step and a url to write.
+func TestWritesURLNeedsAConfigStepAndAURL(t *testing.T) {
+	if !(Plan{Want: Desired{URL: "u"}, Steps: []Step{{Kind: StepConfig}}}).WritesURL() {
+		t.Errorf("config step with a url: want true")
+	}
+	if (Plan{Want: Desired{URL: "u"}, Steps: []Step{{Kind: StepToken}}}).WritesURL() {
+		t.Errorf("token step: want false")
+	}
+	if (Plan{Want: Desired{URL: ""}, Steps: []Step{{Kind: StepConfig}}}).WritesURL() {
+		t.Errorf("no url: want false")
+	}
+}

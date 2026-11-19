@@ -1,6 +1,9 @@
 package modelmode
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // RefusalError is a plan that cannot be made. Each reason says what is still
 // true and the way out.
@@ -69,4 +72,64 @@ func StepLabel(k StepKind) (string, bool) {
 		return "write [model-server]", true
 	}
 	return "", false
+}
+
+// Desired is what the user asked for: the session half of it (mode, url,
+// token file, pasted token, save-unchecked). The admin half — listen, master
+// key, agent removal, the LiteLLM action — is modelsetup's AdminWant.
+type Desired struct {
+	Mode           Mode
+	URL, TokenFile string
+	PastedToken    Secret
+	SaveUnchecked  bool
+}
+
+// Plan is the session half of a plan: what was wanted, the steps to get
+// there and the notes about what is left alone. The admin half — AdminWant,
+// the agent and LiteLLM specs — is modelsetup's Plan.
+type Plan struct {
+	Want  Desired
+	Steps []Step
+	Notes []string
+}
+
+// Format is the text the user confirms: every step, numbered, then what is
+// left alone. Deterministic and ASCII apart from the paths and urls it names.
+func (p Plan) Format() string {
+	var b strings.Builder
+	if len(p.Steps) == 0 {
+		b.WriteString("nothing to change for mode " + string(p.Want.Mode) + "\n")
+	} else {
+		fmt.Fprintf(&b, "set up mode %s in %d %s:\n", p.Want.Mode, len(p.Steps), plural(len(p.Steps), "step", "steps"))
+		for i, s := range p.Steps {
+			fmt.Fprintf(&b, "  %d. %s\n", i+1, s.Detail)
+		}
+	}
+	if len(p.Notes) > 0 {
+		b.WriteString("left alone and notes:\n")
+		for _, n := range p.Notes {
+			b.WriteString("  - " + n + "\n")
+		}
+	}
+	return b.String()
+}
+
+// plural is "step" or "steps" by count.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// WritesURL reports whether the plan's config step writes a url into
+// [model-server] (local and remote do; native clears it). A plan that keeps
+// the stored table has no config step and writes nothing.
+func (p Plan) WritesURL() bool {
+	for _, s := range p.Steps {
+		if s.Kind == StepConfig && p.Want.URL != "" {
+			return true
+		}
+	}
+	return false
 }

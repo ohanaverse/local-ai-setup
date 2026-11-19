@@ -165,7 +165,7 @@ func mustPlan(t *testing.T, st State, want Desired) Plan {
 // TestBuildPlanNativeIsOnlyTheConfigStep pins that choosing native from a
 // local setup writes the table and nothing else: the agent stays installed.
 func TestBuildPlanNativeIsOnlyTheConfigStep(t *testing.T) {
-	p := mustPlan(t, baseState(), Desired{Mode: modelclient.ModeNative})
+	p := mustPlan(t, baseState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeNative}})
 	if !sameKinds(kinds(p), StepConfig) {
 		t.Fatalf("steps = %v, want [config]", kinds(p))
 	}
@@ -177,7 +177,7 @@ func TestBuildPlanNativeIsOnlyTheConfigStep(t *testing.T) {
 	}
 	st := baseState()
 	st.Config.Table = config.ModelServerState{Mode: "native"}
-	if p = mustPlan(t, st, Desired{Mode: modelclient.ModeNative}); len(p.Steps) != 0 {
+	if p = mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeNative}}); len(p.Steps) != 0 {
 		t.Errorf("already native: steps = %v", kinds(p))
 	}
 }
@@ -186,7 +186,7 @@ func TestBuildPlanNativeIsOnlyTheConfigStep(t *testing.T) {
 // removal: bootout and remove the plist before the config, and only for a
 // plist wt manages.
 func TestBuildPlanNativeOffersToRemoveAManagedAgent(t *testing.T) {
-	p := mustPlan(t, baseState(), Desired{Mode: modelclient.ModeNative, RemoveAgent: true})
+	p := mustPlan(t, baseState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeNative}, AdminWant: AdminWant{RemoveAgent: true}})
 	if !sameKinds(kinds(p), StepBootout, StepRemovePlist, StepConfig) {
 		t.Fatalf("steps = %v", kinds(p))
 	}
@@ -195,7 +195,7 @@ func TestBuildPlanNativeOffersToRemoveAManagedAgent(t *testing.T) {
 	}
 	st := baseState()
 	st.Agent.Managed = false
-	p = mustPlan(t, st, Desired{Mode: modelclient.ModeNative, RemoveAgent: true})
+	p = mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeNative}, AdminWant: AdminWant{RemoveAgent: true}})
 	if !sameKinds(kinds(p), StepConfig) {
 		t.Errorf("unmanaged plist must be left alone: %v", kinds(p))
 	}
@@ -207,10 +207,7 @@ func TestBuildPlanNativeOffersToRemoveAManagedAgent(t *testing.T) {
 func TestBuildPlanLeavingLocalNeverRemovesTheTokenOrThePair(t *testing.T) {
 	st := baseState()
 	st.Server = ServerState{}
-	for _, want := range []Desired{
-		{Mode: modelclient.ModeNative, RemoveAgent: true},
-		{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, RemoveAgent: true},
-	} {
+	for _, want := range []Desired{{Desired: modelmode.Desired{Mode: modelclient.ModeNative}, AdminWant: AdminWant{RemoveAgent: true}}, {Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}, AdminWant: AdminWant{RemoveAgent: true}}} {
 		p := mustPlan(t, st, want)
 		for _, s := range p.Steps {
 			if s.Kind == StepPair || s.Path == plLocalTok {
@@ -231,7 +228,7 @@ func TestBuildPlanRefusesAParseErrorBeforeAnyStep(t *testing.T) {
 	for _, m := range []modelclient.Mode{modelclient.ModeNative, modelclient.ModeLocal, modelclient.ModeRemote} {
 		st := freshState()
 		st.Config.Exists, st.Config.ParseErr = true, "toml: line 3: bad"
-		p, err := BuildPlan(st, Desired{Mode: m, URL: "https://x", PastedToken: plPasted})
+		p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: m, URL: "https://x", PastedToken: plPasted}})
 		mustRefuse(t, p, err, plCfgPath, "line 3")
 	}
 }
@@ -244,7 +241,7 @@ func TestBuildPlanRefusesAnUnreadableTableBeforeAnyStep(t *testing.T) {
 	for _, m := range []modelclient.Mode{modelclient.ModeNative, modelclient.ModeLocal, modelclient.ModeRemote} {
 		st := freshState()
 		st.Config.Exists, st.Config.TableErr = true, "toml: cannot load TOML value of type int64 into a Go string"
-		p, err := BuildPlan(st, Desired{Mode: m, URL: "https://x", PastedToken: plPasted})
+		p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: m, URL: "https://x", PastedToken: plPasted}})
 		mustRefuse(t, p, err, plCfgPath, "cannot be read", "int64")
 	}
 }
@@ -252,7 +249,7 @@ func TestBuildPlanRefusesAnUnreadableTableBeforeAnyStep(t *testing.T) {
 // TestBuildPlanRefusesAnUnknownMode pins that a mode other than the three is
 // refused, since the config writer does not validate it.
 func TestBuildPlanRefusesAnUnknownMode(t *testing.T) {
-	p, err := BuildPlan(baseState(), Desired{Mode: "lokal"})
+	p, err := BuildPlan(baseState(), Desired{Desired: modelmode.Desired{Mode: "lokal"}})
 	mustRefuse(t, p, err, "lokal")
 	p, err = BuildPlan(baseState(), Desired{})
 	mustRefuse(t, p, err, "native, local or remote")
@@ -264,7 +261,7 @@ func TestBuildPlanRefusesAnUnknownMode(t *testing.T) {
 func TestBuildPlanRemoteRefusesAFailedCheckUnlessSavedUnchecked(t *testing.T) {
 	st := freshState()
 	st.Server = ServerState{Checked: true, Kind: KindUnauthorized, Message: "401 from https://gpu.example:8787", URL: "https://gpu.example:8787/"}
-	want := Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}
+	want := Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}}
 	p, err := BuildPlan(st, want)
 	mustRefuse(t, p, err, "rejected the token", "save anyway")
 	want.SaveUnchecked = true
@@ -279,17 +276,17 @@ func TestBuildPlanRemoteRefusesAFailedCheckUnlessSavedUnchecked(t *testing.T) {
 		t.Errorf("Format does not say it was saved unchecked:\n%s", p.Format())
 	}
 	// A remote needs a url and a token.
-	p, err = BuildPlan(freshState(), Desired{Mode: modelclient.ModeRemote, PastedToken: plPasted})
+	p, err = BuildPlan(freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, PastedToken: plPasted}})
 	mustRefuse(t, p, err, "url")
-	p, err = BuildPlan(freshState(), Desired{Mode: modelclient.ModeRemote, URL: "https://x"})
+	p, err = BuildPlan(freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://x"}})
 	mustRefuse(t, p, err, "token")
 	// A typed token file must exist with mode 0600.
 	st = freshState()
 	st.TokenFiles = append(st.TokenFiles, TokenState{Path: "/srv/tok", Exists: true, Loose: true})
-	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: "https://x", TokenFile: "/srv/tok"})
+	p, err = BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://x", TokenFile: "/srv/tok"}})
 	mustRefuse(t, p, err, "/srv/tok", "chmod 600")
 	st.TokenFiles[len(st.TokenFiles)-1].Loose = false
-	p = mustPlan(t, st, Desired{Mode: modelclient.ModeRemote, URL: "https://x", TokenFile: "/srv/tok"})
+	p = mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://x", TokenFile: "/srv/tok"}})
 	if !sameKinds(kinds(p), StepConfig) {
 		t.Errorf("existing token file: steps = %v", kinds(p))
 	}
@@ -299,7 +296,7 @@ func TestBuildPlanRemoteRefusesAFailedCheckUnlessSavedUnchecked(t *testing.T) {
 // that a pasted token over an existing file at the fixed path is a step whose
 // text says "replace", and a fresh one says "write" without "replace".
 func TestBuildPlanRemoteReplacesADifferentPastedTokenOnlyWhenTheTextSaysSo(t *testing.T) {
-	want := Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}
+	want := Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}}
 	p := mustPlan(t, freshState(), want)
 	s, ok := stepOf(p, StepToken)
 	if !ok || s.Path != plRemoteTok || s.Action != ActionWritePastedToken {
@@ -320,7 +317,7 @@ func TestBuildPlanRemoteReplacesADifferentPastedTokenOnlyWhenTheTextSaysSo(t *te
 // TestBuildPlanLocalStepsInOrderWithConfigLast pins the local order on a
 // fresh host: token, pair, plist, bootstrap, wait, config.
 func TestBuildPlanLocalStepsInOrderWithConfigLast(t *testing.T) {
-	p := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal})
+	p := mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if !sameKinds(kinds(p), StepToken, StepPair, StepPlist, StepBootstrap, StepWait, StepConfig) {
 		t.Fatalf("steps = %v", kinds(p))
 	}
@@ -330,13 +327,13 @@ func TestBuildPlanLocalStepsInOrderWithConfigLast(t *testing.T) {
 	if s, _ := stepOf(p, StepToken); s.Action != ActionGenerateToken || s.Path != plLocalTok {
 		t.Errorf("token step = %+v", s)
 	}
-	if p.Want.URL != "http://127.0.0.1:8787" || p.Want.TokenFile != plLocalTok || p.Want.Listen != DefaultListen {
+	if p.Want.URL != "http://127.0.0.1:8787" || p.Want.TokenFile != plLocalTok || p.Admin.Listen != DefaultListen {
 		t.Errorf("Want = %+v", p.Want)
 	}
 	// A loaded job whose plist changes is booted out first.
 	st := baseState()
 	st.Listener = ListenerState{Port: 8788}
-	p = mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, Listen: "127.0.0.1:8788"})
+	p = mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{Listen: "127.0.0.1:8788"}})
 	if !sameKinds(kinds(p), StepPlist, StepBootout, StepBootstrap, StepWait, StepConfig) {
 		t.Errorf("port change: steps = %v", kinds(p))
 	}
@@ -349,7 +346,7 @@ func TestBuildPlanLocalReusesAnExistingPairAndToken(t *testing.T) {
 	st.Token = TokenState{Path: plLocalTok, Exists: true}
 	st.TokenFiles = []TokenState{{Path: plRemoteTok}}
 	st.Pair = PairState{URL: "http://localhost:4000", KeySet: true}
-	p := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
+	p := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if !sameKinds(kinds(p), StepPlist, StepBootstrap, StepWait, StepConfig) {
 		t.Fatalf("steps = %v", kinds(p))
 	}
@@ -364,13 +361,13 @@ func TestBuildPlanLocalReusesAnExistingPairAndToken(t *testing.T) {
 func TestBuildPlanLocalTakesThePairFromTheLiteLLMPlist(t *testing.T) {
 	st := freshState()
 	st.LiteLLMPlist.Port = 4111
-	p := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, MasterKey: plMasterKey})
+	p := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{MasterKey: plMasterKey}})
 	s, _ := stepOf(p, StepPair)
 	if s.Action != ActionPairKeyFromPlist || s.Value != "http://localhost:4111" || s.Path != plLiteLLM {
 		t.Errorf("pair step = %+v", s)
 	}
 	st.LiteLLMPlist.Port = 0
-	p = mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
+	p = mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if s, _ = stepOf(p, StepPair); s.Value != "http://localhost:4000" {
 		t.Errorf("default port: %+v", s)
 	}
@@ -384,7 +381,7 @@ func TestBuildPlanLocalTakesThePairFromTheLiteLLMPlist(t *testing.T) {
 func TestBuildPlanLocalFallsBackToTheEnteredMasterKey(t *testing.T) {
 	st := freshState()
 	st.LiteLLMPlist.HasMasterKey = false
-	p := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, MasterKey: plMasterKey})
+	p := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{MasterKey: plMasterKey}})
 	if s, _ := stepOf(p, StepPair); s.Action != ActionPairKeyEntered {
 		t.Errorf("pair step = %+v", s)
 	}
@@ -395,7 +392,7 @@ func TestBuildPlanLocalFallsBackToTheEnteredMasterKey(t *testing.T) {
 func TestBuildPlanRefusesWhenNoMasterKeyIsAvailable(t *testing.T) {
 	st := freshState()
 	st.LiteLLMPlist.HasMasterKey = false
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	mustRefuse(t, p, err, "docs/guides/14-litellm-install-and-configuration.md")
 }
 
@@ -404,7 +401,7 @@ func TestBuildPlanRefusesWhenNoMasterKeyIsAvailable(t *testing.T) {
 func TestBuildPlanTightensALooseTokenFile(t *testing.T) {
 	st := baseState()
 	st.Token.Loose = true
-	p := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
+	p := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if !sameKinds(kinds(p), StepToken) {
 		t.Fatalf("steps = %v", kinds(p))
 	}
@@ -415,7 +412,7 @@ func TestBuildPlanTightensALooseTokenFile(t *testing.T) {
 	// An empty one is regenerated, and the running server is restarted.
 	st = baseState()
 	st.Token.Empty = true
-	p = mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
+	p = mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if s, _ := stepOf(p, StepToken); s.Action != ActionGenerateToken {
 		t.Errorf("empty token: %+v", s)
 	}
@@ -429,7 +426,7 @@ func TestBuildPlanTightensALooseTokenFile(t *testing.T) {
 func TestBuildPlanKickstartsWhenOnlyThePairChanged(t *testing.T) {
 	st := baseState()
 	st.Pair = PairState{}
-	p := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
+	p := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if !sameKinds(kinds(p), StepPair, StepKickstart, StepWait) {
 		t.Errorf("steps = %v", kinds(p))
 	}
@@ -440,10 +437,10 @@ func TestBuildPlanKickstartsWhenOnlyThePairChanged(t *testing.T) {
 func TestBuildPlanRefusesAForeignListener(t *testing.T) {
 	st := freshState()
 	st.Listener = ListenerState{Port: 8787, PID: 999}
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	mustRefuse(t, p, err, "pid 999", "8787", "another port")
 	// A port nobody checked is refused too.
-	p, err = BuildPlan(freshState(), Desired{Mode: modelclient.ModeLocal, Listen: "127.0.0.1:9000"})
+	p, err = BuildPlan(freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{Listen: "127.0.0.1:9000"}})
 	mustRefuse(t, p, err, "9000", "not checked")
 }
 
@@ -452,7 +449,7 @@ func TestBuildPlanRefusesAForeignListener(t *testing.T) {
 func TestBuildPlanRefusesAnUnmarkedPlist(t *testing.T) {
 	st := freshState()
 	st.Agent.Present = true
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	mustRefuse(t, p, err, plAgentPath, "managed by wt")
 }
 
@@ -462,7 +459,7 @@ func TestBuildPlanOverwritesAMarkedPlist(t *testing.T) {
 	st := baseState()
 	st.Agent.Content = RenderAgentPlist(AgentSpec{Binary: "/old/wt-model", Listen: DefaultListen, TokenFile: plLocalTok, Path: "/bin", Home: plHome})
 	st.Agent.Binary = "/old/wt-model"
-	p := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
+	p := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if !sameKinds(kinds(p), StepPlist, StepBootout, StepBootstrap, StepWait) {
 		t.Fatalf("steps = %v", kinds(p))
 	}
@@ -476,7 +473,7 @@ func TestBuildPlanOverwritesAMarkedPlist(t *testing.T) {
 func TestBuildPlanRefusesWhenWtModelIsMissingAndNamesMakeInstall(t *testing.T) {
 	st := freshState()
 	st.Tools.Binary, st.Tools.BinaryErr = "", "wt-model was not found beside wt or on PATH"
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	mustRefuse(t, p, err, "not found", "make install")
 }
 
@@ -484,7 +481,7 @@ func TestBuildPlanRefusesWhenWtModelIsMissingAndNamesMakeInstall(t *testing.T) {
 // applied local setup plans nothing, or only the config step when the stored
 // table differs.
 func TestBuildPlanLocalIsEmptyOfWorkWhenAlreadyApplied(t *testing.T) {
-	p := mustPlan(t, baseState(), Desired{Mode: modelclient.ModeLocal})
+	p := mustPlan(t, baseState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if len(p.Steps) != 0 {
 		t.Errorf("steps = %v, want none", kinds(p))
 	}
@@ -493,13 +490,13 @@ func TestBuildPlanLocalIsEmptyOfWorkWhenAlreadyApplied(t *testing.T) {
 	}
 	st := baseState()
 	st.Config.Table.Mode = ""
-	if p = mustPlan(t, st, Desired{Mode: modelclient.ModeLocal}); !sameKinds(kinds(p), StepConfig) {
+	if p = mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}); !sameKinds(kinds(p), StepConfig) {
 		t.Errorf("table differs: steps = %v", kinds(p))
 	}
 	// A ~ path in the table is the same file.
 	st = baseState()
 	st.Config.Table.TokenFile = "~/.config/wt-model/server.token"
-	if p = mustPlan(t, st, Desired{Mode: modelclient.ModeLocal}); len(p.Steps) != 0 {
+	if p = mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}); len(p.Steps) != 0 {
 		t.Errorf("~ token_file: steps = %v", kinds(p))
 	}
 }
@@ -509,7 +506,7 @@ func TestBuildPlanLocalIsEmptyOfWorkWhenAlreadyApplied(t *testing.T) {
 func TestBuildPlanRefusesLocalOffMacOS(t *testing.T) {
 	st := freshState()
 	st.Platform = Platform{Reason: "the local model server runs as a macOS LaunchAgent; this is linux"}
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	mustRefuse(t, p, err, "linux")
 }
 
@@ -519,11 +516,11 @@ func goldenPlans(t *testing.T) map[string]Plan {
 	remote.Agent = baseState().Agent
 	remote.TokenFiles = []TokenState{{Path: plLocalTok}, {Path: plRemoteTok, Exists: true}}
 	return map[string]Plan{
-		"plan_local.golden":          mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}),
-		"plan_remote.golden":         mustPlan(t, remote, Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, RemoveAgent: true}),
-		"plan_native.golden":         mustPlan(t, baseState(), Desired{Mode: modelclient.ModeNative}),
-		"plan_litellm_create.golden": mustPlan(t, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate}),
-		"plan_litellm_rotate.golden": mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}),
+		"plan_local.golden":          mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}),
+		"plan_remote.golden":         mustPlan(t, remote, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}, AdminWant: AdminWant{RemoveAgent: true}}),
+		"plan_native.golden":         mustPlan(t, baseState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeNative}}),
+		"plan_litellm_create.golden": mustPlan(t, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}}),
+		"plan_litellm_rotate.golden": mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}),
 	}
 }
 
@@ -575,17 +572,17 @@ func TestFormatIsDeterministic(t *testing.T) {
 // secret typed into the other mode's field never rides along.
 func TestBuildPlanKeepsEachSecretToItsMode(t *testing.T) {
 	st := freshState()
-	in := Desired{URL: "https://gpu.example:8787", PastedToken: plPasted, MasterKey: plMasterKey}
+	in := Desired{Desired: modelmode.Desired{URL: "https://gpu.example:8787", PastedToken: plPasted}, AdminWant: AdminWant{MasterKey: plMasterKey}}
 	in.Mode = modelclient.ModeNative
-	if p := mustPlan(t, st, in); p.Want.PastedToken != "" || p.Want.MasterKey != "" {
+	if p := mustPlan(t, st, in); p.Want.PastedToken != "" || p.Admin.MasterKey != "" {
 		t.Errorf("native keeps a secret")
 	}
 	in.Mode = modelclient.ModeLocal
-	if p := mustPlan(t, st, in); p.Want.PastedToken != "" || p.Want.MasterKey.Reveal() != plMasterKey {
+	if p := mustPlan(t, st, in); p.Want.PastedToken != "" || p.Admin.MasterKey.Reveal() != plMasterKey {
 		t.Errorf("local: pasted kept or key lost")
 	}
 	in.Mode = modelclient.ModeRemote
-	if p := mustPlan(t, st, in); p.Want.MasterKey != "" || p.Want.PastedToken.Reveal() != plPasted {
+	if p := mustPlan(t, st, in); p.Admin.MasterKey != "" || p.Want.PastedToken.Reveal() != plPasted {
 		t.Errorf("remote: key kept or pasted lost")
 	}
 }
@@ -595,7 +592,7 @@ func TestBuildPlanKeepsEachSecretToItsMode(t *testing.T) {
 // fails the remote gate: it reads as not checked, so the confirm text never
 // implies the new server was verified.
 func TestBuildPlanRemoteCheckOfAnotherURLIsNotAVerification(t *testing.T) {
-	want := Desired{Mode: modelclient.ModeRemote, URL: "https://typo.example:8787", PastedToken: plPasted}
+	want := Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://typo.example:8787", PastedToken: plPasted}}
 	p := mustPlan(t, baseState(), want)
 	if !strings.Contains(p.Format(), "was not checked") {
 		t.Errorf("a ping of the local server counted as a check:\n%s", p.Format())
@@ -623,7 +620,7 @@ func TestBuildPlanRemoteCheckOfAnotherURLIsNotAVerification(t *testing.T) {
 // them still matches a check recorded of that plain url, so a passed check
 // is not called unchecked.
 func TestBuildPlanRemoteCheckMatchesATypedURLWithCredentials(t *testing.T) {
-	want := Desired{Mode: modelclient.ModeRemote, URL: "https://u:p@gpu.example:8787", PastedToken: plPasted}
+	want := Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://u:p@gpu.example:8787", PastedToken: plPasted}}
 	st := freshState()
 	st.Server = ServerState{Checked: true, OK: true, URL: "https://gpu.example:8787"}
 	p, err := BuildPlan(st, want)
@@ -643,10 +640,10 @@ func TestBuildPlanRemoteCheckMatchesATypedURLWithCredentials(t *testing.T) {
 // (which clears it) and for a plan that keeps the stored table. The tab keys
 // its "credentials are not kept" note on it, not on a step's wording.
 func TestPlanWritesURLIsData(t *testing.T) {
-	remote := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, SaveUnchecked: true})
-	local := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal})
-	native := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeNative})
-	kept := mustPlan(t, baseState(), Desired{Mode: modelclient.ModeLocal})
+	remote := mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, SaveUnchecked: true}})
+	local := mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
+	native := mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeNative}})
+	kept := mustPlan(t, baseState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	for name, c := range map[string]struct {
 		p    Plan
 		want bool
@@ -673,9 +670,9 @@ func TestObserveAndPlanFlagACredentialedURLThatWillBeRewritten(t *testing.T) {
 	if !st.Config.URLHadCredentials || st.Config.Table.URL != urlrule.Hidden {
 		t.Fatalf("URLHadCredentials = %t, Table.URL = %q for a url with userinfo", st.Config.URLHadCredentials, st.Config.Table.URL)
 	}
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, PastedToken: "tok-NEW"})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, PastedToken: "tok-NEW"}})
 	mustRefuse(t, p, err, "user:password", "token file")
-	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787/", PastedToken: "tok-NEW", SaveUnchecked: true})
+	p, err = BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787/", PastedToken: "tok-NEW", SaveUnchecked: true}})
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
@@ -719,12 +716,12 @@ func rotateState() State {
 func TestBuildPlanCreateRefusesWhenLiteLLMIsNotInstalled(t *testing.T) {
 	st := createState()
 	st.LiteLLMInstall.Binary = ""
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 	mustRefuse(t, p, err, "litellm binary", guide14)
 
 	st = createState()
 	st.LiteLLMInstall.ConfigExists = false
-	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	p, err = BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 	mustRefuse(t, p, err, plLiteLLMCfg, guide14)
 }
 
@@ -735,15 +732,15 @@ func TestBuildPlanCreateRefusesWhenLiteLLMIsNotInstalled(t *testing.T) {
 func TestBuildPlanCreateOnlyWhenAbsent(t *testing.T) {
 	present := createState()
 	present.LiteLLMPlist = LiteLLMPlistState{Path: plLiteLLM, Present: true, Port: 4000, Mode: 0o600, HasMasterKey: true}
-	p, err := BuildPlan(present, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	p, err := BuildPlan(present, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 	mustRefuse(t, p, err, plLiteLLM, "already exists", guide14)
 
 	unmanaged := createState()
 	unmanaged.LiteLLMPlist = LiteLLMPlistState{Path: plLiteLLM, Present: true, Err: "cannot parse"}
-	p, err = BuildPlan(unmanaged, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	p, err = BuildPlan(unmanaged, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 	mustRefuse(t, p, err, plLiteLLM, "already exists")
 
-	p = mustPlan(t, createState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	p = mustPlan(t, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 	if !sameKinds(kinds(p), StepToken, StepLiteLLMPlist, StepBootstrap, StepWait, StepPair, StepPlist, StepBootstrap, StepWait, StepConfig) {
 		t.Fatalf("steps = %v", kinds(p))
 	}
@@ -773,7 +770,7 @@ func TestBuildPlanCreateOnlyWhenAbsent(t *testing.T) {
 		}
 	}
 	// A plan that does not create carries no spec.
-	if p = mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}); p.LiteLLM != nil {
+	if p = mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}); p.LiteLLM != nil {
 		t.Errorf("Plan.LiteLLM set without create")
 	}
 }
@@ -783,7 +780,7 @@ func TestBuildPlanCreateOnlyWhenAbsent(t *testing.T) {
 // same new key, then restart LiteLLM and then wt-model. The plan names what
 // else may hold the old key and what it never changes.
 func TestBuildPlanRotateOrdersBackupEditPairKickstart(t *testing.T) {
-	p := mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+	p := mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}})
 	if !sameKinds(kinds(p), StepBackup, StepMasterKey, StepPair, StepKickstartLiteLLM, StepWait, StepKickstart, StepWait) {
 		t.Fatalf("steps = %v", kinds(p))
 	}
@@ -809,7 +806,7 @@ func TestBuildPlanRotateOrdersBackupEditPairKickstart(t *testing.T) {
 	}
 	st := rotateState()
 	st.LiteLLMPlist.Mode = 0o600
-	p = mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+	p = mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}})
 	if !sameKinds(kinds(p), StepBackup, StepMasterKey, StepPair, StepKickstartLiteLLM, StepWait, StepKickstart, StepWait) {
 		t.Errorf("0600 plist: steps = %v", kinds(p))
 	}
@@ -834,7 +831,7 @@ func TestBuildPlanRotateRefusesWithoutAReadableXMLPlist(t *testing.T) {
 	for name, c := range cases {
 		st := rotateState()
 		st.LiteLLMPlist = c.plist
-		p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+		p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}})
 		mustRefuse(t, p, err, c.wants...)
 		if err != nil && strings.Contains(err.Error(), "sk-LEAK") {
 			t.Errorf("%s: refusal quotes the parser: %v", name, err)
@@ -849,20 +846,20 @@ func TestBuildPlanRotateRefusesWithoutAReadableXMLPlist(t *testing.T) {
 // pair (TestBuildPlanUseExistingKeyRePairsOverASetPair).
 func TestBuildPlanUseExistingKeyIsTheDefault(t *testing.T) {
 	for _, st := range []State{freshState()} {
-		a := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
-		b := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey})
+		a := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
+		b := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMUseExistingKey}})
 		if a.Format() != b.Format() || fmt.Sprint(kinds(a)) != fmt.Sprint(kinds(b)) {
 			t.Errorf("use-existing differs from the default:\n%s\n---\n%s", a.Format(), b.Format())
 		}
 	}
 	for _, st := range []State{freshState(), baseState(), rotateState()} {
-		for _, s := range mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey}).Steps {
+		for _, s := range mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMUseExistingKey}}).Steps {
 			if s.Kind == StepMasterKey || s.Kind == StepLiteLLMPlist || s.Kind == StepBackup {
 				t.Errorf("use-existing edits the plist")
 			}
 		}
 	}
-	p, err := BuildPlan(freshState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: "reinstall"})
+	p, err := BuildPlan(freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: "reinstall"}})
 	mustRefuse(t, p, err, "reinstall")
 }
 
@@ -879,7 +876,7 @@ func TestBuildPlanCreateValidatesTheSpecBeforeAnyStep(t *testing.T) {
 	} {
 		st := createState()
 		mut(&st)
-		p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+		p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 		var re *RefusalError
 		if !errors.As(err, &re) || len(p.Steps) != 0 {
 			t.Errorf("%s: err = %v, steps %v", name, err, kinds(p))
@@ -906,11 +903,11 @@ func TestBuildPlanCreateValidatesTheSpecBeforeAnyStep(t *testing.T) {
 func TestBuildPlanCreateRefusesAListenerOnTheLiteLLMPort(t *testing.T) {
 	st := createState()
 	st.LiteLLMInstall.ListenerPID = 4242
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 	mustRefuse(t, p, err, "pid 4242", "4000", guide14)
 	st = createState()
 	st.LiteLLMInstall.ListenerChecked = false
-	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
+	p, err = BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
 	mustRefuse(t, p, err, "4000", "not checked")
 }
 
@@ -921,7 +918,7 @@ func TestBuildPlanCreateRefusesAListenerOnTheLiteLLMPort(t *testing.T) {
 // there is no salt key, so "never changed: LITELLM_SALT_KEY" is only said
 // when one exists.
 func TestBuildPlanRotateGuardsTheSaltFallback(t *testing.T) {
-	want := Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}
+	want := Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}
 	st := rotateState()
 	st.LiteLLMPlist.HasSaltKey, st.LiteLLMPlist.HasDatabaseURL = false, true
 	p, err := BuildPlan(st, want)
@@ -947,7 +944,7 @@ func TestBuildPlanRotateGuardsTheSaltFallback(t *testing.T) {
 // naming the file, and a non-local mode ignores the action.
 func TestBuildPlanTightenLiteLLMIsAChmodOnly(t *testing.T) {
 	st := rotateState() // plist mode 0644
-	p := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMTighten})
+	p := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMTighten}})
 	if !sameKinds(kinds(p), StepChmod) {
 		t.Fatalf("steps = %v, want only chmod", kinds(p))
 	}
@@ -956,15 +953,15 @@ func TestBuildPlanTightenLiteLLMIsAChmodOnly(t *testing.T) {
 	}
 	tight := rotateState()
 	tight.LiteLLMPlist.Mode = 0o600
-	p, err := BuildPlan(tight, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMTighten})
+	p, err := BuildPlan(tight, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMTighten}})
 	mustRefuse(t, p, err, plLiteLLM, "0600")
 	gone := rotateState()
 	gone.LiteLLMPlist = LiteLLMPlistState{Path: plLiteLLM}
-	p, err = BuildPlan(gone, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMTighten})
+	p, err = BuildPlan(gone, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMTighten}})
 	mustRefuse(t, p, err, plLiteLLM)
-	p = mustPlan(t, freshState(), Desired{Mode: modelclient.ModeNative, LiteLLM: LiteLLMTighten})
-	if p.Want.LiteLLM != LiteLLMNone {
-		t.Errorf("native plan kept the action %q", p.Want.LiteLLM)
+	p = mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeNative}, AdminWant: AdminWant{LiteLLM: LiteLLMTighten}})
+	if p.Admin.LiteLLM != LiteLLMNone {
+		t.Errorf("native plan kept the action %q", p.Admin.LiteLLM)
 	}
 }
 
@@ -976,7 +973,7 @@ func TestBuildPlanTightenLiteLLMIsAChmodOnly(t *testing.T) {
 // use request when the plist has no key to read.
 func TestBuildPlanUseExistingKeyRePairsOverASetPair(t *testing.T) {
 	st := baseState() // pair set, plist holds a key
-	p := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey})
+	p := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMUseExistingKey}})
 	s, ok := stepOf(p, StepPair)
 	if !ok || s.Action != ActionPairKeyFromPlist || s.Path != plLiteLLM {
 		t.Fatalf("pair step = %+v (found %v), want the pair read from %s", s, ok, plLiteLLM)
@@ -985,13 +982,13 @@ func TestBuildPlanUseExistingKeyRePairsOverASetPair(t *testing.T) {
 	if !strings.Contains(text, "read from "+plLiteLLM) || strings.Contains(text, "keep wt-model's LiteLLM pair") {
 		t.Errorf("Format does not say the pair is re-set from the plist:\n%s", text)
 	}
-	kept := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal})
+	kept := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if _, ok := stepOf(kept, StepPair); ok || !strings.Contains(kept.Format(), "keep wt-model's LiteLLM pair") {
 		t.Errorf("the default request no longer keeps the pair:\n%s", kept.Format())
 	}
 	keyless := baseState()
 	keyless.LiteLLMPlist.HasMasterKey = false
-	p = mustPlan(t, keyless, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey})
+	p = mustPlan(t, keyless, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMUseExistingKey}})
 	if _, ok := stepOf(p, StepPair); ok {
 		t.Errorf("a plist without a key planned a pair step")
 	}
@@ -1005,10 +1002,10 @@ func TestApplyUseExistingKeyWritesThePlistKeyOverAStalePair(t *testing.T) {
 	f.pair.URL, f.pair.APIKey = "http://localhost:4000", "sk-STALE-1"
 	st := baseState()
 	var lines []string
-	full := mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMUseExistingKey})
+	full := mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMUseExistingKey}})
 	pairStep, _ := stepOf(full, StepPair)
 	// The pair step alone: the restart and wait after it need a live server.
-	r := Apply(context.Background(), f.Env(), Plan{Want: full.Want, Steps: []Step{pairStep}},
+	r := Apply(context.Background(), f.Env(), Plan{Plan: modelmode.Plan{Want: full.Want, Steps: []Step{pairStep}}, Admin: full.Admin},
 		func(s string) { lines = append(lines, s) })
 	if r.Err != nil || f.pair.APIKey != apPlistKey {
 		t.Fatalf("err %v, pair key from the plist: %t", r.Err, f.pair.APIKey == apPlistKey)
@@ -1023,7 +1020,7 @@ func TestBuildPlanRefusesAKeyElsewhereInTheFile(t *testing.T) {
 	st := freshState()
 	st.Config.RestErr = "agents.name: incompatible types"
 	for _, m := range []modelclient.Mode{modelclient.ModeNative, modelclient.ModeLocal, modelclient.ModeRemote} {
-		if _, err := BuildPlan(st, Desired{Mode: m, URL: "https://gpu.example:8787", PastedToken: plPasted}); err == nil {
+		if _, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: m, URL: "https://gpu.example:8787", PastedToken: plPasted}}); err == nil {
 			t.Errorf("mode %s planned despite RestErr", m)
 		}
 	}

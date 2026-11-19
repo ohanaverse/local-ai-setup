@@ -578,7 +578,7 @@ func TestServerTabMenuAgreesWithBuildPlan(t *testing.T) {
 			offered[o.action] = true
 		}
 		for _, a := range []modelsetup.LiteLLMAction{modelsetup.LiteLLMUseExistingKey, modelsetup.LiteLLMRotateKey, modelsetup.LiteLLMCreate} {
-			_, err := modelsetup.BuildPlan(st, modelsetup.Desired{Mode: modelclient.ModeLocal, LiteLLM: a})
+			_, err := modelsetup.BuildPlan(st, modelsetup.Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: modelsetup.AdminWant{LiteLLM: a}})
 			if a == modelsetup.LiteLLMUseExistingKey {
 				// Use is a no-op plan, not a refusal, when the plist has no key
 				// and the pair is set; it is offered only with a key.

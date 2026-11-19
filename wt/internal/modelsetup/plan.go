@@ -25,12 +25,21 @@ type Secret = modelmode.Secret
 // are Secrets: BuildPlan keeps each only in its own mode's Plan.Want, for
 // Apply, and no step, note, Format text or refusal holds them. LiteLLM is
 // what a local plan does to the LiteLLM LaunchAgent (nothing by default).
+// AdminWant is the admin half of a Desired: what the setup side decides that
+// a session never chooses.
+type AdminWant struct {
+	Listen      string
+	MasterKey   Secret
+	RemoveAgent bool
+	LiteLLM     LiteLLMAction
+}
+
+// Desired is what the user asked for: the session half (mode, url, token
+// file, pasted token, save-unchecked) is modelmode's; the admin half is
+// AdminWant.
 type Desired struct {
-	Mode                       modelmode.Mode
-	URL, TokenFile, Listen     string
-	PastedToken, MasterKey     Secret
-	SaveUnchecked, RemoveAgent bool
-	LiteLLM                    LiteLLMAction
+	modelmode.Desired
+	AdminWant
 }
 
 // LiteLLMAction is what a local plan does to the LiteLLM LaunchAgent. wt never
@@ -101,7 +110,7 @@ const (
 	// ActionPairKeyFromPlist reads LITELLM_MASTER_KEY from the LiteLLM plist
 	// at Step.Path when applied.
 	ActionPairKeyFromPlist StepAction = "pair-key-from-litellm-plist"
-	// ActionPairKeyEntered uses Plan.Want.MasterKey.
+	// ActionPairKeyEntered uses Plan.Admin.MasterKey.
 	ActionPairKeyEntered StepAction = "pair-key-entered"
 	// ActionPairKeyNew uses the master key an earlier step of the same Apply
 	// generated and wrote to the LiteLLM plist (create or rotate); the key is
@@ -131,10 +140,12 @@ type Step = modelmode.Step
 // what a create plan's StepLiteLLMPlist renders, without its keys: Apply
 // generates them when it writes the file, so no plan ever holds one (nil for
 // any plan that does not create).
+// Plan is what BuildPlan decides: the session half — wanted, steps, notes —
+// is modelmode's; the admin half is Admin, plus the agent and LiteLLM specs
+// the admin steps render and apply.
 type Plan struct {
-	Want    Desired
-	Steps   []Step
-	Notes   []string
+	modelmode.Plan
+	Admin   AdminWant
 	Agent   *AgentSpec
 	LiteLLM *LiteLLMSpec
 }
@@ -239,7 +250,7 @@ func (p *Plan) restartNote() {
 // planNative stores only the mode, plus the optional agent removal.
 func planNative(st State, want Desired) (Plan, error) {
 	want.URL, want.TokenFile, want.Listen = "", "", ""
-	p := Plan{Want: want}
+	p := Plan{Plan: modelmode.Plan{Want: want.Desired}, Admin: want.AdminWant}
 	p.leaveAgent(st)
 	p.keepLocalSetup(st)
 	p.config(st)
@@ -315,7 +326,7 @@ func planRemote(st State, want Desired) (Plan, error) {
 		return Plan{}, &RefusalError{Reasons: reasons}
 	}
 	want.Listen = ""
-	p := Plan{Want: want}
+	p := Plan{Plan: modelmode.Plan{Want: want.Desired}, Admin: want.AdminWant}
 	if tokenStep != nil {
 		p.Steps = append(p.Steps, *tokenStep)
 	}
@@ -474,7 +485,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 	want.TokenFile = tokPath
 	want.URL = "http://" + listen
 	spec := AgentSpec{Binary: st.Tools.Binary, Listen: listen, TokenFile: tokPath, Path: st.Tools.Path, Home: st.Host.Home}
-	p := Plan{Want: want, Agent: &spec, LiteLLM: lspec}
+	p := Plan{Plan: modelmode.Plan{Want: want.Desired}, Admin: want.AdminWant, Agent: &spec, LiteLLM: lspec}
 	pairChanged := false
 
 	if tokenStep != nil {
@@ -589,12 +600,12 @@ func (p *Plan) leaveAgent(st State) {
 		return
 	}
 	if !a.Managed {
-		if p.Want.RemoveAgent {
+		if p.Admin.RemoveAgent {
 			p.Notes = append(p.Notes, a.PlistPath+" is not marked \"managed by wt\" and is left alone")
 		}
 		return
 	}
-	if !p.Want.RemoveAgent {
+	if !p.Admin.RemoveAgent {
 		state := "left installed"
 		if a.Job.Running {
 			state += " and running"
@@ -633,27 +644,6 @@ func (p *Plan) envNote(st State) {
 	if st.EnvOverride != "" {
 		p.Notes = append(p.Notes, "the environment sets "+st.EnvOverride+", which overrides what is stored here")
 	}
-}
-
-// Format is the text the user confirms: every step, numbered, then what is
-// left alone. Deterministic and ASCII apart from the paths and urls it names.
-func (p Plan) Format() string {
-	var b strings.Builder
-	if len(p.Steps) == 0 {
-		b.WriteString("nothing to change for mode " + string(p.Want.Mode) + "\n")
-	} else {
-		fmt.Fprintf(&b, "set up mode %s in %d %s:\n", p.Want.Mode, len(p.Steps), plural(len(p.Steps), "step", "steps"))
-		for i, s := range p.Steps {
-			fmt.Fprintf(&b, "  %d. %s\n", i+1, s.Detail)
-		}
-	}
-	if len(p.Notes) > 0 {
-		b.WriteString("left alone and notes:\n")
-		for _, n := range p.Notes {
-			b.WriteString("  - " + n + "\n")
-		}
-	}
-	return b.String()
 }
 
 // tokenAt finds the observed description of the token file at path.
@@ -717,30 +707,11 @@ func changedWhat(pair, token bool) string {
 	}
 }
 
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
-}
-
 func orNone(s string) string {
 	if s == "" {
 		return "none"
 	}
 	return s
-}
-
-// WritesURL reports whether the plan's config step writes a url into
-// [model-server] (local and remote do; native clears it). A plan that keeps
-// the stored table has no config step and writes nothing.
-func (p Plan) WritesURL() bool {
-	for _, s := range p.Steps {
-		if s.Kind == StepConfig && p.Want.URL != "" {
-			return true
-		}
-	}
-	return false
 }
 
 // liteLLMURL is the url wt-model's pair names for LiteLLM: the port a create
@@ -904,6 +875,6 @@ func planTightenLiteLLM(st State, want Desired) (Plan, error) {
 	case lp.Mode.Perm()&0o077 == 0:
 		return Plan{}, &RefusalError{Reasons: []string{reason(path+" is already mode 0600 or tighter", "nothing to do")}}
 	}
-	return Plan{Want: want, Steps: []Step{{Kind: StepChmod, Path: lp.Path,
-		Detail: fmt.Sprintf("set %s to mode 0600 (it is %04o, readable by others); nothing else changes", lp.Path, lp.Mode.Perm())}}}, nil
+	return Plan{Plan: modelmode.Plan{Want: want.Desired, Steps: []Step{{Kind: StepChmod, Path: lp.Path,
+		Detail: fmt.Sprintf("set %s to mode 0600 (it is %04o, readable by others); nothing else changes", lp.Path, lp.Mode.Perm())}}}, Admin: want.AdminWant}, nil
 }
