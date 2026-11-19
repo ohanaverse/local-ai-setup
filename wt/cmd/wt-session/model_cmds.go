@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/hoststop"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -56,15 +57,7 @@ var (
 // so piped input can never authorise it. The terminal is opened through the
 // openTTY seam, so a test can take it away.
 func promptStop(question string) (bool, error) {
-	f, err := openTTY()
-	if err != nil {
-		return false, errNoTerminal
-	}
-	defer f.Close()
-	if _, err := fmt.Fprintf(f, "%s [y/N] ", question); err != nil {
-		return false, err
-	}
-	return askYesNo(f)
+	return cli.AskOnTTY(openTTY, question, cli.ErrNoTerminal)
 }
 
 func stopCmd(a *app) *cobra.Command {
@@ -375,10 +368,10 @@ func runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s)%s%s; stop them all?", inUse, strings.Join(users, ", "), unreadClause(unread, false), loading))
 		if err != nil {
-			return noTerminalRefusal(err, "--yes", "nothing was stopped")
+			return cli.NoTerminalRefusal(err, "--yes", "nothing was stopped")
 		}
 		if !ok {
-			return declined("nothing was stopped")
+			return cli.Declined("nothing was stopped")
 		}
 	}
 	var failures []error
@@ -584,10 +577,10 @@ func runStop(out io.Writer, cfg *config.Config, arg string, yes bool) error {
 	if inUse > 0 && !yes {
 		ok, err := confirmStop(fmt.Sprintf("%s in use by %d live wt session(s) (%s)%s; stop anyway?", what, inUse, strings.Join(users, ", "), blind))
 		if err != nil {
-			return noTerminalRefusal(err, "--yes", "nothing was stopped")
+			return cli.NoTerminalRefusal(err, "--yes", "nothing was stopped")
 		}
 		if !ok {
-			return declined(arg + " is still running")
+			return cli.Declined(arg + " is still running")
 		}
 	}
 	if halt {

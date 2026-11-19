@@ -1,16 +1,15 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
@@ -58,22 +57,7 @@ func promptProfile(rp profiles.ResolvedProfile) (bool, error) {
 	if _, err := fmt.Fprintf(f, "wt: local-model profile available for this launch (%s) — apply? [Y/n] ", strings.Join(rp.Sources, ", ")); err != nil {
 		return false, err
 	}
-	return askYesNoDefault(f, true)
-}
-
-func askYesNoDefault(r io.Reader, def bool) (bool, error) {
-	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && line == "" {
-		return def, nil
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true, nil
-	case "n", "no":
-		return false, nil
-	default:
-		return def, nil
-	}
+	return cli.ReadYesNo(f, true)
 }
 
 // shellDir is a test seam over os.Getwd: the directory the user typed the

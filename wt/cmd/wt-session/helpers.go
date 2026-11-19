@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
-	"github.com/charmbracelet/x/term"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -103,35 +103,14 @@ func removeGuard() error {
 	return guard.Uninstall()
 }
 
-// isStdinTTY reports whether stdin is attached to a terminal. Used to gate
-// the picker paths in main.go so a non-interactive invocation (CI, cron,
-// piped command) gets a clear error pointing at -A instead of Bubble Tea's
-// opaque "could not open a new TTY" failure from /dev/tty.
-//
-// stdin (not stdout) is checked because that's the input Bubble Tea reads
-// from. Piping output to a file or another program doesn't make the TUI
-// unusable on its own, but `wt < /dev/null` does.
-//
-// term.IsTerminal does a TIOCGWINSZ/TCGETS ioctl to confirm TTY-ness; a
-// plain os.FileInfo mode check would return true for /dev/null and other
-// character devices, which isn't strict enough.
-//
-// `wt start`'s two questions — the others question (decideOthers) and the
-// replace question (askReplace) — use it the same way on purpose (#424): stdin
-// is the "interactive invocation" signal, while the prompts themselves read
-// /dev/tty. A redirected stdin therefore means a script even when a terminal
-// is attached: `wt start x < answers.txt` asks neither question, keeps the
-// other providers' models with a warning, and fails closed on the replace
-// question naming --replace. A piped answer must never be able to stop a
-// model, and a script must never hang on a prompt nobody answers;
-// --replace and --others=keep|stop are how a script proceeds.
-func isStdinTTY() bool {
-	return term.IsTerminal(os.Stdin.Fd())
-}
-
-// stdinTTY is a test seam wrapping isStdinTTY. Production code uses the real
-// terminal check; tests override it to control the TTY state deterministically.
-var stdinTTY = isStdinTTY
+// stdinTTY is a test seam over cli.IsStdinTTY (which says why stdin, not
+// /dev/tty, is the "interactive invocation" signal). It gates the picker paths
+// in main.go, so a non-interactive invocation (CI, cron, piped command) gets a
+// clear error pointing at -A instead of Bubble Tea's opaque "could not open a
+// new TTY" failure, and `wt start`'s two questions — the others question
+// (decideOthers) and the replace question (askReplace) — the same way (#424).
+// Tests override it to control the TTY state deterministically.
+var stdinTTY = cli.IsStdinTTY
 
 // configError words a config load or validation error for the user, with a
 // hint that names where to fix it. config.LoadFixHint chooses the hint, for

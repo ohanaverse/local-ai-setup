@@ -7,12 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/x/term"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
@@ -239,15 +238,7 @@ func registryNote(loadErr error) string {
 // stdoutWidth is the terminal's width in columns, or 0 when stdout is not
 // a terminal (a pipe or a file has no width to fit). A seam so tests do not
 // depend on where `go test` was run.
-var stdoutWidth = realStdoutWidth
-
-func realStdoutWidth() int {
-	w, _, err := term.GetSize(os.Stdout.Fd())
-	if err != nil {
-		return 0
-	}
-	return w
-}
+var stdoutWidth = cli.StdoutWidth
 
 // collectUsageRemote builds the usage report for one window ending at asOf,
 // (asOf-window, asOf], on the model server: the spend comes

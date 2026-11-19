@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -382,10 +383,10 @@ func runModelRm(out, errOut io.Writer, cfg *config.Config, ids []string, yes boo
 	if !yes {
 		ok, err := confirmRemove(fmt.Sprintf("Remove %d model(s) from the registry (%s)? Weights are not deleted.", len(ids), strings.Join(ids, ", ")))
 		if err != nil {
-			return noTerminalRefusal(err, "--yes", "nothing was removed")
+			return cli.NoTerminalRefusal(err, "--yes", "nothing was removed")
 		}
 		if !ok {
-			return declined("nothing was removed")
+			return cli.Declined("nothing was removed")
 		}
 	}
 	if err := modeladmin.Remove(ids); err != nil {

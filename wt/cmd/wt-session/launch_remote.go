@@ -8,6 +8,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
@@ -205,7 +206,7 @@ func startRemote(ctx context.Context, ms *modelSession, row modelapi.Row, others
 			// A redirected stdin is a script even with a terminal attached
 			// (#424): it is never asked.
 			if !stdinTTY() {
-				return nil, errNoTerminal
+				return nil, cli.ErrNoTerminal
 			}
 			return openTTY()
 		},
