@@ -269,13 +269,24 @@ func (m *model) noteProbeOut() {
 // routesPending is the note the tab shows once it has written the registry.
 const routesPending = "LiteLLM routes pending (sync on quit)"
 
-// modelsStatus is the tab's status block: why the registry did not load,
-// what the last action said, and a note that the LiteLLM routes are owed a
-// sync once the registry has been written. It is wrapped, not cut: a
+// modelsStatus is the tab's status block: why the config did not load or
+// validate, what the last action said, and a note that the LiteLLM routes are
+// owed a sync once the registry has been written. It is wrapped, not cut: a
 // removal's status ends with the path of the weights left behind.
+//
+// The load banner (m.status, the host's load or validation error) is drawn
+// only while the probe reports no load error of its own: the probe's
+// config.Load does not validate, so a registry that loads but fails
+// validation (#209) is told only by the banner, while a file that does not
+// load fails the probe too, and its reason, refreshed by every probe, is the
+// one shown.
 func (m *model) modelsStatus() string {
+	banner := m.status
+	if m.models.loadErr != "" {
+		banner = ""
+	}
 	var parts []string
-	for _, s := range []string{m.models.loadErr, m.models.status} {
+	for _, s := range []string{banner, m.models.loadErr, m.models.status} {
 		if s != "" {
 			parts = append(parts, s)
 		}

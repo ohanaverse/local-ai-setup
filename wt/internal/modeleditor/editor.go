@@ -36,7 +36,8 @@ type model struct {
 	width       int
 	height      int
 	ready       bool
-	// status is the load banner: why the config handed to Run did not load.
+	// status is the load banner: why the config handed to Run did not load
+	// or validate. modelsStatus draws it.
 	status string
 
 	// home is the home directory paths are abbreviated against
