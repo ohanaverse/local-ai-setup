@@ -80,8 +80,13 @@ func TestMovedCommandsPointAtWtModel(t *testing.T) {
 
 // TestMovedStubsAreHiddenAndAnnotated checks every movedCommands row is
 // registered in the real tree as a hidden, flag-parsing-off stub carrying the
-// moved annotation (which TestNoWtCommandIsHidden skips on).
+// moved annotation (which TestNoWtCommandIsHidden skips on). While the table
+// is empty (4a-i) it skips: TestAddMovedStubsFindsOrAddsTheParent runs the stub
+// through a scratch root meanwhile.
 func TestMovedStubsAreHiddenAndAnnotated(t *testing.T) {
+	if len(movedCommands) == 0 {
+		t.Skip("movedCommands is empty until Tasks 37, 38 and 42 add rows")
+	}
 	root := rootCmdWith(testHooks())
 	for _, m := range movedCommands {
 		words := strings.Fields(m.Old)
@@ -98,7 +103,9 @@ func TestMovedStubsAreHiddenAndAnnotated(t *testing.T) {
 
 // TestAddMovedStubsFindsOrAddsTheParent pins addMovedStubs' placement: a stub
 // goes under an existing parent, a missing parent is created (not hidden), and
-// a row naming a live command panics so a stub never shadows one.
+// a row naming a live command panics so a stub never shadows one. Each placed
+// stub then runs through the scratch root: a stray flag and arguments reach
+// the one pointer line and exit 1, with no usage text.
 func TestAddMovedStubsFindsOrAddsTheParent(t *testing.T) {
 	isStub := func(c *cobra.Command) bool {
 		return c != nil && c.Hidden && c.Annotations[removedCmdAnnotation] == movedAnnotation
@@ -111,7 +118,7 @@ func TestAddMovedStubsFindsOrAddsTheParent(t *testing.T) {
 		}
 		return nil
 	}
-	root := &cobra.Command{Use: "wt"}
+	root := &cobra.Command{Use: "wt", SilenceErrors: true}
 	model := &cobra.Command{Use: "model"}
 	list := &cobra.Command{Use: "list", Run: func(*cobra.Command, []string) {}}
 	model.AddCommand(list)
@@ -134,6 +141,28 @@ func TestAddMovedStubsFindsOrAddsTheParent(t *testing.T) {
 	}
 	if got := child(group, "sub"); !isStub(got) {
 		t.Errorf("group sub is not a hidden stub: %v", got)
+	}
+	for _, c := range []*cobra.Command{child(model, "add"), child(root, "served"), child(group, "sub")} {
+		if c != nil && (!c.DisableFlagParsing || !c.SilenceUsage) {
+			t.Errorf("%s: flags-off=%v silence=%v", c.CommandPath(), c.DisableFlagParsing, c.SilenceUsage)
+		}
+	}
+
+	for _, r := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"model", "add", "--json", "x"}, "wt: model add moved to wt-model — run 'wt-model model add'; nothing was changed\n"},
+		{[]string{"group", "sub", "--bogus", "y"}, "wt: group sub moved to wt-model — run 'wt-model x'; nothing was changed\n"},
+	} {
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetErr(&buf)
+		root.SetArgs(r.args)
+		code := reportExit(root.Execute(), &buf)
+		if code != 1 || buf.String() != r.want {
+			t.Errorf("wt %v: code %d, output %q; want 1, %q", r.args, code, buf.String(), r.want)
+		}
 	}
 
 	func() {
