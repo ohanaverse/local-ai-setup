@@ -115,12 +115,12 @@ class OmlxBackend(Backend):
         subprocess.run(["omlx", "start"], capture_output=True, check=False)
 
     def warm(self, plan: StartPlan) -> None:
-        """The keyless warmup, and `wt warm` when omlx refuses it (#256).
+        """The keyless warmup, and `wt-model warm` when omlx refuses it (#256).
 
         An omlx started with an API key answers 401 to a keyless chat
         completion. The key is the registry omlx provider's auth.secret_ref,
-        which only wt resolves, so the refusal hands this one step to wt
-        rather than teach llmbench to resolve secrets. An omlx with no key —
+        which only wt-model and wt resolve, so the refusal hands this one step
+        to wt-model rather than teach llmbench to resolve secrets. An omlx with no key —
         or one that allows unauthenticated inference — never gets here.
         """
         try:
@@ -155,10 +155,11 @@ class OmlxBackend(Backend):
         """Unload every model omlx serves except `keep`, then ask again; a
         warning names a model that would not unload or is still listed.
 
-        Listing and unloading go through wt (`wt served omlx`, `wt stop
-        omlx/<name>`): a keyed omlx refuses keyless management calls, and
-        only wt resolves the key. A DOWN omlx serves nothing, so wt's "no
-        usable answer" is not an error there — but the same message covers a
+        Listing and unloading go through wt-model and wt (`wt-model served
+        omlx`, `wt stop omlx/<name>`): a keyed omlx refuses keyless management
+        calls, and only they resolve the key. A DOWN omlx serves nothing, so
+        wt-model's "no usable answer" is not an error there — but the same
+        message covers a
         server that is UP and would not say (mixed pool counts, a status call
         it refuses), and that is not "nothing loaded": warming beside
         occupants nobody could list is the silent RAM sharing this teardown

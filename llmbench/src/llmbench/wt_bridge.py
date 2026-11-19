@@ -1,7 +1,9 @@
-"""Subprocess bridge to wt: `wt warm`, `wt served` and `wt stop`.
+"""Subprocess bridge to wt-model and wt: `wt-model warm`, `wt-model served`
+and `wt stop`.
 
-wt resolves the registry's secret_ref, which an omlx with an API key wants
-before it loads a model (#256), lists what it serves, or unloads one.
+wt-model resolves the registry's secret_ref, which an omlx with an API key
+wants before it loads a model (#256), and lists what it serves; wt unloads
+one through the model server.
 """
 
 from __future__ import annotations
@@ -15,31 +17,35 @@ class WtBridgeError(Exception):
 
 
 class WtNotFoundError(WtBridgeError):
-    """The wt binary is not on PATH."""
+    """The wt or wt-model binary is not on PATH."""
 
 
 class WtBridgeTimeoutError(WtBridgeError):
     """wt timed out before it answered."""
 
 
-def ensure_wt() -> None:
-    """Raise WtNotFoundError unless the wt binary is on PATH."""
-    if shutil.which("wt") is None:
-        raise WtNotFoundError("wt not found on PATH; install it with `make install`")
+def _not_found(name: str) -> WtNotFoundError:
+    return WtNotFoundError(f"{name} not found on PATH; install it with `make install`")
+
+
+def ensure_binary(name: str) -> None:
+    """Raise WtNotFoundError unless the `name` binary (wt or wt-model) is on PATH."""
+    if shutil.which(name) is None:
+        raise _not_found(name)
 
 
 def _msg(proc: subprocess.CompletedProcess[str], fallback: str) -> str:
-    """One clean line for the user from wt's output.
+    """One clean line for the user from wt's or wt-model's output.
 
-    wt (cobra) prints both `Error: <msg>` and its own `wt: <msg>`; drop blank
-    lines, strip those prefixes, de-duplicate and join with "; ". Only wt's
+    cobra prints `Error: <msg>`, wt its own `wt: <msg>` and wt-model
+    `wt-model: <msg>`; drop blank lines, strip those prefixes, de-duplicate and join with "; ". Only wt's
     own output is used (never argv), so no api key can leak through here.
     """
     raw = (proc.stderr or "").strip() or (proc.stdout or "").strip()
     lines: list[str] = []
     for line in raw.splitlines():
         line = line.strip()
-        for prefix in ("Error: ", "wt: "):
+        for prefix in ("Error: ", "wt-model: ", "wt: "):
             if line.startswith(prefix):
                 line = line[len(prefix) :].strip()
         if line and line not in lines:
@@ -53,29 +59,31 @@ WARM_TIMEOUT = 630.0
 
 
 def warm(provider: str, model: str, timeout: float = WARM_TIMEOUT) -> None:
-    """Have wt load `model` into `provider`'s running server (`wt warm`).
+    """Have wt-model load `model` into `provider`'s running server
+    (`wt-model warm`).
 
-    wt is asked because it resolves the registry's secret_ref: an omlx with
-    an API key refuses the keyless warmup llmbench sends itself (#256).
-    Raises WtBridgeError with wt's own message when the model did not load.
+    wt-model is asked because it resolves the registry's secret_ref: an omlx
+    with an API key refuses the keyless warmup llmbench sends itself (#256).
+    Raises WtBridgeError with wt-model's own message when the model did not
+    load.
     """
-    ensure_wt()
+    ensure_binary("wt-model")
     try:
         proc = subprocess.run(
-            ["wt", "warm", provider, model],
+            ["wt-model", "warm", provider, model],
             capture_output=True,
             text=True,
             encoding="utf-8",
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        raise WtBridgeTimeoutError(f"wt warm timed out after {timeout:g}s") from None
+        raise WtBridgeTimeoutError(f"wt-model warm timed out after {timeout:g}s") from None
     except FileNotFoundError:
-        raise WtNotFoundError("wt not found on PATH; install it with `make install`") from None
+        raise _not_found("wt-model") from None
     except OSError as e:
-        raise WtBridgeError(f"wt warm could not run: {type(e).__name__}") from None
+        raise WtBridgeError(f"wt-model warm could not run: {type(e).__name__}") from None
     if proc.returncode != 0:
-        raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))
+        raise WtBridgeError(_msg(proc, f"wt-model exited {proc.returncode}"))
 
 
 SERVED_TIMEOUT = 30.0
@@ -85,7 +93,7 @@ STOP_TIMEOUT = 240.0
 
 
 def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
-    ensure_wt()
+    ensure_binary(argv[0])
     try:
         return subprocess.run(
             argv, capture_output=True, text=True, encoding="utf-8", timeout=timeout
@@ -93,18 +101,18 @@ def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     except subprocess.TimeoutExpired:
         raise WtBridgeTimeoutError(f"{' '.join(argv[:2])} timed out after {timeout:g}s") from None
     except FileNotFoundError:
-        raise WtNotFoundError("wt not found on PATH; install it with `make install`") from None
+        raise _not_found(argv[0]) from None
     except OSError as e:
         raise WtBridgeError(f"{' '.join(argv[:2])} could not run: {type(e).__name__}") from None
 
 
 def served(provider: str, timeout: float = SERVED_TIMEOUT) -> list[str]:
-    """The model ids `provider`'s server is serving now (`wt served`): for
+    """The model ids `provider`'s server is serving now (`wt-model served`): for
     omlx, the models loaded or loading. Raises WtBridgeError when the server
     gave no usable answer — not running, or it would not say."""
-    proc = _run(["wt", "served", provider], timeout)
+    proc = _run(["wt-model", "served", provider], timeout)
     if proc.returncode != 0:
-        raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))
+        raise WtBridgeError(_msg(proc, f"wt-model exited {proc.returncode}"))
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
