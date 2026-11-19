@@ -359,57 +359,6 @@ func TestApplyWaitTimesOutAndPointsAtTheLog(t *testing.T) {
 	}
 }
 
-// TestApplyRemoteWritesThePastedTokenBeforeTheConfig pins that a pasted
-// remote token is written 0600 to the fixed path before the table names it,
-// never appears in any call, line or result, and that an identical token
-// already on disk is not rewritten.
-func TestApplyRemoteWritesThePastedTokenBeforeTheConfig(t *testing.T) {
-	want := Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted}}
-	f := apEnv(t)
-	p := mustPlan(t, freshState(), want)
-	r, lines := apply(t, f, p)
-	if r.Err != nil {
-		t.Fatalf("Apply: %v", r.Err)
-	}
-	wantCalls := []string{"FS.WriteAtomic " + plRemoteTok + " 0600", "Config.Update"}
-	if got := f.mutations(); strings.Join(got, "|") != strings.Join(wantCalls, "|") {
-		t.Errorf("calls = %q, want %q", got, wantCalls)
-	}
-	if strings.TrimSpace(string(f.files[plRemoteTok])) != plPasted {
-		t.Errorf("token file does not hold the pasted token")
-	}
-	tbl := f.configFile.Table
-	if tbl == nil || tbl.Mode != "remote" || tbl.URL != want.URL || tbl.TokenFile != plRemoteTok {
-		t.Errorf("table = %+v", tbl)
-	}
-	noSecrets(t, f, lines, r, plPasted)
-
-	// The same token already there: the replace step writes nothing.
-	f = apEnv(t)
-	f.files[plRemoteTok], f.modes[plRemoteTok] = []byte(plPasted+"\n"), 0o600
-	st := freshState()
-	st.TokenFiles = []TokenState{{Path: plLocalTok}, {Path: plRemoteTok, Exists: true}}
-	p = mustPlan(t, st, want)
-	if s, _ := stepOf(p, StepToken); s.Action != ActionReplacePastedToken {
-		t.Fatalf("token step = %+v", s)
-	}
-	r, lines = apply(t, f, p)
-	if r.Err != nil {
-		t.Fatalf("Apply: %v", r.Err)
-	}
-	if f.called("FS.WriteAtomic " + plRemoteTok) {
-		t.Errorf("identical token rewritten")
-	}
-	noSecrets(t, f, lines, r, plPasted)
-
-	// A different one is replaced.
-	f = apEnv(t)
-	f.files[plRemoteTok], f.modes[plRemoteTok] = []byte("old\n"), 0o600
-	if r, _ = apply(t, f, p); r.Err != nil || strings.TrimSpace(string(f.files[plRemoteTok])) != plPasted {
-		t.Errorf("different token not replaced: %v", r.Err)
-	}
-}
-
 // TestApplyReadsTheLiteLLMKeyOnlyInThePairStep pins that the master key is
 // read from the LiteLLM plist once, inside the pair step, written only
 // through SetPair, and that an entered key never reads the plist; neither key

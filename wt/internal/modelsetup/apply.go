@@ -13,11 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 const (
@@ -160,7 +158,9 @@ func stepLabel(k StepKind) string {
 func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result, run *applyRun) error {
 	switch s.Kind {
 	case StepToken:
-		return applyToken(env, p, s)
+		if s.Action == ActionGenerateToken {
+			return applyToken(env, s)
+		}
 	case StepPair:
 		if s.Action == ActionPairKeyNew {
 			return applyNewPair(env, s, run)
@@ -244,14 +244,6 @@ func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result, run *app
 		}
 		run.litellmRestarted = true
 		return nil
-	case StepConfig:
-		if urlrule.HasUserinfo(p.Want.URL) {
-			return errors.New("the url contains an @ (read as a user:password); wt does not store credentials in config.toml; use a token file; config.toml was not written")
-		}
-		return env.Config.Update(func(t config.ModelServerState) (config.ModelServerState, error) {
-			t.Mode, t.URL, t.TokenFile = string(p.Want.Mode), p.Want.URL, p.Want.TokenFile
-			return t, nil
-		})
 	case StepRemovePlist:
 		present, err := agentPlistOurs(env, s.Path)
 		if err != nil {
@@ -268,53 +260,26 @@ func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result, run *app
 		}
 		return err
 	}
+	// The session-side steps (a token step other than generating one, and
+	// the config step) are modelmode's.
+	if handled, err := modelmode.ApplyStep(ctx, env.Mode(), p.Plan, s, r); handled {
+		return err
+	}
 	return fmt.Errorf("step kind %q is not one Apply knows; nothing of it was done", s.Kind)
 }
 
-// applyToken carries out a token step's Action.
-func applyToken(env Env, p Plan, s Step) error {
+// applyToken generates a token into the step's file (0600). The other token
+// actions are modelmode's (ApplyStep); generating one is the admin's, since
+// it needs Host.RandRead.
+func applyToken(env Env, s Step) error {
 	if s.Path == "" {
 		return errors.New("the token step names no file")
 	}
-	switch s.Action {
-	case ActionGenerateToken:
-		b := make([]byte, tokenBytes)
-		if err := env.Host.RandRead(b); err != nil {
-			return fmt.Errorf("generate a token: %w", err)
-		}
-		return env.FS.WriteAtomic(s.Path, []byte(base64.StdEncoding.EncodeToString(b)+"\n"), 0o600)
-	case ActionTightenToken:
-		return env.FS.Chmod(s.Path, 0o600)
-	case ActionWritePastedToken, ActionReplacePastedToken:
-		tok := strings.TrimSpace(p.Want.PastedToken.Reveal())
-		if tok == "" {
-			return errors.New("no token was pasted")
-		}
-		if same, tight := sameToken(env, s.Path, tok); same {
-			if tight {
-				return nil
-			}
-			return env.FS.Chmod(s.Path, 0o600)
-		}
-		return env.FS.WriteAtomic(s.Path, []byte(tok+"\n"), 0o600)
+	b := make([]byte, tokenBytes)
+	if err := env.Host.RandRead(b); err != nil {
+		return fmt.Errorf("generate a token: %w", err)
 	}
-	return fmt.Errorf("token action %q is not one Apply knows", s.Action)
-}
-
-// sameToken reports whether path already holds tok (white space trimmed) and
-// whether its mode is 0600 or stricter. Any read problem is "not the same".
-func sameToken(env Env, path, tok string) (same, tight bool) {
-	info, err := env.FS.Stat(path)
-	if err != nil {
-		return false, false
-	}
-	raw, err := env.FS.ReadFile(path)
-	if err != nil {
-		return false, false
-	}
-	have := strings.TrimSpace(string(raw))
-	same = subtle.ConstantTimeCompare([]byte(have), []byte(tok)) == 1
-	return same, info.Mode().Perm()&0o077 == 0
+	return env.FS.WriteAtomic(s.Path, []byte(base64.StdEncoding.EncodeToString(b)+"\n"), 0o600)
 }
 
 // applyPair writes wt-model's LiteLLM pair. The master key is read from the

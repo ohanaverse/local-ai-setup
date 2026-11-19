@@ -26,19 +26,6 @@ func TestBuildPlanLocalRefusesAListenAddressWithCredentials(t *testing.T) {
 	}
 }
 
-// TestApplyConfigRefusesAURLWithCredentials pins the apply-time backstop: a
-// plan (built by hand) whose config step would write a url with a
-// user:password fails that step and never calls Config.Update.
-func TestApplyConfigRefusesAURLWithCredentials(t *testing.T) {
-	f := apEnv(t)
-	p := Plan{Plan: modelmode.Plan{Want: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://u:pw-SECRET@gpu.example:8787", TokenFile: plRemoteTok}, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}}
-	r, lines := apply(t, f, p)
-	if r.Failed == nil || r.Failed.Kind != StepConfig || f.called("Config.Update") {
-		t.Fatalf("Failed = %+v, Config.Update called %t", r.Failed, f.called("Config.Update"))
-	}
-	noSecrets(t, f, lines, r, "pw-SECRET")
-}
-
 // TestApplyRotateKeepsTheBackupOutOfLaunchAgents pins that a rotation's backup
 // (same Label, old key) never lands in ~/Library/LaunchAgents, where launchd
 // or Background Task Management could pick it up: it goes to wt-model's
