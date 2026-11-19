@@ -35,7 +35,7 @@ func loadingFixture(t *testing.T) *config.Config {
 // ends.
 func TestALoadingModelKeepsItsRoute(t *testing.T) {
 	cfg := loadingFixture(t)
-	if got := desiredLocalIDs(cfg, probeInventory(cfg)); !slices.Equal(got, []string{"omlx/c", "omlx/other"}) {
+	if got := recheckIDs(cfg, probeInventory(cfg)); !slices.Equal(got, []string{"omlx/c", "omlx/other"}) {
 		t.Errorf("desiredLocalIDs = %v, want the loading omlx/c beside omlx/other", got)
 	}
 }
