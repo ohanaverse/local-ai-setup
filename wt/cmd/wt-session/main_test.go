@@ -1042,7 +1042,7 @@ func TestRootHelpListsModelSubcommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"start", "stop", "served", "smoke",
+		"start", "stop", "smoke",
 		"config", "litellm", "profile", "stats", "rotate",
 		"wt start", "wt stop", "wt smoke",
 	} {

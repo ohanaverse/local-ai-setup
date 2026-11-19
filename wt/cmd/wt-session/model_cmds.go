@@ -1,21 +1,17 @@
 // wt start / wt stop — direct control of local models without launching an
 // agent. `wt start` and `wt stop <model>` (and bare `wt stop`) go through the
 // model server (model_cmds_remote.go); `wt stop <provider>|--all` stay on the
-// host (R3) and reuse the hoststop package's stop loop. wt served reports what
-// a provider's server is serving, the probe the host stop acts on.
+// host (R3) and reuse the hoststop package's stop loop.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
@@ -25,7 +21,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -698,107 +693,4 @@ func startCmd(a *app) *cobra.Command {
 			return runStartRemote(cmd.Context(), cmd.OutOrStdout(), ms, a.theme, id, replace, ans)
 		},
 	}
-}
-
-// servedProbeTimeout bounds each request `wt served` makes — the lifecycle
-// engine's probe timeout, since it asks the same question.
-const servedProbeTimeout = 5 * time.Second
-
-// servedFamilies are the providers `wt served` answers for: the ones whose
-// server says what it is serving. Ollama has no such answer — a pulled model
-// loads on request — so it is left out rather than answered with its pulls.
-var servedFamilies = provider.ServedFamilies()
-
-func servedCmd(a *app) *cobra.Command {
-	var asJSON bool
-	cmd := &cobra.Command{
-		Use:   "served <provider>",
-		Short: "List the models a local provider's server is serving now",
-		Long: "List the model ids a local provider's server (" + strings.Join(servedFamilies, ", ") + ") is serving\n" +
-			"now, one per line, as the server names them. This is the probe `wt start`,\n" +
-			"`wt stop` and the pickers act on. For omlx it is the models loaded or loading,\n" +
-			"not every model it lists; when the server has an API key, wt sends the one\n" +
-			"the registry's omlx provider names (auth.secret_ref).\n\n" +
-			"Nothing listed and exit 0 means the server answered and serves nothing.\n" +
-			"Exit 1 means it gave no usable answer — not running, or it would not say.",
-		Example: "  wt served omlx\n  wt served mtplx --json",
-		Args:    cobra.ExactArgs(1),
-		// A probe that gets no answer is the expected failure here, not a
-		// usage mistake.
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// The load error only: this reads the registry's provider rows
-			// and writes nothing, so a validation gap elsewhere in the
-			// config must not make the probe unavailable.
-			cfg, loadErr := a.hostConfig()
-			if loadErr != nil {
-				return configError(loadErr)
-			}
-			client := &http.Client{Timeout: servedProbeTimeout}
-			return runServed(cmd.OutOrStdout(), cfg, client, args[0], asJSON)
-		},
-	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
-	return cmd
-}
-
-func runServed(out io.Writer, cfg *config.Config, client *http.Client, family string, asJSON bool) error {
-	if !slices.Contains(servedFamilies, family) {
-		return fmt.Errorf("unknown provider %q: wt served answers for %s", family, strings.Join(servedFamilies, ", "))
-	}
-	ids, err := localmodels.ServedIDs(cfg, client, family)
-	if err != nil {
-		return fmt.Errorf("%s gave no usable answer: %w", family, err)
-	}
-	if asJSON {
-		if ids == nil {
-			ids = []string{}
-		}
-		return json.NewEncoder(out).Encode(map[string]any{"provider": family, "served": ids})
-	}
-	for _, id := range ids {
-		fmt.Fprintln(out, id)
-	}
-	return nil
-}
-
-func warmCmd(a *app) *cobra.Command {
-	return &cobra.Command{
-		Use:   "warm <provider> <model>",
-		Short: "Load a model into a running omlx server",
-		Long: "Load a model into an omlx server that is already running, by sending it one\n" +
-			"short request. <model> is the name omlx serves it under, or a repo id whose\n" +
-			"last segment is that name. When the server has an API key, wt sends the one\n" +
-			"the registry's omlx provider names (auth.secret_ref).\n\n" +
-			"Nothing is started, stopped or routed: this is the warmup step of `wt start`\n" +
-			"by itself, which llmbench's omlx backend asks for when omlx refuses its\n" +
-			"keyless request. To start a model, use `wt start`.",
-		Example: "  wt warm omlx Qwen3.8-27B-4bit",
-		Args:    cobra.ExactArgs(2),
-		// A server that refuses or never loads the model is the expected
-		// failure here, not a usage mistake.
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// The load error only, as for `wt served`: this reads the
-			// registry's provider rows and writes nothing.
-			cfg, loadErr := a.hostConfig()
-			if loadErr != nil {
-				return configError(loadErr)
-			}
-			ctx, cancel := startSignalCtx()
-			defer cancel()
-			return runWarm(ctx, cmd.OutOrStdout(), cfg, args[0], args[1])
-		},
-	}
-}
-
-func runWarm(ctx context.Context, out io.Writer, cfg *config.Config, provider, model string) error {
-	if localmodels.Family(provider) != "omlx" {
-		return fmt.Errorf("unknown provider %q: wt warm loads models into omlx only", provider)
-	}
-	if err := lifecycle.Warm(ctx, cfg, provider, model); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "%s is loaded on %s\n", model, provider)
-	return nil
 }
