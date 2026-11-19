@@ -1,4 +1,4 @@
-package configeditor
+package sessioneditor
 
 import (
 	"os"
@@ -77,9 +77,13 @@ func TestSave_ValidationFails_BlocksWrite(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
+	// A session rule (no registry is read here): two agents with one name.
 	m := newModel(testTheme(), &config.Config{
 		DefaultTag: "code",
-		Models:     []config.Model{{ID: "foo", ProviderID: "missing"}},
+		Agents: []config.Agent{
+			{Name: "a", SupportedProviders: []string{"x"}},
+			{Name: "a", SupportedProviders: []string{"x"}},
+		},
 	}, nil)
 	m.dirty = true
 
@@ -270,64 +274,89 @@ func TestSave_FailureKeepsDirty(t *testing.T) {
 	}
 }
 
-// TestSave_RegistryRowErrorNamesTheRegistry pins what a refused save says
-// when the problem is a registry row. This editor writes config.toml; a model
-// with no model_name is in registry.toml, and the save status is the last
-// thing the user reads before trying to fix it here. It carries the hint
-// every refusing command gives for the same error (#291), and a config.toml
-// problem keeps its own wording with no hint.
-func TestSave_RegistryRowErrorNamesTheRegistry(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
+// TestSave_ValidatesOnlyTheSessionRules pins the session editor's save rule:
+// it validates with config.ValidateSession, so an agent naming a provider no
+// registry is loaded for still saves (wt config reads no registry, and every
+// provider id would look unknown), while a session rule such as two agents
+// with one name refuses the save with a "validation: " status and no registry
+// hint.
+func TestSave_ValidatesOnlyTheSessionRules(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal}},
-		Models:     []config.Model{{ID: "omlx/m", ProviderID: "omlx"}},
+		Agents:     []config.Agent{{Name: "a", SupportedProviders: []string{"nosuch"}, DefaultProvider: "nosuch"}},
 	}, nil)
 	m.dirty = true
 	got, cmd := m.handleSave()
-	if cmd != nil {
-		t.Fatal("a config that fails validation was saved")
-	}
-	const want = `validation: model "omlx/m": model_name is required (fix the entry in /tmp/somewhere/registry.toml)`
-	if status := got.(*model).status; status != want {
-		t.Errorf("status = %q, want %q", status, want)
+	if cmd == nil || !got.(*model).saving {
+		t.Fatalf("an agent naming an unloaded provider was not saved: status %q", got.(*model).status)
 	}
 
-	m = newModel(testTheme(), &config.Config{}, nil)
+	m = newModel(testTheme(), &config.Config{
+		DefaultTag: "code",
+		Agents: []config.Agent{
+			{Name: "a", SupportedProviders: []string{"x"}},
+			{Name: "a", SupportedProviders: []string{"x"}},
+		},
+	}, nil)
 	m.dirty = true
-	got, _ = m.handleSave()
-	if status := got.(*model).status; status != "validation: default_tag must not be empty" {
-		t.Errorf("a config.toml problem's status = %q, want it with no registry hint", status)
+	got, cmd = m.handleSave()
+	if cmd != nil || got.(*model).saving {
+		t.Fatal("two agents named \"a\" were saved")
+	}
+	if status := got.(*model).status; status != `validation: duplicate agent name "a"` {
+		t.Errorf("status = %q, want %q", status, `validation: duplicate agent name "a"`)
 	}
 }
 
-// TestSave_JoinedErrors_RegistryHintPreferred pins that when ValidateAll
-// returns multiple errors including both a registry.toml problem and a
-// config.toml problem, the status shows the registry repair hint (not the
-// config.toml one). This prevents the user being sent to `wt config` when the
-// real fix is in registry.toml. The hint wins wherever the registry error sits
-// in the join: RegistryFixHint looks through the whole join.
-func TestSave_JoinedErrors_RegistryHintPreferred(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
-	// Config with BOTH a registry.toml problem (missing model_name) AND a
-	// config.toml problem (empty default_tag). ValidateAll joins both errors.
-	m := newModel(testTheme(), &config.Config{
-		DefaultTag: "", // config.toml problem
-		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal}},
-		Models:     []config.Model{{ID: "omlx/m", ProviderID: "omlx"}}, // registry.toml problem (no model_name)
-	}, nil)
+// TestSaveNeverWritesASynthesizedAgent pins the spec's rule for the session
+// load: config.LoadSession adds an in-memory agent for each driver with no
+// entry (AllProviders), and a save through the real saveCmd must write only
+// the file's own agents. A synthesized claude written to config.toml would
+// pin claude to whatever providers it was saved with and stop accepting every
+// provider.
+func TestSaveNeverWritesASynthesizedAgent(t *testing.T) {
+	scratchConfigHome(t)
+	if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const toml = "default_tag = \"code\"\n\n[[agents]]\nname = \"codex\"\nsupported_providers = [\"ollama\"]\ndefault_provider = \"ollama\"\n"
+	if err := os.WriteFile(config.Path(), []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadSession("claude")
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if !slicesContainsSynth(cfg.Agents, "claude") {
+		t.Fatalf("LoadSession did not synthesize claude: %+v", cfg.Agents)
+	}
+	m := newModel(testTheme(), cfg, nil)
+	m = send(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = send(t, m, loadedMsg{cfg: cfg})
 	m.dirty = true
-	got, cmd := m.handleSave()
-	if cmd != nil {
-		t.Fatal("a config that fails validation was saved")
+	m = keys(t, m, "ctrl+s")
+	if m.dirty || m.status != "saved" {
+		t.Fatalf("the save did not finish: dirty %v status %q", m.dirty, m.status)
 	}
-	// The hint must be the registry one, not "run `wt config` to repair"
-	const wantRegistryHint = "fix the entry in /tmp/somewhere/registry.toml"
-	status := got.(*model).status
-	if !strings.Contains(status, wantRegistryHint) {
-		t.Errorf("status = %q, want it to contain registry hint %q", status, wantRegistryHint)
+	data, err := os.ReadFile(config.Path())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(status, "run `wt config` to repair") {
-		t.Errorf("status = %q, must not contain config.toml hint when registry problem exists", status)
+	if !strings.Contains(string(data), `name = "codex"`) {
+		t.Errorf("config.toml lost the codex agent:\n%s", data)
 	}
+	if strings.Contains(string(data), `name = "claude"`) {
+		t.Errorf("config.toml holds the synthesized claude agent:\n%s", data)
+	}
+}
+
+// slicesContainsSynth reports whether agents holds a synthesized (AllProviders)
+// agent named name.
+func slicesContainsSynth(agents []config.Agent, name string) bool {
+	for _, a := range agents {
+		if a.Name == name && a.AllProviders {
+			return true
+		}
+	}
+	return false
 }

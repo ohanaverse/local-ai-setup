@@ -292,7 +292,7 @@ func (m *model) modelsStatus() string {
 		}
 	}
 	switch {
-	case m.quitPending:
+	case m.quitPending && m.models.writing:
 		parts = append(parts, "quitting when the registry write is done...")
 	case m.registryChanged:
 		parts = append(parts, routesPending)
@@ -619,6 +619,8 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key.String() {
 		case "q", "ctrl+c":
 			return m.quit()
+		case "tab":
+			return m, m.switchTab()
 		}
 		return m, nil
 	}
@@ -643,8 +645,9 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m.quit()
 	case "tab":
-		// The screen has one tab: tab is inert.
-		return m, nil
+		// The first visit to the Setup tab reads the machine; later ones
+		// show what is there (r reads again).
+		return m, m.switchTab()
 	case "r":
 		if mt.busy {
 			m.noteProbeOut()

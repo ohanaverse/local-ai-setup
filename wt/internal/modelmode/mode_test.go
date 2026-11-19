@@ -64,7 +64,7 @@ func TestModeErrorsKeepTheExistingLead(t *testing.T) {
 // TestModeUnsetMessageNamesTheFix checks the unset message tells the user
 // both ways out, and the native message the one.
 func TestModeUnsetMessageNamesTheFix(t *testing.T) {
-	want := "no model server is configured — choose a mode: run wt config (Model server tab) or set WT_MODEL_MODE to native, local or remote"
+	want := "no model server is configured — choose a mode: run wt config (Mode tab) or set WT_MODEL_MODE to native, local or remote"
 	if got := (&ModeUnsetError{}).Error(); got != want {
 		t.Fatalf("got %q", got)
 	}

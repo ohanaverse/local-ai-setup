@@ -1,4 +1,4 @@
-package configeditor
+package modeleditor
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
@@ -29,14 +29,14 @@ func plistLoose(p modelsetup.LiteLLMPlistState) bool {
 	return p.Present && p.Mode.Perm()&0o077 != 0
 }
 
-// serverLiteLLMMenu is what the k menu offers for a state, and the reasons
+// setupLiteLLMMenu is what the k menu offers for a state, and the reasons
 // for what it does not (each a line of its own). probeSkipped says the
 // observation skipped the LiteLLM probe, so its binary and port are unknown,
 // not absent. It reads State only: the
 // rules mirror modelsetup.BuildPlan's refusals so the menu never offers an
 // action the plan would refuse for a reason the observation already shows;
 // a refusal for anything else still arrives as the plan's own text.
-func serverLiteLLMMenu(s modelsetup.State, probeSkipped bool) (opts []menuOption, reasons []string) {
+func setupLiteLLMMenu(s modelsetup.State, probeSkipped bool) (opts []menuOption, reasons []string) {
 	p, inst := s.LiteLLMPlist, s.LiteLLMInstall
 	where := p.Path
 	if where == "" {
@@ -96,15 +96,15 @@ func orNoneWord(s string) string {
 	return s
 }
 
-// serverLiteLLMBlocked is why k and t do nothing now, or "": a write is
+// setupLiteLLMBlocked is why k and t do nothing now, or "": a write is
 // blocked, or the choice is not local.
-func (m *model) serverLiteLLMBlocked() string {
-	if why := m.serverWriteBlocked(); why != "" {
+func (m *model) setupLiteLLMBlocked() string {
+	if why := m.setupWriteBlocked(); why != "" {
 		return why
 	}
-	st := &m.server
+	st := &m.setup
 	switch {
-	case st.want.Mode != modelclient.ModeLocal:
+	case st.want.Mode != modelmode.ModeLocal:
 		return "k and t change the LiteLLM setup of local mode: choose local first; nothing was changed"
 	case !st.state.Platform.OK:
 		return "the local model server cannot run here, so k and t do nothing; nothing was changed"
@@ -112,41 +112,41 @@ func (m *model) serverLiteLLMBlocked() string {
 	return ""
 }
 
-// serverTightenBlocked is why t does nothing now, or "".
-func (m *model) serverTightenBlocked() string {
-	if why := m.serverLiteLLMBlocked(); why != "" {
+// setupTightenBlocked is why t does nothing now, or "".
+func (m *model) setupTightenBlocked() string {
+	if why := m.setupLiteLLMBlocked(); why != "" {
 		return why
 	}
-	if !plistLoose(m.server.state.LiteLLMPlist) {
+	if !plistLoose(m.setup.state.LiteLLMPlist) {
 		return "the LiteLLM plist is not looser than 0600, or there is none; nothing was changed"
 	}
 	return ""
 }
 
-// openServerMenu is k.
-func (m *model) openServerMenu() {
-	st := &m.server
-	if why := m.serverLiteLLMBlocked(); why != "" {
+// openSetupMenu is k.
+func (m *model) openSetupMenu() {
+	st := &m.setup
+	if why := m.setupLiteLLMBlocked(); why != "" {
 		st.status = why
 		return
 	}
-	st.phase, st.menuAt = serverMenu, 0
+	st.phase, st.menuAt = setupMenu, 0
 }
 
-// updateServerMenu takes keys while the menu shows: up and down move, enter
+// updateSetupMenu takes keys while the menu shows: up and down move, enter
 // chooses (through the same read, plan and confirm as a), esc closes it.
-func (m *model) updateServerMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) updateSetupMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
 	}
-	st := &m.server
-	opts, _ := serverLiteLLMMenu(st.state, st.probeSkipped)
+	st := &m.setup
+	opts, _ := setupLiteLLMMenu(st.state, st.probeSkipped)
 	switch key.String() {
 	case "ctrl+c":
 		return m.quit()
 	case "esc":
-		st.phase, st.status = serverView, "no LiteLLM change chosen; nothing was changed"
+		st.phase, st.status = setupView, "no LiteLLM change chosen; nothing was changed"
 	case "up":
 		if st.menuAt > 0 {
 			st.menuAt--
@@ -159,32 +159,32 @@ func (m *model) updateServerMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if st.menuAt >= len(opts) {
 			return m, nil
 		}
-		st.phase = serverView
-		return m, m.startServerPlanWith(opts[st.menuAt].action)
+		st.phase = setupView
+		return m, m.startSetupPlanWith(opts[st.menuAt].action)
 	}
 	return m, nil
 }
 
-// serverMenuHints are the menu's hints: only keys that act.
-func (m *model) serverMenuHints() []string {
-	opts, _ := serverLiteLLMMenu(m.server.state, m.server.probeSkipped)
+// setupMenuHints are the menu's hints: only keys that act.
+func (m *model) setupMenuHints() []string {
+	opts, _ := setupLiteLLMMenu(m.setup.state, m.setup.probeSkipped)
 	if len(opts) == 0 {
 		return []string{"esc back · ctrl+c quit", "esc · ctrl+c quit"}
 	}
 	return []string{"up/down choose · enter select · esc back · ctrl+c quit", "up/down · enter · esc · ctrl+c quit"}
 }
 
-// serverMenuView draws the menu: the title and the options always, then the
+// setupMenuView draws the menu: the title and the options always, then the
 // reasons as dim lines as far as they fit, behind a marker for the rest.
-func (m *model) serverMenuView(bar string, dim lipgloss.Style) string {
-	opts, reasons := serverLiteLLMMenu(m.server.state, m.server.probeSkipped)
+func (m *model) setupMenuView(bar string, dim lipgloss.Style) string {
+	opts, reasons := setupLiteLLMMenu(m.setup.state, m.setup.probeSkipped)
 	lines := []string{"", "LiteLLM master key"}
 	if len(opts) == 0 {
 		lines = append(lines, "nothing can be done here:")
 	}
 	for i, o := range opts {
 		mark := "  "
-		if i == m.server.menuAt {
+		if i == m.setup.menuAt {
 			mark = "> "
 		}
 		lines = append(lines, mark+o.label)
@@ -203,7 +203,7 @@ func (m *model) serverMenuView(bar string, dim lipgloss.Style) string {
 			rl = nil
 		}
 	}
-	return tuilayout.MessageAlone(bar, strings.Join(append(lines, rl...), "\n"), editorkit.FitHints(m.width, m.serverMenuHints()), m.width, m.height, dim)
+	return tuilayout.MessageAlone(bar, strings.Join(append(lines, rl...), "\n"), editorkit.FitHints(m.width, m.setupMenuHints()), m.width, m.height, dim)
 }
 
 // plistModeLines is the status block's warning for a LiteLLM plist that is
@@ -217,30 +217,30 @@ func plistModeLines(st modelsetup.State, home string) []editorkit.Line {
 		p.Mode.Perm(), editorkit.HomePath(p.Path, st.Host.Home, home)), Tone: editorkit.ToneWarn}}
 }
 
-// updateServerResult takes keys while the result screen shows: up and down
+// updateSetupResult takes keys while the result screen shows: up and down
 // scroll, esc and enter leave it; q, ctrl+c and tab work as ever. Every other
 // key is eaten, c and r included: a check or re-read would replace the
 // status, and the Recovery commands and notes of a failed apply could not be
 // shown again. Reports whether the key was handled here.
-func (m *model) updateServerResult(key string) bool {
-	st := &m.server
+func (m *model) updateSetupResult(key string) bool {
+	st := &m.setup
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	warn := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenWarning))
-	handled, done := st.result.Key(key, m.width, m.height, lipgloss.Height(tabBar(m.theme, TabServer)), warn, dim)
+	handled, done := st.result.Key(key, m.width, m.height, lipgloss.Height(tabBar(m.theme, TabSetup)), warn, dim)
 	if done {
 		st.result = nil
 	}
 	return handled
 }
 
-// serverResultView draws the result screen.
-func (m *model) serverResultView(bar string, dim lipgloss.Style) string {
+// setupResultView draws the result screen.
+func (m *model) setupResultView(bar string, dim lipgloss.Style) string {
 	warn := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenWarning))
-	return m.server.result.View(bar, m.serverResultHints, m.width, m.height, warn, dim)
+	return m.setup.result.View(bar, m.setupResultHints, m.width, m.height, warn, dim)
 }
 
-// serverResultHints are the result screen's hints.
-func (m *model) serverResultHints(scrolls bool) []string {
+// setupResultHints are the result screen's hints.
+func (m *model) setupResultHints(scrolls bool) []string {
 	scroll, short := "", ""
 	if scrolls {
 		scroll, short = "up/down scroll · ", "up/down · "

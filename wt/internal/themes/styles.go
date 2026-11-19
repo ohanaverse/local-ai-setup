@@ -8,7 +8,8 @@ import (
 // ListDelegate returns a list.DefaultDelegate whose Normal/Selected styles
 // are themed. This is the single styling point for every list in wt's
 // terminal programs: internal/tui's pickers (worktree, agent, model, ollama
-// and replace-choice lists) and internal/configeditor's tabs. It lives here,
+// and replace-choice lists) and the editors' tabs (internal/sessioneditor,
+// internal/modeleditor). It lives here,
 // beside the theme tokens it reads, so the two programs share it without one
 // importing the other. Tests continue to use list.NewDefaultDelegate()
 // because they assert model state, not rendered colors.
@@ -37,7 +38,7 @@ func ListDelegate(theme Theme) list.DefaultDelegate {
 
 // ErrorStyle returns the lipgloss style for user-facing errors in the active
 // theme: internal/tui's new-worktree error under the input and its list error
-// above the list, and internal/configeditor's form errors, so every error
+// above the list, and the editors' form errors, so every error
 // renders identically.
 func ErrorStyle(theme Theme) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Token(TokenError))

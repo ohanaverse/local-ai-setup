@@ -78,7 +78,7 @@ func quote(s string) string { return `"` + s + `"` }
 type ModeUnsetError struct{}
 
 func (*ModeUnsetError) Error() string {
-	return "no model server is configured — choose a mode: run wt config (Model server tab) or set WT_MODEL_MODE to native, local or remote"
+	return "no model server is configured — choose a mode: run wt config (Mode tab) or set WT_MODEL_MODE to native, local or remote"
 }
 
 // NativeModeError says the mode is native, which has no model server.

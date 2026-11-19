@@ -1,8 +1,11 @@
-// Package modeleditor is the Models screen behind `wt-model model`: one
-// Models tab that manages the models in the shared registry.toml (through
-// internal/modeladmin). It is an admin screen: it reads and writes the
-// registry and probes the providers, so it is linked by the host binary,
-// never by the session one.
+// Package modeleditor is wt-model's screen: a Models tab that manages the
+// models in the shared registry.toml (through internal/modeladmin), opened by
+// `wt-model model`, and a Setup tab that sets up wt-model on this machine
+// (local mode's LaunchAgent, token and LiteLLM, through internal/modelsetup,
+// reached only by its injected SetupDeps) or chooses native. It is an admin
+// screen: it reads and writes the registry, probes the providers and
+// changes the machine, so it is linked by the host binary, never by the
+// session one.
 package modeleditor
 
 import (
@@ -27,8 +30,11 @@ type model struct {
 	// tab has written registry.toml (Result.RegistryChanged).
 	models          modelsTab
 	registryChanged bool
+	// setup is the Setup tab's state.
+	setup setupTab
 	// quitPending is true when the user asked to leave while a registry
-	// write was in flight: the screen quits when its result is in.
+	// write, or a setup apply or start/stop, was in flight: the screen quits
+	// when its result is in.
 	quitPending bool
 	theme       themes.Theme
 	cfg         *config.Config
@@ -49,12 +55,17 @@ func newModel(theme themes.Theme, cfg *config.Config, cfgErr error) *model {
 	return &model{theme: theme, cfg: cfg, cfgErr: cfgErr}
 }
 
-// Init emits the loaded config at once and starts the first probe: the
-// screen has nothing to show before the providers answer.
+// Init emits the loaded config at once and starts the read that fills the
+// tab it opens on: the Models tab's probe (it has nothing to show before the
+// providers answer) or the Setup tab's observation. The other tab is read on
+// its first visit (switchTab).
 func (m *model) Init() tea.Cmd {
 	loaded := func() tea.Msg {
 		// cfg and cfgErr are captured when newModel is called.
 		return loadedMsg{cfg: m.cfg, err: m.cfgErr}
+	}
+	if m.tab == TabSetup {
+		return tea.Batch(loaded, m.observeSetupCmd())
 	}
 	return tea.Batch(loaded, m.probeCmd())
 }
@@ -76,6 +87,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.resizeModelForm()
+		m.resizeSetupInputs()
 	case loadedMsg:
 		m.ready = true
 		if msg.cfg == nil {
@@ -100,6 +112,18 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyModelSaved(msg)
 	case filterMatchesMsg:
 		return m, m.applyFilterMatches(msg)
+	case setupObservedMsg:
+		return m, m.applySetupObserved(msg)
+	case setupPlannedMsg:
+		m.applySetupPlanned(msg)
+		return m, nil
+	case setupAppliedMsg:
+		return m, m.applySetupApplied(msg)
+	case setupControlledMsg:
+		return m, m.applySetupControlled(msg)
+	}
+	if m.tab == TabSetup {
+		return m.updateSetup(msg)
 	}
 	return m.updateModels(msg)
 }
@@ -111,16 +135,21 @@ func (m *model) quit() (tea.Model, tea.Cmd) {
 }
 
 // leave ends the program — once the registry write in flight, if there is
-// one, has reported. The write runs in a command; a program that ended before
-// its message was handled would return Result{RegistryChanged: false} for a
-// registry that did change, and the caller would skip the route sync it owes.
-// So the quit is recorded, and applyModelRemoved or applyModelSaved, whichever
-// the write reports to, issues it. The tab says the quit is waiting (the
-// table's status, or the form's title when the write is a form's save). A
-// probe in flight holds nothing up.
+// one, has reported, and the Setup tab's apply or start/stop, if one is out.
+// The write runs in a command; a program that ended before its message was
+// handled would return Result{RegistryChanged: false} for a registry that did
+// change, and the caller would skip the route sync it owes, or would drop an
+// apply's result unread. So the quit is recorded and shown on the tab of the
+// write it waits for, and applyModelRemoved, applyModelSaved or
+// finishSetupWrite, whichever the write reports to, issues it. That tab says
+// the quit is waiting. A probe or an observation in flight holds nothing up.
 func (m *model) leave() (tea.Model, tea.Cmd) {
-	if m.models.writing {
-		m.quitPending = true
+	switch {
+	case m.models.writing:
+		m.quitPending, m.tab = true, TabModels
+		return m, nil
+	case m.setup.writing:
+		m.quitPending, m.tab = true, TabSetup
 		return m, nil
 	}
 	return m, tea.Quit
@@ -135,6 +164,9 @@ func (m *model) refuseHeldQuit() {
 func (m *model) View() string {
 	if !m.ready {
 		return "Loading config..."
+	}
+	if m.tab == TabSetup {
+		return m.setupTabView()
 	}
 	return m.modelsView()
 }
@@ -160,6 +192,7 @@ func resolveHome(f func() (string, error)) string {
 func Run(theme themes.Theme, cfg *config.Config, cfgErr error, o Options, opts ...tea.ProgramOption) (Result, error) {
 	m := newModel(theme, cfg, cfgErr)
 	o.Models = o.Models.withDefaults()
+	o.Setup = o.Setup.withDefaults()
 	m.opts, m.tab = o, o.StartTab
 	m.home = resolveHome(o.UserHome)
 	allOpts := append([]tea.ProgramOption{tea.WithAltScreen()}, opts...)

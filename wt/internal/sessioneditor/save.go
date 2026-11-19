@@ -1,4 +1,4 @@
-package configeditor
+package sessioneditor
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
@@ -30,7 +30,8 @@ var saveCmd = func(cfg *config.Config) tea.Cmd {
 	}
 }
 
-// handleSave validates the in-memory config and dispatches an async save.
+// handleSave validates the in-memory config with the session rules
+// (config.ValidateSession) and dispatches an async save.
 // It ignores additional save requests while one is already in flight to
 // prevent concurrent writes to the same temporary file.
 func (m *model) handleSave() (tea.Model, tea.Cmd) {
@@ -40,16 +41,11 @@ func (m *model) handleSave() (tea.Model, tea.Cmd) {
 	if m.saving {
 		return m, nil
 	}
-	if err := m.cfg.ValidateAll(); err != nil {
+	// The session rules only: no registry is read here, so provider ids are
+	// not checked, and the agents LoadSession synthesized are skipped (the
+	// save never writes them: writeConfigFile drops them).
+	if err := m.cfg.ValidateSession(); err != nil {
 		m.status = "validation: " + err.Error()
-		// A provider or model row is registry.toml's, which this editor does
-		// not write: say where the repair is, as the load status does.
-		// ValidateAll joins all errors; RegistryFixHint looks through the
-		// whole join, so the hint is correct even when a config.toml error
-		// appears first in it (e.g., empty default_tag + missing model_name).
-		if hint := config.RegistryFixHint(err); hint != "" {
-			m.status += " (" + hint + ")"
-		}
 		m.showQuitSaveFailure()
 		return m, nil
 	}

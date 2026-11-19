@@ -12,7 +12,7 @@ import (
 )
 
 // ModelServerState is the [model-server] table of config.toml (written by the
-// Model server tab, and still hand-editable):
+// wt config Mode tab or wt-model setup, and still hand-editable):
 // where the wt-model server is and which file holds its bearer token.
 type ModelServerState struct {
 	// Mode is native, local or remote (empty is unset: a launch refuses, or on a

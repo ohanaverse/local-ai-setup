@@ -1,4 +1,4 @@
-package configeditor
+package sessioneditor
 
 import (
 	"fmt"
@@ -54,7 +54,7 @@ func (a agentItem) Description() string {
 // buildAgentsList constructs the agents list from the shared
 // agents.ListEntries helper. It merges configured agents with registered
 // drivers, preserves command classification and issue state, and applies the
-// configeditor-specific commands-first display order.
+// editor's commands-first display order.
 func buildAgentsList(theme themes.Theme, width, height int, cfg *config.Config) list.Model {
 	entries := agents.ListEntries(cfg, agents.Installed)
 	items := make([]list.Item, 0, len(entries))
@@ -74,7 +74,7 @@ func buildAgentsList(theme themes.Theme, width, height int, cfg *config.Config) 
 	}
 
 	// Sort: commands first, then alphabetical. agents.ListEntries returns
-	// a purely alphabetical list; the configeditor applies its own display
+	// a purely alphabetical list; the editor applies its own display
 	// order here.
 	sort.SliceStable(items, func(i, j int) bool {
 		ai := items[i].(agentItem)

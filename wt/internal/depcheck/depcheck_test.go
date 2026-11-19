@@ -11,33 +11,35 @@ const modulePath = "github.com/ohanaverse/local-ai-setup/wt/"
 
 // adminBanned is the set of packages the session library packages must not
 // link: the model administration half (lifecycle, litellm, localmodels,
-// cloudsync, spend, modeladmin, configeditor) and the model server's own
-// packages.
+// cloudsync, spend, modeladmin, the model editor modeleditor and its setup
+// engine modelsetup) and the model server's own packages.
 var adminBanned = []string{
 	"internal/lifecycle", "internal/litellm", "internal/localmodels",
 	"internal/cloudsync", "internal/spend", "internal/modeladmin",
-	"internal/configeditor", "internal/modelserver", "internal/modelgateway",
+	"internal/modelserver", "internal/modelgateway",
 	"internal/modeljobs", "internal/sessionreg", "internal/candidates",
 	"internal/hoststop", "internal/modelsetup", "internal/modeleditor",
 }
 
 // sessionBanned is the set cmd/wt-model must not link: the session half.
 var sessionBanned = []string{
-	"internal/tui", "internal/configeditor", "internal/cleanup",
+	"internal/tui", "internal/cleanup",
 	"internal/agents", "internal/rotation", "internal/rescue",
 	"internal/rootmove", "internal/removal", "internal/modelclient",
+	"internal/sessioneditor",
 }
 
-// adminScreensBanned is what every package in adminScreens (the editors,
-// `wt config`'s Agents and Models tabs and the admin screens, and the UI leaf
-// they share) must not link: the launcher's session screens. The two
+// adminScreensBanned is what every package in adminScreens (the editors:
+// sessioneditor, `wt config`'s Agents and Mode tabs, and modeleditor,
+// `wt-model`'s Models and Setup tabs; and the UI leaf they share) must not link: the launcher's session screens. The two
 // programs share styling through internal/themes and sizing through
 // internal/tuilayout, never through each other.
 var adminScreensBanned = []string{"internal/tui"}
 
-// adminScreens are the editors and the UI leaf they share; each must stay off
+// adminScreens are the editors (sessioneditor for `wt config`, modeleditor for
+// `wt-model model|setup`) and the UI leaf they share; each must stay off
 // adminScreensBanned.
-var adminScreens = []string{"internal/configeditor", "internal/modeleditor", "internal/editorkit"}
+var adminScreens = []string{"internal/modeleditor", "internal/editorkit", "internal/sessioneditor"}
 
 // allowList names, per session library package, the banned packages it still
 // links. It only shrinks: TestSessionLibrariesStayOffTheAdminPackages fails
@@ -52,7 +54,7 @@ var sessionLibraries = []string{
 	"internal/smoke", "internal/profiles", "internal/catalog",
 	"internal/survey", "internal/tui", "internal/urlrule",
 	"internal/modelping", "internal/modelmode", "internal/editorkit",
-	"internal/modeview",
+	"internal/modeview", "internal/sessioneditor",
 }
 
 // modeLeaves are the session-safe leaves cmd/wt-model will link through
@@ -246,8 +248,8 @@ func TestModelServerBinaryStaysOffTheSessionPackages(t *testing.T) {
 // adminScreens from linking internal/tui: the admin screens and the
 // launcher's screens are two programs that must not depend on each other, so
 // a screen can move between binaries (Phase 4) without dragging the other's
-// UI along. configeditor used to link it for two styling helpers, which now
-// live in internal/themes.
+// UI along. The old `wt config` editor used to link it for two styling
+// helpers, which now live in internal/themes.
 func TestAdminScreensStayOffTheSessionScreens(t *testing.T) {
 	for _, pkg := range adminScreens {
 		for _, hit := range linked(closure(t, pkg), adminScreensBanned) {

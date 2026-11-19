@@ -5,8 +5,9 @@ side of wt (the registry, the live inventory of local models, start and stop,
 the LiteLLM routes) and serves it over HTTP, so an agent session that runs
 somewhere else needs no registry of its own. It has `wt-model serve`,
 `wt-model litellm set|status`, the commands for the proxy pair the gateway
-forwards with ([Proxy url and key](#proxy-url-and-key)), and `wt-model
-model`, the Models tab ([below](#wt-model-model)). (This page is the server.
+forwards with ([Proxy url and key](#proxy-url-and-key)), `wt-model setup`,
+the Setup tab ([below](#wt-model-setup)), and `wt-model model`, the Models
+tab ([below](#wt-model-model)). (This page is the server.
 `wt model …`, with a space, is the registry command group:
 [wt-model.md](wt-model.md).)
 
@@ -29,20 +30,24 @@ One port carries two surfaces:
 
 ## Setting it up
 
-The way in is the Model server tab of `wt config`
-([wt-config.md](wt-config.md), "Model server tab"). Choose `local` there and
-its plan writes the token file, wt-model's LiteLLM pair and a LaunchAgent,
-`local.wt-model.serve`, that runs `wt-model serve` on a loopback address
-(`127.0.0.1:8787` unless you name another) at login; macOS only, and a plist
-wt did not write (no wt marker comment) is never overwritten. Choose `remote`
-to point a session at a server on another machine. The tab shows the plan and
-asks `Apply this plan? [y/N]` (default no) before anything is written. The
-LiteLLM proxy itself is a separate concern: the tab only checks it and offers
-narrow actions on its plist ([guide 14](../../docs/guides/14-litellm-install-and-configuration.md)).
+The way in is `wt-model setup` ([below](#wt-model-setup)), run on the
+machine that will serve. Choose `local` there and its plan writes the token
+file, wt-model's LiteLLM pair and a LaunchAgent, `local.wt-model.serve`, that
+runs `wt-model serve` on a loopback address (`127.0.0.1:8787` unless you name
+another) at login; macOS only, and a plist wt did not write (no wt marker
+comment) is never overwritten. The tab shows the plan and asks `Apply this
+plan? [y/N]` (default no) before anything is written. The LiteLLM proxy
+itself is a separate concern: the tab only checks it and offers narrow
+actions on its plist ([guide 14](../../docs/guides/14-litellm-install-and-configuration.md)).
+
+A session machine chooses its mode on the Mode tab of `wt config`
+([wt-config.md](wt-config.md), "Mode tab"): `remote` points it at a server on
+another machine, and `local` stores the default url and token file and points
+at `wt-model setup` (offering to run it when `wt-model` is on `PATH`).
 
 Running `wt-model serve` yourself, as the rest of this page describes, stays
-the alternative: a server started by hand on the chosen port is refused by the
-tab, not adopted, so use one route or the other per port.
+the alternative: a server started by hand on the chosen port is refused by
+`wt-model setup`, not adopted, so use one route or the other per port.
 
 ## Where it runs
 
@@ -127,8 +132,8 @@ reader resolves it — the key is never printed, only masked.
   anywhere in it (exit 1, a fixed message that quotes none of it, nothing
   written); give the key with `--api-key`, and write an `@` a path needs as
   `%40`. A url with an `@` already stored (a hand edit, an older wt) is still
-  what the gateway forwards to, but `litellm status`, the `wt config` Model
-  server tab and every error print it only as
+  what the gateway forwards to, but `litellm status`, the Setup tab of
+  `wt-model setup` and every error print it only as
   `(hidden: the url contains an @)`, and the tab's LiteLLM checks do not
   request it (they read `not checked: the pair url contains an @`).
 - A home that cannot be read (a loose or unreadable key file, a `config.toml`
@@ -165,6 +170,35 @@ reader resolves it — the key is never printed, only masked.
 Both commands answer `0` done and `1` any failure. A set that wrote the pair
 prints `litellm: updated`; a set with no flag is refused with `nothing to
 set: pass --url and/or --api-key`.
+
+## `wt-model setup`
+
+`wt-model setup` opens the Setup tab, the same TUI as `wt-model model` on its
+other tab (`tab` switches; a Models edit made there still gets its one route
+sync when the screen closes). It sets up and controls wt-model on this
+machine and offers two modes, `local` and `native`; `remote` is not offered
+here, since a session's remote server is set on the Mode tab of `wt config`.
+
+- `local` plans the token file, wt-model's LiteLLM pair, the
+  `local.wt-model.serve` LaunchAgent and the `[model-server]` table (see
+  [Setting it up](#setting-it-up)). macOS only: elsewhere choose `native`.
+- `native` leaves local: its plan asks, default no, whether to boot out and
+  remove the LaunchAgent wt wrote.
+- The rows show the platform, the LaunchAgent, the LiteLLM pair, the listener
+  and each LiteLLM check. Keys (the footer names the ones that apply):
+  `left`/`right`/`space` choose the mode, `down`/`enter` move through its
+  fields, `a` plans and applies, `c` checks, `r` re-reads, `s` / `x` / `R`
+  start, stop or restart the local server, `tab` switches tabs and `q`
+  quits. Two keys act on the LiteLLM LaunchAgent, each as a plan you
+  confirm: `k` opens the master-key menu (use the key the plist already has,
+  generate a new one, which rotates `LITELLM_MASTER_KEY` with a backup under
+  `~/.config/wt-model/backups/`, or create the LiteLLM agent when it has no
+  plist), and `t` tightens a LiteLLM plist looser than 0600 to 0600 and
+  changes nothing else. A plan that restarts or unloads a running LiteLLM or
+  wt-model (`launchctl kickstart -k`, `bootout`) says so: requests in flight
+  are cut at once, unlike `wt litellm restart`, which lets them finish.
+- It needs a terminal. Without one it exits 1 with `wt-model setup needs a
+  terminal to open the Setup tab`.
 
 ## `wt-model model`
 

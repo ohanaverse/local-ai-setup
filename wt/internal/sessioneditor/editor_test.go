@@ -1,4 +1,4 @@
-package configeditor
+package sessioneditor
 
 import (
 	"errors"
@@ -193,53 +193,20 @@ func TestRun_EmptyConfig_Launches(t *testing.T) {
 	}
 }
 
-// TestLoadedMsgLocationErrorNamesTheRegistry pins #209. `wt config` is the one
-// command that opens on an invalid config, so the user can repair it — but a
-// mistyped location is in a registry.toml row, and the repair is an edit of
-// that file. The status line printed only the raw error, so the screen built
-// for repair was the only place that did not say where the repair is; every
-// other command already names the file. It must carry the same hint, from the
-// same source, and any other config error keeps its wording with no hint (this
-// editor is where those are fixed).
-func TestLoadedMsgLocationErrorNamesTheRegistry(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
-	cfg := &config.Config{
-		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "omlx", Location: "Local"}},
-		Models:     []config.Model{{ID: "omlx/m", ProviderID: "omlx", ModelName: "m"}},
-	}
-	locErr := cfg.Validate()
-	if locErr == nil {
-		t.Fatal("fixture validated; want a location error")
-	}
-	got, _ := newModel(themes.Theme{}, cfg, locErr).Update(loadedMsg{cfg: cfg, err: locErr})
-	want := `config load/validation error: provider "omlx" has location "Local"; expected "local" or "cloud" (` + config.RegistryFixHint(locErr) + `)`
-	if status := got.(*model).status; status != want || !strings.Contains(status, "fix the entry in /tmp/somewhere/registry.toml") {
-		t.Errorf("status = %q, want %q", status, want)
-	}
-
-	got, _ = newModel(themes.Theme{}, cfg, nil).Update(loadedMsg{cfg: cfg, err: fmt.Errorf("default_tag must not be empty")})
-	if status := got.(*model).status; status != "config load/validation error: default_tag must not be empty" {
-		t.Errorf("another config error's status = %q, want it unchanged", status)
-	}
-}
-
-// TestStatusWrapsInsteadOfBeingCutOff pins what makes #209's hint visible. The
-// status was drawn as one line, and a terminal cuts a too-wide line at its
-// right edge: at 80 columns a location error ended `…expected "lo`, with the
-// hint that names registry.toml — the end of the line — never on screen. The
-// status now wraps to the terminal's width, and the list gives up the rows
-// the extra lines take, so the view is still no taller than the terminal
-// (Bubble Tea drops a too-tall view's TOP lines: the title and this status).
+// TestStatusWrapsInsteadOfBeingCutOff pins what makes the end of a long
+// status visible (#209). The status was drawn as one line, and a terminal
+// cuts a too-wide line at its right edge, where a load error names the file
+// to fix. The status now wraps to the terminal's width, and the list gives up
+// the rows the extra lines take, so the view is still no taller than the
+// terminal (Bubble Tea drops a too-tall view's TOP lines: the title and this
+// status). The session editor reads no registry, so the error here is a long
+// config.toml one whose last word is the file.
 func TestStatusWrapsInsteadOfBeingCutOff(t *testing.T) {
-	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "omlx", Location: "Local"}},
-		Models:     []config.Model{{ID: "omlx/m", ProviderID: "omlx", ModelName: "m"}},
 		Agents:     []config.Agent{{Name: "claude"}, {Name: "codex"}, {Name: "pi"}, {Name: "opencode"}},
 	}
-	locErr := cfg.Validate()
+	locErr := fmt.Errorf("toml: line 12 (last key \"agents.supported_providers\"): incompatible types: TOML value has type string; destination has type slice; fix the entry in /tmp/somewhere/config.toml")
 	// 60 columns is the narrowest checked: below the title's own width this
 	// screen was already too wide for the terminal, status or no status.
 	for _, size := range []struct{ w, h int }{{80, 24}, {60, 24}, {120, 12}, {200, 50}} {
@@ -262,7 +229,7 @@ func TestStatusWrapsInsteadOfBeingCutOff(t *testing.T) {
 		// contiguous). This avoids both false positives from strings.Fields
 		// collapsing whitespace and false negatives from exact string matching
 		// when the hint wraps.
-		hintWords := []string{"fix", "the", "entry", "in", "/tmp/somewhere/registry.toml"}
+		hintWords := []string{"fix", "the", "entry", "in", "/tmp/somewhere/config.toml"}
 		for _, word := range hintWords {
 			if !strings.Contains(view, word) {
 				t.Errorf("%dx%d: hint word %q not found in view:\n%s", size.w, size.h, word, view)

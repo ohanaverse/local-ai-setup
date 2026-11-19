@@ -26,10 +26,11 @@ func modelCmd(h *host) *cobra.Command {
 	}
 }
 
-// runModelEditor opens the Models screen on the host's config with this
-// package's seams, then runs the one route sync when the screen wrote the
-// registry — even when the screen ended with an error, since the write
-// already happened. It returns the screen's error.
+// runModelEditor opens the Models screen on tab start, on the host's config
+// with this package's seams (the Setup tab over setupEnv), then runs the one
+// route sync when the screen wrote the registry — even when the screen ended
+// with an error, since the write already happened. It returns the screen's
+// error.
 func runModelEditor(out, errOut io.Writer, h *host, start modeleditor.Tab) error {
 	theme, err := loadTheme()
 	if err != nil {
@@ -39,6 +40,7 @@ func runModelEditor(out, errOut io.Writer, h *host, start modeleditor.Tab) error
 	res, err := h.modeleditorRun(theme, cfg, h.hostConfigErr(), modeleditor.Options{
 		StartTab: start,
 		Models:   modeleditor.ModelsDeps{Probe: h.probeInventory, SeedEnv: h.seedEnv, Capabilities: h.ollamaCaps},
+		Setup:    modeleditor.SetupDepsFromEnv(h.setupEnv()),
 	})
 	if res.RegistryChanged {
 		// What `wt model add|edit|rm` run after their write: the sync's own

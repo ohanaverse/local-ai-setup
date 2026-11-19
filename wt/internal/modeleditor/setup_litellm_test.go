@@ -1,4 +1,4 @@
-package configeditor
+package modeleditor
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 )
@@ -25,7 +24,7 @@ func litellmLocalState(p modelsetup.LiteLLMPlistState) modelsetup.State {
 	return modelsetup.State{
 		Platform: modelsetup.Platform{OK: true},
 		State: modelmode.State{
-			Resolution: modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored},
+			Resolution: modelmode.Resolution{Mode: modelmode.ModeLocal, Source: modelmode.SourceStored},
 			Config:     modelsetup.ConfigState{Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true, Table: config.ModelServerState{Mode: "local"}},
 			Token:      modelsetup.TokenState{Path: "/Users/dev/.config/wt-model/server.token", Exists: true},
 			Host:       modelmode.HostState{Home: "/Users/dev", ConfigHome: "/Users/dev/.config"},
@@ -55,12 +54,12 @@ var (
 	optCreate = "create the LiteLLM agent"
 )
 
-// TestServerTabMasterKeyMenuOffersOnlyWhatTheStateAllows pins the menu's
+// TestSetupTabMasterKeyMenuOffersOnlyWhatTheStateAllows pins the menu's
 // rules: create only with no plist and LiteLLM installed, rotate only for a
 // readable XML plist with a key that is not the salt-refusal case, use only
 // when the plist has a key; each option the state rules out is not offered,
 // and why (naming guide 14 where it helps) is shown in a dim line instead.
-func TestServerTabMasterKeyMenuOffersOnlyWhatTheStateAllows(t *testing.T) {
+func TestSetupTabMasterKeyMenuOffersOnlyWhatTheStateAllows(t *testing.T) {
 	noBinary := installable()
 	noBinary.LiteLLMInstall.Binary = ""
 	noConfig := installable()
@@ -89,10 +88,10 @@ func TestServerTabMasterKeyMenuOffersOnlyWhatTheStateAllows(t *testing.T) {
 		{"unreadable plist", litellmLocalState(unreadable), nil, []string{optUse, optRotate, optCreate}, []string{"cannot be read", "14-litellm"}},
 	}
 	for _, c := range cases {
-		sm := &serverMachine{states: []modelsetup.State{c.st}}
-		m := keys(t, serverEditor(t, sm, 120, 50), "k")
-		if m.server.phase != serverMenu {
-			t.Errorf("%s: k did not open the menu (phase %d, status %q)", c.name, m.server.phase, m.server.status)
+		sm := &setupMachine{states: []modelsetup.State{c.st}}
+		m := keys(t, setupEditor(t, sm, 120, 50), "k")
+		if m.setup.phase != setupMenu {
+			t.Errorf("%s: k did not open the menu (phase %d, status %q)", c.name, m.setup.phase, m.setup.status)
 			continue
 		}
 		view := flat(plain(m))
@@ -128,17 +127,17 @@ func pickOption(t *testing.T, m *model, i int) *model {
 	return keys(t, m, "enter")
 }
 
-// TestServerTabRotateShowsThePlanAndNeverTheKey pins that choosing a new key
+// TestSetupTabRotateShowsThePlanAndNeverTheKey pins that choosing a new key
 // reads the machine again, plans with Desired.LiteLLM = rotate, and shows the
 // real plan's text (the backup, the LITELLM_MASTER_KEY edit, the pair, the
 // LiteLLM and wt-model restarts, what else may hold the old key) on the
 // confirm screen; a master key typed into the form earlier and
 // any fake key never appear, and no key reaches Plan.
-func TestServerTabRotateShowsThePlanAndNeverTheKey(t *testing.T) {
-	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true}
-	m := pickOption(t, serverEditor(t, sm, 120, 50), 1)
-	if m.server.phase != serverConfirm || m.server.prompt != promptApply {
-		t.Fatalf("phase %d prompt %d status %q, want the plan's confirm", m.server.phase, m.server.prompt, m.server.status)
+func TestSetupTabRotateShowsThePlanAndNeverTheKey(t *testing.T) {
+	sm := &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true}
+	m := pickOption(t, setupEditor(t, sm, 120, 50), 1)
+	if m.setup.phase != setupConfirm || m.setup.prompt != promptApply {
+		t.Fatalf("phase %d prompt %d status %q, want the plan's confirm", m.setup.phase, m.setup.prompt, m.setup.status)
 	}
 	if sm.observes != 2 || len(sm.desired) != 1 || sm.desired[0].LiteLLM != modelsetup.LiteLLMRotateKey {
 		t.Fatalf("observes %d desired %v, want a fresh read and a rotate plan", sm.observes, sm.desired)
@@ -153,12 +152,12 @@ func TestServerTabRotateShowsThePlanAndNeverTheKey(t *testing.T) {
 	// A key typed into the master field of a keyless machine (where a create
 	// is possible) is dropped from the plan and never drawn.
 	st := installable()
-	sm = &serverMachine{states: []modelsetup.State{st}, build: true}
-	m = serverEditor(t, sm, 120, 50)
+	sm = &setupMachine{states: []modelsetup.State{st}, build: true}
+	m = setupEditor(t, sm, 120, 50)
 	m = keys(t, m, "down", "down", "down", "sk-FAKE-SECRET", "esc")
 	m = pickOption(t, m, 0)
-	if m.server.phase != serverConfirm || len(sm.desired) != 1 {
-		t.Fatalf("create: phase %d status %q desired %d", m.server.phase, m.server.status, len(sm.desired))
+	if m.setup.phase != setupConfirm || len(sm.desired) != 1 {
+		t.Fatalf("create: phase %d status %q desired %d", m.setup.phase, m.setup.status, len(sm.desired))
 	}
 	if sm.desired[0].LiteLLM != modelsetup.LiteLLMCreate || sm.desired[0].MasterKey != "" {
 		t.Errorf("create: Desired = LiteLLM %q, key set %v; want create and no key", sm.desired[0].LiteLLM, sm.desired[0].MasterKey != "")
@@ -171,26 +170,26 @@ func TestServerTabRotateShowsThePlanAndNeverTheKey(t *testing.T) {
 	}
 }
 
-// TestServerTabRotateIsDefaultNo pins P1 on the LiteLLM confirm: only y or
+// TestSetupTabRotateIsDefaultNo pins P1 on the LiteLLM confirm: only y or
 // Y applies; any other key leaves the question up and applies nothing; n and
 // esc cancel saying nothing was changed; ctrl+c quits.
-func TestServerTabRotateIsDefaultNo(t *testing.T) {
-	open := func() (*serverMachine, *model) {
-		sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true}
-		return sm, pickOption(t, serverEditor(t, sm, 80, 24), 1)
+func TestSetupTabRotateIsDefaultNo(t *testing.T) {
+	open := func() (*setupMachine, *model) {
+		sm := &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true}
+		return sm, pickOption(t, setupEditor(t, sm, 80, 24), 1)
 	}
 	sm, m := open()
 	for _, k := range []string{"x", "enter", " ", "q", "tab", "k", "a", "Y "} {
 		m = keys(t, m, k)
-		if m.server.phase != serverConfirm || sm.applies != 0 {
-			t.Fatalf("after %q: phase %d applies %d, want the question to stay", k, m.server.phase, sm.applies)
+		if m.setup.phase != setupConfirm || sm.applies != 0 {
+			t.Fatalf("after %q: phase %d applies %d, want the question to stay", k, m.setup.phase, sm.applies)
 		}
 	}
 	for _, k := range []string{"n", "N", "esc"} {
 		sm, m = open()
 		m = keys(t, m, k)
-		if m.server.phase != serverView || sm.applies != 0 || !strings.Contains(m.server.status, "nothing was changed") {
-			t.Errorf("%q: phase %d applies %d status %q, want a cancel", k, m.server.phase, sm.applies, m.server.status)
+		if m.setup.phase != setupView || sm.applies != 0 || !strings.Contains(m.setup.status, "nothing was changed") {
+			t.Errorf("%q: phase %d applies %d status %q, want a cancel", k, m.setup.phase, sm.applies, m.setup.status)
 		}
 	}
 	sm, m = open()
@@ -215,14 +214,14 @@ func hasStep(p modelsetup.Plan, k modelsetup.StepKind) bool {
 	return false
 }
 
-// TestServerTabLooseLiteLLMPlistShowsAWarning pins that a plist looser than
+// TestSetupTabLooseLiteLLMPlistShowsAWarning pins that a plist looser than
 // 0600 shows a warning line with its mode and "tighten to 0600", that t is
 // offered (in the hints) only then, and that t plans a chmod-only change
 // through the same confirm; at 0600 there is no warning, no t hint, and t
 // says nothing was changed and plans nothing.
-func TestServerTabLooseLiteLLMPlistShowsAWarning(t *testing.T) {
-	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true}
-	m := serverEditor(t, sm, 200, 50)
+func TestSetupTabLooseLiteLLMPlistShowsAWarning(t *testing.T) {
+	sm := &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true}
+	m := setupEditor(t, sm, 200, 50)
 	view := plain(m)
 	if !strings.Contains(view, "warning") || !strings.Contains(view, "0644") || !strings.Contains(view, "tighten to 0600") {
 		t.Errorf("no warning with the mode and the fix:\n%s", view)
@@ -231,8 +230,8 @@ func TestServerTabLooseLiteLLMPlistShowsAWarning(t *testing.T) {
 		t.Errorf("hints %q do not offer t", h)
 	}
 	m = keys(t, m, "t")
-	if m.server.phase != serverConfirm || len(sm.applied) != 0 {
-		t.Fatalf("t: phase %d status %q, want the confirm", m.server.phase, m.server.status)
+	if m.setup.phase != setupConfirm || len(sm.applied) != 0 {
+		t.Fatalf("t: phase %d status %q, want the confirm", m.setup.phase, m.setup.status)
 	}
 	if sm.desired[0].LiteLLM != modelsetup.LiteLLMTighten {
 		t.Errorf("t planned %q", sm.desired[0].LiteLLM)
@@ -247,25 +246,25 @@ func TestServerTabLooseLiteLLMPlistShowsAWarning(t *testing.T) {
 
 	tight := xmlPlist()
 	tight.Mode = 0o600
-	sm = &serverMachine{states: []modelsetup.State{litellmLocalState(tight)}, build: true}
-	m = serverEditor(t, sm, 120, 50)
+	sm = &setupMachine{states: []modelsetup.State{litellmLocalState(tight)}, build: true}
+	m = setupEditor(t, sm, 120, 50)
 	if strings.Contains(plain(m), "tighten to 0600") || strings.Contains(hintLine(m), "t tighten") {
 		t.Errorf("a 0600 plist shows the warning or the key:\n%s", plain(m))
 	}
 	m = keys(t, m, "t")
-	if m.server.phase != serverView || sm.plans != 0 || !strings.Contains(m.server.status, "nothing was changed") {
-		t.Errorf("t at 0600: phase %d plans %d status %q", m.server.phase, sm.plans, m.server.status)
+	if m.setup.phase != setupView || sm.plans != 0 || !strings.Contains(m.setup.status, "nothing was changed") {
+		t.Errorf("t at 0600: phase %d plans %d status %q", m.setup.phase, sm.plans, m.setup.status)
 	}
 }
 
-// TestServerTabLiteLLMKeysAreInertWhenTheyCannotAct pins that k and t do
+// TestSetupTabLiteLLMKeysAreInertWhenTheyCannotAct pins that k and t do
 // nothing, with a status, outside local mode, while the tab is busy, and
 // when config.toml does not parse (naming the path and saying nothing was
 // changed); none of them calls Plan or Apply.
-func TestServerTabLiteLLMKeysAreInertWhenTheyCannotAct(t *testing.T) {
+func TestSetupTabLiteLLMKeysAreInertWhenTheyCannotAct(t *testing.T) {
 	loose := litellmLocalState(xmlPlist())
 	native := loose
-	native.Resolution.Mode = modelclient.ModeNative
+	native.Resolution.Mode = modelmode.ModeNative
 	for name, c := range map[string]struct {
 		st   modelsetup.State
 		want string
@@ -274,41 +273,41 @@ func TestServerTabLiteLLMKeysAreInertWhenTheyCannotAct(t *testing.T) {
 		"parse":  {parseErrState(), "/Users/dev/.config/agent-wt/config.toml"},
 	} {
 		for _, k := range []string{"k", "t"} {
-			sm := &serverMachine{states: []modelsetup.State{c.st}, build: true}
-			m := keys(t, serverEditor(t, sm, 120, 50), k)
-			if m.server.phase != serverView || sm.plans != 0 || sm.applies != 0 || !strings.Contains(m.server.status, c.want) ||
-				!strings.Contains(m.server.status, "nothing was changed") {
-				t.Errorf("%s %s: phase %d plans %d status %q", name, k, m.server.phase, sm.plans, m.server.status)
+			sm := &setupMachine{states: []modelsetup.State{c.st}, build: true}
+			m := keys(t, setupEditor(t, sm, 120, 50), k)
+			if m.setup.phase != setupView || sm.plans != 0 || sm.applies != 0 || !strings.Contains(m.setup.status, c.want) ||
+				!strings.Contains(m.setup.status, "nothing was changed") {
+				t.Errorf("%s %s: phase %d plans %d status %q", name, k, m.setup.phase, sm.plans, m.setup.status)
 			}
 		}
 	}
 	// Busy: a was pressed and its read is still out.
-	sm := &serverMachine{states: []modelsetup.State{loose}, build: true}
-	m := serverEditor(t, sm, 120, 50)
+	sm := &setupMachine{states: []modelsetup.State{loose}, build: true}
+	m := setupEditor(t, sm, 120, 50)
 	next, _ := m.Update(keyMsg("a"))
 	m = next.(*model)
 	for _, k := range []string{"k", "t"} {
 		next, cmd := m.Update(keyMsg(k))
 		m = next.(*model)
-		if cmd != nil || m.server.phase != serverView || !strings.Contains(m.server.status, "wait") {
-			t.Errorf("busy %s: phase %d cmd %v status %q", k, m.server.phase, cmd != nil, m.server.status)
+		if cmd != nil || m.setup.phase != setupView || !strings.Contains(m.setup.status, "wait") {
+			t.Errorf("busy %s: phase %d cmd %v status %q", k, m.setup.phase, cmd != nil, m.setup.status)
 		}
 	}
 	// The menu's keys do nothing outside it: escape closes without a plan.
-	sm = &serverMachine{states: []modelsetup.State{loose}, build: true}
-	m = keys(t, serverEditor(t, sm, 80, 24), "k", "esc")
-	if m.server.phase != serverView || sm.plans != 0 {
-		t.Errorf("esc in the menu: phase %d plans %d", m.server.phase, sm.plans)
+	sm = &setupMachine{states: []modelsetup.State{loose}, build: true}
+	m = keys(t, setupEditor(t, sm, 80, 24), "k", "esc")
+	if m.setup.phase != setupView || sm.plans != 0 {
+		t.Errorf("esc in the menu: phase %d plans %d", m.setup.phase, sm.plans)
 	}
 }
 
-// TestServerTabHintsNameKAndTOnlyWhenTheyAct pins T5 for the new keys: k only
+// TestSetupTabHintsNameKAndTOnlyWhenTheyAct pins T5 for the new keys: k only
 // in local mode with a write allowed, t only for a loose plist as well.
-func TestServerTabHintsNameKAndTOnlyWhenTheyAct(t *testing.T) {
+func TestSetupTabHintsNameKAndTOnlyWhenTheyAct(t *testing.T) {
 	tight := xmlPlist()
 	tight.Mode = 0o600
 	native := litellmLocalState(xmlPlist())
-	native.Resolution.Mode = modelclient.ModeNative
+	native.Resolution.Mode = modelmode.ModeNative
 	for _, c := range []struct {
 		name     string
 		st       modelsetup.State
@@ -319,7 +318,7 @@ func TestServerTabHintsNameKAndTOnlyWhenTheyAct(t *testing.T) {
 		{"native", native, false, false},
 		{"parse error", parseErrState(), false, false},
 	} {
-		h := hintLine(serverEditor(t, &serverMachine{states: []modelsetup.State{c.st}}, 200, 24))
+		h := hintLine(setupEditor(t, &setupMachine{states: []modelsetup.State{c.st}}, 200, 24))
 		if got := strings.Contains(h, "k key"); got != c.k {
 			t.Errorf("%s: hints %q, k named = %v, want %v", c.name, h, got, c.k)
 		}
@@ -342,17 +341,17 @@ func failedRotate() modelsetup.Result {
 	}
 }
 
-// TestServerTabShowsTheNotesAndRecoveryAfterAFailedRotate pins that a failed
+// TestSetupTabShowsTheNotesAndRecoveryAfterAFailedRotate pins that a failed
 // rotation shows its backup note and its recovery commands, whole and
 // scrubbed, at every size including 40x12, where they scroll with up and
 // down rather than being clipped: each command is on screen at some scroll
 // position and nothing is cut mid-line; esc returns to the tab.
-func TestServerTabShowsTheNotesAndRecoveryAfterAFailedRotate(t *testing.T) {
+func TestSetupTabShowsTheNotesAndRecoveryAfterAFailedRotate(t *testing.T) {
 	for _, size := range tabSizes {
-		sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: failedRotate()}
-		m := keys(t, pickOption(t, serverEditor(t, sm, size[0], size[1]), 1), "y")
-		if m.server.result == nil {
-			t.Fatalf("%dx%d: no result screen (status %q)", size[0], size[1], m.server.status)
+		sm := &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: failedRotate()}
+		m := keys(t, pickOption(t, setupEditor(t, sm, size[0], size[1]), 1), "y")
+		if m.setup.result == nil {
+			t.Fatalf("%dx%d: no result screen (status %q)", size[0], size[1], m.setup.status)
 		}
 		// Collect the lines seen while scrolling to the end.
 		seen := plain(m)
@@ -372,33 +371,33 @@ func TestServerTabShowsTheNotesAndRecoveryAfterAFailedRotate(t *testing.T) {
 			t.Errorf("%dx%d: the command is not on the first screen of a roomy terminal", size[0], size[1])
 		}
 		m = keys(t, m, "esc")
-		if m.server.result != nil || m.server.phase != serverView {
+		if m.setup.result != nil || m.setup.phase != setupView {
 			t.Errorf("%dx%d: esc did not leave the result screen", size[0], size[1])
 		}
 	}
 }
 
-// TestServerTabRecoveryIsOnTheFirstScreenWhenItFits pins that at 40x12 a
+// TestSetupTabRecoveryIsOnTheFirstScreenWhenItFits pins that at 40x12 a
 // short recovery command is on the first screen, before any scrolling.
-func TestServerTabRecoveryIsOnTheFirstScreenWhenItFits(t *testing.T) {
+func TestSetupTabRecoveryIsOnTheFirstScreenWhenItFits(t *testing.T) {
 	res := failedRotate()
 	res.Recovery = "run `launchctl kickstart -k gui/501/local.wt-model.serve`"
-	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: res}
-	m := keys(t, pickOption(t, serverEditor(t, sm, 40, 12), 1), "y")
+	sm := &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: res}
+	m := keys(t, pickOption(t, setupEditor(t, sm, 40, 12), 1), "y")
 	if !strings.Contains(flat(plain(m)), flat("launchctl kickstart -k gui/501/local.wt-model.serve")) {
 		t.Errorf("the recovery command is not on the first screen:\n%s", plain(m))
 	}
 	assertFits(t, "recovery", m.View(), 40, 12)
 }
 
-// TestServerTabShowsTheBackupNoteAfterASuccessfulRotate pins that a rotation
+// TestSetupTabShowsTheBackupNoteAfterASuccessfulRotate pins that a rotation
 // that succeeded still shows where the backup is, at every size.
-func TestServerTabShowsTheBackupNoteAfterASuccessfulRotate(t *testing.T) {
+func TestSetupTabShowsTheBackupNoteAfterASuccessfulRotate(t *testing.T) {
 	ok := failedRotate()
 	ok.Failed, ok.Err, ok.Recovery = nil, nil, ""
 	for _, size := range tabSizes {
-		sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: ok}
-		m := keys(t, pickOption(t, serverEditor(t, sm, size[0], size[1]), 1), "y")
+		sm := &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: ok}
+		m := keys(t, pickOption(t, setupEditor(t, sm, size[0], size[1]), 1), "y")
 		seen := plain(m)
 		for range 20 {
 			m = keys(t, m, "down")
@@ -410,16 +409,16 @@ func TestServerTabShowsTheBackupNoteAfterASuccessfulRotate(t *testing.T) {
 	}
 }
 
-// TestServerTabScrubsTheNotesAndRecovery pins that a url's user:password in
+// TestSetupTabScrubsTheNotesAndRecovery pins that a url's user:password in
 // a result's notes or recovery is never drawn, and that a fake key a careless
 // dep put in a warning never reaches the rendered result screen either.
-func TestServerTabScrubsTheNotesAndRecovery(t *testing.T) {
+func TestSetupTabScrubsTheNotesAndRecovery(t *testing.T) {
 	res := failedRotate()
 	res.Notes = []string{"see https://user:hunter2@host:4000/x"}
 	res.Recovery = "run `curl https://user:hunter2@host:4000/health`"
 	res.Warnings = []string{"LiteLLM said the key sk-warnkey0123456789abcdef0123456789abcdef was refused"}
-	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: res}
-	m := keys(t, pickOption(t, serverEditor(t, sm, 120, 50), 1), "y")
+	sm := &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: res}
+	m := keys(t, pickOption(t, setupEditor(t, sm, 120, 50), 1), "y")
 	if strings.Contains(plain(m), "hunter2") || !strings.Contains(plain(m), "host:4000") {
 		t.Errorf("the result screen leaks or loses the url:\n%s", plain(m))
 	}
@@ -428,15 +427,15 @@ func TestServerTabScrubsTheNotesAndRecovery(t *testing.T) {
 	}
 }
 
-// TestServerTabHoldsAQuitDuringALiteLLMApply pins that a quit asked for while
+// TestSetupTabHoldsAQuitDuringALiteLLMApply pins that a quit asked for while
 // a LiteLLM apply is out is held until its result is in, like every write.
-func TestServerTabHoldsAQuitDuringALiteLLMApply(t *testing.T) {
-	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: modelsetup.Result{}}
-	m := pickOption(t, serverEditor(t, sm, 80, 24), 1)
+func TestSetupTabHoldsAQuitDuringALiteLLMApply(t *testing.T) {
+	sm := &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: modelsetup.Result{}}
+	m := pickOption(t, setupEditor(t, sm, 80, 24), 1)
 	next, apply := m.Update(keyMsg("y"))
 	m = next.(*model)
-	if apply == nil || sm.applies != 0 || !m.server.writing {
-		t.Fatalf("y: the apply was not handed to a command (writing %v)", m.server.writing)
+	if apply == nil || sm.applies != 0 || !m.setup.writing {
+		t.Fatalf("y: the apply was not handed to a command (writing %v)", m.setup.writing)
 	}
 	next, cmd := m.Update(keyMsg("q"))
 	m = next.(*model)
@@ -452,33 +451,33 @@ func TestServerTabHoldsAQuitDuringALiteLLMApply(t *testing.T) {
 	}
 }
 
-// TestServerTabFitsTheTerminalWithTheMenu pins that the menu (with all
+// TestSetupTabFitsTheTerminalWithTheMenu pins that the menu (with all
 // options, and with reasons only), and the result screens fit every size,
 // keep the hints on the last line, and that the cursor option stays visible.
-func TestServerTabFitsTheTerminalWithTheMenu(t *testing.T) {
+func TestSetupTabFitsTheTerminalWithTheMenu(t *testing.T) {
 	noBinary := installable()
 	noBinary.LiteLLMInstall.Binary = ""
 	phases := map[string]func(*testing.T, int, int) *model{
 		"menu with options": func(t *testing.T, w, h int) *model {
-			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}}, w, h), "k")
+			return keys(t, setupEditor(t, &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}}, w, h), "k")
 		},
 		"menu with a reason": func(t *testing.T, w, h int) *model {
 			noSalt := xmlPlist()
 			noSalt.HasSaltKey = false
-			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{litellmLocalState(noSalt)}}, w, h), "k")
+			return keys(t, setupEditor(t, &setupMachine{states: []modelsetup.State{litellmLocalState(noSalt)}}, w, h), "k")
 		},
 		"menu with only a reason": func(t *testing.T, w, h int) *model {
-			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{noBinary}}, w, h), "k")
+			return keys(t, setupEditor(t, &setupMachine{states: []modelsetup.State{noBinary}}, w, h), "k")
 		},
 		"rotate confirm": func(t *testing.T, w, h int) *model {
-			return pickOption(t, serverEditor(t, &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true}, w, h), 1)
+			return pickOption(t, setupEditor(t, &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true}, w, h), 1)
 		},
 		"failed rotate": func(t *testing.T, w, h int) *model {
-			sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: failedRotate()}
-			return keys(t, pickOption(t, serverEditor(t, sm, w, h), 1), "y")
+			sm := &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: failedRotate()}
+			return keys(t, pickOption(t, setupEditor(t, sm, w, h), 1), "y")
 		},
 		"loose warning": func(t *testing.T, w, h int) *model {
-			return serverEditor(t, &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}}, w, h)
+			return setupEditor(t, &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}}, w, h)
 		},
 	}
 	for name, open := range phases {
@@ -499,17 +498,17 @@ func TestServerTabFitsTheTerminalWithTheMenu(t *testing.T) {
 	}
 }
 
-// TestServerTabUseThePlistsKeyRePairsOverASetPair pins that choosing "use the
+// TestSetupTabUseThePlistsKeyRePairsOverASetPair pins that choosing "use the
 // plist's key" while wt-model's pair is already set reaches a confirm screen
 // (the real plan) that says the pair is re-set from the plist, never showing
 // a key.
-func TestServerTabUseThePlistsKeyRePairsOverASetPair(t *testing.T) {
+func TestSetupTabUseThePlistsKeyRePairsOverASetPair(t *testing.T) {
 	st := litellmLocalState(xmlPlist())
 	st.Pair = modelsetup.PairState{URL: "http://localhost:4000", KeySet: true}
-	sm := &serverMachine{states: []modelsetup.State{st}, build: true}
-	m := pickOption(t, serverEditor(t, sm, 120, 50), 0)
-	if m.server.phase != serverConfirm || sm.desired[0].LiteLLM != modelsetup.LiteLLMUseExistingKey {
-		t.Fatalf("phase %d status %q", m.server.phase, m.server.status)
+	sm := &setupMachine{states: []modelsetup.State{st}, build: true}
+	m := pickOption(t, setupEditor(t, sm, 120, 50), 0)
+	if m.setup.phase != setupConfirm || sm.desired[0].LiteLLM != modelsetup.LiteLLMUseExistingKey {
+		t.Fatalf("phase %d status %q", m.setup.phase, m.setup.status)
 	}
 	view := flat(plain(m))
 	if !strings.Contains(view, flat("key LITELLM_MASTER_KEY read from "+tlPlist)) || strings.Contains(view, flat("keep wt-model's LiteLLM pair")) {
@@ -517,14 +516,14 @@ func TestServerTabUseThePlistsKeyRePairsOverASetPair(t *testing.T) {
 	}
 }
 
-// TestServerTabHoldsAQuitUntilTheNotesAreRead pins that a quit held during a
+// TestSetupTabHoldsAQuitUntilTheNotesAreRead pins that a quit held during a
 // successful apply whose result carries notes is called off when the result
 // lands, so the backup path can be read, and says how to quit.
-func TestServerTabHoldsAQuitUntilTheNotesAreRead(t *testing.T) {
+func TestSetupTabHoldsAQuitUntilTheNotesAreRead(t *testing.T) {
 	ok := failedRotate()
 	ok.Failed, ok.Err, ok.Recovery = nil, nil, ""
-	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: ok}
-	m := pickOption(t, serverEditor(t, sm, 80, 24), 1)
+	sm := &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: ok}
+	m := pickOption(t, setupEditor(t, sm, 80, 24), 1)
 	next, apply := m.Update(keyMsg("y"))
 	m = next.(*model)
 	next, _ = m.Update(keyMsg("q"))
@@ -534,25 +533,25 @@ func TestServerTabHoldsAQuitUntilTheNotesAreRead(t *testing.T) {
 	}
 	next, cmd := m.Update(apply())
 	m = next.(*model)
-	if m.quitPending || m.tab != TabServer || m.server.result == nil {
-		t.Errorf("quitPending %v tab %d result %v, want the quit called off with the notes showing", m.quitPending, m.tab, m.server.result != nil)
+	if m.quitPending || m.tab != TabSetup || m.setup.result == nil {
+		t.Errorf("quitPending %v tab %d result %v, want the quit called off with the notes showing", m.quitPending, m.tab, m.setup.result != nil)
 	}
 	if cmd != nil {
 		if _, quit := cmd().(tea.QuitMsg); quit {
 			t.Errorf("the held quit was issued")
 		}
 	}
-	if !strings.Contains(m.server.status, "press q to quit") {
-		t.Errorf("status %q does not say how to quit", m.server.status)
+	if !strings.Contains(m.setup.status, "press q to quit") {
+		t.Errorf("status %q does not say how to quit", m.setup.status)
 	}
 }
 
-// TestServerTabMenuAgreesWithBuildPlan pins the menu against the real plan
+// TestSetupTabMenuAgreesWithBuildPlan pins the menu against the real plan
 // for every state of the menu test: an action the menu offers plans without
 // a refusal, an action it hides is refused. Create is the one exception:
 // the menu does not look at the plist path or at a port other than 4000
 // (BuildPlan refuses those), so those states are not in the table.
-func TestServerTabMenuAgreesWithBuildPlan(t *testing.T) {
+func TestSetupTabMenuAgreesWithBuildPlan(t *testing.T) {
 	noBinary := installable()
 	noBinary.LiteLLMInstall.Binary = ""
 	noConfig := installable()
@@ -572,13 +571,13 @@ func TestServerTabMenuAgreesWithBuildPlan(t *testing.T) {
 		"present": litellmLocalState(xmlPlist()), "no salt": litellmLocalState(noSalt), "no key": litellmLocalState(noKey),
 		"binary": litellmLocalState(binary), "unreadable": litellmLocalState(unreadable),
 	} {
-		opts, _ := serverLiteLLMMenu(st, false)
+		opts, _ := setupLiteLLMMenu(st, false)
 		offered := map[modelsetup.LiteLLMAction]bool{}
 		for _, o := range opts {
 			offered[o.action] = true
 		}
 		for _, a := range []modelsetup.LiteLLMAction{modelsetup.LiteLLMUseExistingKey, modelsetup.LiteLLMRotateKey, modelsetup.LiteLLMCreate} {
-			_, err := modelsetup.BuildPlan(st, modelsetup.Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: modelsetup.AdminWant{LiteLLM: a}})
+			_, err := modelsetup.BuildPlan(st, modelsetup.Desired{Desired: modelmode.Desired{Mode: modelmode.ModeLocal}, AdminWant: modelsetup.AdminWant{LiteLLM: a}})
 			if a == modelsetup.LiteLLMUseExistingKey {
 				// Use is a no-op plan, not a refusal, when the plist has no key
 				// and the pair is set; it is offered only with a key.
@@ -594,23 +593,23 @@ func TestServerTabMenuAgreesWithBuildPlan(t *testing.T) {
 	}
 }
 
-// TestServerTabResultScreenEatsCAndR pins that c and r do nothing while the
+// TestSetupTabResultScreenEatsCAndR pins that c and r do nothing while the
 // result screen shows: a check or re-read would replace the status and the
 // screen with it, and the Recovery commands and the backup note of a failed
 // apply could not be brought back. The screen and its text stay, no read is
 // asked for, and the hint line names esc/enter to close it and neither key;
 // after esc, c reads again as usual.
-func TestServerTabResultScreenEatsCAndR(t *testing.T) {
-	sm := &serverMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: failedRotate()}
-	m := keys(t, pickOption(t, serverEditor(t, sm, 120, 50), 1), "y")
-	if m.server.result == nil {
-		t.Fatalf("no result screen (status %q)", m.server.status)
+func TestSetupTabResultScreenEatsCAndR(t *testing.T) {
+	sm := &setupMachine{states: []modelsetup.State{litellmLocalState(xmlPlist())}, build: true, result: failedRotate()}
+	m := keys(t, pickOption(t, setupEditor(t, sm, 120, 50), 1), "y")
+	if m.setup.result == nil {
+		t.Fatalf("no result screen (status %q)", m.setup.status)
 	}
 	before := sm.observes
 	for _, k := range []string{"c", "r"} {
 		m = keys(t, m, k)
-		if m.server.result == nil || !strings.Contains(m.server.result.Recovery, "cp -p "+tlBackup) {
-			t.Fatalf("%s closed the result screen or lost its Recovery (status %q)", k, m.server.status)
+		if m.setup.result == nil || !strings.Contains(m.setup.result.Recovery, "cp -p "+tlBackup) {
+			t.Fatalf("%s closed the result screen or lost its Recovery (status %q)", k, m.setup.status)
 		}
 		if !strings.Contains(flat(plain(m)), flat("cp -p "+tlBackup)) || !strings.Contains(flat(plain(m)), flat(tlBackup+" (it holds")) {
 			t.Errorf("%s: the Recovery or the backup note is no longer drawn:\n%s", k, plain(m))
@@ -624,25 +623,24 @@ func TestServerTabResultScreenEatsCAndR(t *testing.T) {
 		t.Errorf("result hints = %q, want esc/enter to close and no c or r", h)
 	}
 	m = keys(t, m, "esc", "c")
-	if m.server.result != nil || sm.observes != before+1 {
-		t.Errorf("esc then c: result %v, observes %d, want the screen closed and one read", m.server.result != nil, sm.observes-before)
+	if m.setup.result != nil || sm.observes != before+1 {
+		t.Errorf("esc then c: result %v, observes %d, want the screen closed and one read", m.setup.result != nil, sm.observes-before)
 	}
 }
 
-// TestServerTabReadsTheLiteLLMProbeWhenLocalIsChosen pins that choosing
+// TestSetupTabReadsTheLiteLLMProbeWhenLocalIsChosen pins that choosing
 // local with the mode keys, after an observation that skipped the LiteLLM
 // probe (the first read of an unset or remote config does), reads the
 // machine again with the probe, exactly as r would, so the k menu can offer
-// create without the user first pressing r. Moving between native and remote
-// asks for no read, and coming back to local after a probed read asks for
-// none either. The fake answers like Observe: the litellm binary and the
+// create without the user first pressing r. Moving to native asks for no
+// read, and coming back to local after a probed read asks for none either. The fake answers like Observe: the litellm binary and the
 // port check only when the probe is not skipped.
-func TestServerTabReadsTheLiteLLMProbeWhenLocalIsChosen(t *testing.T) {
+func TestSetupTabReadsTheLiteLLMProbeWhenLocalIsChosen(t *testing.T) {
 	base := installable()
-	base.Resolution = modelclient.Resolution{}
+	base.Resolution = modelmode.Resolution{}
 	base.Config.Table.Mode = ""
 	probed := 0
-	sm := &serverMachine{}
+	sm := &setupMachine{}
 	deps := sm.deps()
 	observe := deps.Observe
 	deps.Observe = func(ctx context.Context, o modelsetup.ObserveOptions) modelsetup.State {
@@ -657,29 +655,24 @@ func TestServerTabReadsTheLiteLLMProbeWhenLocalIsChosen(t *testing.T) {
 	}
 	m := newModel(testTheme(), &config.Config{}, nil)
 	scratchConfigHome(t)
-	m.opts = Options{StartTab: TabServer, Server: deps}
-	m.tab = TabServer
+	m.opts = Options{StartTab: TabSetup, Models: quietModels(), Setup: deps}
+	m.tab = TabSetup
 	m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
 	m = runCmd(t, m, m.Init())
 	if sm.observes != 1 || probed != 0 {
 		t.Fatalf("first read: observes %d probed %d, want one read without the probe", sm.observes, probed)
 	}
 
-	// Among native and remote: no read.
-	for _, c := range []struct {
-		key  string
-		mode modelclient.Mode
-	}{{"right", modelclient.ModeNative}, {"left", modelclient.ModeRemote}, {" ", modelclient.ModeNative}} {
-		m = keys(t, m, c.key)
-		if m.server.want.Mode != c.mode || sm.observes != 1 {
-			t.Fatalf("%q: mode %q observes %d, want %q and no read", c.key, m.server.want.Mode, sm.observes, c.mode)
-		}
+	// To native: no read.
+	m = keys(t, m, "left")
+	if m.setup.want.Mode != modelmode.ModeNative || sm.observes != 1 {
+		t.Fatalf("left: mode %q observes %d, want native and no read", m.setup.want.Mode, sm.observes)
 	}
 	next, cmd := m.Update(keyMsg("right")) // local
 	m = next.(*model)
-	if m.server.want.Mode != modelclient.ModeLocal || cmd == nil || !m.server.busy ||
-		!strings.Contains(m.server.status, "re-reading the model server's state") {
-		t.Fatalf("local: mode %q cmd %v busy %v status %q, want a re-read as r starts", m.server.want.Mode, cmd != nil, m.server.busy, m.server.status)
+	if m.setup.want.Mode != modelmode.ModeLocal || cmd == nil || !m.setup.busy ||
+		!strings.Contains(m.setup.status, "re-reading the model server's state") {
+		t.Fatalf("local: mode %q cmd %v busy %v status %q, want a re-read as r starts", m.setup.want.Mode, cmd != nil, m.setup.busy, m.setup.status)
 	}
 	m = runCmd(t, m, cmd)
 	if sm.observes != 2 || probed != 1 || sm.opts[1].SkipLiteLLMProbe {
@@ -689,21 +682,21 @@ func TestServerTabReadsTheLiteLLMProbeWhenLocalIsChosen(t *testing.T) {
 		t.Errorf("k after choosing local does not offer create:\n%s", plain(keys(t, m, "k")))
 	}
 
-	m = keys(t, m, "right", "left") // remote, then local again after a probed read
-	if m.server.want.Mode != modelclient.ModeLocal || sm.observes != 2 {
-		t.Errorf("remote and back: mode %q observes %d, want local and no new read", m.server.want.Mode, sm.observes)
+	m = keys(t, m, "right", " ") // native, then local again after a probed read
+	if m.setup.want.Mode != modelmode.ModeLocal || sm.observes != 2 {
+		t.Errorf("native and back: mode %q observes %d, want local and no new read", m.setup.want.Mode, sm.observes)
 	}
 }
 
-// TestServerTabModeKeysPassThroughLocalDuringItsProbeRead pins that going
-// from native to remote, which passes over local, is not stopped halfway by
-// the probe read the stop on local starts: the next mode key is let through
-// while that read is out, and only that read.
-func TestServerTabModeKeysPassThroughLocalDuringItsProbeRead(t *testing.T) {
+// TestSetupTabModeKeysPassThroughLocalDuringItsProbeRead pins that moving
+// on from local is not held up by the probe read the stop on local starts:
+// the next mode key is let through while that read is out, and only that
+// read.
+func TestSetupTabModeKeysPassThroughLocalDuringItsProbeRead(t *testing.T) {
 	base := installable()
-	base.Resolution = modelclient.Resolution{}
+	base.Resolution = modelmode.Resolution{}
 	base.Config.Table.Mode = ""
-	sm := &serverMachine{}
+	sm := &setupMachine{}
 	deps := sm.deps()
 	observe := deps.Observe
 	deps.Observe = func(ctx context.Context, o modelsetup.ObserveOptions) modelsetup.State {
@@ -712,47 +705,48 @@ func TestServerTabModeKeysPassThroughLocalDuringItsProbeRead(t *testing.T) {
 	}
 	m := newModel(testTheme(), &config.Config{}, nil)
 	scratchConfigHome(t)
-	m.opts = Options{StartTab: TabServer, Server: deps}
-	m.tab = TabServer
+	m.opts = Options{StartTab: TabSetup, Models: quietModels(), Setup: deps}
+	m.tab = TabSetup
 	m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
 	m = runCmd(t, m, m.Init())
-	m = keys(t, m, "right")                // native
+	m = keys(t, m, "left")                 // native
 	next, cmd := m.Update(keyMsg("right")) // local: the probe read starts
 	m = next.(*model)
-	if !m.server.busy || cmd == nil {
-		t.Fatalf("local: busy %v cmd %v, want a read out", m.server.busy, cmd != nil)
+	if !m.setup.busy || cmd == nil {
+		t.Fatalf("local: busy %v cmd %v, want a read out", m.setup.busy, cmd != nil)
 	}
-	next, _ = m.Update(keyMsg("right")) // remote, while that read is out
+	next, _ = m.Update(keyMsg("right")) // native again, while that read is out
 	m = next.(*model)
-	if m.server.want.Mode != modelclient.ModeRemote {
-		t.Fatalf("mode %q, want remote: the key was held back (%q)", m.server.want.Mode, m.server.status)
+	if m.setup.want.Mode != modelmode.ModeNative {
+		t.Fatalf("mode %q, want native: the key was held back (%q)", m.setup.want.Mode, m.setup.status)
 	}
 	next, _ = m.Update(keyMsg("enter")) // other keys still wait
 	m = next.(*model)
-	if !strings.Contains(m.server.status, "wait") {
-		t.Errorf("enter during the probe read: status %q, want the wait line", m.server.status)
+	if !strings.Contains(m.setup.status, "wait") {
+		t.Errorf("enter during the probe read: status %q, want the wait line", m.setup.status)
 	}
 }
 
-// TestServerTabProbesOnFirstOpenOfAStoredLocalConfig pins that opening the
+// TestSetupTabProbesOnFirstOpenOfAStoredLocalConfig pins that opening the
 // tab on a config that already stores mode = "local" runs the LiteLLM probe
 // in its one first read: that read is made before the mode is known, and no
 // mode key moves the choice to local because it already is local, so a read
 // that skipped the probe left the k menu saying no litellm binary was found
 // when nobody had looked. The first read asks Observe to probe if the mode it
 // resolves is local (the fake answers by the same rule), the tab still reads
-// once, and k offers create. An unset or remote config is still not probed.
-func TestServerTabProbesOnFirstOpenOfAStoredLocalConfig(t *testing.T) {
+// once, and k offers create. An unset or remote config is still not probed
+// (a remote one's choice starts on local; r reads it with the probe).
+func TestSetupTabProbesOnFirstOpenOfAStoredLocalConfig(t *testing.T) {
 	for _, c := range []struct {
-		name  string
-		mode  modelclient.Mode
-		probe bool
-	}{{"local", modelclient.ModeLocal, true}, {"remote", modelclient.ModeRemote, false}, {"unset", "", false}} {
+		name       string
+		mode, want modelmode.Mode
+		probe      bool
+	}{{"local", modelmode.ModeLocal, modelmode.ModeLocal, true}, {"remote", modelmode.ModeRemote, modelmode.ModeLocal, false}, {"unset", "", "", false}} {
 		base := installable() // no LiteLLM plist, litellm installed, port free
 		base.Resolution.Mode = c.mode
 		base.Config.Table.Mode = string(c.mode)
 		probed := 0
-		sm := &serverMachine{}
+		sm := &setupMachine{}
 		deps := sm.deps()
 		observe := deps.Observe
 		deps.Observe = func(ctx context.Context, o modelsetup.ObserveOptions) modelsetup.State {
@@ -767,13 +761,13 @@ func TestServerTabProbesOnFirstOpenOfAStoredLocalConfig(t *testing.T) {
 		}
 		m := newModel(testTheme(), &config.Config{}, nil)
 		scratchConfigHome(t)
-		m.opts = Options{StartTab: TabServer, Server: deps}
-		m.tab = TabServer
+		m.opts = Options{StartTab: TabSetup, Models: quietModels(), Setup: deps}
+		m.tab = TabSetup
 		m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
 		m = runCmd(t, m, m.Init())
-		if m.server.want.Mode != c.mode || sm.observes != 1 || (probed == 1) != c.probe || m.server.probeSkipped == c.probe {
+		if m.setup.want.Mode != c.want || sm.observes != 1 || (probed == 1) != c.probe || m.setup.probeSkipped == c.probe {
 			t.Fatalf("%s: mode %q observes %d probed %d probeSkipped %v, want one read, probed %v",
-				c.name, m.server.want.Mode, sm.observes, probed, m.server.probeSkipped, c.probe)
+				c.name, m.setup.want.Mode, sm.observes, probed, m.setup.probeSkipped, c.probe)
 		}
 		if !c.probe {
 			continue
@@ -784,14 +778,14 @@ func TestServerTabProbesOnFirstOpenOfAStoredLocalConfig(t *testing.T) {
 	}
 }
 
-// TestServerTabMenuSaysTheProbeWasNotRun pins the k menu's reason when the
+// TestSetupTabMenuSaysTheProbeWasNotRun pins the k menu's reason when the
 // observation shown skipped the LiteLLM probe: the binary and the port were
 // never looked at, so it says the probe was not run and names r, and never
 // claims no litellm binary was found.
-func TestServerTabMenuSaysTheProbeWasNotRun(t *testing.T) {
+func TestSetupTabMenuSaysTheProbeWasNotRun(t *testing.T) {
 	st := installable()
 	st.LiteLLMInstall = modelsetup.LiteLLMInstallState{ConfigPath: st.LiteLLMInstall.ConfigPath, ConfigExists: true}
-	opts, reasons := serverLiteLLMMenu(st, true)
+	opts, reasons := setupLiteLLMMenu(st, true)
 	for _, o := range opts {
 		if o.action == modelsetup.LiteLLMCreate {
 			t.Fatalf("create offered from a read that skipped the probe")
@@ -803,7 +797,7 @@ func TestServerTabMenuSaysTheProbeWasNotRun(t *testing.T) {
 	}
 	// A probed read with no binary still says so.
 	st.LiteLLMInstall.ListenerChecked = true
-	if _, reasons := serverLiteLLMMenu(st, false); !strings.Contains(strings.Join(reasons, "\n"), "no litellm binary was found") {
+	if _, reasons := setupLiteLLMMenu(st, false); !strings.Contains(strings.Join(reasons, "\n"), "no litellm binary was found") {
 		t.Errorf("probed read without a binary: reasons %q, want the missing binary named", reasons)
 	}
 }

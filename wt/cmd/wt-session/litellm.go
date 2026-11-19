@@ -4,7 +4,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,13 +16,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/spf13/cobra"
 )
-
-// desiredRouteIDs lists the model_names a sync would leave in config.yaml
-// now (litellm.DesiredRouteIDsFor). It reads the probeInventory seam at call
-// time, so a test's stub is honoured.
-func desiredRouteIDs(ctx context.Context) ([]string, error) {
-	return litellm.DesiredRouteIDsFor(probeInventory)(ctx)
-}
 
 func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
 	return litellm.RunSync(out, errOut, cfg, probeInventory, asJSON, dryRun)

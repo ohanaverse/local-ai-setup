@@ -1,12 +1,16 @@
-// Package configeditor is the TUI behind `wt config`: an Agents tab that
-// edits the agent section of wt's config.toml, and a Model server tab that
-// shows the model server's setup (through internal/modelsetup, reached only
-// by its injected ServerDeps). The models in registry.toml are managed by
-// internal/modeleditor (`wt-model model`).
-package configeditor
+// Package sessioneditor is the session's TUI behind `wt config`: an Agents
+// tab that edits the agent section of wt's config.toml, and a Mode tab that
+// chooses how this session reaches a model server (native, remote, or a
+// pointer to wt-model on this machine, through internal/modelmode). It is a
+// session screen: it reads no registry (the config comes from config.LoadSession and
+// a save validates with config.ValidateSession) and links no admin package.
+// The models in registry.toml and this machine's model-server setup are
+// internal/modeleditor's (`wt-model model`, `wt-model setup`).
+package sessioneditor
 
 import (
 	"os"
+	"os/exec"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -35,33 +39,33 @@ type loadedMsg struct {
 type model struct {
 	phase phase
 	// tab is the tab showing; opts are what the editor was opened with.
-	tab    Tab
-	opts   Options
-	server serverTab
-	// quitPending is true when the user asked to leave while a Model server
-	// apply or start/stop was in flight: the editor quits when its result is
-	// in.
+	tab  Tab
+	opts Options
+	mode modeTab
+	// quitPending is true when the user asked to leave while a Mode apply
+	// was in flight: the editor quits when its result is in.
 	quitPending bool
 	// discardHeld is true when that held quit came from "discard and quit"
 	// on the unsaved-changes prompt: the edits the answer was about are no
 	// longer counted as unsaved (dirty is cleared), so the quit asks again
-	// only about edits made while it waited. A refused write calls the quit
+	// only about edits made while it waited. A failed apply calls the quit
 	// off and puts dirty back. It is cleared only when the quit happens
 	// (leave returns tea.Quit) or the prompt asks again (quit).
 	discardHeld bool
-	theme       themes.Theme
-	cfg         *config.Config
-	dirty       bool
-	width       int
-	height      int
-	ready       bool
-	status      string // shown above the list
-	saving      bool   // prevents duplicate save dispatches
-	cfgErr      error  // captured at construction for the initial loadedMsg
+	// result is what Run hands its caller (the run-setup answer).
+	result Result
+	theme  themes.Theme
+	cfg    *config.Config
+	dirty  bool
+	width  int
+	height int
+	ready  bool
+	status string // shown above the list
+	saving bool   // prevents duplicate save dispatches
+	cfgErr error  // captured at construction for the initial loadedMsg
 
-	// home is the home directory paths are abbreviated against when the
-	// observed state names none (Options.UserHome, read once in Run); empty
-	// writes every path in full.
+	// home is the home directory paths are abbreviated against
+	// (Options.UserHome, read once in Run); empty writes every path in full.
 	home string
 
 	// cachedStatusBlock caches the rendered status block to avoid double rendering
@@ -99,16 +103,16 @@ func newModel(theme themes.Theme, cfg *config.Config, cfgErr error) *model {
 }
 
 // Init emits the loaded config immediately. The config is supplied by the
-// caller (cmd/wt-session) rather than reloaded inside the TUI, so a validation error
+// caller (cmd/wt-session) rather than reloaded inside the TUI, so a load error
 // can be surfaced without hanging on the "Loading config..." screen.
 func (m *model) Init() tea.Cmd {
 	loaded := func() tea.Msg {
 		// cfg and cfgErr are captured when newModel is called.
 		return loadedMsg{cfg: m.cfg, err: m.cfgErr}
 	}
-	if m.tab == TabServer {
-		// Opened on the Model server tab: observe at once.
-		return tea.Batch(loaded, m.observeServerCmd())
+	if m.tab == TabMode {
+		// Opened on the Mode tab: observe at once.
+		return tea.Batch(loaded, m.observeModeCmd())
 	}
 	return loaded
 }
@@ -189,7 +193,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.phase == phaseForm {
 			m.resizeFormInputs()
 		}
-		m.resizeServerInputs()
+		m.resizeModeInputs()
 	case loadedMsg:
 		m.ready = true
 		if msg.cfg == nil {
@@ -197,25 +201,19 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.cfg = msg.cfg
 		if msg.err != nil {
+			// A LoadSession error is config.toml's: no registry is read, so
+			// there is no registry hint to add.
 			m.status = "config load/validation error: " + msg.err.Error()
-			// This editor writes config.toml. An error whose repair is in
-			// registry.toml must say so here of all places: the user opened
-			// this screen to fix it.
-			if hint := config.RegistryFixHint(msg.err); hint != "" {
-				m.status += " (" + hint + ")"
-			}
 		}
 		m.list = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
 		return m, nil
-	case serverObservedMsg:
-		return m, m.applyServerObserved(msg)
-	case serverPlannedMsg:
-		m.applyServerPlanned(msg)
+	case modeObservedMsg:
+		return m, m.applyModeObserved(msg)
+	case modePlannedMsg:
+		m.applyModePlanned(msg)
 		return m, nil
-	case serverAppliedMsg:
-		return m, m.applyServerApplied(msg)
-	case serverControlledMsg:
-		return m, m.applyServerControlled(msg)
+	case modeAppliedMsg:
+		return m, m.applyModeApplied(msg)
 	case filterMatchesMsg:
 		return m, m.applyFilterMatches(msg)
 	case saveMsg:
@@ -243,10 +241,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.phase == phaseQuit {
 		return m.handleQuitUpdate(msg)
 	}
-	if m.tab == TabServer {
-		return m.updateServer(msg)
+	if m.tab == TabMode {
+		return m.updateMode(msg)
 	}
-
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		// Delegate to the list while it is filtering so single-key global
 		// shortcuts (n, d, q) don't intercept filter input.
@@ -268,8 +265,8 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m.quit()
 		case "tab":
-			// The first visit to a tab fills it; later ones show what is
-			// there (r refreshes).
+			// The first visit to the Mode tab fills it; later ones show what
+			// is there (r refreshes).
 			return m, m.switchTab()
 		case "d":
 			if m.ready {
@@ -311,7 +308,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // quit leaves the editor, by way of the unsaved-changes prompt when the
 // Agents tab has edits that were not saved. The prompt concerns agent edits
-// only: the Model server tab writes nothing until it is applied.
+// only: the Mode tab writes nothing until it is applied.
 func (m *model) quit() (tea.Model, tea.Cmd) {
 	if !m.dirty {
 		return m.leave()
@@ -323,17 +320,17 @@ func (m *model) quit() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// leave ends the program — once an apply or a start/stop in flight on the
-// Model server tab, if there is one, has reported: the quit is recorded and
-// finishServerWrite issues it, on that tab, which is the one that says what
-// the write did.
+// leave ends the program — once a Mode apply in flight, if there is one,
+// has reported: the quit is recorded and finishModeWrite issues it, on the
+// Mode tab, which is the one that says what the apply did. (An agents save
+// is waited for by the quit prompt itself.)
 func (m *model) leave() (tea.Model, tea.Cmd) {
-	if m.server.writing {
+	if m.mode.writing {
 		m.quitPending = true
-		m.phase, m.tab = phaseList, TabServer
+		m.phase, m.tab = phaseList, TabMode
 		return m, nil
 	}
-	// Only now is a discard final: a write's failure while the quit was held
+	// Only now is a discard final: a failed apply while the quit was held
 	// puts the edits back.
 	m.discardHeld = false
 	return m, tea.Quit
@@ -341,13 +338,14 @@ func (m *model) leave() (tea.Model, tea.Cmd) {
 
 // showQuitSaveFailure calls off a quit whose save-before-quit failed, and
 // brings forward the one place that says why: m.status is the Agents tab's
-// status line, and neither the unsaved-changes prompt nor the Model server
-// tab draws it. It does nothing for a save that was not a quit's.
+// status line, and neither the unsaved-changes prompt nor the Mode tab draws
+// it. It does nothing for a save that was not a quit's.
 func (m *model) showQuitSaveFailure() {
 	if !m.quitting {
 		return
 	}
 	m.quitting = false
+	m.result = Result{} // the quit that carried the run-setup answer is off
 	m.phase, m.tab = phaseList, TabAgents
 }
 
@@ -359,12 +357,16 @@ func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m.handleSave()
 		case "n", "N":
-			if m.server.writing {
+			if m.mode.writing {
 				// The quit will wait (leave). The answer is kept with it.
 				m.discardHeld, m.dirty = true, false
 			}
 			return m.leave()
 		case "c", "C", "esc":
+			// The quit is off, and so is the run-setup answer it carried
+			// (a y on the offer after local was applied): a later quit
+			// must not run `wt-model setup` the user has since declined.
+			m.result = Result{}
 			m.phase = phaseList
 			m.quitting = false
 			return m, nil
@@ -386,8 +388,8 @@ func (m *model) View() string {
 		// Wrapped: at 40 columns both lines are wider than the terminal.
 		return editorkit.WrapText("You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel", m.width) + "\n"
 	default:
-		if m.tab == TabServer {
-			return m.serverTabView()
+		if m.tab == TabMode {
+			return m.modeTabView()
 		}
 		var status string
 		if s := m.statusBlock(); s != "" {
@@ -421,16 +423,22 @@ func resolveHome(f func() (string, error)) string {
 	return home
 }
 
-// Run starts the config editor TUI with the config already loaded by the
+// Run starts the session config editor TUI with the config already loaded by the
 // caller. A non-nil cfgErr is surfaced as a status message so the user can
 // repair the config without the CLI exiting early.
 func Run(theme themes.Theme, cfg *config.Config, cfgErr error, o Options, opts ...tea.ProgramOption) (Result, error) {
 	m := newModel(theme, cfg, cfgErr)
-	o.Server = o.Server.withDefaults()
+	if o.LookPath == nil {
+		o.LookPath = exec.LookPath
+	}
+	o.Mode = o.Mode.withDefaults()
 	m.opts, m.tab = o, o.StartTab
 	m.home = resolveHome(o.UserHome)
 	allOpts := append([]tea.ProgramOption{tea.WithAltScreen()}, opts...)
 	p := tea.NewProgram(m, allOpts...)
-	_, err := p.Run()
-	return Result{}, err
+	final, err := p.Run()
+	if fm, ok := final.(*model); ok {
+		return fm.result, err
+	}
+	return m.result, err
 }

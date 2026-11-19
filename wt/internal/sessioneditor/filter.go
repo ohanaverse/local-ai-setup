@@ -1,4 +1,4 @@
-package configeditor
+package sessioneditor
 
 import (
 	"github.com/charmbracelet/bubbles/list"

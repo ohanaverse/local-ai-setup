@@ -1,4 +1,4 @@
-package configeditor
+package sessioneditor
 
 import (
 	"errors"
@@ -103,15 +103,13 @@ func TestQuitPrompt_Cancel(t *testing.T) {
 }
 
 // agentsEditor is the editor in a terminal of the given size, opened on the
-// Agents tab with its config delivered and a Model server machine that
-// answers nothing.
+// Agents tab with its config delivered.
 func agentsEditor(t *testing.T, width, height int) *model {
 	t.Helper()
 	scratchConfigHome(t)
 	cfg := &config.Config{DefaultTag: "code"}
 	m := newModel(testTheme(), cfg, nil)
 	m.home = testUserHome
-	m.opts = Options{Server: (&serverMachine{}).deps()}
 	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
 	return send(t, m, loadedMsg{cfg: cfg})
 }
@@ -253,26 +251,4 @@ func TestAgentsStatusFollowsTheLastSave(t *testing.T) {
 		t.Errorf("the save that worked should replace the failure:\n%s", view)
 	}
 	assertFits(t, "agents tab with a status", m.View(), 80, 24)
-}
-
-// TestADiscardHeldForAServerApplySurvivesItsFailure pins a quit held for the
-// one write the editor still has in flight, a Model server apply: after "q",
-// "n" (discard and quit) the quit waits with the agent edits given up only
-// for that quit; when the apply then fails, the quit is called off and the
-// edits are unsaved again, so the next q asks about them instead of exiting.
-func TestADiscardHeldForAServerApplySurvivesItsFailure(t *testing.T) {
-	m := agentsEditor(t, 80, 24)
-	m.dirty = true
-	m.server.writing = true // a Model server apply is out
-	m = keys(t, m, "q", "n")
-	if !m.quitPending || m.dirty {
-		t.Fatalf("q n with an apply out: quitPending = %v dirty = %v, want the quit held and the edits given up", m.quitPending, m.dirty)
-	}
-	m.finishServerWrite(false) // the apply failed
-	if m.quitPending || !m.dirty {
-		t.Fatalf("the apply failed: quitPending = %v dirty = %v, want the quit off and the edits unsaved again", m.quitPending, m.dirty)
-	}
-	if m = keys(t, m, "q"); m.phase != phaseQuit {
-		t.Errorf("phase = %d, want the unsaved-changes prompt", m.phase)
-	}
 }

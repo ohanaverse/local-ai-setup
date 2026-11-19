@@ -11,8 +11,9 @@ reads the LiteLLM key.
 A wt session never starts a model server, never guesses an address and never
 falls back to anything local. It works from a stored **mode**: `native` (no
 model server), `local` (a `wt-model` on this machine) or `remote` (one
-elsewhere), chosen on the Model server tab of `wt config`
-([wt-config.md](wt-config.md)). With no mode chosen anywhere, a command that
+elsewhere), chosen on the Mode tab of `wt config`
+([wt-config.md](wt-config.md)); a local server is set up with `wt-model
+setup` ([wt-model-server.md](wt-model-server.md)). With no mode chosen anywhere, a command that
 needs a model refuses before anything starts, and on a terminal the first
 launch that needs a model opens `wt config` on that tab once (the "first-run
 gate", below). With native mode chosen, a launch that asks for no model runs
@@ -23,8 +24,8 @@ worktree.)
 ## Configuration: `[model-server]`
 
 The model server is named in `~/.config/agent-wt/config.toml` (or
-`$XDG_CONFIG_HOME/agent-wt/config.toml`). The Model server tab of `wt config`
-writes the table, and you can still edit it by hand:
+`$XDG_CONFIG_HOME/agent-wt/config.toml`). The Mode tab of `wt config` (or,
+for local mode, `wt-model setup`) writes the table, and you can still edit it by hand:
 
 ```toml
 [model-server]
@@ -88,13 +89,15 @@ and exit 1. With no mode chosen anywhere (no `mode` under `[model-server]`, no
 and names `wt config` and `WT_MODEL_MODE`:
 
 ```
-wt: no model server is configured — choose a mode: run wt config (Model server tab) or set WT_MODEL_MODE to native, local or remote; nothing was launched
+wt: no model server is configured — choose a mode: run wt config (Mode tab) or set WT_MODEL_MODE to native, local or remote; nothing was launched
 ```
 
 On a terminal a launch that needs a model does not refuse at first: this is
 the **first-run gate**. The first launch with the mode unset opens `wt config`
-on the Model server tab, once per run and before anything is created; when
-you quit with a mode chosen the launch goes on, and with none still chosen it
+on the Mode tab, once per run and before anything is created; when
+you quit with a mode chosen the launch goes on (after `wt-model setup`, when
+you chose local and answered `y` to running it; a setup that fails prints
+`wt: warning: wt-model setup did not finish: …` and the launch still goes on), and with none still chosen it
 ends with `no model-server mode chosen — nothing was launched` (exit 1). The
 gate never opens for a stored or environment mode, even an invalid one, and
 never without a terminal: a script gets the refusal above. A command agent
@@ -109,10 +112,11 @@ the line starts `no model server is configured; [litellm] is no longer used by
 wt`, `the model server url is not configured` or `the model server token is not
 configured`, then `— set url and token_file under [model-server] in config.toml
 (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE), or choose the mode in wt config
-(Model server tab): native, local or remote`. A server that does not answer its
-ping adds the mode's way out: for local, `start it from wt config (Model
-server tab) or run launchctl kickstart -k gui/<uid>/local.wt-model.serve`; for
-remote, the url it tried. The last clause says what did not happen, per command:
+(Mode tab): native, local or remote`. A server that does not answer its
+ping adds the mode's way out: for local, `start it with wt-model setup or
+run launchctl kickstart -k gui/<uid>/local.wt-model.serve`; for remote, the url
+it tried and `check the server there, or change the url or mode in wt config
+(Mode tab)`. The last clause says what did not happen, per command:
 `nothing was launched` (a launch that asks for a model: `-M`, `-T`, `-F`), `nothing was started`
 (`wt start`), `nothing was stopped` (`wt stop MODEL`), `the job was not read`
 or `nothing was cancelled` (`wt job`), `nothing was run` (`wt smoke`),
@@ -275,8 +279,8 @@ wt: litellm on is retired — every session routes through the model server; set
 ```
 
 Nothing is migrated, and `wt` itself never starts a server or writes
-`[model-server]` on a launch: only the Model server tab of `wt config` does,
-on your confirmation.
+`[model-server]` on a launch: only the Mode tab of `wt config` and `wt-model
+setup` do, on your confirmation.
 
 ## Interim limits
 

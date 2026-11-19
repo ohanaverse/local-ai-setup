@@ -312,12 +312,15 @@ func keyMsg(k string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }
 
-// sendKey delivers one key. Inside the model form only ctrl+s starts a
-// command worth running: the others a text input returns are cursor blinks,
-// each of which sleeps for half a second.
+// sendKey delivers one key. Inside the model form, and inside the Setup
+// tab's fields, only ctrl+s starts a command worth running: the others a
+// text input returns are cursor blinks, each of which sleeps for half a
+// second.
 func sendKey(t *testing.T, m *model, msg tea.KeyMsg) *model {
 	t.Helper()
-	if m.models.phase == modelsForm && msg.Type != tea.KeyCtrlS {
+	inForm := m.tab == TabModels && m.models.phase == modelsForm
+	inFields := m.tab == TabSetup && m.setup.phase == setupEdit
+	if (inForm || inFields) && msg.Type != tea.KeyCtrlS {
 		next, _ := m.Update(msg)
 		return next.(*model)
 	}
@@ -400,16 +403,15 @@ func visibleIDs(m *model) []string {
 }
 
 // TestModelsProbeRunsOnceUntilR verifies the screen probes the providers once
-// when it opens, in a command (Init), and again only when r asks: tab, the
-// arrows and esc start no probe. A probe on other keys would dial every local
-// server each time. The probe-once half of the old Agents/Models tab-switch
-// test; the Models screen has no other tab to switch to.
+// when it opens, in a command (Init), and again only when r asks: tab (to
+// the Setup tab and back), the arrows and esc start no probe. A probe on
+// other keys would dial every local server each time.
 func TestModelsProbeRunsOnceUntilR(t *testing.T) {
 	tm := newTabMachine(t, tabRegistry)
 	cfg, _ := tm.deps().Load()
 	m := newModel(testTheme(), cfg, nil)
 	m.home = testUserHome
-	m.opts = Options{Models: tm.deps()}
+	m.opts = Options{Models: tm.deps(), Setup: (&setupMachine{}).deps()}
 	m = send(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	init := m.Init()
 	if tm.probes != 0 {

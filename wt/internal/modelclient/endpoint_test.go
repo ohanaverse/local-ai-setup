@@ -132,7 +132,7 @@ func TestZeroNotConfiguredErrorIsNotATokenError(t *testing.T) {
 // TestNotConfiguredMessages pins the three exact refusal texts and that each
 // names both settings and wt config.
 func TestNotConfiguredMessages(t *testing.T) {
-	tail := " — set url and token_file under [model-server] in config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE), or choose the mode in wt config (Model server tab): native, local or remote"
+	tail := " — set url and token_file under [model-server] in config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE), or choose the mode in wt config (Mode tab): native, local or remote"
 	cases := []struct {
 		e    NotConfiguredError
 		want string

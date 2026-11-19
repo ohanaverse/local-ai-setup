@@ -1,4 +1,4 @@
-package configeditor
+package sessioneditor
 
 import (
 	"os"
@@ -13,12 +13,11 @@ import (
 // developer's.
 const testUserHome = "/Users/dev"
 
-// TestMain keeps this package's tests off the developer's machine. The Models
-// tab writes registry.toml through config.UpdateRegistry, so the package
-// needs the throwaway config home and the registry write guard it arms: a
-// test that forgot to redirect the registry would otherwise edit the real
-// one. The package links internal/worktree through internal/tui, so git is
-// kept to the repositories a test makes (gitenv.IsolateForTest).
+// TestMain keeps this package's tests off the developer's machine. The
+// Agents tab writes config.toml, so the package needs the throwaway config
+// home (which also arms the registry write guard: this editor reads and
+// writes no registry, and the guard proves a mistake would fail closed). Git
+// is kept to the repositories a test makes (gitenv.IsolateForTest).
 func TestMain(m *testing.M) {
 	_, cleanup := config.IsolateConfigHomeForTest()
 	gitenv.IsolateForTest()

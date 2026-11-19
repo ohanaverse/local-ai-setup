@@ -1,4 +1,4 @@
-package configeditor
+package modeleditor
 
 import (
 	"regexp"
@@ -6,18 +6,17 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeview"
 )
 
-// TestServerTabParseErrorSaysTheErrorOnce pins that a config.toml that does
+// TestSetupTabParseErrorSaysTheErrorOnce pins that a config.toml that does
 // not parse is explained once, in the banner: the mode row says it is
 // unknown and the pair row says it was not read, neither repeating the error.
-func TestServerTabParseErrorSaysTheErrorOnce(t *testing.T) {
+func TestSetupTabParseErrorSaysTheErrorOnce(t *testing.T) {
 	st := parseErrState()
-	m := serverEditor(t, &serverMachine{states: []modelsetup.State{st}}, 120, 50)
+	m := setupEditor(t, &setupMachine{states: []modelsetup.State{st}}, 120, 50)
 	v := plain(m)
 	if n := strings.Count(flat(v), flat(`expected value but found "=" instead`)); n != 1 {
 		t.Errorf("the toml error appears %d times, want 1:\n%s", n, v)
@@ -32,15 +31,15 @@ func TestServerTabParseErrorSaysTheErrorOnce(t *testing.T) {
 	}
 }
 
-// TestServerTabParseErrorPathIsAbbreviatedAndBreaksAtSlashes pins that the
+// TestSetupTabParseErrorPathIsAbbreviatedAndBreaksAtSlashes pins that the
 // banner writes the config path with ~ and, when it is wider than the
 // terminal, breaks it only after a slash: no segment is split when it fits.
-func TestServerTabParseErrorPathIsAbbreviatedAndBreaksAtSlashes(t *testing.T) {
+func TestSetupTabParseErrorPathIsAbbreviatedAndBreaksAtSlashes(t *testing.T) {
 	st := parseErrState()
 	st.Host.Home = "/Users/dev"
 	st.Config.Path = "/Users/dev/.config/agent-wt/some-long-directory-name/another-long-directory/config.toml"
 	for _, size := range [][2]int{{40, 50}, {80, 50}, {120, 50}} {
-		m := serverEditor(t, &serverMachine{states: []modelsetup.State{st}}, size[0], size[1])
+		m := setupEditor(t, &setupMachine{states: []modelsetup.State{st}}, size[0], size[1])
 		assertFits(t, "parse error", m.View(), size[0], size[1])
 		v := plain(m)
 		if strings.Contains(v, "/Users/dev") {
@@ -61,65 +60,65 @@ func TestServerTabParseErrorPathIsAbbreviatedAndBreaksAtSlashes(t *testing.T) {
 	}
 }
 
-// serverPhasesForFit builds every non-prompt and prompt phase of the Model
-// server tab at a size, for the clipping tests.
-func serverPhasesForFit() map[string]func(*testing.T, int, int) *model {
+// setupPhasesForFit builds every non-prompt and prompt phase of the Setup
+// tab at a size, for the clipping tests.
+func setupPhasesForFit() map[string]func(*testing.T, int, int) *model {
 	long := modelsetup.Plan{}
 	for i := 0; i < 9; i++ {
 		long.Steps = append(long.Steps, modelsetup.Step{Kind: modelsetup.StepPlist,
 			Detail: "write wt's LaunchAgent plist /Users/dev/Library/LaunchAgents/local.wt-model.serve.plist: /Users/dev/.local/bin/wt-model serve --listen 127.0.0.1:8787"})
 	}
 	offLocal := offMacState()
-	offLocal.Resolution = modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored}
+	offLocal.Resolution = modelmode.Resolution{Mode: modelmode.ModeLocal, Source: modelmode.SourceStored}
 	return map[string]func(*testing.T, int, int) *model{
 		"view": func(t *testing.T, w, h int) *model {
-			return serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}}, w, h)
+			return setupEditor(t, &setupMachine{states: []modelsetup.State{fullState()}}, w, h)
 		},
 		"edit": func(t *testing.T, w, h int) *model {
-			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{noKeyState()}}, w, h), "down", "down")
+			return keys(t, setupEditor(t, &setupMachine{states: []modelsetup.State{noKeyState()}}, w, h), "down", "down")
 		},
 		"confirm": func(t *testing.T, w, h int) *model {
-			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}, plan: long}, w, h), "a")
+			return keys(t, setupEditor(t, &setupMachine{states: []modelsetup.State{fullState()}, plan: long}, w, h), "a")
 		},
-		"save anyway": func(t *testing.T, w, h int) *model {
-			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{failedRemoteState()}}, w, h), "a")
+		"remote machine": func(t *testing.T, w, h int) *model {
+			return setupEditor(t, &setupMachine{states: []modelsetup.State{remoteState()}}, w, h)
 		},
 		"remove agent": func(t *testing.T, w, h int) *model {
-			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}}, w, h), "left", "a")
+			return keys(t, setupEditor(t, &setupMachine{states: []modelsetup.State{fullState()}}, w, h), "left", "a")
 		},
 		"applying": func(t *testing.T, w, h int) *model {
-			m := keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}, plan: long}, w, h), "a")
+			m := keys(t, setupEditor(t, &setupMachine{states: []modelsetup.State{fullState()}, plan: long}, w, h), "a")
 			next, _ := m.Update(keyMsg("y"))
 			next, _ = next.(*model).Update(keyMsg("q"))
 			return next.(*model)
 		},
 		"parse error": func(t *testing.T, w, h int) *model {
-			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{parseErrState()}}, w, h), "a")
+			return keys(t, setupEditor(t, &setupMachine{states: []modelsetup.State{parseErrState()}}, w, h), "a")
 		},
 		"off macOS": func(t *testing.T, w, h int) *model {
-			return serverEditor(t, &serverMachine{states: []modelsetup.State{offMacState()}}, w, h)
+			return setupEditor(t, &setupMachine{states: []modelsetup.State{offMacState()}}, w, h)
 		},
 		"off macOS local": func(t *testing.T, w, h int) *model {
-			return serverEditor(t, &serverMachine{states: []modelsetup.State{offLocal}}, w, h)
+			return setupEditor(t, &setupMachine{states: []modelsetup.State{offLocal}}, w, h)
 		},
 	}
 }
 
-// TestServerTabClippedViewKeepsRadiosHintsAndWholeRows pins the clipped
-// view of every phase at 40x12 and 80x24: the mode choice stays whole (all
-// three options) outside the prompts, the hints are the last line, no row is
+// TestSetupTabClippedViewKeepsRadiosHintsAndWholeRows pins the clipped
+// view of every phase at 40x12 and 80x24: the mode choice stays whole (both
+// options) outside the prompts, the hints are the last line, no row is
 // left as an orphan continuation under a marker or a blank, and nothing is
 // wider or taller than the terminal.
-func TestServerTabClippedViewKeepsRadiosHintsAndWholeRows(t *testing.T) {
-	radio := regexp.MustCompile(`\([x\- ]\) native.*\([x\- ]\) local.*\([x\- ]\) remote`)
-	for name, open := range serverPhasesForFit() {
+func TestSetupTabClippedViewKeepsRadiosHintsAndWholeRows(t *testing.T) {
+	radio := regexp.MustCompile(`\([x\- ]\) local.*\([x\- ]\) native`)
+	for name, open := range setupPhasesForFit() {
 		for _, size := range [][2]int{{40, 12}, {80, 24}} {
 			m := open(t, size[0], size[1])
 			assertFits(t, name, m.View(), size[0], size[1])
 			if last := hintLine(m); !strings.Contains(last, "quit") {
 				t.Errorf("%s at %dx%d: the last line is %q, want the hints", name, size[0], size[1], last)
 			}
-			if m.server.phase == serverConfirm {
+			if m.setup.phase == setupConfirm {
 				continue
 			}
 			v := plain(m)
@@ -138,17 +137,17 @@ func TestServerTabClippedViewKeepsRadiosHintsAndWholeRows(t *testing.T) {
 	}
 }
 
-// TestServerTabDropsLowestPriorityRowsFirstAndMarksTheEnd pins the order in
+// TestSetupTabDropsLowestPriorityRowsFirstAndMarksTheEnd pins the order in
 // which a short terminal gives up status rows (litellm, agent, env, pair,
 // token, url, problems, server, mode last), that the marker names how many
 // rows went and stands after the last row kept, and that the rows kept are
 // always whole.
-func TestServerTabDropsLowestPriorityRowsFirstAndMarksTheEnd(t *testing.T) {
+func TestSetupTabDropsLowestPriorityRowsFirstAndMarksTheEnd(t *testing.T) {
 	order := []string{"litellm", "agent", "env", "pair", "token", "url", "problems", "server", "mode"}
 	marker := regexp.MustCompile(`\.\.\. (\d+) status rows? not shown \.\.\.`)
 	sawDrop := false
 	for h := 10; h <= 40; h++ {
-		m := serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}}, 80, h)
+		m := setupEditor(t, &setupMachine{states: []modelsetup.State{fullState()}}, 80, h)
 		assertFits(t, "view", m.View(), 80, h)
 		lines := strings.Split(plain(m), "\n")
 		present := map[string]int{}
@@ -196,33 +195,33 @@ func TestServerTabDropsLowestPriorityRowsFirstAndMarksTheEnd(t *testing.T) {
 	}
 }
 
-// TestServerTabCancelsAPlanWhenCOrRReadsAgain pins that c or r while the
+// TestSetupTabCancelsAPlanWhenCOrRReadsAgain pins that c or r while the
 // read before a plan is out says planning was cancelled and clears the
 // stored snapshot, secrets included, at once.
-func TestServerTabCancelsAPlanWhenCOrRReadsAgain(t *testing.T) {
+func TestSetupTabCancelsAPlanWhenCOrRReadsAgain(t *testing.T) {
 	for _, k := range []string{"c", "r"} {
-		sm := &serverMachine{states: []modelsetup.State{noKeyState()}}
-		m := serverEditor(t, sm, 120, 50)
+		sm := &setupMachine{states: []modelsetup.State{noKeyState()}}
+		m := setupEditor(t, sm, 120, 50)
 		m = keys(t, m, "down", "down", "down", "sk-secret", "esc")
 		next, _ := m.Update(keyMsg("a"))
 		m = next.(*model)
-		if m.server.planWant.MasterKey == "" {
+		if m.setup.planWant.MasterKey == "" {
 			t.Fatalf("%s: no snapshot taken at a", k)
 		}
 		next, _ = m.Update(keyMsg(k))
 		m = next.(*model)
-		if !strings.Contains(m.server.status, "planning cancelled") {
-			t.Errorf("%s: status = %q, want planning cancelled", k, m.server.status)
+		if !strings.Contains(m.setup.status, "planning cancelled") {
+			t.Errorf("%s: status = %q, want planning cancelled", k, m.setup.status)
 		}
-		if m.server.planWant.MasterKey != "" || m.server.planWant != (modelsetup.Desired{}) || m.server.planGen != 0 {
-			t.Errorf("%s: the plan snapshot was not cleared: %+v", k, m.server.planWant)
+		if m.setup.planWant.MasterKey != "" || m.setup.planWant != (modelsetup.Desired{}) || m.setup.planGen != 0 {
+			t.Errorf("%s: the plan snapshot was not cleared: %+v", k, m.setup.planWant)
 		}
 	}
 }
 
-// TestServerTabNamesWhatACheckIsMissing pins that a server that was not
+// TestSetupTabNamesWhatACheckIsMissing pins that a server that was not
 // checked says which of the url and the token is missing.
-func TestServerTabNamesWhatACheckIsMissing(t *testing.T) {
+func TestSetupTabNamesWhatACheckIsMissing(t *testing.T) {
 	url := remoteState()
 	url.Config.Table.URL = "https://gpu.example:8787"
 	tok := remoteState()
@@ -244,10 +243,10 @@ func TestServerTabNamesWhatACheckIsMissing(t *testing.T) {
 	}
 }
 
-// TestServerTabPromptsStayVisibleAtEverySize pins that each of the three
+// TestSetupTabPromptsStayVisibleAtEverySize pins that each of the two
 // default-No questions is on screen at every size, with nothing but the hint
 // after it: a clipped question would leave the user answering blind.
-func TestServerTabPromptsStayVisibleAtEverySize(t *testing.T) {
+func TestSetupTabPromptsStayVisibleAtEverySize(t *testing.T) {
 	long := modelsetup.Plan{Plan: modelmode.Plan{Notes: []string{"the environment sets WT_MODEL_URL, which overrides what is stored here"}}}
 	for i := 0; i < 9; i++ {
 		long.Steps = append(long.Steps, modelsetup.Step{Kind: modelsetup.StepPlist,
@@ -258,13 +257,10 @@ func TestServerTabPromptsStayVisibleAtEverySize(t *testing.T) {
 		open   func(*testing.T, int, int) *model
 	}{
 		{"Apply this plan? [y/N]", func(t *testing.T, w, h int) *model {
-			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}, plan: long}, w, h), "a")
-		}},
-		{"Save anyway? [y/N]", func(t *testing.T, w, h int) *model {
-			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{failedRemoteState()}}, w, h), "a")
+			return keys(t, setupEditor(t, &setupMachine{states: []modelsetup.State{fullState()}, plan: long}, w, h), "a")
 		}},
 		{"Remove the LaunchAgent? [y/N]", func(t *testing.T, w, h int) *model {
-			return keys(t, serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}}, w, h), "left", "a")
+			return keys(t, setupEditor(t, &setupMachine{states: []modelsetup.State{fullState()}}, w, h), "left", "a")
 		}},
 	}
 	for _, c := range cases {
@@ -291,15 +287,15 @@ func TestServerTabPromptsStayVisibleAtEverySize(t *testing.T) {
 	}
 }
 
-// TestServerTabCancelsAPlanInFlightWhenCOrRReadsAgain pins the later twin of
-// TestServerTabCancelsAPlanWhenCOrRReadsAgain: once the read before a plan
+// TestSetupTabCancelsAPlanInFlightWhenCOrRReadsAgain pins the later twin of
+// TestSetupTabCancelsAPlanWhenCOrRReadsAgain: once the read before a plan
 // landed and the plan itself is out, c or r still says planning was
 // cancelled (the plan is dropped by its generation when it lands), and the
 // dropped plan never reaches the confirm screen.
-func TestServerTabCancelsAPlanInFlightWhenCOrRReadsAgain(t *testing.T) {
+func TestSetupTabCancelsAPlanInFlightWhenCOrRReadsAgain(t *testing.T) {
 	for _, k := range []string{"c", "r"} {
-		sm := &serverMachine{states: []modelsetup.State{fullState()}, plan: okPlan()}
-		m := serverEditor(t, sm, 120, 50)
+		sm := &setupMachine{states: []modelsetup.State{fullState()}, plan: okPlan()}
+		m := setupEditor(t, sm, 120, 50)
 		next, read := m.Update(keyMsg("a"))
 		m = next.(*model)
 		next, plan := m.Update(read())
@@ -309,11 +305,11 @@ func TestServerTabCancelsAPlanInFlightWhenCOrRReadsAgain(t *testing.T) {
 		}
 		next, _ = m.Update(keyMsg(k))
 		m = next.(*model)
-		if !strings.Contains(m.server.status, "planning cancelled") {
-			t.Errorf("%s: status = %q, want planning cancelled", k, m.server.status)
+		if !strings.Contains(m.setup.status, "planning cancelled") {
+			t.Errorf("%s: status = %q, want planning cancelled", k, m.setup.status)
 		}
 		m = send(t, m, plan())
-		if m.server.phase == serverConfirm {
+		if m.setup.phase == setupConfirm {
 			t.Errorf("%s: the cancelled plan reached the confirm screen", k)
 		}
 	}
