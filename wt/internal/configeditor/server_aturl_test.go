@@ -15,6 +15,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 )
 
@@ -22,9 +23,11 @@ import (
 // none: nothing listens and nothing is reachable.
 type recNet struct{ pings, gets *[]string }
 
-func (n recNet) Ping(_ context.Context, ep modelclient.Endpoint) (modelapi.Ping, error) {
+func (n recNet) Ping(_ context.Context, ep modelping.Endpoint) (modelapi.Ping, modelping.Kind, string, error) {
 	*n.pings = append(*n.pings, ep.URL)
-	return modelapi.Ping{}, &modelclient.UnreachableError{Addr: ep.URL, Reason: "refused"}
+	err := &modelping.UnreachableError{Addr: ep.URL, Reason: "refused"}
+	o := modelping.Classify(err)
+	return modelapi.Ping{}, o.Kind, o.Message, err
 }
 func (n recNet) Get(_ context.Context, url, _ string) (int, []byte, error) {
 	*n.gets = append(*n.gets, url)

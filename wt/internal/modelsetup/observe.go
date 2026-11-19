@@ -14,7 +14,9 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 // ObserveOptions tunes Observe. ListenPort is the port to look for a
@@ -28,7 +30,7 @@ import (
 // read from CheckTokenFile, so a remote plan's check is about the server the
 // user named. Neither the token nor the url's userinfo goes into State. A
 // url holding an '@' (entered, stored or WT_MODEL_URL) is never pinged: the
-// check reads as not made, with the fixed notCheckedAtURL message.
+// check reads as not made, with the fixed modelmode.NotCheckedAtURL message.
 type ObserveOptions struct {
 	ListenPort     int
 	TokenPaths     []string
@@ -48,8 +50,8 @@ type ObserveOptions struct {
 // LiteLLMProbeSkipped reports whether a read made with o and resolving
 // mode left out the LiteLLM probe (so its binary and port are unknown, not
 // absent). Observe follows the same rule.
-func (o ObserveOptions) LiteLLMProbeSkipped(mode modelclient.Mode) bool {
-	return o.SkipLiteLLMProbe && !(o.ProbeLiteLLMWhenLocal && mode == modelclient.ModeLocal)
+func (o ObserveOptions) LiteLLMProbeSkipped(mode modelmode.Mode) bool {
+	return o.SkipLiteLLMProbe && !(o.ProbeLiteLLMWhenLocal && mode == modelmode.ModeLocal)
 }
 
 // Platform says whether the local mode can be set up here: macOS with launchd.
@@ -60,9 +62,9 @@ type Platform struct {
 
 // ConfigState is config.toml's [model-server] table as read.
 // URLHadCredentials is true when the stored url held an '@' (read as a
-// user:password), so Observe replaced Table.URL whole with hiddenURL
+// user:password), so Observe replaced Table.URL whole with urlrule.Hidden
 // (Problems says so in words); a plan that writes a url writes a retyped one
-// in its place (hiddenURL itself holds an '@' and is refused), so the
+// in its place (urlrule.Hidden itself holds an '@' and is refused), so the
 // credentials are not kept.
 type ConfigState struct {
 	Path                        string
@@ -112,16 +114,17 @@ type ListenerState struct {
 	Ours      bool
 }
 
-// ServerKind says how a ping failed.
-type ServerKind int
+// ServerKind says how a ping failed. It is modelping.Kind, and the net seam
+// returns it beside the classified message, so the constants are aliases.
+type ServerKind = modelping.Kind
 
 const (
-	KindNone ServerKind = iota
-	KindUnreachable
-	KindUnauthorized
-	KindNotWtModel
-	KindSkew
-	KindSchema
+	KindNone         = modelping.KindNone
+	KindUnreachable  = modelping.KindUnreachable
+	KindUnauthorized = modelping.KindUnauthorized
+	KindNotWtModel   = modelping.KindNotWtModel
+	KindSkew         = modelping.KindSkew
+	KindSchema       = modelping.KindSchema
 )
 
 // ServerState is the result of pinging the configured model server. Checked
@@ -212,7 +215,7 @@ type LiteLLMState struct {
 // State is everything Observe saw. It never holds a secret.
 type State struct {
 	Platform    Platform
-	Resolution  modelclient.Resolution
+	Resolution  modelmode.Resolution
 	EnvOverride string
 	Config      ConfigState
 	// Token is the token file a session would use (see Observe).
@@ -268,16 +271,16 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 	// rawURL is the configured url as written, kept out of State: it may
 	// carry a user:password. A url with an @ is never pinged (fail closed);
-	// rawURL only feeds redactCheck, which scrubs it from other check text.
+	// rawURL only feeds modelmode.RedactCheck, which scrubs it from other check text.
 	var rawURL string
 	if file.Table != nil {
 		t := *file.Table
 		t.Token = "" // a secret never goes into State; Problems reports its presence
 		rawURL = t.URL
-		// Only a url with an @ is replaced, whole, by hiddenURL (shownURL
-		// leaves any other exactly as written, so an ordinary url never reads
+		// Only a url with an @ is replaced, whole, by urlrule.Hidden
+		// (modelmode.ShownURL leaves any other exactly as written, so an ordinary url never reads
 		// as a change).
-		t.URL = shownURL(t.URL)
+		t.URL = modelmode.ShownURL(t.URL)
 		st.Config.Table = t
 		if file.Table.Token != "" {
 			st.Config.Problems = append(st.Config.Problems, "token under [model-server] is set; move it into a 0600 token_file")
@@ -288,7 +291,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		}
 	}
 	tbl := st.Config.Table
-	st.Resolution = modelclient.ResolveMode(tbl.Mode, tbl.URL, tbl.TokenFile, getenv)
+	st.Resolution = modelmode.ResolveMode(tbl.Mode, tbl.URL, tbl.TokenFile, getenv)
 
 	var set []string
 	for _, n := range envOverrideNames {
@@ -319,7 +322,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			} else {
 				st.Agent.Managed, st.Agent.Listen, st.Agent.Binary, st.Agent.TokenFile = p.Managed, p.Listen, p.Binary, p.TokenFile
 			}
-		} else if danglingLink(env, st.Agent.PlistPath) {
+		} else if modelmode.DanglingLink(env.FS, st.Agent.PlistPath) {
 			// A link there that does not resolve is a plist that exists (a
 			// plan must not write over the link), but one wt cannot read.
 			st.Agent.Present, st.Agent.Err = true, st.Agent.PlistPath+" is a symlink that does not resolve"
@@ -359,7 +362,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		}
 	case getenv("WT_MODEL_TOKEN") != "":
 		token = getenv("WT_MODEL_TOKEN")
-	case st.Resolution.Mode == modelclient.ModeLocal && st.Agent.TokenFile != "":
+	case st.Resolution.Mode == modelmode.ModeLocal && st.Agent.TokenFile != "":
 		st.Token.Path = st.Agent.TokenFile
 		token = readToken(env, &st.Token)
 	}
@@ -392,10 +395,10 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	pair, perr := env.Config.Pair()
 	// The pair url is shown like every url here: one holding an '@' is the
 	// fixed placeholder, whole (#640). The pair still reads as present.
-	st.Pair = PairState{URL: shownURL(pair.URL), KeySet: pair.APIKey != ""}
+	st.Pair = PairState{URL: modelmode.ShownURL(pair.URL), KeySet: pair.APIKey != ""}
 	if perr != nil {
 		st.Pair.Err = perr.Error()
-		if hasUserinfo(st.Pair.Err) {
+		if urlrule.HasUserinfo(st.Pair.Err) {
 			st.Pair.Err = pairErrHidden
 		}
 	}
@@ -406,7 +409,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	if info, err := env.LiteLLM.ReadPlist(lp); err != nil {
 		// A symlink there that does not resolve is a plist that exists (a
 		// create must not replace the link), but one wt cannot read.
-		dangling := danglingLink(env, lp)
+		dangling := modelmode.DanglingLink(env.FS, lp)
 		st.LiteLLMPlist.Present = dangling || !errors.Is(err, fs.ErrNotExist)
 		var se *xml.SyntaxError
 		switch {
@@ -486,7 +489,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	if url == "" {
 		url = rawURL
 	}
-	if url == "" && st.Resolution.Mode == modelclient.ModeLocal {
+	if url == "" && st.Resolution.Mode == modelmode.ModeLocal {
 		listen := st.Agent.Listen
 		if listen == "" {
 			listen = DefaultListen
@@ -503,27 +506,27 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			token = readToken(env, &ts)
 		}
 		if token == "" {
-			st.Server.Message = "no token entered for " + shownURL(url)
+			st.Server.Message = "no token entered for " + modelmode.ShownURL(url)
 		}
 	}
 	switch {
-	case hasUserinfo(url):
+	case urlrule.HasUserinfo(url):
 		// Never pinged: modelclient's failure quotes the parsed host, which no
 		// redaction of the typed text can find, and quotes a malformed url whole. The plan refuses the url
 		// anyway; the check reads as not made, in words that hold none of it.
-		st.Server = ServerState{URL: hiddenURL, Message: notCheckedAtURL}
+		st.Server = ServerState{URL: urlrule.Hidden, Message: modelmode.NotCheckedAtURL}
 	case ctx.Err() != nil:
 		st.Server.Message = "not checked: " + ctx.Err().Error()
 	case url != "" && token != "":
-		st.Server = pingServer(ctx, env, modelclient.Endpoint{URL: url, Token: token})
-		st.Server.URL = shownURL(url)
+		st.Server = pingServer(ctx, env, modelping.Endpoint{URL: url, Token: token})
+		st.Server.URL = modelmode.ShownURL(url)
 		// Defence in depth: the url pinged holds no '@' here, but the stored
 		// or entered one beside it may.
-		st.Server.Message = redactCheck(st.Server.Message, url, rawURL, envURL, opts.CheckURL)
+		st.Server.Message = modelmode.RedactCheck(st.Server.Message, url, rawURL, envURL, opts.CheckURL)
 	}
 
 	// LiteLLM checks: only where the local model server is in use.
-	if st.Resolution.Mode == modelclient.ModeLocal && ctx.Err() == nil {
+	if st.Resolution.Mode == modelmode.ModeLocal && ctx.Err() == nil {
 		st.LiteLLM = CheckLiteLLM(ctx, env, pair)
 	}
 	return st
@@ -545,15 +548,17 @@ func expandHome(path, home string, herr error) (string, error) {
 }
 
 // DefaultLocalTokenPath is where the local plan creates the model server's
-// token: <config home>/wt-model/server.token.
+// token: <config home>/wt-model/server.token. It is
+// modelmode.DefaultLocalTokenPath.
 func DefaultLocalTokenPath(configHome string) string {
-	return filepath.Join(configHome, "wt-model", "server.token")
+	return modelmode.DefaultLocalTokenPath(configHome)
 }
 
 // RemoteTokenPath is the one file a pasted remote token is written to:
-// <config home>/agent-wt/remote-model-server.token.
+// <config home>/agent-wt/remote-model-server.token. It is
+// modelmode.RemoteTokenPath.
 func RemoteTokenPath(configHome string) string {
-	return filepath.Join(configHome, "agent-wt", "remote-model-server.token")
+	return modelmode.RemoteTokenPath(configHome)
 }
 
 // configHome is config's baseConfigHome over the Host seam: XDG_CONFIG_HOME
@@ -571,18 +576,6 @@ func configHome(xdg, home string, herr error) string {
 	return filepath.Join(home, ".config")
 }
 
-// danglingLink is true when p is a symlink (Lstat sees it) that Stat cannot
-// follow: its target does not exist, or the links loop. Whatever the reason,
-// a write there would replace the link, so it reads as present, unreadable.
-func danglingLink(env Env, p string) bool {
-	fi, err := env.FS.Lstat(p)
-	if err != nil || fi.Mode()&fs.ModeSymlink == 0 {
-		return false
-	}
-	_, err = env.FS.Stat(p)
-	return err != nil
-}
-
 // readToken fills ts from the token file and returns the token, or "" when it
 // is missing, empty, unreadable or loose (a loose file is never read). A
 // symlink that does not resolve reads as existing, with an error naming it.
@@ -590,7 +583,7 @@ func readToken(env Env, ts *TokenState) string {
 	info, err := env.FS.Stat(ts.Path)
 	if err != nil {
 		switch {
-		case danglingLink(env, ts.Path):
+		case modelmode.DanglingLink(env.FS, ts.Path):
 			// A token file that is a link to nothing exists, unreadable: a
 			// plan must not make a new token over the link.
 			ts.Exists, ts.Dangling, ts.Err = true, true, ts.Path+" is a symlink that does not resolve"
@@ -617,34 +610,25 @@ func readToken(env Env, ts *TokenState) string {
 	return tok
 }
 
-// pingServer pings ep and maps the failure to a ServerKind. An error of no
-// known type reads as unreachable.
-func pingServer(ctx context.Context, env Env, ep modelclient.Endpoint) ServerState {
+// pingServer pings ep through the seam, which answers with the classification
+// beside the error: kind and message for State, the error unchanged for
+// errors.As. An error of no known type reads as unreachable (the seam's
+// Classify says so).
+func pingServer(ctx context.Context, env Env, ep modelping.Endpoint) ServerState {
 	s := ServerState{Checked: true}
-	p, err := env.Net.Ping(ctx, ep)
+	p, kind, msg, err := env.Net.Ping(ctx, ep)
 	if err == nil {
 		s.OK, s.API, s.Schema = true, p.APIMajor, p.Schema
 		return s
 	}
-	s.Message = err.Error()
-	var un *modelclient.UnreachableError
-	var ua *modelclient.UnauthorizedError
-	var ns *modelclient.NotModelServerError
-	var sk *modelclient.SkewError
-	var sc *modelclient.SchemaError
-	switch {
-	case errors.As(err, &ua):
-		s.Kind = KindUnauthorized
-	case errors.As(err, &ns):
-		s.Kind = KindNotWtModel
-	case errors.As(err, &sk):
-		s.Kind, s.API = KindSkew, sk.Server
-	case errors.As(err, &sc):
-		s.Kind, s.Schema = KindSchema, sc.Server
-	case errors.As(err, &un):
-		s.Kind = KindUnreachable
-	default:
-		s.Kind = KindUnreachable
+	s.Kind, s.Message = kind, msg
+	// CheckPing returns the decoded ping beside a skew or schema error, so
+	// the numbers the server speaks come from the answer itself.
+	if kind == KindSkew {
+		s.API = p.APIMajor
+	}
+	if kind == KindSchema {
+		s.Schema = p.Schema
 	}
 	return s
 }

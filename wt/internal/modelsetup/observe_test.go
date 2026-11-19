@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 const (
@@ -352,14 +353,14 @@ func TestObserveDescribesTheTokenFilesAPlanMayChoose(t *testing.T) {
 
 // TestObserveRecordsThePingedURLWithoutUserinfo pins that a url holding an
 // '@' is never stored in ServerState: it is not pinged at all (the check
-// reads as not made) and is recorded as the fixed hiddenURL, whole (no host
+// reads as not made) and is recorded as the fixed urlrule.Hidden, whole (no host
 // kept).
 func TestObserveRecordsThePingedURLWithoutUserinfo(t *testing.T) {
 	f := obsConfigured(t)
 	f.configFile.Table.Mode = "remote"
 	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if st.Server.Checked || st.Server.URL != hiddenURL || f.called("Net.Ping") {
+	if st.Server.Checked || st.Server.URL != urlrule.Hidden || f.called("Net.Ping") {
 		t.Errorf("Server = %+v, calls %q", st.Server, f.calls)
 	}
 	if strings.Contains(fmt.Sprintf("%+v", st.Server), "pw-SECRET") {
@@ -369,7 +370,7 @@ func TestObserveRecordsThePingedURLWithoutUserinfo(t *testing.T) {
 
 // TestObserveStripsUserinfoFromTheConfiguredURL pins that a [model-server]
 // url holding an '@' never reaches State.Config.Table (the tab draws that
-// table): it is replaced whole by hiddenURL, host included; that it is
+// table): it is replaced whole by urlrule.Hidden, host included; that it is
 // reported as a problem the way an inline token is, and that it is not
 // pinged (a failed ping's text could quote the url, or all of it when malformed).
 func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
@@ -377,8 +378,8 @@ func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
 	f.configFile.Table.Mode = "remote"
 	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if st.Config.Table.URL != hiddenURL {
-		t.Errorf("Config.Table.URL = %q, want %q", st.Config.Table.URL, hiddenURL)
+	if st.Config.Table.URL != urlrule.Hidden {
+		t.Errorf("Config.Table.URL = %q, want %q", st.Config.Table.URL, urlrule.Hidden)
 	}
 	if strings.Contains(fmt.Sprintf("%+v", st), "pw-SECRET") {
 		t.Errorf("State holds the url's password")
@@ -428,7 +429,7 @@ func TestObservePingsTheEnteredEndpoint(t *testing.T) {
 	st = Observe(context.Background(), f.Env(), ObserveOptions{
 		CheckURL: "https://me:pw-SECRET@gpu.example:8787", CheckToken: Secret("tok-ENTERED"),
 	})
-	if f.called("Net.Ping") || st.Server.Checked || st.Server.URL != hiddenURL {
+	if f.called("Net.Ping") || st.Server.Checked || st.Server.URL != urlrule.Hidden {
 		t.Errorf("calls = %q Server = %+v, want no ping and the url hidden", f.calls, st.Server)
 	}
 	if s := fmt.Sprintf("%+v", st); strings.Contains(s, "tok-ENTERED") || strings.Contains(s, "pw-SECRET") {

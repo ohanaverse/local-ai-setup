@@ -9,6 +9,8 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 // credentialedURLs are typed urls that carry a user (and maybe a password),
@@ -81,9 +83,9 @@ var plainURLs = []string{
 }
 
 // leaks reports whether s quotes the test credentials or keeps an '@' other
-// than the ones in the fixed hiddenURL, checkHidden and notCheckedAtURL texts.
+// than the ones in the fixed urlrule.Hidden, modelmode.CheckHidden and modelmode.NotCheckedAtURL texts.
 func leaks(s string) bool {
-	for _, fixed := range []string{hiddenURL, checkHidden, notCheckedAtURL} {
+	for _, fixed := range []string{urlrule.Hidden, modelmode.CheckHidden, modelmode.NotCheckedAtURL} {
 		s = strings.ReplaceAll(s, fixed, "")
 	}
 	return strings.Contains(s, "USERX") || strings.Contains(s, "PASSX") || strings.Contains(s, "@")
@@ -95,13 +97,13 @@ func leaks(s string) bool {
 // user separator), so they stay allowed.
 func TestHasUserinfoIsAnyAt(t *testing.T) {
 	for _, raw := range append(everyCredentialedURL(), hostileAtURLs...) {
-		if !hasUserinfo(raw) {
-			t.Errorf("hasUserinfo(%q) = false, want true", raw)
+		if !urlrule.HasUserinfo(raw) {
+			t.Errorf("urlrule.HasUserinfo(%q) = false, want true", raw)
 		}
 	}
 	for _, raw := range append(plainURLs, "uq:pq\uff20h1", "uq:pq%40h1") {
-		if hasUserinfo(raw) {
-			t.Errorf("hasUserinfo(%q) = true for a url with no ASCII '@'", raw)
+		if urlrule.HasUserinfo(raw) {
+			t.Errorf("urlrule.HasUserinfo(%q) = true for a url with no ASCII '@'", raw)
 		}
 	}
 }
@@ -118,8 +120,8 @@ func TestBuildPlanRemoteRefusesASchemelessURLWithCredentials(t *testing.T) {
 	for _, raw := range everyCredentialedURL() {
 		for _, server := range []ServerState{
 			{},
-			{Checked: true, Kind: KindUnreachable, Message: checkHidden, URL: hiddenURL},
-			{URL: hiddenURL, Message: notCheckedAtURL},
+			{Checked: true, Kind: KindUnreachable, Message: modelmode.CheckHidden, URL: urlrule.Hidden},
+			{URL: urlrule.Hidden, Message: modelmode.NotCheckedAtURL},
 		} {
 			st := freshState()
 			st.Server = server
@@ -140,24 +142,24 @@ func TestBuildPlanRemoteRefusesASchemelessURLWithCredentials(t *testing.T) {
 
 // TestShownURLHidesTheWholeURL pins the display form of a url (the check's
 // "no token entered for" message, ServerState.URL, the table read from
-// config.toml): a url holding an '@' becomes the fixed hiddenURL, whole (no
+// config.toml): a url holding an '@' becomes the fixed urlrule.Hidden, whole (no
 // host kept), and a url with no '@' comes back byte-identical.
 func TestShownURLHidesTheWholeURL(t *testing.T) {
 	for _, raw := range append(everyCredentialedURL(), hostileAtURLs...) {
-		if got := shownURL(raw); got != hiddenURL {
-			t.Errorf("shownURL(%q) = %q, want %q", raw, got, hiddenURL)
+		if got := modelmode.ShownURL(raw); got != urlrule.Hidden {
+			t.Errorf("modelmode.ShownURL(%q) = %q, want %q", raw, got, urlrule.Hidden)
 		}
 	}
 	for _, raw := range plainURLs {
-		if got := shownURL(raw); got != raw {
-			t.Errorf("shownURL(%q) = %q, want it unchanged", raw, got)
+		if got := modelmode.ShownURL(raw); got != raw {
+			t.Errorf("modelmode.ShownURL(%q) = %q, want it unchanged", raw, got)
 		}
 	}
 }
 
 // TestRedactCheckHidesAnyQuote pins the check-message guard: a message that
 // holds an '@', or any 3-byte run of a known url holding an '@', becomes the
-// fixed checkHidden whole; a message about plain urls comes back unchanged,
+// fixed modelmode.CheckHidden whole; a message about plain urls comes back unchanged,
 // and so does one that shares no 3-byte run with the '@' url.
 func TestRedactCheckHidesAnyQuote(t *testing.T) {
 	for _, raw := range everyCredentialedURL() {
@@ -166,24 +168,24 @@ func TestRedactCheckHidesAnyQuote(t *testing.T) {
 			"stray @ in an error",
 			"dial " + strings.ReplaceAll(raw, "@", "%40") + ": refused",
 		} {
-			if got := redactCheck(text, raw); got != checkHidden {
-				t.Errorf("redactCheck(%q, %q) = %q, want %q", text, raw, got, checkHidden)
+			if got := modelmode.RedactCheck(text, raw); got != modelmode.CheckHidden {
+				t.Errorf("modelmode.RedactCheck(%q, %q) = %q, want %q", text, raw, got, modelmode.CheckHidden)
 			}
 		}
-		if got := redactCheck("dial "+strings.ReplaceAll(raw, "@", "")+": refused", "plain.test:1", raw); got != checkHidden {
+		if got := modelmode.RedactCheck("dial "+strings.ReplaceAll(raw, "@", "")+": refused", "plain.test:1", raw); got != modelmode.CheckHidden {
 			t.Errorf("redactCheck with %q among the known urls kept %q", raw, got)
 		}
 	}
-	if got := redactCheck("timeout", "USERX:PASSX@hq"); got != "timeout" {
+	if got := modelmode.RedactCheck("timeout", "USERX:PASSX@hq"); got != "timeout" {
 		t.Errorf("redactCheck hid a message sharing no run with the url: %q", got)
 	}
 	for _, raw := range plainURLs {
 		text := "dial " + raw + ": refused"
-		if got := redactCheck(text, raw, "", raw); got != text {
-			t.Errorf("redactCheck(.., %q) = %q, want it unchanged", raw, got)
+		if got := modelmode.RedactCheck(text, raw, "", raw); got != text {
+			t.Errorf("modelmode.RedactCheck(.., %q) = %q, want it unchanged", raw, got)
 		}
 	}
-	if got := redactCheck("", "USERX@hq"); got != "" {
+	if got := modelmode.RedactCheck("", "USERX@hq"); got != "" {
 		t.Errorf("redactCheck of an empty message = %q", got)
 	}
 }
@@ -219,19 +221,19 @@ func TestApplyConfigRefusesASchemelessURLWithCredentials(t *testing.T) {
 // plan that retypes a plain url, or native (which clears the url), writes
 // no placeholder.
 func TestHiddenURLIsNeverWrittenToConfig(t *testing.T) {
-	if !hasUserinfo(hiddenURL) {
-		t.Fatalf("hiddenURL %q holds no '@', so the refusal would not catch it", hiddenURL)
+	if !urlrule.HasUserinfo(urlrule.Hidden) {
+		t.Fatalf("urlrule.Hidden %q holds no '@', so the refusal would not catch it", urlrule.Hidden)
 	}
 	f := obsConfigured(t)
 	f.configFile.Table.Mode, f.configFile.Table.URL = "remote", "https://USERX:PASSX@gpu.example:8787/"
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if st.Config.Table.URL != hiddenURL || !st.Config.URLHadCredentials {
+	if st.Config.Table.URL != urlrule.Hidden || !st.Config.URLHadCredentials {
 		t.Fatalf("Config = %+v, want the url hidden and flagged", st.Config)
 	}
 	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: st.Config.Table.URL, PastedToken: "tok-NEW", SaveUnchecked: true})
 	mustRefuse(t, p, err, "user:password", "token file")
 	a := apEnv(t)
-	r, _ := apply(t, a, Plan{Want: Desired{Mode: modelclient.ModeRemote, URL: hiddenURL, TokenFile: plRemoteTok},
+	r, _ := apply(t, a, Plan{Want: Desired{Mode: modelclient.ModeRemote, URL: urlrule.Hidden, TokenFile: plRemoteTok},
 		Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}})
 	if r.Failed == nil || a.called("Config.Update") {
 		t.Errorf("Apply wrote the placeholder: Failed %+v", r.Failed)
@@ -241,7 +243,7 @@ func TestHiddenURLIsNeverWrittenToConfig(t *testing.T) {
 		{Mode: modelclient.ModeNative},
 	} {
 		p := mustPlan(t, st, want)
-		if strings.Contains(p.Format(), "hidden") || p.Want.URL == hiddenURL {
+		if strings.Contains(p.Format(), "hidden") || p.Want.URL == urlrule.Hidden {
 			t.Errorf("%s plan carries the placeholder:\n%s", want.Mode, p.Format())
 		}
 		a := apEnv(t)
@@ -273,7 +275,7 @@ func TestPlainURLsPassUntouched(t *testing.T) {
 		f = obsConfigured(t)
 		f.pingErr = &modelclient.UnreachableError{Addr: raw, Reason: "connection refused"}
 		st = Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")})
-		if st.Server.URL != raw || st.Server.Message == checkHidden {
+		if st.Server.URL != raw || st.Server.Message == modelmode.CheckHidden {
 			t.Errorf("%q: Server = %+v, want the url and message as they were", raw, st.Server)
 		}
 	}
@@ -282,14 +284,14 @@ func TestPlainURLsPassUntouched(t *testing.T) {
 // TestObserveCheckMessageDropsTheTypedCredentials pins that a typed url with
 // an '@', scheme or not, keeps nothing of it in ServerState: it is not
 // pinged (whose failure, modelclient's text, would quote the host it
-// dialled), the url is the fixed hiddenURL and the message the fixed
-// notCheckedAtURL.
+// dialled), the url is the fixed urlrule.Hidden and the message the fixed
+// modelmode.NotCheckedAtURL.
 func TestObserveCheckMessageDropsTheTypedCredentials(t *testing.T) {
 	for _, raw := range everyCredentialedURL() {
 		f := obsConfigured(t)
 		f.pingErr = &modelclient.UnreachableError{Addr: raw, Reason: "dial " + raw + "/control/v1/ping: refused"}
 		st := Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")})
-		if st.Server.Checked || f.called("Net.Ping") || st.Server.URL != hiddenURL || st.Server.Message != notCheckedAtURL {
+		if st.Server.Checked || f.called("Net.Ping") || st.Server.URL != urlrule.Hidden || st.Server.Message != modelmode.NotCheckedAtURL {
 			t.Errorf("%q: Server = %+v, want no check, with the url and message hidden", raw, st.Server)
 		}
 		if s := fmt.Sprintf("%+v", st.Server); leaks(s) {
@@ -495,7 +497,7 @@ func TestNoPieceOfAnAtURLReachesAnyOutput(t *testing.T) {
 	}
 }
 
-// wantNotCheckedAtURL pins notCheckedAtURL's text: a url with an '@' gets
+// wantNotCheckedAtURL pins modelmode.NotCheckedAtURL's text: a url with an '@' gets
 // this sentence in place of a check.
 const wantNotCheckedAtURL = "not checked: the url contains an @; retype it without credentials"
 
@@ -506,7 +508,7 @@ const wantNotCheckedAtURL = "not checked: the url contains an @; retype it witho
 func neverPingedAtURLs() []string {
 	return append(append([]string{}, bypassURLs...),
 		"http://pw/@h", "http://pw?@h", "http://pw#@h", "SeCrEt://u:p@x", "PW://@x",
-		"http://%C3%A9%C3%A9/@x", hiddenURL, "https://USERX:PASSX@gpu.example:8787")
+		"http://%C3%A9%C3%A9/@x", urlrule.Hidden, "https://USERX:PASSX@gpu.example:8787")
 }
 
 // atURLObserveCases runs Observe with raw as the url it would ping, from each
@@ -558,7 +560,7 @@ func TestObserveNeverPingsAnAtURL(t *testing.T) {
 				t.Errorf("%s %q: pinged: %q", name, raw, c.f.calls)
 			}
 			s := c.st.Server
-			if s.Checked || s.OK || s.Kind != KindNone || s.URL != hiddenURL || s.Message != wantNotCheckedAtURL {
+			if s.Checked || s.OK || s.Kind != KindNone || s.URL != urlrule.Hidden || s.Message != wantNotCheckedAtURL {
 				t.Errorf("%s %q: Server = %+v, want not checked with %q", name, raw, s, wantNotCheckedAtURL)
 			}
 		}
