@@ -579,36 +579,76 @@ func TestLitellmRestartReadsOnlyTheProxyPair(t *testing.T) {
 
 // TestLitellmRestartNeedsNoRegistry runs `wt-model litellm restart` through
 // the real tree over a registry.toml that does not parse: the restart reads
-// no registry, so bin/update/litellm can restart the proxy on a machine
-// whose registry is broken.
+// only the proxy pair, never the registry, so bin/update/litellm can restart
+// the proxy on a machine whose registry is broken. With a pair set the
+// restart still waits for the pair's url (a registry read would lose the
+// pair and skip the wait); with none it restarts unwaited.
 func TestLitellmRestartNeedsNoRegistry(t *testing.T) {
-	home := proxyEnv(t)
-	registry := filepath.Join(home, "local-ai", "registry.toml")
-	if err := os.MkdirAll(filepath.Dir(registry), 0o755); err != nil {
-		t.Fatal(err)
+	brokenRegistry := func(t *testing.T, home string) {
+		t.Helper()
+		registry := filepath.Join(home, "local-ai", "registry.toml")
+		if err := os.MkdirAll(filepath.Dir(registry), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(registry, []byte("models = [\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(registry, []byte("models = [\n"), 0o600); err != nil {
-		t.Fatal(err)
+	restartsFile := func(t *testing.T) string {
+		t.Helper()
+		restarts := filepath.Join(t.TempDir(), "restarts")
+		t.Setenv("WT_LITELLM_RESTART_CMD", "echo restart >> "+restarts)
+		return restarts
 	}
-	restarts := filepath.Join(t.TempDir(), "restarts")
-	t.Setenv("WT_LITELLM_RESTART_CMD", "echo restart >> "+restarts)
-	t.Cleanup(litellm.StubProxyReadinessForTest(
-		func(context.Context, string, time.Duration) bool { return false },
-		func(_ context.Context, u string, _ time.Duration) error {
-			t.Errorf("waited for %s with no pair url", u)
-			return nil
-		},
-	))
-	stdout, _, err := execLitellm(t, "restart")
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
-	if want := "restarted the LiteLLM proxy (no [litellm] url, so it was not waited for)\n"; stdout != want {
-		t.Errorf("stdout = %q, want %q", stdout, want)
-	}
-	if b, _ := os.ReadFile(restarts); string(b) != "restart\n" {
-		t.Errorf("restarts = %q, want one restart", b)
-	}
+	t.Run("pair set", func(t *testing.T) {
+		home := proxyEnv(t)
+		setPair(t, "--url", "http://proxy.test:4000", "--api-key", "sk-abcdef")
+		brokenRegistry(t, home)
+		restarts := restartsFile(t)
+		var waited []string
+		t.Cleanup(litellm.StubProxyReadinessForTest(
+			func(context.Context, string, time.Duration) bool { return false },
+			func(_ context.Context, u string, _ time.Duration) error {
+				waited = append(waited, u)
+				return nil
+			},
+		))
+		stdout, _, err := execLitellm(t, "restart")
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if want := []string{"http://proxy.test:4000"}; !slices.Equal(waited, want) {
+			t.Errorf("waited for %q, want %q", waited, want)
+		}
+		if want := "restarted the LiteLLM proxy at http://proxy.test:4000\n"; stdout != want {
+			t.Errorf("stdout = %q, want %q", stdout, want)
+		}
+		if b, _ := os.ReadFile(restarts); string(b) != "restart\n" {
+			t.Errorf("restarts = %q, want one restart", b)
+		}
+	})
+	t.Run("no pair", func(t *testing.T) {
+		home := proxyEnv(t)
+		brokenRegistry(t, home)
+		restarts := restartsFile(t)
+		t.Cleanup(litellm.StubProxyReadinessForTest(
+			func(context.Context, string, time.Duration) bool { return false },
+			func(_ context.Context, u string, _ time.Duration) error {
+				t.Errorf("waited for %s with no pair url", u)
+				return nil
+			},
+		))
+		stdout, _, err := execLitellm(t, "restart")
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if want := "restarted the LiteLLM proxy (no [litellm] url, so it was not waited for)\n"; stdout != want {
+			t.Errorf("stdout = %q, want %q", stdout, want)
+		}
+		if b, _ := os.ReadFile(restarts); string(b) != "restart\n" {
+			t.Errorf("restarts = %q, want one restart", b)
+		}
+	})
 }
 
 // TestWtModelLitellmHelpListsRestart pins the line bin/update/litellm
