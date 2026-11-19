@@ -1,13 +1,8 @@
 package modelclient
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,16 +11,17 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 )
 
 const (
-	defaultRequestTimeout = 10 * time.Second
-	dialTimeout           = 5 * time.Second
+	defaultRequestTimeout = modelping.DefaultTimeout
+	dialTimeout           = modelping.DialTimeout
 	endBound              = 3 * time.Second
 	gatewayWaitCap        = 3 * time.Minute
 	gatewayRetryDefault   = 5 * time.Second
-	maxResponse           = 32 << 20
-	serverName            = "wt-model"
+	maxResponse           = modelping.MaxResponse
+	serverName            = modelping.ServerName
 )
 
 // Client talks to the model server's control API. It is safe for concurrent
@@ -70,31 +66,16 @@ func New(ep Endpoint, opts ...Option) *Client {
 		o(c)
 	}
 	if c.hc == nil {
-		tr := http.DefaultTransport.(*http.Transport).Clone()
-		// No environment proxy: the bearer token and the prompts that pass
-		// through the gateway never go to a third party's HTTP(S)_PROXY.
-		tr.Proxy = nil
-		tr.DialContext = (&net.Dialer{Timeout: dialTimeout}).DialContext
-		// A 3xx is never followed: it would replay the bearer token and the
-		// request body to whatever the Location names.
-		c.hc = &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		c.hc = modelping.NewHTTPClient()
 	}
 	return c
 }
 
 // addr is host:port of the endpoint, as the error texts and the server's
-// --listen flag name it. It never echoes the raw url: one holding an '@' is
-// HiddenURL whole (no parsing, HasUserinfo), and one url.Parse finds no host
-// in is the fixed unparsedAddr.
-func (c *Client) addr() string {
-	if HasUserinfo(c.ep.URL) {
-		return HiddenURL
-	}
-	if u, err := url.Parse(c.ep.Origin()); err == nil && u.Host != "" {
-		return u.Host
-	}
-	return unparsedAddr
-}
+// --listen flag name it: modelping.Addr, which never echoes the raw url (an
+// '@' url shows urlrule.Hidden whole, a url with no host shows the fixed
+// unparsedAddr).
+func (c *Client) addr() string { return modelping.Addr(c.ep.URL) }
 
 // Now is the server's clock: the local clock plus the offset measured from the
 // Date header of the latest response (the local clock before the first one).
@@ -104,97 +85,37 @@ func (c *Client) Now() time.Time {
 	return time.Now().Add(c.offset)
 }
 
-// response is what do hands back for a 2xx.
-type response struct {
-	status int
-	header http.Header
-	body   []byte
-}
+// response is modelping.Response under this package's name: what a request
+// came back with, whatever its status.
+type response = modelping.Response
 
-// send performs one request under the per-request timeout and returns the
-// response whatever its status; only transport failures are errors. A url
-// holding an '@' is refused before any request is built (ResolveEndpoint
-// refuses it first; this is the backstop for a Client built directly), and a
-// url with no host, or one net/http cannot build a request from, fails with
-// fixed text: neither quotes the url (url.Parse's own error quotes it whole,
-// and the transport's names a schemeless url's first word as its scheme).
+// send is modelping.Send against this client's transport and timeout, plus
+// the one client-side effect of a response: the Date offset that makes Now()
+// the server's clock.
 func (c *Client) send(ctx context.Context, method, rawurl string, body any) (*response, error) {
-	switch c.addr() {
-	case HiddenURL:
-		return nil, &CredentialsInURLError{}
-	case unparsedAddr:
-		return nil, &UnreachableError{Addr: unparsedAddr, Reason: unbuildableRequest}
-	}
-	var rd io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		rd = bytes.NewReader(b)
-	}
-	bound := c.timeout // the bound that will expire first, for the error text
-	if dl, ok := ctx.Deadline(); ok && time.Until(dl) < bound {
-		bound = time.Until(dl)
-	}
-	rctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(rctx, method, rawurl, rd)
+	r, err := modelping.Send(ctx, c.hc, c.timeout, c.ep, method, rawurl, body)
 	if err != nil {
-		return nil, &UnreachableError{Addr: unparsedAddr, Reason: unbuildableRequest}
+		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.ep.Token)
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.hc.Do(req)
-	var data []byte
-	if err == nil {
-		// One byte past the limit, so an answer at or over it is named
-		// rather than silently truncated into a decode error that would
-		// misread it as not a wt-model server.
-		data, err = io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
-		resp.Body.Close()
-	}
-	if err == nil && len(data) > maxResponse {
-		return nil, &ResponseTooLargeError{Addr: c.addr(), Limit: maxResponse}
-	}
-	if err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) {
-			return nil, ctx.Err()
-		}
-		reason := ""
-		if rctx.Err() != nil {
-			reason = "timed out after " + bound.Round(10*time.Millisecond).String()
-		} else {
-			var ue *url.Error
-			if errors.As(err, &ue) {
-				err = ue.Err
-			}
-			reason = err.Error()
-		}
-		return nil, &UnreachableError{Addr: c.addr(), Reason: reason}
-	}
-	if d, perr := http.ParseTime(resp.Header.Get("Date")); perr == nil {
+	if d, perr := http.ParseTime(r.Header.Get("Date")); perr == nil {
 		c.mu.Lock()
 		c.offset = time.Until(d)
 		c.mu.Unlock()
 	}
-	return &response{status: resp.StatusCode, header: resp.Header, body: data}, nil
+	return r, nil
 }
 
 // statusErr turns a non-2xx response into the typed error for it.
 func (c *Client) statusErr(r *response) error {
-	if r.status >= 300 && r.status < 400 {
-		return &NotModelServerError{Addr: c.addr(), Why: "it answered HTTP " + strconv.Itoa(r.status) + ", a redirect, which wt does not follow"}
+	if r.Status >= 300 && r.Status < 400 {
+		return &NotModelServerError{Addr: c.addr(), Why: "it answered HTTP " + strconv.Itoa(r.Status) + ", a redirect, which wt does not follow"}
 	}
-	if r.status == http.StatusUnauthorized {
+	if r.Status == http.StatusUnauthorized {
 		return &UnauthorizedError{Addr: c.addr()}
 	}
 	var ae modelapi.APIError
-	if err := json.Unmarshal(r.body, &ae); err != nil || ae.Error.Code == "" {
-		return &modelapi.ResponseError{Message: "model server answered HTTP " + strconv.Itoa(r.status)}
+	if err := json.Unmarshal(r.Body, &ae); err != nil || ae.Error.Code == "" {
+		return &modelapi.ResponseError{Message: "model server answered HTTP " + strconv.Itoa(r.Status)}
 	}
 	return &modelapi.ResponseError{Message: clean(ae.Error.Message), Code: clean(ae.Error.Code)}
 }
@@ -210,7 +131,7 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 	if out == nil {
 		return nil
 	}
-	if err := json.Unmarshal(r.body, out); err != nil {
+	if err := json.Unmarshal(r.Body, out); err != nil {
 		return &NotModelServerError{Addr: c.addr(), Why: "its answer to " + method + " " + path + " is not the expected JSON"}
 	}
 	return nil
@@ -225,7 +146,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, q url.Values
 	if err != nil {
 		return nil, err
 	}
-	if r.status < 200 || r.status > 299 {
+	if r.Status < 200 || r.Status > 299 {
 		return r, c.statusErr(r)
 	}
 	return r, nil
@@ -240,7 +161,8 @@ func (c *Client) checked(ctx context.Context, method, path string, q url.Values,
 }
 
 // Ping checks the server answers, is a wt-model and speaks this API major. It
-// asks once per Client; every other method calls it first.
+// asks once per Client; every other method calls it first: the handshake
+// itself is modelping.CheckPing over modelping.Send.
 func (c *Client) Ping(ctx context.Context) (modelapi.Ping, error) {
 	c.mu.Lock()
 	if c.pinged {
@@ -253,24 +175,9 @@ func (c *Client) Ping(ctx context.Context) (modelapi.Ping, error) {
 	if err != nil {
 		return modelapi.Ping{}, err
 	}
-	if r.status == http.StatusUnauthorized {
-		return modelapi.Ping{}, c.statusErr(r)
-	}
-	var p modelapi.Ping
-	if r.status != http.StatusOK {
-		return p, &NotModelServerError{Addr: c.addr(), Why: "GET /control/v1/ping answered HTTP " + strconv.Itoa(r.status)}
-	}
-	if err := json.Unmarshal(r.body, &p); err != nil {
-		return p, &NotModelServerError{Addr: c.addr(), Why: "its ping answer is not JSON"}
-	}
-	if p.Server != serverName {
-		return p, &NotModelServerError{Addr: c.addr(), Why: fmt.Sprintf("it identifies as %q", p.Server)}
-	}
-	if p.APIMajor != modelapi.APIMajor {
-		return p, &SkewError{Addr: c.addr(), Server: p.APIMajor, Client: modelapi.APIMajor}
-	}
-	if p.Schema != modelapi.SchemaVersion {
-		return p, &SchemaError{Addr: c.addr(), Server: p.Schema, Client: modelapi.SchemaVersion}
+	p, err := modelping.CheckPing(c.addr(), r)
+	if err != nil {
+		return p, err
 	}
 	c.mu.Lock()
 	c.pinged, c.ping = true, p
@@ -413,7 +320,7 @@ func (c *Client) Heartbeat(ctx context.Context, id string, models []string) (kno
 		return false, err
 	}
 	r, err := c.exchange(ctx, "POST", "/control/v1/sessions/"+url.PathEscape(id)+"/heartbeat", nil, modelapi.SessionBeat{Models: models})
-	if r != nil && r.status == http.StatusGone {
+	if r != nil && r.Status == http.StatusGone {
 		return false, nil
 	}
 	return err == nil, err
@@ -446,15 +353,15 @@ func (c *Client) WaitGatewayReady(ctx context.Context) error {
 			return err
 		}
 		switch {
-		case r.status >= 200 && r.status <= 299:
+		case r.Status >= 200 && r.Status <= 299:
 			return nil
-		case r.status != http.StatusServiceUnavailable:
+		case r.Status != http.StatusServiceUnavailable:
 			return c.statusErr(r)
 		}
 		if slept+polled >= c.gwCap {
 			return &GatewayDownError{Addr: c.addr()}
 		}
-		d := retryAfter(r.header.Get("Retry-After"))
+		d := retryAfter(r.Header.Get("Retry-After"))
 		d = min(max(d, time.Second), max(c.gwCap-slept, time.Second))
 		if err := c.sleepFor(ctx, d); err != nil {
 			return err
@@ -470,7 +377,7 @@ func (c *Client) GatewayStatus(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return r.status, nil
+	return r.Status, nil
 }
 
 // retryAfter reads a delay-seconds Retry-After; anything else, or a value past
