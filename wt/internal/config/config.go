@@ -886,6 +886,18 @@ func (c *Config) ValidateAll() error {
 	return errors.Join(c.validate()...)
 }
 
+// ValidateSession reports, joined, every problem a session-side save can
+// repair without a registry: default_tag set; each agent named, unique, with
+// at least one supported provider and its default provider in that list.
+// Provider ids are not checked; AllProviders agents are skipped.
+func (c *Config) ValidateSession() error {
+	var errs []error
+	if c.DefaultTag == "" {
+		errs = append(errs, fmt.Errorf("default_tag must not be empty"))
+	}
+	return errors.Join(append(errs, c.validateAgents(nil)...)...)
+}
+
 // validate collects every validation problem in c, in a stable order.
 func (c *Config) validate() []error {
 	var errs []error
@@ -947,8 +959,23 @@ func (c *Config) validate() []error {
 	}
 
 	// Agents
+	errs = append(errs, c.validateAgents(provIDs)...)
+
+	return errs
+}
+
+// validateAgents is the one agent loop: known == nil skips the
+// unknown-provider check (a session reads no registry) and the agents
+// LoadSession synthesized (AllProviders), which exist only in memory and are
+// never written. ValidateAll passes the registry's provider ids and never sees
+// a synthesized agent: config.Load makes none.
+func (c *Config) validateAgents(known map[string]bool) []error {
+	var errs []error
 	agentNames := map[string]bool{}
 	for _, a := range c.Agents {
+		if known == nil && a.AllProviders {
+			continue
+		}
 		if a.Name == "" {
 			errs = append(errs, fmt.Errorf("agent entry with empty name"))
 		}
@@ -959,16 +986,17 @@ func (c *Config) validate() []error {
 		if len(a.SupportedProviders) == 0 {
 			errs = append(errs, fmt.Errorf("agent %q: must have at least one supported provider", a.Name))
 		}
-		for _, pid := range a.SupportedProviders {
-			if !provIDs[pid] {
-				errs = append(errs, fmt.Errorf("agent %q: unknown provider %q", a.Name, pid))
+		if known != nil {
+			for _, pid := range a.SupportedProviders {
+				if !known[pid] {
+					errs = append(errs, fmt.Errorf("agent %q: unknown provider %q", a.Name, pid))
+				}
 			}
 		}
 		if a.DefaultProvider != "" && !slices.Contains(a.SupportedProviders, a.DefaultProvider) {
 			errs = append(errs, fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider))
 		}
 	}
-
 	return errs
 }
 
