@@ -339,8 +339,8 @@ func planLocal(st State, want Desired) (Plan, error) {
 	if !st.Platform.OK {
 		reasons = append(reasons, reason("local mode cannot run here: "+st.Platform.Reason, "choose native or remote"))
 	}
-	if st.Host.Binary == "" {
-		why := st.Host.BinaryErr
+	if st.Tools.Binary == "" {
+		why := st.Tools.BinaryErr
 		if why == "" {
 			why = "wt-model was not found"
 		}
@@ -473,7 +473,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 	want.Listen = listen
 	want.TokenFile = tokPath
 	want.URL = "http://" + listen
-	spec := AgentSpec{Binary: st.Host.Binary, Listen: listen, TokenFile: tokPath, Path: st.Host.Path, Home: st.Host.Home}
+	spec := AgentSpec{Binary: st.Tools.Binary, Listen: listen, TokenFile: tokPath, Path: st.Tools.Path, Home: st.Host.Home}
 	p := Plan{Want: want, Agent: &spec, LiteLLM: lspec}
 	pairChanged := false
 
@@ -515,7 +515,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 		p.Notes = append(p.Notes, "keep the LaunchAgent plist "+st.Agent.PlistPath+" (unchanged)")
 	}
 
-	domain := "gui/" + strconv.Itoa(st.Host.UID)
+	domain := "gui/" + strconv.Itoa(st.Tools.UID)
 	loaded := st.Agent.Job.Loaded
 	started := false
 	switch {
@@ -606,7 +606,7 @@ func (p *Plan) leaveAgent(st State) {
 	}
 	if a.Job.Loaded {
 		p.Steps = append(p.Steps, Step{Kind: StepBootout, Path: a.PlistPath,
-			Detail: "unload the LaunchAgent: launchctl bootout gui/" + strconv.Itoa(st.Host.UID) + "/" + AgentLabel})
+			Detail: "unload the LaunchAgent: launchctl bootout gui/" + strconv.Itoa(st.Tools.UID) + "/" + AgentLabel})
 	}
 	p.Steps = append(p.Steps, Step{Kind: StepRemovePlist, Path: a.PlistPath,
 		Detail: "remove the LaunchAgent plist " + a.PlistPath})
@@ -805,7 +805,7 @@ func planLiteLLMCreate(st State) (*LiteLLMSpec, []Step, []string, []string) {
 	if len(reasons) > 0 {
 		return nil, nil, nil, reasons
 	}
-	spec := LiteLLMSpec{Binary: inst.Binary, ConfigPath: inst.ConfigPath, Path: st.Host.Path, Home: st.Host.Home, Port: DefaultLiteLLMPort}
+	spec := LiteLLMSpec{Binary: inst.Binary, ConfigPath: inst.ConfigPath, Path: st.Tools.Path, Home: st.Host.Home, Port: DefaultLiteLLMPort}
 	if err := checkLiteLLMSpec(spec); err != nil {
 		var re *RefusalError
 		if errors.As(err, &re) {
@@ -814,7 +814,7 @@ func planLiteLLMCreate(st State) (*LiteLLMSpec, []Step, []string, []string) {
 		return nil, nil, nil, []string{reason(err.Error(), "fix it, then check again")}
 	}
 	url := liteLLMURL(st, LiteLLMCreate)
-	domain := "gui/" + strconv.Itoa(st.Host.UID)
+	domain := "gui/" + strconv.Itoa(st.Tools.UID)
 	steps := []Step{
 		{Kind: StepLiteLLMPlist, Path: lp.Path,
 			Detail: "create the LiteLLM LaunchAgent plist " + lp.Path + " (mode 0600): " + spec.Binary + " --config " + spec.ConfigPath +
@@ -854,7 +854,7 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 		// The restart is kickstart -k, which cannot start a job that is not
 		// loaded; by then the plist and the pair would hold the new key.
 		reasons = append(reasons, reason("the LiteLLM job "+litellm.ProxyLabel+" is not loaded, so a restart after the new key would fail",
-			"load it with `launchctl bootstrap gui/"+strconv.Itoa(st.Host.UID)+" "+path+"`, then check again"))
+			"load it with `launchctl bootstrap gui/"+strconv.Itoa(st.Tools.UID)+" "+path+"`, then check again"))
 	case lp.HasDatabaseURL && !lp.HasSaltKey:
 		// LiteLLM encrypts stored provider credentials with the master key
 		// when no salt key is set: a new one would leave them undecryptable.
@@ -875,7 +875,7 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 	url := liteLLMURL(st, LiteLLMRotateKey)
 	steps = append(steps,
 		Step{Kind: StepKickstartLiteLLM, Path: lp.Path,
-			Detail: "restart LiteLLM so it uses the new key: launchctl kickstart -k gui/" + strconv.Itoa(st.Host.UID) + "/" + litellm.ProxyLabel},
+			Detail: "restart LiteLLM so it uses the new key: launchctl kickstart -k gui/" + strconv.Itoa(st.Tools.UID) + "/" + litellm.ProxyLabel},
 		Step{Kind: StepWait, Action: ActionWaitLiteLLM, Value: url,
 			Detail: "wait for LiteLLM to answer at " + url + "/health/liveliness and accept the new master key"})
 	cfg := ""

@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 )
 
@@ -22,12 +23,14 @@ const (
 // plist as given. No key is in any field: State never holds one.
 func litellmLocalState(p modelsetup.LiteLLMPlistState) modelsetup.State {
 	return modelsetup.State{
-		Platform:   modelsetup.Platform{OK: true},
-		Resolution: modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored},
-		Config:     modelsetup.ConfigState{Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true, Table: config.ModelServerState{Mode: "local"}},
-		Token:      modelsetup.TokenState{Path: "/Users/dev/.config/wt-model/server.token", Exists: true},
-		Host: modelsetup.HostState{Binary: "/Users/dev/.local/bin/wt-model", Path: "/usr/bin", Home: "/Users/dev",
-			ConfigHome: "/Users/dev/.config", UID: 501},
+		Platform: modelsetup.Platform{OK: true},
+		State: modelmode.State{
+			Resolution: modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored},
+			Config:     modelsetup.ConfigState{Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true, Table: config.ModelServerState{Mode: "local"}},
+			Token:      modelsetup.TokenState{Path: "/Users/dev/.config/wt-model/server.token", Exists: true},
+			Host:       modelmode.HostState{Home: "/Users/dev", ConfigHome: "/Users/dev/.config"},
+		},
+		Tools:        modelsetup.ToolsState{Binary: "/Users/dev/.local/bin/wt-model", Path: "/usr/bin", UID: 501},
 		Agent:        modelsetup.AgentState{PlistPath: "/Users/dev/Library/LaunchAgents/local.wt-model.serve.plist"},
 		Listener:     modelsetup.ListenerState{Port: 8787},
 		LiteLLMPlist: p,

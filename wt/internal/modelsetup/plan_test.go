@@ -11,6 +11,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
@@ -39,12 +40,16 @@ func plSpec() AgentSpec {
 func baseState() State {
 	return State{
 		Platform: Platform{OK: true},
-		Config: ConfigState{Path: plCfgPath, Exists: true, Table: config.ModelServerState{
-			Mode: "local", URL: "http://" + DefaultListen, TokenFile: plLocalTok,
-		}},
-		Token:      TokenState{Path: plLocalTok, Exists: true},
-		TokenFiles: []TokenState{{Path: plRemoteTok}},
-		Pair:       PairState{URL: "http://localhost:4000", KeySet: true},
+		State: modelmode.State{
+			Config: ConfigState{Path: plCfgPath, Exists: true, Table: config.ModelServerState{
+				Mode: "local", URL: "http://" + DefaultListen, TokenFile: plLocalTok,
+			}},
+			Token:      TokenState{Path: plLocalTok, Exists: true},
+			TokenFiles: []TokenState{{Path: plRemoteTok}},
+			Server:     ServerState{Checked: true, OK: true, API: 1, Schema: 1, URL: "http://" + DefaultListen},
+			Host:       modelmode.HostState{Home: plHome, ConfigHome: plConfigHome},
+		},
+		Pair: PairState{URL: "http://localhost:4000", KeySet: true},
 		Agent: AgentState{
 			PlistPath: plAgentPath, Present: true, Managed: true,
 			Job:    LaunchdJob{Loaded: true, Running: true, PID: 4123},
@@ -52,8 +57,7 @@ func baseState() State {
 			Content: RenderAgentPlist(plSpec()),
 		},
 		Listener:     ListenerState{Port: 8787, PID: 4123, Ours: true},
-		Server:       ServerState{Checked: true, OK: true, API: 1, Schema: 1, URL: "http://" + DefaultListen},
-		Host:         HostState{Binary: plBinary, Path: plPATH, Home: plHome, ConfigHome: plConfigHome, UID: 501},
+		Tools:        ToolsState{Binary: plBinary, Path: plPATH, UID: 501},
 		LiteLLMPlist: LiteLLMPlistState{Path: plLiteLLM, Present: true, Port: 4000, Mode: 0o600, HasMasterKey: true},
 	}
 }
@@ -471,7 +475,7 @@ func TestBuildPlanOverwritesAMarkedPlist(t *testing.T) {
 // refusal when no wt-model binary was found.
 func TestBuildPlanRefusesWhenWtModelIsMissingAndNamesMakeInstall(t *testing.T) {
 	st := freshState()
-	st.Host.Binary, st.Host.BinaryErr = "", "wt-model was not found beside wt or on PATH"
+	st.Tools.Binary, st.Tools.BinaryErr = "", "wt-model was not found beside wt or on PATH"
 	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
 	mustRefuse(t, p, err, "not found", "make install")
 }
@@ -868,7 +872,7 @@ func TestBuildPlanUseExistingKeyIsTheDefault(t *testing.T) {
 // RenderLiteLLMPlist never writes a broken or injected plist.
 func TestBuildPlanCreateValidatesTheSpecBeforeAnyStep(t *testing.T) {
 	for name, mut := range map[string]func(*State){
-		"newline in PATH":     func(st *State) { st.Host.Path = "/bin\n<key>X</key>" },
+		"newline in PATH":     func(st *State) { st.Tools.Path = "/bin\n<key>X</key>" },
 		"control in home":     func(st *State) { st.Host.Home = plHome + "\x01" },
 		"newline in binary":   func(st *State) { st.LiteLLMInstall.Binary = plLiteLLMBin + "\r" },
 		"bad utf-8 in config": func(st *State) { st.LiteLLMInstall.ConfigPath = "/x/\xffconfig.yaml" },

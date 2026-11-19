@@ -274,7 +274,7 @@ func TestPlainURLsPassUntouched(t *testing.T) {
 		}
 		f = obsConfigured(t)
 		f.pingErr = &modelclient.UnreachableError{Addr: raw, Reason: "connection refused"}
-		st = Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")})
+		st = Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")}})
 		if st.Server.URL != raw || st.Server.Message == modelmode.CheckHidden {
 			t.Errorf("%q: Server = %+v, want the url and message as they were", raw, st.Server)
 		}
@@ -290,7 +290,7 @@ func TestObserveCheckMessageDropsTheTypedCredentials(t *testing.T) {
 	for _, raw := range everyCredentialedURL() {
 		f := obsConfigured(t)
 		f.pingErr = &modelclient.UnreachableError{Addr: raw, Reason: "dial " + raw + "/control/v1/ping: refused"}
-		st := Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")})
+		st := Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")}})
 		if st.Server.Checked || f.called("Net.Ping") || st.Server.URL != urlrule.Hidden || st.Server.Message != modelmode.NotCheckedAtURL {
 			t.Errorf("%q: Server = %+v, want no check, with the url and message hidden", raw, st.Server)
 		}
@@ -438,13 +438,13 @@ func atURLSurfaces(t *testing.T, raw string) map[string]string {
 
 	// An entered url with no token: the note.
 	f = obsConfigured(t)
-	st = Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: raw})
+	st = Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{CheckURL: raw}})
 	out["no token: Server.Message"] = st.Server.Message
 
 	// An entered url with a token, its check failing.
 	f = obsConfigured(t)
 	f.pingErr = pingErr
-	st = Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")})
+	st = Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")}})
 	out["entered: Server.URL"] = st.Server.URL
 	out["entered: Server.Message"] = st.Server.Message
 
@@ -531,8 +531,8 @@ func atURLObserveCases(t *testing.T, raw string) map[string]struct {
 			st State
 		}{f, Observe(context.Background(), f.Env(), o)}
 	}
-	run("entered", obsConfigured(t), ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")})
-	run("entered, no token", obsConfigured(t), ObserveOptions{CheckURL: raw})
+	run("entered", obsConfigured(t), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{CheckURL: raw, CheckToken: Secret("tok")}})
+	run("entered, no token", obsConfigured(t), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{CheckURL: raw}})
 	f := obsConfigured(t)
 	f.configFile.Table.Mode, f.configFile.Table.URL = "remote", raw
 	run("stored", f, ObserveOptions{})

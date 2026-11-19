@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 )
 
@@ -169,23 +170,25 @@ func plain(m *model) string { return ansi.Strip(m.View()) }
 // for the tab's height.
 func fullState() modelsetup.State {
 	return modelsetup.State{
-		Platform:    modelsetup.Platform{OK: true},
-		Resolution:  modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored},
-		EnvOverride: "WT_MODEL_URL, WT_MODEL_TOKEN_FILE",
-		Config: modelsetup.ConfigState{
-			Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true,
-			Table:    config.ModelServerState{Mode: "local", URL: "http://127.0.0.1:8787", TokenFile: "~/.config/wt-model/server.token"},
-			Problems: []string{"token under [model-server] is set; move it into a 0600 token_file"},
+		Platform: modelsetup.Platform{OK: true},
+		State: modelmode.State{
+			Resolution:  modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored},
+			EnvOverride: "WT_MODEL_URL, WT_MODEL_TOKEN_FILE",
+			Config: modelsetup.ConfigState{
+				Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true,
+				Table:    config.ModelServerState{Mode: "local", URL: "http://127.0.0.1:8787", TokenFile: "~/.config/wt-model/server.token"},
+				Problems: []string{"token under [model-server] is set; move it into a 0600 token_file"},
+			},
+			Token: modelsetup.TokenState{Path: "/Users/dev/.config/wt-model/server.token", Exists: true},
+			Host:  modelmode.HostState{Home: "/Users/dev"},
+			Server: modelsetup.ServerState{URL: "http://127.0.0.1:8787", Checked: true, Kind: modelsetup.KindUnauthorized,
+				Message: "model server at 127.0.0.1:8787 refused the token (unauthorized) — check token_file under [model-server] in config.toml"},
 		},
-		Token: modelsetup.TokenState{Path: "/Users/dev/.config/wt-model/server.token", Exists: true},
-		Host:  modelsetup.HostState{Home: "/Users/dev"},
-		Pair:  modelsetup.PairState{URL: "http://127.0.0.1:4000", KeySet: true},
+		Pair: modelsetup.PairState{URL: "http://127.0.0.1:4000", KeySet: true},
 		Agent: modelsetup.AgentState{
 			PlistPath: "/Users/dev/Library/LaunchAgents/local.wt-model.serve.plist", Present: true, Managed: true,
 			Job: modelsetup.LaunchdJob{Loaded: true, Running: true, PID: 4123},
 		},
-		Server: modelsetup.ServerState{URL: "http://127.0.0.1:8787", Checked: true, Kind: modelsetup.KindUnauthorized,
-			Message: "model server at 127.0.0.1:8787 refused the token (unauthorized) — check token_file under [model-server] in config.toml"},
 		LiteLLM: modelsetup.LiteLLMState{
 			Checked:      true,
 			Reachable:    modelsetup.Check{Status: modelsetup.CheckOK},
@@ -203,8 +206,10 @@ func fullState() modelsetup.State {
 func parseErrState() modelsetup.State {
 	return modelsetup.State{
 		Platform: modelsetup.Platform{OK: true},
-		Config: modelsetup.ConfigState{Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true,
-			ParseErr: "toml: line 3 (last key \"model-server.mode\"): expected value but found \"=\" instead"},
+		State: modelmode.State{
+			Config: modelsetup.ConfigState{Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true,
+				ParseErr: "toml: line 3 (last key \"model-server.mode\"): expected value but found \"=\" instead"},
+		},
 	}
 }
 
@@ -547,11 +552,13 @@ func TestServerTabNeverShowsASecret(t *testing.T) {
 // and no LaunchAgent: where a user setting up a remote server starts.
 func remoteState() modelsetup.State {
 	return modelsetup.State{
-		Platform:   modelsetup.Platform{OK: true},
-		Resolution: modelclient.Resolution{Mode: modelclient.ModeRemote, Source: modelclient.SourceStored},
-		Config: modelsetup.ConfigState{Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true,
-			Table: config.ModelServerState{Mode: "remote"}},
-		Host: modelsetup.HostState{Home: "/Users/dev", ConfigHome: "/Users/dev/.config"},
+		Platform: modelsetup.Platform{OK: true},
+		State: modelmode.State{
+			Resolution: modelclient.Resolution{Mode: modelclient.ModeRemote, Source: modelclient.SourceStored},
+			Config: modelsetup.ConfigState{Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true,
+				Table: config.ModelServerState{Mode: "remote"}},
+			Host: modelmode.HostState{Home: "/Users/dev", ConfigHome: "/Users/dev/.config"},
+		},
 	}
 }
 
@@ -1209,12 +1216,14 @@ func TestServerTabRealPlanNeverShowsTheSecrets(t *testing.T) {
 	}
 
 	local := modelsetup.State{
-		Platform:   modelsetup.Platform{OK: true},
-		Resolution: modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored},
-		Config:     modelsetup.ConfigState{Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true, Table: config.ModelServerState{Mode: "local"}},
-		Token:      modelsetup.TokenState{Path: "/Users/dev/.config/wt-model/server.token"},
-		Host: modelsetup.HostState{Binary: "/Users/dev/.local/bin/wt-model", Path: "/usr/bin", Home: "/Users/dev",
-			ConfigHome: "/Users/dev/.config", UID: 501},
+		Platform: modelsetup.Platform{OK: true},
+		State: modelmode.State{
+			Resolution: modelclient.Resolution{Mode: modelclient.ModeLocal, Source: modelclient.SourceStored},
+			Config:     modelsetup.ConfigState{Path: "/Users/dev/.config/agent-wt/config.toml", Exists: true, Table: config.ModelServerState{Mode: "local"}},
+			Token:      modelsetup.TokenState{Path: "/Users/dev/.config/wt-model/server.token"},
+			Host:       modelmode.HostState{Home: "/Users/dev", ConfigHome: "/Users/dev/.config"},
+		},
+		Tools:        modelsetup.ToolsState{Binary: "/Users/dev/.local/bin/wt-model", Path: "/usr/bin", UID: 501},
 		Agent:        modelsetup.AgentState{PlistPath: "/Users/dev/Library/LaunchAgents/local.wt-model.serve.plist"},
 		Listener:     modelsetup.ListenerState{Port: 8787},
 		LiteLLMPlist: modelsetup.LiteLLMPlistState{Path: "/Users/dev/Library/LaunchAgents/local.litellm.proxy.plist", Present: true},

@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
@@ -21,22 +20,10 @@ import (
 
 // ObserveOptions tunes Observe. ListenPort is the port to look for a
 // listener on; zero means the port of the LaunchAgent's listen address, else
-// of DefaultListen. TokenPaths are extra token files to describe in
-// State.TokenFiles (a path the user typed for remote, say), so BuildPlan can
-// judge them without reading the disk itself.
-//
-// CheckURL, when set, is the url the user entered: Observe pings it instead
-// of the configured one, with CheckToken (a pasted token) or else the token
-// read from CheckTokenFile, so a remote plan's check is about the server the
-// user named. Neither the token nor the url's userinfo goes into State. A
-// url holding an '@' (entered, stored or WT_MODEL_URL) is never pinged: the
-// check reads as not made, with the fixed modelmode.NotCheckedAtURL message.
+// of DefaultListen.
 type ObserveOptions struct {
-	ListenPort     int
-	TokenPaths     []string
-	CheckURL       string
-	CheckToken     Secret
-	CheckTokenFile string
+	modelmode.ObserveOptions
+	ListenPort int
 	// SkipLiteLLMProbe leaves out the lookups only a local-mode LiteLLM
 	// create plan reads: the binary search and the listener on the default
 	// port. Native and remote choices set it, so a read there pays for none.
@@ -60,32 +47,12 @@ type Platform struct {
 	Reason string
 }
 
-// ConfigState is config.toml's [model-server] table as read.
-// URLHadCredentials is true when the stored url held an '@' (read as a
-// user:password), so Observe replaced Table.URL whole with urlrule.Hidden
-// (Problems says so in words); a plan that writes a url writes a retyped one
-// in its place (urlrule.Hidden itself holds an '@' and is refused), so the
-// credentials are not kept.
-type ConfigState struct {
-	Path                        string
-	Exists                      bool
-	ParseErr, TableErr, RestErr string
-	Table                       config.ModelServerState
-	Problems                    []string
-	URLHadCredentials           bool
-}
+// ConfigState is config.toml's [model-server] table as read (modelmode's
+// session-half type).
+type ConfigState = modelmode.ConfigState
 
-// TokenState describes the token file; the token itself is never held.
-// Empty is true when the file exists, is not loose and holds nothing but
-// white space (a loose file is never read, so its content is unknown).
-type TokenState struct {
-	Path                 string
-	Exists, Loose, Empty bool
-	// Dangling: the path is a symlink that does not resolve (Exists is true
-	// too, and Err names it). Writing there would replace the link.
-	Dangling bool
-	Err      string
-}
+// TokenState describes the token file (modelmode's session-half type).
+type TokenState = modelmode.TokenState
 
 // PairState describes the LiteLLM proxy pair; the key is only a flag.
 type PairState struct {
@@ -114,46 +81,25 @@ type ListenerState struct {
 	Ours      bool
 }
 
-// ServerKind says how a ping failed. It is modelping.Kind, and the net seam
-// returns it beside the classified message, so the constants are aliases.
-type ServerKind = modelping.Kind
+// ServerKind says how a ping failed (modelmode's alias of modelping.Kind).
+type ServerKind = modelmode.ServerKind
 
 const (
-	KindNone         = modelping.KindNone
-	KindUnreachable  = modelping.KindUnreachable
-	KindUnauthorized = modelping.KindUnauthorized
-	KindNotWtModel   = modelping.KindNotWtModel
-	KindSkew         = modelping.KindSkew
-	KindSchema       = modelping.KindSchema
+	KindNone         = modelmode.KindNone
+	KindUnreachable  = modelmode.KindUnreachable
+	KindUnauthorized = modelmode.KindUnauthorized
+	KindNotWtModel   = modelmode.KindNotWtModel
+	KindSkew         = modelmode.KindSkew
+	KindSchema       = modelmode.KindSchema
 )
 
-// ServerState is the result of pinging the configured model server. Checked
-// is true only when a URL and a token were known and a Ping was attempted.
-// When the URL or token came from the local agent (its listen address or
-// token file, used in local mode when nothing else is set) that is a fallback
-// a session would not apply, so the tab words it as the agent's, not the
-// session's.
-//
-// URL is the endpoint that was pinged, with any userinfo removed, so a plan
-// can tell whether a check was of the url it is about to store.
-type ServerState struct {
-	URL         string
-	Checked, OK bool
-	Kind        ServerKind
-	Message     string
-	API, Schema int
-}
+// ServerState is the result of pinging the configured model server
+// (modelmode's session-half type).
+type ServerState = modelmode.ServerState
 
-// HostState is what a plan needs from the host so BuildPlan stays pure: the
-// wt-model binary (beside the running wt, else on PATH, written as found), the
-// captured PATH, the home directory, the base config directory
-// ($XDG_CONFIG_HOME, else ~/.config; the parent of agent-wt and wt-model) and
-// the uid.
-type HostState struct {
-	Binary, BinaryErr, Path, Home string
-	ConfigHome                    string
-	UID                           int
-}
+// HostState is the session half of the host's facts: home and config home
+// (modelmode's type). The admin facts are ToolsState.
+type HostState = modelmode.HostState
 
 // LiteLLMPlistState is the proxy LaunchAgent plist as read; never a secret.
 // Binary is a bplist (it cannot be edited); Err never quotes the XML parser,
@@ -212,27 +158,27 @@ type LiteLLMState struct {
 	Reachable, Database, KeyAccepted, RoutesInSync, RestartOwed, PortMatches, PlistMode Check
 }
 
-// State is everything Observe saw. It never holds a secret.
+// State is everything Observe saw: the session half embedded (modelmode's
+// State: the mode read, the config and token files, the ping, the host's
+// session paths) plus the admin half. It never holds a secret.
 type State struct {
-	Platform    Platform
-	Resolution  modelmode.Resolution
-	EnvOverride string
-	Config      ConfigState
-	// Token is the token file a session would use (see Observe).
-	Token TokenState
-	// TokenFiles describes the other token files a plan may choose: the
-	// local default (DefaultLocalTokenPath), the fixed remote path
-	// (RemoteTokenPath), the agent's own token file and
-	// ObserveOptions.TokenPaths, each once, in that order.
-	TokenFiles     []TokenState
+	Platform Platform
+	modelmode.State
 	Pair           PairState
 	Agent          AgentState
 	Listener       ListenerState
-	Server         ServerState
-	Host           HostState
+	Tools          ToolsState
 	LiteLLMPlist   LiteLLMPlistState
 	LiteLLMInstall LiteLLMInstallState
 	LiteLLM        LiteLLMState
+}
+
+// ToolsState is the admin host facts a plan needs: the wt-model binary
+// (beside the running wt, else on PATH, written as found), the captured PATH
+// and the uid.
+type ToolsState struct {
+	Binary, BinaryErr, Path string
+	UID                     int
 }
 
 // envOverrideNames are the variables that override config.toml, in the order
@@ -302,13 +248,13 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	st.EnvOverride = strings.Join(set, ", ")
 
 	// Host.
-	st.Host.UID = env.Host.UID()
-	st.Host.Path = getenv("PATH")
+	st.Tools.UID = env.Host.UID()
+	st.Tools.Path = getenv("PATH")
 	home, herr := env.Host.Home()
 	if herr == nil {
 		st.Host.Home = home
 	}
-	st.Host.Binary, st.Host.BinaryErr = findModelBinary(env)
+	st.Tools.Binary, st.Tools.BinaryErr = findModelBinary(env)
 	st.Host.ConfigHome = configHome(getenv("XDG_CONFIG_HOME"), home, herr)
 
 	// Agent.

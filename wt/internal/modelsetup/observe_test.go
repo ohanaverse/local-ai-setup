@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
@@ -252,24 +253,29 @@ func TestObserveHonoursACancelledContext(t *testing.T) {
 	}
 }
 
-// TestObserveFindsTheModelBinaryBesideWtThenOnPath pins the HostState lookup
-// order and that the path is reported as found.
+// TestObserveFindsTheModelBinaryBesideWtThenOnPath pins the Tools lookup
+// order and that the path is reported as found (Binary, PATH and uid are the
+// admin half — ToolsState; Home stays in the session half, modelmode's
+// HostState).
 func TestObserveFindsTheModelBinaryBesideWtThenOnPath(t *testing.T) {
 	f := newFakeEnv(t)
 	f.env["PATH"] = "/usr/bin"
 	f.paths["wt-model"] = "/opt/bin/wt-model"
 	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if st.Host.Binary != "/opt/bin/wt-model" || st.Host.Path != "/usr/bin" || st.Host.Home != f.home || st.Host.UID != 501 {
-		t.Errorf("PATH fallback: %+v", st.Host)
+	if st.Tools.Binary != "/opt/bin/wt-model" || st.Tools.Path != "/usr/bin" || st.Tools.UID != 501 {
+		t.Errorf("PATH fallback: %+v", st.Tools)
+	}
+	if st.State.Host.Home != f.home {
+		t.Errorf("Home = %q, want %q", st.State.Host.Home, f.home)
 	}
 	f.files["/Users/user_name/.local/bin/wt-model"] = []byte("x")
-	if st = Observe(context.Background(), f.Env(), ObserveOptions{}); st.Host.Binary != "/Users/user_name/.local/bin/wt-model" {
-		t.Errorf("beside: %+v", st.Host)
+	if st = Observe(context.Background(), f.Env(), ObserveOptions{}); st.Tools.Binary != "/Users/user_name/.local/bin/wt-model" {
+		t.Errorf("beside: %+v", st.Tools)
 	}
 	delete(f.paths, "wt-model")
 	delete(f.files, "/Users/user_name/.local/bin/wt-model")
-	if st = Observe(context.Background(), f.Env(), ObserveOptions{}); st.Host.Binary != "" || st.Host.BinaryErr == "" {
-		t.Errorf("missing: %+v", st.Host)
+	if st = Observe(context.Background(), f.Env(), ObserveOptions{}); st.Tools.Binary != "" || st.Tools.BinaryErr == "" {
+		t.Errorf("missing: %+v", st.Tools)
 	}
 }
 
@@ -331,7 +337,7 @@ func TestObserveDescribesTheTokenFilesAPlanMayChoose(t *testing.T) {
 	f.modes["/srv/tok"] = 0o644
 	plist := RenderAgentPlist(AgentSpec{Binary: "/b/wt-model", Listen: DefaultListen, TokenFile: obsTokenPath, Path: "/bin", Home: "/h"})
 	f.files[obsAgentPath] = plist
-	st := Observe(context.Background(), f.Env(), ObserveOptions{TokenPaths: []string{"/srv/tok", obsTokenPath}})
+	st := Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{TokenPaths: []string{"/srv/tok", obsTokenPath}}})
 	if st.Host.ConfigHome != "/Users/user_name/xdg" {
 		t.Errorf("ConfigHome = %q", st.Host.ConfigHome)
 	}
@@ -408,9 +414,9 @@ func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
 // stored one in its place.
 func TestObservePingsTheEnteredEndpoint(t *testing.T) {
 	f := obsConfigured(t)
-	st := Observe(context.Background(), f.Env(), ObserveOptions{
+	st := Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{
 		CheckURL: "https://gpu.example:8787", CheckToken: Secret("  tok-ENTERED  "),
-	})
+	}})
 	if !f.called("Net.Ping https://gpu.example:8787") || f.called("Net.Ping http://127.0.0.1:8787") {
 		t.Errorf("calls = %q, want the entered url pinged as typed and not the stored one", f.calls)
 	}
@@ -426,9 +432,9 @@ func TestObservePingsTheEnteredEndpoint(t *testing.T) {
 
 	// An entered url with an '@': nothing is pinged, the stored url included.
 	f = obsConfigured(t)
-	st = Observe(context.Background(), f.Env(), ObserveOptions{
+	st = Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{
 		CheckURL: "https://me:pw-SECRET@gpu.example:8787", CheckToken: Secret("tok-ENTERED"),
-	})
+	}})
 	if f.called("Net.Ping") || st.Server.Checked || st.Server.URL != urlrule.Hidden {
 		t.Errorf("calls = %q Server = %+v, want no ping and the url hidden", f.calls, st.Server)
 	}
@@ -440,14 +446,14 @@ func TestObservePingsTheEnteredEndpoint(t *testing.T) {
 	f = obsConfigured(t)
 	f.files["/srv/remote.token"] = []byte("tok-FILE\n")
 	f.modes["/srv/remote.token"] = 0o600
-	st = Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: "https://gpu.example:8787", CheckTokenFile: "/srv/remote.token"})
+	st = Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{CheckURL: "https://gpu.example:8787", CheckTokenFile: "/srv/remote.token"}})
 	if len(f.pingTokens) != 1 || f.pingTokens[0] != "tok-FILE" || !st.Server.Checked {
 		t.Errorf("ping tokens = %q Server = %+v, want the typed file's token", f.pingTokens, st.Server)
 	}
 
 	// No entered token: not pinged, and the reason is said.
 	f = obsConfigured(t)
-	st = Observe(context.Background(), f.Env(), ObserveOptions{CheckURL: "https://gpu.example:8787"})
+	st = Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{CheckURL: "https://gpu.example:8787"}})
 	if f.called("Net.Ping") || st.Server.Checked || !strings.Contains(st.Server.Message, "no token") {
 		t.Errorf("calls = %q Server = %+v, want no ping and a message naming the missing token", f.calls, st.Server)
 	}
