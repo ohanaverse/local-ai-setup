@@ -16,22 +16,20 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 )
 
-// TestTabBarShowsThreeTabs pins the tab bar's three names in order, so the
-// Model server tab is drawn after Models and the old two-tab prefixes stay.
-func TestTabBarShowsThreeTabs(t *testing.T) {
+// TestTabBarShowsAgentsAndModelServer pins the tab bar's two names: the
+// Models tab moved to internal/modeleditor (`wt-model model`), so `wt config`
+// draws Agents and Model server only.
+func TestTabBarShowsAgentsAndModelServer(t *testing.T) {
 	got := tabBar(testTheme(), TabServer)
-	if !strings.Contains(got, "Agents") || !strings.Contains(got, "Models") || !strings.Contains(got, "[Model server]") {
-		t.Errorf("tab bar = %q, want Agents, Models and [Model server]", got)
-	}
-	if strings.Index(got, "Models") > strings.Index(got, "Model server") {
-		t.Errorf("tab bar = %q, want Models before Model server", got)
+	if !strings.Contains(got, "Agents") || !strings.Contains(got, "[Model server]") || strings.Contains(got, "Models") {
+		t.Errorf("tab bar = %q, want Agents and [Model server], and no Models", got)
 	}
 }
 
 // TestNextTabCycles pins the one tab order that every tab key uses:
-// Agents, Models, Model server, back to Agents.
+// Agents, Model server, back to Agents.
 func TestNextTabCycles(t *testing.T) {
-	for from, want := range map[Tab]Tab{TabAgents: TabModels, TabModels: TabServer, TabServer: TabAgents} {
+	for from, want := range map[Tab]Tab{TabAgents: TabServer, TabServer: TabAgents} {
 		if got := nextTab(from); got != want {
 			t.Errorf("nextTab(%d) = %d, want %d", from, got, want)
 		}
@@ -159,7 +157,8 @@ func serverEditor(t *testing.T, sm *serverMachine, width, height int) *model {
 	t.Helper()
 	m := newModel(testTheme(), &config.Config{}, nil)
 	m.home = testUserHome
-	m.opts = Options{StartTab: TabServer, Server: sm.deps(), Models: newTabMachine(t, "").deps()}
+	scratchConfigHome(t)
+	m.opts = Options{StartTab: TabServer, Server: sm.deps()}
 	m.tab = TabServer
 	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
 	return runCmd(t, m, m.Init())
@@ -226,17 +225,18 @@ func offMacState() modelsetup.State {
 func TestServerTabObservesOnFirstVisitOnly(t *testing.T) {
 	sm := &serverMachine{states: []modelsetup.State{fullState()}}
 	m := newModel(testTheme(), &config.Config{}, nil)
-	m.opts = Options{Server: sm.deps(), Models: newTabMachine(t, "").deps()}
+	scratchConfigHome(t)
+	m.opts = Options{Server: sm.deps()}
 	m = send(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = runCmd(t, m, m.Init())
 	if sm.observes != 0 {
 		t.Fatalf("observes on the Agents tab = %d, want 0", sm.observes)
 	}
-	m = keys(t, m, "tab", "tab")
+	m = keys(t, m, "tab")
 	if m.tab != TabServer || sm.observes != 1 {
 		t.Fatalf("tab = %d observes = %d, want the Model server tab observed once", m.tab, sm.observes)
 	}
-	m = keys(t, m, "tab", "tab", "tab")
+	m = keys(t, m, "tab", "tab")
 	if m.tab != TabServer || sm.observes != 1 {
 		t.Errorf("tab = %d observes = %d after a second visit, want still 1", m.tab, sm.observes)
 	}
@@ -246,7 +246,7 @@ func TestServerTabObservesOnFirstVisitOnly(t *testing.T) {
 	if sm.observes != 1 {
 		t.Fatalf("observes with StartTab = TabServer = %d, want 1 from Init", sm.observes)
 	}
-	m = keys(t, m, "tab", "tab", "tab")
+	m = keys(t, m, "tab", "tab")
 	if sm.observes != 1 {
 		t.Errorf("observes after coming back = %d, want 1", sm.observes)
 	}
@@ -481,13 +481,6 @@ func TestServerTabQuitKeysUseTheExistingQuit(t *testing.T) {
 			t.Errorf("%s with agent edits: phase = %d, want the quit prompt", k, next.(*model).phase)
 		}
 
-		m = serverEditor(t, &serverMachine{states: []modelsetup.State{fullState()}}, 80, 24)
-		m.models.writing = true
-		next, cmd = m.Update(keyMsg(k))
-		m = next.(*model)
-		if cmd != nil || !m.quitPending || m.tab != TabModels {
-			t.Errorf("%s during a registry write: cmd = %v quitPending = %v tab = %d, want the quit held on Models", k, cmd != nil, m.quitPending, m.tab)
-		}
 	}
 }
 

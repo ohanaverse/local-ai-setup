@@ -1,8 +1,7 @@
 // wt config command — user-level preferences. Bare, it opens the config
-// editor (internal/configeditor): the Agents tab, the Models tab that
-// bare `wt model` opens it on (runConfigEditor, which also runs the one route
-// sync the Models tab owes), and the Model server tab. `wt config theme` manages the active color
-// theme.
+// editor (internal/configeditor): the Agents tab and the Model server tab
+// (runConfigEditor). The models in registry.toml are managed by `wt-model
+// model`. `wt config theme` manages the active color theme.
 //
 // The theme subcommand family uses the active theme (loaded by newApp)
 // for its own output where appropriate (table borders, list names in their
@@ -30,48 +29,35 @@ var configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error,
 	return configeditor.Run(theme, cfg, cfgErr, o)
 }
 
-// runConfigEditor opens the editor on tab start and, when its Models tab
-// wrote the registry, runs the one LiteLLM route sync that tab owes: the tab
-// does not sync per change, so that a run of edits costs one proxy restart.
-// The sync runs even when the editor ended with an error, because the write
-// already happened; if wt dies before it, the next `wt start`, `wt stop` or
-// launch through LiteLLM repairs the routes.
+// runConfigEditor opens the editor on tab start. It writes no registry, so it
+// owes no route sync.
 func runConfigEditor(out, errOut io.Writer, a *app, start configeditor.Tab) error {
-	// The editor's Models tab is a host screen (R3, R17): it reads and
-	// writes the registry, so the editor opens on the host's config.
+	// The editor opens on the host's config, as it always has.
 	cfg, _ := a.hostConfig()
 	// The Model server tab's seams: the real machine, with the routes check
 	// asking what a sync would write now.
 	env := modelsetup.DefaultEnv()
 	env.DesiredRoutes = desiredRouteIDs
-	res, err := configeditorRun(a.theme, cfg, a.hostConfigErr(), configeditor.Options{
+	_, err := configeditorRun(a.theme, cfg, a.hostConfigErr(), configeditor.Options{
 		StartTab: start,
-		Models:   configeditor.ModelsDeps{Probe: probeInventory, SeedEnv: seedEnv, Capabilities: ollamaCaps},
 		Server:   configeditor.ServerDepsFromEnv(env),
 	})
-	if res.RegistryChanged {
-		// What `wt model add|edit|rm` run after their write: the sync's own
-		// lines, then its warning on stderr. It never fails.
-		_ = syncAndWarn(out, errOut, nil)
-	}
 	return err
 }
 
 // configCmd returns the `wt config` command. With no subcommand, launches
-// the interactive editor: agents in config.toml, models in registry.toml.
+// the interactive editor: agents in config.toml and the model server's setup.
 // Subcommands configure specific concerns without entering the TUI.
 func configCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Manage wt preferences and config.toml",
 		Long: "Manage wt user preferences.\n\n" +
-			"With no subcommand, launches an interactive TUI with three tabs (tab\n" +
-			"switches): Agents, the agents in config.toml, saved with ctrl+s;\n" +
-			"Models, the models in registry.toml, where each change is written at\n" +
-			"once and the LiteLLM routes are synced when you quit; and Model server,\n" +
-			"which checks the wt-model server and its LiteLLM proxy and sets up the\n" +
-			"server's address, token and proxy key. `wt model` opens it on the\n" +
-			"Models tab.\n\n" +
+			"With no subcommand, launches an interactive TUI with two tabs (tab\n" +
+			"switches): Agents, the agents in config.toml, saved with ctrl+s; and\n" +
+			"Model server, which checks the wt-model server and its LiteLLM proxy and\n" +
+			"sets up the server's address, token and proxy key. The models in\n" +
+			"registry.toml are managed with `wt-model model`.\n\n" +
 			"Subcommands:\n" +
 			"  theme   active color theme\n" +
 			"  path    print the config directory",

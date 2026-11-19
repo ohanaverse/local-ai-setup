@@ -1,4 +1,4 @@
-package configeditor
+package modeleditor
 
 import (
 	"errors"
@@ -441,11 +441,8 @@ func saveErrorText(err error, malformed bool) string {
 // cursor on the saved model, and the routes are owed a sync.
 //
 // A quit that was waiting for the write (leave) happens now, with the change
-// recorded for the caller — through quit, like applyModelRemoved's: agent
-// edits the user has not been asked about get the unsaved-changes prompt, and
-// ones already given up (discardHeld) are not asked about twice. After a
-// refusal the quit does not happen, because the refusal has to be read, and
-// the edits a held quit was to discard are unsaved again.
+// recorded for the caller, like applyModelRemoved's. After a refusal the quit
+// does not happen, because the refusal has to be read.
 func (m *model) applyModelSaved(msg modelSavedMsg) tea.Cmd {
 	mt := &m.models
 	mt.writing = false
@@ -478,12 +475,9 @@ func (m *model) applyModelSaved(msg modelSavedMsg) tea.Cmd {
 	mt.phase, mt.form = modelsList, nil
 	m.registryChanged = m.registryChanged || msg.changed
 	if m.quitPending {
-		m.quitPending = false // discardHeld stays until the quit happens (leave)
-		if _, cmd := m.quit(); cmd != nil {
-			return cmd
-		}
-		// The unsaved-changes prompt is up; the table is read again under
-		// it, for a user who cancels.
+		m.quitPending = false
+		_, cmd := m.quit()
+		return cmd
 	}
 	if !msg.changed {
 		return nil

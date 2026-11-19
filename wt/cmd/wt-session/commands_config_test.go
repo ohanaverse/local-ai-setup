@@ -335,19 +335,19 @@ func TestConfigEditorIsGivenTheModelServerDeps(t *testing.T) {
 	}
 }
 
-// TestConfigLongTextNamesThreeTabs pins that `wt config --help` names all
-// three tabs and says what the Model server one does; the text used to say
-// "two tabs" and would otherwise hide the new screen.
-func TestConfigLongTextNamesThreeTabs(t *testing.T) {
+// TestConfigLongTextNamesTwoTabsAndTheModelsMove pins that `wt config --help`
+// names the two tabs it still has and says the models moved to `wt-model
+// model`, so nobody looks for a Models tab that is gone.
+func TestConfigLongTextNamesTwoTabsAndTheModelsMove(t *testing.T) {
 	a, _ := newTestApp(t)
 	long := configCmd(a).Long
-	for _, want := range []string{"three tabs", "Agents", "Models", "Model server"} {
+	for _, want := range []string{"two tabs", "Agents", "Model server", "wt-model model"} {
 		if !strings.Contains(long, want) {
 			t.Errorf("Long text lacks %q:\n%s", want, long)
 		}
 	}
-	if strings.Contains(long, "two tabs") {
-		t.Errorf("Long text still says two tabs:\n%s", long)
+	if strings.Contains(long, "three tabs") {
+		t.Errorf("Long text still says three tabs:\n%s", long)
 	}
 }
 

@@ -1,4 +1,4 @@
-package configeditor
+package modeleditor
 
 import (
 	"errors"
@@ -857,59 +857,6 @@ func TestModelFormRefusalTheFormCanRepairNamesNoFile(t *testing.T) {
 	}
 }
 
-// TestAHeldQuitAfterAFormSaveIsAnOrdinaryQuit verifies the two things a quit
-// held for a form's save owes the Agents tab, as a quit held for a removal
-// does. Agent edits made before the save and not yet asked about get the
-// unsaved-changes prompt when the save lands — with the model saved, the
-// change recorded and the table read again under the prompt — instead of
-// being thrown away unasked. And when the user answered "discard and quit"
-// and the save is then refused, the quit is off and those edits are unsaved
-// again: the next quit asks.
-func TestAHeldQuitAfterAFormSaveIsAnOrdinaryQuit(t *testing.T) {
-	t.Run("agent edits not yet asked about", func(t *testing.T) {
-		tm, m, save := savingAddForm(t, "0.5")
-		next, _ := m.Update(keyMsg("ctrl+c"))
-		m = next.(*model)
-		// An edit the quit did not know of when it was taken.
-		m.dirty = true
-		next, cmd := m.Update(save())
-		m = next.(*model)
-		if m.phase != phaseQuit || m.quitPending || !m.registryChanged || !strings.Contains(m.View(), "unsaved agent changes") {
-			t.Fatalf("phase = %d, quitPending = %v, registryChanged = %v; want the unsaved-changes prompt and the change recorded:\n%s", m.phase, m.quitPending, m.registryChanged, m.View())
-		}
-		if cmd == nil || isQuit(cmd) {
-			t.Fatal("the command should be the re-probe, for a user who cancels the prompt; not a quit")
-		}
-		m = keys(t, send(t, m, cmd()), "c")
-		if r, ok := m.selectedModel(); !ok || r.ID != "openrouter/qwen--qwen3.8-27b" || m.models.phase != modelsList || !strings.Contains(tm.text(t), `id = "openrouter/qwen--qwen3.8-27b"`) {
-			t.Errorf("after c the table should be back with the cursor on the saved model; on %q", r.ID)
-		}
-	})
-	t.Run("a refused save keeps the edits a held quit was to discard", func(t *testing.T) {
-		tm, m, save := savingAddForm(t, "cheap")
-		m.dirty = true
-		m = keys(t, m, "ctrl+c")
-		if m.phase != phaseQuit {
-			t.Fatalf("phase = %d, want the unsaved-changes prompt", m.phase)
-		}
-		next, cmd := m.Update(keyMsg("n"))
-		if m = next.(*model); cmd != nil || !m.quitPending || !m.discardHeld {
-			t.Fatal("n on the prompt with the save in flight should hold the quit back")
-		}
-		next, cmd = m.Update(save())
-		m = next.(*model)
-		if cmd != nil || m.quitPending || m.discardHeld || !m.dirty || m.tab != TabModels || m.models.phase != modelsForm {
-			t.Fatalf("quitPending = %v, discardHeld = %v, dirty = %v; the quit is off, the form is back and the edits are unsaved again", m.quitPending, m.discardHeld, m.dirty)
-		}
-		if !strings.Contains(m.View(), "input-price must be a number") || tm.text(t) != tabRegistry {
-			t.Errorf("the refusal should be on the form, and nothing written:\n%s", m.View())
-		}
-		if m = keys(t, m, "ctrl+c"); m.phase != phaseQuit {
-			t.Errorf("phase = %d, want the next quit to ask about the edits", m.phase)
-		}
-	})
-}
-
 // TestModelFormEditsTheFlatPriceOfATimePricedModel pins what the model form
 // shows for a model with cost.time_prices rows: the model's own (flat)
 // prices, which are the keys the form edits, and never the price in force
@@ -966,4 +913,39 @@ end = "24:00"
 	if tm.text(t) != registry || !strings.Contains(m.View(), "no change to openrouter/timed") {
 		t.Errorf("saving the untouched form changed the registry or did not say it wrote nothing:\n%s", m.View())
 	}
+}
+
+// TestAHeldQuitAfterAFormSaveIsAnOrdinaryQuit verifies a quit held for a
+// form's save is an ordinary quit when the save lands: the program ends with
+// the change recorded, so the caller runs its route sync. When the save is
+// refused the quit is off, the form is back with the reason, and the next
+// ctrl+c quits as any other would.
+func TestAHeldQuitAfterAFormSaveIsAnOrdinaryQuit(t *testing.T) {
+	t.Run("the save lands", func(t *testing.T) {
+		tm, m, save := savingAddForm(t, "0.5")
+		next, _ := m.Update(keyMsg("ctrl+c"))
+		next, cmd := next.(*model).Update(save())
+		m = next.(*model)
+		if !isQuit(cmd) || m.quitPending || !m.registryChanged || !strings.Contains(tm.text(t), `id = "openrouter/qwen--qwen3.8-27b"`) {
+			t.Fatalf("quit = %v, quitPending = %v, registryChanged = %v; want the quit with the change recorded", isQuit(cmd), m.quitPending, m.registryChanged)
+		}
+	})
+	t.Run("a refused save calls the quit off", func(t *testing.T) {
+		tm, m, save := savingAddForm(t, "cheap")
+		next, cmd := m.Update(keyMsg("ctrl+c"))
+		if m = next.(*model); cmd != nil || !m.quitPending {
+			t.Fatal("ctrl+c with the save in flight should hold the quit back")
+		}
+		next, cmd = m.Update(save())
+		m = next.(*model)
+		if cmd != nil || m.quitPending || m.tab != TabModels || m.models.phase != modelsForm {
+			t.Fatalf("quitPending = %v, phase = %d; the quit is off and the form is back", m.quitPending, m.models.phase)
+		}
+		if !strings.Contains(m.View(), "input-price must be a number") || tm.text(t) != tabRegistry {
+			t.Errorf("the refusal should be on the form, and nothing written:\n%s", m.View())
+		}
+		if _, cmd = m.Update(keyMsg("ctrl+c")); !isQuit(cmd) {
+			t.Error("the next ctrl+c should quit")
+		}
+	})
 }

@@ -18,7 +18,7 @@ var adminBanned = []string{
 	"internal/cloudsync", "internal/spend", "internal/modeladmin",
 	"internal/configeditor", "internal/modelserver", "internal/modelgateway",
 	"internal/modeljobs", "internal/sessionreg", "internal/candidates",
-	"internal/hoststop", "internal/modelsetup",
+	"internal/hoststop", "internal/modelsetup", "internal/modeleditor",
 }
 
 // sessionBanned is the set cmd/wt-model must not link: the session half.
@@ -37,7 +37,7 @@ var adminScreensBanned = []string{"internal/tui"}
 
 // adminScreens are the editors and the UI leaf they share; each must stay off
 // adminScreensBanned.
-var adminScreens = []string{"internal/configeditor", "internal/editorkit"}
+var adminScreens = []string{"internal/configeditor", "internal/modeleditor", "internal/editorkit"}
 
 // allowList names, per session library package, the banned packages it still
 // links. It only shrinks: TestSessionLibrariesStayOffTheAdminPackages fails

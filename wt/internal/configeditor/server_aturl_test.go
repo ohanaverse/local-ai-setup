@@ -87,9 +87,9 @@ func TestServerTabNeverPingsAStoredCredentialedURL(t *testing.T) {
 	if err := os.WriteFile(tok, []byte("tok-FILE\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// newTabMachine points XDG_CONFIG_HOME at a temp directory of this test
-	// (restored afterwards), so config.Path() is read after it.
-	models := newTabMachine(t, "").deps()
+	// scratchConfigHome points XDG_CONFIG_HOME at a temp directory of this
+	// test (restored afterwards), so config.Path() is read after it.
+	scratchConfigHome(t)
 	path := config.Path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestServerTabNeverPingsAStoredCredentialedURL(t *testing.T) {
 	env.LiteLLM = noLiteLLM{dir: dir}
 
 	m := newModel(testTheme(), &config.Config{}, nil)
-	m.opts = Options{StartTab: TabServer, Server: ServerDepsFromEnv(env), Models: models}
+	m.opts = Options{StartTab: TabServer, Server: ServerDepsFromEnv(env)}
 	m.tab = TabServer
 	m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
 	m = runCmd(t, m, m.Init())
@@ -187,7 +187,7 @@ func TestServerTabNeverShowsOrRequestsAnAtPairURL(t *testing.T) {
 		if err := os.WriteFile(tok, []byte("tok-FILE\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		models := newTabMachine(t, "").deps()
+		scratchConfigHome(t)
 		path := config.Path()
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
@@ -206,7 +206,7 @@ func TestServerTabNeverShowsOrRequestsAnAtPairURL(t *testing.T) {
 		env.LiteLLM = noLiteLLM{dir: dir}
 
 		m := newModel(testTheme(), &config.Config{}, nil)
-		m.opts = Options{StartTab: TabServer, Server: ServerDepsFromEnv(env), Models: models}
+		m.opts = Options{StartTab: TabServer, Server: ServerDepsFromEnv(env)}
 		m.tab = TabServer
 		m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 60})
 		m = runCmd(t, m, m.Init())

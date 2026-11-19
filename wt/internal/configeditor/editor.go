@@ -1,8 +1,8 @@
 // Package configeditor is the TUI behind `wt config`: an Agents tab that
-// edits the agent section of wt's config.toml, a Models tab that manages the
-// models in the shared registry.toml (through internal/modeladmin), and a
-// Model server tab that shows the model server's setup (through
-// internal/modelsetup, reached only by its injected ServerDeps).
+// edits the agent section of wt's config.toml, and a Model server tab that
+// shows the model server's setup (through internal/modelsetup, reached only
+// by its injected ServerDeps). The models in registry.toml are managed by
+// internal/modeleditor (`wt-model model`).
 package configeditor
 
 import (
@@ -35,24 +35,19 @@ type loadedMsg struct {
 type model struct {
 	phase phase
 	// tab is the tab showing; opts are what the editor was opened with.
-	tab  Tab
-	opts Options
-	// models is the Models tab's state. registryChanged is true once that
-	// tab has written registry.toml (Result.RegistryChanged).
-	models          modelsTab
-	server          serverTab
-	registryChanged bool
-	// quitPending is true when the user asked to leave while a registry
-	// write, or a Model server apply or start/stop, was in flight: the editor
-	// quits when its result is in.
+	tab    Tab
+	opts   Options
+	server serverTab
+	// quitPending is true when the user asked to leave while a Model server
+	// apply or start/stop was in flight: the editor quits when its result is
+	// in.
 	quitPending bool
 	// discardHeld is true when that held quit came from "discard and quit"
 	// on the unsaved-changes prompt: the edits the answer was about are no
 	// longer counted as unsaved (dirty is cleared), so the quit asks again
 	// only about edits made while it waited. A refused write calls the quit
 	// off and puts dirty back. It is cleared only when the quit happens
-	// (leave returns tea.Quit) or the prompt asks again (quit): a quit
-	// re-held for a second write in flight keeps it.
+	// (leave returns tea.Quit) or the prompt asks again (quit).
 	discardHeld bool
 	theme       themes.Theme
 	cfg         *config.Config
@@ -111,11 +106,7 @@ func (m *model) Init() tea.Cmd {
 		// cfg and cfgErr are captured when newModel is called.
 		return loadedMsg{cfg: m.cfg, err: m.cfgErr}
 	}
-	switch m.tab {
-	case TabModels:
-		// Opened on the Models tab (`wt model`): probe at once.
-		return tea.Batch(loaded, m.probeCmd())
-	case TabServer:
+	if m.tab == TabServer {
 		// Opened on the Model server tab: observe at once.
 		return tea.Batch(loaded, m.observeServerCmd())
 	}
@@ -133,7 +124,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	if nm, ok := next.(*model); ok && nm.ready {
 		nm.fitList()
-		nm.fitModels()
 		return nm, cmd
 	}
 	return next, cmd
@@ -199,7 +189,6 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.phase == phaseForm {
 			m.resizeFormInputs()
 		}
-		m.resizeModelForm()
 		m.resizeServerInputs()
 	case loadedMsg:
 		m.ready = true
@@ -218,13 +207,6 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.list = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
 		return m, nil
-	case modelsLoadedMsg:
-		m.applyModels(msg)
-		return m, nil
-	case modelRemovedMsg:
-		return m, m.applyModelRemoved(msg)
-	case modelSavedMsg:
-		return m, m.applyModelSaved(msg)
 	case serverObservedMsg:
 		return m, m.applyServerObserved(msg)
 	case serverPlannedMsg:
@@ -261,9 +243,6 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.phase == phaseQuit {
 		return m.handleQuitUpdate(msg)
 	}
-	if m.tab == TabModels {
-		return m.updateModels(msg)
-	}
 	if m.tab == TabServer {
 		return m.updateServer(msg)
 	}
@@ -279,7 +258,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			var cmd tea.Cmd
 			m.list, cmd = m.list.Update(msg)
-			return m, tagFilter(cmd, TabAgents, 0)
+			return m, tagFilter(cmd)
 		}
 
 		// Global shortcuts take precedence over list delegation.
@@ -323,7 +302,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.list, cmd = m.list.Update(msg)
 			if cmd != nil {
-				return m, tagFilter(cmd, TabAgents, 0)
+				return m, tagFilter(cmd)
 			}
 		}
 	}
@@ -332,7 +311,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // quit leaves the editor, by way of the unsaved-changes prompt when the
 // Agents tab has edits that were not saved. The prompt concerns agent edits
-// only: every change on the Models tab is already in registry.toml.
+// only: the Model server tab writes nothing until it is applied.
 func (m *model) quit() (tea.Model, tea.Cmd) {
 	if !m.dirty {
 		return m.leave()
@@ -344,37 +323,26 @@ func (m *model) quit() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// leave ends the program — once the registry write in flight, if there is
-// one, has reported. The write runs in a command; a program that ended before
-// its message was handled would return Result{RegistryChanged: false} for a
-// registry that did change, and the caller would skip the route sync it owes.
-// So the quit is recorded, and applyModelRemoved or applyModelSaved, whichever
-// the write reports to, issues it. The Models tab is shown meanwhile: it is
-// the one that says the quit is waiting (the table's status, or the form's
-// title when the write is a form's save). A probe in flight holds nothing up.
-// An apply or a start/stop on the Model server tab holds the quit the same
-// way (finishServerWrite issues it), on that tab.
+// leave ends the program — once an apply or a start/stop in flight on the
+// Model server tab, if there is one, has reported: the quit is recorded and
+// finishServerWrite issues it, on that tab, which is the one that says what
+// the write did.
 func (m *model) leave() (tea.Model, tea.Cmd) {
-	if m.models.writing {
-		m.quitPending = true
-		m.phase, m.tab = phaseList, TabModels
-		return m, nil
-	}
 	if m.server.writing {
 		m.quitPending = true
 		m.phase, m.tab = phaseList, TabServer
 		return m, nil
 	}
-	// Only now is a discard final: a quit re-held for another write keeps
-	// discardHeld, so that write's failure still puts the edits back.
+	// Only now is a discard final: a write's failure while the quit was held
+	// puts the edits back.
 	m.discardHeld = false
 	return m, tea.Quit
 }
 
 // showQuitSaveFailure calls off a quit whose save-before-quit failed, and
 // brings forward the one place that says why: m.status is the Agents tab's
-// status line, and neither the unsaved-changes prompt nor the Models tab
-// draws it. It does nothing for a save that was not a quit's.
+// status line, and neither the unsaved-changes prompt nor the Model server
+// tab draws it. It does nothing for a save that was not a quit's.
 func (m *model) showQuitSaveFailure() {
 	if !m.quitting {
 		return
@@ -391,7 +359,7 @@ func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m.handleSave()
 		case "n", "N":
-			if m.models.writing || m.server.writing {
+			if m.server.writing {
 				// The quit will wait (leave). The answer is kept with it.
 				m.discardHeld, m.dirty = true, false
 			}
@@ -405,15 +373,10 @@ func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// refuseHeldQuit calls a quit held for a write off: the write was refused,
-// and the refusal has to be read — on the tab it happened on, which
-// quitPending's tab restore makes current. The agent edits the held quit was
-// going to discard are still there and still unsaved, and go back to being
-// asked about.
+// refuseHeldQuit calls off the discard a held quit carried: the agent edits
+// it was going to discard are still there and still unsaved, and go back to
+// being asked about.
 func (m *model) refuseHeldQuit() {
-	if m.quitPending {
-		m.quitPending, m.tab = false, TabModels
-	}
 	if m.discardHeld {
 		m.discardHeld, m.dirty = false, true
 	}
@@ -432,9 +395,6 @@ func (m *model) View() string {
 		// Wrapped: at 40 columns both lines are wider than the terminal.
 		return editorkit.WrapText("You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel", m.width) + "\n"
 	default:
-		if m.tab == TabModels {
-			return m.modelsView()
-		}
 		if m.tab == TabServer {
 			return m.serverTabView()
 		}
@@ -472,18 +432,14 @@ func resolveHome(f func() (string, error)) string {
 
 // Run starts the config editor TUI with the config already loaded by the
 // caller. A non-nil cfgErr is surfaced as a status message so the user can
-// repair the config without the CLI exiting early. The Result says whether
-// the Models tab wrote the registry, in which case the caller owes the
-// LiteLLM routes one sync; it is reported even when the program ends with an
-// error, since the write happened.
+// repair the config without the CLI exiting early.
 func Run(theme themes.Theme, cfg *config.Config, cfgErr error, o Options, opts ...tea.ProgramOption) (Result, error) {
 	m := newModel(theme, cfg, cfgErr)
-	o.Models = o.Models.withDefaults()
 	o.Server = o.Server.withDefaults()
 	m.opts, m.tab = o, o.StartTab
 	m.home = resolveHome(o.UserHome)
 	allOpts := append([]tea.ProgramOption{tea.WithAltScreen()}, opts...)
 	p := tea.NewProgram(m, allOpts...)
 	_, err := p.Run()
-	return Result{RegistryChanged: m.registryChanged}, err
+	return Result{}, err
 }
