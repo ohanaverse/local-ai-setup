@@ -2,45 +2,29 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/BurntSushi/toml"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 )
 
-// execLitellm runs `wt litellm <args>` over a, discarding both streams, and
+// execLitellm runs `wt litellm <args>`, discarding both streams, and
 // returns the command's error.
-func execLitellm(a *app, args ...string) error {
-	c := litellmCmd(a)
+func execLitellm(args ...string) error {
+	c := litellmCmd()
 	c.SetOut(&bytes.Buffer{})
 	c.SetErr(&bytes.Buffer{})
 	c.SetArgs(args)
 	return c.Execute()
-}
-
-func litellmTestConfig() *config.Config {
-	return &config.Config{
-		Providers: []config.Provider{
-			{ID: "ollama", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
-			{ID: "claude", Auth: config.AuthConfig{Type: "native"}},
-		},
-		Models: []config.Model{
-			{ID: "ollama/gemma:9b", ProviderID: "ollama", ModelName: "gemma:9b", Location: config.LocationLocal},
-			{ID: "claude/sonnet", ProviderID: "claude", ModelName: "sonnet", Native: true},
-		},
-	}
 }
 
 // litellmEnv points the config path at a temp file and the restart command
@@ -54,90 +38,6 @@ func litellmEnv(t *testing.T, body string) string {
 	t.Setenv("WT_LITELLM_CONFIG", p)
 	t.Setenv("WT_LITELLM_RESTART_CMD", "true")
 	return p
-}
-
-// TestLitellmRestartWaitsAndReports pins `wt litellm restart`: the restart
-// `wt litellm sync` runs (here the WT_LITELLM_RESTART_CMD override) and the
-// wait after it, taken with no pre-restart probe so a proxy that was down is
-// waited for too (the probe stub says nothing is listening), one line on
-// stdout when the proxy answers again, and an error naming the cause when
-// the restart command fails or the proxy never answers. bin/update/litellm
-// runs it after an upgrade in place of `launchctl kickstart -k`, which kills
-// a request in flight after 5 seconds; a failure that exited 0 would leave
-// the updater reporting a proxy it never restarted.
-func TestLitellmRestartWaitsAndReports(t *testing.T) {
-	const url = "http://proxy.test:4000"
-	for _, tc := range []struct {
-		name, cmd string
-		waitErr   error
-		wantErr   string
-	}{
-		{name: "restarted and answering", cmd: "echo restart >> RESTARTS"},
-		{name: "the restart command fails", cmd: "echo restart >> RESTARTS; exit 3", wantErr: "exit status 3"},
-		{name: "the proxy never answers", cmd: "echo restart >> RESTARTS", waitErr: errors.New("LiteLLM proxy not ready at " + url + "/health/liveliness: context deadline exceeded"),
-			wantErr: "LiteLLM proxy not ready at " + url},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			restarts := filepath.Join(t.TempDir(), "restarts")
-			t.Setenv("WT_LITELLM_RESTART_CMD", strings.ReplaceAll(tc.cmd, "RESTARTS", restarts))
-			var steps []string
-			t.Cleanup(litellm.StubProxyReadinessForTest(
-				func(_ context.Context, u string, _ time.Duration) bool {
-					steps = append(steps, "probe "+u)
-					return false
-				},
-				func(_ context.Context, u string, _ time.Duration) error {
-					b, _ := os.ReadFile(restarts)
-					steps = append(steps, fmt.Sprintf("wait %s after %q", u, b))
-					return tc.waitErr
-				},
-			))
-			cfg := litellmTestConfig()
-			cfg.SetLitellmForTest(config.LitellmState{URL: url})
-
-			var out bytes.Buffer
-			err := runLitellmRestart(&out, cfg)
-			if want := []string{fmt.Sprintf("wait %s after %q", url, "restart\n")}; !slices.Equal(steps, want) {
-				t.Errorf("steps = %q, want %q", steps, want)
-			}
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("err = %v, want nil", err)
-				}
-				if got, want := out.String(), "restarted the LiteLLM proxy at "+url+"\n"; got != want {
-					t.Errorf("stdout = %q, want %q", got, want)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
-			}
-			if out.Len() != 0 {
-				t.Errorf("a failed restart printed %q on stdout", out.String())
-			}
-		})
-	}
-}
-
-// TestLitellmRestartHidesAnAtURL pins the success line's one url rule
-// (#640): a stored pair url holding an '@' (hand-written, or set by an older
-// wt) is printed only as config.ProxyURLHidden, never in part.
-func TestLitellmRestartHidesAnAtURL(t *testing.T) {
-	const url = "http://USERX:PASSX@proxy.test:4000"
-	t.Setenv("WT_LITELLM_RESTART_CMD", "true")
-	t.Cleanup(litellm.StubProxyReadinessForTest(
-		func(context.Context, string, time.Duration) bool { return false },
-		func(context.Context, string, time.Duration) error { return nil },
-	))
-	cfg := litellmTestConfig()
-	cfg.SetLitellmForTest(config.LitellmState{URL: url})
-	var out bytes.Buffer
-	if err := runLitellmRestart(&out, cfg); err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
-	if got, want := out.String(), "restarted the LiteLLM proxy at "+config.ProxyURLHidden+"\n"; got != want {
-		t.Errorf("stdout = %q, want %q", got, want)
-	}
 }
 
 // TestLitellmStatusAndSet pins the proxy url/key functions the host keeps:
@@ -336,7 +236,7 @@ func TestLitellmRemovedExposeCommandsFailAndPointToSync(t *testing.T) {
 		{"unexpose", "openrouter/x"},
 		{"unexpose", "openrouter/x", "--json"},
 	} {
-		err := execLitellm(&app{hostSet: true, hostCfg: litellmTestConfig()}, args...)
+		err := execLitellm(args...)
 		if err == nil || !strings.Contains(err.Error(), "wt-model litellm sync") || !strings.Contains(err.Error(), "removed") {
 			t.Errorf("%v: err = %v, want a removal error pointing to `wt-model litellm sync`", args, err)
 		}
@@ -345,7 +245,7 @@ func TestLitellmRemovedExposeCommandsFailAndPointToSync(t *testing.T) {
 		t.Fatalf("removed commands modified config.yaml:\n%s", b)
 	}
 	var help bytes.Buffer
-	c := litellmCmd(&app{hostSet: true, hostCfg: litellmTestConfig()})
+	c := litellmCmd()
 	c.SetOut(&help)
 	c.SetErr(&bytes.Buffer{})
 	c.SetArgs([]string{"--help"})
@@ -450,44 +350,56 @@ func TestLitellmStateCommandsFailOnAnUnreadableProxyConfig(t *testing.T) {
 	})
 }
 
-// validationOnlyApp builds an app via newApp() in a temp XDG dir whose registry
-// has a model pointing at a missing provider: Load succeeds but Validate fails
-// (a row whose provider has no row; `wt-model model init` seeds one for a provider
-// it has a default for, any other is a hand edit of registry.toml).
-func validationOnlyApp(t *testing.T) (*app, string) {
+// validationOnlyHome points a scratch config home at a registry with a model
+// naming a missing provider: Load succeeds but Validate fails (a row whose
+// provider has no row; `wt-model model init` seeds one for a provider it has
+// a default for, any other is a hand edit of registry.toml).
+func validationOnlyHome(t *testing.T) {
 	t.Helper()
 	sample, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "contracts", "registry.sample.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg := string(sample) + "\n[[models]]\nid = \"ghost/m\"\nprovider_id = \"ghost\"\nmodel_name = \"m\"\n"
-	registry := modelHome(t, reg)
-	a, err := newApp()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return a, filepath.Join(filepath.Dir(filepath.Dir(registry)), "agent-wt", "config.toml")
+	modelHome(t, string(sample)+"\n[[models]]\nid = \"ghost/m\"\nprovider_id = \"ghost\"\nmodel_name = \"m\"\n")
 }
 
 // TestLitellmRoutingCommandsWorkOnValidationOnlyError pins that status/set
-// depend only on the proxy pair (the wt-model home), not on registry
-// validity: a model referencing an unknown provider (cfgErr set, loadErr nil)
-// must not lock the user out of the only routing control surface, and the
-// change must persist where every reader resolves it (ResolveProxy). (sync is
-// covered by TestLitellmSyncWorksOnValidationOnlyError.)
+// read only the proxy pair (the wt-model home), so a registry that fails
+// validation (a model referencing an unknown provider) cannot reach them and
+// lock the user out of the one surface that repairs the pair, and the change
+// persists where every reader resolves it (ResolveProxy).
 func TestLitellmRoutingCommandsWorkOnValidationOnlyError(t *testing.T) {
 	litellmEnv(t, "model_list: []\n")
-	a, _ := validationOnlyApp(t)
-	if a.hostConfigErr() == nil || hostLoadErrOf(a) != nil {
-		t.Fatalf("fixture: cfgErr=%v loadErr=%v, want validation-only error", a.hostConfigErr(), hostLoadErrOf(a))
+	validationOnlyHome(t)
+	if cfg, err := config.Load(); err != nil || cfg.Validate() == nil {
+		t.Fatalf("fixture: load err=%v, want a registry that loads and fails validation", err)
 	}
 	for _, args := range [][]string{{"set", "--url", "http://localhost:4000", "--api-key", "sk-abcdef"}, {"status"}} {
-		if err := execLitellm(a, args...); err != nil {
+		if err := execLitellm(args...); err != nil {
 			t.Fatalf("%v refused on validation-only error: %v", args, err)
 		}
 	}
 	if pair := resolveProxy(t); pair.URL != "http://localhost:4000" || pair.APIKey != "sk-abcdef" || pair.Source != config.ProxySourceHome {
 		t.Fatalf("state not persisted where every reader resolves it: %+v", pair)
+	}
+}
+
+// TestWtLitellmHelpListsOnlyTheProxyPairCommands pins how `wt litellm
+// --help` reads after the move: status and set, and no line for a moved
+// command (their pointer stubs are hidden). An old bin/update/litellm
+// grepped this help for restart; it must not find one and run a pointer.
+func TestWtLitellmHelpListsOnlyTheProxyPairCommands(t *testing.T) {
+	out, code := runRoot(t, "litellm", "--help")
+	if code != 0 {
+		t.Fatalf("exit %d, output %q; want 0", code, out)
+	}
+	for _, sub := range []string{"status", "set"} {
+		if !regexp.MustCompile(`(?m)^\s+` + sub + `\s`).MatchString(out) {
+			t.Errorf("help has no %q line:\n%s", sub, out)
+		}
+	}
+	if m := regexp.MustCompile(`(?m)^\s+(sync|list|providers|restart|expose|unexpose|on|off)\s`).FindString(out); m != "" {
+		t.Errorf("help lists a moved or removed command %q:\n%s", m, out)
 	}
 }
 
@@ -550,7 +462,7 @@ func TestLitellmOnOffAreRetired(t *testing.T) {
 			}
 		})
 	}
-	c := litellmCmd(&app{})
+	c := litellmCmd()
 	for _, sub := range c.Commands() {
 		if sub.Name() != "on" && sub.Name() != "off" {
 			continue

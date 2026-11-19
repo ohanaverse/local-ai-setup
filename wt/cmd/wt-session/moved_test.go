@@ -49,6 +49,7 @@ var wantMoved = []movedCommand{
 	{"litellm list", "litellm list"},
 	{"litellm providers", "litellm providers"},
 	{"litellm sync", "litellm sync"},
+	{"litellm restart", "litellm restart"},
 }
 
 // explicitMoves are argument rows written out by hand (not derived from
@@ -73,6 +74,9 @@ var explicitMoves = []struct {
 	// `wt litellm sync --dry-run --json` gets the pointer, not a plan.
 	{[]string{"litellm", "sync"}, "litellm sync", "litellm sync"},
 	{[]string{"litellm", "sync", "--dry-run", "--json"}, "litellm sync", "litellm sync"},
+	// An old bin/update/litellm runs a bare `wt litellm restart`: it must
+	// fail with the pointer, never restart the proxy from a session.
+	{[]string{"litellm", "restart"}, "litellm restart", "litellm restart"},
 }
 
 // TestMovedCommandsPointAtWtModel is the one table test of every moved-command

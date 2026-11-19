@@ -1,9 +1,9 @@
 // `wt-model litellm` — the route commands moved from `wt litellm` in phase 4
-// stage 2 (sync, list, providers), beside the set|status twins of `wt
+// stage 2 (sync, list, providers, restart), beside the set|status twins of `wt
 // litellm`'s proxy pair commands. sync reads the registry through the host
 // and writes config.yaml (litellm.RunSync, the one route sync); list and
 // providers read only LiteLLM's config.yaml and the provider policy table,
-// never the registry. The pair wt-model's gateway
+// never the registry; restart reads only the proxy pair. The pair wt-model's gateway
 // forwards to LiteLLM with lives in the wt-model config home: `set` is its one
 // writer (config.SetProxy) and `status` resolves it home-first against the
 // legacy [litellm] fallback (config.ResolveProxy). Command definitions are
@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
@@ -25,7 +26,8 @@ import (
 )
 
 // litellmCmd is `wt-model litellm`: sync and list the routes, list the
-// mapped providers, and set and show the LiteLLM proxy url and key. h is the
+// mapped providers, restart the proxy, and set and show the LiteLLM proxy
+// url and key. h is the
 // host config sync reads the registry through.
 func litellmCmd(h *host) *cobra.Command {
 	c := &cobra.Command{
@@ -168,8 +170,58 @@ Exit codes:
 		},
 	}
 	provC.Flags().BoolVar(&provJSON, "json", false, "print one JSON document (docs/contracts/litellm-cli.sample.json)")
-	c.AddCommand(statusC, setC, syncC, listC, provC)
+	restartC := &cobra.Command{
+		Use:   "restart",
+		Short: "Restart the LiteLLM proxy, letting a request in flight finish, and wait for it to answer",
+		Long: `Restart the LiteLLM proxy the way ` + "`wt-model litellm sync`" + ` does after a route
+change.
+
+With WT_LITELLM_RESTART_CMD set, that command is run as given. Otherwise
+wt-model sends the proxy's process one SIGTERM, waits up to 3 minutes for a
+request in flight to finish, and has launchd start it again; ` + "`launchctl\nkickstart -k`" + ` would kill that request after 5 seconds. It then waits up to
+30 seconds for the proxy at the pair's url to answer (the wt-model home,
+else the legacy [litellm] table; with no url it is not waited for). It reads
+no registry. bin/update/litellm runs it after an upgrade.
+
+Exit codes:
+  0  restarted
+  1  the pair could not be read, the restart failed, or the proxy did not
+     answer again`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		// No host config and no registry read: the restart needs only the
+		// proxy pair, so a broken registry cannot stop the updater's restart.
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			pair, err := config.ResolveProxy()
+			return runLitellmRestart(cmd.OutOrStdout(), pair, err)
+		},
+	}
+	c.AddCommand(statusC, setC, syncC, listC, provC, restartC)
 	return c
+}
+
+// runLitellmRestart is `wt-model litellm restart`: litellm.RestartAndAwait
+// on the pair's url, waiting for the proxy to answer even if it was down
+// before. A pair that could not be resolved (pairErr) refuses before
+// anything restarts: a restart that skipped its wait as "no url" would hide
+// the broken pair. Its notices (a request in flight being waited for, or cut
+// off at the bound) go to os.Stderr as they happen (litellm.RestartNotice's
+// default); any warning it returns is the command's error, so a script that
+// restarts the proxy learns it failed.
+func runLitellmRestart(out io.Writer, pair config.ProxyPair, pairErr error) error {
+	if pairErr != nil {
+		return config.ConfigError(pairErr)
+	}
+	url := strings.TrimRight(pair.URL, "/")
+	if warnings := litellm.RestartAndAwait(url); len(warnings) > 0 {
+		return fmt.Errorf("LiteLLM proxy restart: %s", strings.Join(warnings, "; "))
+	}
+	if url == "" {
+		fmt.Fprintln(out, "restarted the LiteLLM proxy (no [litellm] url, so it was not waited for)")
+		return nil
+	}
+	fmt.Fprintf(out, "restarted the LiteLLM proxy at %s\n", config.ShownProxyURL(url))
+	return nil
 }
 
 // runLitellmSync is `wt-model litellm sync`: the one route sync

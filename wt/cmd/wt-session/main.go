@@ -637,7 +637,7 @@ func rootCmdWith(h hooks) *cobra.Command {
 	cmd.Flags().Bool("check-guard", false, "Check if the main guard is installed and exit")
 	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
-	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), litellmCmd(a), profileCmd(a), modelCmd(a), worktreesCmd(a), removeCmd(a), rescueCmd(a), restoreRootCmd(a), jobCmd(a))
+	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), litellmCmd(), profileCmd(a), modelCmd(a), worktreesCmd(a), removeCmd(a), rescueCmd(a), restoreRootCmd(a), jobCmd(a))
 	addMovedStubs(cmd, movedCommands)
 	silenceUsageOnError(cmd)
 	return cmd

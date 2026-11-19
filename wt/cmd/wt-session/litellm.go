@@ -1,17 +1,16 @@
-// wt litellm — the primitives that manage LiteLLM's config.yaml and the proxy.
-// wt owns this since the 2026-09-21 ownership move: nothing else writes
-// config.yaml (see docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md).
+// wt litellm — the proxy pair commands (status, set) and the hidden stubs of
+// retired and removed subcommands. The route commands (sync, list,
+// providers) and the proxy restart moved to `wt-model litellm` in phase 4
+// stage 2; their wt names are pointer stubs (moved.go).
 package main
 
 import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/spf13/cobra"
 )
 
@@ -34,10 +33,14 @@ func runLitellmSet(out io.Writer, url, key *string) error {
 	return nil
 }
 
-func litellmCmd(a *app) *cobra.Command {
+// litellmCmd is `wt litellm`: the proxy pair's status and set. The route
+// commands and the proxy restart moved to `wt-model litellm` (their wt names
+// are hidden pointers the root adds); no subcommand here reads the host
+// config.
+func litellmCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "litellm",
-		Short: "Manage LiteLLM routes for registry models, and the proxy url and key",
+		Short: "Show and set the LiteLLM proxy url and key",
 	}
 	// status and set carry no config gate (ruling 8): they reach only the
 	// proxy pair — the wt-model home and its legacy fallback — so a broken
@@ -71,26 +74,8 @@ func litellmCmd(a *app) *cobra.Command {
 	}
 	setC.Flags().StringVar(&setURL, "url", "", "LiteLLM proxy base URL")
 	setC.Flags().StringVar(&setKey, "api-key", "", "LiteLLM proxy API key")
-	restartC := &cobra.Command{
-		Use:   "restart",
-		Short: "Restart the LiteLLM proxy, letting a request in flight finish, and wait for it to answer",
-		Long: "Restart the LiteLLM proxy the way `wt-model litellm sync` does after a route change.\n\n" +
-			"With WT_LITELLM_RESTART_CMD set, that command is run as given. Otherwise wt sends the\n" +
-			"proxy's process one SIGTERM, waits up to 3 minutes for a request in flight to finish,\n" +
-			"and has launchd start it again; `launchctl kickstart -k` would kill that request after\n" +
-			"5 seconds. It then waits up to 30 seconds for the proxy at the [litellm] url to answer.\n" +
-			"A restart that fails, or a proxy that does not answer again, exits 1.",
-		Args: cobra.NoArgs, SilenceUsage: true,
-		// No config gate: the restart reads only the [litellm] url, and a
-		// config.toml that does not load leaves it empty, so the restart is
-		// made and not waited for.
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, _ := a.hostConfig()
-			return runLitellmRestart(cmd.OutOrStdout(), cfg)
-		},
-	}
 	c.AddCommand(
-		statusC, setC, restartC,
+		statusC, setC,
 		removedLitellmCmd("expose"), removedLitellmCmd("unexpose"),
 		retiredLitellmToggleCmd("on"), retiredLitellmToggleCmd("off"),
 	)
@@ -137,30 +122,4 @@ func removedLitellmCmd(name string) *cobra.Command {
 			return fmt.Errorf("`wt litellm %s` was removed (#179): configured cloud models and running (or pulled ollama) local models are routed automatically — run `wt-model litellm sync`", name)
 		},
 	}
-}
-
-// runLitellmRestart is `wt litellm restart`: litellm.RestartAndAwait on the
-// [litellm] url, waiting for the proxy to answer even if it was down before. Its notices (a request in flight being waited for, or cut
-// off at the bound) go to os.Stderr as they happen (litellm.RestartNotice's
-// default); any warning it returns is the command's error, so a script that
-// restarts the proxy learns it failed.
-func runLitellmRestart(out io.Writer, cfg *config.Config) error {
-	url := ""
-	if cfg != nil {
-		// A pair the load could not resolve would make the restart skip
-		// its readiness wait as "no url": say why instead.
-		if perr := cfg.ProxyErr(); perr != nil {
-			return config.ConfigError(perr)
-		}
-		url = cfg.LitellmBaseURL()
-	}
-	if warnings := litellm.RestartAndAwait(url); len(warnings) > 0 {
-		return fmt.Errorf("LiteLLM proxy restart: %s", strings.Join(warnings, "; "))
-	}
-	if url == "" {
-		fmt.Fprintln(out, "restarted the LiteLLM proxy (no [litellm] url, so it was not waited for)")
-		return nil
-	}
-	fmt.Fprintf(out, "restarted the LiteLLM proxy at %s\n", config.ShownProxyURL(url))
-	return nil
 }
