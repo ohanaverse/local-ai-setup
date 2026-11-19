@@ -16,7 +16,7 @@
 // page arrives as text, a fetch as a function the caller passes, the time as
 // an argument. The two Apply methods change a config.RegistryDoc and nothing
 // else, so they are safe inside config.UpdateRegistry, which may run them
-// more than once. cmd/wt-session/cloudsync.go owns the fetches, the ollama CLI, the
+// more than once. cmd/wt-model/cloudsync.go owns the fetches, the ollama CLI, the
 // confirmation and the exit codes.
 //
 // ParsePricing is the only code that knows the pricing page's HTML shape:

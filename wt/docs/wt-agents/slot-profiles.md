@@ -178,7 +178,7 @@ Resolved reasons (against the model server's catalog):
 
 | Reason | Cause |
 |---|---|
-| `slot haiku: <id> is not in the model server's catalog` | The id is not a model the server lists. This is what a profile shows after `wt cloud-sync` or `wt-model model rm` removed a model it names |
+| `slot haiku: <id> is not in the model server's catalog` | The id is not a model the server lists. This is what a profile shows after `wt-model cloud-sync` or `wt-model model rm` removed a model it names |
 | `slot opus: <id> is a native model, which has no gateway route` | A slot cannot use the native Anthropic subscription (the gateway's origin and token never reach a native model) |
 | `slot opus: ` and the server's own block reason | The server blocks that model (no LiteLLM mapping, not on disk, no engine to start it, …) |
 | `slots name two local models (<id> and <id>); a slot profile may name one` | More than one distinct local model |

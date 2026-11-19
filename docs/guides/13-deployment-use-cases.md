@@ -79,7 +79,7 @@ url = "http://<host>:8787"
 token_file = "~/.config/agent-wt/remote-model-server.token"
 ```
 
-The host keeps its own `[model-server]` (use case 1) or none: a host command (`wt-model model add`, `wt cloud-sync`, `wt litellm …`, `wt-model litellm set|status`) needs no server.
+The host keeps its own `[model-server]` (use case 1) or none: a host command (`wt-model model add`, `wt-model cloud-sync`, `wt litellm …`, `wt-model litellm set|status`) needs no server.
 
 ### 4. Use case 3 — two machines
 
@@ -121,7 +121,7 @@ A session with no `[model-server]` that asks for a model (`-M`, `-T`, `-F`, `wt 
 
 - **A session never starts a server and never guesses an address.** Each layout above runs `wt-model serve` yourself (or, on the same machine, `local` mode in `wt-model setup` sets up a LaunchAgent that does); with none configured, a `wt` that needs a model (`-M`, `-T`, `-F`, `wt start`, `wt smoke`, …) refuses (exit 1) instead of falling back to a local server. A plain `wt -A <agent>` launches the agent natively, with its own configuration and one `wt:` line saying so, only in native mode (`mode = "native"` under `[model-server]`, or `WT_MODEL_MODE=native`), never with no mode chosen and never when a server is half-configured (`wt/docs/wt-session.md`, "Native launch").
 - **`wt-model serve` is a foreground process.** Start it in a terminal, under `nohup`, or from your own LaunchAgent — running it at boot is an optional recipe, not something wt builds.
-- **Host commands run on the host.** `wt-model model add|edit|rm|init`, `wt cloud-sync` and `wt litellm …` read and write `registry.toml` and `config.yaml` on the machine they run on, never the server's ([08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §6).
+- **Host commands run on the host.** `wt-model model add|edit|rm|init`, `wt-model cloud-sync` and `wt litellm …` read and write `registry.toml` and `config.yaml` on the machine they run on, never the server's ([08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §6).
 
 ## Going deeper
 
