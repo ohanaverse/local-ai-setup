@@ -9,7 +9,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
-// dupLocalConfig is a registry Config.Validate refuses and `wt litellm sync`
+// dupLocalConfig is a registry Config.Validate refuses and `wt-model litellm sync`
 // still runs on: the id "dup/q" is on two rows, the first under ollama and
 // the second under mtplx. A route's name is the model id, so the two rows can
 // only ever share one route.

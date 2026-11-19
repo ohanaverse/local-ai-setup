@@ -129,7 +129,7 @@ type Outcome struct {
 }
 
 // ActionAPIBaseSet is the Outcome action for a row File.EnsureOllamaAPIBase
-// repaired (#202). It is part of `wt litellm sync --json`'s contract.
+// repaired (#202). It is part of `wt-model litellm sync --json`'s contract.
 const ActionAPIBaseSet = "api_base set"
 
 // Result reports a batch: per-id outcomes, whether config.yaml was written,
@@ -486,7 +486,7 @@ func applyTo(f *File, add []plannedAdd, remove []plannedRemove, ollamaBase strin
 		// names every registry local model of the family, routed or not;
 		// recording each as "unrouted" made the Result claim routes were
 		// removed that never existed (#195). Sync's removals come from the
-		// rows themselves, so its report — what `wt litellm sync` prints —
+		// rows themselves, so its report — what `wt-model litellm sync` prints —
 		// never held one.
 		if removed {
 			out = append(out, Outcome{ID: r.id, Action: "unrouted"})
@@ -991,7 +991,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 }
 
 // Providers maps each LiteLLM-mapped provider id to whether it is a cloud
-// provider. `wt litellm providers` prints this, so a reader of the policy
+// provider. `wt-model litellm providers` prints this, so a reader of the policy
 // table needs no copy of its own.
 func Providers() map[string]bool {
 	policies := provider.Policies()

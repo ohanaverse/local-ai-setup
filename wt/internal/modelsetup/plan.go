@@ -213,11 +213,11 @@ func BuildPlan(st State, want Desired) (Plan, error) {
 
 // restartNote says, once, that a step that restarts or unloads a running job
 // ends its requests in flight at once (launchctl kickstart -k, bootout):
-// unlike `wt litellm restart`, nothing waits for them to finish.
+// unlike `wt-model litellm restart`, nothing waits for them to finish.
 func (p *Plan) restartNote() {
 	for _, s := range p.Steps {
 		if s.Kind == StepKickstart || s.Kind == StepKickstartLiteLLM || s.Kind == StepBootout {
-			p.Notes = append(p.Notes, "a restart or unload here (launchctl kickstart -k, bootout) ends the requests in flight at once; unlike `wt litellm restart`, nothing waits for them to finish")
+			p.Notes = append(p.Notes, "a restart or unload here (launchctl kickstart -k, bootout) ends the requests in flight at once; unlike `wt-model litellm restart`, nothing waits for them to finish")
 			return
 		}
 	}

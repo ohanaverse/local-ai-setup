@@ -12,4 +12,4 @@ left alone and notes:
   - keep [model-server] in /Users/user_name/.config/agent-wt/config.toml (already mode = "local")
   - anything else that holds the old master key stops working once LiteLLM restarts: other clients and scripts that send it, a [litellm] api_key in /Users/user_name/.config/agent-wt/config.toml if one is set there, and copies of the plist (the backup keeps the old key; remove it once the new key works)
   - never changed in /Users/user_name/Library/LaunchAgents/local.litellm.proxy.plist: LITELLM_SALT_KEY, DATABASE_URL, provider keys and the UI login
-  - a restart or unload here (launchctl kickstart -k, bootout) ends the requests in flight at once; unlike `wt litellm restart`, nothing waits for them to finish
+  - a restart or unload here (launchctl kickstart -k, bootout) ends the requests in flight at once; unlike `wt-model litellm restart`, nothing waits for them to finish

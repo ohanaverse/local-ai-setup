@@ -161,7 +161,7 @@ func (e ambiguousModelErr) Is(target error) bool { return target == ErrModelAmbi
 // each row's provider_id in file order: `model "x" is in the registry twice
 // (providers ollama, omlx)`. A row with no provider_id is "(none)". It is the
 // one wording for a duplicated id, shared by the writer's refusal
-// (ErrModelAmbiguous) and `wt litellm sync`'s warning, which each add what
+// (ErrModelAmbiguous) and `wt-model litellm sync`'s warning, which each add what
 // they do about it.
 func DuplicatedModelText(id string, providers []string) string {
 	named := make([]string, len(providers))

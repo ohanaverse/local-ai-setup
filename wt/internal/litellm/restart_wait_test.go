@@ -61,7 +61,7 @@ var (
 	waitStep  = "wait " + testProxyURL + " " + ProxyReadyTimeout.String()
 )
 
-// TestSyncWaitsForAListeningProxy pins #382: `wt litellm sync` (and every
+// TestSyncWaitsForAListeningProxy pins #382: `wt-model litellm sync` (and every
 // command that runs it after a registry write) restarts the proxy and used to
 // return as soon as the restart command did, while the proxy refused
 // connections for seconds more — an agent launched right after met a proxy
@@ -186,7 +186,7 @@ func TestSyncOptionsRestartReplacesTheWait(t *testing.T) {
 }
 
 // TestSyncDefaultRestartStillGivesTheDrainNotice pins that waiting for the
-// proxy did not cost `wt litellm sync` the line #381 added: with the default
+// proxy did not cost `wt-model litellm sync` the line #381 added: with the default
 // restart (no override), a proxy still finishing a request in flight is
 // reported on stderr while the sync waits for it, and the readiness wait
 // follows the restart.

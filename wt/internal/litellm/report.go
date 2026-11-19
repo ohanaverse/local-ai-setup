@@ -142,7 +142,7 @@ func RunSync(out, errOut io.Writer, cfg *config.Config, probe Probe, asJSON, dry
 }
 
 // SyncAfterWrite reloads the config (the registry just changed) and
-// reconciles the routes exactly as `wt litellm sync` does. It never fails the
+// reconciles the routes exactly as `wt-model litellm sync` does. It never fails the
 // command that wrote the registry: the write succeeded, and a sync that could
 // not run is a warning. No LiteLLM setup at all (no config.yaml) is not even
 // that. A redirected registry with no WT_LITELLM_CONFIG is refused by the

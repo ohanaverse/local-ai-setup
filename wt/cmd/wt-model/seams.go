@@ -103,7 +103,7 @@ func (h *host) realConfirmRemove(question string) (bool, error) {
 }
 
 // realSyncRoutesAfterWrite reloads the config (the registry just changed) and
-// reconciles the routes exactly as `wt litellm sync` does
+// reconciles the routes exactly as `wt-model litellm sync` does
 // (litellm.SyncAfterWrite, with the host's probeInventory seam).
 func (h *host) realSyncRoutesAfterWrite(out, errOut io.Writer) string {
 	return litellm.SyncAfterWrite(out, errOut, h.probeInventory)

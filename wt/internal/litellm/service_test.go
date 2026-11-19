@@ -761,7 +761,7 @@ func TestSyncRemovesLegacyUnmarkedLocalRoute(t *testing.T) {
 // produce one removal, not two. RemoveRow drops every duplicate, so the FILE is
 // right either way, but the plan and the outcomes are built from the raw rows:
 // the same removal was announced twice, in both the text and the JSON output of
-// `wt litellm sync`, and plan.Remove handed a duplicate id to any caller of the
+// `wt-model litellm sync`, and plan.Remove handed a duplicate id to any caller of the
 // exported PlanSync. Duplicate rows are exactly what a hand-edited config.yaml
 // grows, and a report that names the same route twice reads as two stale routes.
 func TestSyncDeduplicatesRepeatedStaleRow(t *testing.T) {
@@ -914,7 +914,7 @@ func TestPlanSyncWritesNothing(t *testing.T) {
 
 // TestPlanSyncRejectsNonSequenceModelList pins that a dry run refuses the same
 // config.yaml the real sync refuses: PlanSync returns (and errors.Is sees)
-// ErrInvalid, so `wt litellm sync --dry-run` cannot report a plan for a file
+// ErrInvalid, so `wt-model litellm sync --dry-run` cannot report a plan for a file
 // the real sync would not touch. Without it a user previews work that then
 // fails — or worse, trusts a preview that never happens.
 func TestPlanSyncRejectsNonSequenceModelList(t *testing.T) {

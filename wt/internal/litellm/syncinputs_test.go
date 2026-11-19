@@ -98,7 +98,7 @@ func TestDesiredLocalIDsPulledNeedsTrustedProbe(t *testing.T) {
 	}
 }
 
-// TestSyncRoutesMlxLMServerByProbe pins that `wt litellm sync` owns the
+// TestSyncRoutesMlxLMServerByProbe pins that `wt-model litellm sync` owns the
 // mlx_lm_server route lifecycle (#179): wt has no start backend for it
 // (`llmbench provider isolate` starts a pairing) and nothing else writes its
 // route, so sync is the only route write.

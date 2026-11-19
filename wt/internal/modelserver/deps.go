@@ -166,9 +166,9 @@ func (w routeWaiter) wait(ctx context.Context, id string) error {
 		case <-deadline.C:
 			tick.Stop()
 			if err != nil {
-				return fmt.Errorf("%s is not listed by the gateway after %s (last check: %w); check that the LiteLLM proxy answers, or run 'wt litellm restart'", id, w.timeout, err)
+				return fmt.Errorf("%s is not listed by the gateway after %s (last check: %w); check that the LiteLLM proxy answers, or run 'wt-model litellm restart'", id, w.timeout, err)
 			}
-			return fmt.Errorf("%s is not listed by the gateway after %s; check the LiteLLM routes with 'wt litellm list'", id, w.timeout)
+			return fmt.Errorf("%s is not listed by the gateway after %s; check the LiteLLM routes with 'wt-model litellm list'", id, w.timeout)
 		case <-tick.C:
 		}
 	}
