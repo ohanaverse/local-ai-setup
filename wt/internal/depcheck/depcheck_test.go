@@ -54,12 +54,12 @@ var sessionLibraries = []string{
 	"internal/smoke", "internal/profiles", "internal/catalog",
 	"internal/survey", "internal/tui", "internal/urlrule",
 	"internal/modelping", "internal/modelmode", "internal/editorkit",
-	"internal/modeview", "internal/sessioneditor",
+	"internal/modeview", "internal/sessioneditor", "internal/cli",
 }
 
 // modeLeaves are the session-safe leaves cmd/wt-model will link through
 // internal/modelsetup; none may link internal/modelclient (sessionBanned).
-var modeLeaves = []string{"internal/urlrule", "internal/modelping", "internal/modelmode", "internal/editorkit", "internal/modeview"}
+var modeLeaves = []string{"internal/urlrule", "internal/modelping", "internal/modelmode", "internal/editorkit", "internal/modeview", "internal/cli"}
 
 // listError words a `go list` failure with the command's stderr, so a broken
 // package is named instead of a bare "exit status 1".
