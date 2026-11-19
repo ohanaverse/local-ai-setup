@@ -1,0 +1,81 @@
+#!/bin/bash
+# pre-pr — the whole of what CI used to check, run locally in a CI-like environment.
+#
+# GitHub CI is disabled; this is the gate to run before pushing a PR. It runs
+# `make test-all` (root lint, llmbench, modeltiers, wt build/vet/tests and the
+# GOMAXPROCS=1 pass), `wt`'s own `make check` (format and shell lint), and then
+# bin/check-config-dirs-untouched.
+#
+# The last check only means something on a machine that never ran wt or
+# llmbench, which a developer machine is not. So everything runs with HOME
+# pointing at a fresh empty directory (and XDG_CONFIG_HOME unset), as on a CI
+# runner: a test that reads or writes the real config home, or leans on a
+# ~/.gitconfig, a ~/.config/litellm file or a mise setting, fails here the way
+# it would have there. Tool locations and caches are resolved from the real
+# HOME first, so the scratch HOME costs nothing but the first-use setup.
+#
+# Usage:
+#   pre-pr            # everything
+#   pre-pr --keep     # keep the scratch HOME afterwards (printed at the end)
+#
+# Exit 0 all green, 1 a step failed (its name is printed), 2 a needed tool is missing.
+
+keep=0
+case "${1:-}" in
+    "") ;;
+    --keep) keep=1 ;;
+    *) echo "usage: pre-pr [--keep]" >&2; exit 2 ;;
+esac
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+
+# Resolve everything that lives under the real HOME before swapping it.
+for tool in go uv make git; do
+    command -v "$tool" > /dev/null 2>&1 || { echo "pre-pr: $tool not on PATH" >&2; exit 2; }
+done
+real_path=$PATH
+for tool in go uv; do
+    real_path="$(dirname "$(command -v "$tool")"):$real_path"
+done
+go_cache=$(go env GOCACHE)
+go_path=$(go env GOPATH)
+go_mod_cache=$(go env GOMODCACHE)
+go_toolchain=$(go env GOTOOLCHAIN)
+uv_cache=$(uv cache dir)
+
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/pre-pr-home.XXXXXX") || exit 1
+cleanup() {
+    if [ "$keep" = 1 ]; then
+        echo "pre-pr: scratch HOME kept at $scratch"
+    else
+        # The Go module cache is read-only by design.
+        chmod -R u+w "$scratch" 2> /dev/null
+        rm -rf "$scratch"
+    fi
+}
+trap cleanup EXIT
+
+export HOME=$scratch
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME
+export PATH=$real_path
+export GOCACHE=$go_cache GOPATH=$go_path GOMODCACHE=$go_mod_cache GOTOOLCHAIN=$go_toolchain
+export UV_CACHE_DIR=$uv_cache
+# CI's runner has no user identity either; tests must not depend on one.
+export GIT_CONFIG_NOSYSTEM=1
+
+cd "$root" || exit 1
+
+step() {
+    local name=$1
+    shift
+    echo "==> pre-pr: $name"
+    if ! "$@"; then
+        echo "pre-pr: FAILED at: $name" >&2
+        exit 1
+    fi
+}
+
+step "make test-all (lint, llmbench, modeltiers, wt build+vet+test, single-P)" make test-all
+step "wt make check (format and shell lint)" make -C wt check
+step "tests left the real config directories alone" bin/check-config-dirs-untouched
+echo "pre-pr: all green"
