@@ -26,6 +26,7 @@ var sessionBanned = []string{
 	"internal/tui", "internal/configeditor", "internal/cleanup",
 	"internal/agents", "internal/rotation", "internal/rescue",
 	"internal/rootmove", "internal/removal", "internal/modelclient",
+	"internal/sessioneditor",
 }
 
 // adminScreensBanned is what every package in adminScreens (the editors,
@@ -35,9 +36,9 @@ var sessionBanned = []string{
 // internal/tuilayout, never through each other.
 var adminScreensBanned = []string{"internal/tui"}
 
-// adminScreens are the editors and the UI leaf they share; each must stay off
-// adminScreensBanned.
-var adminScreens = []string{"internal/configeditor", "internal/modeleditor", "internal/editorkit"}
+// adminScreens are the editors (the session editor `wt config` included) and
+// the UI leaf they share; each must stay off adminScreensBanned.
+var adminScreens = []string{"internal/configeditor", "internal/modeleditor", "internal/editorkit", "internal/sessioneditor"}
 
 // allowList names, per session library package, the banned packages it still
 // links. It only shrinks: TestSessionLibrariesStayOffTheAdminPackages fails
@@ -52,7 +53,7 @@ var sessionLibraries = []string{
 	"internal/smoke", "internal/profiles", "internal/catalog",
 	"internal/survey", "internal/tui", "internal/urlrule",
 	"internal/modelping", "internal/modelmode", "internal/editorkit",
-	"internal/modeview",
+	"internal/modeview", "internal/sessioneditor",
 }
 
 // modeLeaves are the session-safe leaves cmd/wt-model will link through
