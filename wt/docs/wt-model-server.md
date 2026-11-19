@@ -8,7 +8,8 @@ somewhere else needs no registry of its own. It has `wt-model serve`,
 forwards with ([Proxy url and key](#proxy-url-and-key)), `wt-model setup`,
 the Setup tab ([below](#wt-model-setup)), and `wt-model model`, the Models
 tab ([below](#wt-model-model)). (This page is the server.
-`wt model …`, with a space, is the registry command group:
+`wt-model model …` is the registry command group, and `wt model …` in wt
+only points there (`wt model list --server` aside):
 [wt-model.md](wt-model.md).)
 
 ```bash
@@ -406,7 +407,7 @@ shutdown kills it.
   opens every inference path and every model LiteLLM routes. The gateway does
   not tell clients apart or limit which models a client may call.
 - **The client uses no environment proxy.** The control and gateway calls ignore `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so the bearer token and the prompts go straight to the `[model-server]` url and never to a third party. A session machine that can reach the server only through a proxy cannot use it.
-- Config is read per request, job and scan, so `wt model …` and `wt cloud-sync`
+- Config is read per request, job and scan, so `wt-model model …` and `wt cloud-sync`
   edits show without a restart.
 
 ## Wire contract

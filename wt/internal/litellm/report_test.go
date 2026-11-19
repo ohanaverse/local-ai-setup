@@ -31,7 +31,7 @@ func TestSyncAndWarnPrintsTheSyncLinesThenEveryWarning(t *testing.T) {
 
 // TestSyncAfterWriteSkipsAMachineWithoutLiteLLM checks that SyncAfterWrite
 // returns "" and never probes providers when config.yaml is absent, so
-// `wt model` writes on a machine without LiteLLM neither warn nor probe.
+// `wt-model model` writes on a machine without LiteLLM neither warn nor probe.
 func TestSyncAfterWriteSkipsAMachineWithoutLiteLLM(t *testing.T) {
 	t.Setenv("WT_LITELLM_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
 	probed := false

@@ -104,7 +104,7 @@ Beyond launching, `wt` has subcommands; `wt --help` lists them. Each has a refer
 | `wt start`, `wt stop`, `wt served`, `wt warm` | Start and stop local models | [docs/wt-start-stop.md](docs/wt-start-stop.md) |
 | `wt job` | Show or cancel a model server job | [docs/wt-job.md](docs/wt-job.md) |
 | `wt smoke` | One-shot prompt through every agent eligible for a model | [docs/wt-smoke.md](docs/wt-smoke.md) |
-| `wt model …`, `wt-model model`, `wt config` | Registry and preferences | [docs/wt-model.md](docs/wt-model.md), [docs/wt-config.md](docs/wt-config.md) |
+| `wt-model model …`, `wt model list --server`, `wt config` | Registry and preferences | [docs/wt-model.md](docs/wt-model.md), [docs/wt-config.md](docs/wt-config.md) |
 | `wt-model serve` | The model server: a control API and a gateway for agent sessions on other machines | [docs/wt-model-server.md](docs/wt-model-server.md) |
 | `wt stats` | Launches and LiteLLM spend per model | [docs/wt-stats.md](docs/wt-stats.md) |
 | `wt cloud-sync` | Refresh cloud prices and the ollama catalog | [docs/wt-cloud-sync.md](docs/wt-cloud-sync.md) |

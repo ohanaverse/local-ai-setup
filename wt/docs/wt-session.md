@@ -284,8 +284,9 @@ setup` do, on your confirmation.
 
 ## Interim limits
 
-- **Host commands still run here.** Until the admin commands move to
-  `wt-model` (Phase 4), this binary still runs the host commands above,
+- **Host commands still run here.** The model registry commands moved to
+  `wt-model model …`; until the other admin commands move to `wt-model`
+  (Phase 4), this binary still runs the rest of the host commands above,
   reading and writing `registry.toml` and `config.yaml` on whatever machine
   runs them, and the proxy url and key live in the `wt-model` config home of
   whichever machine runs them (above; the `[litellm]` table of `config.toml`

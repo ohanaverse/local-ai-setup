@@ -104,12 +104,12 @@ cannot be read at all stops it.
 
 ### `wt model list --server [--json]`
 
-With `--server`, `wt-model model list` reads the model server's catalog
+With `--server`, `wt model list` (in wt, on a session machine) reads the model server's catalog
 (`[model-server]` in `config.toml`, or `WT_MODEL_URL`) instead of the
 registry: the models a client session can launch or start, in the server's
 order, with their state. Nothing is read from the registry and no provider is
-probed. Without `--server` the command is the host registry's listing above,
-with or without an endpoint configured.
+probed. Without `--server`, `wt model list` only points at `wt-model model
+list` (exit 1).
 
 | Column | Values |
 |---|---|
