@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modeview"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -480,7 +481,7 @@ func serverResultText(res modelsetup.Result, progress []string) string {
 		var wait *modelsetup.WaitError
 		switch {
 		case errors.As(res.Err, &wait):
-			line += ": wt-model did not answer at " + editorkit.Scrub(wait.URL) + " (" + serverKindWord(wait.Kind) + "); see " + wait.Log
+			line += ": wt-model did not answer at " + editorkit.Scrub(wait.URL) + " (" + modeview.KindWord(wait.Kind) + "); see " + wait.Log
 		case res.Err != nil:
 			line += ": " + editorkit.Scrub(res.Err.Error())
 		}
