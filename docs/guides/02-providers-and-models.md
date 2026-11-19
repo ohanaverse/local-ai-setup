@@ -1,6 +1,6 @@
-# Providers and models — wt model, registry.toml, and LiteLLM routing
+# Providers and models — the wt model commands, wt-model model, registry.toml, and LiteLLM routing
 
-> Use this to: register cloud providers and local models in the shared `registry.toml` — with `wt model add`, `edit` and `rm`, or the Models tab of `wt config` — and download them with each provider's own tool. Routing through the LiteLLM proxy on :4000 follows on its own: **add a cloud model and it is routed**, and a local model is routed while it runs (an ollama model while it is pulled) — with or without a registry entry.
+> Use this to: register cloud providers and local models in the shared `registry.toml` — with `wt model add`, `edit` and `rm`, or the Models tab of `wt-model model` — and download them with each provider's own tool. Routing through the LiteLLM proxy on :4000 follows on its own: **add a cloud model and it is routed**, and a local model is routed while it runs (an ollama model while it is pulled) — with or without a registry entry.
 >
 > Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live; the Sushi block in Step 4 is written from the code and wt's docs, and the Sushi install and pull were run once on this machine while it was built, not for this guide)
 
@@ -21,11 +21,11 @@ LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`WT_LITELLM
 
 ## TL;DR
 
-<!-- UNVERIFIED — not run as one block. The `start`/`stop` lines were not driven from this session (they load real models — see Step 6 and Verification for how to confirm). The `wt model` lines were run against a scratch registry, the tab from a pty. -->
+<!-- UNVERIFIED — not run as one block. The `start`/`stop` lines were not driven from this session (they load real models — see Step 6 and Verification for how to confirm). The `wt model …` lines were run against a scratch registry, the tab from a pty. -->
 
 ```bash
 wt model init                                  # create registry.toml if it is missing, add the default provider rows (never changes a row that exists)
-wt model                                       # the Models tab of `wt config`: n add, enter edit, d remove (Step 1)
+wt-model model                                 # the Models tab (on the host): n add, enter edit, d remove (Step 1)
 wt model add openrouter <model> --family <f>   # the same without a terminal; also `wt model edit <id> …`, `wt model rm <id>`
 wt model list                                  # every registry model, and every local model found that has no entry
 wt litellm sync --dry-run                      # read-only: what wt would route/unroute for the registry as edited
@@ -37,17 +37,17 @@ wt start ollama/gpt-oss:20b                    # load it; the start writes its L
 wt stop ollama/gpt-oss:20b                     # unload it (a pulled ollama model stays routed; on mtplx the route goes with it; on omlx only that model is unloaded and unrouted)
 ```
 
-Who does what now (verified via `wt --help`): **wt** = `wt model` (the Models tab of `wt config`) and `wt model add|edit|rm|list` (models: add, edit, remove, list), `wt model init` (the file and its provider rows), `wt cloud-sync` (OpenRouter prices, and ollama's cloud models with their prices), `wt litellm …` (routes), `wt start`/`wt stop` (local models), `wt served <provider>` (what a server is serving). **The provider's own tool** = downloads (Step 5). **llmbench** = benchmarks. **By hand** = a provider row wt has no default for, a `local_path` entry for a single model ([10-mlx-lm-quantization](10-mlx-lm-quantization.md)), `[[families]]` display names, and the repair of a row wt refuses to write (Step 1). There is no per-model routing command: `wt` routes the cloud models `registry.toml` configures plus the local models it finds running (Step 6).
+Who does what now (verified via `wt --help`): **wt** = `wt-model model` (the Models tab; bare `wt model` only points there) and `wt model add|edit|rm|list` (models: add, edit, remove, list), `wt model init` (the file and its provider rows), `wt cloud-sync` (OpenRouter prices, and ollama's cloud models with their prices), `wt litellm …` (routes), `wt start`/`wt stop` (local models), `wt served <provider>` (what a server is serving). **The provider's own tool** = downloads (Step 5). **llmbench** = benchmarks. **By hand** = a provider row wt has no default for, a `local_path` entry for a single model ([10-mlx-lm-quantization](10-mlx-lm-quantization.md)), `[[families]]` display names, and the repair of a row wt refuses to write (Step 1). There is no per-model routing command: `wt` routes the cloud models `registry.toml` configures plus the local models it finds running (Step 6).
 
 ## Steps
 
-### 1. Add, edit and remove models with `wt model`
+### 1. Add, edit and remove models with `wt model add|edit|rm` or `wt-model model`
 
 A model is added, edited and removed with wt, two ways that write the same rows:
 
 ```bash
 wt model init                    # 1. the file and its provider rows (once)
-wt model                         # 2a. the Models tab of `wt config`: n add, enter edit, d remove
+wt-model model                   # 2a. the Models tab (on the host): n add, enter edit, d remove
 wt model add ollama qwen3:8b --family qwen3 --tags code      # 2b. the same from the command line
 wt model edit ollama/qwen3:8b --tags code,design
 wt model rm ollama/qwen3:8b
@@ -63,7 +63,7 @@ What to keep in mind:
 - **A model's provider must have a `[[providers]]` row.** `wt model add` refuses a provider that has none and that it has no default row for, and names the file to add it to. A registry that already holds such a model makes `wt`, `wt start` and `wt stop` stop with `config error: model "<id>": unknown provider "<provider>"`, and `wt litellm sync` warns that it cannot route the model; `wt model list` and `wt model rm` still work, so the row can be seen and removed; `wt model edit` refuses the row until its `[[providers]]` block is added, which is a hand edit (below).
 - **A few things stay a hand edit of `registry.toml`:** a `[[providers]]` row for a provider wt has no default for (Step 2), a model served from a directory of your own (`[models.fetch] local_path`, guide 10), `[[families]]` display names (guide 03), and the repair of a row wt will not write: two `[[models]]` rows that share an id (`wt model edit`, `wt model rm` and the tab refuse the id rather than pick a row, and name both rows' providers), or a `fetch` that is not a table (`fetch must be a table`). `wt model list` shows such rows, so you can see what to fix. The procedure for one: edit the file; run `wt litellm sync --dry-run`, a read-only check that prints `config error: parse …` when the file is no longer valid TOML and otherwise the route changes a sync would make; then `wt litellm sync`, because no tool saw the edit. Steps 2–4 show a block per provider kind; every field name there is one the shared fixture `docs/contracts/registry.sample.toml` pins for wt and llmbench.
 - **A local provider's `base_url` names the port its server listens on.** The rows `wt model init` writes do. wt reads the url as written, and one with no port means the scheme's own (80 for `http`, 443 for `https`): omlx and ollama listen where their own settings say, and wt cannot know that port. The exceptions are mtplx and rec, which wt itself starts with a port: an `http` url for the `mtplx` or `rec` provider on this machine (`localhost`, `127.0.0.1`, or `0.0.0.0`) with no port means the port `wt start` serves it on (8003 for mtplx, 11500 for rec), for everything wt does with the address — the status it shows, `wt start` and `wt stop`, the LiteLLM route and a direct launch. If your server really is on port 80, write `:80`. wt goes by the url's text, so a host name that only resolves to this machine (an `/etc/hosts` alias) is not recognised: name the port there too. `wt start` refuses an mtplx or rec `base_url` that is left with no port (such an alias, another host, `[::1]`, an `https` url) and starts nothing, since the server it runs listens on `127.0.0.1` and would not be the one at that address.
-- **Comments do not survive.** The first tool that changes the file — a `wt model` command or `wt cloud-sync` — lays the whole file out again without them. Keys wt does not know are kept.
+- **Comments do not survive.** The first tool that changes the file — a `wt model …` command or `wt cloud-sync` — lays the whole file out again without them. Keys wt does not know are kept.
 - **Downloads, starts and stops:** downloads are the provider's own tool (Step 5), starting and stopping is `wt start`/`wt stop` (Step 6), and nothing records whether a model is ready — wt probes the providers for what is on disk.
 - **Cloud rows are never downloads.** Cloud-hosted rows (`location = "cloud"`, ollama `:cloud` models included) are never treated as downloads; `wt cloud-sync` pulls and removes the ollama cloud stubs.
 - **No per-model state.** wt stores no per-model state: `wt model list` shows what is on disk (STATUS) and what is running (RUNNING) from a live probe.
@@ -419,7 +419,7 @@ End-to-end confirm: the model also answers through the proxy — `curl http://lo
 
 ## Gotchas
 
-- **`registry.toml` is canonical.** Which cloud models agents see, and the family, tags and cost of every model, change HERE — with `wt model add|edit|rm` or the Models tab of `wt config` (Step 1), which write `~/.config/local-ai/registry.toml`; wt's own `config.toml` holds no model. Which *local* models agents see is what wt's probes find on disk or running (Step 3), with or without an entry. wt stores no per-model state and no routing flag: `wt model list` and `wt litellm list` read both live.
+- **`registry.toml` is canonical.** Which cloud models agents see, and the family, tags and cost of every model, change HERE — with `wt model add|edit|rm` or the Models tab of `wt-model model` (Step 1), which write `~/.config/local-ai/registry.toml`; wt's own `config.toml` holds no model. Which *local* models agents see is what wt's probes find on disk or running (Step 3), with or without an entry. wt stores no per-model state and no routing flag: `wt model list` and `wt litellm list` read both live.
 - **A provider row for every model.** A `[[models]]` block whose `provider_id` names no `[[providers]]` row stops every wt launch with `config error: … unknown provider`, and `wt litellm sync` warns that it cannot route the model and leaves it unrouted; `wt model init` adds the default row for a provider a model references (Step 1).
 - **A hand edit is not routed until you sync.** Nothing watches `registry.toml`: `wt model …` and the Models tab sync for themselves, but after an edit of the file run `wt litellm sync` (Step 6). The same goes for a download — nothing records it; wt finds the artifact the next time it probes.
 - **Secrets:** wt resolves `secret_ref` (Step 2) and writes the resulting key into the LiteLLM entry's `api_key` — whatever form the ref takes, the live `config.yaml` holds the literal key (e.g. `sk-or-v1-…`) — check and redact before pasting config anywhere.

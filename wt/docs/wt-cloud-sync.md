@@ -799,7 +799,7 @@ no `~` unless another row of the model applies. `wt model list` names the
 row and the rule on stderr; for a time written `9:00`, which is not
 `HH:MM`: `<id>: cost.time_prices[0]: windows[0]: start must be HH:MM, got
 9:00; wt reads it as absent (fix the entry in <registry>)`. The Models tab
-of `wt config` shows the same under the selected model. wt also refuses to
+of `wt-model model` shows the same under the selected model. wt also refuses to
 write that model's entry until the row is fixed: `wt model edit`, a save
 in `wt config`, or a `wt cloud-sync` with a change for that model is
 refused with `invalid registry entry: model "<id>": cost: time_prices[0]:

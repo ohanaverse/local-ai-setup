@@ -286,3 +286,20 @@ func TestResolveHomeFallsBackToNoAbbreviation(t *testing.T) {
 		t.Errorf("resolveHome on an error = %q, want empty", got)
 	}
 }
+
+// TestAgentsFilterNarrowsTheList verifies / filters the Agents tab's list:
+// bubbles ranks the rows in a command and sends the result back as a message,
+// and a list that lost its filter results showed every agent for "/cla".
+func TestAgentsFilterNarrowsTheList(t *testing.T) {
+	cfg := &config.Config{Agents: []config.Agent{{Name: "claude"}, {Name: "pi"}}}
+	m := newModel(testTheme(), cfg, nil)
+	m.home = testUserHome
+	m = send(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = stillCursors(send(t, m, loadedMsg{cfg: cfg}))
+	all := len(m.list.VisibleItems())
+	m = keys(t, m, "/", "c", "l", "a", "u")
+	got := m.list.VisibleItems()
+	if len(got) != 1 || got[0].(agentItem).agent.Name != "claude" || all < 2 {
+		t.Errorf("/clau shows %d of %d agents, want claude alone", len(got), all)
+	}
+}

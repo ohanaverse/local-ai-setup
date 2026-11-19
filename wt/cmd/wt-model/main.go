@@ -1,5 +1,6 @@
-// Command wt-model serves wt's model control API and gateway: it starts and
-// stops local models on behalf of agent sessions that run elsewhere.
+// Command wt-model is wt's host side: it serves the model control API and
+// gateway, and administers the registry, the LiteLLM routes and this
+// machine's model-server setup.
 package main
 
 import (
@@ -23,15 +24,23 @@ var version = "0.1.0"
 // rootCmd builds the wt-model command tree; mk supplies the server's
 // dependencies.
 func rootCmd(mk depsFactory) *cobra.Command {
+	return rootCmdWith(mk, newHost())
+}
+
+// rootCmdWith is rootCmd over a given host: tests hand in one whose seams
+// reach nothing on the machine.
+func rootCmdWith(mk depsFactory, h *host) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "wt-model",
-		Short:         "Serve wt's models over a control API and gateway",
+		Short:         "Serve wt's models and administer the registry, routes and this machine's setup",
 		Version:       version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
 	root.SetVersionTemplate("wt-model {{.Version}}\n")
-	root.AddCommand(serveCmd(mk), litellmCmd())
+	// One host config for the whole tree: every admin command reads the
+	// registry through the same h.
+	root.AddCommand(serveCmd(mk), litellmCmd(), modelCmd(h))
 	return root
 }
 

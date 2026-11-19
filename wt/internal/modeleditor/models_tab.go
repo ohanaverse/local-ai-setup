@@ -1,4 +1,4 @@
-package configeditor
+package modeleditor
 
 import (
 	"slices"
@@ -269,13 +269,24 @@ func (m *model) noteProbeOut() {
 // routesPending is the note the tab shows once it has written the registry.
 const routesPending = "LiteLLM routes pending (sync on quit)"
 
-// modelsStatus is the tab's status block: why the registry did not load,
-// what the last action said, and a note that the LiteLLM routes are owed a
-// sync once the registry has been written. It is wrapped, not cut: a
+// modelsStatus is the tab's status block: why the config did not load or
+// validate, what the last action said, and a note that the LiteLLM routes are
+// owed a sync once the registry has been written. It is wrapped, not cut: a
 // removal's status ends with the path of the weights left behind.
+//
+// The load banner (m.status, the host's load or validation error) is drawn
+// only while the probe reports no load error of its own: the probe's
+// config.Load does not validate, so a registry that loads but fails
+// validation (#209) is told only by the banner, while a file that does not
+// load fails the probe too, and its reason, refreshed by every probe, is the
+// one shown.
 func (m *model) modelsStatus() string {
+	banner := m.status
+	if m.models.loadErr != "" {
+		banner = ""
+	}
 	var parts []string
-	for _, s := range []string{m.models.loadErr, m.models.status} {
+	for _, s := range []string{banner, m.models.loadErr, m.models.status} {
 		if s != "" {
 			parts = append(parts, s)
 		}
@@ -363,8 +374,8 @@ func (m *model) modelsDetailLines(sides bool) (id, path []string) {
 
 // modelsHints are the tab's key hints, fullest first.
 var modelsHints = []string{
-	"enter edit · n add · d remove · r refresh · / filter · tab next · q quit",
-	"enter · n · d · r · / · tab · q quit",
+	"enter edit · n add · d remove · r refresh · / filter · q quit",
+	"enter · n · d · r · / · q quit",
 }
 
 // modelsFrames are the tab's layouts, fullest first: the tab bar, the status,
@@ -420,7 +431,7 @@ func (m *model) modelsFrames() []tuilayout.ListFrame {
 }
 
 // fitModels sizes the table to the room its frame leaves. Update calls it
-// after every message, like fitList for the Agents tab. It measures the list
+// after every message. It measures the list
 // (up to sixteen probe renders), so it runs only while the table is what is
 // showing — the tab is the one on screen, and neither the form nor the remove
 // prompt is over it: only modelsView's table draws this list, and the message
@@ -540,7 +551,7 @@ func (m *model) applyModels(msg modelsLoadedMsg) {
 		// failed, and the hint is there only when the repair is the registry's.
 		mt.loadErr = "config load error: " + msg.err.Error()
 		// The repair, worded by the one function that words it (as on the
-		// Agents tab's status): a file this tab cannot read is not one it
+		// load banner's status): a file this tab cannot read is not one it
 		// can fix.
 		if hint := config.RegistryFixHint(msg.err); hint != "" {
 			mt.loadErr += " (" + hint + ")"
@@ -548,31 +559,29 @@ func (m *model) applyModels(msg modelsLoadedMsg) {
 	}
 }
 
-// filterMatchesMsg is a bubbles list's filter result with the list it is
+// filterMatchesMsg is a bubbles list's filter result with the table it is
 // for. The list ranks its items in a command and takes the result as a
-// message; that message says nothing of which list sent it, and the editor
-// has two. tab names the list, and built the Models table it was ranked
-// over, so that a result is never applied to the other tab's list or to a
-// table that has been rebuilt since.
+// message; that message says nothing of which table it was ranked over.
+// built names that table, so that a result is never applied to a table that
+// has been rebuilt since.
 type filterMatchesMsg struct {
-	tab     Tab
 	built   int
 	matches list.FilterMatchesMsg
 }
 
 // tagFilter wraps a command a list returned, so that a filter result in what
 // it produces comes back as a filterMatchesMsg.
-func tagFilter(cmd tea.Cmd, tab Tab, built int) tea.Cmd {
+func tagFilter(cmd tea.Cmd, built int) tea.Cmd {
 	if cmd == nil {
 		return nil
 	}
 	return func() tea.Msg {
 		switch msg := cmd().(type) {
 		case list.FilterMatchesMsg:
-			return filterMatchesMsg{tab: tab, built: built, matches: msg}
+			return filterMatchesMsg{built: built, matches: msg}
 		case tea.BatchMsg:
 			for i := range msg {
-				msg[i] = tagFilter(msg[i], tab, built)
+				msg[i] = tagFilter(msg[i], built)
 			}
 			return msg
 		default:
@@ -581,13 +590,10 @@ func tagFilter(cmd tea.Cmd, tab Tab, built int) tea.Cmd {
 	}
 }
 
-// applyFilterMatches hands a filter result to the list it was ranked for.
+// applyFilterMatches hands a filter result to the table it was ranked for.
 func (m *model) applyFilterMatches(msg filterMatchesMsg) tea.Cmd {
 	var cmd tea.Cmd
-	switch {
-	case msg.tab == TabAgents && m.ready:
-		m.list, cmd = m.list.Update(msg.matches)
-	case msg.tab == TabModels && m.models.loaded && msg.built == m.models.built:
+	if m.models.loaded && msg.built == m.models.built {
 		m.models.list, cmd = m.models.list.Update(msg.matches)
 	}
 	return cmd
@@ -608,12 +614,11 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if !mt.loaded {
 		// The first probe is on its way and there is no table to act on,
-		// but the user is not held on this tab until a slow provider answers.
+		// but the user is not held on this screen until a slow provider
+		// answers.
 		switch key.String() {
 		case "q", "ctrl+c":
 			return m.quit()
-		case "tab":
-			return m, m.switchTab()
 		}
 		return m, nil
 	}
@@ -626,7 +631,7 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		mt.list, cmd = mt.list.Update(msg)
-		return m, tagFilter(cmd, TabModels, mt.built)
+		return m, tagFilter(cmd, mt.built)
 	}
 	// What the last action said has been read: the next key clears it, and
 	// gives its lines back to the table. Not while a probe or a write is
@@ -638,7 +643,8 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m.quit()
 	case "tab":
-		return m, m.switchTab()
+		// The screen has one tab: tab is inert.
+		return m, nil
 	case "r":
 		if mt.busy {
 			m.noteProbeOut()
@@ -679,7 +685,7 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	mt.list, cmd = mt.list.Update(msg)
-	return m, tagFilter(cmd, TabModels, mt.built)
+	return m, tagFilter(cmd, mt.built)
 }
 
 // updateModelsRemove handles the remove prompt: y removes, anything that
@@ -757,15 +763,10 @@ func (m *model) modelsRemoveView() string {
 
 // applyModelRemoved takes a removal's outcome and re-probes: the rows are
 // rebuilt from the registry as it now is. A quit that was waiting for the
-// write happens now, with the change recorded for the caller — through quit,
-// like any other: the tabs took keys while it waited, and an agent edit made
-// meanwhile gets the unsaved-changes prompt (the table is then read again
-// under it, for a user who cancels). Edits the user already chose to discard
-// are not asked about twice (discardHeld). After a refusal the quit does not
-// happen, because the refusal has to be read — on this tab, which is where
-// it is drawn, so a quit typed from the Agents tab comes back here. A refusal
-// re-probes too: the usual reason is that another program took the row
-// first, and the table would go on showing it.
+// write happens now, with the change recorded for the caller. After a
+// refusal the quit does not happen, because the refusal has to be read. A
+// refusal re-probes too: the usual reason is that another program took the
+// row first, and the table would go on showing it.
 func (m *model) applyModelRemoved(msg modelRemovedMsg) tea.Cmd {
 	mt := &m.models
 	mt.busy, mt.writing = false, false
@@ -781,12 +782,9 @@ func (m *model) applyModelRemoved(msg modelRemovedMsg) tea.Cmd {
 		mt.status += "; " + msg.note
 	}
 	if m.quitPending {
-		m.quitPending = false // discardHeld stays until the quit happens (leave)
-		if _, cmd := m.quit(); cmd != nil {
-			return cmd
-		}
-		// The unsaved-changes prompt is up; the status written above it is
-		// the one behind it when it is answered.
+		m.quitPending = false
+		_, cmd := m.quit()
+		return cmd
 	}
 	return m.probeCmd()
 }

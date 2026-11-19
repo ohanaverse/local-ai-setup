@@ -852,7 +852,7 @@ var SushiAgents = []string{"claude", "pi"}
 // supported_providers when the registry holds a sushi model and the agent
 // does not name it. A stock config.toml has no sushi entry, and without one
 // `wt smoke` and the pickers report no agent supports the model; deriving it
-// here covers a pack registered by the `wt config` Models tab, by hand, or
+// here covers a pack registered by the `wt-model model` Models screen, by hand, or
 // on a restored registry, where `wt model add` never ran. Nothing is written.
 // An agent config.toml does not name is skipped, and so is one with no
 // supported_providers at all (an empty list is its own validation error). To

@@ -656,7 +656,8 @@ func TestServerTabReadsTheLiteLLMProbeWhenLocalIsChosen(t *testing.T) {
 		return st
 	}
 	m := newModel(testTheme(), &config.Config{}, nil)
-	m.opts = Options{StartTab: TabServer, Server: deps, Models: newTabMachine(t, "").deps()}
+	scratchConfigHome(t)
+	m.opts = Options{StartTab: TabServer, Server: deps}
 	m.tab = TabServer
 	m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
 	m = runCmd(t, m, m.Init())
@@ -710,7 +711,8 @@ func TestServerTabModeKeysPassThroughLocalDuringItsProbeRead(t *testing.T) {
 		return base
 	}
 	m := newModel(testTheme(), &config.Config{}, nil)
-	m.opts = Options{StartTab: TabServer, Server: deps, Models: newTabMachine(t, "").deps()}
+	scratchConfigHome(t)
+	m.opts = Options{StartTab: TabServer, Server: deps}
 	m.tab = TabServer
 	m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
 	m = runCmd(t, m, m.Init())
@@ -764,7 +766,8 @@ func TestServerTabProbesOnFirstOpenOfAStoredLocalConfig(t *testing.T) {
 			return st
 		}
 		m := newModel(testTheme(), &config.Config{}, nil)
-		m.opts = Options{StartTab: TabServer, Server: deps, Models: newTabMachine(t, "").deps()}
+		scratchConfigHome(t)
+		m.opts = Options{StartTab: TabServer, Server: deps}
 		m.tab = TabServer
 		m = send(t, m, tea.WindowSizeMsg{Width: 120, Height: 50})
 		m = runCmd(t, m, m.Init())

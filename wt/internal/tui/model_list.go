@@ -146,7 +146,7 @@ func formatPerToken(cost config.ModelCost) string {
 
 // styleTableTitle styles a list whose Title is the selector table's header so
 // it sits flush with the row text, in the theme's dim colour. The reset is
-// tuilayout.StyleTableTitle, which `wt config`'s Models tab calls too; this
+// tuilayout.StyleTableTitle, which `wt-model model`'s Models screen calls too; this
 // is the launcher's name for it, used by the agent-flow picker and wt smoke's
 // PickStartModel.
 func styleTableTitle(l *list.Model, theme themes.Theme) {
@@ -200,7 +200,7 @@ const statusAloneHint = "press a key to go back to the models"
 // unloaded several models (two lines a model, #275) would be the part that
 // goes. Alone it is wrapped to the width, cut in its middle behind a marker
 // if it is still too tall (tuilayout.MessageAlone), and the next key takes it
-// down (Update). It is what `wt config`'s Models tab does with a refusal.
+// down (Update). It is what `wt-model model`'s Models screen does with a refusal.
 //
 // It is a measurement of the frame as drawn, not a count of lines, so it
 // stays right when the frame's other lines change. Not while the list's full

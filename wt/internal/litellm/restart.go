@@ -440,7 +440,7 @@ var bounce = Bounce{Restart: RestartContext, Listening: Listening, WaitReady: Wa
 
 // RestartAndWait is the Apply default when Options.Restart is nil (`wt
 // litellm sync`, and through it `wt cloud-sync`, `wt model add|edit|rm|init`
-// and the Models tab of `wt config`), and all of `wt litellm restart`:
+// and the Models screen (`wt-model model`)), and all of `wt litellm restart`:
 // bounce.Run, with a failed wait made one more warning, which the command
 // prints like the restart's own. Every warning is a restart that failed or a
 // proxy that did not answer again.

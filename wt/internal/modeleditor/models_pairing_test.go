@@ -1,4 +1,4 @@
-package configeditor
+package modeleditor
 
 import (
 	"strings"

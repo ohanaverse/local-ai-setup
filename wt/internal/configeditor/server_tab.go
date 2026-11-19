@@ -582,14 +582,11 @@ func (m *model) finishServerWrite(ok bool) tea.Cmd {
 	return m.observeServerCmd()
 }
 
-// switchTab moves to the next tab and, on a tab's first visit, starts what
-// fills it: the Models tab's probe, the Model server tab's observation.
+// switchTab moves to the next tab and, on the Model server tab's first
+// visit, starts the observation that fills it.
 func (m *model) switchTab() tea.Cmd {
 	m.tab = nextTab(m.tab)
-	switch {
-	case m.tab == TabModels && !m.models.asked:
-		return m.probeCmd()
-	case m.tab == TabServer && !m.server.asked:
+	if m.tab == TabServer && !m.server.asked {
 		return m.observeServerCmd()
 	}
 	return nil

@@ -85,7 +85,7 @@ func (c ModelCost) PriceAt(at time.Time) PriceInForce {
 // One bad window is enough: the validator refuses the row, not the window,
 // and a row applied in some of its windows only would show a price its
 // writer did not mean. Model.Malformed names such a row, which is how `wt
-// model list` and the Models tab say that it is in the file and not in use.
+// model list` and the Models screen say that it is in the file and not in use.
 func (tp TimePrice) Problem() string {
 	if err := validateTimePrice(tp.table()); err != nil {
 		return err.Error()

@@ -1,6 +1,6 @@
 # Model families — grouping, display names, tags, and wt rotation
 
-> Use this to: set the `family` and `tags` of a model with `wt model edit` or the Models tab of `wt config`, and a family's display name by hand in `registry.toml`, and understand how `family` and `tags` decide what the `wt` picker offers and which model it lands on next.
+> Use this to: set the `family` and `tags` of a model with `wt model edit` or the Models tab of `wt-model model`, and a family's display name by hand in `registry.toml`, and understand how `family` and `tags` decide what the `wt` picker offers and which model it lands on next.
 >
 > Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live)
 
@@ -26,7 +26,7 @@ It prints the number of `[[models]]` entries in your registry; anything ≥2 is 
 | `tags` per model (rotation groups, e.g. `code`/`design`) | `~/.config/local-ai/registry.toml` | `wt` (`-T` filter, tag rotation) | `wt model edit <id> --tags code,design`, or the Tags field of the Models tab's form (Step 3) |
 
 ```bash
-wt model edit <id> --family <name> --tags code,design   # family and tags (or: wt model, then enter on the row)
+wt model edit <id> --family <name> --tags code,design   # family and tags (or: `wt-model model`, then enter on the row)
 "${EDITOR:-vi}" ~/.config/local-ai/registry.toml          # a [[families]] display name is the one hand edit here
 wt litellm sync --dry-run                          # read-only: `config error: parse …` if the file is no longer valid TOML
 ```

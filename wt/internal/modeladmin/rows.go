@@ -1,5 +1,5 @@
 // Package modeladmin is the core of model management, shared by the `wt
-// model` commands and the Models tab of `wt config`: the rows both list, the
+// model` commands and the Models screen (`wt-model model`): the rows both list, the
 // rules both validate with, and the registry writes both make. It imports no
 // UI package, so the two cannot drift apart.
 package modeladmin
