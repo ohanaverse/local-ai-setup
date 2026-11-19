@@ -1,4 +1,4 @@
-.PHONY: help lint lint-shell lint-skills check-links test-all install update-tools install-skill-claude install-skill-pi install-skill-codex uninstall-skill-claude uninstall-skill-pi uninstall-skill-codex
+.PHONY: help lint lint-shell lint-skills check-links test-all pre-pr install update-tools install-skill-claude install-skill-pi install-skill-codex uninstall-skill-claude uninstall-skill-pi uninstall-skill-codex
 
 .DEFAULT_GOAL := help
 
@@ -10,6 +10,7 @@ SHELL_SCRIPTS := \
 	bin/lib/update-common.sh \
 	bin/mlx-quantize \
 	bin/check-config-dirs-untouched \
+	bin/pre-pr \
 	bin/update/* \
 	bin/update-tools \
 	benchmarks/qwen3.8-benchmark \
@@ -56,6 +57,9 @@ test-all: lint ## CI-equivalent: lint + llmbench + modeltiers + wt
 	cd llmbench && uv sync && make check && make test
 	cd modeltiers && uv sync && make check && make test
 	cd wt && go build ./... && go vet ./... && go test -count=1 ./... && make single-p
+
+pre-pr: ## Run before a PR: test-all in a clean scratch HOME + wt check + config-dir check (CI is off)
+	@bin/pre-pr
 
 install: ## Install all monorepo components (wt + llmbench + modeltiers).
 	cd wt && make install

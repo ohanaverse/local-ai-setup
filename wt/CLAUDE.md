@@ -86,7 +86,8 @@ go test ./...
 go test ./internal/agents -run TestOpenCodeOllamaPrefix   # one test
 go vet ./...
 make check   # shellcheck, shfmt, gofmt -l (wt-ci's gate); `make format` writes both
-make -C .. test-all   # CI-equivalent: root lint + llmbench + modeltiers + wt
+make -C .. pre-pr     # before a PR (CI is off): test-all in a scratch HOME + wt check + config-dir check
+make -C .. test-all   # root lint + llmbench + modeltiers + wt (+ single-P), real HOME
 ```
 
 ## Go module
