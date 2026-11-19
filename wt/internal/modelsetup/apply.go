@@ -396,7 +396,7 @@ func waitReady(ctx context.Context, env Env, p Plan, s Step) error {
 	ep := modelping.Endpoint{URL: url, Token: strings.TrimSpace(string(raw))}
 	deadline := env.Host.Now().Add(ReadyTimeout)
 	for {
-		st := pingServer(ctx, env, ep)
+		st := modelmode.PingServer(ctx, env.Mode(), ep)
 		if st.OK {
 			return nil
 		}

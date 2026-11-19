@@ -283,7 +283,7 @@ func planRemote(st State, want Desired) (Plan, error) {
 		}
 		tokenStep = &s
 	case strings.TrimSpace(want.TokenFile) != "":
-		path := expandIn(strings.TrimSpace(want.TokenFile), st.Host.Home)
+		path := modelmode.ExpandIn(strings.TrimSpace(want.TokenFile), st.Host.Home)
 		want.TokenFile = path
 		ts, seen := tokenAt(st, path)
 		switch {
@@ -388,7 +388,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 	if tokPath == "" && st.Host.ConfigHome != "" {
 		tokPath = DefaultLocalTokenPath(st.Host.ConfigHome)
 	}
-	tokPath = expandIn(tokPath, st.Host.Home)
+	tokPath = modelmode.ExpandIn(tokPath, st.Host.Home)
 	var tokenStep *Step
 	tokenChanged := false
 	var tokenKept string
@@ -552,7 +552,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 func (p *Plan) config(st State) {
 	t := st.Config.Table
 	cur, _ := modelmode.ParseMode(t.Mode)
-	if cur == p.Want.Mode && t.URL == p.Want.URL && expandIn(t.TokenFile, st.Host.Home) == p.Want.TokenFile {
+	if cur == p.Want.Mode && t.URL == p.Want.URL && modelmode.ExpandIn(t.TokenFile, st.Host.Home) == p.Want.TokenFile {
 		p.Notes = append(p.Notes, "keep [model-server] in "+st.Config.Path+" (already mode = \""+string(p.Want.Mode)+"\")")
 		return
 	}
@@ -670,15 +670,6 @@ func tokenAt(st State, path string) (TokenState, bool) {
 		}
 	}
 	return TokenState{}, false
-}
-
-// expandIn expands a leading ~ against home; a path it cannot expand is
-// returned as given.
-func expandIn(path, home string) string {
-	if p, err := expandHome(path, home, nil); err == nil {
-		return p
-	}
-	return path
 }
 
 // sameEndpoint reports whether two urls name the same endpoint: scheme, host

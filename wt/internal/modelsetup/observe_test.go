@@ -14,7 +14,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 const (
@@ -35,20 +34,6 @@ func obsConfigured(t *testing.T) *fakeEnv {
 	f.files[obsTokenPath] = []byte(obsFakeToken + "\n")
 	f.modes[obsTokenPath] = 0o600
 	return f
-}
-
-// TestObserveMissingConfigIsEmptyNotAnError pins that a machine with no
-// config.toml observes as an empty, error-free Config part, so a first run
-// is not reported as a failure.
-func TestObserveMissingConfigIsEmptyNotAnError(t *testing.T) {
-	f := newFakeEnv(t)
-	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if st.Config.Exists || st.Config.ParseErr != "" || st.Config.TableErr != "" {
-		t.Errorf("Config = %+v, want empty and error-free", st.Config)
-	}
-	if st.Server.Checked {
-		t.Errorf("Server.Checked with nothing configured")
-	}
 }
 
 // TestObserveReportsAParseErrorAndStillFillsTheRest pins that a config.toml
@@ -74,59 +59,6 @@ func TestObserveReportsAParseErrorAndStillFillsTheRest(t *testing.T) {
 	}
 	if !st.Server.Checked || !st.Server.OK {
 		t.Errorf("Server = %+v", st.Server)
-	}
-}
-
-// TestObserveClassifiesEachPingFailure pins that every modelclient error type
-// maps to its own ServerKind, so the tab can say what is wrong.
-func TestObserveClassifiesEachPingFailure(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want ServerKind
-	}{
-		{"none", nil, KindNone},
-		{"unreachable", &modelclient.UnreachableError{Addr: "a", Reason: "refused"}, KindUnreachable},
-		{"unauthorized", &modelclient.UnauthorizedError{Addr: "a"}, KindUnauthorized},
-		{"not wt-model", &modelclient.NotModelServerError{Addr: "a", Why: "x"}, KindNotWtModel},
-		{"skew", &modelclient.SkewError{Addr: "a", Server: 2, Client: 1}, KindSkew},
-		{"schema", &modelclient.SchemaError{Addr: "a", Server: 2, Client: 1}, KindSchema},
-		{"wrapped", fmt.Errorf("ctx: %w", &modelclient.UnauthorizedError{Addr: "a"}), KindUnauthorized},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			f := obsConfigured(t)
-			f.pingErr = c.err
-			f.ping = modelapi.Ping{APIMajor: 1, Schema: 3}
-			st := Observe(context.Background(), f.Env(), ObserveOptions{})
-			if !st.Server.Checked || st.Server.Kind != c.want || st.Server.OK != (c.err == nil) {
-				t.Errorf("Server = %+v, want kind %v", st.Server, c.want)
-			}
-			if c.err != nil && st.Server.Message == "" {
-				t.Errorf("no message for %v", c.err)
-			}
-			if c.err == nil && (st.Server.API != 1 || st.Server.Schema != 3) {
-				t.Errorf("API/Schema = %d/%d", st.Server.API, st.Server.Schema)
-			}
-		})
-	}
-}
-
-// TestObserveLoosenessOfTheTokenFile pins that a group/other-accessible token
-// file is reported Loose and is never pinged with, while 0600 is fine.
-func TestObserveLoosenessOfTheTokenFile(t *testing.T) {
-	f := obsConfigured(t)
-	f.modes[obsTokenPath] = 0o644
-	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if !st.Token.Exists || !st.Token.Loose {
-		t.Errorf("Token = %+v, want Exists and Loose", st.Token)
-	}
-	if st.Server.Checked || f.called("Net.Ping") {
-		t.Errorf("pinged with a loose token file")
-	}
-	f.modes[obsTokenPath] = 0o600
-	if st := Observe(context.Background(), f.Env(), ObserveOptions{}); st.Token.Loose || !st.Server.Checked {
-		t.Errorf("0600: Token = %+v Server = %+v", st.Token, st.Server)
 	}
 }
 
@@ -189,24 +121,6 @@ func TestObserveOffMacOSDisablesLocal(t *testing.T) {
 	st = Observe(context.Background(), f.Env(), ObserveOptions{})
 	if st.Platform.OK || st.Platform.Reason == "" || f.called("Launchd.Print") {
 		t.Errorf("no launchd: %+v calls %q", st.Platform, f.calls)
-	}
-}
-
-// TestObserveNamesEnvOverrides pins that the environment variables in force
-// are named (never their values) and that an unset environment reads "".
-func TestObserveNamesEnvOverrides(t *testing.T) {
-	f := obsConfigured(t)
-	if st := Observe(context.Background(), f.Env(), ObserveOptions{}); st.EnvOverride != "" {
-		t.Errorf("EnvOverride = %q, want empty", st.EnvOverride)
-	}
-	f.env["WT_MODEL_URL"] = "http://elsewhere:1"
-	f.env["WT_MODEL_TOKEN_FILE"] = obsTokenPath
-	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if st.EnvOverride != "WT_MODEL_URL, WT_MODEL_TOKEN_FILE" {
-		t.Errorf("EnvOverride = %q", st.EnvOverride)
-	}
-	if strings.Contains(st.EnvOverride, "elsewhere") {
-		t.Errorf("EnvOverride holds a value: %q", st.EnvOverride)
 	}
 }
 
@@ -279,51 +193,6 @@ func TestObserveFindsTheModelBinaryBesideWtThenOnPath(t *testing.T) {
 	}
 }
 
-// TestObserveKeepsAnInlineConfigTokenOutOfState pins that a literal token in
-// [model-server] is reported as a problem but never copied into State.
-func TestObserveKeepsAnInlineConfigTokenOutOfState(t *testing.T) {
-	f := obsConfigured(t)
-	f.configFile.Table.Token = obsFakeToken
-	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if strings.Contains(fmt.Sprintf("%+v", st), obsFakeToken) {
-		t.Errorf("State holds the inline token: %+v", st.Config)
-	}
-	if len(st.Config.Problems) == 0 {
-		t.Errorf("inline token not reported as a problem")
-	}
-}
-
-// TestObserveExpandsATildeInTheConfiguredTokenFile pins that a config
-// token_file of ~/... is read from the home directory, as a session does.
-func TestObserveExpandsATildeInTheConfiguredTokenFile(t *testing.T) {
-	f := obsConfigured(t)
-	f.configFile.Table.TokenFile = "~/.config/wt-model/token"
-	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if !st.Token.Exists || st.Token.Err != "" || !st.Server.Checked {
-		t.Errorf("Token = %+v Server = %+v", st.Token, st.Server)
-	}
-}
-
-// TestObserveTokenChoiceMirrorsTheSession pins ResolveEndpoint's order: an env
-// token file wins and never falls back to a literal WT_MODEL_TOKEN, which is
-// otherwise used untrimmed.
-func TestObserveTokenChoiceMirrorsTheSession(t *testing.T) {
-	f := obsConfigured(t)
-	f.env["WT_MODEL_TOKEN_FILE"] = "/missing/token"
-	f.env["WT_MODEL_TOKEN"] = obsFakeToken
-	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if st.Token.Path != "/missing/token" || st.Token.Exists || st.Server.Checked {
-		t.Errorf("env file must win without fallback: %+v %+v", st.Token, st.Server)
-	}
-	f = obsConfigured(t)
-	f.env["WT_MODEL_TOKEN"] = " " + obsFakeToken + " "
-	f.calls = nil
-	st = Observe(context.Background(), f.Env(), ObserveOptions{})
-	if !st.Server.Checked || f.called("FS.ReadFile "+obsTokenPath) {
-		t.Errorf("literal token: %+v calls %q", st.Server, f.calls)
-	}
-}
-
 // TestObserveDescribesTheTokenFilesAPlanMayChoose pins the additions BuildPlan
 // reads instead of the disk: the config home, the default local and fixed
 // remote token files plus any asked-for path (each once), an empty file
@@ -354,108 +223,6 @@ func TestObserveDescribesTheTokenFilesAPlanMayChoose(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprintf("%+v", st), obsFakeToken) {
 		t.Errorf("State holds a token")
-	}
-}
-
-// TestObserveRecordsThePingedURLWithoutUserinfo pins that a url holding an
-// '@' is never stored in ServerState: it is not pinged at all (the check
-// reads as not made) and is recorded as the fixed urlrule.Hidden, whole (no host
-// kept).
-func TestObserveRecordsThePingedURLWithoutUserinfo(t *testing.T) {
-	f := obsConfigured(t)
-	f.configFile.Table.Mode = "remote"
-	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
-	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if st.Server.Checked || st.Server.URL != urlrule.Hidden || f.called("Net.Ping") {
-		t.Errorf("Server = %+v, calls %q", st.Server, f.calls)
-	}
-	if strings.Contains(fmt.Sprintf("%+v", st.Server), "pw-SECRET") {
-		t.Errorf("ServerState holds the url's password")
-	}
-}
-
-// TestObserveStripsUserinfoFromTheConfiguredURL pins that a [model-server]
-// url holding an '@' never reaches State.Config.Table (the tab draws that
-// table): it is replaced whole by urlrule.Hidden, host included; that it is
-// reported as a problem the way an inline token is, and that it is not
-// pinged (a failed ping's text could quote the url, or all of it when malformed).
-func TestObserveStripsUserinfoFromTheConfiguredURL(t *testing.T) {
-	f := obsConfigured(t)
-	f.configFile.Table.Mode = "remote"
-	f.configFile.Table.URL = "https://me:pw-SECRET@gpu.example:8787/"
-	st := Observe(context.Background(), f.Env(), ObserveOptions{})
-	if st.Config.Table.URL != urlrule.Hidden {
-		t.Errorf("Config.Table.URL = %q, want %q", st.Config.Table.URL, urlrule.Hidden)
-	}
-	if strings.Contains(fmt.Sprintf("%+v", st), "pw-SECRET") {
-		t.Errorf("State holds the url's password")
-	}
-	found := false
-	for _, p := range st.Config.Problems {
-		if strings.Contains(p, "credentials") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("Problems = %q, want one about the url's credentials", st.Config.Problems)
-	}
-	if st.Server.Checked || f.called("Net.Ping") {
-		t.Errorf("Server = %+v, calls %q, want the url not pinged", st.Server, f.calls)
-	}
-}
-
-// TestObservePingsTheEnteredEndpoint pins ObserveOptions.Check: when the tab
-// asks about a url the user typed, Observe pings that url (not the stored
-// one) with the token the user entered (pasted, else read from the typed
-// token file), so a remote plan's check gate is about the server the user
-// named. Without an entered token nothing is pinged and the reason is said;
-// no State field holds the entered token. An entered url with an '@' is
-// pinged neither (TestObserveNeverPingsAnAtURL has the full set), nor is the
-// stored one in its place.
-func TestObservePingsTheEnteredEndpoint(t *testing.T) {
-	f := obsConfigured(t)
-	st := Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{
-		CheckURL: "https://gpu.example:8787", CheckToken: Secret("  tok-ENTERED  "),
-	}})
-	if !f.called("Net.Ping https://gpu.example:8787") || f.called("Net.Ping http://127.0.0.1:8787") {
-		t.Errorf("calls = %q, want the entered url pinged as typed and not the stored one", f.calls)
-	}
-	if len(f.pingTokens) != 1 || f.pingTokens[0] != "tok-ENTERED" {
-		t.Errorf("ping tokens = %q, want the pasted token, trimmed", f.pingTokens)
-	}
-	if !st.Server.Checked || st.Server.URL != "https://gpu.example:8787" {
-		t.Errorf("Server = %+v, want the entered url recorded", st.Server)
-	}
-	if s := fmt.Sprintf("%+v", st); strings.Contains(s, "tok-ENTERED") {
-		t.Errorf("State holds the entered token")
-	}
-
-	// An entered url with an '@': nothing is pinged, the stored url included.
-	f = obsConfigured(t)
-	st = Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{
-		CheckURL: "https://me:pw-SECRET@gpu.example:8787", CheckToken: Secret("tok-ENTERED"),
-	}})
-	if f.called("Net.Ping") || st.Server.Checked || st.Server.URL != urlrule.Hidden {
-		t.Errorf("calls = %q Server = %+v, want no ping and the url hidden", f.calls, st.Server)
-	}
-	if s := fmt.Sprintf("%+v", st); strings.Contains(s, "tok-ENTERED") || strings.Contains(s, "pw-SECRET") {
-		t.Errorf("State holds the entered token or the url's password")
-	}
-
-	// A typed token file is read for the ping.
-	f = obsConfigured(t)
-	f.files["/srv/remote.token"] = []byte("tok-FILE\n")
-	f.modes["/srv/remote.token"] = 0o600
-	st = Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{CheckURL: "https://gpu.example:8787", CheckTokenFile: "/srv/remote.token"}})
-	if len(f.pingTokens) != 1 || f.pingTokens[0] != "tok-FILE" || !st.Server.Checked {
-		t.Errorf("ping tokens = %q Server = %+v, want the typed file's token", f.pingTokens, st.Server)
-	}
-
-	// No entered token: not pinged, and the reason is said.
-	f = obsConfigured(t)
-	st = Observe(context.Background(), f.Env(), ObserveOptions{ObserveOptions: modelmode.ObserveOptions{CheckURL: "https://gpu.example:8787"}})
-	if f.called("Net.Ping") || st.Server.Checked || !strings.Contains(st.Server.Message, "no token") {
-		t.Errorf("calls = %q Server = %+v, want no ping and a message naming the missing token", f.calls, st.Server)
 	}
 }
 
@@ -650,5 +417,28 @@ func TestObserveCountsADanglingLiteLLMPlistLinkAsPresent(t *testing.T) {
 	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMCreate})
 	if err == nil || !strings.Contains(err.Error(), "already exists") || len(p.Steps) != 0 {
 		t.Errorf("create over a dangling link: err %v, steps %d", err, len(p.Steps))
+	}
+}
+
+// TestObservePassesTheAgentAsTheLocalFallback pins the handoff: modelsetup
+// reads the agent plist and hands its token file and listen address to
+// modelmode.Observe as the local fallback, so a local-mode read with nothing
+// stored pings the agent's listen with the agent's token.
+func TestObservePassesTheAgentAsTheLocalFallback(t *testing.T) {
+	f := obsConfigured(t)
+	f.configFile.Table.URL = ""
+	f.configFile.Table.TokenFile = ""
+	f.files[obsAgentPath] = RenderAgentPlist(AgentSpec{Binary: "/b/wt-model", Listen: "127.0.0.1:9911", TokenFile: "/a/tok", Path: "/bin", Home: "/h"})
+	f.files["/a/tok"] = []byte("tok-AGENT\n")
+	f.modes["/a/tok"] = 0o600
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if !f.called("Net.Ping http://127.0.0.1:9911") {
+		t.Errorf("calls = %q, want the agent's listen pinged", f.calls)
+	}
+	if len(f.pingTokens) != 1 || f.pingTokens[0] != "tok-AGENT" {
+		t.Errorf("ping tokens = %q, want the agent's token", f.pingTokens)
+	}
+	if st.Agent.Listen != "127.0.0.1:9911" {
+		t.Errorf("Agent.Listen = %q", st.Agent.Listen)
 	}
 }
