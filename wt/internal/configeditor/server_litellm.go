@@ -217,70 +217,6 @@ func plistModeLines(st modelsetup.State, home string) []editorkit.Line {
 		p.Mode.Perm(), editorkit.HomePath(p.Path, st.Host.Home, home)), Tone: editorkit.ToneWarn}}
 }
 
-// serverResultScreen is what an apply left to read: the commands to run by
-// hand and the notes (the backup's path), each scrubbed, and the result's
-// own text. It is a screen of its own, scrolled with up and down, because
-// a recovery command cut off is useless.
-type serverResultScreen struct {
-	recovery string
-	notes    []string
-	text     string
-	top      int
-}
-
-// newResultScreen is the screen for a result, or nil when it has neither
-// notes nor recovery to show.
-func newResultScreen(res modelsetup.Result, text string) *serverResultScreen {
-	if len(res.Notes) == 0 && res.Recovery == "" {
-		return nil
-	}
-	r := &serverResultScreen{recovery: editorkit.Scrub(res.Recovery), text: text}
-	for _, n := range res.Notes {
-		r.notes = append(r.notes, editorkit.Scrub(n))
-	}
-	return r
-}
-
-// lines lays the screen out at width: the recovery first (the part that
-// must be read), then the notes, then the result's text.
-func (r *serverResultScreen) lines(width int, warn, dim lipgloss.Style) []string {
-	var out []string
-	add := func(s string, style lipgloss.Style) {
-		for _, l := range strings.Split(editorkit.WrapText(s, width), "\n") {
-			out = append(out, style.Render(l))
-		}
-	}
-	plain := lipgloss.NewStyle()
-	if r.recovery != "" {
-		add("to put things right by hand:", warn)
-		add(r.recovery, plain)
-		out = append(out, "")
-	}
-	for _, n := range r.notes {
-		add("note: "+n, plain)
-	}
-	if r.text != "" {
-		if len(r.notes) > 0 || r.recovery != "" {
-			out = append(out, "")
-		}
-		add(r.text, dim)
-	}
-	return out
-}
-
-// resultWindow is the screen's lines, how many rows show and whether it
-// scrolls.
-func (m *model) resultWindow() (lines []string, rows int, scrolls bool) {
-	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	warn := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenWarning))
-	lines = m.server.result.lines(m.width, warn, dim)
-	rows = max(m.height-lipgloss.Height(tabBar(m.theme, TabServer))-1, 1)
-	if len(lines) > rows {
-		return lines, max(rows-1, 1), true
-	}
-	return lines, rows, false
-}
-
 // updateServerResult takes keys while the result screen shows: up and down
 // scroll, esc and enter leave it; q, ctrl+c and tab work as ever. Every other
 // key is eaten, c and r included: a check or re-read would replace the
@@ -288,30 +224,19 @@ func (m *model) resultWindow() (lines []string, rows int, scrolls bool) {
 // shown again. Reports whether the key was handled here.
 func (m *model) updateServerResult(key string) bool {
 	st := &m.server
-	lines, rows, _ := m.resultWindow()
-	switch key {
-	case "up":
-		st.result.top = max(st.result.top-1, 0)
-	case "down":
-		st.result.top = min(st.result.top+1, max(len(lines)-rows, 0))
-	case "esc", "enter":
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	warn := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenWarning))
+	handled, done := st.result.Key(key, m.width, m.height, lipgloss.Height(tabBar(m.theme, TabServer)), warn, dim)
+	if done {
 		st.result = nil
-	case "q", "ctrl+c", "tab":
-		return false
 	}
-	return true
+	return handled
 }
 
 // serverResultView draws the result screen.
 func (m *model) serverResultView(bar string, dim lipgloss.Style) string {
-	lines, rows, scrolls := m.resultWindow()
-	top := min(m.server.result.top, max(len(lines)-rows, 0))
-	end := min(top+rows, len(lines))
-	shown := append([]string{}, lines[top:end]...)
-	if scrolls {
-		shown = append(shown, dim.Render(fmt.Sprintf("... lines %d-%d of %d; up/down scroll ...", top+1, end, len(lines))))
-	}
-	return tuilayout.MessageAlone(bar, strings.Join(shown, "\n"), editorkit.FitHints(m.width, m.serverResultHints(scrolls)), m.width, m.height, dim)
+	warn := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenWarning))
+	return m.server.result.View(bar, m.serverResultHints, m.width, m.height, warn, dim)
 }
 
 // serverResultHints are the result screen's hints.

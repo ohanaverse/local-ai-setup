@@ -134,7 +134,7 @@ type serverTab struct {
 	planText string
 	// result is the result screen after an apply that left notes or
 	// recovery commands to read; nil when none is showing.
-	result *serverResultScreen
+	result *editorkit.ResultScreen
 	// menuAt is the menu option the cursor is on.
 	menuAt int
 	// probeSkipped is true when the observation shown left out the LiteLLM
@@ -507,7 +507,7 @@ func pluralWord(n int, one, many string) string {
 func (m *model) applyServerApplied(msg serverAppliedMsg) tea.Cmd {
 	st := &m.server
 	st.status = serverResultText(msg.res, msg.progress)
-	st.result = newResultScreen(msg.res, st.status)
+	st.result = editorkit.NewResultScreen(msg.res.Recovery, msg.res.Notes, st.status)
 	ok := msg.res.Failed == nil && msg.res.Err == nil
 	if ok {
 		st.fields[sfPaste].SetValue("")
@@ -564,7 +564,7 @@ func (m *model) finishServerWrite(ok bool) tea.Cmd {
 		if ok && held {
 			// Notes or recovery to read (the backup's path): the quit waits.
 			st.status = "quit held back so the notes can be read; press q to quit"
-			st.result.text += "\n" + st.status
+			st.result.Text += "\n" + st.status
 		}
 		if !ok || held {
 			m.quitPending, m.tab = false, TabServer

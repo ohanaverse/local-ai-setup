@@ -485,10 +485,7 @@ func (m *model) serverPromptView(bar string, dim lipgloss.Style) string {
 			". The server may be off; y stores the setup unchecked."
 		question = "Save anyway? [y/N]"
 	default:
-		question = "Apply this plan? [y/N]"
-		body := "\n" + editorkit.WrapIndented(strings.TrimRight(st.planText, "\n"), m.width) + "\n\n" + editorkit.WrapText(question, m.width)
-		return tuilayout.MessageAlone(bar, body, editorkit.FitHints(m.width, m.serverHints()), m.width, m.height, dim)
+		return editorkit.PlanPromptView(bar, st.planText, "Apply this plan? [y/N]", m.serverHints(), m.width, m.height, dim)
 	}
-	body := "\n" + editorkit.WrapText(text, m.width) + "\n\n" + editorkit.WrapText(question, m.width)
-	return tuilayout.MessageAlone(bar, body, editorkit.FitHints(m.width, m.serverHints()), m.width, m.height, dim)
+	return editorkit.PromptView(bar, text, question, m.serverHints(), m.width, m.height, dim)
 }
