@@ -254,11 +254,11 @@ func TestServerTabNeverShowsOrRequestsAnAtPairURL(t *testing.T) {
 func TestPairLineHidesAnAtURLItWasHanded(t *testing.T) {
 	for _, raw := range atPairURLs {
 		l := pairLine(modelsetup.PairState{URL: raw, KeySet: true})
-		if l.text != "LiteLLM "+modelclient.HiddenURL+", key set" {
-			t.Errorf("%q: pair row %q", raw, l.text)
+		if l.Text != "LiteLLM "+modelclient.HiddenURL+", key set" {
+			t.Errorf("%q: pair row %q", raw, l.Text)
 		}
 	}
-	if l := pairLine(modelsetup.PairState{URL: "http://localhost:4000", KeySet: true}); l.text != "LiteLLM http://localhost:4000, key set" {
-		t.Errorf("plain pair row %q", l.text)
+	if l := pairLine(modelsetup.PairState{URL: "http://localhost:4000", KeySet: true}); l.Text != "LiteLLM http://localhost:4000, key set" {
+		t.Errorf("plain pair row %q", l.Text)
 	}
 }

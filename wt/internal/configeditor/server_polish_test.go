@@ -127,7 +127,7 @@ func TestServerTabClippedViewKeepsRadiosHintsAndWholeRows(t *testing.T) {
 			}
 			lines := strings.Split(v, "\n")
 			for i, l := range lines {
-				if strings.HasPrefix(l, strings.Repeat(" ", serverLabelW)) && strings.TrimSpace(l) != "" && i > 0 {
+				if strings.HasPrefix(l, strings.Repeat(" ", editorkit.LabelW)) && strings.TrimSpace(l) != "" && i > 0 {
 					if prev := strings.TrimSpace(lines[i-1]); prev == "" || strings.Contains(prev, "not shown") {
 						t.Errorf("%s at %dx%d: orphan continuation line %q after %q:\n%s", name, size[0], size[1], l, lines[i-1], v)
 					}
@@ -236,7 +236,7 @@ func TestServerTabNamesWhatACheckIsMissing(t *testing.T) {
 		{"token only", tok, "not checked: no url"},
 		{"neither", none, "not checked: no url and no token"},
 	} {
-		got := serverCheckLine(c.st).text
+		got := serverCheckLine(c.st).Text
 		if got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}

@@ -157,7 +157,7 @@ func (m *model) statusBlock() string {
 	// by the width alone went on drawing the status of the first render — at
 	// a width that never changed, "save failed: ..." was never shown.
 	if m.cachedStatusWidth != m.width || m.cachedStatusText != m.status {
-		m.cachedStatusBlock = lipgloss.NewStyle().Width(m.width).Render(m.status)
+		m.cachedStatusBlock = editorkit.StatusBlock(m.status, m.width)
 		m.cachedStatusWidth, m.cachedStatusText = m.width, m.status
 	}
 	return m.cachedStatusBlock

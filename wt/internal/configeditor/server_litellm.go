@@ -208,13 +208,13 @@ func (m *model) serverMenuView(bar string, dim lipgloss.Style) string {
 
 // plistModeLines is the status block's warning for a LiteLLM plist that is
 // readable by others: the word warning, the mode, and the fix.
-func plistModeLines(st modelsetup.State, home string) []serverLine {
+func plistModeLines(st modelsetup.State, home string) []editorkit.Line {
 	p := st.LiteLLMPlist
 	if !plistLoose(p) {
 		return nil
 	}
-	return []serverLine{{"", fmt.Sprintf("warning: plist mode %04o is readable by others: tighten to 0600 (chmod 600 %s)",
-		p.Mode.Perm(), editorkit.HomePath(p.Path, st.Host.Home, home)), toneWarn}}
+	return []editorkit.Line{{Label: "", Text: fmt.Sprintf("warning: plist mode %04o is readable by others: tighten to 0600 (chmod 600 %s)",
+		p.Mode.Perm(), editorkit.HomePath(p.Path, st.Host.Home, home)), Tone: editorkit.ToneWarn}}
 }
 
 // serverResultScreen is what an apply left to read: the commands to run by

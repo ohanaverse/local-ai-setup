@@ -229,7 +229,7 @@ func (m *model) resizeServerInputs() {
 		return
 	}
 	for f := range st.fields {
-		st.fields[f].Width = max(m.width-serverLabelW-1, 3)
+		st.fields[f].Width = max(m.width-editorkit.LabelW-1, 3)
 	}
 }
 
