@@ -34,9 +34,9 @@ T0 = datetime(2026, 10, 12, 15, 58, 0, tzinfo=UTC)
 ALIGN_MIN = 3
 # The cross-language fixtures at the repo root, beside wt's and llmbench's.
 CONTRACTS_DIR = Path(__file__).parents[2] / "docs" / "contracts"
-# The inventory contract: one `wt model list --json` document. wt's own tests
-# hold the same file to what the command prints
-# (wt/cmd/wt-session/model_list_contract_test.go), so a key wt renames fails there
+# The inventory contract: one `wt-model model list --json` document. wt's own
+# tests hold the same file to what the command prints
+# (wt/cmd/wt-model/model_list_contract_test.go), so a key wt renames fails there
 # before it can reach a run here. Every test that needs the golden inventory
 # reads it through this name.
 INVENTORY = CONTRACTS_DIR / "model-list.sample.json"
@@ -70,7 +70,7 @@ def _no_subprocess(*args: Any, **kwargs: Any) -> Any:
 
 @pytest.fixture(autouse=True)
 def _hermetic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """No test may fetch, run wt, or read or write the real output file or the
+    """No test may fetch, run wt-model, or read or write the real output file or the
     real snapshot cache. `urllib.request` and `subprocess` are each one shared
     module object, so these two patches hold for the whole process. A test
     that needs either replaces it with its own fake."""

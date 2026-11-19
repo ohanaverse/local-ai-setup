@@ -16,7 +16,7 @@ class InventoryRow:
 
 @dataclass(frozen=True)
 class Inventory:
-    """`wt model list --json`, without its native rows."""
+    """`wt-model model list --json`, without its native rows."""
 
     rows: tuple[InventoryRow, ...]
     registry: str  # the registry path wt read

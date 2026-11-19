@@ -112,7 +112,7 @@ def _parser() -> argparse.ArgumentParser:
         "--inventory",
         metavar="FILE",
         type=Path,
-        help="read saved `wt model list --json` output instead of running wt",
+        help="read saved `wt-model model list --json` output instead of running wt-model",
     )
     shown = commands.add_parser("show", help="print the tier table from tiers.toml")
     shown.add_argument("--candidates", action="store_true", help="list the candidates too")

@@ -6,7 +6,7 @@ Guidance for Claude Code when working in `modeltiers/`. Mechanism detail (full c
 
 `modeltiers` is a Python 3.13 CLI (argparse) that writes an advisory capability tier (`marathon`, `deep`, `standard`, `quick` or `unrated`) for every model wt lists, from four public sources, into `tiers.toml`. Nothing routes on a tier yet. Design: `../docs/superpowers/specs/2026-10-12-model-tiers-design.md`. User guide: `../docs/guides/12-model-tiers.md`. The committed `aliases.toml` and `contracts.toml` were calibrated against the live sources and the owner's inventory on 2026-10-12 (the contracts' `version` is `2026-10-21`: the Fable 5.1 and MiniMax-M3 sentinels were re-pinned after a source re-score, floors kept): every sentinel held, and each alias rests on evidence that identifies its model. What that run could not identify was left listed, not guessed; the record is the Calibration Record in `../docs/superpowers/plans/2026-10-12-model-tiers-step4-calibration-docs.md`.
 
-It never writes `registry.toml`, `config.yaml` or any wt state, and it never reads `registry.toml`: the inventory comes only from `wt model list --json`.
+It never writes `registry.toml`, `config.yaml` or any wt state, and it never reads `registry.toml`: the inventory comes only from `wt-model model list --json`.
 
 ## Commands
 
@@ -14,7 +14,7 @@ Run from the repo root as `uv run --directory modeltiers modeltiers <command>`, 
 
 | Command | Effect |
 |---|---|
-| `modeltiers run [--dry-run] [--offline] [--inventory FILE]` | Validate the data files (`aliases.toml`, `contracts.toml`, `vendors.toml`), read the inventory, load the four sources, follow each closed lab's catalog address through its redirects (not under `--offline`), resolve, assign tiers, check sentinels, print the report, write `tiers.toml`. `--dry-run` does everything except write and returns the code the real run would (except under a redirected registry, below). `--offline` fetches nothing and reads each source's newest good snapshot. `--inventory FILE` reads saved `wt model list --json` output and does not run wt. |
+| `modeltiers run [--dry-run] [--offline] [--inventory FILE]` | Validate the data files (`aliases.toml`, `contracts.toml`, `vendors.toml`), read the inventory, load the four sources, follow each closed lab's catalog address through its redirects (not under `--offline`), resolve, assign tiers, check sentinels, print the report, write `tiers.toml`. `--dry-run` does everything except write and returns the code the real run would (except under a redirected registry, below). `--offline` fetches nothing and reads each source's newest good snapshot. `--inventory FILE` reads saved `wt-model model list --json` output and does not run wt-model. |
 | `modeltiers show [--candidates] [--sort COLUMN] [--wide] [--html FILE]` | The tier table from `tiers.toml`, led by the file's age in days (a `warning:` on stderr past 14), rows by aligned score, highest first, unless `--sort` says otherwise. `--html FILE` writes one self-contained sortable page, opening in that order, with each canonical key linked to its model card (Hugging Face, the lab's catalog of models, or OpenRouter), prints `wrote <absolute path>`, and refuses (exit 1) a `FILE` that is the output file under any name (symlink, case variant). |
 | `modeltiers explain <model>` | One entry's identity, tier, votes, scores, aligned score, gates and notes. Argument: exact `provider_id/model_name`, else a canonical key in any case. No match exits 1. |
 | `modeltiers ladder <signal> [--low SCORE] [--high SCORE]` | One signal's resolved scores highest first with gaps and midpoints; the tool for moving a floor (guide step 5). No window match exits 1. |
@@ -96,7 +96,7 @@ Both are package data under `src/modeltiers/data/`, loaded with `importlib.resou
 
 ## Inventory contract
 
-`docs/contracts/model-list.sample.json` is one `wt model list --json` document, shared with wt: wt's `cmd/wt-session/model_list_contract_test.go` fails when it and the command's output differ in a key or JSON type, and these tests read it as the golden inventory (`INVENTORY` in `tests/conftest.py`). A key wt renames reaches this suite through the fixture, in a change that runs `modeltiers-ci`. The registry path in it is made up; `size_bytes` and `path` are nulled. It is not in `tests/fixtures/`; a row added to it moves the same pinned counts as a golden-fixture row, and wt's test must still pass.
+`docs/contracts/model-list.sample.json` is one `wt-model model list --json` document, shared with wt: wt's `cmd/wt-model/model_list_contract_test.go` fails when it and the command's output differ in a key or JSON type, and these tests read it as the golden inventory (`INVENTORY` in `tests/conftest.py`). A key wt renames reaches this suite through the fixture, in a change that runs `modeltiers-ci`. The registry path in it is made up; `size_bytes` and `path` are nulled. It is not in `tests/fixtures/`; a row added to it moves the same pinned counts as a golden-fixture row, and wt's test must still pass.
 
 ## Output file
 

@@ -444,12 +444,14 @@ def test_an_inventory_error_exits_1_before_any_fetch(
     specs: SourceSpecs, good_answers: Answers, capsys: pytest.CaptureFixture[str]
 ) -> None:
     def no_wt() -> str:
-        raise InventoryError("wt is not on PATH; install it or pass --inventory FILE")
+        raise InventoryError(
+            "wt-model is not on PATH; install it (make install) or pass --inventory FILE"
+        )
 
     deps, fetcher = _deps(specs, good_answers, run_wt=no_wt)
     assert cli.main(["run", "--dry-run"], deps=deps) == 1
     assert capsys.readouterr().err == failed(
-        1, "wt is not on PATH; install it or pass --inventory FILE"
+        1, "wt-model is not on PATH; install it (make install) or pass --inventory FILE"
     )
     assert fetcher.calls == []
 
