@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"sort"
 	"strings"
 
@@ -19,116 +18,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type litellmOutcomeJSON struct {
-	ID     string `json:"id"`
-	Action string `json:"action,omitempty"`
-	Error  string `json:"error,omitempty"`
-}
-
-type litellmResultJSON struct {
-	Outcomes []litellmOutcomeJSON `json:"outcomes"`
-	Changed  bool                 `json:"changed"`
-	Warnings []string             `json:"warnings"`
-}
-
-var errLitellmIDFailed = errors.New("one or more models could not be applied")
-
-// reportLitellm prints a Result (text or JSON) and returns errLitellmIDFailed
-// when any id was rejected, so the process exits 1 while the per-id detail is
-// still printed for callers that parse it.
-func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON bool) error {
-	failed := false
-	doc := litellmResultJSON{Outcomes: []litellmOutcomeJSON{}, Changed: res.Changed, Warnings: append([]string{}, res.Warnings...)}
-	for _, o := range res.Outcomes {
-		j := litellmOutcomeJSON{ID: o.ID, Action: o.Action}
-		if o.Err != nil {
-			j.Action, j.Error, failed = "", o.Err.Error(), true
-		}
-		doc.Outcomes = append(doc.Outcomes, j)
-	}
-	if asJSON {
-		if err := json.NewEncoder(out).Encode(doc); err != nil {
-			return err
-		}
-	} else {
-		for _, j := range doc.Outcomes {
-			if j.Error != "" {
-				fmt.Fprintf(errOut, "%s: %s\n", j.ID, j.Error)
-			} else {
-				fmt.Fprintf(out, "%s: %s\n", j.ID, j.Action)
-			}
-		}
-		for _, w := range doc.Warnings {
-			fmt.Fprintf(errOut, "warning: %s\n", w)
-		}
-	}
-	if failed {
-		return errLitellmIDFailed
-	}
-	return nil
-}
-
-type syncPlanJSON struct {
-	DryRun bool `json:"dry_run"`
-	Plan   struct {
-		Add     []string             `json:"add"`
-		Adopt   []string             `json:"adopt"`
-		Rewrite []string             `json:"rewrite"`
-		Remove  []string             `json:"remove"`
-		Repair  []string             `json:"repair"`
-		Errors  []litellmOutcomeJSON `json:"errors"`
-	} `json:"plan"`
-	Warnings []string `json:"warnings"`
-}
-
-// reportSyncPlan prints a dry-run plan plus the probe warnings the real sync
-// would report, in both renderings; exit status 1 when any desired id could
-// not be built, like a real sync.
-func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, warnings []string, asJSON bool) error {
-	doc := syncPlanJSON{DryRun: true, Warnings: append([]string{}, warnings...)}
-	doc.Plan.Add = append([]string{}, plan.Add...)
-	doc.Plan.Adopt = append([]string{}, plan.Adopt...)
-	doc.Plan.Rewrite = append([]string{}, plan.Rewrite...)
-	doc.Plan.Remove = append([]string{}, plan.Remove...)
-	doc.Plan.Repair = append([]string{}, plan.Repair...)
-	doc.Plan.Errors = []litellmOutcomeJSON{}
-	for _, e := range plan.Errors {
-		doc.Plan.Errors = append(doc.Plan.Errors, litellmOutcomeJSON{ID: e.ID, Error: e.Err.Error()})
-	}
-	if asJSON {
-		if err := json.NewEncoder(out).Encode(doc); err != nil {
-			return err
-		}
-	} else {
-		for _, id := range plan.Add {
-			verb := "route"
-			switch {
-			case slices.Contains(plan.Adopt, id):
-				verb = "adopt"
-			case slices.Contains(plan.Rewrite, id):
-				verb = "rewrite"
-			}
-			fmt.Fprintf(out, "%s: would %s\n", id, verb)
-		}
-		for _, id := range plan.Remove {
-			fmt.Fprintf(out, "%s: would unroute\n", id)
-		}
-		for _, id := range plan.Repair {
-			fmt.Fprintf(out, "%s: would set api_base\n", id)
-		}
-		for _, e := range doc.Plan.Errors {
-			fmt.Fprintf(errOut, "%s: %s\n", e.ID, e.Error)
-		}
-		for _, w := range doc.Warnings {
-			fmt.Fprintf(errOut, "warning: %s\n", w)
-		}
-	}
-	if len(plan.Errors) > 0 {
-		return errLitellmIDFailed
-	}
-	return nil
-}
-
 // desiredRouteIDs lists the model_names a sync would leave in config.yaml
 // now (litellm.DesiredRouteIDsFor). It reads the probeInventory seam at call
 // time, so a test's stub is honoured.
@@ -137,22 +26,7 @@ func desiredRouteIDs(ctx context.Context) ([]string, error) {
 }
 
 func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
-	desired, o, probeWarns := litellm.SyncInputs(cfg, probeInventory)
-	if dryRun {
-		plan, err := litellm.PlanSync(cfg, desired, o)
-		if err != nil {
-			return err
-		}
-		// Same order as the real sync: what the write would leave behind,
-		// then the probe warnings.
-		return reportSyncPlan(out, errOut, plan, append(slices.Clone(plan.Warnings), probeWarns...), asJSON)
-	}
-	res, err := litellm.Sync(cfg, desired, o)
-	if err != nil {
-		return err
-	}
-	res.Warnings = append(res.Warnings, probeWarns...)
-	return reportLitellm(out, errOut, res, asJSON)
+	return litellm.RunSync(out, errOut, cfg, probeInventory, asJSON, dryRun)
 }
 
 func runLitellmList(out io.Writer, asJSON bool) error {

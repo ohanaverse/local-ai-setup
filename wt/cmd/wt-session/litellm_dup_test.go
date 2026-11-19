@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -195,9 +196,9 @@ func TestLitellmSyncLeavesTheRouteOfADuplicatedIDAlone(t *testing.T) {
 
 	out, errOut := run("sync", "--json")
 	var doc struct {
-		Outcomes []litellmOutcomeJSON `json:"outcomes"`
-		Changed  bool                 `json:"changed"`
-		Warnings []string             `json:"warnings"`
+		Outcomes []litellm.OutcomeJSON `json:"outcomes"`
+		Changed  bool                  `json:"changed"`
+		Warnings []string              `json:"warnings"`
 	}
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatalf("sync --json is not JSON: %v\n%s", err, out)
@@ -212,7 +213,7 @@ func TestLitellmSyncLeavesTheRouteOfADuplicatedIDAlone(t *testing.T) {
 		t.Errorf("sync --json stderr = %q, want nothing: the warning is in the document", errOut)
 	}
 	out, _ = run("sync", "--dry-run", "--json")
-	var plan syncPlanJSON
+	var plan litellm.SyncPlanJSON
 	if err := json.Unmarshal([]byte(out), &plan); err != nil {
 		t.Fatalf("sync --dry-run --json is not JSON: %v\n%s", err, out)
 	}

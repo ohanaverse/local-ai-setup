@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/spf13/cobra"
@@ -237,19 +237,10 @@ func enableSushiForAgents(out io.Writer, providerID string) []string {
 	return nil
 }
 
-// syncAndWarn runs the one route sync that follows a registry write, prints
-// its lines, and prints every warning on stderr. It never fails: the write
-// succeeded, so the command exits 0.
-func syncAndWarn(out, errOut io.Writer, warnings []string) error {
-	var syncOut bytes.Buffer
-	if w := syncRoutesAfterWrite(&syncOut, errOut); w != "" {
-		warnings = append(warnings, w)
-	}
-	_, _ = io.Copy(out, &syncOut)
-	for _, w := range warnings {
-		fmt.Fprintf(errOut, "warning: %s\n", w)
-	}
-	return nil
+// syncAndWarn runs the one route sync that follows a registry write
+// (litellm.SyncAndWarn), reading the syncRoutesAfterWrite seam per call.
+func syncAndWarn(out, errOut io.Writer, w []string) error {
+	return litellm.SyncAndWarn(out, errOut, w, syncRoutesAfterWrite)
 }
 
 func modelEditCmd(_ *app) *cobra.Command {

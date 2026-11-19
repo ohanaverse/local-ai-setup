@@ -840,9 +840,9 @@ func jsonKeySet(t *testing.T, raw []byte) []string {
 // reads that block — nothing here calls `wt litellm sync --dry-run --json` —
 // so this is not guarding a live consumer. It is guarding the fixture itself:
 // the block is the documented shape of the command's output, and without
-// this pin a field added to syncPlanJSON (or to its nested plan) would
+// this pin a field added to litellm.SyncPlanJSON (or to its nested plan) would
 // silently leave the fixture describing a shape wt no longer emits, for
-// whoever reads it next. A field added to syncPlanJSON must reach the fixture
+// whoever reads it next. A field added to litellm.SyncPlanJSON must reach the fixture
 // in the same change.
 func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 	plan := litellm.SyncPlan{
@@ -855,8 +855,8 @@ func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 	var out, errOut bytes.Buffer
 	// No probe warnings in this rendering; a plan with errors exits 1, like a
 	// real sync.
-	if err := reportSyncPlan(&out, &errOut, plan, nil, true); !errors.Is(err, errLitellmIDFailed) {
-		t.Fatalf("reportSyncPlan err = %v, want errLitellmIDFailed", err)
+	if err := litellm.ReportSyncPlan(&out, &errOut, plan, nil, true); !errors.Is(err, litellm.ErrIDFailed) {
+		t.Fatalf("litellm.ReportSyncPlan err = %v, want litellm.ErrIDFailed", err)
 	}
 	raw, err := os.ReadFile("../../../docs/contracts/litellm-cli.sample.json")
 	if err != nil {
@@ -880,7 +880,7 @@ func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sync --dry-run --json =\n%s\nfixture =\n%s", out.String(), block)
 	}
-	// Pin the key sets too, so a field that is added to syncPlanJSON but left
+	// Pin the key sets too, so a field that is added to litellm.SyncPlanJSON but left
 	// at its zero value (and would otherwise slip past a value comparison only
 	// because the fixture happens not to exercise it) still fails here.
 	if gotKeys, wantKeys := jsonKeySet(t, out.Bytes()), jsonKeySet(t, block); !slices.Equal(gotKeys, wantKeys) {
@@ -940,8 +940,8 @@ func TestLitellmSyncJSONMatchesContract(t *testing.T) {
 		t.Fatalf("rows = %v, want the discovered route written marked", rows)
 	}
 	var out, errOut bytes.Buffer
-	if err := reportLitellm(&out, &errOut, res, true); !errors.Is(err, errLitellmIDFailed) {
-		t.Fatalf("reportLitellm err = %v, want errLitellmIDFailed", err)
+	if err := litellm.Report(&out, &errOut, res, true); !errors.Is(err, litellm.ErrIDFailed) {
+		t.Fatalf("litellm.Report err = %v, want litellm.ErrIDFailed", err)
 	}
 	raw, err := os.ReadFile("../../../docs/contracts/litellm-cli.sample.json")
 	if err != nil {
@@ -1228,7 +1228,7 @@ litellm_settings:
 	if err := runLitellmSync(&out, &errOut, cfg, true, true); err != nil {
 		t.Fatalf("dry run: %v (stderr %q)", err, errOut.String())
 	}
-	var dry syncPlanJSON
+	var dry litellm.SyncPlanJSON
 	if err := json.Unmarshal(out.Bytes(), &dry); err != nil {
 		t.Fatalf("dry run: not JSON: %q", out.String())
 	}
@@ -1291,7 +1291,7 @@ func TestStartHookAndSyncAgreeOnDiscoveredRoute(t *testing.T) {
 	if err := runLitellmSync(&out, &errOut, cfg, true, true); err != nil {
 		t.Fatalf("dry run: %v (stderr %q)", err, errOut.String())
 	}
-	var dry syncPlanJSON
+	var dry litellm.SyncPlanJSON
 	if err := json.Unmarshal(out.Bytes(), &dry); err != nil {
 		t.Fatalf("dry run: not JSON: %q", out.String())
 	}
@@ -1302,7 +1302,7 @@ func TestStartHookAndSyncAgreeOnDiscoveredRoute(t *testing.T) {
 	if err := runLitellmSync(&out, &errOut, cfg, true, false); err != nil {
 		t.Fatalf("sync: %v (stderr %q)", err, errOut.String())
 	}
-	var doc litellmResultJSON
+	var doc litellm.ResultJSON
 	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
 		t.Fatalf("sync: not JSON: %q", out.String())
 	}
@@ -1383,7 +1383,7 @@ litellm_settings:
 	if err := runLitellmSync(&out, &errOut, cfg, true, true); err != nil {
 		t.Fatalf("dry run: %v (stderr %q)", err, errOut.String())
 	}
-	var dry syncPlanJSON
+	var dry litellm.SyncPlanJSON
 	if err := json.Unmarshal(out.Bytes(), &dry); err != nil {
 		t.Fatalf("dry run: not JSON: %q", out.String())
 	}
@@ -1394,7 +1394,7 @@ litellm_settings:
 	if err := runLitellmSync(&out, &errOut, cfg, true, false); err != nil {
 		t.Fatalf("sync: %v (stderr %q)", err, errOut.String())
 	}
-	var real litellmResultJSON
+	var real litellm.ResultJSON
 	if err := json.Unmarshal(out.Bytes(), &real); err != nil {
 		t.Fatalf("sync: not JSON: %q", out.String())
 	}
@@ -1479,7 +1479,7 @@ general_settings:
 			if err := runLitellmSync(&out, &errOut, tc.cfg, true, true); err != nil {
 				t.Fatalf("dry run: %v (stderr %q)", err, errOut.String())
 			}
-			var dry syncPlanJSON
+			var dry litellm.SyncPlanJSON
 			if err := json.Unmarshal(out.Bytes(), &dry); err != nil {
 				t.Fatalf("dry run: not JSON: %q", out.String())
 			}
@@ -1490,7 +1490,7 @@ general_settings:
 			if err := runLitellmSync(&out, &errOut, tc.cfg, true, false); err != nil {
 				t.Fatalf("sync: %v (stderr %q)", err, errOut.String())
 			}
-			var real litellmResultJSON
+			var real litellm.ResultJSON
 			if err := json.Unmarshal(out.Bytes(), &real); err != nil {
 				t.Fatalf("sync: not JSON: %q", out.String())
 			}
@@ -1665,7 +1665,7 @@ litellm_settings:
 	if err := runLitellmSync(&out, &errOut, cfg, true, true); err != nil {
 		t.Fatalf("dry run: %v (stderr %q)", err, errOut.String())
 	}
-	var dry syncPlanJSON
+	var dry litellm.SyncPlanJSON
 	if err := json.Unmarshal(out.Bytes(), &dry); err != nil {
 		t.Fatalf("dry run: not JSON: %q", out.String())
 	}
@@ -1677,7 +1677,7 @@ litellm_settings:
 	if err := runLitellmSync(&out, &errOut, cfg, true, false); err != nil {
 		t.Fatalf("sync: %v (stderr %q)", err, errOut.String())
 	}
-	var real litellmResultJSON
+	var real litellm.ResultJSON
 	if err := json.Unmarshal(out.Bytes(), &real); err != nil {
 		t.Fatalf("sync: not JSON: %q", out.String())
 	}
@@ -1806,7 +1806,7 @@ func TestSyncAndStartHookAgreeWhenOmlxListsAnUnloadedSibling(t *testing.T) {
 // by hand, so the change must be visible both before and after.
 func TestSyncReportsTheAPIBaseRepairInText(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if err := reportSyncPlan(&out, &errOut, litellm.SyncPlan{Repair: []string{"ollama/q8"}}, nil, false); err != nil {
+	if err := litellm.ReportSyncPlan(&out, &errOut, litellm.SyncPlan{Repair: []string{"ollama/q8"}}, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := out.String(); !strings.Contains(got, "ollama/q8: would set api_base\n") {
@@ -1814,7 +1814,7 @@ func TestSyncReportsTheAPIBaseRepairInText(t *testing.T) {
 	}
 	out.Reset()
 	res := litellm.Result{Outcomes: []litellm.Outcome{{ID: "ollama/q8", Action: "api_base set"}}, Changed: true}
-	if err := reportLitellm(&out, &errOut, res, false); err != nil {
+	if err := litellm.Report(&out, &errOut, res, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := out.String(); got != "ollama/q8: api_base set\n" {
