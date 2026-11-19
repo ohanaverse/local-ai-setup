@@ -316,6 +316,7 @@ Read [docs/internals/cleanup-and-removal.md](docs/internals/cleanup-and-removal.
 - **Auto-stop is the only stop nobody asked for** (#600): it considers only models a session registered. Every `wt` session is a client of the model server since Task 18 and registers its models, so auto-stop sees them.
 - **`wt-model` is the server, `wt model` the registry command** (#600): write them that way in prose.
 - `Deps.Config` reloads the registry per request, job and scan. `cmd/wt-model`'s tests inject a fake `Deps` through `depsFactory`; its `TestMain` carries the four isolations (config home, git, tiers, lifecycle processes).
+- **An admin command's hooks are fields of `host`** (`seams.go`: `newHost` real, `testHost()` isolated, `rootCmdWith(mk, h)` in tests); never a package var.
 
 ## Verification commands
 
