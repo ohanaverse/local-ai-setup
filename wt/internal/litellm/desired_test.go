@@ -8,9 +8,9 @@ import (
 // TestDesiredIDsMatchWhatSyncWrites pins that DesiredIDs names exactly the
 // model_names config.yaml holds after a real Sync of the same registry and
 // local snapshot: a stopped local row and a stale marked row gone, a new
-// local and the cloud rows added, a hand-written row kept. The Model server
-// tab compares this list with the proxy's model list, so a drift from Sync
-// would report a false "out of sync".
+// local and the cloud rows added, a hand-written row kept. The Setup tab
+// (wt-model setup) compares this list with the proxy's model list, so a
+// drift from Sync would report a false "out of sync".
 func TestDesiredIDsMatchWhatSyncWrites(t *testing.T) {
 	const body = `model_list:
   - model_name: ollama/gemma:9b

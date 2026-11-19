@@ -1,5 +1,5 @@
 // Package urlrule is the one url @ rule: the rule a model-server url follows
-// (internal/modelclient for a session, internal/modelsetup's Model server tab
+// (internal/modelclient for a session, internal/modelsetup's Setup tab
 // for setup) and the LiteLLM pair url follows (internal/config) — no parsing,
 // no partial echo. A url has no legitimate '@', so any url holding an ASCII
 // '@' anywhere is read as carrying a user:password and refused before it is

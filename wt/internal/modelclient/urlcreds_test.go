@@ -111,7 +111,7 @@ func countingServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
 }
 
 // TestHasUserinfoIsAnyASCIIAt pins the predicate the session side and the
-// Model server tab share: any ASCII '@' counts, with no parsing (every
+// setup screens (Mode and Setup tabs) share: any ASCII '@' counts, with no parsing (every
 // parse-based reading was bypassed); a url with none never does, and the
 // fullwidth U+FF20 and %40 are not '@'.
 func TestHasUserinfoIsAnyASCIIAt(t *testing.T) {

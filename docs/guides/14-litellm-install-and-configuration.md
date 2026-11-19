@@ -214,7 +214,7 @@ Details: [08-maintenance-and-troubleshooting.md](08-maintenance-and-troubleshoot
 
 ### 10. Link the master key to wt-model
 
-`wt-model serve` forwards inference to LiteLLM with its own copy of the master key (the "pair"), kept apart from the plist: nothing in wt reads `LITELLM_MASTER_KEY` from the plist, so the two agree only because they are kept in step: the `wt config` Model server tab does it when it links or rotates the key (below); otherwise you do.
+`wt-model serve` forwards inference to LiteLLM with its own copy of the master key (the "pair"), kept apart from the plist: nothing in wt reads `LITELLM_MASTER_KEY` from the plist, so the two agree only because they are kept in step: `wt-model setup` does it when it links or rotates the key (below); otherwise you do.
 
 ```bash
 wt-model litellm set --url http://localhost:4000 --api-key <master key>
@@ -238,9 +238,9 @@ wt litellm list          # the model ids currently routed (live state: run it, d
 - `/v1/models` is the only key check: **200** means the key is accepted, **401** means the key you sent differs from the plist's `LITELLM_MASTER_KEY`.
 - An empty `model_list` returns an empty list: that is fine before `wt litellm sync`.
 
-## What the `wt config` Model server tab does for LiteLLM
+## What `wt-model setup` does for LiteLLM
 
-The `wt config` Model server tab (design: [the model-server configuration spec](../superpowers/specs/2026-11-17-wt-session-model-server-config-design.md); session side: [06-wt-agents-and-models.md](06-wt-agents-and-models.md)) sets up the `wt-model` side. For LiteLLM it checks that the proxy is reachable, its database connected, the pair's key accepted and routes in sync, and says what to fix. It also warns when the plist is readable by group or others, and offers two LiteLLM actions in local mode: `k` (the key menu) and `t` (tighten). Both change nothing until you confirm a plan that lists every step.
+`wt-model setup`, the Setup tab of `wt-model` (design: [the model-server configuration spec](../superpowers/specs/2026-11-17-wt-session-model-server-config-design.md), split by [the phase 4 stage 2 spec](../superpowers/specs/2026-11-18-wt-phase4-stage2-design.md); session side, the `wt config` Mode tab: [06-wt-agents-and-models.md](06-wt-agents-and-models.md)) sets up the `wt-model` side. For LiteLLM it checks that the proxy is reachable, its database connected, the pair's key accepted and routes in sync, and says what to fix. It also warns when the plist is readable by group or others, and offers two LiteLLM actions in local mode: `k` (the key menu) and `t` (tighten). Both change nothing until you confirm a plan that lists every step.
 
 `k` opens a menu of up to three options, each offered only when it can work; a line under the menu says why an option is missing:
 
@@ -282,7 +282,7 @@ The tab never installs LiteLLM, Postgres, Redis or Prisma, never touches the sal
 
 ### Optional: a wt-model LaunchAgent
 
-`wt-model serve` is a foreground process; this runs it at login beside the proxy. This is the file the `wt config` Model server tab manages for `local` mode (`local.wt-model.serve`, token `~/.config/wt-model/server.token`); the tab recognises a plist with that label only when it carries wt's `managed by wt` marker comment, and otherwise reports it as not managed and never overwrites it, so a hand-made plist is yours to maintain. Use a token file (mode `0600`) that sessions also name (`token_file` under `[model-server]`, see [13-deployment-use-cases.md](13-deployment-use-cases.md)); a remote server's token is a separate file:
+`wt-model serve` is a foreground process; this runs it at login beside the proxy. This is the file `wt-model setup` manages for `local` mode (`local.wt-model.serve`, token `~/.config/wt-model/server.token`); the tab recognises a plist with that label only when it carries wt's `managed by wt` marker comment, and otherwise reports it as not managed and never overwrites it, so a hand-made plist is yours to maintain. Use a token file (mode `0600`) that sessions also name (`token_file` under `[model-server]`, see [13-deployment-use-cases.md](13-deployment-use-cases.md)); a remote server's token is a separate file:
 
 ```bash
 mkdir -p ~/.config/wt-model

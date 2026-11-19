@@ -19,7 +19,7 @@ type Probe func(*config.Config) localmodels.Snapshot
 // SyncInputs probes the local providers and returns what a sync is called
 // with: the local models to route, the options (untouched ids and families,
 // the under-the-lock recheck) and the probe warnings to report after it. The
-// one place both the real sync and the Model server tab's desired-routes
+// one place both the real sync and the Setup tab's desired-routes
 // check decide this, so they cannot disagree.
 func SyncInputs(cfg *config.Config, probe Probe) ([]config.Model, Options, []string) {
 	snap := probe(cfg)
@@ -45,7 +45,7 @@ func SyncInputs(cfg *config.Config, probe Probe) ([]config.Model, Options, []str
 }
 
 // DesiredRouteIDsFor returns the function that lists the model_names a sync
-// would leave in config.yaml now (DesiredIDs), for the Model server tab's
+// would leave in config.yaml now (DesiredIDs), for the Setup tab's
 // route check, probing with probe. It probes the providers, so it is slow;
 // the tab calls it from its observation.
 func DesiredRouteIDsFor(probe Probe) func(context.Context) ([]string, error) {

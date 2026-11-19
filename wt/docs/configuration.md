@@ -115,6 +115,10 @@ agent-toolkit deploy home --dry-run    # Preview changes
 
 `wt` (the worktree/agent launcher, `wt/cmd/wt`) is a separate tool from the Claude Code/Codex configuration this doc otherwise covers, but it reads its own model registry at `~/.config/local-ai/registry.toml`. A missing registry does not block launching an agent: a model-driven agent with no `config.toml` entry (including the case where the registry is entirely absent) launches its installed binary directly, with no model routing. `wt model init` creates the registry and its provider rows; models are added, edited and removed with `wt model add|edit|rm`, or on the Models tab of `wt-model model`; each syncs the LiteLLM routes itself. A registry with models in it is what unlocks model routing/rotation. See the "Missing registry → unconfigured-agent passthrough" note in `wt/docs/internals/config-and-registry.md` and `wt/docs/superpowers/specs/2026-09-22-wt-unconfigured-agent-passthrough-design.md` for the full behavior.
 
+### Model server setting
+
+`[model-server]` in `~/.config/agent-wt/config.toml` (`mode`, `url`, `token_file`) names the model server a session uses. It is written by the Mode tab of `wt config` (native, remote, or local as a pointer with the default url and token file) or by `wt-model setup` (which sets up a local server on this machine), each as a plan you confirm, and stays hand-editable. The `wt config` Agents tab's save keeps it as it is. See [wt-session.md](wt-session.md) and [wt-config.md](wt-config.md).
+
 ### Exit prompt setting
 
 `[launch] exit_prompt` in `~/.config/agent-wt/config.toml` is a legacy key, tolerated and ignored: the exit prompt it once controlled is removed (nothing is offered when an agent exits; cleanup is user-driven with `wt worktrees` and `wt remove`), no value is validated or consulted, and any value survives wt's saves. A non-empty value prints one note per process:
