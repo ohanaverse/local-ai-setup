@@ -9,7 +9,7 @@ A slot profile gives each of Claude Code's four slots (`fable`, `opus`, `sonnet`
 
 - create a profile, or a twin pair of profiles on ollama and openrouter models;
 - clean up profiles they no longer launch;
-- check whether a profile's models are still good choices, for example after new models were released or `wt cloud-sync` added some.
+- check whether a profile's models are still good choices, for example after new models were released or `wt-model cloud-sync` added some.
 
 Do the steps that fit the request, in this order. A plain "clean up my profiles" is steps 1-3; "make me a profile" is steps 1, 4, 5 and 6. Steps 2-4 change the file, so step 6 follows any of them.
 
@@ -138,4 +138,4 @@ A local model is started by smoke on the model server, and smoke asks nothing wh
 - Open weights first and tier score first; price second.
 - Say plainly when confidence is low, a model is unrated, tool calling is unknown, or the tiers are stale. Never present a subscription price as comparable with a per-token one.
 - Model names, counts and scores come from the commands at the time you run them. Never write them into repo docs, and never state them from memory.
-- Nothing routes on a tier; this skill only edits the file. It does not run `wt cloud-sync`, add registry models or change LiteLLM routes; suggest those instead when a model the user wants is not in the registry (`wt-model model add`, guide 02).
+- Nothing routes on a tier; this skill only edits the file. It does not run `wt-model cloud-sync`, add registry models or change LiteLLM routes; suggest those instead when a model the user wants is not in the registry (`wt-model model add`, guide 02).
