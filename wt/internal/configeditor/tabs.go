@@ -40,6 +40,10 @@ type Options struct {
 	// Server are the functions the Model server tab reaches the machine
 	// through. Run fills in the real ones for any left nil.
 	Server ServerDeps
+	// UserHome is the home directory paths are abbreviated against when the
+	// observed state names none; nil means os.UserHomeDir. It is read once,
+	// in Run.
+	UserHome func() (string, error)
 }
 
 // ServerDeps are the Model server tab's ways out of the program. Each is

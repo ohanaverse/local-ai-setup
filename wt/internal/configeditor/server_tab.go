@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -410,9 +411,9 @@ func (m *model) applyServerPlanned(msg serverPlannedMsg) {
 	if msg.err != nil {
 		var ref *modelsetup.RefusalError
 		if errors.As(msg.err, &ref) {
-			st.status = scrub(ref.Error())
+			st.status = editorkit.Scrub(ref.Error())
 		} else {
-			st.status = "no plan: " + scrub(msg.err.Error()) + "; nothing was changed"
+			st.status = "no plan: " + editorkit.Scrub(msg.err.Error()) + "; nothing was changed"
 		}
 		return
 	}
@@ -426,7 +427,7 @@ func (m *model) applyServerPlanned(msg serverPlannedMsg) {
 // placeholder), since the url written replaces it and its credentials are
 // gone. Both are data, not wording.
 func serverPlanText(s modelsetup.State, p modelsetup.Plan) string {
-	text := scrub(p.Format())
+	text := editorkit.Scrub(p.Format())
 	if s.Config.URLHadCredentials && p.WritesURL() {
 		text += "the stored url's credentials are not kept: it contained an @, and the url above replaces it\n"
 	}
@@ -463,7 +464,7 @@ func stepKinds(steps []modelsetup.Step) string {
 func serverResultText(res modelsetup.Result, progress []string) string {
 	var lines []string
 	for _, l := range progress {
-		lines = append(lines, scrub(l))
+		lines = append(lines, editorkit.Scrub(l))
 	}
 	if res.Failed == nil && res.Err == nil {
 		if len(res.Done) == 0 {
@@ -479,9 +480,9 @@ func serverResultText(res modelsetup.Result, progress []string) string {
 		var wait *modelsetup.WaitError
 		switch {
 		case errors.As(res.Err, &wait):
-			line += ": wt-model did not answer at " + scrub(wait.URL) + " (" + serverKindWord(wait.Kind) + "); see " + wait.Log
+			line += ": wt-model did not answer at " + editorkit.Scrub(wait.URL) + " (" + serverKindWord(wait.Kind) + "); see " + wait.Log
 		case res.Err != nil:
-			line += ": " + scrub(res.Err.Error())
+			line += ": " + editorkit.Scrub(res.Err.Error())
 		}
 		if len(res.Done) > 0 {
 			line += "; done before it: " + stepKinds(res.Done)
@@ -489,7 +490,7 @@ func serverResultText(res modelsetup.Result, progress []string) string {
 		lines = append(lines, line+"; nothing after it was changed")
 	}
 	for _, w := range res.Warnings {
-		lines = append(lines, "warning: "+scrub(w))
+		lines = append(lines, "warning: "+editorkit.Scrub(w))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -543,7 +544,7 @@ func (m *model) serverControlCmd(a modelsetup.ControlAction) tea.Cmd {
 func (m *model) applyServerControlled(msg serverControlledMsg) tea.Cmd {
 	st := &m.server
 	if msg.err != nil {
-		st.status = msg.action.String() + " failed: " + scrub(msg.err.Error())
+		st.status = msg.action.String() + " failed: " + editorkit.Scrub(msg.err.Error())
 	} else {
 		st.status = modelsetup.AgentLabel + " " + controlWords[msg.action][1]
 	}

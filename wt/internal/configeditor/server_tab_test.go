@@ -158,6 +158,7 @@ func runCmd(t *testing.T, m *model, cmd tea.Cmd) *model {
 func serverEditor(t *testing.T, sm *serverMachine, width, height int) *model {
 	t.Helper()
 	m := newModel(testTheme(), &config.Config{}, nil)
+	m.home = testUserHome
 	m.opts = Options{StartTab: TabServer, Server: sm.deps(), Models: newTabMachine(t, "").deps()}
 	m.tab = TabServer
 	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
@@ -1298,15 +1299,6 @@ func TestServerTabPlansTheSnapshotTakenAtA(t *testing.T) {
 	}
 	if sm.plans != 1 || sm.desired[0].URL != "https://gpu.example:8787" || !sm.desired[0].SaveUnchecked {
 		t.Errorf("Plan got url %q SaveUnchecked %v, want the snapshot's url with the answer", sm.desired[0].URL, sm.desired[0].SaveUnchecked)
-	}
-}
-
-// TestScrubTakesUserinfoThroughTheLastAt pins carry-forward 4: a password
-// with an @ in it is taken out whole, not up to its first @.
-func TestScrubTakesUserinfoThroughTheLastAt(t *testing.T) {
-	got := scrub("see https://me:p@ss@gpu.example:8787/x and http://a@b/ or mailto me@host")
-	if want := "see https://gpu.example:8787/x and http://b/ or mailto me@host"; got != want {
-		t.Errorf("scrub = %q, want %q", got, want)
 	}
 }
 

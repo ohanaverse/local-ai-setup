@@ -2,10 +2,10 @@ package configeditor
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -103,47 +103,6 @@ type serverLine struct {
 	tone        tone
 }
 
-// userinfoRE finds a user:password in a url inside free text, through the
-// last @ before the host: a password may hold an @ itself.
-var userinfoRE = regexp.MustCompile(`://[^/\s]*@`)
-
-// keyRE finds a LiteLLM-style key (sk- and a long run of key characters) that
-// does not continue a longer word: group 1 is the character before it (RE2
-// has no lookbehind), kept by the replacement.
-var keyRE = regexp.MustCompile(`(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}`)
-
-// scrub takes any url userinfo and any sk- key out of text the tab draws:
-// Observe already strips them from what it stores, but a message a dep
-// composed may still carry one, and nothing the tab shows may hold a
-// credential.
-//
-// Deliberately greedy: an @ anywhere before the first / or space ends the
-// userinfo, so "https://h:1?x=a@b" loses its host too. That errs on the safe
-// side (a credential is never shown); TestScrubTakesTheHostWithAnAtInTheQuery
-// pins it.
-func scrub(s string) string {
-	return keyRE.ReplaceAllString(userinfoRE.ReplaceAllString(s, "://"), "${1}sk-<hidden>")
-}
-
-// homePath writes a path under home with ~ for the home.
-//
-// The token file is shown in this one form whatever the config wrote: Observe
-// hands back the expanded path (State.Token.Path), which is the file a
-// session reads, while [model-server] token_file may say ~/... or the same
-// path in full. Abbreviating the expanded path against the home Observe used
-// gives the ~ form a user writes, is the same file the line's ok / loose /
-// missing is about, and stays one form when the value came from
-// WT_MODEL_TOKEN_FILE or the agent's plist instead of the table.
-func homePath(path, home string) string {
-	if home == "" || home == "/" {
-		return tildePath(path)
-	}
-	if rest, ok := strings.CutPrefix(path, home); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
-		return "~" + rest
-	}
-	return path
-}
-
 // modeSource says where the effective mode came from.
 func modeSource(r modelclient.Resolution) string {
 	switch r.Source {
@@ -177,7 +136,7 @@ func hasEnv(st modelsetup.State, name string) bool {
 }
 
 // tokenLine is the token file and its state, as a word.
-func tokenLine(st modelsetup.State) serverLine {
+func tokenLine(st modelsetup.State, home string) serverLine {
 	t := st.Token
 	if t.Path == "" {
 		if hasEnv(st, "WT_MODEL_TOKEN") {
@@ -185,7 +144,7 @@ func tokenLine(st modelsetup.State) serverLine {
 		}
 		return serverLine{"token", "none set", toneDim}
 	}
-	path := homePath(t.Path, st.Host.Home)
+	path := editorkit.HomePath(t.Path, st.Host.Home, home)
 	switch {
 	case t.Loose:
 		return serverLine{"token", path + "  loose: chmod 600 " + path, toneBad}
@@ -199,7 +158,7 @@ func tokenLine(st modelsetup.State) serverLine {
 
 func pairLine(p modelsetup.PairState) serverLine {
 	if p.Err != "" {
-		return serverLine{"pair", "unreadable: " + scrub(p.Err), toneBad}
+		return serverLine{"pair", "unreadable: " + editorkit.Scrub(p.Err), toneBad}
 	}
 	url := p.URL
 	switch {
@@ -215,7 +174,7 @@ func pairLine(p modelsetup.PairState) serverLine {
 	if p.KeySet {
 		key = "key set"
 	}
-	l := serverLine{"pair", "LiteLLM " + scrub(url) + ", " + key, toneNone}
+	l := serverLine{"pair", "LiteLLM " + editorkit.Scrub(url) + ", " + key, toneNone}
 	if p.URL == "" || !p.KeySet {
 		l.tone = toneWarn
 	}
@@ -247,7 +206,7 @@ func agentLines(st modelsetup.State) []serverLine {
 	}
 	lines := []serverLine{{"agent", modelsetup.AgentLabel + ": " + strings.Join(facts, ", "), toneNone}}
 	if a.Err != "" {
-		lines = append(lines, serverLine{"", "problem: " + scrub(a.Err), toneBad})
+		lines = append(lines, serverLine{"", "problem: " + editorkit.Scrub(a.Err), toneBad})
 	}
 	if l := st.Listener; l.PID != 0 && !l.Ours {
 		lines = append(lines, serverLine{"", fmt.Sprintf("port %d is held by pid %d, not the agent", l.Port, l.PID), toneWarn})
@@ -278,13 +237,13 @@ func serverCheckLine(st modelsetup.State) serverLine {
 	case !s.Checked && s.Message != "":
 		// A message that already says so (a url with an '@', a cancelled
 		// read) is not prefixed twice.
-		return serverLine{"server", "not checked: " + scrub(strings.TrimPrefix(s.Message, "not checked: ")), toneDim}
+		return serverLine{"server", "not checked: " + editorkit.Scrub(strings.TrimPrefix(s.Message, "not checked: ")), toneDim}
 	case !s.Checked:
 		return serverLine{"server", "not checked: " + missingForCheck(st), toneDim}
 	case s.OK:
-		return serverLine{"server", fmt.Sprintf("ok: wt-model answers at %s (api %d, schema %d)", scrub(s.URL), s.API, s.Schema), toneNone}
+		return serverLine{"server", fmt.Sprintf("ok: wt-model answers at %s (api %d, schema %d)", editorkit.Scrub(s.URL), s.API, s.Schema), toneNone}
 	}
-	return serverLine{"server", "problem: " + serverKindWord(s.Kind) + ": " + scrub(s.Message), toneBad}
+	return serverLine{"server", "problem: " + serverKindWord(s.Kind) + ": " + editorkit.Scrub(s.Message), toneBad}
 }
 
 // missingForCheck says what a check of the server lacked: the url, the token
@@ -337,7 +296,7 @@ func litellmLines(st modelsetup.State) []serverLine {
 		word, tn := checkWord(ch.c)
 		text := ch.name + " " + word
 		if ch.c.Detail != "" {
-			text += ": " + scrub(ch.c.Detail)
+			text += ": " + editorkit.Scrub(ch.c.Detail)
 		}
 		label := ""
 		if i == 0 {
@@ -353,7 +312,7 @@ func litellmLines(st modelsetup.State) []serverLine {
 // serverStatusLines is the status block: the effective mode and where it
 // came from, the url, the token file, the pair, the agent, the server check,
 // the LiteLLM checks, the env-override line and the problems.
-func serverStatusLines(st modelsetup.State) []serverLine {
+func serverStatusLines(st modelsetup.State, home string) []serverLine {
 	var lines []serverLine
 	r := st.Resolution
 	switch {
@@ -363,7 +322,7 @@ func serverStatusLines(st modelsetup.State) []serverLine {
 		// The banner above says why, once.
 		lines = append(lines, serverLine{"mode", "unknown: config.toml is not readable", toneWarn})
 	case r.Problem != "":
-		lines = append(lines, serverLine{"mode", "problem: " + scrub(r.Problem), toneBad})
+		lines = append(lines, serverLine{"mode", "problem: " + editorkit.Scrub(r.Problem), toneBad})
 	default:
 		lines = append(lines, serverLine{"mode", "unset: choose one below", toneWarn})
 	}
@@ -371,16 +330,16 @@ func serverStatusLines(st modelsetup.State) []serverLine {
 	if url == "" {
 		url = "none set"
 	}
-	lines = append(lines, serverLine{"url", scrub(url), toneNone})
+	lines = append(lines, serverLine{"url", editorkit.Scrub(url), toneNone})
 	pair := pairLine(st.Pair)
 	if st.Config.ParseErr != "" {
 		pair = serverLine{"pair", "not read", toneDim}
 	}
-	lines = append(lines, tokenLine(st), pair)
+	lines = append(lines, tokenLine(st, home), pair)
 	lines = append(lines, agentLines(st)...)
 	lines = append(lines, serverCheckLine(st))
 	lines = append(lines, litellmLines(st)...)
-	lines = append(lines, plistModeLines(st)...)
+	lines = append(lines, plistModeLines(st, home)...)
 	if names := envNames(st); len(names) > 0 {
 		lines = append(lines, serverLine{"env", strings.Join(names, ", ") + " set: they override config.toml", toneWarn})
 	}
@@ -397,7 +356,7 @@ func serverStatusLines(st modelsetup.State) []serverLine {
 		if i == 0 {
 			label = "problems"
 		}
-		lines = append(lines, serverLine{label, scrub(p), toneBad})
+		lines = append(lines, serverLine{label, editorkit.Scrub(p), toneBad})
 	}
 	return lines
 }
@@ -483,46 +442,11 @@ func (m *model) serverFieldLines() []string {
 		}
 		view := st.fields[f].View()
 		if f == sfURL {
-			view = scrub(view)
+			view = editorkit.Scrub(view)
 		}
 		lines = append(lines, tuilayout.PadRunes(label, serverLabelW)+view)
 	}
 	return lines
-}
-
-// breakPath splits a path into lines no wider than width, breaking only
-// after a "/"; a segment wider than the width on its own is cut at the width.
-func breakPath(path string, width int) []string {
-	if width <= 0 || len(path) <= width {
-		return []string{path}
-	}
-	var segs []string
-	for rest := path; rest != ""; {
-		i := strings.IndexByte(rest, '/')
-		if i < 0 {
-			segs, rest = append(segs, rest), ""
-			continue
-		}
-		segs, rest = append(segs, rest[:i+1]), rest[i+1:]
-	}
-	var out []string
-	cur := ""
-	for _, seg := range segs {
-		for len(seg) > width {
-			if cur != "" {
-				out, cur = append(out, cur), ""
-			}
-			out, seg = append(out, seg[:width]), seg[width:]
-		}
-		if len(cur)+len(seg) > width {
-			out, cur = append(out, cur), ""
-		}
-		cur += seg
-	}
-	if cur != "" {
-		out = append(out, cur)
-	}
-	return out
 }
 
 // statusDropOrder is the order a terminal too short gives up status rows:
@@ -538,9 +462,9 @@ type statusGroup struct {
 
 // serverStatusGroups lays the status block out as one group per labelled
 // row (an entry without a label belongs to the row before it).
-func serverStatusGroups(st modelsetup.State, width int, styles map[tone]lipgloss.Style) []statusGroup {
+func serverStatusGroups(st modelsetup.State, home string, width int, styles map[tone]lipgloss.Style) []statusGroup {
 	var groups []statusGroup
-	for _, l := range serverStatusLines(st) {
+	for _, l := range serverStatusLines(st, home) {
 		if l.label != "" || len(groups) == 0 {
 			groups = append(groups, statusGroup{label: l.label})
 		}
@@ -580,14 +504,14 @@ func (m *model) serverBody(room int) string {
 	if st.Config.ParseErr != "" {
 		// The path breaks only after a slash, so wrapping never splits a name.
 		lines := []string{"config.toml does not parse:"}
-		lines = append(lines, breakPath(homePath(st.Config.Path, st.Host.Home), m.width)...)
-		lines = append(lines, strings.Split(wrapText(scrub(st.Config.ParseErr), m.width), "\n")...)
+		lines = append(lines, editorkit.BreakPath(editorkit.HomePath(st.Config.Path, st.Host.Home, m.home), m.width)...)
+		lines = append(lines, strings.Split(wrapText(editorkit.Scrub(st.Config.ParseErr), m.width), "\n")...)
 		lines = append(lines, "fix the file, then press r")
 		for _, l := range lines {
 			head = append(head, styles[toneBad].Render(l))
 		}
 	}
-	groups := serverStatusGroups(st, m.width, styles)
+	groups := serverStatusGroups(st, m.home, m.width, styles)
 	radios, notes := m.modeChoice()
 	var fieldLines []string
 	if fields := m.serverFieldLines(); len(fields) > 0 {
@@ -709,7 +633,7 @@ func (m *model) serverPromptView(bar string, dim lipgloss.Style) string {
 		question = "Remove the LaunchAgent? [y/N]"
 	case promptSaveAnyway:
 		s := st.state.Server
-		text = "The check of " + scrub(s.URL) + " failed: " + serverKindWord(s.Kind) + ": " + scrub(s.Message) +
+		text = "The check of " + editorkit.Scrub(s.URL) + " failed: " + serverKindWord(s.Kind) + ": " + editorkit.Scrub(s.Message) +
 			". The server may be off; y stores the setup unchecked."
 		question = "Save anyway? [y/N]"
 	default:

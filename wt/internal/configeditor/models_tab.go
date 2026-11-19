@@ -1,7 +1,6 @@
 package configeditor
 
 import (
-	"os"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -10,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
@@ -151,29 +151,11 @@ func flow(units []string, sep string, width int) []string {
 
 func wrapText(s string, width int) string { return tuilayout.WrapText(s, width) }
 
-// userHome is the home directory paths are abbreviated against. A seam: the
-// package's TestMain names one, so no test reads the developer's.
-var userHome = os.UserHomeDir
-
-// tildePath writes a path under the home directory with ~ for the home, the
-// way the registry's own model_dir does: shorter, and still a path a shell
-// takes.
-func tildePath(path string) string {
-	home, err := userHome()
-	if err != nil || home == "" || home == "/" {
-		return path
-	}
-	if rest, ok := strings.CutPrefix(path, home); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
-		return "~" + rest
-	}
-	return path
-}
-
 // weightsLines is modeladmin.WeightsNote for the tab: the same words, with
 // the path abbreviated and on a line of its own, so that wrapping never
 // breaks it in the middle. Nil for a row with nothing on this machine.
-func weightsLines(r modeladmin.Row) []string {
-	r.Path = tildePath(r.Path)
+func weightsLines(r modeladmin.Row, home string) []string {
+	r.Path = editorkit.TildePath(r.Path, home)
 	note := modeladmin.WeightsNote(r)
 	switch {
 	case note == "":
@@ -382,7 +364,7 @@ func (m *model) modelsDetailLines(sides bool) (id, path []string) {
 		id = append(id, flow(strings.Fields(line), " ", m.width)...)
 	}
 	if r.Path != "" && !r.Pairing() {
-		path = flow([]string{tildePath(r.Path)}, "", m.width)
+		path = flow([]string{editorkit.TildePath(r.Path, m.home)}, "", m.width)
 	}
 	return id, path
 }
@@ -729,11 +711,11 @@ func (m *model) updateModelsRemove(msg tea.Msg) (tea.Model, tea.Cmd) {
 	mt := &m.models
 	switch key.String() {
 	case "y", "Y":
-		row := mt.remove
+		row, home := mt.remove, m.home
 		mt.phase, mt.busy, mt.writing, mt.status = modelsList, true, true, "removing "+row.ID+"..."
 		return m, func() tea.Msg {
 			// A registry write takes a file lock, so it is not for Update.
-			return modelRemovedMsg{id: row.ID, note: strings.Join(weightsLines(row), "\n"), err: modeladmin.Remove([]string{row.ID})}
+			return modelRemovedMsg{id: row.ID, note: strings.Join(weightsLines(row, home), "\n"), err: modeladmin.Remove([]string{row.ID})}
 		}
 	case "n", "N", "esc", "q":
 		mt.phase = modelsList
@@ -755,7 +737,7 @@ func (m *model) updateModelsRemove(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) modelsRemoveView() string {
 	r := m.models.remove
 	question := "Remove " + r.ID + " from the registry? [y/N]"
-	weights := strings.Join(weightsLines(r), "\n")
+	weights := strings.Join(weightsLines(r, m.home), "\n")
 	const closing = "wt removes the registry entry only; it never deletes weights."
 
 	// Build the core message: question and weights (the path end must be at

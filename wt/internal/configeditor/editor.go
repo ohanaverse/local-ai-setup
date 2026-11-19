@@ -6,6 +6,8 @@
 package configeditor
 
 import (
+	"os"
+
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -60,6 +62,11 @@ type model struct {
 	status      string // shown above the list
 	saving      bool   // prevents duplicate save dispatches
 	cfgErr      error  // captured at construction for the initial loadedMsg
+
+	// home is the home directory paths are abbreviated against when the
+	// observed state names none (Options.UserHome, read once in Run); empty
+	// writes every path in full.
+	home string
 
 	// cachedStatusBlock caches the rendered status block to avoid double rendering
 	// and re-creating lipgloss.Style on every call.
@@ -449,6 +456,19 @@ func (m *model) resizeFormInputs() {
 	m.agDefaultProviderInput.Width = w
 }
 
+// resolveHome is the home directory f names: os.UserHomeDir when f is nil,
+// and "" (no path is abbreviated) when it cannot be read.
+func resolveHome(f func() (string, error)) string {
+	if f == nil {
+		f = os.UserHomeDir
+	}
+	home, err := f()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
 // Run starts the config editor TUI with the config already loaded by the
 // caller. A non-nil cfgErr is surfaced as a status message so the user can
 // repair the config without the CLI exiting early. The Result says whether
@@ -460,6 +480,7 @@ func Run(theme themes.Theme, cfg *config.Config, cfgErr error, o Options, opts .
 	o.Models = o.Models.withDefaults()
 	o.Server = o.Server.withDefaults()
 	m.opts, m.tab = o, o.StartTab
+	m.home = resolveHome(o.UserHome)
 	allOpts := append([]tea.ProgramOption{tea.WithAltScreen()}, opts...)
 	p := tea.NewProgram(m, allOpts...)
 	_, err := p.Run()

@@ -1,6 +1,7 @@
 package configeditor
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -271,5 +272,17 @@ func TestStatusWrapsInsteadOfBeingCutOff(t *testing.T) {
 		if !strings.HasPrefix(view, "[Agents]") {
 			t.Errorf("%dx%d: the title is not the first line:\n%s", size.w, size.h, view)
 		}
+	}
+}
+
+// TestResolveHomeFallsBackToNoAbbreviation pins resolveHome: the home it is
+// given is used as is, and a home that cannot be read leaves paths written in
+// full, as the package-variable seam did.
+func TestResolveHomeFallsBackToNoAbbreviation(t *testing.T) {
+	if got := resolveHome(func() (string, error) { return "/Users/dev", nil }); got != "/Users/dev" {
+		t.Errorf("resolveHome = %q, want /Users/dev", got)
+	}
+	if got := resolveHome(func() (string, error) { return "", errors.New("no home") }); got != "" {
+		t.Errorf("resolveHome on an error = %q, want empty", got)
 	}
 }

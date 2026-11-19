@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -329,6 +330,7 @@ func modelsEditor(t *testing.T, tm *tabMachine, width, height int) *model {
 	t.Helper()
 	cfg, _ := tm.deps().Load()
 	m := newModel(testTheme(), cfg, nil)
+	m.home = testUserHome
 	m.opts = Options{StartTab: TabModels, Models: tm.deps(), Server: (&serverMachine{}).deps()}
 	m.tab = TabModels
 	m = send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
@@ -408,6 +410,7 @@ func TestTabKeySwitchesTabsAndProbesOnce(t *testing.T) {
 	tm := newTabMachine(t, tabRegistry)
 	cfg, _ := tm.deps().Load()
 	m := newModel(testTheme(), cfg, nil)
+	m.home = testUserHome
 	m.opts = Options{Models: tm.deps(), Server: (&serverMachine{}).deps()}
 	m = send(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = send(t, m, loadedMsg{cfg: cfg})
@@ -551,11 +554,11 @@ func TestModelsTabFitsTheTerminal(t *testing.T) {
 		// 13 lines at 40 columns as the prompt is written; the blank lines
 		// are what a 12-line terminal gives up.
 		{name: "remove prompt for a long id", registry: tabLongRegistry, bare: true, longPath: tabLongWeights, set: longPrompt,
-			want: []string{"Remove " + tabLongID + " from the registry? [y/N]", "weights are still at", tildePath(tabLongWeights), closing}},
+			want: []string{"Remove " + tabLongID + " from the registry? [y/N]", "weights are still at", editorkit.TildePath(tabLongWeights, testUserHome), closing}},
 		// Two lines more: at 40x12 the closing sentence goes too, never a
 		// line of the path (TestRemovePromptGivesUpLinesBeforeThePath).
 		{name: "remove prompt for a long id and a long path", registry: tabLongRegistry, bare: true, longPath: tabLongerWeights, set: longPrompt,
-			want: []string{"Remove " + tabLongID + " from the registry? [y/N]", "weights are still at", tildePath(tabLongerWeights)}},
+			want: []string{"Remove " + tabLongID + " from the registry? [y/N]", "weights are still at", editorkit.TildePath(tabLongerWeights, testUserHome)}},
 		// bubbles draws the filter's input where the table's header was.
 		{name: "filter being typed", registry: tabRegistry, bare: true, set: typing("q", "w"), want: []string{"qw"}},
 		{name: "filter applied", registry: tabRegistry, set: typing("q", "w", "enter")},
@@ -712,8 +715,8 @@ func TestRemovePromptGivesUpLinesBeforeThePath(t *testing.T) {
 	}
 	question := flat("Remove " + tabLongID + " from the registry? [y/N]")
 	// The path is wrapped at width, so check for its last segment.
-	longWeightsEnd := flat(strings.TrimPrefix(tildePath(tabLongWeights), "/"))
-	longerWeightsEnd := flat(strings.TrimPrefix(tildePath(tabLongerWeights), "/"))
+	longWeightsEnd := flat(strings.TrimPrefix(editorkit.TildePath(tabLongWeights, testUserHome), "/"))
+	longerWeightsEnd := flat(strings.TrimPrefix(editorkit.TildePath(tabLongerWeights, testUserHome), "/"))
 
 	// The blank lines go first: everything else is still said.
 	view := prompt(t, tabLongWeights, 40, 12)
@@ -1174,6 +1177,7 @@ func TestModelsTabFilterNarrowsTheTable(t *testing.T) {
 func TestAgentsFilterNarrowsTheList(t *testing.T) {
 	cfg := &config.Config{Agents: []config.Agent{{Name: "claude"}, {Name: "pi"}}}
 	m := newModel(testTheme(), cfg, nil)
+	m.home = testUserHome
 	m = send(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = stillCursors(send(t, m, loadedMsg{cfg: cfg}))
 	all := len(m.list.VisibleItems())

@@ -8,6 +8,11 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
 )
 
+// testUserHome is the home directory the tests' models abbreviate paths
+// against (model.home): the tests' paths are under this one, not the
+// developer's.
+const testUserHome = "/Users/dev"
+
 // TestMain keeps this package's tests off the developer's machine. The Models
 // tab writes registry.toml through config.UpdateRegistry, so the package
 // needs the throwaway config home and the registry write guard it arms: a
@@ -17,9 +22,6 @@ import (
 func TestMain(m *testing.M) {
 	_, cleanup := config.IsolateConfigHomeForTest()
 	gitenv.IsolateForTest()
-	// The tab abbreviates a path under the home directory; the tests' paths
-	// are under this one, not the developer's.
-	userHome = func() (string, error) { return "/Users/dev", nil }
 	code := m.Run()
 	cleanup()
 	os.Exit(code)

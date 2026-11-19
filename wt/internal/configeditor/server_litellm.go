@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -190,7 +191,7 @@ func (m *model) serverMenuView(bar string, dim lipgloss.Style) string {
 	}
 	var rl []string
 	for _, r := range reasons {
-		for _, l := range strings.Split(wrapText(scrub(r), m.width), "\n") {
+		for _, l := range strings.Split(wrapText(editorkit.Scrub(r), m.width), "\n") {
 			rl = append(rl, dim.Render(l))
 		}
 	}
@@ -207,13 +208,13 @@ func (m *model) serverMenuView(bar string, dim lipgloss.Style) string {
 
 // plistModeLines is the status block's warning for a LiteLLM plist that is
 // readable by others: the word warning, the mode, and the fix.
-func plistModeLines(st modelsetup.State) []serverLine {
+func plistModeLines(st modelsetup.State, home string) []serverLine {
 	p := st.LiteLLMPlist
 	if !plistLoose(p) {
 		return nil
 	}
 	return []serverLine{{"", fmt.Sprintf("warning: plist mode %04o is readable by others: tighten to 0600 (chmod 600 %s)",
-		p.Mode.Perm(), homePath(p.Path, st.Host.Home)), toneWarn}}
+		p.Mode.Perm(), editorkit.HomePath(p.Path, st.Host.Home, home)), toneWarn}}
 }
 
 // serverResultScreen is what an apply left to read: the commands to run by
@@ -233,9 +234,9 @@ func newResultScreen(res modelsetup.Result, text string) *serverResultScreen {
 	if len(res.Notes) == 0 && res.Recovery == "" {
 		return nil
 	}
-	r := &serverResultScreen{recovery: scrub(res.Recovery), text: text}
+	r := &serverResultScreen{recovery: editorkit.Scrub(res.Recovery), text: text}
 	for _, n := range res.Notes {
-		r.notes = append(r.notes, scrub(n))
+		r.notes = append(r.notes, editorkit.Scrub(n))
 	}
 	return r
 }
