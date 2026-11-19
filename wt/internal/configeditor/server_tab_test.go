@@ -1429,11 +1429,11 @@ func TestServerTabSourceNeverFormatsAPlanWithV(t *testing.T) {
 // and an Apply whose failure is the fixed refusal, no screen (the view, the
 // prefilled remote form's save-anyway question and refusal, the applied
 // result) shows any piece of the hostile url. Free-text Warnings carrying a
-// hostile url raw with a plain user:password are hidden by the tab's own
-// scrub too, which is defence in depth only: it keys on "://" and the first
+// hostile url raw with a plain user:password are hidden by editorkit.Scrub
+// too, which is defence in depth only: it keys on "://" and the first
 // '/', so "ftp://u:p//@h", "http://u:p@PASS/x@h" and a schemeless
 // "user:pa://ss@host" keep a piece (modelsetup never hands the tab such
-// text; the scrub was not widened, since a greedy '@' rule would also eat
+// text; editorkit.Scrub was not widened, since a greedy '@' rule would also eat
 // the placeholder's '@').
 func TestServerTabNeverRendersAPieceOfAnAtURL(t *testing.T) {
 	const checkHiddenText = "the check failed; the url contains an @ so the error text is hidden"

@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-// TestBreakPathNeverSplitsASegmentThatFits pins breakPath: it breaks only
+// TestBreakPathNeverSplitsASegmentThatFits pins BreakPath: it breaks only
 // after a slash, and cuts a segment only when it alone is wider than the width.
 func TestBreakPathNeverSplitsASegmentThatFits(t *testing.T) {
 	got := BreakPath("~/aaaa/bbbb/cccc/dddd", 12)
 	want := []string{"~/aaaa/bbbb/", "cccc/dddd"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("breakPath = %q, want %q", got, want)
+		t.Errorf("BreakPath = %q, want %q", got, want)
 	}
 	if got := BreakPath("~/"+strings.Repeat("x", 30), 10); len(got) < 3 {
 		t.Errorf("a segment wider than the width must still be cut: %q", got)

@@ -6,15 +6,15 @@ import (
 )
 
 // TestScrubTakesTheHostWithAnAtInTheQuery pins a deliberate choice: an @ in
-// a url's query makes scrub read everything before it as userinfo, so the
+// a url's query makes Scrub read everything before it as userinfo, so the
 // host goes too. That errs on the safe side of showing a credential.
 func TestScrubTakesTheHostWithAnAtInTheQuery(t *testing.T) {
 	if got, want := Scrub("https://h:1?x=a@b"), "https://b"; got != want {
-		t.Errorf("scrub = %q, want %q", got, want)
+		t.Errorf("Scrub = %q, want %q", got, want)
 	}
 }
 
-// TestScrubHidesKeysWithoutMangling pins that scrub hides a real-shaped
+// TestScrubHidesKeysWithoutMangling pins that Scrub hides a real-shaped
 // sk- key after any separator, and leaves a word that merely contains sk-.
 func TestScrubHidesKeysWithoutMangling(t *testing.T) {
 	key := "sk-" + strings.Repeat("ab12", 16)
@@ -26,7 +26,7 @@ func TestScrubHidesKeysWithoutMangling(t *testing.T) {
 	}
 	for _, keep := range []string{"mask-rcnn-large-v2-xxxxxxxxxxxxxxxx", "models/task-runner-abcdefghijklmnop"} {
 		if got := Scrub(keep); got != keep {
-			t.Errorf("scrub mangled %q into %q", keep, got)
+			t.Errorf("Scrub mangled %q into %q", keep, got)
 		}
 	}
 }
@@ -36,6 +36,6 @@ func TestScrubHidesKeysWithoutMangling(t *testing.T) {
 func TestScrubTakesUserinfoThroughTheLastAt(t *testing.T) {
 	got := Scrub("see https://me:p@ss@gpu.example:8787/x and http://a@b/ or mailto me@host")
 	if want := "see https://gpu.example:8787/x and http://b/ or mailto me@host"; got != want {
-		t.Errorf("scrub = %q, want %q", got, want)
+		t.Errorf("Scrub = %q, want %q", got, want)
 	}
 }

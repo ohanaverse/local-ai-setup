@@ -144,7 +144,7 @@ func TestServerTabNeverPingsAStoredCredentialedURL(t *testing.T) {
 }
 
 // atPairURLs are wt-model pair urls holding an '@' (issue #640): schemeless
-// (which the tab's "://" scrub cannot see), with a scheme, and a password
+// (which editorkit.Scrub's "://" rule cannot see), with a scheme, and a password
 // holding '/'. Each carries USERQ or PASSQ, which no fixed text holds.
 var atPairURLs = []string{
 	"USERQ:PASSQ@litellm:4000",
@@ -249,7 +249,7 @@ func TestServerTabNeverShowsOrRequestsAnAtPairURL(t *testing.T) {
 // TestPairLineHidesAnAtURLItWasHanded pins the pair row's own defence: a
 // PairState whose url holds an '@' (one Observe would never hand over, but
 // a dep composed by hand could) is drawn as the placeholder, whole, even
-// when it has no "://" for the tab's scrub to find; a plain url is drawn as
+// when it has no "://" for editorkit.Scrub to find; a plain url is drawn as
 // it was.
 func TestPairLineHidesAnAtURLItWasHanded(t *testing.T) {
 	for _, raw := range atPairURLs {
