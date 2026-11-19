@@ -12,26 +12,26 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessioneditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/spf13/cobra"
 )
 
 // TestConfig_NoSubcommand_LaunchesEditor verifies that `wt config` with no
-// args invokes the config editor TUI. We stub configeditorRun so the test
+// args invokes the config editor TUI. We stub sessioneditorRun so the test
 // does not require a TTY.
 func TestConfig_NoSubcommand_LaunchesEditor(t *testing.T) {
-	call := stubConfigEditor(t, configeditor.Result{}, nil)
+	call := stubConfigEditor(t, sessioneditor.Result{}, nil)
 
 	_, err := runWT(t, "config")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !call.called {
-		t.Fatal("expected configeditorRun to be called")
+		t.Fatal("expected sessioneditorRun to be called")
 	}
 }
 

@@ -12,9 +12,9 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessioneditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -22,20 +22,44 @@ import (
 // runs, records the tab it opened on and runs effect (the user's change in the
 // editor, written to the fake config home only). It returns the run count and
 // the last tab.
-func stubEditorSideEffect(t *testing.T, effect func(run int)) (runs *int, tab *configeditor.Tab) {
+func stubEditorSideEffect(t *testing.T, effect func(run int)) (runs *int, tab *sessioneditor.Tab) {
 	t.Helper()
-	runs, tab = new(int), new(configeditor.Tab)
-	old := configeditorRun
-	configeditorRun = func(_ themes.Theme, _ *config.Config, _ error, o configeditor.Options) (configeditor.Result, error) {
+	return stubEditorResult(t, sessioneditor.Result{}, effect)
+}
+
+// stubEditorResult is stubEditorSideEffect with the Result the editor
+// returns (an offer to run wt-model setup, say).
+func stubEditorResult(t *testing.T, res sessioneditor.Result, effect func(run int)) (runs *int, tab *sessioneditor.Tab) {
+	t.Helper()
+	runs, tab = new(int), new(sessioneditor.Tab)
+	old := sessioneditorRun
+	sessioneditorRun = func(_ themes.Theme, _ *config.Config, _ error, o sessioneditor.Options) (sessioneditor.Result, error) {
 		*runs++
 		*tab = o.StartTab
 		if effect != nil {
 			effect(*runs)
 		}
-		return configeditor.Result{}, nil
+		return res, nil
 	}
-	t.Cleanup(func() { configeditorRun = old })
+	t.Cleanup(func() { sessioneditorRun = old })
 	return runs, tab
+}
+
+// stubModelSetupChild replaces the `wt-model setup` child with one that
+// records each path it was run with, runs effect and returns err.
+func stubModelSetupChild(t *testing.T, effect func(), err error) *[]string {
+	t.Helper()
+	paths := new([]string)
+	old := runModelSetupChild
+	runModelSetupChild = func(path string) error {
+		*paths = append(*paths, path)
+		if effect != nil {
+			effect()
+		}
+		return err
+	}
+	t.Cleanup(func() { runModelSetupChild = old })
+	return paths
 }
 
 // appendModelServer appends a [model-server] table to the rig's config.toml.
@@ -51,20 +75,77 @@ func appendModelServer(t *testing.T, home, body string) {
 	}
 }
 
-// TestGateOpensTheModelServerTabOnATerminal pins the first-run gate: an unset
-// mode on a terminal opens wt config on the Model server tab, and once the
+// TestGateOpensTheModeTabOnATerminal pins the first-run gate: an unset
+// mode on a terminal opens wt config on the Mode tab, and once the
 // editor stored native the launch proceeds natively (one agent run). Why: a
 // first launch should ask for the mode instead of just refusing.
-func TestGateOpensTheModelServerTabOnATerminal(t *testing.T) {
+func TestGateOpensTheModeTabOnATerminal(t *testing.T) {
 	r := newNativeRig(t)
 	stubStdinTTY(t, true)
 	runs, tab := stubEditorSideEffect(t, func(int) { r.appendConfig("\n[model-server]\nmode = \"native\"\n") })
 	out, code := r.run(t, "--cwd", "-A", "claude")
-	if code != 0 || *runs != 1 || *tab != configeditor.TabServer || !r.ranAgent("claude") {
-		t.Fatalf("exit %d, editor runs %d on tab %v, agent ran %v; want 0, 1, the Model server tab, true\n%s", code, *runs, *tab, r.ranAgent("claude"), out)
+	if code != 0 || *runs != 1 || *tab != sessioneditor.TabMode || !r.ranAgent("claude") {
+		t.Fatalf("exit %d, editor runs %d on tab %v, agent ran %v; want 0, 1, the Mode tab, true\n%s", code, *runs, *tab, r.ranAgent("claude"), out)
 	}
 	if n := strings.Count(out, "launching claude natively"); n != 1 {
 		t.Errorf("native note %d times, want 1:\n%s", n, out)
+	}
+}
+
+// TestGateRunsWtModelSetupWhenTheTabAsks: when the Mode tab stored local and
+// asked for `wt-model setup`, the gate runs that child once, with the path
+// the tab found, after the editor and before it resolves the mode again
+// (the child here turns the stored local into native, so only a resolve
+// after the child launches natively). Why: setting up this machine is part
+// of choosing local on a first run.
+func TestGateRunsWtModelSetupWhenTheTabAsks(t *testing.T) {
+	r := newNativeRig(t)
+	stubStdinTTY(t, true)
+	cfgPath := filepath.Join(r.home, ".config", "agent-wt", "config.toml")
+	runs, _ := stubEditorResult(t, sessioneditor.Result{RunModelSetup: true, ModelSetup: "/x/wt-model"}, func(int) {
+		r.appendConfig("\n[model-server]\nmode = \"local\"\n")
+	})
+	editorRunsAtChild := -1
+	paths := stubModelSetupChild(t, func() {
+		editorRunsAtChild = *runs
+		b, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cfgPath, []byte(strings.Replace(string(b), `mode = "local"`, `mode = "native"`, 1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}, nil)
+	out, code := r.run(t, "--cwd", "-A", "claude")
+	if !slices.Equal(*paths, []string{"/x/wt-model"}) || editorRunsAtChild != 1 {
+		t.Fatalf("child ran with %q after %d editor runs; want once with /x/wt-model after 1\n%s", *paths, editorRunsAtChild, out)
+	}
+	if code != 0 || *runs != 1 || !r.ranAgent("claude") {
+		t.Fatalf("exit %d, editor runs %d, agent ran %v; want 0, 1, true (the mode was resolved after the child)\n%s", code, *runs, r.ranAgent("claude"), out)
+	}
+}
+
+// TestGateGoesOnWhenWtModelSetupFails: a failed `wt-model setup` child is one
+// warning line on stderr and the gate goes on (the mode is already stored):
+// the launch takes local mode's own handling and the editor is not opened
+// again. Why: the mode choice stands even when the machine's setup did not
+// finish.
+func TestGateGoesOnWhenWtModelSetupFails(t *testing.T) {
+	r := newNativeRig(t)
+	stubStdinTTY(t, true)
+	runs, _ := stubEditorResult(t, sessioneditor.Result{RunModelSetup: true, ModelSetup: "/x/wt-model"}, func(int) {
+		r.appendConfig("\n[model-server]\nmode = \"local\"\n")
+	})
+	paths := stubModelSetupChild(t, nil, errors.New("exit status 2"))
+	out, _ := r.run(t, "--cwd", "-A", "claude")
+	if len(*paths) != 1 || *runs != 1 {
+		t.Fatalf("child runs %d, editor runs %d; want 1 and 1\n%s", len(*paths), *runs, out)
+	}
+	if !slices.Contains(strings.Split(out, "\n"), "wt: warning: wt-model setup did not finish: exit status 2") {
+		t.Errorf("no warning line for the failed child:\n%s", out)
+	}
+	if strings.Contains(out, "no model-server mode chosen") {
+		t.Errorf("the gate ended the launch as unset after a failed child:\n%s", out)
 	}
 }
 
@@ -169,7 +250,7 @@ func TestGateEditorFailureEndsTheLaunchOnce(t *testing.T) {
 	root := sharedRootRepo(t)
 	t.Chdir(root)
 	stubStdinTTY(t, true)
-	call := stubConfigEditor(t, configeditor.Result{}, errors.New("terminal went away"))
+	call := stubConfigEditor(t, sessioneditor.Result{}, errors.New("terminal went away"))
 	out, code := r.run(t, "-W", "gatebranch", "-A", "claude")
 	// The editor's host-config load of the rig's legacy config.toml prints a
 	// migration note of its own; count only the lines about the failure.

@@ -752,7 +752,7 @@ func closedServerConfig(t *testing.T, mode, url string) (body, addr string) {
 
 // TestUnreachableLocalServerNamesTheFix pins the local mode's hint on a
 // failed ping: the wt-model this machine is meant to run is down, so the
-// error names both ways to bring it back (wt config's Model server tab and
+// error names both ways to bring it back (`wt-model setup` and
 // the launchctl kickstart of its LaunchAgent for this user's uid), keeps the
 // classified cause for errors.As and still ends with the caller's clause.
 func TestUnreachableLocalServerNamesTheFix(t *testing.T) {
@@ -764,7 +764,7 @@ func TestUnreachableLocalServerNamesTheFix(t *testing.T) {
 	}
 	msg := err.Error()
 	want := fmt.Sprintf("launchctl kickstart -k gui/%d/local.wt-model.serve", os.Getuid())
-	for _, s := range []string{"is not reachable", "local mode", "wt config (Model server tab)", want} {
+	for _, s := range []string{"is not reachable", "local mode", "wt-model setup", want} {
 		if !strings.Contains(msg, s) {
 			t.Errorf("err = %q, missing %q", msg, s)
 		}

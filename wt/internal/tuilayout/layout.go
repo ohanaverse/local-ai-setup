@@ -1,8 +1,9 @@
 // Package tuilayout sizes a Bubble Tea screen built around a bubbles list so
 // that it is never taller or wider than the terminal, and lays out a table
 // whose columns are dropped whole when it is too wide. internal/tui (the
-// launcher's pickers) and internal/configeditor (`wt config`) both import it,
-// so the two programs fit a terminal by one rule.
+// launcher's pickers) and the editors (internal/sessioneditor for `wt config`,
+// internal/modeleditor for `wt-model`) import it, so every screen fits a
+// terminal by one rule.
 package tuilayout
 
 import (

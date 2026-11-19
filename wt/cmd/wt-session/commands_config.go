@@ -1,7 +1,9 @@
-// wt config command — user-level preferences. Bare, it opens the config
-// editor (internal/configeditor): the Agents tab and the Model server tab
-// (runConfigEditor). The models in registry.toml are managed by `wt-model
-// model`. `wt config theme` manages the active color theme.
+// wt config command — user-level preferences. Bare, it opens the session
+// editor (internal/sessioneditor): the Agents tab and the Mode tab
+// (runConfigEditor). It reads config.toml only, never the registry; the models
+// in registry.toml are managed by `wt-model model` and this machine's model
+// server is set up by `wt-model setup`. `wt config theme` manages the active
+// color theme.
 //
 // The theme subcommand family uses the active theme (loaded by newApp)
 // for its own output where appropriate (table borders, list names in their
@@ -12,41 +14,59 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"sort"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessioneditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/spf13/cobra"
 )
 
-// configeditorRun is the entry point for the config viewer TUI. It is a
+// sessioneditorRun is the entry point for the session editor TUI. It is a
 // package-level var so tests can verify it is called without needing a TTY.
-var configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error, o configeditor.Options) (configeditor.Result, error) {
-	return configeditor.Run(theme, cfg, cfgErr, o)
+var sessioneditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error, o sessioneditor.Options) (sessioneditor.Result, error) {
+	return sessioneditor.Run(theme, cfg, cfgErr, o)
 }
 
-// runConfigEditor opens the editor on tab start. It writes no registry, so it
-// owes no route sync.
-func runConfigEditor(out, errOut io.Writer, a *app, start configeditor.Tab) error {
-	// The editor opens on the host's config, as it always has.
-	cfg, _ := a.hostConfig()
-	// The Model server tab's seams: the real machine, with the routes check
-	// asking what a sync would write now.
-	env := modelsetup.DefaultEnv()
-	env.DesiredRoutes = desiredRouteIDs
-	_, err := configeditorRun(a.theme, cfg, a.hostConfigErr(), configeditor.Options{
+// modelSetupError is a `wt-model setup` child, asked for by the Mode tab,
+// that did not finish. wt config returns it ("wt-model setup: <err>"); the
+// first-run gate words it as a warning and goes on, since the mode is stored.
+type modelSetupError struct{ err error }
+
+func (e *modelSetupError) Error() string { return "wt-model setup: " + e.err.Error() }
+func (e *modelSetupError) Unwrap() error { return e.err }
+
+// runConfigEditor opens the session editor on tab start over config.toml
+// alone (config.LoadSession, no registry). A parse error leaves cfg nil (the
+// editor builds its own stand-in and disables writes); a session validation
+// error is shown in the banner on open. When the Mode tab asked for it, it
+// then runs `wt-model setup` (runModelSetupChild); a failed child is a
+// *modelSetupError.
+func runConfigEditor(a *app, start sessioneditor.Tab) error {
+	cfg, err := config.LoadSession()
+	cfgErr := err
+	if err == nil {
+		cfgErr = cfg.ValidateSession()
+	}
+	res, err := sessioneditorRun(a.theme, cfg, cfgErr, sessioneditor.Options{
 		StartTab: start,
-		Server:   configeditor.ServerDepsFromEnv(env),
+		Mode:     sessioneditor.ModeDepsFromEnv(modelmode.DefaultEnv()),
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if res.RunModelSetup {
+		if err := runModelSetupChild(res.ModelSetup); err != nil {
+			return &modelSetupError{err: err}
+		}
+	}
+	return nil
 }
 
 // configCmd returns the `wt config` command. With no subcommand, launches
-// the interactive editor: agents in config.toml and the model server's setup.
+// the interactive session editor: agents in config.toml and the mode.
 // Subcommands configure specific concerns without entering the TUI.
 func configCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
@@ -54,15 +74,13 @@ func configCmd(a *app) *cobra.Command {
 		Short: "Manage wt preferences and config.toml",
 		Long: "Manage wt user preferences.\n\n" +
 			"With no subcommand, launches an interactive TUI with two tabs (tab\n" +
-			"switches): Agents, the agents in config.toml, saved with ctrl+s; and\n" +
-			"Model server, which checks the wt-model server and its LiteLLM proxy and\n" +
-			"sets up the server's address, token and proxy key. The models in\n" +
-			"registry.toml are managed with `wt-model model`.\n\n" +
-			"Subcommands:\n" +
-			"  theme   active color theme\n" +
-			"  path    print the config directory",
+			"switches): Agents, the agents in config.toml, saved with ctrl+s; and Mode,\n" +
+			"how sessions reach a model server: native, remote (its url and token are\n" +
+			"checked here) or local (set up this machine with `wt-model setup`). The\n" +
+			"models in registry.toml are managed with `wt-model model`.\n\n" +
+			"Subcommands:\n  theme   active color theme\n  path    print the config directory",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigEditor(cmd.OutOrStdout(), cmd.ErrOrStderr(), a, configeditor.TabAgents)
+			return runConfigEditor(a, sessioneditor.TabAgents)
 		},
 	}
 	cmd.AddCommand(configPathCmd(a), configThemeCmd(a))

@@ -7,17 +7,14 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessioneditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -64,28 +61,28 @@ type editorCall struct {
 	called bool
 	cfg    *config.Config
 	cfgErr error
-	opts   configeditor.Options
+	opts   sessioneditor.Options
 }
 
 // stubConfigEditor replaces the editor (which needs a terminal) with one that
 // records how it was opened and returns res and err.
-func stubConfigEditor(t *testing.T, res configeditor.Result, err error) *editorCall {
+func stubConfigEditor(t *testing.T, res sessioneditor.Result, err error) *editorCall {
 	t.Helper()
 	call := &editorCall{}
-	old := configeditorRun
-	configeditorRun = func(_ themes.Theme, cfg *config.Config, cfgErr error, o configeditor.Options) (configeditor.Result, error) {
+	old := sessioneditorRun
+	sessioneditorRun = func(_ themes.Theme, cfg *config.Config, cfgErr error, o sessioneditor.Options) (sessioneditor.Result, error) {
 		*call = editorCall{called: true, cfg: cfg, cfgErr: cfgErr, opts: o}
 		return res, err
 	}
-	t.Cleanup(func() { configeditorRun = old })
+	t.Cleanup(func() { sessioneditorRun = old })
 	return call
 }
 
 // TestConfigCmd_NoSubcommand_LaunchesEditor: wt config with no args now
-// launches the config editor TUI. We stub configeditorRun to avoid the
+// launches the config editor TUI. We stub sessioneditorRun to avoid the
 // TTY requirement in tests.
 func TestConfigCmd_NoSubcommand_LaunchesEditor(t *testing.T) {
-	call := stubConfigEditor(t, configeditor.Result{}, nil)
+	call := stubConfigEditor(t, sessioneditor.Result{}, nil)
 
 	a, _ := newTestApp(t)
 	cmd := configCmd(a)
@@ -96,33 +93,77 @@ func TestConfigCmd_NoSubcommand_LaunchesEditor(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	if !call.called {
-		t.Fatal("expected configeditorRun to be called")
+		t.Fatal("expected sessioneditorRun to be called")
 	}
-	if call.opts.StartTab != configeditor.TabAgents {
+	if call.opts.StartTab != sessioneditor.TabAgents {
 		t.Errorf("wt config opened on tab %d, want the Agents tab", call.opts.StartTab)
 	}
 }
 
-// TestConfigCmd_InvalidConfig_LaunchesEditor verifies that `wt config`
-// launches the repair TUI even when the loaded config has a validation
-// error. Without this, a broken config.toml would be a dead end.
-func TestConfigCmd_InvalidConfig_LaunchesEditor(t *testing.T) {
-	call := stubConfigEditor(t, configeditor.Result{}, nil)
+// TestWtConfigShowsSessionValidationOnOpen pins that `wt config` opens on a
+// config.toml that parses but breaks a session rule (an agent named twice):
+// the editor gets the loaded config and the ValidateSession error, so the
+// banner shows it on open. Without this a broken config.toml would be a dead
+// end.
+func TestWtConfigShowsSessionValidationOnOpen(t *testing.T) {
+	modelHome(t, "providers = []\nmodels = []\n")
+	call := stubConfigEditor(t, sessioneditor.Result{}, nil)
+	p := filepath.Join(config.Dir(), "config.toml")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"ollama\"]\n\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"ollama\"]\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runWT(t, "config"); err != nil {
+		t.Fatalf("wt config error = %v, want the editor opened", err)
+	}
+	if !call.called || call.cfg == nil {
+		t.Fatalf("editor called %v with cfg %v; want the loaded config", call.called, call.cfg)
+	}
+	if call.cfgErr == nil || !strings.Contains(call.cfgErr.Error(), `duplicate agent name "claude"`) {
+		t.Fatalf("cfgErr = %v, want the duplicate agent name", call.cfgErr)
+	}
+}
 
-	a, _ := newTestApp(t)
-	setHostCfgErr(a, fmt.Errorf("validation failed"))
-	cmd := configCmd(a)
-	cmd.SetArgs([]string{})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
+// TestWtConfigReadsNoRegistry pins that `wt config` is a session screen: a
+// registry.toml that does not parse neither keeps it from opening nor reaches
+// the editor as an error, and the file is left as it was.
+func TestWtConfigReadsNoRegistry(t *testing.T) {
+	const garbage = "not toml [["
+	registry := modelHome(t, garbage)
+	call := stubConfigEditor(t, sessioneditor.Result{}, nil)
+	if _, err := runWT(t, "config"); err != nil {
+		t.Fatalf("wt config error = %v, want the editor opened", err)
 	}
-	if call.cfg == nil {
-		t.Fatal("expected configeditorRun to receive the config")
+	if !call.called || call.cfgErr != nil {
+		t.Fatalf("editor called %v with cfgErr %v; want it opened with none", call.called, call.cfgErr)
 	}
-	if call.cfgErr == nil {
-		t.Fatal("expected configeditorRun to receive the validation error")
+	if got := mustRead(t, registry); got != garbage {
+		t.Fatalf("registry.toml changed: %q", got)
+	}
+}
+
+// TestWtConfigRunsWtModelSetupWhenAsked pins the Mode tab's hand-off: when
+// the editor asks for `wt-model setup`, wt config runs that child with the
+// path the tab found once the editor closed, and a failed child is wt
+// config's own error ("wt-model setup: ..."). Why: the editor never runs an
+// admin program itself.
+func TestWtConfigRunsWtModelSetupWhenAsked(t *testing.T) {
+	modelHome(t, "providers = []\nmodels = []\n")
+	stubConfigEditor(t, sessioneditor.Result{RunModelSetup: true, ModelSetup: "/x/wt-model"}, nil)
+	paths := stubModelSetupChild(t, nil, nil)
+	if _, err := runWT(t, "config"); err != nil {
+		t.Fatalf("wt config error = %v", err)
+	}
+	if len(*paths) != 1 || (*paths)[0] != "/x/wt-model" {
+		t.Fatalf("child ran with %q, want once with /x/wt-model", *paths)
+	}
+	stubModelSetupChild(t, nil, errors.New("exit status 2"))
+	_, err := runWT(t, "config")
+	if err == nil || err.Error() != "wt-model setup: exit status 2" {
+		t.Fatalf("wt config error = %v, want \"wt-model setup: exit status 2\"", err)
 	}
 }
 
@@ -321,33 +362,34 @@ func TestConfigPath_PrintsDir(t *testing.T) {
 	}
 }
 
-// TestConfigEditorIsGivenTheModelServerDeps pins that `wt config` hands the
-// editor its Model server dependencies: without them the tab would open on
-// the zero ServerDeps and could neither observe nor apply anything.
-func TestConfigEditorIsGivenTheModelServerDeps(t *testing.T) {
-	call := stubConfigEditor(t, configeditor.Result{}, nil)
+// TestConfigEditorIsGivenTheModeDeps pins that runConfigEditor hands the
+// editor the Mode tab's seams: without them the tab would open on the zero
+// ModeDeps and could neither observe nor apply anything.
+func TestConfigEditorIsGivenTheModeDeps(t *testing.T) {
+	call := stubConfigEditor(t, sessioneditor.Result{}, nil)
 	a, _ := newTestApp(t)
-	if err := runConfigEditor(&bytes.Buffer{}, &bytes.Buffer{}, a, configeditor.TabAgents); err != nil {
+	if err := runConfigEditor(a, sessioneditor.TabAgents); err != nil {
 		t.Fatal(err)
 	}
-	if call.opts.Server.Observe == nil {
-		t.Fatal("Options.Server.Observe is nil: the Model server tab has no dependencies")
+	if call.opts.Mode.Observe == nil {
+		t.Fatal("Options.Mode.Observe is nil: the Mode tab has no dependencies")
 	}
 }
 
-// TestConfigLongTextNamesTwoTabsAndTheModelsMove pins that `wt config --help`
-// names the two tabs it still has and says the models moved to `wt-model
-// model`, so nobody looks for a Models tab that is gone.
-func TestConfigLongTextNamesTwoTabsAndTheModelsMove(t *testing.T) {
+// TestConfigLongTextNamesAgentsAndMode pins that `wt config --help` names
+// its two tabs (Agents and Mode), points local at `wt-model setup` and says
+// the models are managed with `wt-model model`, so nobody looks for a Model
+// server or Models tab that is gone.
+func TestConfigLongTextNamesAgentsAndMode(t *testing.T) {
 	a, _ := newTestApp(t)
 	long := configCmd(a).Long
-	for _, want := range []string{"two tabs", "Agents", "Model server", "wt-model model"} {
+	for _, want := range []string{"two tabs", "Agents", "Mode", "wt-model setup", "wt-model model"} {
 		if !strings.Contains(long, want) {
 			t.Errorf("Long text lacks %q:\n%s", want, long)
 		}
 	}
-	if strings.Contains(long, "three tabs") {
-		t.Errorf("Long text still says three tabs:\n%s", long)
+	if strings.Contains(long, "Model server") {
+		t.Errorf("Long text still names the Model server tab:\n%s", long)
 	}
 }
 
@@ -357,7 +399,7 @@ func TestConfigLongTextNamesTwoTabsAndTheModelsMove(t *testing.T) {
 // and nothing may be written on the way.
 func TestWtConfigOpensWhenConfigTomlIsSyntaxBroken(t *testing.T) {
 	registry := modelHome(t, "providers = []\nmodels = []\n")
-	call := stubConfigEditor(t, configeditor.Result{}, nil)
+	call := stubConfigEditor(t, sessioneditor.Result{}, nil)
 	broken := filepath.Join(config.Dir(), "config.toml")
 	if err := os.MkdirAll(filepath.Dir(broken), 0o755); err != nil {
 		t.Fatal(err)
@@ -370,7 +412,7 @@ func TestWtConfigOpensWhenConfigTomlIsSyntaxBroken(t *testing.T) {
 		t.Fatalf("wt config error = %v, want the editor opened", err)
 	}
 	if !call.called {
-		t.Fatal("configeditorRun was not reached")
+		t.Fatal("sessioneditorRun was not reached")
 	}
 	if call.cfgErr == nil {
 		t.Fatal("the editor got a nil load error for a syntax-broken config.toml")
@@ -380,35 +422,5 @@ func TestWtConfigOpensWhenConfigTomlIsSyntaxBroken(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(registry); string(b) != "providers = []\nmodels = []\n" {
 		t.Fatalf("registry.toml was rewritten: %q", b)
-	}
-}
-
-// TestDesiredRouteIDsAreWhatASyncWouldWrite pins the Model server tab's
-// routes seam end to end in the command package: with the registry, the
-// provider probe and config.yaml all faked, it returns the ids a sync would
-// leave, a cloud model added and a stale wt row dropped. It touches no real
-// provider or config.
-func TestDesiredRouteIDsAreWhatASyncWouldWrite(t *testing.T) {
-	modelHome(t, writeRegistry)
-	t.Setenv("OPENROUTER_API_KEY", "sk-test")
-	yamlPath := filepath.Join(t.TempDir(), "config.yaml")
-	t.Setenv("WT_LITELLM_CONFIG", yamlPath)
-	if err := os.WriteFile(yamlPath, []byte(`model_list:
-  - model_name: gone/stale
-    litellm_params: {model: openai/stale}
-    model_info: {wt_managed: true}
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	old := probeInventory
-	probeInventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
-	t.Cleanup(func() { probeInventory = old })
-
-	got, err := desiredRouteIDs(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(got, []string{"openrouter/a--b"}) {
-		t.Fatalf("desiredRouteIDs = %v, want [openrouter/a--b]", got)
 	}
 }

@@ -11,10 +11,10 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessioneditor"
 	"gopkg.in/yaml.v3"
 )
 
@@ -511,7 +511,7 @@ func TestBareWtModelPointsAtWtModel(t *testing.T) {
 			cfgBefore = mustRead(t, cfgPath)
 		}
 		regBefore := mustRead(t, registry)
-		call := stubConfigEditor(t, configeditor.Result{}, nil)
+		call := stubConfigEditor(t, sessioneditor.Result{}, nil)
 		_, err := runWT(t, "model")
 		var buf bytes.Buffer
 		if code := exitcode.Report("wt", err, &buf); code != 1 || buf.String() != "wt: model moved to wt-model — run 'wt-model model'; nothing was changed\n" {

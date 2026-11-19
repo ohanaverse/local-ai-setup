@@ -30,7 +30,7 @@ func (e *NotConfiguredError) Error() string {
 	case e.MissingToken:
 		lead = "the model server token is not configured"
 	}
-	return lead + " — set url and token_file under [model-server] in config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE), or choose the mode in wt config (Model server tab): native, local or remote"
+	return lead + " — set url and token_file under [model-server] in config.toml (or WT_MODEL_URL and WT_MODEL_TOKEN_FILE), or choose the mode in wt config (Mode tab): native, local or remote"
 }
 
 // Still appends what did not happen (or did) to err, keeping err as the cause.

@@ -13,9 +13,9 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessioneditor"
 )
 
 // modelSession is the client session's handle on the model server: the client
@@ -121,9 +121,10 @@ var errNoModeChosen = errors.New("no model-server mode chosen — " + launchStil
 // ensureMode is the first-run gate of a launch that needs a model: it does
 // nothing unless the effective mode is unset (a stored or environment mode of
 // any kind, even an invalid one, is left to the launch's own handling). On a
-// terminal it opens wt config on the Model server tab once, as a separate
-// program run to completion, forgets every cached read and resolves again; a
-// mode still unset ends the launch (exit 1). Without a terminal it returns
+// terminal it opens wt config on the Mode tab once, as a separate program run
+// to completion (then `wt-model setup` when the tab asked for it; a failed
+// setup is one warning line and the gate goes on), forgets every cached read
+// and resolves again; a mode still unset ends the launch (exit 1). Without a terminal it returns
 // the same refusal a script always got (ModeUnsetError with launchStill).
 // It never opens the editor twice in one process.
 func (a *app) ensureMode(_ *cobra.Command) error {
@@ -134,8 +135,15 @@ func (a *app) ensureMode(_ *cobra.Command) error {
 	if !stdinTTY() {
 		return err
 	}
-	if eerr := runConfigEditor(os.Stdout, os.Stderr, a, configeditor.TabServer); eerr != nil {
-		return modelclient.Still(eerr, launchStill)
+	if eerr := runConfigEditor(a, sessioneditor.TabMode); eerr != nil {
+		var se *modelSetupError
+		if !errors.As(eerr, &se) {
+			return modelclient.Still(eerr, launchStill)
+		}
+		// The mode is stored before the setup is offered: a setup that did
+		// not finish is a warning, and the launch takes the mode's own
+		// handling below.
+		fmt.Fprintf(osStderr, "wt: warning: wt-model setup did not finish: %v\n", se.err)
 	}
 	a.resetModelCaches()
 	if _, err := a.buildModels(launchStill); err != nil {
@@ -213,16 +221,16 @@ func (e *pingHintError) Error() string { return e.err.Error() + "; " + e.hint }
 func (e *pingHintError) Unwrap() error { return e.err }
 
 // pingHint words a failed ping for the session's mode. local: the server is
-// this machine's LaunchAgent, so the fix is the Model server tab or a
+// this machine's LaunchAgent, so the fix is `wt-model setup` or a
 // kickstart of local.wt-model.serve for this user. remote: the url tried
 // (without credentials, query or fragment) beside the classified error,
 // which already says what went wrong there.
 func pingHint(err error, ms *modelSession) error {
 	switch ms.mode {
 	case modelclient.ModeLocal:
-		return &pingHintError{err: err, hint: fmt.Sprintf("local mode: start it from wt config (Model server tab) or run launchctl kickstart -k gui/%d/local.wt-model.serve", os.Getuid())}
+		return &pingHintError{err: err, hint: fmt.Sprintf("local mode: start it with wt-model setup or run launchctl kickstart -k gui/%d/local.wt-model.serve", os.Getuid())}
 	case modelclient.ModeRemote:
-		return &pingHintError{err: err, hint: "remote mode, url " + displayURL(ms.ep.URL) + " — check the server there, or change the url or mode in wt config (Model server tab)"}
+		return &pingHintError{err: err, hint: "remote mode, url " + displayURL(ms.ep.URL) + " — check the server there, or change the url or mode in wt config (Mode tab)"}
 	}
 	return err
 }
