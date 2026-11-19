@@ -4,7 +4,7 @@ import "testing"
 
 // TestFinalizeCfgDerivesSushiForClaudeAndPi verifies a registry holding a
 // sushi model makes claude and pi support sushi in memory, whatever wrote the
-// row (`wt model add` is not the only way: the Models tab, a hand edit and a
+// row (`wt-model model add` is not the only way: the Models tab, a hand edit and a
 // restored registry never run it). Without the entry `wt smoke` and the
 // pickers say no agent supports the model. Nothing else changes: a registry
 // with no sushi model, an agent that is absent, and an agent with no

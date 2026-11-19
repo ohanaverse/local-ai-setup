@@ -321,7 +321,7 @@ local_path = "/models/alpha"
 }
 
 // TestRemoveModelReturnsTheRow pins RemoveModel: the row is gone from the
-// document and handed back whole, because `wt model rm` never deletes weights
+// document and handed back whole, because `wt-model model rm` never deletes weights
 // and has to print where they are from the row it just removed. It also pins
 // what a removal or an unset leaves behind: `models = []` after the last row
 // goes, and the empty table after a table's last key is unset. That is

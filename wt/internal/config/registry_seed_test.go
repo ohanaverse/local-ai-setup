@@ -34,7 +34,7 @@ func seedReport(t *testing.T, env SeedEnv) (added, unseeded []string, changed bo
 // TestSeedWritesTheDefaultRows pins every default row byte for byte: each
 // provider's name, location, auth and base_url, its keys in schema order, the
 // rows placed ahead of the models. The expected text is what the registries
-// already on disk hold for the same machine, so a row `wt model init` seeds
+// already on disk hold for the same machine, so a row `wt-model model init` seeds
 // today is the row an older registry has. A base_url that drifted would make
 // wt probe a port the provider does not serve, and a name or key order that
 // drifted would give a fresh machine a registry that differs from every
@@ -135,7 +135,7 @@ model_name = "org/target"
 // still gets its row. A provider an agent lists gets its default row whether
 // or not it is installed, because wt refuses a config whose agent lists a
 // provider with no row; openrouter comes from a model that references it or
-// an agent that lists it, never from PATH — `wt model add openrouter …` on a
+// an agent that lists it, never from PATH — `wt-model model add openrouter …` on a
 // registry with no openrouter row must not be refused for a row wt can write.
 func TestSeedAddsOnlyWhatTheMachineNeeds(t *testing.T) {
 	const sixBit = `[[providers]]
@@ -221,7 +221,7 @@ func TestSeedAnAgentNamedAfterAProviderGetsThatProvidersRow(t *testing.T) {
 }
 
 // TestSeedIsIdempotentAndNeverEditsARow pins the two safety properties of
-// seeding. Run twice it changes nothing the second time (so `wt model add`
+// seeding. Run twice it changes nothing the second time (so `wt-model model add`
 // can seed on every call for free). And a row that exists is left exactly as
 // it is, however incomplete: seeding appends, it does not repair — a user's
 // own base_url must never be reset to the default.

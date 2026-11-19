@@ -181,12 +181,12 @@ func resolveRegistryFile(path string) (target string, exists bool, err error) {
 // truth for native-ness, consumed by driver dispatch and route resolution.
 //
 // Fail-closed: a missing or malformed registry is an error — wt has no
-// editor for this file; `wt model init` creates it.
+// editor for this file; `wt-model model init` creates it.
 // A symlinked registry is read through; a link that leads nowhere is
 // ErrRegistryLink, never "missing" (resolveRegistryFile).
 func loadRegistry() ([]Provider, []Model, error) {
 	path := RegistryPath()
-	missing := fmt.Errorf("%w at %s — seed it with `wt model init`", ErrRegistryMissing, path)
+	missing := fmt.Errorf("%w at %s — seed it with `wt-model model init`", ErrRegistryMissing, path)
 	_, data, exists, err := readRegistryFile(path)
 	if err != nil {
 		return nil, nil, err

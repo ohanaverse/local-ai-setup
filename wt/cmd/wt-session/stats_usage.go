@@ -226,7 +226,7 @@ type usageReport struct {
 // appends to the same error: `wt config` cannot repair a registry problem
 // (a link to fix, a file to edit by hand), so those name the working repair,
 // and a missing registry gets no hint because its error already says to run
-// `wt model init`.
+// `wt-model model init`.
 func registryNote(loadErr error) string {
 	what := strings.Join(strings.Fields(loadErr.Error()), " ")
 	if hint := config.LoadFixHint(loadErr); hint != "" {

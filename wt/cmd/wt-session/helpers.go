@@ -119,7 +119,7 @@ var stdinTTY = cli.IsStdinTTY
 // repair for a problem there (a mistyped location, a link that leads
 // nowhere, a file that does not parse), which `wt config` cannot touch; and
 // nothing for a missing registry, whose error already names the command that
-// creates one (`wt model init`) — a hint would name a second repair.
+// creates one (`wt-model model init`) — a hint would name a second repair.
 //
 // Every command that refuses to run on a config load or validation error
 // (hostConfig's, or sessionCfg's for a launch) returns this.

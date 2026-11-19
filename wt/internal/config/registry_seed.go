@@ -128,7 +128,7 @@ const OpenRouterKeyEnv = provider.OpenRouterKeyEnv
 //	})
 //
 // Reads never seed: Load does not call this, and a missing registry stays
-// ErrRegistryMissing until `wt model init` or a write creates one.
+// ErrRegistryMissing until `wt-model model init` or a write creates one.
 func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string, err error) {
 	existing := map[string]bool{}
 	for _, row := range d.rows("providers") {

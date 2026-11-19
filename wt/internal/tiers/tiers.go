@@ -204,7 +204,7 @@ func (e Entry) Notes() []string {
 
 // key is how an entry is found: the inventory's provider_id and model_name,
 // the two fields of a wt model row (config.Model.ProviderID and ModelName)
-// that `wt model list --json` writes and modeltiers keys its entries by.
+// that `wt-model model list --json` writes and modeltiers keys its entries by.
 type key struct{ provider, name string }
 
 // Index is the file's entries by provider and provider-side model name. The

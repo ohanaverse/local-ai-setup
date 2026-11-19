@@ -595,7 +595,7 @@ func TestStatsCmdWorksWithoutARegistry(t *testing.T) {
 			// model-server mode exists, the spend line's unset-mode refusal
 			// rightly names wt config as the place to choose a mode.
 			wantHint := map[string]string{
-				"missing":          "seed it with `wt model init`)",
+				"missing":          "seed it with `wt-model model init`)",
 				"unparseable":      "; fix that file by hand)",
 				"dangling symlink": "; fix the link or move it aside)",
 			}

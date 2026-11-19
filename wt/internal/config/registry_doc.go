@@ -206,7 +206,7 @@ func (c *Config) CheckModelRow(id string) error {
 
 // modelRow finds the one model row with the id, for an operation that reads
 // or changes it. Two rows under one id are a registry Config.Validate
-// refuses, yet the commands that repair a registry (`wt model edit`, `wt
+// refuses, yet the commands that repair a registry (`wt-model model edit`, `wt
 // model rm`) are let into it on purpose — so the row is never "the first
 // one": which of them the user means cannot be told from the id, and the
 // refusal says so (ErrModelAmbiguous). No row is ErrModelNotFound.

@@ -439,7 +439,7 @@ func (b Bounce) RunWaiting(ctx context.Context, baseURL string) (warnings []stri
 var bounce = Bounce{Restart: RestartContext, Listening: Listening, WaitReady: WaitReady}
 
 // RestartAndWait is the Apply default when Options.Restart is nil (`wt
-// litellm sync`, and through it `wt cloud-sync`, `wt model add|edit|rm|init`
+// litellm sync`, and through it `wt cloud-sync`, `wt-model model add|edit|rm|init`
 // and the Models screen (`wt-model model`)), and all of `wt litellm restart`:
 // bounce.Run, with a failed wait made one more warning, which the command
 // prints like the restart's own. Every warning is a restart that failed or a

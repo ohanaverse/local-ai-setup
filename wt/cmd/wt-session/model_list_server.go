@@ -55,7 +55,7 @@ var modelListServerColumns = []cli.PlainColumn{
 
 // modelListServerDoc is `wt model list --server --json`: the contract
 // document docs/contracts/model-list.server.sample.json. It is the session's
-// catalog view, NOT the host registry's `wt model list --json` (that is
+// catalog view, NOT the host registry's `wt-model model list --json` (that is
 // docs/contracts/model-list.sample.json, which modeltiers reads).
 type modelListServerDoc struct {
 	Version   int               `json:"version"`

@@ -488,7 +488,7 @@ func TestPriceAtIgnoresARowItCannotRead(t *testing.T) {
 
 // TestTimePriceProblemIsTheValidatorsRefusal pins the words Problem gives
 // for a row that is not applied. They are the registry validator's own (the
-// refusal a write of that model gets), and `wt model list` prints them, so
+// refusal a write of that model gets), and `wt-model model list` prints them, so
 // they are how a user learns why a row they wrote changes nothing: a time
 // written "9:00" reads "start must be HH:MM, got 9:00". A row either flow's
 // sync writes has no problem, and neither has a window that runs past

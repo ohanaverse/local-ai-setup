@@ -57,7 +57,7 @@ func TestReadRegistryDocRefusesWhatAWriteWouldRefuse(t *testing.T) {
 		want          error
 		says          string
 	}{
-		{"missing", "", ErrRegistryMissing, "wt model init"},
+		{"missing", "", ErrRegistryMissing, "wt-model model init"},
 		{"not TOML", "not [ valid toml", ErrRegistryFile, "parse"},
 		{"an unknown top-level key", "[[model]]\nid = \"x\"\n", ErrRegistryTopLevel, "`model`"},
 	}

@@ -43,8 +43,8 @@ id = "ollama/y:cloud"
 }
 
 // TestCoveredBySync pins which models a sync flow can address: every
-// openrouter model, and ollama models that are cloud. `wt model add` marks
-// only these manual and `wt model edit --source` accepts only these, so a
+// openrouter model, and ollama models that are cloud. `wt-model model add` marks
+// only these manual and `wt-model model edit --source` accepts only these, so a
 // wrong answer would mark a local model that no sync would ever touch.
 func TestCoveredBySync(t *testing.T) {
 	cases := []struct {

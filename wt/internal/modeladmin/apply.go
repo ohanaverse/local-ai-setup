@@ -175,10 +175,10 @@ func Add(req AddRequest, env config.SeedEnv) (AddResult, error) {
 		// Everything assigned here is assigned afresh: apply may run again.
 		res = AddResult{ID: id}
 		if other := samePairing(d.Models(), plan.target, plan.draft); other != "" {
-			return fieldErr(FieldName, "model %q already registers this pairing (target %s, draft %s); edit that one (wt model edit %s)", other, sideText(plan.target), sideText(plan.draft), other)
+			return fieldErr(FieldName, "model %q already registers this pairing (target %s, draft %s); edit that one (wt-model model edit %s)", other, sideText(plan.target), sideText(plan.draft), other)
 		}
 		if other := sameArtifact(d.Models(), req.ProviderID, req.ModelName); other != "" {
-			return fieldErr(FieldName, "model %q already registers %s on %s; edit that one (wt model edit %s)", other, req.ModelName, req.ProviderID, other)
+			return fieldErr(FieldName, "model %q already registers %s on %s; edit that one (wt-model model edit %s)", other, req.ModelName, req.ProviderID, other)
 		}
 		if err := d.AddModel(map[string]any{
 			"id": id, "family": set["family"], "provider_id": req.ProviderID, "model_name": req.ModelName,
@@ -244,7 +244,7 @@ func artifactTable(repoOrPath string) map[string]any {
 // IsLocalPath reports whether one side of a pairing, as typed, is taken for
 // a local path: it starts with "/", "~", "./" or "../". Anything else is
 // taken for a Hugging Face repo id — a bare relative directory included,
-// which is why `wt model add` says so when one is there.
+// which is why `wt-model model add` says so when one is there.
 func IsLocalPath(repoOrPath string) bool {
 	for _, prefix := range []string{"/", "~", "./", "../"} {
 		if strings.HasPrefix(repoOrPath, prefix) {

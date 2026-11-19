@@ -14,7 +14,7 @@ import (
 // inside an organization folder) and an mtplx model each report the directory
 // the scan found them in, for a registered row and a discovered one alike,
 // and that an omlx name found under two organizations is one entry with no
-// directory at all. `wt model rm` prints that path as "the weights are still
+// directory at all. `wt-model model rm` prints that path as "the weights are still
 // here"; a wrong or empty one sends the user to delete the wrong directory,
 // or none, and a guess between two organizations is the #266 case.
 func TestInventoryEntriesCarryTheModelDirectory(t *testing.T) {
@@ -54,7 +54,7 @@ func TestInventoryEntriesCarryTheModelDirectory(t *testing.T) {
 // org-a/Name is matched to org-b/Name when that is the only copy on disk; the
 // entry still says the model is there (Artifact), and withholds the path. A
 // path wt prints is a path someone may delete, and Entry.Path is exported:
-// held one layer up, in modeladmin, the rule protected `wt model list` and
+// held one layer up, in modeladmin, the rule protected `wt-model model list` and
 // left every other reader of a snapshot to print another organization's
 // weights as this model's.
 func TestInventoryPathIsTheModelsOwnDirectoryOrEmpty(t *testing.T) {
@@ -134,7 +134,7 @@ func TestInventoryPathIsTheModelsOwnDirectoryOrEmpty(t *testing.T) {
 // TestScanOmlxModelPathsDropsAmbiguousPath verifies a name found in two
 // organization folders is listed once with no path. A leaf-name match across
 // organizations must never put another organization's directory on a row
-// that `wt model rm` then names as "the weights are still here" (#266).
+// that `wt-model model rm` then names as "the weights are still here" (#266).
 func TestScanOmlxModelPathsDropsAmbiguousPath(t *testing.T) {
 	dir := t.TempDir()
 	mkOmlxModels(t, dir, "orgA/Same-4bit", "orgB/Same-4bit", "Solo-4bit")
@@ -155,8 +155,8 @@ func TestScanOmlxModelPathsDropsAmbiguousPath(t *testing.T) {
 
 // TestScanOmlxModelPathsWhenTheDirectoryIsItselfAModel verifies omlx's
 // fallback: a model directory that holds no model but is one is listed under
-// its own name, with itself as the path. That path is what `wt model list`
-// and `wt model rm` print for the one model of such a setup; without it the
+// its own name, with itself as the path. That path is what `wt-model model list`
+// and `wt-model model rm` print for the one model of such a setup; without it the
 // row would say wt cannot tell where the weights are while the scan knows.
 func TestScanOmlxModelPathsWhenTheDirectoryIsItselfAModel(t *testing.T) {
 	root := t.TempDir()
@@ -173,7 +173,7 @@ func TestScanOmlxModelPathsWhenTheDirectoryIsItselfAModel(t *testing.T) {
 
 // TestInventoryOllamaEntriesCarryTheirSize verifies an ollama entry's Size is
 // the `size` /api/tags reports and its Path is empty: ollama keeps blobs, not
-// a directory per model. `wt model list --json` reports both, and a made-up
+// a directory per model. `wt-model model list --json` reports both, and a made-up
 // path would name a directory that does not exist.
 func TestInventoryOllamaEntriesCarryTheirSize(t *testing.T) {
 	mux := http.NewServeMux()

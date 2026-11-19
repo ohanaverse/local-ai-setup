@@ -44,7 +44,7 @@ func loadErrorCases() []loadErrorCase {
 			name:  "missing registry",
 			setup: func(t *testing.T, registry, cfgFile string) {},
 			errText: func(registry string) string {
-				return "model registry not found at " + registry + " — seed it with `wt model init`"
+				return "model registry not found at " + registry + " — seed it with `wt-model model init`"
 			},
 			never: []string{"wt config", "modelman"},
 		},
@@ -63,7 +63,7 @@ func loadErrorCases() []loadErrorCase {
 					", which does not exist"
 			},
 			hint:  "fix the link or move it aside",
-			never: []string{"wt config", "wt model init", "modelman"},
+			never: []string{"wt config", "wt-model model init", "modelman"},
 		},
 		{
 			name: "unparseable registry",
@@ -72,7 +72,7 @@ func loadErrorCases() []loadErrorCase {
 			},
 			errHas: func(registry string) string { return "parse " + registry + ": toml: " },
 			hint:   "fix that file by hand",
-			never:  []string{"wt config", "wt model init", "modelman"},
+			never:  []string{"wt config", "wt-model model init", "modelman"},
 		},
 		{
 			// A regular file where the registry's directory should be: the
@@ -83,7 +83,7 @@ func loadErrorCases() []loadErrorCase {
 			},
 			errText: func(registry string) string { return "lstat " + registry + ": not a directory" },
 			hint:    "fix that file by hand",
-			never:   []string{"wt config", "wt model init", "modelman"},
+			never:   []string{"wt config", "wt-model model init", "modelman"},
 		},
 		{
 			name: "unparseable config.toml",
@@ -93,7 +93,7 @@ func loadErrorCases() []loadErrorCase {
 			},
 			errHas: func(string) string { return "parse config: toml: " },
 			hint:   "run `wt config` to repair",
-			never:  []string{"wt model init", "modelman", "by hand", "the link"},
+			never:  []string{"wt-model model init", "modelman", "by hand", "the link"},
 		},
 	}
 }
@@ -139,8 +139,8 @@ func (c loadErrorCase) check(t *testing.T, got, prefix, hintFmt, suffix, registr
 		}
 	}
 	if c.name == "missing registry" {
-		if n := strings.Count(got, "wt model init"); n != 1 {
-			t.Errorf("message %q names `wt model init` %d times, want exactly once", got, n)
+		if n := strings.Count(got, "wt-model model init"); n != 1 {
+			t.Errorf("message %q names `wt-model model init` %d times, want exactly once", got, n)
 		}
 	}
 	if strings.Contains(strings.TrimSuffix(got, "\n"), "\n") {
@@ -153,7 +153,7 @@ func (c loadErrorCase) check(t *testing.T, got, prefix, hintFmt, suffix, registr
 // pair and fail, if at all, on their own config files) — in a home broken
 // each way wt's configuration can fail to load, and pins the repair the
 // refusal names. Such refusals used to end with "run `wt config` to repair":
-// for a missing registry that contradicted the `wt model init` the same line
+// for a missing registry that contradicted the `wt-model model init` the same line
 // already named, and for a registry link that leads nowhere it sent the user
 // to an editor that cannot touch the link (#291). Only a config.toml problem
 // is `wt config`'s to repair.
@@ -182,7 +182,7 @@ func TestLitellmLoadErrorNamesTheRepairThatWorks(t *testing.T) {
 // registry simply absent at the default path: a session-only machine). The note
 // has to agree with what every refusing command says for the same error: it
 // used to tell a user with no registry to run a command of the retired
-// modelman, right after quoting an error that says `wt model init` (#291).
+// modelman, right after quoting an error that says `wt-model model init` (#291).
 func TestStatsFamilyNoteNamesTheRepairThatWorks(t *testing.T) {
 	for _, c := range loadErrorCases() {
 		t.Run(c.name, func(t *testing.T) {

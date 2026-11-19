@@ -8,7 +8,7 @@ import (
 )
 
 // pairingRegistry is tabRegistry plus an mlx_lm_server provider and one
-// target+draft pairing, as `wt model add mlx_lm_server … --draft …` writes it
+// target+draft pairing, as `wt-model model add mlx_lm_server … --draft …` writes it
 // (provider rows before model rows, the order wt writes).
 var pairingRegistry = strings.Replace(tabRegistry, "[[models]]", `[[providers]]
 id = "mlx_lm_server"
@@ -75,7 +75,7 @@ func TestModelsTabShowsAndEditsAPairing(t *testing.T) {
 	}
 	// The form says where the missing provider is added, while the Provider
 	// choice is the field in hand, and stops saying it on the next field.
-	const hint = "a pairing: wt model add mlx_lm_server <target> --draft <draft>"
+	const hint = "a pairing: wt-model model add mlx_lm_server <target> --draft <draft>"
 	if view := m.View(); m.models.form.cursor != mfProvider || !strings.Contains(view, hint) {
 		t.Errorf("the add form opens on Provider and should name the command that adds a pairing:\n%s", view)
 	}
@@ -84,10 +84,10 @@ func TestModelsTabShowsAndEditsAPairing(t *testing.T) {
 	}
 }
 
-// TestAddFormPairingLineFitsTheTerminal verifies the line that names `wt
-// model add mlx_lm_server` costs the add form nothing it needs: at every
-// layout size the form is inside the terminal with the line on it — the
-// short spelling at 40 columns — and on a terminal so short that the line
+// TestAddFormPairingLineFitsTheTerminal verifies the line that names
+// `wt-model model add mlx_lm_server` costs the add form nothing it needs: at
+// every layout size the form is inside the terminal with the line on it — the
+// shortest spelling at 40 columns — and on a terminal so short that the line
 // would leave the fields fewer than three rows it is the line that goes, not
 // the fields or the markers that count the ones off screen.
 func TestAddFormPairingLineFitsTheTerminal(t *testing.T) {
@@ -101,7 +101,7 @@ func TestAddFormPairingLineFitsTheTerminal(t *testing.T) {
 			}
 			want := modelFormPairingHints[0]
 			if width == 40 {
-				want = modelFormPairingHints[1]
+				want = modelFormPairingHints[len(modelFormPairingHints)-1]
 			}
 			if !strings.Contains(view, want) || !strings.Contains(view, "Provider") {
 				t.Errorf("%dx%d: want %q under the Provider field:\n%s", width, height, want, view)
@@ -110,7 +110,7 @@ func TestAddFormPairingLineFitsTheTerminal(t *testing.T) {
 	}
 	m := keys(t, modelsEditor(t, tm, 80, 6), "n")
 	view := m.View()
-	if strings.Contains(view, "wt model add mlx_lm_server") || !strings.Contains(view, "Provider") || !strings.Contains(view, "more") || lipgloss.Height(view) > 6 {
+	if strings.Contains(view, "model add mlx_lm_server") || !strings.Contains(view, "Provider") || !strings.Contains(view, "more") || lipgloss.Height(view) > 6 {
 		t.Errorf("80x6: want the fields and their marker, without the pairing line:\n%s", view)
 	}
 }

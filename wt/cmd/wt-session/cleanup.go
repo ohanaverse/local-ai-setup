@@ -476,7 +476,7 @@ func noRegistry(a *app) bool {
 // loader read as absent because it was malformed (config.ArtifactFaults: not
 // a string, or its fetch/draft not a table), a "~" path that cannot be
 // expanded, or a relative path is an error naming the model. A relative
-// local_path has no agreed base (wt model add writes absolute paths, llmbench
+// local_path has no agreed base (wt-model model add writes absolute paths, llmbench
 // resolves from its own working directory, modeladmin from wt's), so wt
 // cannot know what it names: a path wt cannot enumerate is a path it cannot
 // protect.

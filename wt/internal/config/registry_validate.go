@@ -47,7 +47,7 @@ var ErrNoProviderRow = errors.New("names no provider row")
 // validateModelRefs checks the two rules of Config.Validate that need other
 // rows: the model's provider_id names a provider row, and its location — its
 // own, or the one it inherits from that provider — resolves to "local" or
-// "cloud". Without them `wt model edit --location mars` would be written, and
+// "cloud". Without them `wt-model model edit --location mars` would be written, and
 // every wt command would then refuse to run until the file was fixed by hand.
 // ResolveLocation is the judge, as everywhere else; it is asked over the
 // document's provider rows as they are after apply, so a provider row seeded

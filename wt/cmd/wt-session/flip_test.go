@@ -459,7 +459,7 @@ func TestStatsFamilyNoNoteWithoutARegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, stderr := runStats(t, a, "--family", "qwen")
-	if strings.Contains(stderr, "did not load") || strings.Contains(stderr, "wt model init") {
+	if strings.Contains(stderr, "did not load") || strings.Contains(stderr, "model init") {
 		t.Errorf("stderr = %q, want no registry note on a machine with no registry", stderr)
 	}
 }

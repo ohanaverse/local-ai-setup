@@ -114,7 +114,7 @@ func ReadRegistryDoc() (*RegistryDoc, error) {
 		return nil, err
 	}
 	if !exists {
-		return nil, fmt.Errorf("%w at %s — seed it with `wt model init`", ErrRegistryMissing, path)
+		return nil, fmt.Errorf("%w at %s — seed it with `wt-model model init`", ErrRegistryMissing, path)
 	}
 	root, err := tomlw.Decode(data)
 	if err != nil {

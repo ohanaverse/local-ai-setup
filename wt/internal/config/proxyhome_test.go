@@ -994,7 +994,7 @@ api_key = "sk-legacy"
 // secret others can read) is never served as the legacy values (fix round 1,
 // Findings 1/3) — Load's pair is empty and ProxyErr carries the chmod 600
 // error for the commands that use the pair — but the load itself succeeds, so
-// a loose key file no longer blocks `wt model list`, `wt stop` or the model
+// a loose key file no longer blocks `wt-model model list`, `wt stop` or the model
 // server's per-request reload. LoadSession never opens the home at all, so a
 // session launch cannot fail on it (the spec's "No session-behavior change").
 func TestABrokenHomeFailsOnlyWhatUsesThePair(t *testing.T) {

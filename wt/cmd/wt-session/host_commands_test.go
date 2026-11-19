@@ -53,14 +53,13 @@ func execOn(c *cobra.Command, args ...string) (string, error) {
 }
 
 // TestHostCommandsStillLoadTheRegistry pins R3 and R17: after the flip the
-// host commands of this binary (`model list` and its --json, `model add`,
-// `cloud-sync --dry-run`, `litellm list`, `served`, `warm`, `stop
-// <provider>`) still read registry.toml, through app.hostConfig() and never
-// through the model server, even with a model server configured, and behave
-// as they did before it: each one's output or error equals the pre-flip
-// function's over config.Load()'s config, newApp itself reads no registry,
-// and `wt model list --json` still has the shape of model-list.sample.json
-// (modeltiers reads that document as its whole inventory). A host command
+// host commands of this binary (`cloud-sync --dry-run`, `litellm list`,
+// `served`, `warm`, `stop <provider>`) still read registry.toml, through
+// app.hostConfig() and never through the model server, even with a model
+// server configured, and behave as they did before it: each one's output or
+// error equals the pre-flip function's over config.Load()'s config, and
+// newApp itself reads no registry (`model list --json` and `model add` moved
+// to wt-model, whose tests pin model-list.sample.json). A host command
 // moved onto the session config would see no models and silently plan,
 // route or stop nothing.
 func TestHostCommandsStillLoadTheRegistry(t *testing.T) {

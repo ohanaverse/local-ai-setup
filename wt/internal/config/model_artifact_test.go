@@ -12,7 +12,7 @@ import (
 
 // TestModelDecodesFetchAndDraft verifies wt reads a model's fetch and draft
 // tables: the repo of each side of the shared fixture's mlx_lm_server pairing,
-// and a local_path. `wt model list` shows a local_path as the model's path and
+// and a local_path. `wt-model model list` shows a local_path as the model's path and
 // the pairing hint names the target and the draft; decoded as empty, the hint
 // would tell the user to start a pairing with no target.
 func TestModelDecodesFetchAndDraft(t *testing.T) {
@@ -151,7 +151,7 @@ repo = "org/second"
 // table and each repo or local_path that is not a string, fetch before draft
 // and repo before local_path, and names nothing for a well-formed, empty or
 // absent table. Tolerating a slip such as `fetch = "~/models/x"` in silence
-// leaves a row that reads "missing" with no hint why; `wt model list` prints
+// leaves a row that reads "missing" with no hint why; `wt-model model list` prints
 // these phrases, so their wording and order are what the user sees. The
 // record must not change what Fetch and Draft hold.
 func TestModelNamesItsMalformedFetchAndDraft(t *testing.T) {

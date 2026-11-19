@@ -14,7 +14,7 @@ func args(a ...string) *[]string { return &a }
 // TestFieldsPatchServeArgs verifies how serve_args become a registry patch
 // (#432): given, they are set as the list, one element each and in order; an
 // empty list clears the key; not given leaves it alone, and a Fields with only
-// serve_args is not empty (so `wt model edit --serve-arg ...` is not refused as
+// serve_args is not empty (so `wt-model model edit --serve-arg ...` is not refused as
 // "nothing to change").
 func TestFieldsPatchServeArgs(t *testing.T) {
 	set, unset, err := Fields{ServeArgs: args("--profile", "turbo")}.patch()
@@ -40,7 +40,7 @@ func TestFieldsPatchServeArgs(t *testing.T) {
 	}
 }
 
-// TestAddWritesServeArgsForMtplxOnly verifies `wt model add` stores serve_args
+// TestAddWritesServeArgsForMtplxOnly verifies `wt-model model add` stores serve_args
 // on an mtplx model, at their place in the row (after the tags), and refuses
 // them where they cannot be used: a provider that takes none, and a flag wt
 // sets itself. Each refusal is a FieldError on --serve-arg raised before
@@ -79,7 +79,7 @@ func TestAddWritesServeArgsForMtplxOnly(t *testing.T) {
 	}
 }
 
-// TestEditSetsAndClearsServeArgs verifies `wt model edit` on an mtplx row sets
+// TestEditSetsAndClearsServeArgs verifies `wt-model model edit` on an mtplx row sets
 // serve_args, leaves the rest of the row alone, does nothing when the same
 // list is given again, replaces a different list, and clears it with an empty
 // one; and that it refuses them on a model of a provider that takes none and

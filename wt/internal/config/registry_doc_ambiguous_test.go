@@ -7,7 +7,7 @@ import (
 
 // dupRow is a second row under docRegistry's id "ollama/alpha", held by
 // another provider: the registry Config.Validate refuses with "duplicate
-// model id", which `wt model edit` and `wt model rm` are still let into so
+// model id", which `wt-model model edit` and `wt-model model rm` are still let into so
 // that it can be repaired.
 const dupRow = `
 [[models]]
@@ -57,8 +57,8 @@ var ambiguousOps = []struct {
 // addresses a model row by its id refuses an id two rows carry, changes
 // nothing, and says which providers hold the rows, in file order. Before
 // this each of them took the first row: on the one registry where the user
-// most needs to choose — two rows under one id is what `wt model edit` and
-// `wt model rm` are let in to repair — an edit or a removal landed on
+// most needs to choose — two rows under one id is what `wt-model model edit` and
+// `wt-model model rm` are let in to repair — an edit or a removal landed on
 // whichever row came first, and the row of the other provider could not be
 // reached at all.
 func TestOperationsRefuseAnIDTheRegistryHoldsTwice(t *testing.T) {
@@ -145,7 +145,7 @@ func TestModelReturnsACopy(t *testing.T) {
 
 // TestCheckModelRow verifies the same three answers from a loaded Config:
 // nil for an id one row has, ErrModelNotFound for none, and ErrModelAmbiguous
-// — in the writer's own words — for two. `wt model rm` asks it before its
+// — in the writer's own words — for two. `wt-model model rm` asks it before its
 // confirmation question, so a user is not asked "remove these?" about an id
 // the write is going to refuse.
 func TestCheckModelRow(t *testing.T) {

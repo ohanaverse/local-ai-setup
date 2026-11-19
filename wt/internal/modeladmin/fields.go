@@ -199,7 +199,7 @@ func checkSubscription(hasPrice bool, period string) error {
 	return nil
 }
 
-// DeriveID is the id `wt model add` gives a model when --id does not. A model
+// DeriveID is the id `wt-model model add` gives a model when --id does not. A model
 // of a local provider gets config.DiscoveredModelID: the id wt already lists,
 // routes and keeps history under for that artifact, so registering a model
 // that is on disk does not change its id. Any other provider gets the rule
