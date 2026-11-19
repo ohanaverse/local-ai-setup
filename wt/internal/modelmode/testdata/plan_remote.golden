@@ -1,0 +1,5 @@
+set up mode remote in 2 steps:
+  1. replace /Users/user_name/.config/agent-wt/remote-model-server.token with the pasted token (mode 0600; the old token there is lost)
+  2. create [model-server] in /Users/user_name/.config/agent-wt/config.toml: mode = "remote", url = "https://gpu.example:8787", token_file = "/Users/user_name/.config/agent-wt/remote-model-server.token"
+left alone and notes:
+  - the server at https://gpu.example:8787 was not checked

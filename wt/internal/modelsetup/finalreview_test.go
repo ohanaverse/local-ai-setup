@@ -9,55 +9,21 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 )
 
 // plBackupDir is where a rotation's backup of the LiteLLM plist goes: wt-model's
 // config home, never ~/Library/LaunchAgents.
 const plBackupDir = plConfigHome + "/wt-model/backups"
 
-// TestBuildPlanRemoteRefusesAURLWithCredentials pins that a typed url carrying
-// a user:password is refused (config.toml is 0644, so wt never stores one),
-// that the refusal is fixed text naming nothing of the url (no user, no
-// password, not even the host), and that a plain url still plans.
-func TestBuildPlanRemoteRefusesAURLWithCredentials(t *testing.T) {
-	const user, pass = "alice-USER", "hunter2-PASSWORD"
-	for _, u := range []string{
-		"https://" + user + ":" + pass + "@gpu.example:8787",
-		"https://" + user + "@gpu.example:8787",
-	} {
-		st := freshState()
-		st.Server = ServerState{Checked: true, OK: true, URL: "https://gpu.example:8787"}
-		p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: u, PastedToken: plPasted})
-		mustRefuse(t, p, err, "user:password", "token file", "credentials")
-		if err != nil && (strings.Contains(err.Error(), user) || strings.Contains(err.Error(), pass) || strings.Contains(err.Error(), "gpu.example")) {
-			t.Errorf("refusal quotes the credentials: %q", err.Error())
-		}
-	}
-	mustPlan(t, freshState(), Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, SaveUnchecked: true})
-}
-
 // TestBuildPlanLocalRefusesAListenAddressWithCredentials pins the local twin:
 // a listen address typed with a user:password is refused without echoing it.
 func TestBuildPlanLocalRefusesAListenAddressWithCredentials(t *testing.T) {
-	p, err := BuildPlan(freshState(), Desired{Mode: modelclient.ModeLocal, Listen: "bob:hunter2-PASSWORD@127.0.0.1:8787"})
+	p, err := BuildPlan(freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{Listen: "bob:hunter2-PASSWORD@127.0.0.1:8787"}})
 	mustRefuse(t, p, err, "user:password")
 	if err != nil && strings.Contains(err.Error(), "hunter2-PASSWORD") {
 		t.Errorf("refusal quotes the password: %q", err.Error())
 	}
-}
-
-// TestApplyConfigRefusesAURLWithCredentials pins the apply-time backstop: a
-// plan (built by hand) whose config step would write a url with a
-// user:password fails that step and never calls Config.Update.
-func TestApplyConfigRefusesAURLWithCredentials(t *testing.T) {
-	f := apEnv(t)
-	p := Plan{Want: Desired{Mode: modelclient.ModeRemote, URL: "https://u:pw-SECRET@gpu.example:8787", TokenFile: plRemoteTok},
-		Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}
-	r, lines := apply(t, f, p)
-	if r.Failed == nil || r.Failed.Kind != StepConfig || f.called("Config.Update") {
-		t.Fatalf("Failed = %+v, Config.Update called %t", r.Failed, f.called("Config.Update"))
-	}
-	noSecrets(t, f, lines, r, "pw-SECRET")
 }
 
 // TestApplyRotateKeepsTheBackupOutOfLaunchAgents pins that a rotation's backup
@@ -66,7 +32,7 @@ func TestApplyConfigRefusesAURLWithCredentials(t *testing.T) {
 // backups directory, and the plan says where.
 func TestApplyRotateKeepsTheBackupOutOfLaunchAgents(t *testing.T) {
 	f := rotEnv(t)
-	p := mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+	p := mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}})
 	if s, _ := stepOf(p, StepBackup); !strings.Contains(s.Detail, plBackupDir) {
 		t.Errorf("backup step does not name %s: %q", plBackupDir, s.Detail)
 	}
@@ -93,7 +59,7 @@ func TestApplyRotateRefusalLeavesNoBackup(t *testing.T) {
 	f := rotEnv(t)
 	f.files[plLiteLLM] = []byte(envPlist("", "\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t<string>"+apOldMaster+"</string>\n"+
 		"\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t<string>"+apOldMaster+"</string>\n"))
-	r, lines := apply(t, f, mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}))
+	r, lines := apply(t, f, mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}))
 	if r.Failed == nil || r.Failed.Kind != StepBackup {
 		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
 	}
@@ -118,7 +84,7 @@ func TestApplyRotateRechecksTheSaltGuardAtApplyTime(t *testing.T) {
 	f.files[plLiteLLM] = []byte(envPlist("", "\t\t<key>LITELLM_MASTER_KEY</key>\n\t\t<string>"+apOldMaster+"</string>\n"+
 		"\t\t<key>DATABASE_URL</key>\n\t\t<string>postgresql://u:db-SECRET@localhost/litellm</string>\n"))
 	before := append([]byte(nil), f.files[plLiteLLM]...)
-	r, lines := apply(t, f, mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey}))
+	r, lines := apply(t, f, mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}))
 	if r.Failed == nil || r.Failed.Kind != StepBackup || !strings.Contains(r.Err.Error(), "LITELLM_SALT_KEY") {
 		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
 	}
@@ -138,21 +104,21 @@ func TestApplyAgentPlistStepsRecheckTheFileAtApplyTime(t *testing.T) {
 
 	f := apEnv(t)
 	f.files[plAgentPath] = foreign
-	r, _ := apply(t, f, mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}))
+	r, _ := apply(t, f, mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}))
 	if r.Failed == nil || r.Failed.Kind != StepPlist || string(f.files[plAgentPath]) != string(foreign) {
 		t.Errorf("write over a foreign plist: Failed = %+v, Err = %v", r.Failed, r.Err)
 	}
 
 	f = apEnv(t)
 	f.files[plAgentPath] = foreign
-	r, _ = apply(t, f, mustPlan(t, baseState(), Desired{Mode: modelclient.ModeNative, RemoveAgent: true}))
+	r, _ = apply(t, f, mustPlan(t, baseState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeNative}, AdminWant: AdminWant{RemoveAgent: true}}))
 	if r.Failed == nil || r.Failed.Kind != StepRemovePlist || f.called("FS.Remove") {
 		t.Errorf("removal of a foreign plist: Failed = %+v, Err = %v", r.Failed, r.Err)
 	}
 
 	f = apEnv(t)
 	f.files[plAgentPath] = RenderAgentPlist(plSpec())
-	if r, _ = apply(t, f, mustPlan(t, baseState(), Desired{Mode: modelclient.ModeNative, RemoveAgent: true})); r.Err != nil {
+	if r, _ = apply(t, f, mustPlan(t, baseState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeNative}, AdminWant: AdminWant{RemoveAgent: true}})); r.Err != nil {
 		t.Errorf("removal of wt's own plist failed: %v", r.Err)
 	}
 	if _, ok := f.files[plAgentPath]; ok {
@@ -166,7 +132,7 @@ func TestApplyAgentPlistStepsRecheckTheFileAtApplyTime(t *testing.T) {
 func TestApplyPairNeverQuotesAPlistDecoderError(t *testing.T) {
 	f := apEnv(t)
 	f.plistErr = &xml.SyntaxError{Msg: "invalid character entity &sk-LEAK-0123456789abcdef;", Line: 3}
-	r, lines := apply(t, f, mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal}))
+	r, lines := apply(t, f, mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}))
 	if r.Failed == nil || r.Failed.Kind != StepPair {
 		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
 	}
@@ -181,17 +147,17 @@ func TestApplyPairNeverQuotesAPlistDecoderError(t *testing.T) {
 func TestBuildPlanRefusesAConfigFileItCannotWrite(t *testing.T) {
 	st := freshState()
 	st.Config.TableErr = "toml: line 2: incompatible types"
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	mustRefuse(t, p, err, plCfgPath, "[model-server]")
 
 	st = freshState()
 	st.Config.RestErr = "toml: line 9 (last key \"agents.claude.args\"): incompatible types"
-	p, err = BuildPlan(st, Desired{Mode: modelclient.ModeLocal})
+	p, err = BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	mustRefuse(t, p, err, plCfgPath, "agents.claude.args")
 
 	st = rotateState()
 	st.Config.RestErr = "toml: line 9: incompatible types"
-	mustPlan(t, st, Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+	mustPlan(t, st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}})
 }
 
 // TestPlansSayARestartCutsRequestsInFlight pins that a plan that restarts a
@@ -199,11 +165,11 @@ func TestBuildPlanRefusesAConfigFileItCannotWrite(t *testing.T) {
 // in flight are cut, unlike `wt litellm restart`, and that a plan that only
 // loads a job does not.
 func TestPlansSayARestartCutsRequestsInFlight(t *testing.T) {
-	rot := mustPlan(t, rotateState(), Desired{Mode: modelclient.ModeLocal, LiteLLM: LiteLLMRotateKey})
+	rot := mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}})
 	if !strings.Contains(rot.Format(), "in flight") {
 		t.Errorf("rotate plan does not say requests in flight are cut:\n%s", rot.Format())
 	}
-	fresh := mustPlan(t, freshState(), Desired{Mode: modelclient.ModeLocal})
+	fresh := mustPlan(t, freshState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
 	if strings.Contains(fresh.Format(), "in flight") {
 		t.Errorf("a plan that only loads a job speaks of cut requests:\n%s", fresh.Format())
 	}
@@ -236,6 +202,6 @@ func TestObserveCarriesADecodeErrorElsewhereIntoState(t *testing.T) {
 	if st.Config.RestErr == "" {
 		t.Fatalf("RestErr not carried into State")
 	}
-	p, err := BuildPlan(st, Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, SaveUnchecked: true})
+	p, err := BuildPlan(st, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeRemote, URL: "https://gpu.example:8787", PastedToken: plPasted, SaveUnchecked: true}})
 	mustRefuse(t, p, err, "agents.name")
 }

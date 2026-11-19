@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 // Secret holds a secret the user typed (a pasted token, a master key); every
@@ -20,17 +18,26 @@ import (
 // this name is modelsetup's alias.
 type Secret = modelmode.Secret
 
-// Desired is what the user asked for. PastedToken (remote) and MasterKey
-// (local, used only when the pair is unset and the LiteLLM plist has no key)
-// are Secrets: BuildPlan keeps each only in its own mode's Plan.Want, for
-// Apply, and no step, note, Format text or refusal holds them. LiteLLM is
-// what a local plan does to the LiteLLM LaunchAgent (nothing by default).
+// AdminWant is the admin half of a Desired: what the setup side decides that
+// a session never chooses. MasterKey (local, used only when the pair is unset
+// and the LiteLLM plist has no key) is a Secret: BuildPlan keeps it only in a
+// local plan's Plan.Admin, for Apply, and no step, note, Format text or
+// refusal holds it (PastedToken, the session half's secret, stays in
+// Plan.Want). LiteLLM is what a local plan does to the LiteLLM LaunchAgent
+// (nothing by default).
+type AdminWant struct {
+	Listen      string
+	MasterKey   Secret
+	RemoveAgent bool
+	LiteLLM     LiteLLMAction
+}
+
+// Desired is what the user asked for: the session half (mode, url, token
+// file, pasted token, save-unchecked) is modelmode's; the admin half is
+// AdminWant.
 type Desired struct {
-	Mode                       modelmode.Mode
-	URL, TokenFile, Listen     string
-	PastedToken, MasterKey     Secret
-	SaveUnchecked, RemoveAgent bool
-	LiteLLM                    LiteLLMAction
+	modelmode.Desired
+	AdminWant
 }
 
 // LiteLLMAction is what a local plan does to the LiteLLM LaunchAgent. wt never
@@ -101,7 +108,7 @@ const (
 	// ActionPairKeyFromPlist reads LITELLM_MASTER_KEY from the LiteLLM plist
 	// at Step.Path when applied.
 	ActionPairKeyFromPlist StepAction = "pair-key-from-litellm-plist"
-	// ActionPairKeyEntered uses Plan.Want.MasterKey.
+	// ActionPairKeyEntered uses Plan.Admin.MasterKey.
 	ActionPairKeyEntered StepAction = "pair-key-entered"
 	// ActionPairKeyNew uses the master key an earlier step of the same Apply
 	// generated and wrote to the LiteLLM plist (create or rotate); the key is
@@ -124,17 +131,16 @@ const (
 // line the user confirms. It is modelmode.Step.
 type Step = modelmode.Step
 
-// Plan is what BuildPlan decided. Want is the request with every default
-// filled in (Mode, URL, TokenFile and Listen as they will be written); Notes
-// say what is left alone and anything else worth knowing; Agent is what a
-// local plan's plist step renders (nil for native and remote). LiteLLM is
-// what a create plan's StepLiteLLMPlist renders, without its keys: Apply
-// generates them when it writes the file, so no plan ever holds one (nil for
-// any plan that does not create).
+// Plan is what BuildPlan decides. The session half (Want with Mode, URL and
+// TokenFile as they will be written, the Steps, and the Notes on what is left
+// alone) is modelmode's; Admin is the admin half of the request (Listen as it
+// will be written); Agent is what a local plan's plist step renders (nil for
+// native and remote). LiteLLM is what a create plan's StepLiteLLMPlist
+// renders, without its keys: Apply generates them when it writes the file, so
+// no plan ever holds one (nil for any plan that does not create).
 type Plan struct {
-	Want    Desired
-	Steps   []Step
-	Notes   []string
+	modelmode.Plan
+	Admin   AdminWant
 	Agent   *AgentSpec
 	LiteLLM *LiteLLMSpec
 }
@@ -157,71 +163,52 @@ const DefaultLiteLLMPort = 4000
 // BuildPlan decides the steps that take the machine from st to want. It is
 // pure: everything it needs is in st, and it reads no clock and no file.
 func BuildPlan(st State, want Desired) (Plan, error) {
-	if st.Config.ParseErr != "" {
-		return Plan{}, &RefusalError{Reasons: []string{reason(
-			"config.toml at "+st.Config.Path+" has a TOML syntax error ("+st.Config.ParseErr+") and is never overwritten",
-			"fix it by hand, then re-read")}}
+	d, err := modelmode.Preflight(st.State, want.Desired)
+	if err != nil {
+		return Plan{}, err
 	}
-	if st.Config.TableErr != "" {
-		// The config step re-reads the whole file and refuses what it cannot
-		// decode, so a plan would run every earlier step (token, plist,
-		// launchd) and then fail on the last one.
-		return Plan{}, &RefusalError{Reasons: []string{reason(
-			"[model-server] in "+st.Config.Path+" cannot be read ("+st.Config.TableErr+") and is never overwritten",
-			"fix it by hand, then re-read")}}
-	}
-	mode, ok := modelmode.ParseMode(string(want.Mode))
-	if !ok {
-		return Plan{}, &RefusalError{Reasons: []string{reason(
-			"mode "+strconv.Quote(string(want.Mode))+" is not native, local or remote",
-			"choose one of native, local or remote")}}
-	}
-	want.Mode = mode
+	want.Desired = d
 	// Each secret stays only in the mode that uses it.
-	if mode != modelmode.ModeRemote {
-		want.PastedToken = ""
-	}
-	if mode != modelmode.ModeLocal {
+	if want.Mode != modelmode.ModeLocal {
 		want.MasterKey = ""
 		want.LiteLLM = LiteLLMNone
 	}
 	var p Plan
-	var err error
-	switch mode {
+	switch want.Mode {
 	case modelmode.ModeLocal:
+		// The tighten plan is one chmod: no Postflight, no restart note,
+		// as before.
 		if want.LiteLLM == LiteLLMTighten {
 			return planTightenLiteLLM(st, want)
 		}
 		p, err = planLocal(st, want)
-	case modelmode.ModeRemote:
-		p, err = planRemote(st, want)
+		if err != nil {
+			return Plan{}, err
+		}
+		// Same failure as TableErr above, from a key outside [model-server]
+		// (RestErr): the config step is last, so a file its writer cannot
+		// decode would fail it only after every machine change before it.
+		// BuildPlanWith already ran this for native and remote.
+		if err := modelmode.Postflight(st.State, p.Plan); err != nil {
+			return Plan{}, err
+		}
 	default:
-		p, err = planNative(st, want)
-	}
-	if err != nil {
-		return Plan{}, err
-	}
-	// Same failure as TableErr above, from a key outside [model-server]
-	// (RestErr): the config step is last, so a file its writer cannot decode
-	// would fail it only after every machine change before it. A plan that
-	// leaves config.toml alone (a key rotation) does not reach that writer.
-	if _, writes := findStep(p, StepConfig); writes && st.Config.RestErr != "" {
-		return Plan{}, &RefusalError{Reasons: []string{reason(
-			"config.toml at "+st.Config.Path+" has a key that cannot be read ("+st.Config.RestErr+") and is never overwritten",
-			"fix it by hand, then re-read")}}
+		// Preflight already ran (idempotent: the mode is parsed, PastedToken
+		// cleared), and BuildPlanWith repeats it; Postflight runs there.
+		mp, err := modelmode.BuildPlanWith(st.State, want.Desired, modelmode.PlanHooks{
+			LeavingLocal: func(mp *modelmode.Plan) {
+				leaveAgent(mp, st, want.AdminWant)
+				keepLocalSetup(mp, st)
+			},
+		})
+		if err != nil {
+			return Plan{}, err
+		}
+		p = Plan{Plan: mp, Admin: want.AdminWant}
+		p.Admin.Listen = ""
 	}
 	p.restartNote()
 	return p, nil
-}
-
-// findStep finds the first step of kind k.
-func findStep(p Plan, k StepKind) (Step, bool) {
-	for _, s := range p.Steps {
-		if s.Kind == k {
-			return s, true
-		}
-	}
-	return Step{}, false
 }
 
 // restartNote says, once, that a step that restarts or unloads a running job
@@ -236,102 +223,6 @@ func (p *Plan) restartNote() {
 	}
 }
 
-// planNative stores only the mode, plus the optional agent removal.
-func planNative(st State, want Desired) (Plan, error) {
-	want.URL, want.TokenFile, want.Listen = "", "", ""
-	p := Plan{Want: want}
-	p.leaveAgent(st)
-	p.keepLocalSetup(st)
-	p.config(st)
-	p.envNote(st)
-	return p, nil
-}
-
-// planRemote writes a pasted token if any, then the table, plus the optional
-// agent removal.
-func planRemote(st State, want Desired) (Plan, error) {
-	var reasons []string
-	want.URL = strings.TrimSpace(want.URL)
-	if urlrule.HasUserinfo(want.URL) {
-		// Alone: every other reason may quote the url.
-		return Plan{}, &RefusalError{Reasons: []string{modelmode.CredentialsReason("the url")}}
-	}
-	if want.URL == "" {
-		reasons = append(reasons, reason("remote mode has no url", "enter the model server's url"))
-	}
-	var tokenStep *Step
-	switch {
-	case strings.TrimSpace(want.PastedToken.Reveal()) != "":
-		if st.Host.ConfigHome == "" {
-			reasons = append(reasons, reason("the config directory is not known, so the pasted token has nowhere to go", "set HOME or XDG_CONFIG_HOME"))
-			break
-		}
-		path := RemoteTokenPath(st.Host.ConfigHome)
-		want.TokenFile = path
-		ts, _ := tokenAt(st, path)
-		if ts.Dangling {
-			// A link that does not resolve: apply would refuse it after the
-			// confirmation, so refuse it now.
-			reasons = append(reasons, reason("token path "+path+" cannot be replaced ("+ts.Err+")", "remove or repair the link, then plan again"))
-			break
-		}
-		s := Step{Kind: StepToken, Path: path, Action: ActionWritePastedToken,
-			Detail: "write the pasted token to " + path + " (mode 0600)"}
-		if ts.Exists {
-			s.Action = ActionReplacePastedToken
-			s.Detail = "replace " + path + " with the pasted token (mode 0600; the old token there is lost)"
-		}
-		tokenStep = &s
-	case strings.TrimSpace(want.TokenFile) != "":
-		path := expandIn(strings.TrimSpace(want.TokenFile), st.Host.Home)
-		want.TokenFile = path
-		ts, seen := tokenAt(st, path)
-		switch {
-		case !seen:
-			reasons = append(reasons, reason("token file "+path+" was not checked", "check again before applying"))
-		case !ts.Exists:
-			reasons = append(reasons, reason("token file "+path+" does not exist", "enter the path of an existing token file, or paste the token"))
-		case ts.Loose:
-			reasons = append(reasons, reason("token file "+path+" is readable by others", "run chmod 600 "+path))
-		case ts.Empty:
-			reasons = append(reasons, reason("token file "+path+" is empty", "put the server's token in it, or paste the token"))
-		case ts.Err != "":
-			reasons = append(reasons, reason("token file "+path+" cannot be read ("+ts.Err+")", "fix it, or paste the token"))
-		}
-	default:
-		reasons = append(reasons, reason("remote mode has no token", "enter a token file path or paste the token"))
-	}
-	// A check of any other endpoint (the local server, an old remote) says
-	// nothing about this one: it reads as not checked.
-	server := st.Server
-	if server.Checked && (want.URL == "" || !sameEndpoint(server.URL, want.URL)) {
-		server = ServerState{}
-	}
-	if server.Checked && !server.OK && !want.SaveUnchecked {
-		reasons = append(reasons, reason("the check of "+want.URL+" failed: "+serverFailure(server),
-			"fix the url or token and check again, or choose save anyway (the server may be off)"))
-	}
-	if len(reasons) > 0 {
-		return Plan{}, &RefusalError{Reasons: reasons}
-	}
-	want.Listen = ""
-	p := Plan{Want: want}
-	if tokenStep != nil {
-		p.Steps = append(p.Steps, *tokenStep)
-	}
-	p.leaveAgent(st)
-	p.keepLocalSetup(st)
-	p.config(st)
-	switch {
-	case server.Checked && !server.OK:
-		p.Notes = append(p.Notes, "the server did not answer the check ("+serverFailure(server)+"); the config is saved anyway")
-	case !server.Checked:
-		p.Notes = append(p.Notes, "the server at "+want.URL+" was not checked")
-	}
-	p.envNote(st)
-	return p, nil
-}
-
 // planLocal sets up the token, the pair, the LaunchAgent and the table, in
 // that order.
 func planLocal(st State, want Desired) (Plan, error) {
@@ -339,8 +230,8 @@ func planLocal(st State, want Desired) (Plan, error) {
 	if !st.Platform.OK {
 		reasons = append(reasons, reason("local mode cannot run here: "+st.Platform.Reason, "choose native or remote"))
 	}
-	if st.Host.Binary == "" {
-		why := st.Host.BinaryErr
+	if st.Tools.Binary == "" {
+		why := st.Tools.BinaryErr
 		if why == "" {
 			why = "wt-model was not found"
 		}
@@ -388,12 +279,12 @@ func planLocal(st State, want Desired) (Plan, error) {
 	if tokPath == "" && st.Host.ConfigHome != "" {
 		tokPath = DefaultLocalTokenPath(st.Host.ConfigHome)
 	}
-	tokPath = expandIn(tokPath, st.Host.Home)
+	tokPath = modelmode.ExpandIn(tokPath, st.Host.Home)
 	var tokenStep *Step
 	tokenChanged := false
 	var tokenKept string
 	if tokPath != "" {
-		ts, seen := tokenAt(st, tokPath)
+		ts, seen := modelmode.TokenAt(st.State, tokPath)
 		switch {
 		case !seen:
 			reasons = append(reasons, reason("token file "+tokPath+" was not checked", "check again before applying"))
@@ -473,8 +364,8 @@ func planLocal(st State, want Desired) (Plan, error) {
 	want.Listen = listen
 	want.TokenFile = tokPath
 	want.URL = "http://" + listen
-	spec := AgentSpec{Binary: st.Host.Binary, Listen: listen, TokenFile: tokPath, Path: st.Host.Path, Home: st.Host.Home}
-	p := Plan{Want: want, Agent: &spec, LiteLLM: lspec}
+	spec := AgentSpec{Binary: st.Tools.Binary, Listen: listen, TokenFile: tokPath, Path: st.Tools.Path, Home: st.Host.Home}
+	p := Plan{Plan: modelmode.Plan{Want: want.Desired}, Admin: want.AdminWant, Agent: &spec, LiteLLM: lspec}
 	pairChanged := false
 
 	if tokenStep != nil {
@@ -515,7 +406,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 		p.Notes = append(p.Notes, "keep the LaunchAgent plist "+st.Agent.PlistPath+" (unchanged)")
 	}
 
-	domain := "gui/" + strconv.Itoa(st.Host.UID)
+	domain := "gui/" + strconv.Itoa(st.Tools.UID)
 	loaded := st.Agent.Job.Loaded
 	started := false
 	switch {
@@ -541,82 +432,50 @@ func planLocal(st State, want Desired) (Plan, error) {
 	if started {
 		p.Steps = append(p.Steps, Step{Kind: StepWait, Value: want.URL, Detail: "wait for wt-model to answer at " + want.URL})
 	}
-	p.config(st)
+	p.AddConfigStep(st.State)
 	p.Notes = append(p.Notes, lnotes...)
-	p.envNote(st)
+	p.AddEnvNote(st.State)
 	return p, nil
 }
 
-// config appends the config step when the stored table differs from Want,
-// else a note that it is kept. It is always the last step.
-func (p *Plan) config(st State) {
-	t := st.Config.Table
-	cur, _ := modelmode.ParseMode(t.Mode)
-	if cur == p.Want.Mode && t.URL == p.Want.URL && expandIn(t.TokenFile, st.Host.Home) == p.Want.TokenFile {
-		p.Notes = append(p.Notes, "keep [model-server] in "+st.Config.Path+" (already mode = \""+string(p.Want.Mode)+"\")")
-		return
-	}
-	fields := "mode = \"" + string(p.Want.Mode) + "\""
-	if p.Want.URL != "" {
-		fields += ", url = \"" + p.Want.URL + "\""
-	}
-	if p.Want.TokenFile != "" {
-		fields += ", token_file = \"" + p.Want.TokenFile + "\""
-	}
-	var cleared []string
-	if p.Want.URL == "" && t.URL != "" {
-		cleared = append(cleared, "url")
-	}
-	if p.Want.TokenFile == "" && t.TokenFile != "" {
-		cleared = append(cleared, "token_file")
-	}
-	if len(cleared) > 0 {
-		fields += "; clear " + strings.Join(cleared, " and ")
-	}
-	verb := "write"
-	if !st.Config.Exists {
-		verb = "create"
-	}
-	p.Steps = append(p.Steps, Step{Kind: StepConfig, Path: st.Config.Path,
-		Detail: verb + " [model-server] in " + st.Config.Path + ": " + fields})
-}
-
 // leaveAgent handles a wt LaunchAgent when leaving local: removal when asked
-// for and the plist is wt's, else a note that it stays.
-func (p *Plan) leaveAgent(st State) {
-	a := st.Agent
-	if !a.Present {
+// for and the plist is wt's, else a note that it stays. It is the LeavingLocal
+// hook modelmode's native and remote plans run; a has the admin half of the
+// request (a modelmode plan carries no AdminWant).
+func leaveAgent(p *modelmode.Plan, st State, a AdminWant) {
+	ag := st.Agent
+	if !ag.Present {
 		return
 	}
-	if !a.Managed {
-		if p.Want.RemoveAgent {
-			p.Notes = append(p.Notes, a.PlistPath+" is not marked \"managed by wt\" and is left alone")
+	if !ag.Managed {
+		if a.RemoveAgent {
+			p.Notes = append(p.Notes, ag.PlistPath+" is not marked \"managed by wt\" and is left alone")
 		}
 		return
 	}
-	if !p.Want.RemoveAgent {
+	if !a.RemoveAgent {
 		state := "left installed"
-		if a.Job.Running {
+		if ag.Job.Running {
 			state += " and running"
-		} else if a.Job.Loaded {
+		} else if ag.Job.Loaded {
 			state += " and loaded"
 		}
-		p.Notes = append(p.Notes, "the LaunchAgent "+a.PlistPath+" is "+state)
+		p.Notes = append(p.Notes, "the LaunchAgent "+ag.PlistPath+" is "+state)
 		return
 	}
-	if a.Job.Loaded {
-		p.Steps = append(p.Steps, Step{Kind: StepBootout, Path: a.PlistPath,
-			Detail: "unload the LaunchAgent: launchctl bootout gui/" + strconv.Itoa(st.Host.UID) + "/" + AgentLabel})
+	if ag.Job.Loaded {
+		p.Steps = append(p.Steps, Step{Kind: StepBootout, Path: ag.PlistPath,
+			Detail: "unload the LaunchAgent: launchctl bootout gui/" + strconv.Itoa(st.Tools.UID) + "/" + AgentLabel})
 	}
-	p.Steps = append(p.Steps, Step{Kind: StepRemovePlist, Path: a.PlistPath,
-		Detail: "remove the LaunchAgent plist " + a.PlistPath})
+	p.Steps = append(p.Steps, Step{Kind: StepRemovePlist, Path: ag.PlistPath,
+		Detail: "remove the LaunchAgent plist " + ag.PlistPath})
 }
 
 // keepLocalSetup notes that leaving local keeps the token file and the pair.
-func (p *Plan) keepLocalSetup(st State) {
+func keepLocalSetup(p *modelmode.Plan, st State) {
 	tok := st.Agent.TokenFile
 	if tok == "" && st.Host.ConfigHome != "" {
-		if ts, ok := tokenAt(st, DefaultLocalTokenPath(st.Host.ConfigHome)); ok && ts.Exists {
+		if ts, ok := modelmode.TokenAt(st.State, DefaultLocalTokenPath(st.Host.ConfigHome)); ok && ts.Exists {
 			tok = ts.Path
 		}
 	}
@@ -626,93 +485,6 @@ func (p *Plan) keepLocalSetup(st State) {
 	if st.Pair.URL != "" || st.Pair.KeySet {
 		p.Notes = append(p.Notes, "keep wt-model's LiteLLM pair ("+orNone(modelmode.ShownURL(st.Pair.URL))+")")
 	}
-}
-
-// envNote says when the environment overrides what is stored.
-func (p *Plan) envNote(st State) {
-	if st.EnvOverride != "" {
-		p.Notes = append(p.Notes, "the environment sets "+st.EnvOverride+", which overrides what is stored here")
-	}
-}
-
-// Format is the text the user confirms: every step, numbered, then what is
-// left alone. Deterministic and ASCII apart from the paths and urls it names.
-func (p Plan) Format() string {
-	var b strings.Builder
-	if len(p.Steps) == 0 {
-		b.WriteString("nothing to change for mode " + string(p.Want.Mode) + "\n")
-	} else {
-		fmt.Fprintf(&b, "set up mode %s in %d %s:\n", p.Want.Mode, len(p.Steps), plural(len(p.Steps), "step", "steps"))
-		for i, s := range p.Steps {
-			fmt.Fprintf(&b, "  %d. %s\n", i+1, s.Detail)
-		}
-	}
-	if len(p.Notes) > 0 {
-		b.WriteString("left alone and notes:\n")
-		for _, n := range p.Notes {
-			b.WriteString("  - " + n + "\n")
-		}
-	}
-	return b.String()
-}
-
-// tokenAt finds the observed description of the token file at path.
-func tokenAt(st State, path string) (TokenState, bool) {
-	if path == "" {
-		return TokenState{}, false
-	}
-	if st.Token.Path == path {
-		return st.Token, true
-	}
-	for _, ts := range st.TokenFiles {
-		if ts.Path == path {
-			return ts, true
-		}
-	}
-	return TokenState{}, false
-}
-
-// expandIn expands a leading ~ against home; a path it cannot expand is
-// returned as given.
-func expandIn(path, home string) string {
-	if p, err := expandHome(path, home, nil); err == nil {
-		return p
-	}
-	return path
-}
-
-// sameEndpoint reports whether two urls name the same endpoint: scheme, host
-// and port case-insensitively, path with any trailing slash trimmed. A url
-// that does not parse matches nothing.
-func sameEndpoint(a, b string) bool {
-	ua, ea := url.Parse(strings.TrimSpace(a))
-	ub, eb := url.Parse(strings.TrimSpace(b))
-	if ea != nil || eb != nil || ua.Host == "" || ub.Host == "" {
-		return false
-	}
-	return strings.EqualFold(ua.Scheme, ub.Scheme) && strings.EqualFold(ua.Host, ub.Host) &&
-		strings.TrimRight(ua.Path, "/") == strings.TrimRight(ub.Path, "/")
-}
-
-// serverFailure words a failed ping.
-func serverFailure(s ServerState) string {
-	var what string
-	switch s.Kind {
-	case KindUnauthorized:
-		what = "the server rejected the token"
-	case KindNotWtModel:
-		what = "the url answers but is not wt-model"
-	case KindSkew:
-		what = fmt.Sprintf("the server speaks API %d, which this wt does not", s.API)
-	case KindSchema:
-		what = fmt.Sprintf("the server's catalog schema %d is not one this wt reads", s.Schema)
-	default:
-		what = "the server did not answer"
-	}
-	if s.Message != "" {
-		what += ": " + s.Message
-	}
-	return what
 }
 
 func changedWhat(pair, token bool) string {
@@ -726,30 +498,11 @@ func changedWhat(pair, token bool) string {
 	}
 }
 
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
-}
-
 func orNone(s string) string {
 	if s == "" {
 		return "none"
 	}
 	return s
-}
-
-// WritesURL reports whether the plan's config step writes a url into
-// [model-server] (local and remote do; native clears it). A plan that keeps
-// the stored table has no config step and writes nothing.
-func (p Plan) WritesURL() bool {
-	for _, s := range p.Steps {
-		if s.Kind == StepConfig && p.Want.URL != "" {
-			return true
-		}
-	}
-	return false
 }
 
 // liteLLMURL is the url wt-model's pair names for LiteLLM: the port a create
@@ -805,7 +558,7 @@ func planLiteLLMCreate(st State) (*LiteLLMSpec, []Step, []string, []string) {
 	if len(reasons) > 0 {
 		return nil, nil, nil, reasons
 	}
-	spec := LiteLLMSpec{Binary: inst.Binary, ConfigPath: inst.ConfigPath, Path: st.Host.Path, Home: st.Host.Home, Port: DefaultLiteLLMPort}
+	spec := LiteLLMSpec{Binary: inst.Binary, ConfigPath: inst.ConfigPath, Path: st.Tools.Path, Home: st.Host.Home, Port: DefaultLiteLLMPort}
 	if err := checkLiteLLMSpec(spec); err != nil {
 		var re *RefusalError
 		if errors.As(err, &re) {
@@ -814,7 +567,7 @@ func planLiteLLMCreate(st State) (*LiteLLMSpec, []Step, []string, []string) {
 		return nil, nil, nil, []string{reason(err.Error(), "fix it, then check again")}
 	}
 	url := liteLLMURL(st, LiteLLMCreate)
-	domain := "gui/" + strconv.Itoa(st.Host.UID)
+	domain := "gui/" + strconv.Itoa(st.Tools.UID)
 	steps := []Step{
 		{Kind: StepLiteLLMPlist, Path: lp.Path,
 			Detail: "create the LiteLLM LaunchAgent plist " + lp.Path + " (mode 0600): " + spec.Binary + " --config " + spec.ConfigPath +
@@ -854,7 +607,7 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 		// The restart is kickstart -k, which cannot start a job that is not
 		// loaded; by then the plist and the pair would hold the new key.
 		reasons = append(reasons, reason("the LiteLLM job "+litellm.ProxyLabel+" is not loaded, so a restart after the new key would fail",
-			"load it with `launchctl bootstrap gui/"+strconv.Itoa(st.Host.UID)+" "+path+"`, then check again"))
+			"load it with `launchctl bootstrap gui/"+strconv.Itoa(st.Tools.UID)+" "+path+"`, then check again"))
 	case lp.HasDatabaseURL && !lp.HasSaltKey:
 		// LiteLLM encrypts stored provider credentials with the master key
 		// when no salt key is set: a new one would leave them undecryptable.
@@ -875,7 +628,7 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 	url := liteLLMURL(st, LiteLLMRotateKey)
 	steps = append(steps,
 		Step{Kind: StepKickstartLiteLLM, Path: lp.Path,
-			Detail: "restart LiteLLM so it uses the new key: launchctl kickstart -k gui/" + strconv.Itoa(st.Host.UID) + "/" + litellm.ProxyLabel},
+			Detail: "restart LiteLLM so it uses the new key: launchctl kickstart -k gui/" + strconv.Itoa(st.Tools.UID) + "/" + litellm.ProxyLabel},
 		Step{Kind: StepWait, Action: ActionWaitLiteLLM, Value: url,
 			Detail: "wait for LiteLLM to answer at " + url + "/health/liveliness and accept the new master key"})
 	cfg := ""
@@ -913,6 +666,6 @@ func planTightenLiteLLM(st State, want Desired) (Plan, error) {
 	case lp.Mode.Perm()&0o077 == 0:
 		return Plan{}, &RefusalError{Reasons: []string{reason(path+" is already mode 0600 or tighter", "nothing to do")}}
 	}
-	return Plan{Want: want, Steps: []Step{{Kind: StepChmod, Path: lp.Path,
-		Detail: fmt.Sprintf("set %s to mode 0600 (it is %04o, readable by others); nothing else changes", lp.Path, lp.Mode.Perm())}}}, nil
+	return Plan{Plan: modelmode.Plan{Want: want.Desired, Steps: []Step{{Kind: StepChmod, Path: lp.Path,
+		Detail: fmt.Sprintf("set %s to mode 0600 (it is %04o, readable by others); nothing else changes", lp.Path, lp.Mode.Perm())}}}, Admin: want.AdminWant}, nil
 }

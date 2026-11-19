@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 )
 
@@ -272,7 +273,7 @@ func TestServerTabNamesWhatACheckIsMissing(t *testing.T) {
 // default-No questions is on screen at every size, with nothing but the hint
 // after it: a clipped question would leave the user answering blind.
 func TestServerTabPromptsStayVisibleAtEverySize(t *testing.T) {
-	long := modelsetup.Plan{Notes: []string{"the environment sets WT_MODEL_URL, which overrides what is stored here"}}
+	long := modelsetup.Plan{Plan: modelmode.Plan{Notes: []string{"the environment sets WT_MODEL_URL, which overrides what is stored here"}}}
 	for i := 0; i < 9; i++ {
 		long.Steps = append(long.Steps, modelsetup.Step{Kind: modelsetup.StepPlist,
 			Detail: "write wt's LaunchAgent plist /Users/dev/Library/LaunchAgents/local.wt-model.serve.plist: /Users/dev/.local/bin/wt-model serve --listen 127.0.0.1:8787"})

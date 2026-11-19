@@ -1,0 +1,4 @@
+set up mode native in 1 step:
+  1. write [model-server] in /Users/user_name/.config/agent-wt/config.toml: mode = "native"; clear url and token_file
+left alone and notes:
+  - wt-model's LaunchAgent is untouched; remove it with `wt-model setup`
