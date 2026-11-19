@@ -198,11 +198,6 @@ func retiredLitellmToggleCmd(name string) *cobra.Command {
 	}
 }
 
-// removedCmdAnnotation marks a hidden stub that only reports a removed
-// command; its value names the issue that removed it, or the date it was
-// retired.
-const removedCmdAnnotation = "wt-removed"
-
 // removedLitellmCmd is a hidden stub for a subcommand #179 removed. Without
 // it cobra prints the parent's help and exits 0 for the unknown name, so a
 // script running `wt litellm expose X && ...` would "succeed" having written
