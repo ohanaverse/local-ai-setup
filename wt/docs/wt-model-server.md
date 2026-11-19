@@ -3,10 +3,11 @@
 The model server: a second binary, built beside `wt`, that holds the model
 side of wt (the registry, the live inventory of local models, start and stop,
 the LiteLLM routes) and serves it over HTTP, so an agent session that runs
-somewhere else needs no registry of its own. It has `wt-model serve` and
+somewhere else needs no registry of its own. It has `wt-model serve`,
 `wt-model litellm set|status`, the commands for the proxy pair the gateway
-forwards with ([Proxy url and key](#proxy-url-and-key)). (This page is the
-server. `wt model`, with a space, is the registry command:
+forwards with ([Proxy url and key](#proxy-url-and-key)), and `wt-model
+model`, the Models tab ([below](#wt-model-model)). (This page is the server.
+`wt model …`, with a space, is the registry command group:
 [wt-model.md](wt-model.md).)
 
 ```bash
@@ -164,6 +165,28 @@ reader resolves it — the key is never printed, only masked.
 Both commands answer `0` done and `1` any failure. A set that wrote the pair
 prints `litellm: updated`; a set with no flag is refused with `nothing to
 set: pass --url and/or --api-key`.
+
+## `wt-model model`
+
+`wt-model model` opens the Models tab: the models in this host's
+`registry.toml` and every local model found on it, with `n` to add, `enter`
+to edit or register and `d` to remove. It is a host screen: run it on the
+machine that holds the registry and `config.yaml`, not on a session machine.
+Its keys, columns and form are in [wt-model.md](wt-model.md) ("The Models
+tab"); bare `wt model` prints only `wt: model moved to wt-model — run
+'wt-model model'; nothing was changed` and exits 1.
+
+- It needs a terminal. Without one it exits 1 and names the commands that
+  need none: `wt model list`, `wt model add`, `wt model edit` and `wt model
+  rm`.
+- Each saved form and each removal is written to `registry.toml` at once.
+  The LiteLLM routes are synced once, when the screen closes, and only if it
+  wrote the registry (also when it ended with an error, since the write
+  already happened). The sync prints what `wt model add|edit|rm` print after
+  their write, its warning on stderr; it never changes the exit code.
+- With the registry redirected (`WT_REGISTRY`) and nothing naming
+  `config.yaml` (`WT_LITELLM_CONFIG`), that sync refuses to write the real
+  routes and says so on stderr, as `wt model add|edit|rm` do.
 
 ## Endpoints
 
@@ -349,7 +372,7 @@ shutdown kills it.
   opens every inference path and every model LiteLLM routes. The gateway does
   not tell clients apart or limit which models a client may call.
 - **The client uses no environment proxy.** The control and gateway calls ignore `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so the bearer token and the prompts go straight to the `[model-server]` url and never to a third party. A session machine that can reach the server only through a proxy cannot use it.
-- Config is read per request, job and scan, so `wt model` and `wt cloud-sync`
+- Config is read per request, job and scan, so `wt model …` and `wt cloud-sync`
   edits show without a restart.
 
 ## Wire contract

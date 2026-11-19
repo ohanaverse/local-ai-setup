@@ -2,33 +2,31 @@
 
 User-level preferences for the `wt` launcher.
 
-- **`wt config`** (no subcommand) — interactive TUI with three tabs: the agents
-  in `config.toml`, the models in `registry.toml`, and the model server
+- **`wt config`** (no subcommand) — interactive TUI with two tabs: the agents
+  in `config.toml` and the model server (the models in `registry.toml` are
+  `wt-model model`'s, below)
 - **`wt config theme`** — color theme management
 - **`wt config path`** — print the config directory
 
 ## Config viewer (`wt config`)
 
-Launching `wt config` with no subcommand opens a full-screen TUI with three
+Launching `wt config` with no subcommand opens a full-screen TUI with two
 tabs, named on its first line; `Tab` switches between them.
 
 - **Agents** — the agents in `config.toml`. Edits are held in memory and
   saved with `Ctrl+S`, from this tab. The sections below describe it.
-- **Models** — the models in `registry.toml`: every registry model and every
-  local model found on this machine. `n` adds a model, `Enter` edits the
-  selected one (or registers a `new` row) in a form, and `d` removes it.
-  Each change is written at once, and the LiteLLM routes are synced once
-  when you quit. `wt model` opens the editor on this tab; its keys, columns
-  and form are in [`wt-model.md`](wt-model.md). This tab is a host screen:
-  it reads and writes this machine's registry and `config.yaml`, not the
-  model server's, until it moves to `wt-model` ([`wt-session.md`](wt-session.md),
-  "Interim limits").
 - **Model server** — the mode this machine's sessions use (`native`, `local`
   or `remote`), checked against the `wt-model` server and its LiteLLM proxy.
   See "Model server tab" below.
 
 `wt config` needs no model server: it opens, and edits `config.toml`, with
 none configured.
+
+The Models tab that used to be here (the models in `registry.toml`) moved to
+`wt-model model`, an admin screen run on the host
+([`wt-model-server.md`](wt-model-server.md), "`wt-model model`"); its keys,
+columns and form are in [`wt-model.md`](wt-model.md). Bare `wt model` now
+only prints where it went.
 
 ### Model server tab
 
@@ -138,10 +136,7 @@ If that save fails (validation, or the write itself), the editor does not
 quit: the prompt goes and the Agents tab is shown, with the reason on its
 status line, whichever tab `q` was typed on.
 
-The prompt is about agent edits only: a change made on the Models tab is
-already in `registry.toml` when it is made.
-
-`Esc` on the Agents or Models list does not quit: it clears a filter (`/`) and does
+`Esc` on the Agents list does not quit: it clears a filter (`/`) and does
 nothing else. Only `q` and `Ctrl+C` leave the editor.
 
 ## Where settings live

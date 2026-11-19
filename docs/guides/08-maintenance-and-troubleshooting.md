@@ -481,7 +481,7 @@ directory is gone; that is expected. Each thing it did:
 
 | modelman | Now |
 |---|---|
-| TUI (`a`, `e`, `d` keys) | `wt config` Models tab, or `wt model add\|edit\|rm` |
+| TUI (`a`, `e`, `d` keys) | `wt-model model` (the Models tab), or `wt model add\|edit\|rm` |
 | `start` with no argument | `wt model list` |
 | `start <id>`, `stop <id>` | `wt start <id>`, `wt stop <id>` |
 | `stop --all` | `wt stop --all`, and for a running `mlx_lm_server` pairing, which wt does not stop, `uv run --directory llmbench llmbench provider stop mlx_lm_server` |
@@ -495,7 +495,7 @@ directory is gone; that is expected. Each thing it did:
 | `benchmark …`, `provider …` | `uv run --directory llmbench llmbench …`, `… llmbench provider …` |
 | `migrate`, `delete-family`, TUI `r` (download, delete), `l`, `s` | dropped — download with the provider's own tool (guide 02 Step 5); `wt start` and `wt stop` cover `l` and `s` (`wt litellm on\|off`, which covered routing, are retired stubs since 2026-11-15: every session routes through the model server) |
 
-**Where each command runs.** The table's registry commands are host commands: `wt model …`, `wt cloud-sync`, `wt litellm …`, `wt served`/`wt warm`, `wt stop <provider>`/`wt stop --all` and the Models tab of `wt config` read and write `registry.toml`, LiteLLM's `config.yaml` and `slot-profiles.toml` on the machine they run on — run them where `wt-model serve` runs ([13-deployment-use-cases](13-deployment-use-cases.md)). Everything else is a session command and runs anywhere a model server is configured under `[model-server]`: a launch, `wt start`/`wt stop <model>`, `wt job`, `wt smoke`, `wt model list --server`, `wt stats` and the cleanup commands ([wt-session.md](../../wt/docs/wt-session.md), "Host commands"). Interim limit: until the admin commands move to `wt-model` (the split's Phase 4) they still run in this same `wt` binary; the proxy url/key is the `~/.config/wt-model/` home's now (set with `wt-model litellm set --url URL --api-key KEY`), the `[litellm]` table of `config.toml` its read-only fallback — recorded in [wt-session.md](../../wt/docs/wt-session.md) "Interim limits".
+**Where each command runs.** The table's registry commands are host commands: `wt model …`, `wt cloud-sync`, `wt litellm …`, `wt served`/`wt warm`, `wt stop <provider>`/`wt stop --all` and the Models tab of `wt-model model` read and write `registry.toml`, LiteLLM's `config.yaml` and `slot-profiles.toml` on the machine they run on — run them where `wt-model serve` runs ([13-deployment-use-cases](13-deployment-use-cases.md)). Everything else is a session command and runs anywhere a model server is configured under `[model-server]`: a launch, `wt start`/`wt stop <model>`, `wt job`, `wt smoke`, `wt model list --server`, `wt stats` and the cleanup commands ([wt-session.md](../../wt/docs/wt-session.md), "Host commands"). Interim limit: until the admin commands move to `wt-model` (the split's Phase 4) they still run in this same `wt` binary; the proxy url/key is the `~/.config/wt-model/` home's now (set with `wt-model litellm set --url URL --api-key KEY`), the `[litellm]` table of `config.toml` its read-only fallback — recorded in [wt-session.md](../../wt/docs/wt-session.md) "Interim limits".
 
 llmbench is not installed on `PATH`. Where wt prints a command that starts
 with `llmbench provider …` (the start hint of a stopped pairing, the text of

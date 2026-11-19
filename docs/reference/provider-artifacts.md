@@ -217,7 +217,7 @@ the plist is installed, `launchctl unload` it by hand:
 - **Local-path artifact ownership (shared with the `omlx` provider's
   `local_path` support):** a directory produced by `bin/mlx-quantize` or
   hand-run `mlx_lm.convert`/`dwq` is user-produced. wt never deletes weights:
-  `wt model rm <id>`, or `d` on its row in the Models tab of `wt config`,
+  `wt model rm <id>`, or `d` on its row in the Models tab of `wt-model model`,
   removes the registry entry, prints where the weights are and touches no
   file on disk.
   Cleanup of an abandoned experiment is a manual `rm -rf`.
