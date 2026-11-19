@@ -15,6 +15,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeview"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 // TestTabBarShowsAgentsAndMode pins the tab bar's two names: `wt config`
@@ -1662,6 +1663,37 @@ func TestModeTabPromptsStayVisibleAtEverySize(t *testing.T) {
 				if strings.TrimSpace(l) != "" {
 					t.Errorf("%q at %dx%d: %q follows the question", c.prompt, size[0], size[1], l)
 				}
+			}
+		}
+	}
+}
+
+// TestModeTabHidesALongOrSchemelessAtURLWhole pins that the url field is
+// judged on its whole value, not on the part the input draws: a long url with
+// a scheme whose "https://" scrolls out of view at 60 and 80 columns, and a
+// url with no scheme at all, show no piece of themselves while being typed or
+// after esc — the field draws urlrule.Hidden instead.
+func TestModeTabHidesALongOrSchemelessAtURLWhole(t *testing.T) {
+	const long = "https://USERXXXXXXXXXXXXXXXXXXXX:PASSXXXXXXXXXXXXXXXXXXXXXXX@gpu.example:8787"
+	const bare = "USERX:PASSX@gpu.example:8787"
+	cases := []struct {
+		url   string
+		width int
+	}{{long, 60}, {long, 80}, {long, 120}, {bare, 60}, {bare, 120}}
+	for _, c := range cases {
+		mm := &modeMachine{states: []modelmode.State{remoteState()}, build: true}
+		m := keys(t, modeEditor(t, mm, c.width, 50), "down", c.url)
+		screens := map[string]string{"editing": plain(m)}
+		m = keys(t, m, "esc")
+		screens["after esc"] = plain(m)
+		for name, v := range screens {
+			for _, piece := range []string{"USERX", "PASSX", "XXXX", "gpu.example"} {
+				if strings.Contains(v, piece) {
+					t.Errorf("%q at %d columns, %s, shows %q:\n%s", c.url, c.width, name, piece, v)
+				}
+			}
+			if !strings.Contains(v, urlrule.Hidden) {
+				t.Errorf("%q at %d columns, %s, does not show %q:\n%s", c.url, c.width, name, urlrule.Hidden, v)
 			}
 		}
 	}

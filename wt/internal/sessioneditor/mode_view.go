@@ -9,6 +9,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeview"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 // modeHints are the Mode tab's key hints for the phase showing, fullest
@@ -100,7 +101,10 @@ func (m *model) modeChoice() (radios []string, notes [][]string) {
 
 // modeFieldLines are the chosen mode's fields, one line each: the label
 // (marked "> " while being edited) and the input. The pasted token is drawn
-// by its input masked; the url is scrubbed like every other url.
+// by its input masked. The url is judged on its whole value, never on the
+// part the input draws (a long one scrolls its scheme out of view): one
+// holding an '@' is drawn as urlrule.Hidden in every phase, the rest scrubbed
+// like every other url.
 func (m *model) modeFieldLines() []string {
 	st := &m.mode
 	var lines []string
@@ -111,7 +115,11 @@ func (m *model) modeFieldLines() []string {
 		}
 		view := st.fields[f].View()
 		if f == mfURL {
-			view = editorkit.Scrub(view)
+			if urlrule.HasUserinfo(st.fields[f].Value()) {
+				view = urlrule.Hidden
+			} else {
+				view = editorkit.Scrub(view)
+			}
 		}
 		lines = append(lines, tuilayout.PadRunes(label, editorkit.LabelW)+view)
 	}
