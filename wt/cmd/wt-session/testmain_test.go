@@ -22,12 +22,11 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
-// TestMain stubs the live seams a cmd/wt-session test would otherwise hit: the
-// local-model inventory probe of the host commands (no test may dial the
-// developer's real ollama/omlx/mtplx servers) and the host `wt stop`'s engine
-// (no test may stop a real model). Every test app's model-server client is
-// loopback-only because hooks.client guards it in a test binary.
-// Tests that need a probe result call stubProbeInventory.
+// TestMain stubs the live seams a cmd/wt-session test would otherwise hit:
+// the host `wt stop`'s engine (no test may stop a real model). This binary
+// has no local-model inventory probe left to stub: litellm sync, its last
+// reader, moved to wt-model. Every test app's model-server client
+// is loopback-only because hooks.client guards it in a test binary.
 func TestMain(m *testing.M) {
 	// No test may read or write the developer's real config directory —
 	// config.IsolateConfigHomeForTest carries the full rationale. A test that
@@ -51,7 +50,6 @@ func TestMain(m *testing.M) {
 	// MODELTIERS_OUT in their shell names): every TIER cell is "-" unless a
 	// test names a file of its own (tiers.IsolateForTest).
 	tiers.IsolateForTest()
-	probeInventory = localmodels.OnDiskSnapshotForTest
 	// The model-server client path fails closed: no WT_MODEL_* from the
 	// developer's shell reaches a test.
 	for _, k := range []string{"WT_MODEL_URL", "WT_MODEL_TOKEN_FILE", "WT_MODEL_TOKEN", "WT_MODEL_MODE"} {
@@ -103,15 +101,6 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	rmConfigHome()
 	os.Exit(code)
-}
-
-// stubProbeInventory makes the host commands see snap for the duration of a
-// test; the seam is restored on cleanup.
-func stubProbeInventory(t *testing.T, snap localmodels.Snapshot) {
-	t.Helper()
-	old := probeInventory
-	probeInventory = func(*config.Config) localmodels.Snapshot { return snap }
-	t.Cleanup(func() { probeInventory = old })
 }
 
 // TestConfigHomeIsNotTheDevelopersOwn pins TestMain's throwaway config home:

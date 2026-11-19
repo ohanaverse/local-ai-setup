@@ -48,6 +48,7 @@ var wantMoved = []movedCommand{
 	{"cloud-sync", "cloud-sync"},
 	{"litellm list", "litellm list"},
 	{"litellm providers", "litellm providers"},
+	{"litellm sync", "litellm sync"},
 }
 
 // explicitMoves are argument rows written out by hand (not derived from
@@ -68,6 +69,10 @@ var explicitMoves = []struct {
 	{[]string{"litellm", "list"}, "litellm list", "litellm list"},
 	{[]string{"litellm", "list", "--json"}, "litellm list", "litellm list"},
 	{[]string{"litellm", "providers", "--json"}, "litellm providers", "litellm providers"},
+	// sync's own flags reach the pointer unparsed: a scripted
+	// `wt litellm sync --dry-run --json` gets the pointer, not a plan.
+	{[]string{"litellm", "sync"}, "litellm sync", "litellm sync"},
+	{[]string{"litellm", "sync", "--dry-run", "--json"}, "litellm sync", "litellm sync"},
 }
 
 // TestMovedCommandsPointAtWtModel is the one table test of every moved-command

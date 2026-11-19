@@ -12,22 +12,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/spf13/cobra"
 )
-
-// probeInventory is a test seam for the host code still in wt-session
-// (litellm sync, until it moves in 4c):
-// production probes the live local-model inventory. cmd/wt-session's TestMain
-// stubs it to localmodels.OnDiskSnapshotForTest so no test dials the
-// developer's real ollama/omlx/mtplx servers, and tests that need a verdict
-// stub it with their own snapshot. No session path reads it (the boundary
-// test).
-var probeInventory = localmodels.Inventory
-
-func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
-	return litellm.RunSync(out, errOut, cfg, probeInventory, asJSON, dryRun)
-}
 
 // runLitellmStatus is `wt litellm status`: the shared status body
 // (config.ShowProxyStatus) — the pair as every reader resolves it, never the
@@ -53,19 +39,6 @@ func litellmCmd(a *app) *cobra.Command {
 		Use:   "litellm",
 		Short: "Manage LiteLLM routes for registry models, and the proxy url and key",
 	}
-	var syncJSON, syncDryRun bool
-	syncC := &cobra.Command{
-		Use: "sync", Short: "Make LiteLLM routes match the registry's cloud models and the running (or pulled ollama) local models", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, loadErr := a.hostConfig()
-			if loadErr != nil {
-				return configError(loadErr)
-			}
-			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, syncJSON, syncDryRun)
-		},
-	}
-	syncC.Flags().BoolVar(&syncJSON, "json", false, "machine-readable output")
-	syncC.Flags().BoolVar(&syncDryRun, "dry-run", false, "print the route plan and the probe warnings the real sync would report; change nothing (does not report litellm_settings fixes)")
 	// status and set carry no config gate (ruling 8): they reach only the
 	// proxy pair — the wt-model home and its legacy fallback — so a broken
 	// registry or config.toml cannot lock the user out of the one surface
@@ -101,7 +74,7 @@ func litellmCmd(a *app) *cobra.Command {
 	restartC := &cobra.Command{
 		Use:   "restart",
 		Short: "Restart the LiteLLM proxy, letting a request in flight finish, and wait for it to answer",
-		Long: "Restart the LiteLLM proxy the way `wt litellm sync` does after a route change.\n\n" +
+		Long: "Restart the LiteLLM proxy the way `wt-model litellm sync` does after a route change.\n\n" +
 			"With WT_LITELLM_RESTART_CMD set, that command is run as given. Otherwise wt sends the\n" +
 			"proxy's process one SIGTERM, waits up to 3 minutes for a request in flight to finish,\n" +
 			"and has launchd start it again; `launchctl kickstart -k` would kill that request after\n" +
@@ -117,7 +90,7 @@ func litellmCmd(a *app) *cobra.Command {
 		},
 	}
 	c.AddCommand(
-		syncC, statusC, setC, restartC,
+		statusC, setC, restartC,
 		removedLitellmCmd("expose"), removedLitellmCmd("unexpose"),
 		retiredLitellmToggleCmd("on"), retiredLitellmToggleCmd("off"),
 	)
@@ -149,7 +122,8 @@ func retiredLitellmToggleCmd(name string) *cobra.Command {
 // it cobra prints the parent's help and exits 0 for the unknown name, so a
 // script running `wt litellm expose X && ...` would "succeed" having written
 // nothing. Flag parsing is off so legacy flags (--json, --dry-run,
-// --skip-ready-gate) reach the same pointer to sync instead of "unknown flag".
+// --skip-ready-gate) reach the same pointer to `wt-model litellm sync`
+// instead of "unknown flag".
 // The removedCmdAnnotation marks the Hidden as deliberate for
 // TestNoWtCommandIsHidden.
 func removedLitellmCmd(name string) *cobra.Command {
@@ -160,7 +134,7 @@ func removedLitellmCmd(name string) *cobra.Command {
 			// Mirrors sync's own wording: a pulled ollama model is routed
 			// whether or not it is loaded, so "running" alone understates
 			// what sync does.
-			return fmt.Errorf("`wt litellm %s` was removed (#179): configured cloud models and running (or pulled ollama) local models are routed automatically — run `wt litellm sync`", name)
+			return fmt.Errorf("`wt litellm %s` was removed (#179): configured cloud models and running (or pulled ollama) local models are routed automatically — run `wt-model litellm sync`", name)
 		},
 	}
 }

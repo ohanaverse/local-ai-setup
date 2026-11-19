@@ -148,35 +148,6 @@ func (c loadErrorCase) check(t *testing.T, got, prefix, hintFmt, suffix, registr
 	}
 }
 
-// TestLitellmLoadErrorNamesTheRepairThatWorks runs `wt litellm sync` — the
-// remaining load-gated litellm command (`status`/`set` reach only the proxy
-// pair and fail, if at all, on their own config files) — in a home broken
-// each way wt's configuration can fail to load, and pins the repair the
-// refusal names. Such refusals used to end with "run `wt config` to repair":
-// for a missing registry that contradicted the `wt-model model init` the same line
-// already named, and for a registry link that leads nowhere it sent the user
-// to an editor that cannot touch the link (#291). Only a config.toml problem
-// is `wt config`'s to repair.
-func TestLitellmLoadErrorNamesTheRepairThatWorks(t *testing.T) {
-	for _, c := range loadErrorCases() {
-		for _, args := range [][]string{{"litellm", "sync"}} {
-			t.Run(c.name+"/"+strings.Join(args, " "), func(t *testing.T) {
-				registry, _ := brokenHome(t, c)
-				root := rootCmdWith(testHooks())
-				var out, errOut bytes.Buffer
-				root.SetOut(&out)
-				root.SetErr(&errOut)
-				root.SetArgs(args)
-				err := root.Execute()
-				if err == nil {
-					t.Fatalf("wt %v succeeded (stdout %q); want it to refuse on the load error", args, out.String())
-				}
-				c.check(t, err.Error(), "config error: ", " (%s)", "", registry)
-			})
-		}
-	}
-}
-
 // TestStatsFamilyNoteNamesTheRepairThatWorks pins the repair in the note
 // `wt stats --family` prints when the configuration did not load (none for a
 // registry simply absent at the default path: a session-only machine). The note

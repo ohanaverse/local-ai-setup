@@ -1,7 +1,9 @@
 // `wt-model litellm` — the route commands moved from `wt litellm` in phase 4
-// stage 2 (list, providers), beside the set|status twins of `wt litellm`'s
-// proxy pair commands. list and providers read only LiteLLM's config.yaml and
-// the provider policy table, never the registry. The pair wt-model's gateway
+// stage 2 (sync, list, providers), beside the set|status twins of `wt
+// litellm`'s proxy pair commands. sync reads the registry through the host
+// and writes config.yaml (litellm.RunSync, the one route sync); list and
+// providers read only LiteLLM's config.yaml and the provider policy table,
+// never the registry. The pair wt-model's gateway
 // forwards to LiteLLM with lives in the wt-model config home: `set` is its one
 // writer (config.SetProxy) and `status` resolves it home-first against the
 // legacy [litellm] fallback (config.ResolveProxy). Command definitions are
@@ -22,13 +24,44 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// litellmCmd is `wt-model litellm`: list the routes and the mapped
-// providers, and set and show the LiteLLM proxy url and key.
-func litellmCmd() *cobra.Command {
+// litellmCmd is `wt-model litellm`: sync and list the routes, list the
+// mapped providers, and set and show the LiteLLM proxy url and key. h is the
+// host config sync reads the registry through.
+func litellmCmd(h *host) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "litellm",
 		Short: "Manage LiteLLM routes for registry models, and the proxy url and key",
 	}
+	var syncJSON, syncDryRun bool
+	syncC := &cobra.Command{
+		Use:   "sync",
+		Short: "Make LiteLLM routes match the registry's cloud models and the running (or pulled ollama) local models",
+		Long: `Make LiteLLM's config.yaml routes match the registry: every configured cloud
+model, plus every running local model (an ollama model while it is pulled).
+It reads registry.toml (a load error refuses, exit 1, nothing written; a
+registry that only fails validation is still synced) and restarts the proxy
+only when config.yaml changed.
+
+Flags:
+  --json      print one JSON document (docs/contracts/litellm-cli.sample.json)
+  --dry-run   print the route plan and the probe warnings the real sync would
+              report; change nothing (does not report litellm_settings fixes)
+
+Exit codes:
+  0  done
+  1  any failure, including a model whose route could not be built`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, loadErr := h.hostConfig()
+			if loadErr != nil {
+				return config.ConfigError(loadErr)
+			}
+			return h.runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, syncJSON, syncDryRun)
+		},
+	}
+	syncC.Flags().BoolVar(&syncJSON, "json", false, "print one JSON document (docs/contracts/litellm-cli.sample.json)")
+	syncC.Flags().BoolVar(&syncDryRun, "dry-run", false, "print the route plan and the probe warnings the real sync would report; change nothing (does not report litellm_settings fixes)")
 	var statusJSON bool
 	statusC := &cobra.Command{
 		Use:   "status",
@@ -135,8 +168,14 @@ Exit codes:
 		},
 	}
 	provC.Flags().BoolVar(&provJSON, "json", false, "print one JSON document (docs/contracts/litellm-cli.sample.json)")
-	c.AddCommand(statusC, setC, listC, provC)
+	c.AddCommand(statusC, setC, syncC, listC, provC)
 	return c
+}
+
+// runLitellmSync is `wt-model litellm sync`: the one route sync
+// (litellm.RunSync) over cfg, with the host's inventory probe.
+func (h *host) runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
+	return litellm.RunSync(out, errOut, cfg, h.probeInventory, asJSON, dryRun)
 }
 
 // runLitellmStatus is `wt-model litellm status`: the shared status body

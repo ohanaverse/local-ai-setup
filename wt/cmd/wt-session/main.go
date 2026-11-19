@@ -44,9 +44,9 @@ func main() {
 	// Never exit while an async LiteLLM proxy restart a route write kicked off
 	// (internal/lifecycle/routes.go) is still in flight: goroutines do not
 	// survive main returning, so the restart would be killed mid-flight and
-	// the proxy would never pick up the route change. Only host commands
-	// write routes (`wt stop <provider>`, `litellm sync`, …); a session writes
-	// none, so for it this returns at once, and the session's other exits
+	// the proxy would never pick up the route change. Only the host ones
+	// (`wt stop <provider>`, `--all`) write routes; a session writes none, so
+	// for it this returns at once, and the session's other exits
 	// (runAgentCmd's exit-code propagation, wt smoke's failure exit) need no
 	// wait of their own.
 	lifecycle.WaitPendingRoutes()
