@@ -37,7 +37,7 @@ type Source string
 const (
 	SourceCurated    Source = "curated"
 	SourceDiscovered Source = "discovered"
-	// SourceManual marks a cloud model added by hand that wt cloud-sync keeps
+	// SourceManual marks a cloud model added by hand that wt-model cloud-sync keeps
 	// until the source it mirrors lists it (then the sync sets SourceCurated).
 	SourceManual Source = "manual"
 )
@@ -396,7 +396,7 @@ type CostWindow struct {
 }
 
 // TimePrice is a time-windowed override of a ModelCost's flat (default)
-// per-token prices. The rows are written by `wt cloud-sync`: the ollama
+// per-token prices. The rows are written by `wt-model cloud-sync`: the ollama
 // flow's row labelled off-peak (ollama's off-peak pricing, on ollama cloud
 // entries) and the openrouter flow's rows labelled openrouter (the other
 // levels of a model OpenRouter prices by time of day, whose flat price is
@@ -456,7 +456,7 @@ type Model struct {
 	// value reads as absent and Malformed() names it.
 	ServeArgs ServeArgs `toml:"serve_args,omitempty"`
 	// PricingUpdatedAt is the registry's pricing_updated_at, as written:
-	// the string `wt cloud-sync` stamps, or a TOML date-time a
+	// the string `wt-model cloud-sync` stamps, or a TOML date-time a
 	// hand edit left. It is `any` so that neither spelling can fail the
 	// load; read it through PricingUpdated.
 	PricingUpdatedAt any  `toml:"pricing_updated_at,omitempty"`
@@ -1071,7 +1071,7 @@ func (c *Config) InCatalog(m Model) bool {
 const OpenRouterProvider = provider.IDOpenRouter
 
 // OpenRouterPriced reports whether m's price comes from OpenRouter, which is
-// what `wt cloud-sync`'s openrouter flow refreshes and what the stale-pricing
+// what `wt-model cloud-sync`'s openrouter flow refreshes and what the stale-pricing
 // notice watches: a model whose provider_id is "openrouter", and no other.
 // cloudsync.OpenRouterPriced is the same rule over registry rows; both are
 // pinned by docs/contracts/catalog-predicates.sample.toml.
@@ -1093,7 +1093,7 @@ const priceStampSkew = 24 * time.Hour
 
 // LastPriceRefresh is when OpenRouter prices were last refreshed, and whether
 // they ever were: the newest pricing_updated_at among c's OpenRouter-priced
-// models. Nothing stores the date. `wt cloud-sync` stamps every model it
+// models. Nothing stores the date. `wt-model cloud-sync` stamps every model it
 // matches, whether or not its price moved, so the newest stamp is the last
 // refresh. A model with no stamp, one that is not a time, or one more than a
 // day ahead of now is skipped.
@@ -1119,7 +1119,7 @@ func (c *Config) LastPriceRefresh(now time.Time) (time.Time, bool) {
 }
 
 // OpenRouterPricedModel reports whether any model in c takes its price
-// from OpenRouter — what `wt cloud-sync`'s openrouter flow refreshes. It
+// from OpenRouter — what `wt-model cloud-sync`'s openrouter flow refreshes. It
 // delegates to OpenRouterPriced: a model whose provider_id is
 // "openrouter". Ollama cloud models (priced by ollama.com), native agent
 // models and any other cloud provider's models don't count. A nil Config has

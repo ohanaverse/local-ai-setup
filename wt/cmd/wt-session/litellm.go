@@ -19,7 +19,7 @@ import (
 )
 
 // probeInventory is a test seam for the host code still in wt-session
-// (litellm sync and the after-write route sync, until they move in 4b/4c):
+// (litellm sync, until it moves in 4c):
 // production probes the live local-model inventory. cmd/wt-session's TestMain
 // stubs it to localmodels.OnDiskSnapshotForTest so no test dials the
 // developer's real ollama/omlx/mtplx servers, and tests that need a verdict

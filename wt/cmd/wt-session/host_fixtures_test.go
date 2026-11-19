@@ -5,15 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // Helpers that wt's registry-write tests defined (model_write_test.go, which
 // moved to cmd/wt-model with `wt-model model init|add|edit|rm`) and that the
 // tests still here use: a throwaway home with a registry, a file read, a run
-// of the real command tree, and a redirected registry for cloud-sync's
-// scratch-registry safety test.
+// of the real command tree. (The redirected-registry helper moved to
+// cmd/wt-model with cloud-sync.)
 
 // writeRegistry is a registry with an ollama and an openrouter provider and
 // one model of each.
@@ -99,34 +97,4 @@ func runWTWith(t *testing.T, h hooks, args ...string) (string, error) {
 	root.SetArgs(args)
 	err := root.Execute()
 	return buf.String(), err
-}
-
-// redirectedRegistry is a throwaway home whose registry lives under scratch/,
-// away from the default registry path, with the default config.yaml beside
-// it holding an empty model_list. WT_LITELLM_CONFIG is unset, the route sync
-// is the real one and ollama answers its probe with nothing pulled, so the
-// sync has no provider to warn about. It returns the registry's path and the
-// default config.yaml's.
-func redirectedRegistry(t *testing.T, content string) (registry, defaultYAML string) {
-	t.Helper()
-	home := t.TempDir()
-	registry = filepath.Join(home, "scratch", "registry.toml")
-	defaultYAML = filepath.Join(home, ".config", "litellm", "config.yaml")
-	for path, body := range map[string]string{registry: content, defaultYAML: "model_list: []\n"} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("WT_REGISTRY", registry)
-	t.Setenv("WT_LITELLM_CONFIG", "")
-	t.Setenv("MODELMAN_LITELLM_CONFIG", "")
-	t.Setenv("OPENROUTER_API_KEY", "sk-test-not-a-key")
-	realRouteSync(t)
-	stubProbeInventory(t, localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}})
-	return registry, defaultYAML
 }

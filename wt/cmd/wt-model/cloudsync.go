@@ -1,4 +1,4 @@
-// wt cloud-sync — refresh what two public services publish into
+// wt-model cloud-sync — refresh what two public services publish into
 // registry.toml: OpenRouter's prices (the openrouter flow) and ollama.com's cloud
 // catalog (the ollama flow, cloudsync_catalog.go). The planning is
 // internal/cloudsync's; this file owns the fetches, the confirmation, the one
@@ -21,19 +21,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cloudsync"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/spf13/cobra"
-)
-
-// Test seams. cmd/wt-session's TestMain makes all of them fail closed, so no test
-// reaches the network, a terminal or the developer's ollama (the ollama CLI's
-// own seam is in cloudsync_ollama.go).
-var (
-	// cloudFetch GETs one public page: OpenRouter's model list,
-	// ollama.com/pricing, an ollama.com/library tags page.
-	cloudFetch = realCloudFetch
-	// confirmCloudSync asks the one question that covers both printed plans.
-	confirmCloudSync = promptCloudSync
-	// cloudSyncNow is the clock the stamps and the saved-page name read.
-	cloudSyncNow = time.Now
 )
 
 // The flows' names: --only's spelling and the prefix of every line a flow
@@ -104,9 +91,9 @@ func realCloudFetch(ctx context.Context, url string) ([]byte, error) {
 // promptCloudSync asks on the controlling terminal and defaults to No, like
 // promptStop: piped input can never approve a sync. Without a terminal it
 // names the flag that applies without asking. The terminal is opened through
-// openTTY (launch.go), the seam a test takes it away with.
-func promptCloudSync(question string) (bool, error) {
-	return cli.AskOnTTY(openTTY, question, errors.New("there is no terminal to confirm on — rerun with --yes to apply without asking"))
+// h.openTTY (seams.go), the seam a test takes it away with.
+func (h *host) promptCloudSync(question string) (bool, error) {
+	return cli.AskOnTTY(h.openTTY, question, errors.New("there is no terminal to confirm on — rerun with --yes to apply without asking"))
 }
 
 // cloudSyncOpts is the parsed command line.
@@ -168,7 +155,7 @@ func selectedFlows(o cloudSyncOpts) []string {
 	return names
 }
 
-func cloudSyncCmd(a *app) *cobra.Command {
+func cloudSyncCmd(h *host) *cobra.Command {
 	var (
 		o    cloudSyncOpts
 		only string
@@ -212,9 +199,9 @@ func cloudSyncCmd(a *app) *cobra.Command {
 			"2 to 5 name a flow that changed nothing and win over 1 (the ollama flow's\n" +
 			"over the openrouter flow's); the other flow may have been applied in the\n" +
 			"same run.",
-		Example: "  wt cloud-sync --dry-run\n" +
-			"  wt cloud-sync --yes --approve-removals 0bcc560b956e\n" +
-			"  wt cloud-sync --only openrouter --yes",
+		Example: "  wt-model cloud-sync --dry-run\n" +
+			"  wt-model cloud-sync --yes --approve-removals 0bcc560b956e\n" +
+			"  wt-model cloud-sync --only openrouter --yes",
 		Args: cobra.NoArgs,
 		// A failed fetch or a refused plan is not a usage mistake, and main
 		// prints the one error line.
@@ -234,11 +221,11 @@ func cloudSyncCmd(a *app) *cobra.Command {
 			// Only a config that could not be loaded stops this: the host
 			// config is then an empty default, and a sync planned against
 			// it would find nothing to keep. A validation gap does not.
-			cfg, loadErr := a.hostConfig()
+			cfg, loadErr := h.hostConfig()
 			if loadErr != nil {
-				return configError(loadErr)
+				return config.ConfigError(loadErr)
 			}
-			return runCloudSync(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, o)
+			return h.runCloudSync(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, o)
 		},
 	}
 	cmd.Flags().StringVar(&only, "only", "", "Run only these flows: a comma list of "+strings.Join(cloudSyncFlows, ", ")+" (default: all)")
@@ -330,7 +317,7 @@ type openRouterRun struct {
 // returns nil when there is nothing to apply: no OpenRouter-priced model (one
 // line, no fetch is made, res.failed stays false), a fetch that failed, or a
 // plan the write would refuse (both reported, and res.failed set).
-func planOpenRouterFlow(ctx context.Context, out, errOut io.Writer, doc *config.RegistryDoc, res *cloudSyncOutcome) *openRouterRun {
+func (h *host) planOpenRouterFlow(ctx context.Context, out, errOut io.Writer, doc *config.RegistryDoc, res *cloudSyncOutcome) *openRouterRun {
 	entries := cloudsync.Entries(doc.Models())
 	if !slices.ContainsFunc(entries, cloudsync.OpenRouterPriced) {
 		fmt.Fprintln(out, "openrouter: no OpenRouter-priced model in the registry; nothing to refresh")
@@ -349,7 +336,7 @@ func planOpenRouterFlow(ctx context.Context, out, errOut io.Writer, doc *config.
 			return nil
 		}
 	}
-	body, err := cloudFetch(ctx, cloudsync.OpenRouterModelsURL)
+	body, err := h.cloudFetch(ctx, cloudsync.OpenRouterModelsURL)
 	var api map[string]cloudsync.APIPrice
 	if err == nil {
 		api, err = cloudsync.ParseOpenRouter(body)
@@ -476,14 +463,14 @@ func pendingFlows(active map[string]bool) []string {
 	return names
 }
 
-// runCloudSync is `wt cloud-sync`: plan both flows with no lock held, print
+// runCloudSync is `wt-model cloud-sync`: plan both flows with no lock held, print
 // both plans, gate, apply both in one registry write, run the ollama flow's
 // ollama work, sync the routes once. The flows are independent: one that
 // fails or is refused does not stop the other. (That is also the one case
 // with a second write: when the shared write is refused because a row would
 // not load, each flow is written alone, so only the flow that owns the row
 // is held up.)
-func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config, o cloudSyncOpts) error {
+func (h *host) runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config, o cloudSyncOpts) error {
 	doc, err := config.ReadRegistryDoc()
 	if err != nil {
 		return withRegistryHint(err)
@@ -492,11 +479,11 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 	var res cloudSyncOutcome
 	var openrouter *openRouterRun
 	if o.openrouter {
-		openrouter = planOpenRouterFlow(ctx, out, errOut, doc, &res)
+		openrouter = h.planOpenRouterFlow(ctx, out, errOut, doc, &res)
 	}
 	var ollama *ollamaRun
 	if o.ollama {
-		ollama = planOllamaFlow(ctx, out, errOut, cfg, o, doc, &res)
+		ollama = h.planOllamaFlow(ctx, out, errOut, cfg, o, doc, &res)
 	}
 	if openrouter != nil && ollama != nil {
 		if or, ol := openrouter.plan.RemovalDigest(), ollama.plan.RemovalDigest(); or != "" && ol != "" {
@@ -525,7 +512,7 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 		}
 	}
 	if !o.yes {
-		ok, err := confirmCloudSync("Apply these changes?")
+		ok, err := h.confirmCloudSync("Apply these changes?")
 		if err != nil {
 			notApplied(errOut, "error: not applied: %v", err)
 			res.failed = true
@@ -537,7 +524,7 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 		}
 	}
 
-	now := cloudSyncNow()
+	now := h.cloudSyncNow()
 	applied, err := writeCloudSync(openrouter, ollama, now)
 	switch {
 	case err == nil:
@@ -584,7 +571,7 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 			fmt.Fprintf(out, "ollama: updated %d, added %d and removed %d model(s)", applied.ollama.Updated, applied.ollama.Added, applied.ollama.Removed)
 			fmt.Fprint(out, graduatedClause(applied.ollama.Graduated))
 			fmt.Fprintln(out)
-			runOllamaWork(ctx, out, errOut, ollama.origin, applied.ollama, &res)
+			h.runOllamaWork(ctx, out, errOut, ollama.origin, applied.ollama, &res)
 		}
 	}
 
@@ -596,7 +583,7 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 	ollamaWork := len(applied.ollama.Pulls)+len(applied.ollama.Removes) > 0
 	if applied.openrouter.Changed > 0 || applied.openrouter.Removed > 0 || applied.ollama.Changed() || ollamaWork {
 		var routes, routeErrs bytes.Buffer
-		warning := syncRoutesAfterWrite(&routes, &routeErrs)
+		warning := h.syncRoutesAfterWrite(&routes, &routeErrs)
 		if routes.Len() > 0 {
 			prefixLines(out, "routes", routes.String())
 		}

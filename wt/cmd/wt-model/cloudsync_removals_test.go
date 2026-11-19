@@ -69,10 +69,11 @@ func TestApprovedDigests(t *testing.T) {
 // nothing; with the digest a dry run printed the vanished model is removed
 // and the routes are synced even though no price moved.
 func TestOpenRouterRemovalNeedsApprovalUnderYes(t *testing.T) {
-	path, cfg := cloudSyncHome(t, vanishedRegistry("old"))
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
-	synced := stubRouteSync(t, "")
-	dry, _, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, vanishedRegistry("old"))
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
+	synced := stubRouteSync(h, "")
+	dry, _, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
 	if code != 0 || !strings.Contains(dry, "openrouter: Registry removals — not on openrouter.ai/api/v1/models (1):\nopenrouter:   openrouter/vendor--old\n") {
 		t.Fatalf("dry run exit %d:\n%s", code, dry)
 	}
@@ -80,7 +81,7 @@ func TestOpenRouterRemovalNeedsApprovalUnderYes(t *testing.T) {
 	before := mustRead(t, path)
 
 	for _, approve := range []string{"", "000000000000"} {
-		_, stderr, final, code := runCSFinal(t, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: approve})
+		_, stderr, final, code := runCSFinal(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: approve})
 		if code != 5 || !strings.Contains(stderr, "openrouter: error: ") || !strings.Contains(stderr, "Nothing was changed by the openrouter flow.") ||
 			final != "cloud-sync: the openrouter flow changed nothing: removals not approved" {
 			t.Errorf("approve %q: exit %d, stderr %q, final %q", approve, code, stderr, final)
@@ -90,7 +91,7 @@ func TestOpenRouterRemovalNeedsApprovalUnderYes(t *testing.T) {
 		}
 	}
 
-	stdout, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: digest})
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: digest})
 	if code != 0 || stderr != "" || !strings.Contains(stdout, "openrouter: refreshed 1 model(s); 0 price(s) changed; removed 1\n") {
 		t.Fatalf("approved run: exit %d, stderr %q, stdout:\n%s", code, stderr, stdout)
 	}
@@ -103,12 +104,13 @@ func TestOpenRouterRemovalNeedsApprovalUnderYes(t *testing.T) {
 // half the removable models going is exit 4 until --force, then the digest
 // still applies.
 func TestOpenRouterMassRemovalRefusedWithoutForce(t *testing.T) {
-	path, cfg := cloudSyncHome(t, vanishedRegistry("old1", "old2"))
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
-	stubRouteSync(t, "")
-	dry, _, _ := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, vanishedRegistry("old1", "old2"))
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
+	stubRouteSync(h, "")
+	dry, _, _ := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
 	digest := orDigestIn(t, dry)
-	_, stderr, final, code := runCSFinal(t, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: digest})
+	_, stderr, final, code := runCSFinal(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: digest})
 	if code != 4 || !strings.Contains(stderr, "openrouter: error: 2 of 3 OpenRouter-priced models would be removed") ||
 		final != "cloud-sync: the openrouter flow changed nothing: mass removal refused" {
 		t.Errorf("exit %d, stderr %q, final %q", code, stderr, final)
@@ -116,7 +118,7 @@ func TestOpenRouterMassRemovalRefusedWithoutForce(t *testing.T) {
 	if strings.Contains(mustRead(t, path), "vendor--old") == false {
 		t.Fatal("a refused mass removal removed models")
 	}
-	if _, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: digest, force: true}); code != 0 || stderr != "" {
+	if _, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: digest, force: true}); code != 0 || stderr != "" {
 		t.Errorf("--force with the digest: exit %d, stderr %q", code, stderr)
 	}
 	if strings.Contains(mustRead(t, path), "vendor--old") {
@@ -127,11 +129,12 @@ func TestOpenRouterMassRemovalRefusedWithoutForce(t *testing.T) {
 // TestInteractiveDeclineRemovesNothing pins that the one prompt covers
 // removals too: answering no leaves the vanished model and says so.
 func TestInteractiveDeclineRemovesNothing(t *testing.T) {
-	path, cfg := cloudSyncHome(t, vanishedRegistry("old"))
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
-	stubRouteSync(t, "")
-	asked := stubConfirm(t, false, nil, nil)
-	stdout, _, code := runCS(t, cfg, cloudSyncOpts{openrouter: true})
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, vanishedRegistry("old"))
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
+	stubRouteSync(h, "")
+	asked := stubConfirm(t, h, false, nil, nil)
+	stdout, _, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true})
 	if code != 0 || *asked != 1 || !strings.HasSuffix(stdout, "openrouter: not applied (declined)\n") {
 		t.Errorf("exit %d, asked %d, stdout:\n%s", code, *asked, stdout)
 	}
@@ -145,19 +148,20 @@ func TestInteractiveDeclineRemovesNothing(t *testing.T) {
 // OpenRouter one is refused (exit 5, models kept); naming both digests,
 // comma separated with a space, applies both in one run.
 func TestYesWithOneFlowsDigestAppliesOnlyThatFlow(t *testing.T) {
+	h := testHost()
 	pages := ollamaPages()
 	pages[cloudsync.OpenRouterModelsURL] = healthyOpenRouterBody()
 	both := cloudSyncOpts{openrouter: true, ollama: true}
 	// start gives the subtest a registry with one vanished OpenRouter model
 	// and one off-page ollama entry, and the digests a dry run prints.
 	start := func(t *testing.T) (path string, cfg *config.Config, ollamaDigest, orDigest string) {
-		path, cfg = cloudSyncHome(t, vanishedRegistry("old"))
-		stubCloudFetch(t, pages)
-		stubOllama(t, ollamaPulled...)
-		stubRouteSync(t, "")
+		path, cfg = cloudSyncHome(t, h, vanishedRegistry("old"))
+		stubCloudFetch(t, h, pages)
+		stubOllama(t, h, ollamaPulled...)
+		stubRouteSync(h, "")
 		dry := both
 		dry.dryRun = true
-		stdout, _, _ := runCS(t, cfg, dry)
+		stdout, _, _ := runCS(t, h, cfg, dry)
 		return path, cfg, digestIn(t, stdout), orDigestIn(t, stdout)
 	}
 
@@ -165,7 +169,7 @@ func TestYesWithOneFlowsDigestAppliesOnlyThatFlow(t *testing.T) {
 		path, cfg, ollamaDigest, _ := start(t)
 		o := both
 		o.yes, o.approve = true, ollamaDigest
-		_, stderr, code := runCS(t, cfg, o)
+		_, stderr, code := runCS(t, h, cfg, o)
 		text := mustRead(t, path)
 		if code != 5 || !strings.Contains(stderr, "openrouter: error: ") || strings.Contains(text, "retired:cloud") || !strings.Contains(text, "vendor--old") {
 			t.Errorf("exit %d, stderr %q\nwant the ollama removal applied and the OpenRouter model kept:\n%s", code, stderr, text)
@@ -176,7 +180,7 @@ func TestYesWithOneFlowsDigestAppliesOnlyThatFlow(t *testing.T) {
 		path, cfg, ollamaDigest, orDigest := start(t)
 		o := both
 		o.yes, o.approve = true, orDigest+", "+ollamaDigest
-		stdout, stderr, code := runCS(t, cfg, o)
+		stdout, stderr, code := runCS(t, h, cfg, o)
 		text := mustRead(t, path)
 		if code != 0 || stderr != "" || strings.Contains(text, "retired:cloud") || strings.Contains(text, "vendor--old") {
 			t.Errorf("exit %d, stderr %q, stdout:\n%s\nregistry:\n%s", code, stderr, stdout, text)
@@ -188,21 +192,22 @@ func TestYesWithOneFlowsDigestAppliesOnlyThatFlow(t *testing.T) {
 // pasting two digests by hand: it appears only when both flows plan
 // removals.
 func TestDryRunPrintsCombinedApproveLine(t *testing.T) {
+	h := testHost()
 	pages := ollamaPages()
 	pages[cloudsync.OpenRouterModelsURL] = healthyOpenRouterBody()
-	_, cfg := cloudSyncHome(t, vanishedRegistry("old"))
-	stubCloudFetch(t, pages)
-	stubOllama(t, ollamaPulled...)
-	stdout, _, _ := runCS(t, cfg, cloudSyncOpts{openrouter: true, ollama: true, dryRun: true})
+	_, cfg := cloudSyncHome(t, h, vanishedRegistry("old"))
+	stubCloudFetch(t, h, pages)
+	stubOllama(t, h, ollamaPulled...)
+	stdout, _, _ := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, ollama: true, dryRun: true})
 	want := "removals: approve both with --yes --approve-removals " + orDigestIn(t, stdout) + "," + digestIn(t, stdout) + "\n"
 	if !strings.Contains(stdout, want) {
 		t.Errorf("stdout lacks %q:\n%s", want, stdout)
 	}
 
-	_, cfg = cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, pages)
-	stubOllama(t, ollamaPulled...)
-	if stdout, _, _ := runCS(t, cfg, cloudSyncOpts{openrouter: true, ollama: true, dryRun: true}); strings.Contains(stdout, "approve both") {
+	_, cfg = cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, pages)
+	stubOllama(t, h, ollamaPulled...)
+	if stdout, _, _ := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, ollama: true, dryRun: true}); strings.Contains(stdout, "approve both") {
 		t.Errorf("one flow's removals printed the combined line:\n%s", stdout)
 	}
 }
@@ -211,15 +216,16 @@ func TestDryRunPrintsCombinedApproveLine(t *testing.T) {
 // OpenRouter gained removals: --approve-removals and --force work with
 // --only openrouter, --html still belongs to the ollama flow.
 func TestApproveAndForceAreAcceptedWithOnlyOpenrouter(t *testing.T) {
-	_, cfg := cloudSyncHome(t, cloudSyncRegistry)
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: sameOpenRouterBody})
+	h := testHost()
+	_, cfg := cloudSyncHome(t, h, cloudSyncRegistry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: sameOpenRouterBody})
 	for _, flags := range [][]string{{"--approve-removals", "abc"}, {"--force"}} {
-		cmd := cloudSyncCmd(&app{hostSet: true, hostCfg: cfg})
+		cmd := cloudSyncCmd(hostOn(h, cfg, nil))
 		cmd.SetArgs(append([]string{"--only", "openrouter", "--dry-run"}, flags...))
 		cmd.SetOut(new(bytes.Buffer))
 		cmd.SetErr(new(bytes.Buffer))
 		if err := cmd.Execute(); err != nil {
-			t.Errorf("wt cloud-sync --only openrouter %v: %v", flags, err)
+			t.Errorf("wt-model cloud-sync --only openrouter %v: %v", flags, err)
 		}
 	}
 }
@@ -228,11 +234,12 @@ func TestApproveAndForceAreAcceptedWithOnlyOpenrouter(t *testing.T) {
 // model in the registry is removed, the output does not also say "no model
 // could be refreshed": the removal is the news, not a failed refresh.
 func TestRemovalAloneIsNotAdviceAboutRefreshing(t *testing.T) {
+	h := testHost()
 	registry := strings.Replace(vanishedRegistry("old"), `id = "openrouter/vendor--gpt"`, `id = "openrouter/vendor--gone2"`, 1)
 	registry = strings.Replace(registry, `model_name = "vendor/gpt"`, `model_name = "vendor/gone2"`, 1)
-	_, cfg := cloudSyncHome(t, registry)
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
-	stdout, _, _ := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
+	_, cfg := cloudSyncHome(t, h, registry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
+	stdout, _, _ := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
 	if !strings.Contains(stdout, "Registry removals") || strings.Contains(stdout, "no model could be refreshed") {
 		t.Errorf("stdout:\n%s", stdout)
 	}
@@ -241,10 +248,11 @@ func TestRemovalAloneIsNotAdviceAboutRefreshing(t *testing.T) {
 // TestWithheldRemovalsAreSaid pins that a list too short to trust prints the
 // reason (the plan itself stays unchanged) and removes nothing.
 func TestWithheldRemovalsAreSaid(t *testing.T) {
-	path, cfg := cloudSyncHome(t, vanishedRegistry("old"))
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: sameOpenRouterBody})
-	stubRouteSync(t, "")
-	stdout, _, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, vanishedRegistry("old"))
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: sameOpenRouterBody})
+	stubRouteSync(h, "")
+	stdout, _, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	if code != 0 || !strings.Contains(stdout, "no removals are planned") {
 		t.Errorf("exit %d, stdout:\n%s", code, stdout)
 	}
@@ -347,18 +355,19 @@ func TestRemovalGateAllowsAnApprovedRemovalAndANoRemovalPlan(t *testing.T) {
 // removes nothing and so has nothing to approve. The row is still in the
 // registry afterwards.
 func TestCloudSyncKeptVariantNeedsNoApprovalAndIsExplained(t *testing.T) {
-	path, cfg := cloudSyncHome(t, vanishedRegistry("gpt:nitro"))
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
-	stubRouteSync(t, "")
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, vanishedRegistry("gpt:nitro"))
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
+	stubRouteSync(h, "")
 
-	dry, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
+	dry, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
 	if code != 0 || stderr != "" ||
 		!strings.Contains(dry, "openrouter: warning: No OpenRouter match for openrouter/vendor--gpt:nitro (vendor/gpt:nitro); its base model is listed, so it is left unpriced: :nitro bills at its own rate, not vendor/gpt's; set a price by hand\n") ||
 		strings.Contains(dry, "Registry removals") {
 		t.Fatalf("dry run exit %d, stderr %q:\n%s", code, stderr, dry)
 	}
 
-	_, stderr, final, code := runCSFinal(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	_, stderr, final, code := runCSFinal(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	if code != 0 || stderr != "" || final != "" {
 		t.Fatalf("--yes with a kept variant: exit %d, stderr %q, final %q; want no approval asked for", code, stderr, final)
 	}
@@ -372,11 +381,12 @@ func TestCloudSyncKeptVariantNeedsNoApprovalAndIsExplained(t *testing.T) {
 // both, `--yes` without the digest exits 5 and changes nothing, and with it
 // only the vanished model is removed while the variant stays.
 func TestCloudSyncKeptVariantBesideARemovalStillNeedsTheDigest(t *testing.T) {
-	path, cfg := cloudSyncHome(t, vanishedRegistry("gpt:nitro", "old"))
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
-	stubRouteSync(t, "")
+	h := testHost()
+	path, cfg := cloudSyncHome(t, h, vanishedRegistry("gpt:nitro", "old"))
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
+	stubRouteSync(h, "")
 
-	dry, _, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
+	dry, _, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
 	if code != 0 || !strings.Contains(dry, "openrouter:   openrouter/vendor--old\n") || strings.Contains(dry, "openrouter:   openrouter/vendor--gpt:nitro\n") ||
 		!strings.Contains(dry, "openrouter: Note: a model OpenRouter serves under another name") {
 		t.Fatalf("dry run exit %d:\n%s", code, dry)
@@ -384,12 +394,12 @@ func TestCloudSyncKeptVariantBesideARemovalStillNeedsTheDigest(t *testing.T) {
 	digest := orDigestIn(t, dry)
 	before := mustRead(t, path)
 
-	_, _, final, code := runCSFinal(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	_, _, final, code := runCSFinal(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true})
 	if code != 5 || final != "cloud-sync: the openrouter flow changed nothing: removals not approved" || mustRead(t, path) != before {
 		t.Fatalf("unapproved run: exit %d, final %q, registry changed %v", code, final, mustRead(t, path) != before)
 	}
 
-	_, stderr, _, code := runCSFinal(t, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: digest})
+	_, stderr, _, code := runCSFinal(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: digest})
 	after := mustRead(t, path)
 	if code != 0 || stderr != "" || strings.Contains(after, "vendor--old") || !strings.Contains(after, `model_name = "vendor/gpt:nitro"`) {
 		t.Errorf("approved run: exit %d, stderr %q; want old removed and the variant kept:\n%s", code, stderr, after)

@@ -1,4 +1,4 @@
-// The ollama CLI as wt cloud-sync's ollama flow uses it: list what is
+// The ollama CLI as wt-model cloud-sync's ollama flow uses it: list what is
 // pulled, pull a tag, remove a tag. Always the CLI, never the HTTP API, and
 // always pinned to the daemon the registry's ollama provider row names.
 package main
@@ -15,11 +15,6 @@ import (
 	"time"
 )
 
-// ollamaCLI runs the ollama command against the daemon at origin and returns
-// what it printed. A seam: cmd/wt-session's TestMain makes it fail, so no test runs
-// the developer's ollama.
-var ollamaCLI = realOllamaCLI
-
 // How long one ollama command may take. A cloud model's pull fetches a
 // manifest, not weights.
 const (
@@ -28,11 +23,8 @@ const (
 	ollamaPullTimeout = 10 * time.Minute
 )
 
-// ollamaWaitDelay bounds what a time limit leaves open. The limit kills the
-// command wt started; if that was a wrapper script, the process it started in
-// turn lives on holding the output pipes, and without this Run would wait
-// for it to exit, however long that takes.
-var ollamaWaitDelay = 5 * time.Second
+// defaultOllamaWaitDelay is the real host's ollamaWaitDelay (seams.go).
+const defaultOllamaWaitDelay = 5 * time.Second
 
 // errOllamaNotInstalled is realOllamaCLI's answer when there is no ollama
 // command to run, which is not a daemon that is down.
@@ -43,13 +35,13 @@ var errOllamaNotInstalled = errors.New("the ollama command is not installed (not
 // which daemon wt manages, and an OLLAMA_HOST inherited from the shell that
 // pointed elsewhere would pull into, or remove from, a daemon the registry
 // does not describe.
-func realOllamaCLI(ctx context.Context, origin string, args ...string) (stdout, stderr string, err error) {
+func (h *host) realOllamaCLI(ctx context.Context, origin string, args ...string) (stdout, stderr string, err error) {
 	bin, err := exec.LookPath("ollama")
 	if err != nil {
 		return "", "", errOllamaNotInstalled
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.WaitDelay = ollamaWaitDelay
+	cmd.WaitDelay = h.ollamaWaitDelay
 	cmd.Env = append(os.Environ(), "OLLAMA_HOST="+origin)
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
@@ -100,10 +92,10 @@ func ollamaTimedOut(ctx context.Context, limit time.Duration) string {
 // ollamaTags is `ollama list`'s NAME column: every pulled tag, cloud stubs
 // included. (wt's inventory probe cannot serve here: it leaves cloud stubs
 // out on purpose, since they are not local models.)
-func ollamaTags(ctx context.Context, origin string) ([]string, error) {
+func (h *host) ollamaTags(ctx context.Context, origin string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, ollamaListTimeout)
 	defer cancel()
-	stdout, stderr, err := ollamaCLI(ctx, origin, "list")
+	stdout, stderr, err := h.ollamaCLI(ctx, origin, "list")
 	if err != nil {
 		if why := ollamaTimedOut(ctx, ollamaListTimeout); why != "" {
 			return nil, errors.New(why)
@@ -129,10 +121,10 @@ func ollamaTags(ctx context.Context, origin string) ([]string, error) {
 // ollama pruning a retired stub) is gone, which is what was wanted. The
 // answer must name the tag: some other failure with "not found" in it (a 404
 // from something that is not ollama) is not a removal.
-func ollamaRemove(ctx context.Context, origin, tag string) error {
+func (h *host) ollamaRemove(ctx context.Context, origin, tag string) error {
 	ctx, cancel := context.WithTimeout(ctx, ollamaRmTimeout)
 	defer cancel()
-	_, stderr, err := ollamaCLI(ctx, origin, "rm", tag)
+	_, stderr, err := h.ollamaCLI(ctx, origin, "rm", tag)
 	if err == nil {
 		return nil
 	}
@@ -145,10 +137,10 @@ func ollamaRemove(ctx context.Context, origin, tag string) error {
 	return fmt.Errorf("`ollama rm %s` failed: %s", tag, ollamaFailure(stderr, err))
 }
 
-func ollamaPull(ctx context.Context, origin, tag string) error {
+func (h *host) ollamaPull(ctx context.Context, origin, tag string) error {
 	ctx, cancel := context.WithTimeout(ctx, ollamaPullTimeout)
 	defer cancel()
-	if _, stderr, err := ollamaCLI(ctx, origin, "pull", tag); err != nil {
+	if _, stderr, err := h.ollamaCLI(ctx, origin, "pull", tag); err != nil {
 		if why := ollamaTimedOut(ctx, ollamaPullTimeout); why != "" {
 			return fmt.Errorf("`ollama pull %s` %s", tag, why)
 		}

@@ -51,7 +51,7 @@ func (c ModelCost) Flat() PriceInForce {
 // after it are still tried. PriceAt never fails: it runs while a screen is
 // drawn.
 //
-// This is the reader of every cost.time_prices row, those `wt cloud-sync`
+// This is the reader of every cost.time_prices row, those `wt-model cloud-sync`
 // writes and those written by hand. It is pure: the caller passes the
 // clock.
 func (c ModelCost) PriceAt(at time.Time) PriceInForce {

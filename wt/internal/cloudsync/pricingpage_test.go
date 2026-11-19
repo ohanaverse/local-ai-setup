@@ -213,7 +213,7 @@ func TestPyReprMatchesPythonsRepr(t *testing.T) {
 // cases below). The expected values are what Python's HTMLParser collects
 // from the same inputs, and they are the fixed reading of the pricing page:
 // a tokenizer that read one of these differently would find different cells
-// in the same page, and `wt cloud-sync` would write different prices from it.
+// in the same page, and `wt-model cloud-sync` would write different prices from it.
 func TestCollectTablesReadsMarkupAsPinned(t *testing.T) {
 	cases := []struct {
 		name, html string

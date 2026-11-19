@@ -173,7 +173,7 @@ or after adding it; `wt-model model list` shows what is on disk and unregistered
 | `--subscription-price`, `--subscription-period month\|year` | a subscription price needs a period |
 | `--id` | the id, instead of the derived one: `<provider>/<name>`, with no spaces |
 
-A cloud model that `wt cloud-sync` covers (any `openrouter` model, an ollama
+A cloud model that `wt-model cloud-sync` covers (any `openrouter` model, an ollama
 model with `--location cloud` or a cloud tag) is written with `source =
 "manual"`: cloud-sync keeps it even if the source it mirrors does not list it,
 and sets it to `curated` once it does ([wt-cloud-sync.md](wt-cloud-sync.md#models-you-add-by-hand)).
@@ -272,7 +272,7 @@ other key (off-peak prices, `model_info`, `fetch`, keys wt does not know) is
 kept as it is. A flag left out leaves its field alone; an empty value clears
 it (`--tags ""`, `--input-price ""`), and an empty `--location` makes the
 model inherit its provider's. `--source manual|curated` sets the row's
-source; it is for models `wt cloud-sync` covers (an `openrouter` model, an
+source; it is for models `wt-model cloud-sync` covers (an `openrouter` model, an
 ollama cloud model) and is refused for any other. Use `--source manual` on a
 cloud model you added by hand before cloud-sync knew the mark, so the next sync
 does not offer to remove it. No flag at all is a usage error. It does not

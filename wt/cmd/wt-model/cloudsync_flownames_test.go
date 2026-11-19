@@ -19,13 +19,14 @@ import (
 // flows, an error that lists the valid names, so a script still using one
 // stops instead of running a flow it did not ask for.
 func TestCloudSyncFlowsAreNamedForTheirProviders(t *testing.T) {
+	h := testHost()
 	// noOllamaRegistry is one openrouter model and no ollama provider row: the
 	// openrouter flow has a plan to print and the ollama flow its skip line,
 	// so both prefixes are seen with one stubbed page.
-	_, cfg := cloudSyncHome(t, noOllamaRegistry)
-	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
+	_, cfg := cloudSyncHome(t, h, noOllamaRegistry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 	run := func(args ...string) (string, error) {
-		cmd := cloudSyncCmd(&app{hostSet: true, hostCfg: cfg})
+		cmd := cloudSyncCmd(hostOn(h, cfg, nil))
 		var out bytes.Buffer
 		cmd.SetArgs(args)
 		cmd.SetOut(&out)
@@ -41,7 +42,7 @@ func TestCloudSyncFlowsAreNamedForTheirProviders(t *testing.T) {
 		"openrouter: Unchanged prices: 0\n" +
 		"ollama: no ollama provider in the registry; nothing to mirror\n"
 	if err != nil || out != want {
-		t.Errorf("wt cloud-sync --dry-run: err = %v, output:\n%s\nwant:\n%s", err, out, want)
+		t.Errorf("wt-model cloud-sync --dry-run: err = %v, output:\n%s\nwant:\n%s", err, out, want)
 	}
 	if out, err := run("--only", "openrouter", "--dry-run"); err != nil || !strings.HasPrefix(out, "openrouter: ") || strings.Contains(out, "ollama: ") {
 		t.Errorf("--only openrouter: err = %v, output:\n%s\nwant the openrouter lines alone", err, out)
@@ -72,6 +73,7 @@ func TestCloudSyncFlowsAreNamedForTheirProviders(t *testing.T) {
 // (TestCloudSyncFlowsAreNamedForTheirProviders spells out the two flows'
 // help text, so it would not notice a third.)
 func TestCloudFlowsMatchTheirProviders(t *testing.T) {
+	h := testHost()
 	if len(cloudFlows) == 0 || len(cloudFlows) != len(cloudSyncFlows) {
 		t.Fatalf("cloudFlows has %d flows and cloudSyncFlows %v", len(cloudFlows), cloudSyncFlows)
 	}
@@ -102,7 +104,7 @@ func TestCloudFlowsMatchTheirProviders(t *testing.T) {
 	}
 
 	var help bytes.Buffer
-	cmd := cloudSyncCmd(&app{hostSet: true, hostCfg: &config.Config{}})
+	cmd := cloudSyncCmd(hostOn(h, &config.Config{}, nil))
 	cmd.SetArgs([]string{"--help"})
 	cmd.SetOut(&help)
 	cmd.SetErr(&help)

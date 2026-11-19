@@ -71,7 +71,7 @@ mkdir -p ~/.config/litellm
 echo "model_list: []" > ~/.config/litellm/config.yaml
 ```
 
-Do not `touch` an empty file: LiteLLM fails to start on it, while `model_list: []` is a valid empty config. From here **wt owns this file**: `wt litellm sync` (and `wt start`/`stop`, `wt cloud-sync`) rewrites `model_list` to match the registry and the running local models. Edit only the proxy-only sections (for example `general_settings`) by hand; what is safe to edit is in [04-litellm-config.md](04-litellm-config.md). `WT_LITELLM_CONFIG` redirects the path wt writes. Optional Redis wiring goes under `general_settings` (`coordination_redis`, see the reference doc above).
+Do not `touch` an empty file: LiteLLM fails to start on it, while `model_list: []` is a valid empty config. From here **wt owns this file**: `wt litellm sync` (and `wt start`/`stop`, `wt-model cloud-sync`) rewrites `model_list` to match the registry and the running local models. Edit only the proxy-only sections (for example `general_settings`) by hand; what is safe to edit is in [04-litellm-config.md](04-litellm-config.md). `WT_LITELLM_CONFIG` redirects the path wt writes. Optional Redis wiring goes under `general_settings` (`coordination_redis`, see the reference doc above).
 
 ### 5. The plist
 

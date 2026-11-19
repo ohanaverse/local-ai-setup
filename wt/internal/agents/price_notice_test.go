@@ -23,10 +23,10 @@ func TestPriceNoticeThresholds(t *testing.T) {
 		{"refreshed a minute ago", now.Add(-time.Minute), true, ""},
 		{"six days ago", now.Add(-6 * 24 * time.Hour), true, ""},
 		{"exactly seven days ago", now.Add(-7 * 24 * time.Hour), true, ""},
-		{"seven days and a second", now.Add(-7*24*time.Hour - time.Second), true, "wt: token pricing last refreshed 2026-09-30 — run 'wt cloud-sync'"},
-		{"a month ago", time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), true, "wt: token pricing last refreshed 2026-09-01 — run 'wt cloud-sync'"},
+		{"seven days and a second", now.Add(-7*24*time.Hour - time.Second), true, "wt: token pricing last refreshed 2026-09-30 — run 'wt-model cloud-sync'"},
+		{"a month ago", time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), true, "wt: token pricing last refreshed 2026-09-01 — run 'wt-model cloud-sync'"},
 		{"a stamp a few minutes ahead (a skewed clock)", now.Add(10 * time.Minute), true, ""},
-		{"never", time.Time{}, false, "wt: token pricing has never been refreshed — run 'wt cloud-sync'"},
+		{"never", time.Time{}, false, "wt: token pricing has never been refreshed — run 'wt-model cloud-sync'"},
 	}
 	for _, tc := range cases {
 		if got := PriceNotice(tc.last, tc.present, now); got != tc.want {
@@ -43,7 +43,7 @@ func TestPriceNoticeShowsTheLocalDate(t *testing.T) {
 	pacific := time.FixedZone("PDT", -7*3600)
 	last := time.Date(2026, 10, 4, 2, 31, 25, 0, time.UTC)
 	now := time.Date(2026, 10, 20, 9, 0, 0, 0, pacific)
-	if got, want := PriceNotice(last, true, now), "wt: token pricing last refreshed 2026-10-03 — run 'wt cloud-sync'"; got != want {
+	if got, want := PriceNotice(last, true, now), "wt: token pricing last refreshed 2026-10-03 — run 'wt-model cloud-sync'"; got != want {
 		t.Errorf("PriceNotice = %q, want %q", got, want)
 	}
 }

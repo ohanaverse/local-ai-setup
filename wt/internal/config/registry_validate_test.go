@@ -338,7 +338,7 @@ model_name = "old"
 // own layout, as a registry wt has written once is), when another key of
 // its model is patched and when its cost table is. Before #322 the
 // validator refused such a row, so every `wt-model model edit` of that model and
-// every `wt cloud-sync` with a change for it stopped with "start must be
+// every `wt-model cloud-sync` with a change for it stopped with "start must be
 // before end".
 func TestUpdateRegistryKeepsAWindowPastMidnightByteForByte(t *testing.T) {
 	const nightRow = `[[models.cost.time_prices]]

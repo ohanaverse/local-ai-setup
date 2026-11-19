@@ -1,19 +1,23 @@
 ---
 name: wt-cloud-sync
-description: Refresh cloud model prices and the ollama cloud catalog with `wt cloud-sync` — OpenRouter prices into registry.toml, and https://ollama.com/pricing mirrored into the registry, ollama and LiteLLM (new cloud models registered and pulled, ones Ollama no longer lists unregistered and removed, prices including off-peak). Use when asked to update or refresh model prices, ollama cloud models or ollama pricing, when wt prints "token pricing last refreshed … — run 'wt cloud-sync'", or when `wt cloud-sync` exits 3 (the ollama pricing page changed shape and the parser needs repair).
+description: Refresh cloud model prices and the ollama cloud catalog with `wt-model cloud-sync` — OpenRouter prices into registry.toml, and https://ollama.com/pricing mirrored into the registry, ollama and LiteLLM (new cloud models registered and pulled, ones Ollama no longer lists unregistered and removed, prices including off-peak). Use when asked to update or refresh model prices, ollama cloud models or ollama pricing, when wt prints "token pricing last refreshed … — run 'wt-model cloud-sync'", or when `wt-model cloud-sync` exits 3 (the ollama pricing page changed shape and the parser needs repair).
 ---
 
 # Cloud sync
 
-`wt cloud-sync` runs two independent flows and prefixes every line with the
+`wt-model cloud-sync` runs two independent flows and prefixes every line with the
 one it is about. Both run unless `--only openrouter` or `--only ollama` picks
 one; a flow that fails or is refused does not stop the other.
+
+`cloud-sync` run under `wt` (its old home) only prints `wt: cloud-sync moved
+to wt-model — run 'wt-model cloud-sync'; nothing was changed` and exits 1,
+never 2 to 5: run `wt-model cloud-sync`; that exit 1 is not the parser case.
 
 - **`openrouter:`** re-prices the registry's OpenRouter-priced models (the
   ones whose `provider_id` is `openrouter`, and no other) from
   OpenRouter's public model list and stamps each one it matched. The stamps
-  are what clear wt's `token pricing last refreshed <date> — run 'wt
-  cloud-sync'` notice. A model OpenRouter prices by time of day is stored
+  are what clear wt's `token pricing last refreshed <date> — run
+  'wt-model cloud-sync'` notice. A model OpenRouter prices by time of day is stored
   as its whole schedule: the dearest level as the model's price, each other
   level as a `cost.time_prices` row labelled `openrouter`, which the model
   picker applies (it shows the level in force when it opens).
@@ -52,12 +56,11 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
 
 ## Steps
 
-1. **Dry run:** `wt cloud-sync --dry-run`. It changes nothing.
-   - First run `wt cloud-sync --help`. If it does not print the two flows
-     (`openrouter`, `ollama`), the installed `wt` predates the command: stop
-     and ask the user to run `make install` from the repo root. Do not run
-     anything else with that binary (what an older `wt` does with the word
-     `cloud-sync` has not been checked).
+1. **Dry run:** `wt-model cloud-sync --dry-run`. It changes nothing.
+   - First run `wt-model cloud-sync --help`. If `wt-model` is not on PATH,
+     or it does not print the two flows (`openrouter`, `ollama`), the
+     installed `wt-model` predates the command: stop and ask the user to run
+     `make install` from the repo root.
    - Summarize **both** plans for the user. openrouter: each `id: old -> new`
      under `Price updates`. A line that ends `(openrouter <in>/<cached>/<out>
      <windows>)`, for example (illustrative) `openrouter/acme--alpha-1:
@@ -184,7 +187,7 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
    are not in `<n>`, and the line says `(re-tagged entries are not
    counted)` when the plan has any), and that many removals usually means
    the page parsed wrong, not that the catalog shrank.
-3. **Apply:** `wt cloud-sync --yes --approve-removals <digest>`, with the
+3. **Apply:** `wt-model cloud-sync --yes --approve-removals <digest>`, with the
    digest from step 1 (`<a>,<b>` when both flows delete). Leave
    `--approve-removals` out if the dry run printed no digest. Your shell has no terminal, so the command's one question
    cannot be answered: without `--yes` it stops with `error: not applied:
@@ -221,10 +224,10 @@ To run one flow: `--only openrouter` or `--only ollama`. `--html` with
 
 ## Exit codes
 
-The last line on stderr says which: `wt: cloud-sync: the ollama flow
-changed nothing: <why>` for 2 to 5 (`the openrouter flow` when it is
-that flow's 4 or 5), `wt: cloud-sync: a step failed; see the error lines
-above` for 1. Codes 2 to 5 name a flow that changed nothing and win over 1:
+The last line on stderr says which: `wt-model: cloud-sync: the ollama
+flow changed nothing: <why>` for 2 to 5 (`the openrouter flow` when it is
+that flow's 4 or 5), `wt-model: cloud-sync: a step failed; see the error
+lines above` for 1. Codes 2 to 5 name a flow that changed nothing and win over 1:
 read the other flow's lines too, it may have been applied.
 
 | Code | Meaning | Do |
@@ -236,7 +239,7 @@ read the other flow's lines too, it may have been applied.
 | 4 | a flow changed nothing: its plan removes more than half its entries and `--force` was not given | Ask the user; `--force` only on their confirmation |
 | 5 | a flow changed nothing: under `--yes` its plan deletes and no digest, or another plan's, was given (`…: removals not approved`); or (ollama) the registry changed after the plan was printed (`…: the registry changed after the plan was printed`) | Step 1 again; get the user's yes for the new plan; use its digest |
 
-Unlike the other `wt` commands, `cloud-sync` does not use 3 for approval
+Unlike the other wt and wt-model commands, `cloud-sync` does not use 3 for approval
 missing (there it means the ollama pricing page changed shape): with no
 terminal and no `--yes` it exits 1 (the `not applied: there is no terminal`
 line below), and a "no" at the question exits 0 (`not applied (declined)`).
@@ -265,7 +268,7 @@ line below), and a "no" at the question exits 0 (`not applied (declined)`).
   have been applied: read both.
 - ``ollama: error: `ollama pull <tag>` failed: <ollama's last line>``,
   followed by ``<tag> is in the registry but not pulled, so it is not routed;
-  run `wt cloud-sync` again to retry the pull``. The registry is already
+  run `wt-model cloud-sync` again to retry the pull``. The registry is already
   written and the other pulls and removals still ran. Run the sync again
   (a pull needs no digest, but go through step 1 anyway: the plan is
   different now). Whether `ollama pull` of a cloud model needs the user to
@@ -320,7 +323,7 @@ a saved copy of the page and work from that. Work from `wt/`.
    page, update `TestParsePricingFixture`'s expected count and prices, and
    run `go test ./internal/cloudsync && make check`.
 4. Try it on the page that broke it:
-   `go run ./cmd/wt-session cloud-sync --only ollama --dry-run --html <saved page>`
+   `go run ./cmd/wt-model cloud-sync --only ollama --dry-run --html <saved page>`
    (it still reads ollama.com/library and runs `ollama list`), then go
    through the steps above from step 1. The first plan after a parser change
    deserves a slower read than usual: check its model count and removals

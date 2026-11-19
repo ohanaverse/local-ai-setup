@@ -1,4 +1,4 @@
-// The ollama flow of wt cloud-sync: mirror https://ollama.com/pricing into
+// The ollama flow of wt-model cloud-sync: mirror https://ollama.com/pricing into
 // the registry's ollama cloud entries and into ollama itself. Everything that
 // decides what changes is internal/cloudsync's; this file reads the page and
 // `ollama list`, gates the plan, and runs the pulls and removals the registry
@@ -80,7 +80,7 @@ func hasOllamaProvider(providers []cloudsync.Provider) bool {
 // a registry with no ollama provider row (one line, nothing fetched,
 // res untouched), or a flow that cannot go on, with res saying why. In every
 // such case it has changed nothing.
-func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Config, o cloudSyncOpts,
+func (h *host) planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Config, o cloudSyncOpts,
 	doc *config.RegistryDoc, res *cloudSyncOutcome) *ollamaRun {
 	stop := func(code int, format string, args ...any) *ollamaRun {
 		fmt.Fprintf(errOut, "ollama: error: "+format+"\n", args...)
@@ -97,7 +97,7 @@ func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Conf
 	// included): it is skipped, never an error. A new entry would be a row
 	// with provider_id "ollama", which the registry writer refuses without
 	// the provider row, and there is no daemon address to pin the CLI to.
-	// `wt cloud-sync` never seeds the row.
+	// `wt-model cloud-sync` never seeds the row.
 	if !hasOllamaProvider(providers) {
 		fmt.Fprintln(out, "ollama: no ollama provider in the registry; nothing to mirror")
 		return nil
@@ -120,7 +120,7 @@ func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Conf
 		}
 		page = string(data)
 	} else {
-		data, err := cloudFetch(ctx, cloudsync.PricingURL)
+		data, err := h.cloudFetch(ctx, cloudsync.PricingURL)
 		if err != nil {
 			return stop(2, "could not fetch ollama.com/pricing: %v; nothing was changed", err)
 		}
@@ -128,7 +128,7 @@ func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Conf
 	}
 	catalog, err := cloudsync.ParsePricing(page)
 	if err != nil {
-		saved, saveErr := saveFailedHTML(page, cloudSyncNow())
+		saved, saveErr := saveFailedHTML(page, h.cloudSyncNow())
 		where := "raw HTML saved to " + saved
 		if saveErr != nil {
 			where = "the raw HTML could not be saved: " + saveErr.Error()
@@ -139,7 +139,7 @@ func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Conf
 	run := &ollamaRun{catalog: catalog, origin: origin}
 	// Without it, what to pull and what to rm is unknowable: refuse instead
 	// of mirroring half the plan.
-	if run.tags, err = ollamaTags(ctx, run.origin); err != nil {
+	if run.tags, err = h.ollamaTags(ctx, run.origin); err != nil {
 		hint := " (is the ollama daemon up?)"
 		if errors.Is(err, errOllamaNotInstalled) {
 			hint = ""
@@ -150,7 +150,7 @@ func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Conf
 	for i, m := range catalog.Models {
 		names[i] = m.Name
 	}
-	run.resolved, run.tagWarnings = cloudsync.ResolveCloudTags(ctx, cloudFetch, names, cloudsync.VerifiedTags(entries, run.tags))
+	run.resolved, run.tagWarnings = cloudsync.ResolveCloudTags(ctx, h.cloudFetch, names, cloudsync.VerifiedTags(entries, run.tags))
 	if !slices.ContainsFunc(names, func(n string) bool { return run.resolved[n] != "" }) {
 		for _, w := range run.tagWarnings {
 			fmt.Fprintf(errOut, "ollama:   %s\n", w)
@@ -225,21 +225,21 @@ func ollamaGate(errOut io.Writer, c *ollamaRun, o cloudSyncOpts, res *cloudSyncO
 //
 // The daemon is named once, first: it is where the pulls and removals land,
 // and no other line of a run that works says so.
-func runOllamaWork(ctx context.Context, out, errOut io.Writer, origin string, done cloudsync.CatalogApplied, res *cloudSyncOutcome) {
+func (h *host) runOllamaWork(ctx context.Context, out, errOut io.Writer, origin string, done cloudsync.CatalogApplied, res *cloudSyncOutcome) {
 	if len(done.Pulls)+len(done.Removes) > 0 {
 		fmt.Fprintf(out, "ollama: daemon at %s\n", origin)
 	}
 	for _, tag := range done.Pulls {
-		if err := ollamaPull(ctx, origin, tag); err != nil {
+		if err := h.ollamaPull(ctx, origin, tag); err != nil {
 			fmt.Fprintf(errOut, "ollama: error: %v\n", err)
-			fmt.Fprintf(errOut, "ollama:   %s is in the registry but not pulled, so it is not routed; run `wt cloud-sync` again to retry the pull\n", tag)
+			fmt.Fprintf(errOut, "ollama:   %s is in the registry but not pulled, so it is not routed; run `wt-model cloud-sync` again to retry the pull\n", tag)
 			res.failed = true
 			continue
 		}
 		fmt.Fprintf(out, "ollama: pulled %s\n", tag)
 	}
 	for _, tag := range done.Removes {
-		if err := ollamaRemove(ctx, origin, tag); err != nil {
+		if err := h.ollamaRemove(ctx, origin, tag); err != nil {
 			fmt.Fprintf(errOut, "ollama: error: %v\n", err)
 			fmt.Fprintf(errOut, "ollama:   %s is left pulled; the next run lists it as a stray tag — start again from --dry-run, since the removal digest may have changed\n", tag)
 			res.failed = true

@@ -255,7 +255,7 @@ func modelEditCmd(h *host) *cobra.Command {
 		SilenceUsage: true,
 	}
 	fields := modelFieldFlags(c)
-	c.Flags().String(modeladmin.FieldSource, "", "manual or curated: manual keeps a cloud model through wt cloud-sync until its source lists it")
+	c.Flags().String(modeladmin.FieldSource, "", "manual or curated: manual keeps a cloud model through wt-model cloud-sync until its source lists it")
 	c.Flags().Bool("clear-serve-args", false, "remove the model's serve_args")
 	c.RunE = func(cmd *cobra.Command, args []string) error {
 		f := fields()

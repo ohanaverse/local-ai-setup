@@ -9,12 +9,79 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/cloudsync"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/spf13/cobra"
 )
 
-// hostHome is a scratch home whose registry (cloudSyncRegistry, at the
+// hostCommandsRegistry is the registry the host-command tests start from:
+// one OpenRouter-priced model, two ollama cloud entries and a local ollama
+// model. A test-only copy of cmd/wt-model's cloudSyncRegistry (test files
+// cannot cross packages), kept since cloud-sync moved to wt-model.
+const hostCommandsRegistry = `[[providers]]
+id = "ollama"
+name = "Ollama"
+location = "local"
+
+[providers.auth]
+type = "none"
+base_url = "http://127.0.0.1:11434"
+
+[[providers]]
+id = "openrouter"
+name = "OpenRouter"
+location = "cloud"
+
+[providers.auth]
+type = "api_key"
+secret_ref = "WT_TEST_OPENROUTER_KEY"
+
+[[models]]
+id = "openrouter/vendor--gpt"
+family = "gpt"
+provider_id = "openrouter"
+model_name = "vendor/gpt"
+location = "cloud"
+source = "curated"
+tags = []
+
+[models.cost]
+input_price_per_million = 2.5
+output_price_per_million = 10
+
+[[models]]
+id = "ollama/deepseek-v4-pro:cloud"
+family = "deepseek"
+provider_id = "ollama"
+model_name = "deepseek-v4-pro:cloud"
+location = "cloud"
+source = "curated"
+tags = []
+
+[models.cost]
+input_price_per_million = 9
+subscription_price = 100
+subscription_period = "month"
+
+[[models]]
+id = "ollama/retired:cloud"
+family = "retired"
+provider_id = "ollama"
+model_name = "retired:cloud"
+location = "cloud"
+source = "curated"
+tags = []
+
+[[models]]
+id = "ollama/qwen3:8b"
+family = "qwen3"
+provider_id = "ollama"
+model_name = "qwen3:8b"
+location = "local"
+source = "curated"
+tags = []
+`
+
+// hostHome is a scratch home whose registry (hostCommandsRegistry, at the
 // default path) a host command reads, whose config.toml also names a fake
 // model server, and whose config.yaml is a scratch file. It returns the fake
 // (which no host command may call) and the registry's path.
@@ -22,7 +89,7 @@ func hostHome(t *testing.T, registry string) (*fakeModelServer, string) {
 	t.Helper()
 	// The agy provider: every config.toml with agents needs one
 	// (wt/CLAUDE.md "Fixture gotcha"), or the registry fails validation.
-	path, _ := cloudSyncHome(t, registry+"\n[[providers]]\nid = \"agy\"\nname = \"agy\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n")
+	path := modelHome(t, registry+"\n[[providers]]\nid = \"agy\"\nname = \"agy\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n")
 	f := newFakeModelServer(t)
 	cfgDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt")
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
@@ -52,14 +119,14 @@ func execOn(c *cobra.Command, args ...string) (string, error) {
 }
 
 // TestHostCommandsStillLoadTheRegistry pins R3 and R17: after the flip the
-// host commands of this binary (`cloud-sync --dry-run`, `litellm list`,
-// `stop <provider>`) still read registry.toml, through
+// host commands of this binary (`litellm list`, `stop <provider>`) still
+// read registry.toml, through
 // app.hostConfig() and never through the model server, even with a model
 // server configured, and behave as they did before it: each one's output or
 // error equals the pre-flip function's over config.Load()'s config, and
-// newApp itself reads no registry (`model list --json`, `model add`, `served`
-// and `warm` moved to wt-model, whose tests pin model-list.sample.json and
-// the moved host commands). A host command
+// newApp itself reads no registry (`model list --json`, `model add`,
+// `served`, `warm` and `cloud-sync` moved to wt-model, whose tests pin
+// model-list.sample.json and the moved host commands). A host command
 // moved onto the session config would see no models and silently plan,
 // route or stop nothing.
 func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
@@ -83,21 +150,6 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 		noRegistry bool
 	}
 	for _, tc := range []hostCase{
-		{name: "cloud-sync --dry-run", build: cloudSyncCmd, args: []string{"--only", "openrouter", "--dry-run"},
-			before: func(t *testing.T, cfg *config.Config) (string, error) {
-				var out bytes.Buffer
-				o := cloudSyncOpts{dryRun: true}
-				if err := selectFlows("openrouter", true, &o); err != nil {
-					t.Fatal(err)
-				}
-				err := runCloudSync(context.Background(), &out, &out, cfg, o)
-				return out.String(), err
-			},
-			check: func(t *testing.T, out string) {
-				if !strings.HasPrefix(out, "openrouter: openrouter.ai: 1 OpenRouter-priced models in the registry") {
-					t.Errorf("output = %q, want the registry's one priced model", out)
-				}
-			}},
 		{name: "litellm list", build: litellmCmd, args: []string{"list"}, noRegistry: true},
 		{name: "stop provider", build: stopCmd, args: []string{"ollama", "--yes"},
 			before: func(t *testing.T, cfg *config.Config) (string, error) {
@@ -112,9 +164,7 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f, _ := hostHome(t, cloudSyncRegistry)
-			stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
-			stubRouteSync(t, "")
+			f, _ := hostHome(t, hostCommandsRegistry)
 			var stopped []string
 			oldStop := stopProvider
 			stopProvider = func(_ context.Context, _ *config.Config, p string) error {
@@ -156,38 +206,6 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 			}
 			if reqs := f.reqs(); len(reqs) != 0 {
 				t.Errorf("a host command called the model server: %q", reqs)
-			}
-		})
-	}
-
-	// A registry that does not parse is each registry reader's error, as it
-	// was before the flip: the host commands read the file, not the server.
-	for _, tc := range []struct {
-		name  string
-		build func(a *app) *cobra.Command
-		args  []string
-	}{
-		{"cloud-sync", cloudSyncCmd, []string{"--dry-run"}},
-	} {
-		t.Run("broken registry/"+tc.name, func(t *testing.T) {
-			f, path := hostHome(t, cloudSyncRegistry)
-			if err := os.WriteFile(path, []byte("models = [\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			_, loadErr := config.Load()
-			if loadErr == nil {
-				t.Fatal("fixture: the registry loaded")
-			}
-			a, err := newApp()
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = execOn(tc.build(a), tc.args...)
-			if want := configError(loadErr); err == nil || err.Error() != want.Error() {
-				t.Errorf("err = %v, want %v", err, want)
-			}
-			if len(f.reqs()) != 0 {
-				t.Errorf("a host command called the model server: %q", f.reqs())
 			}
 		})
 	}

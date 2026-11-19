@@ -473,7 +473,7 @@ base_url = "http://localhost:8003/v1"
 // create `providers` and `models`, at their places, and nothing else. A new
 // top-level key is a file wt's own writer refuses to touch again
 // (ErrRegistryTopLevel, #247): every later registry write (`wt-model model
-// init|add|edit|rm`, `wt cloud-sync`) would stop on the registry wt just
+// init|add|edit|rm`, `wt-model cloud-sync`) would stop on the registry wt just
 // wrote, while the typed reader went on loading it without a word.
 func TestOperationsCreateOnlyTheKnownTopLevelKeys(t *testing.T) {
 	doc := parseDoc(t, "")

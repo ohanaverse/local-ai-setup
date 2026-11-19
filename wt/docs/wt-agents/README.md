@@ -54,7 +54,7 @@ automatic route updates from `wt start`/`wt stop`) write `config.yaml` and then
 restart the proxy after a change. Every one of them then waits up to 30s for
 `/health/liveliness` before it is done, when a LiteLLM URL is configured and a
 pre-probe before the restart was not refused: `wt litellm sync` and the
-commands that run it after a registry write (`wt cloud-sync`, `wt-model model
+commands that run it after a registry write (`wt-model cloud-sync`, `wt-model model
 add|edit|rm|init`, the Models tab of `wt-model model`) before they return (#382),
 and the automatic route updates from the host's `wt stop <provider>`/`--all`
 and the model server's start and stop jobs, before wt exits or hands the

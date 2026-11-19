@@ -26,10 +26,11 @@ func TestReportExitNil(t *testing.T) {
 	}
 }
 
-// TestExitCodeOf pins the mapping main uses: the code a cloud-sync error
-// carries, however deeply wrapped, and 1 for every other error — so no other
-// command's exit status moved when cloud-sync got its own codes, and a
-// carried 0 can never turn a failure into a success.
+// TestExitCodeOf pins the mapping main uses: the code a coded error carries
+// (`wt-model cloud-sync`'s 2 to 5, now, and the pointer stubs' 1), however
+// deeply wrapped, and 1 for every other error — so no other command's exit
+// status moved when cloud-sync got its own codes, and a carried 0 can never
+// turn a failure into a success.
 func TestExitCodeOf(t *testing.T) {
 	coded := exitcode.New(4, errors.New("refused"), false)
 	cases := []struct {

@@ -231,7 +231,7 @@ func TestRegistryFixtureProviderLocationInheritance(t *testing.T) {
 
 // TestRegistryFixtureTimePrices pins the time-windowed pricing rows
 // (docs/superpowers/specs/2026-09-28-ollama-catalog-sync-design.md) that
-// `wt cloud-sync` writes under [models.cost]. This pins the decode: a registry
+// `wt-model cloud-sync` writes under [models.cost]. This pins the decode: a registry
 // holding them loads and each window and price comes back as written
 // (ModelCost.PriceAt, which applies them, is pinned in price_at_test.go).
 func TestRegistryFixtureTimePrices(t *testing.T) {

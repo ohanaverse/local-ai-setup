@@ -1,4 +1,4 @@
-# `wt cloud-sync`
+# `wt-model cloud-sync`
 
 Brings `registry.toml` up to date with what two public services publish:
 OpenRouter's per-token prices, and ollama's cloud catalog. Nothing runs it
@@ -6,11 +6,17 @@ for you: wt never fetches prices on a launch, it only reminds you (see
 [The stale-pricing notice](#the-stale-pricing-notice)).
 
 ```bash
-wt cloud-sync --dry-run                              # print both plans, change nothing
-wt cloud-sync                                        # print both plans, ask once, apply
-wt cloud-sync --yes --approve-removals <digest>      # apply without a terminal
-wt cloud-sync --only openrouter                      # one flow
+wt-model cloud-sync --dry-run                              # print both plans, change nothing
+wt-model cloud-sync                                        # print both plans, ask once, apply
+wt-model cloud-sync --yes --approve-removals <digest>      # apply without a terminal
+wt-model cloud-sync --only openrouter                      # one flow
 ```
+
+`cloud-sync` run under `wt` (its home before phase 4 stage 2) prints
+`wt: cloud-sync moved to wt-model — run 'wt-model cloud-sync'; nothing was changed`
+and exits 1; it changes nothing and never exits 2 to 5. Run it where
+`wt-model serve` runs: it writes that machine's `registry.toml`, ollama and
+LiteLLM routes.
 
 An agent running the sync for you follows the `wt-cloud-sync` skill
 (`wt/.claude/skills/wt-cloud-sync/SKILL.md`), which is this page as a
@@ -386,7 +392,7 @@ finished (exit 0). This is never an error, however the flow was asked for.
   whose `provider_id` is `openrouter` counts even when the row is missing.
 - The ollama rule holds for `--only ollama`, `--html`,
   `--approve-removals` and `--force` too; with no `ollama` row the `--html`
-  file is not even opened. `wt cloud-sync` never adds a provider row:
+  file is not even opened. `wt-model cloud-sync` never adds a provider row:
   `wt-model model init` does, for one on a machine where `ollama` is on `PATH`
   ([wt-model.md](wt-model.md)).
 - With neither, the command prints the two lines and nothing else: it asks
@@ -432,7 +438,7 @@ finished (exit 0). This is never an error, however the flow was asked for.
    never changes the exit status; run `wt litellm sync`.
 
 The route sync is the last step. A run interrupted before it (Ctrl-C during
-a pull) leaves the routes behind the registry; the next `wt cloud-sync`
+a pull) leaves the routes behind the registry; the next `wt-model cloud-sync`
 syncs them only if it still has a tag to pull or remove, so after an
 interrupted run, run `wt litellm sync`.
 
@@ -550,15 +556,15 @@ openrouter flow's). The other flow may have been applied, or have failed, in
 the same run; its lines say which.
 Every other wt command exits 1 on any error.
 
-cloud-sync is a named exception to the exit table the other wt commands
+cloud-sync is a named exception to the exit table the other wt and wt-model commands
 share (3 there means approval missing). Here approval missing is not 3:
 with no terminal and no `--yes` the run changes nothing and exits **1**
 (`not applied: there is no terminal to confirm on`), and a "no" at the
 question exits **0** (`not applied (declined)`). 3 stays the ollama flow's
 `the pricing page changed shape`.
 
-The last line on stderr gives the reason: `wt: cloud-sync: the ollama flow
-changed nothing: <why>` (or `the openrouter flow`) for 2 to 5, and `wt: cloud-sync: a step failed; see
+The last line on stderr gives the reason: `wt-model: cloud-sync: the ollama flow
+changed nothing: <why>` (or `the openrouter flow`) for 2 to 5, and `wt-model: cloud-sync: a step failed; see
 the error lines above` for 1.
 
 **Exit 1** — each cause has its own `error:` line:
@@ -644,7 +650,7 @@ the job.
 
 - **A failed pull.** One line, ``ollama: error: `ollama pull <tag>`
   failed: <ollama's last line>``, then ``<tag> is in the registry but not
-  pulled, so it is not routed; run `wt cloud-sync` again to retry the
+  pulled, so it is not routed; run `wt-model cloud-sync` again to retry the
   pull``. A pull needs no digest. Whether pulling a cloud model needs you to
   be signed in to ollama has not been verified; if it does, this is where
   it shows.
@@ -663,7 +669,7 @@ the job.
 - **A timeout** reads `timed out after 10m (wt's own limit)` for a pull, `1m`
   for an rm, `30s` for `ollama list` (which is exit 2). The limit is wt's,
   not ollama's.
-- **An interrupted run.** Run `wt cloud-sync --dry-run` again to see what is
+- **An interrupted run.** Run `wt-model cloud-sync --dry-run` again to see what is
   left, and `wt litellm sync` for the routes.
 
 ## What it reads and writes
@@ -801,7 +807,7 @@ row and the rule on stderr; for a time written `9:00`, which is not
 9:00; wt reads it as absent (fix the entry in <registry>)`. The Models tab
 of `wt-model model` shows the same under the selected model. wt also refuses to
 write that model's entry until the row is fixed: `wt-model model edit`, a save
-in the Models tab of `wt-model model`, or a `wt cloud-sync` with a change for that model is
+in the Models tab of `wt-model model`, or a `wt-model cloud-sync` with a change for that model is
 refused with `invalid registry entry: model "<id>": cost: time_prices[0]:
 windows[0]: start must be HH:MM, got 9:00`, and nothing is written.
 
@@ -814,10 +820,10 @@ is fixed, as for a wrong type anywhere else in the registry.
 
 ## The stale-pricing notice
 
-After a launch wt prints `wt: token pricing last refreshed <date> — run 'wt
+After a launch wt prints `wt: token pricing last refreshed <date> — run 'wt-model
 cloud-sync'` when the newest `pricing_updated_at` among the OpenRouter-priced
 models is more than 7 days old, or `wt: token pricing has never been
-refreshed — run 'wt cloud-sync'` when none has a stamp. Nothing else stores
+refreshed — run 'wt-model cloud-sync'` when none has a stamp. Nothing else stores
 the date. The ollama flow's stamps on ollama cloud entries do not count,
 and with no OpenRouter-priced model the notice is silent.
 
@@ -827,7 +833,7 @@ priced from OpenRouter) and measures its age on the server's clock, so a clock
 on this machine that is off cannot make a fresh stamp read stale. It costs at
 most one catalog fetch after the agent exits; if that fails, nothing prints.
 
-Running `wt cloud-sync` clears it as long as the openrouter flow matches at
+Running `wt-model cloud-sync` clears it as long as the openrouter flow matches at
 least one model. When it matches none, every model of the `openrouter`
 provider has a `warning:` that says why (a `model_name` OpenRouter does not
 list, most often); correct the name, or remove the model
