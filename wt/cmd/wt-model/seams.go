@@ -33,6 +33,10 @@ type seams struct {
 	syncRoutesAfterWrite func(out, errOut io.Writer) string
 	// stdinTTY reports whether stdin is a terminal.
 	stdinTTY func() bool
+	// stdoutWidth is the terminal's width in columns, or 0 when stdout is
+	// not a terminal (cli.StdoutWidth): what `wt-model model list` fits its
+	// table to.
+	stdoutWidth func() int
 	// modeleditorRun opens the Models screen; a seam because it needs a
 	// terminal.
 	modeleditorRun func(theme themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error)
@@ -45,6 +49,7 @@ func newHost() *host {
 		seedEnv:        config.DefaultSeedEnv,
 		ollamaCaps:     modeladmin.OllamaCapabilities,
 		stdinTTY:       cli.IsStdinTTY,
+		stdoutWidth:    cli.StdoutWidth,
 		modeleditorRun: func(theme themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error) {
 			return modeleditor.Run(theme, cfg, cfgErr, o)
 		},

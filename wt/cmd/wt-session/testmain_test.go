@@ -84,8 +84,9 @@ func TestMain(m *testing.M) {
 	}
 	lifecycle.IsolateProcessesForTest()
 	confirmStop = func(string) (bool, error) { return false, nil }
-	// `wt stats` seam: the width is pinned to "not a terminal" so a table
-	// does not depend on where `go test` was started.
+	// `wt stats` and `wt model list --server` seam: the width is pinned to
+	// "not a terminal" so a table does not depend on where `go test` was
+	// started.
 	stdoutWidth = func() int { return 0 }
 	// Registry-write seams: no test may read the developer's PATH to decide
 	// what to seed, and none may go on from a registry write to the real

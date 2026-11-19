@@ -141,7 +141,8 @@ func TestModelListServerFailureEnvelope(t *testing.T) {
 // TestModelListServerPlainColumns proves the text listing is a plain table
 // with the columns MODEL STATE LOC TIER and CLIENT SESSIONS, the S4 state
 // words as the server sends them, a blocked row's reason left to --json, and
-// that the default `model list` (no --server) never asks the server (R3).
+// that `model list` without --server (now the pointer to wt-model) never asks
+// the server (R3).
 func TestModelListServerPlainColumns(t *testing.T) {
 	a, f := serverListRig(t)
 	out, _, err := runModelListCmd(t, a, "--server")
@@ -174,10 +175,31 @@ func TestModelListServerPlainColumns(t *testing.T) {
 		t.Errorf("catalog fetched %d times, want 1", n)
 	}
 	before := len(f.reqs())
-	if _, _, err := runModelListCmd(t, a); err != nil {
-		t.Fatal(err)
+	// Without --server the command is the pointer to wt-model (Task 37):
+	// an error, and still no call to the server.
+	if _, _, err := runModelListCmd(t, a); err == nil {
+		t.Fatal("model list without --server succeeded; want the wt-model pointer")
 	}
 	if len(f.reqs()) != before {
 		t.Errorf("model list without --server asked the server: %v", f.reqs()[before:])
+	}
+}
+
+// TestModelListWithoutServerIsAPointer pins the one rule of `wt model list`
+// after the registry listing moved to wt-model: without --server it does
+// nothing but point there, exit 1, so a script still running the old command
+// fails loudly instead of reading an empty inventory; --server stays the
+// session's catalog view (the three tests above).
+func TestModelListWithoutServerIsAPointer(t *testing.T) {
+	out, errOut, err := runModelListCmd(t, &app{})
+	const want = "model list moved to wt-model — run 'wt-model model list'; nothing was changed"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if code := exitcode.Of(err); code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if out != "" || errOut != "" {
+		t.Errorf("stdout %q, stderr %q; want nothing printed by the command itself", out, errOut)
 	}
 }

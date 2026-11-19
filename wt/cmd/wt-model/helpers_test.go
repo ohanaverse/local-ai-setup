@@ -23,9 +23,10 @@ import (
 // testHost is a host whose seams reach nothing on the developer's machine:
 // the probe reads on-disk state only, no ollama is run, nothing is seeded
 // from PATH, stdin is no terminal, the Models screen cannot open and a
-// registry write's route sync reports that it was not stubbed. A test
-// replaces the fields it exercises; each test owns its host, so nothing is
-// shared between parallel tests.
+// registry write's route sync reports that it was not stubbed, and stdout is
+// no terminal (width 0, so a table does not depend on where `go test` was
+// started). A test replaces the fields it exercises; each test owns its
+// host, so nothing is shared between parallel tests.
 func testHost() *host {
 	h := newHost()
 	h.probeInventory = localmodels.OnDiskSnapshotForTest
@@ -37,6 +38,7 @@ func testHost() *host {
 		return "syncRoutesAfterWrite not stubbed in this test"
 	}
 	h.stdinTTY = func() bool { return false }
+	h.stdoutWidth = func() int { return 0 }
 	h.modeleditorRun = func(themes.Theme, *config.Config, error, modeleditor.Options) (modeleditor.Result, error) {
 		return modeleditor.Result{}, errors.New("the Models screen is not stubbed in this test")
 	}

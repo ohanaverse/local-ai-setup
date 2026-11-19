@@ -31,9 +31,10 @@ func realSyncRoutesAfterWrite(out, errOut io.Writer) string {
 }
 
 // modelCmd is the `wt model` group: bare, it prints where the Models screen
-// moved (`wt-model model`, movedError); list (model_list.go), add, edit and rm
-// (model_write.go) and init, which creates the registry and seeds its provider
-// rows, work without a terminal.
+// moved (`wt-model model`, movedError); list (model_list_server.go: --server
+// is the catalog view, without it the pointer to `wt-model model list`), add,
+// edit and rm (model_write.go) and init, which creates the registry and seeds
+// its provider rows, work without a terminal.
 func modelCmd(a *app) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "model",

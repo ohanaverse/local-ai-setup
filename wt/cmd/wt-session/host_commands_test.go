@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -85,24 +84,6 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 		noRegistry bool
 	}
 	for _, tc := range []hostCase{
-		{name: "model list", build: modelCmd, args: []string{"list"},
-			before: func(t *testing.T, cfg *config.Config) (string, error) {
-				var out, errOut bytes.Buffer
-				err := runModelList(&out, &errOut, cfg, false, stdoutWidth())
-				return out.String() + errOut.String(), err
-			},
-			check: func(t *testing.T, out string) {
-				if !strings.Contains(out, "openrouter/vendor--gpt") {
-					t.Errorf("the registry's model is not listed:\n%s", out)
-				}
-			}},
-		{name: "model list --json", build: modelCmd, args: []string{"list", "--json"},
-			check: func(t *testing.T, out string) {
-				checkJSONShape(t, "output", []byte(out), reflect.TypeFor[modelListJSON]())
-				if !strings.Contains(out, `"openrouter/vendor--gpt"`) {
-					t.Errorf("the registry's model is not in the document:\n%s", out)
-				}
-			}},
 		{name: "model add", build: modelCmd, args: []string{"add", "openrouter", "vendor/new", "--family", "f"},
 			check: func(t *testing.T, out string) {
 				if !strings.Contains(out, "added model: openrouter/vendor--new") {
@@ -202,7 +183,6 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 		build func(a *app) *cobra.Command
 		args  []string
 	}{
-		{"model list", modelCmd, []string{"list"}},
 		{"cloud-sync", cloudSyncCmd, []string{"--dry-run"}},
 		{"served", servedCmd, []string{"omlx"}},
 		{"warm", warmCmd, []string{"omlx", "m"}},

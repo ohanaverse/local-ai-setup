@@ -12,18 +12,20 @@ import (
 // modelCmd is `wt-model model`: bare, it opens the Models screen on its
 // Models tab, which needs a terminal.
 func modelCmd(h *host) *cobra.Command {
-	return &cobra.Command{
+	c := &cobra.Command{
 		Use:          "model",
 		Short:        "Manage the model registry (registry.toml)",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !h.stdinTTY() {
-				return errors.New("wt-model model needs a terminal to open the Models tab; without one use `wt model list`, `wt model add`, `wt model edit` or `wt model rm`")
+				return errors.New("wt-model model needs a terminal to open the Models tab; without one use `wt-model model list`, `wt model add`, `wt model edit` or `wt model rm`")
 			}
 			return runModelEditor(cmd.OutOrStdout(), cmd.ErrOrStderr(), h, modeleditor.TabModels)
 		},
 	}
+	c.AddCommand(modelListCmd(h))
+	return c
 }
 
 // runModelEditor opens the Models screen on tab start, on the host's config
