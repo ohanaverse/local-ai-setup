@@ -1,6 +1,8 @@
 // Package sessioneditor is the session's TUI behind `wt config`: an Agents
-// tab that edits the agent section of wt's config.toml. It is a session
-// screen: it reads no registry (the config comes from config.LoadSession and
+// tab that edits the agent section of wt's config.toml, and a Mode tab that
+// chooses how this session reaches a model server (native, remote, or a
+// pointer to wt-model on this machine, through internal/modelmode). It is a
+// session screen: it reads no registry (the config comes from config.LoadSession and
 // a save validates with config.ValidateSession) and links no admin package.
 // The models in registry.toml and this machine's model-server setup are
 // internal/modeleditor's (`wt-model model`, `wt-model setup`).
@@ -37,8 +39,21 @@ type loadedMsg struct {
 type model struct {
 	phase phase
 	// tab is the tab showing; opts are what the editor was opened with.
-	tab    Tab
-	opts   Options
+	tab  Tab
+	opts Options
+	mode modeTab
+	// quitPending is true when the user asked to leave while a Mode apply
+	// was in flight: the editor quits when its result is in.
+	quitPending bool
+	// discardHeld is true when that held quit came from "discard and quit"
+	// on the unsaved-changes prompt: the edits the answer was about are no
+	// longer counted as unsaved (dirty is cleared), so the quit asks again
+	// only about edits made while it waited. A failed apply calls the quit
+	// off and puts dirty back. It is cleared only when the quit happens
+	// (leave returns tea.Quit) or the prompt asks again (quit).
+	discardHeld bool
+	// result is what Run hands its caller (the run-setup answer).
+	result Result
 	theme  themes.Theme
 	cfg    *config.Config
 	dirty  bool
@@ -91,10 +106,15 @@ func newModel(theme themes.Theme, cfg *config.Config, cfgErr error) *model {
 // caller (cmd/wt-session) rather than reloaded inside the TUI, so a load error
 // can be surfaced without hanging on the "Loading config..." screen.
 func (m *model) Init() tea.Cmd {
-	return func() tea.Msg {
+	loaded := func() tea.Msg {
 		// cfg and cfgErr are captured when newModel is called.
 		return loadedMsg{cfg: m.cfg, err: m.cfgErr}
 	}
+	if m.tab == TabMode {
+		// Opened on the Mode tab: observe at once.
+		return tea.Batch(loaded, m.observeModeCmd())
+	}
+	return loaded
 }
 
 // Update handles a message and then re-fits the list: the status line can
@@ -173,6 +193,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.phase == phaseForm {
 			m.resizeFormInputs()
 		}
+		m.resizeModeInputs()
 	case loadedMsg:
 		m.ready = true
 		if msg.cfg == nil {
@@ -186,6 +207,13 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.list = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
 		return m, nil
+	case modeObservedMsg:
+		return m, m.applyModeObserved(msg)
+	case modePlannedMsg:
+		m.applyModePlanned(msg)
+		return m, nil
+	case modeAppliedMsg:
+		return m, m.applyModeApplied(msg)
 	case filterMatchesMsg:
 		return m, m.applyFilterMatches(msg)
 	case saveMsg:
@@ -213,6 +241,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.phase == phaseQuit {
 		return m.handleQuitUpdate(msg)
 	}
+	if m.tab == TabMode {
+		return m.updateMode(msg)
+	}
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		// Delegate to the list while it is filtering so single-key global
 		// shortcuts (n, d, q) don't intercept filter input.
@@ -234,8 +265,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m.quit()
 		case "tab":
-			m.tab = nextTab(m.tab)
-			return m, nil
+			// The first visit to the Mode tab fills it; later ones show what
+			// is there (r refreshes).
+			return m, m.switchTab()
 		case "d":
 			if m.ready {
 				if it, ok := m.list.SelectedItem().(agentItem); ok {
@@ -275,25 +307,39 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // quit leaves the editor, by way of the unsaved-changes prompt when the
-// Agents tab has edits that were not saved.
+// Agents tab has edits that were not saved. The prompt concerns agent edits
+// only: the Mode tab writes nothing until it is applied.
 func (m *model) quit() (tea.Model, tea.Cmd) {
 	if !m.dirty {
 		return m.leave()
 	}
+	// The prompt asks about every unsaved edit again, the given-up ones too.
+	m.discardHeld = false
 	m.phase = phaseQuit
 	m.quitting = false
 	return m, nil
 }
 
-// leave ends the program. Nothing this editor writes can be in flight here
-// but an agents save, which the quit prompt waits for itself.
+// leave ends the program — once a Mode apply in flight, if there is one,
+// has reported: the quit is recorded and finishModeWrite issues it, on the
+// Mode tab, which is the one that says what the apply did. (An agents save
+// is waited for by the quit prompt itself.)
 func (m *model) leave() (tea.Model, tea.Cmd) {
+	if m.mode.writing {
+		m.quitPending = true
+		m.phase, m.tab = phaseList, TabMode
+		return m, nil
+	}
+	// Only now is a discard final: a failed apply while the quit was held
+	// puts the edits back.
+	m.discardHeld = false
 	return m, tea.Quit
 }
 
 // showQuitSaveFailure calls off a quit whose save-before-quit failed, and
 // brings forward the one place that says why: m.status is the Agents tab's
-// status line, and the unsaved-changes prompt does not draw it. It does nothing for a save that was not a quit's.
+// status line, and neither the unsaved-changes prompt nor the Mode tab draws
+// it. It does nothing for a save that was not a quit's.
 func (m *model) showQuitSaveFailure() {
 	if !m.quitting {
 		return
@@ -310,6 +356,10 @@ func (m *model) handleQuitUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m.handleSave()
 		case "n", "N":
+			if m.mode.writing {
+				// The quit will wait (leave). The answer is kept with it.
+				m.discardHeld, m.dirty = true, false
+			}
 			return m.leave()
 		case "c", "C", "esc":
 			m.phase = phaseList
@@ -333,6 +383,9 @@ func (m *model) View() string {
 		// Wrapped: at 40 columns both lines are wider than the terminal.
 		return editorkit.WrapText("You have unsaved agent changes. Save before quitting?\n\n[y] save and quit  [n] discard and quit  [c] cancel", m.width) + "\n"
 	default:
+		if m.tab == TabMode {
+			return m.modeTabView()
+		}
 		var status string
 		if s := m.statusBlock(); s != "" {
 			status = s + "\n\n"
@@ -373,10 +426,14 @@ func Run(theme themes.Theme, cfg *config.Config, cfgErr error, o Options, opts .
 	if o.LookPath == nil {
 		o.LookPath = exec.LookPath
 	}
+	o.Mode = o.Mode.withDefaults()
 	m.opts, m.tab = o, o.StartTab
 	m.home = resolveHome(o.UserHome)
 	allOpts := append([]tea.ProgramOption{tea.WithAltScreen()}, opts...)
 	p := tea.NewProgram(m, allOpts...)
-	_, err := p.Run()
-	return Result{}, err
+	final, err := p.Run()
+	if fm, ok := final.(*model); ok {
+		return fm.result, err
+	}
+	return m.result, err
 }

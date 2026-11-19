@@ -74,9 +74,15 @@ func keyMsg(k string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }
 
-// sendKey delivers one key and runs what it leads to.
+// sendKey delivers one key and runs what it leads to. Inside the Mode tab's
+// fields it runs nothing: a focused input's commands are cursor blinks,
+// which sleep and lead to further blinks, so send would never end.
 func sendKey(t *testing.T, m *model, msg tea.KeyMsg) *model {
 	t.Helper()
+	if m.tab == TabMode && m.mode.phase == modeEdit && msg.Type != tea.KeyCtrlS {
+		next, _ := m.Update(msg)
+		return next.(*model)
+	}
 	return send(t, m, msg)
 }
 

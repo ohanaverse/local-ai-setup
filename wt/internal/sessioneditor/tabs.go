@@ -13,8 +13,7 @@ const (
 	// and saved with ctrl+s.
 	TabAgents Tab = iota
 	// TabMode chooses how this session reaches a model server (native,
-	// remote, or a pointer to wt-model on this machine). It is drawn and
-	// reachable once tabNames names it.
+	// remote, or a pointer to wt-model on this machine).
 	TabMode
 )
 
@@ -25,8 +24,11 @@ func nextTab(t Tab) Tab { return Tab((int(t) + 1) % len(tabNames)) }
 type Options struct {
 	// StartTab is the tab shown first.
 	StartTab Tab
-	// LookPath finds a program on PATH; nil means exec.LookPath. It is
-	// resolved once, in Run.
+	// Mode are the Mode tab's deps; a nil func is filled from the real
+	// machine (ModeDeps.withDefaults, in Run).
+	Mode ModeDeps
+	// LookPath finds a program on PATH (wt-model, for the offer to run
+	// `wt-model setup`); nil means exec.LookPath. It is resolved once, in Run.
 	LookPath func(string) (string, error)
 	// UserHome is the home directory paths are abbreviated against; nil
 	// means os.UserHomeDir. It is read once, in Run.
@@ -42,7 +44,7 @@ type Result struct {
 }
 
 // tabNames are the tabs in the order they are drawn and switched.
-var tabNames = []string{"Agents"}
+var tabNames = []string{"Agents", "Mode"}
 
 // tabBar is the editor's first line: every tab, the current one in brackets
 // (and in the accent colour, where there is colour) so that it reads as
