@@ -1,4 +1,4 @@
-# Providers and models — the wt model commands, wt-model model, registry.toml, and LiteLLM routing
+# Providers and models — `wt-model model`, registry.toml, and LiteLLM routing
 
 > Use this to: register cloud providers and local models in the shared `registry.toml` — with `wt-model model add`, `edit` and `rm`, or the Models tab of `wt-model model` — and download them with each provider's own tool. Routing through the LiteLLM proxy on :4000 follows on its own: **add a cloud model and it is routed**, and a local model is routed while it runs (an ollama model while it is pulled) — with or without a registry entry.
 >
@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - [01-initial-setup](01-initial-setup.md) complete: LiteLLM proxy running on :4000, Ollama up, services healthy. Guides 03–08 of this set ([03-model-families](03-model-families.md) onward) continue from here.
-- `wt` on PATH (`make install` from the repo root): `wt-model model init`, `wt-model litellm sync`, `wt start` and `wt stop` do most of what follows.
+- `wt` and `wt-model` on PATH (`make install` from the repo root installs both); the `wt-model` commands run on the host, the machine that runs `wt-model serve`. `wt-model model init`, `wt-model litellm sync`, `wt start` and `wt stop` do most of what follows.
 
 wt's registry file under `~/.config/local-ai/` is this one:
 
@@ -24,20 +24,20 @@ LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`WT_LITELLM
 <!-- UNVERIFIED — not run as one block. The `start`/`stop` lines were not driven from this session (they load real models — see Step 6 and Verification for how to confirm). The `wt-model model …` lines were run against a scratch registry, the tab from a pty. -->
 
 ```bash
-wt-model model init                                  # create registry.toml if it is missing, add the default provider rows (never changes a row that exists)
-wt-model model                                 # the Models tab (on the host): n add, enter edit, d remove (Step 1)
-wt-model model add openrouter <model> --family <f>   # the same without a terminal; also `wt-model model edit <id> …`, `wt-model model rm <id>`
-wt-model model list                                  # every registry model, and every local model found that has no entry
-wt-model litellm sync --dry-run                # read-only: what wt would route/unroute for the registry as edited
-wt-model litellm sync                          # apply it — `wt-model model …` and the tab do this themselves; run it after a hand edit
-wt-model litellm list                          # what is routed right now — the authoritative answer
-ollama pull <name:tag>                         # download: the provider's own tool (Step 5 has omlx, mtplx, mlx_lm_server)
+wt-model model init                                 # create registry.toml if it is missing, add the default provider rows (never changes a row that exists)
+wt-model model                                      # the Models tab (on the host): n add, enter edit, d remove (Step 1)
+wt-model model add openrouter <model> --family <f>  # the same without a terminal; also `wt-model model edit <id> …`, `wt-model model rm <id>`
+wt-model model list                                 # every registry model, and every local model found that has no entry
+wt-model litellm sync --dry-run                     # read-only: what wt would route/unroute for the registry as edited
+wt-model litellm sync                               # apply it — `wt-model model …` and the tab do this themselves; run it after a hand edit
+wt-model litellm list                               # what is routed right now — the authoritative answer
+ollama pull <name:tag>                              # download: the provider's own tool (Step 5 has omlx, mtplx, mlx_lm_server)
 # ollama/gpt-oss:20b below is an example id — substitute any id from your registry.toml, or a discovered id (Step 6)
-wt start ollama/gpt-oss:20b                    # load it; the start writes its LiteLLM route (`wt start` alone: a picker of what is on disk)
-wt stop ollama/gpt-oss:20b                     # unload it (a pulled ollama model stays routed; on mtplx the route goes with it; on omlx only that model is unloaded and unrouted)
+wt start ollama/gpt-oss:20b                         # load it; the start writes its LiteLLM route (`wt start` alone: a picker of what is on disk)
+wt stop ollama/gpt-oss:20b                          # unload it (a pulled ollama model stays routed; on mtplx the route goes with it; on omlx only that model is unloaded and unrouted)
 ```
 
-Who does what now (verified via `wt --help` and `wt-model --help`): **wt-model** = `wt-model model` (the Models tab; bare `wt model` only points there) and `wt-model model add|edit|rm|list` (models: add, edit, remove, list), `wt-model model init` (the file and its provider rows), `wt-model served <provider>` (what a server is serving), `wt-model cloud-sync` (OpenRouter prices, and ollama's cloud models with their prices), `wt-model litellm sync|list|providers|restart` (routes); **wt** = `wt start`/`wt stop` (local models). **The provider's own tool** = downloads (Step 5). **llmbench** = benchmarks. **By hand** = a provider row wt has no default for, a `local_path` entry for a single model ([10-mlx-lm-quantization](10-mlx-lm-quantization.md)), `[[families]]` display names, and the repair of a row wt refuses to write (Step 1). There is no per-model routing command: `wt` routes the cloud models `registry.toml` configures plus the local models it finds running (Step 6).
+Who does what now (verified via `wt --help` and `wt-model --help`): **wt-model** = the registry, the Models tab (`wt-model model`), cloud-sync, LiteLLM routes, provider stop — `wt-model model add|edit|rm|list` (models: add, edit, remove, list), `wt-model model init` (the file and its provider rows), `wt-model served <provider>` (what a server is serving), `wt-model cloud-sync` (OpenRouter prices, and ollama's cloud models with their prices), `wt-model litellm sync|list|providers|restart` (routes), `wt-model stop <provider>|--all` (halt a provider); **wt** = sessions, including `wt start`/`wt stop <model>` (one local model, through the model server). `model` run under `wt` with no subcommand only points at `wt-model model` and exits 1. **The provider's own tool** = downloads (Step 5). **llmbench** = benchmarks. **By hand** = a provider row wt has no default for, a `local_path` entry for a single model ([10-mlx-lm-quantization](10-mlx-lm-quantization.md)), `[[families]]` display names, and the repair of a row wt refuses to write (Step 1). There is no per-model routing command: `wt` routes the cloud models `registry.toml` configures plus the local models it finds running (Step 6).
 
 ## Steps
 
@@ -46,12 +46,12 @@ Who does what now (verified via `wt --help` and `wt-model --help`): **wt-model**
 A model is added, edited and removed with wt, two ways that write the same rows:
 
 ```bash
-wt-model model init                    # 1. the file and its provider rows (once)
-wt-model model                   # 2a. the Models tab (on the host): n add, enter edit, d remove
-wt-model model add ollama qwen3:8b --family qwen3 --tags code      # 2b. the same from the command line
+wt-model model init                                            # 1. the file and its provider rows (once)
+wt-model model                                                 # 2a. the Models tab (on the host): n add, enter edit, d remove
+wt-model model add ollama qwen3:8b --family qwen3 --tags code  # 2b. the same from the command line
 wt-model model edit ollama/qwen3:8b --tags code,design
 wt-model model rm ollama/qwen3:8b
-wt-model model list                    # 3. what the registry has, and what is on disk without an entry (STATUS new)
+wt-model model list                                            # 3. what the registry has, and what is on disk without an entry (STATUS new)
 ```
 
 1. **`wt-model model init`** creates `registry.toml` when it is missing and appends the default `[[providers]]` row for each provider it finds a use for (an installed `ollama`/`omlx`/`mtplx`/`rec`/`sushi`, a provider a model or a configured agent names, a native row per configured agent — `wt-model model init --help` has the full list). It never changes a row that exists, so running it again is safe. `wt-model model add` adds a missing default row too, in the same write as the model.

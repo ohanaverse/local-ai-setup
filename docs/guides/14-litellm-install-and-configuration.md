@@ -240,7 +240,7 @@ wt-model litellm list    # the model ids currently routed (live state: run it, d
 
 ## What `wt-model setup` does for LiteLLM
 
-`wt-model setup`, the Setup tab of `wt-model` (design: [the model-server configuration spec](../superpowers/specs/2026-11-17-wt-session-model-server-config-design.md), split by [the phase 4 stage 2 spec](../superpowers/specs/2026-11-18-wt-phase4-stage2-design.md); session side, the `wt config` Mode tab: [06-wt-agents-and-models.md](06-wt-agents-and-models.md)) sets up the `wt-model` side. For LiteLLM it checks that the proxy is reachable, its database connected, the pair's key accepted and routes in sync, and says what to fix. It also warns when the plist is readable by group or others, and offers two LiteLLM actions in local mode: `k` (the key menu) and `t` (tighten). Both change nothing until you confirm a plan that lists every step.
+The Setup tab of `wt-model setup` (design: [the model-server configuration spec](../superpowers/specs/2026-11-17-wt-session-model-server-config-design.md), split by [the phase 4 stage 2 spec](../superpowers/specs/2026-11-18-wt-phase4-stage2-design.md); session side, the `wt config` Mode tab: [06-wt-agents-and-models.md](06-wt-agents-and-models.md)) sets up the `wt-model` side. For LiteLLM it checks that the proxy is reachable, its database connected, the pair's key accepted and routes in sync, and says what to fix. It also warns when the plist is readable by group or others, and offers two LiteLLM actions in local mode: `k` (the key menu) and `t` (tighten). Both change nothing until you confirm a plan that lists every step.
 
 `k` opens a menu of up to three options, each offered only when it can work; a line under the menu says why an option is missing:
 
