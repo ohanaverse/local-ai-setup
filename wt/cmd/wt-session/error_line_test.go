@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -118,26 +117,25 @@ func TestEveryRunnableCommandSilencesUsage(t *testing.T) {
 	}
 }
 
-// TestStopKeepsUsageOnAMistake runs `wt stop` under a root built as rootCmd
-// builds it (cobra's error line silenced, the usage walk applied), over a
-// config the command accepts: an argument mistake shows usage and the one
-// "wt:" line, and a failure past the argument checks shows no usage.
-func TestStopKeepsUsageOnAMistake(t *testing.T) {
-	for name, tc := range map[string]struct {
-		args  []string
-		usage bool
-	}{
-		"--all with an argument": {[]string{"stop", "--all", "x"}, true},
-		"an unknown provider":    {[]string{"stop", "nosuch"}, true},
+// TestStopPointerShowsNoUsage runs `wt stop` under a root built as rootCmd
+// builds it (cobra's error line silenced, the usage walk applied): a provider
+// name or --all, with or without a stray argument, is the moved pointer, so
+// it prints exactly the one "wt: ... moved to wt-model" line, exit 1, and
+// never cobra's Error: line or the usage text.
+func TestStopPointerShowsNoUsage(t *testing.T) {
+	for name, args := range map[string][]string{
+		"an unknown provider":    {"stop", "nosuch"},
+		"--all":                  {"stop", "--all"},
+		"--all with an argument": {"stop", "--all", "x"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := &cobra.Command{Use: "wt", SilenceErrors: true}
-			root.AddCommand(stopCmd(&app{hostSet: true, hostCfg: &config.Config{DefaultTag: "code"}}))
+			root.AddCommand(stopCmd(&app{}))
 			silenceUsageOnError(root)
 			var buf bytes.Buffer
 			root.SetOut(&buf)
 			root.SetErr(&buf)
-			root.SetArgs(tc.args)
+			root.SetArgs(args)
 			err := root.Execute()
 			if err == nil {
 				t.Fatal("no error")
@@ -146,11 +144,11 @@ func TestStopKeepsUsageOnAMistake(t *testing.T) {
 				t.Errorf("exit code = %d, want 1", code)
 			}
 			out := buf.String()
-			if strings.Contains(out, "Error:") || strings.Count(out, "\nwt: ")+boolToInt(strings.HasPrefix(out, "wt: ")) != 1 {
-				t.Errorf("want one \"wt: \" line and no Error:\n%s", out)
+			if strings.Contains(out, "Error:") || strings.Count(out, "\nwt: ")+boolToInt(strings.HasPrefix(out, "wt: ")) != 1 || !strings.Contains(out, "moved to wt-model") {
+				t.Errorf("want one \"wt: ... moved to wt-model\" line and no Error:\n%s", out)
 			}
-			if got := strings.Contains(out, "Usage:"); got != tc.usage {
-				t.Errorf("usage shown = %v, want %v:\n%s", got, tc.usage, out)
+			if strings.Contains(out, "Usage:") {
+				t.Errorf("usage shown:\n%s", out)
 			}
 		})
 	}

@@ -25,7 +25,7 @@ func TestMovedErrorIsOneLineExitOne(t *testing.T) {
 
 // conditionalMoves are pointers that are not stubs from movedCommands: a live
 // command that points at wt-model only in some shape (bare `wt model`, and
-// `wt model list` without --server). 4d-ii adds `stop`.
+// `wt model list` without --server, `wt stop` with a provider name or --all).
 var conditionalMoves = []struct {
 	args     []string
 	old, new string
@@ -33,6 +33,9 @@ var conditionalMoves = []struct {
 	{[]string{"model"}, "model", "model"},
 	{[]string{"model", "list"}, "model list", "model list"},
 	{[]string{"model", "list", "--json"}, "model list", "model list"},
+	{[]string{"stop", "ollama"}, "stop ollama", "stop ollama"},
+	{[]string{"stop", "--all"}, "stop --all", "stop --all"},
+	{[]string{"stop", "--all", "--yes"}, "stop --all", "stop --all"},
 }
 
 // wantMoved is every command that must be a moved stub, written out by hand

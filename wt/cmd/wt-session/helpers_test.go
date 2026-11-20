@@ -459,3 +459,22 @@ func TestConfigErrorForAMissingRegistryNamesModelInit(t *testing.T) {
 		t.Errorf("configError =\n  %q\nwant\n  %q", got, want)
 	}
 }
+
+// hostCfgOf is a's host config, read through hostConfig (loaded once).
+func hostCfgOf(a *app) *config.Config {
+	cfg, _ := a.hostConfig()
+	return cfg
+}
+
+// hostLoadErrOf is a's host config load error.
+func hostLoadErrOf(a *app) error {
+	_, err := a.hostConfig()
+	return err
+}
+
+// setHostLoadErr makes a's host config load error err, after the load (so a
+// later hostConfig call does not replace it).
+func setHostLoadErr(a *app, err error) {
+	a.loadHost()
+	a.hostLoadErr = err
+}

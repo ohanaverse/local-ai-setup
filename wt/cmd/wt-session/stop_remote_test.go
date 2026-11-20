@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
@@ -122,19 +121,22 @@ func TestStopRemotePickerMarksClientSessions(t *testing.T) {
 	}
 }
 
-// TestStopProviderStaysOnTheHostPath proves R3: with a model server
-// configured, a provider name and --all still take the host path (their
-// legacy errors answer, and the server is never asked), while a model id
-// goes to the server.
-func TestStopProviderStaysOnTheHostPath(t *testing.T) {
+// TestStopProviderAndAllPointAtWtModel pins the pointer: a provider name or
+// --all is wt-model's now, so the session prints the one moved line and exits
+// 1. It never reads a registry for it (hostConfig is never called) and never
+// asks the model server, while a model id still goes to the server.
+func TestStopProviderAndAllPointAtWtModel(t *testing.T) {
 	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
-	r.a.hostCfg, r.a.hostSet = modelCmdConfig(), true
+	// No host config: a pointer that called hostConfig would set hostSet.
+	r.a.hostCfg, r.a.hostSet = nil, false
 	for name, tc := range map[string]struct {
 		args []string
 		want string
 	}{
-		"provider name": {[]string{"bogus"}, `unknown provider "bogus"`},
-		"all with name": {[]string{"--all", "omlx"}, "wt stop --all takes no model or provider"},
+		"unknown provider": {[]string{"bogus"}, "stop bogus moved to wt-model — run 'wt-model stop bogus'; nothing was changed"},
+		"provider --yes":   {[]string{"ollama", "--yes"}, "stop ollama moved to wt-model — run 'wt-model stop ollama'; nothing was changed"},
+		"all":              {[]string{"--all"}, "stop --all moved to wt-model — run 'wt-model stop --all'; nothing was changed"},
+		"all with name":    {[]string{"--all", "omlx"}, "stop --all moved to wt-model — run 'wt-model stop --all'; nothing was changed"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cmd := stopCmd(r.a)
@@ -142,13 +144,16 @@ func TestStopProviderStaysOnTheHostPath(t *testing.T) {
 			cmd.SetOut(io.Discard)
 			cmd.SetErr(io.Discard)
 			err := cmd.Execute()
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("err = %v, want %q", err, tc.want)
+			if err == nil || err.Error() != tc.want || exitcode.Of(err) != 1 {
+				t.Fatalf("err = %v (exit %d), want %q, exit 1", err, exitcode.Of(err), tc.want)
+			}
+			if r.a.hostSet {
+				t.Error("the pointer read the host registry (hostConfig was called)")
 			}
 		})
 	}
 	if n := len(r.f.reqs()); n != 0 {
-		t.Errorf("the model server was asked %d times on the host path:\n%s", n, strings.Join(r.f.reqs(), "\n"))
+		t.Errorf("the model server was asked %d times by a pointer:\n%s", n, strings.Join(r.f.reqs(), "\n"))
 	}
 	cmd := stopCmd(r.a)
 	cmd.SetArgs([]string{"omlx/q"})
@@ -284,34 +289,6 @@ func TestStopAnswererNamesTheRealTerminalFailure(t *testing.T) {
 	if err == nil || exitcode.Of(err) != 3 || strings.Contains(err.Error(), "no terminal to ask") ||
 		!strings.Contains(err.Error(), "could not open the terminal: open /dev/tty: device not configured") {
 		t.Errorf("err = %v (exit %d)", err, exitcode.Of(err))
-	}
-}
-
-// TestStopAllStaysOnTheHostPathWithAnEndpoint proves a bare `wt stop --all`
-// with a model server configured acts on this machine (R3): the server is
-// never asked. A terminal and a picker answer are stubbed so that a regression
-// of the guard would reach the server's catalog and stop; the app's registry
-// has no provider, so the host path has nothing to stop and touches no real
-// service, and its result is checked.
-func TestStopAllStaysOnTheHostPathWithAnEndpoint(t *testing.T) {
-	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
-	r.a.hostCfg, r.a.hostSet = &config.Config{}, true
-	stubStdinTTY(t, true)
-	r.a.hooks.stopIn = func() io.Reader { return strings.NewReader("1\n") }
-	cmd := stopCmd(r.a)
-	cmd.SetArgs([]string{"--all", "--yes"})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	var err error
-	captureFile(t, &os.Stdout, func() { err = cmd.Execute() })
-	if err != nil {
-		t.Errorf("host path --all over an empty registry: err = %v, want nil", err)
-	}
-	if n := len(r.f.reqs()); n != 0 {
-		t.Errorf("the model server was asked %d times:\n%s", n, strings.Join(r.f.reqs(), "\n"))
-	}
-	if len(r.f.Stops) != 0 {
-		t.Errorf("stops = %+v, want none", r.f.Stops)
 	}
 }
 
