@@ -23,8 +23,8 @@ import (
 )
 
 // The stop tests and their helpers are copied from cmd/wt-session's
-// model_cmds_test.go: `wt stop <provider>|--all` moved here as `wt-model
-// stop`. The seams are fields of the host each test builds (testHost), not
+// model_cmds_test.go: the session binary's stop of a provider or --all moved
+// here as `wt-model stop`. The seams are fields of the host each test builds (testHost), not
 // package vars.
 
 // modelCmdConfig is a minimal local-only registry shared by the stop command

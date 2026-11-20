@@ -34,7 +34,7 @@ type StopBatcher interface {
 // probe and gateway; tests build one from closures.
 type Deps struct {
 	// Config returns the host config. It is called at each request, job and
-	// scan, so edits to the registry (wt model, wt-model cloud-sync) show without a
+	// scan, so edits to the registry (wt-model model, wt-model cloud-sync) show without a
 	// restart; DefaultDeps backs it with a reload that keeps the last good
 	// config when the file cannot be read.
 	Config       func() *config.Config

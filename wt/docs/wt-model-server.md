@@ -3,14 +3,11 @@
 The model server: a second binary, built beside `wt`, that holds the model
 side of wt (the registry, the live inventory of local models, start and stop,
 the LiteLLM routes) and serves it over HTTP, so an agent session that runs
-somewhere else needs no registry of its own. It has `wt-model serve`,
-`wt-model litellm set|status`, the commands for the proxy pair the gateway
-forwards with ([Proxy url and key](#proxy-url-and-key)), `wt-model setup`,
-the Setup tab ([below](#wt-model-setup)), and `wt-model model`, the Models
-tab ([below](#wt-model-model)). (This page is the server.
-`wt-model model …` is the registry command group, and `wt model …` in wt
-only points there (`wt model list --server` aside):
-[wt-model.md](wt-model.md).)
+somewhere else needs no registry of its own. It has `wt-model serve`, the
+host-admin commands (`model`, `cloud-sync`, `litellm`, `served`, `warm`,
+`stop <provider>|--all`) and `wt-model setup`; [Commands](#commands) lists
+them. (This page is the server and its command list; the `wt-model model`
+registry commands are on [wt-model.md](wt-model.md).)
 
 ```bash
 wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/wt-model/server.token   # loopback, same machine
@@ -29,11 +26,31 @@ One port carries two surfaces:
   on the host, and it serves only the inference paths (see
   [Endpoints](#endpoints)).
 
+## Commands
+
+Bare `wt-model` prints its help and exits 0.
+
+| Command | What | Page |
+|---|---|---|
+| `wt-model serve` | Run the model server: the control API and the gateway on one port | this page ([Flags](#flags)) |
+| `wt-model setup` | The Setup tab (a TUI): local setup on this machine, the `local.wt-model.serve` LaunchAgent, the token file, the LiteLLM pair and the LiteLLM plist actions | [below](#wt-model-setup) |
+| `wt-model model` | Bare: the Models tab (a TUI) over this host's `registry.toml` | [below](#wt-model-model), [wt-model.md](wt-model.md) |
+| `wt-model model init\|list\|add\|edit\|rm` | The registry commands, no terminal needed | [wt-model.md](wt-model.md) |
+| `wt-model cloud-sync` | Refresh OpenRouter prices and mirror the ollama cloud catalog | [wt-cloud-sync.md](wt-cloud-sync.md) |
+| `wt-model litellm sync\|list\|providers\|status\|set\|restart` | The LiteLLM routes in `config.yaml`, the proxy pair, the proxy restart | [wt-agents/README.md](wt-agents/README.md#litellm-routes-are-wt-owned), [Proxy url and key](#proxy-url-and-key) |
+| `wt-model served <provider>` | The model ids a local provider's server is serving now | [wt-start-stop.md](wt-start-stop.md#wt-model-served-provider) |
+| `wt-model warm <provider> <model>` | Load a model into a running omlx server with one short request | [wt-start-stop.md](wt-start-stop.md#wt-model-warm-provider-model) |
+| `wt-model stop <provider>\|--all` | Stop every running model of a provider, or every local model, asking first about a model client sessions use | [wt-start-stop.md](wt-start-stop.md) |
+
+`wt-model stop` takes a provider or `--all`, never a model id: given one it
+is a usage error (exit 1) naming `wt stop <model>`, the session command that
+stops one model through the server.
+
 ## Setting it up
 
-The way in is `wt-model setup` ([below](#wt-model-setup)), run on the
-machine that will serve. Choose `local` there and its plan writes the token
-file, wt-model's LiteLLM pair and a LaunchAgent, `local.wt-model.serve`, that
+The way in is `wt-model setup` (the Setup tab: local or native;
+[below](#wt-model-setup)), run on the machine that will serve. Choose `local`
+there and its plan writes the token file, wt-model's LiteLLM pair and a LaunchAgent, `local.wt-model.serve`, that
 runs `wt-model serve` on a loopback address (`127.0.0.1:8787` unless you name
 another) at login; macOS only, and a plist wt did not write (no wt marker
 comment) is never overwritten. The tab shows the plan and asks `Apply this
@@ -41,8 +58,8 @@ plan? [y/N]` (default no) before anything is written. The LiteLLM proxy
 itself is a separate concern: the tab only checks it and offers narrow
 actions on its plist ([guide 14](../../docs/guides/14-litellm-install-and-configuration.md)).
 
-A session machine chooses its mode on the Mode tab of `wt config`
-([wt-config.md](wt-config.md), "Mode tab"): `remote` points it at a server on
+A session machine chooses `remote` (or `native`) on the Mode tab of
+`wt config` ([wt-config.md](wt-config.md), "Mode tab"): `remote` points it at a server on
 another machine, and `local` stores the default url and token file and points
 at `wt-model setup` (offering to run it when `wt-model` is on `PATH`).
 
@@ -208,8 +225,8 @@ here, since a session's remote server is set on the Mode tab of `wt config`.
 to edit or register and `d` to remove. It is a host screen: run it on the
 machine that holds the registry and `config.yaml`, not on a session machine.
 Its keys, columns and form are in [wt-model.md](wt-model.md) ("The Models
-tab"); bare `wt model` prints only `wt: model moved to wt-model — run
-'wt-model model'; nothing was changed` and exits 1.
+tab"); `model` run bare under `wt` prints only `wt: model moved to wt-model —
+run 'wt-model model'; nothing was changed` and exits 1.
 
 - It needs a terminal. Without one it exits 1 and names the commands that
   need none: `wt-model model list`, `wt-model model add`, `wt-model model edit` and `wt-model model
@@ -422,8 +439,17 @@ client sessions. On a clean stop (SIGINT or SIGTERM) the server removes the
 record only when it still names its own pid; a second serve overwrites the
 record, and the first one's exit then leaves the second's in place. A serve
 that cannot bind its address neither writes nor removes it. A killed server
-leaves its record behind: a later reader finds the address unreachable and says
-so.
+leaves its record behind. `wt-model stop <provider>|--all` reads the record to
+ask the live server for its client sessions; a record whose pid is no longer
+running is stale and is not asked (another process may hold the port now).
+A stale record, or a server that cannot be asked, is one note on stderr and
+the stop goes on without asking about any model:
+
+```text
+wt-model: note: could not read client sessions from the model server (the model server (pid 4242) is not running: stale record) — models they use are stopped without asking
+```
+
+No record at all (no server running) is silent: there is nothing to ask.
 
 ## Known limits
 

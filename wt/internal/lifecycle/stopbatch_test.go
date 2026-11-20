@@ -72,7 +72,7 @@ func ollamaEntry(name string) localmodels.Entry {
 // stop` is sent before the first probe, the first model's wait spends the
 // whole shared bound (5 sleeps here), and the two after it get one probe each
 // and no sleep. Waiting serially, the batch sat out three bounds (9 minutes
-// in production) before `wt stop --all` reached the omlx halt or the exit
+// in production) before `wt-model stop --all` reached the omlx halt or the exit
 // flow its summary. Each still-listed model is a *StillFinishingError that
 // names the batch's whole wait.
 func TestStopBatchSharesOneBound(t *testing.T) {

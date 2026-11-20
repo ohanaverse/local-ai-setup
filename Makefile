@@ -61,7 +61,7 @@ test-all: lint ## CI-equivalent: lint + llmbench + modeltiers + wt
 pre-pr: ## Run before a PR: test-all in a clean scratch HOME + wt check + config-dir check (CI is off)
 	@bin/pre-pr
 
-install: ## Install all monorepo components (wt + llmbench + modeltiers).
+install: ## Install all monorepo components (wt, wt-session and wt-model + llmbench + modeltiers)
 	cd wt && make install
 	cd llmbench && make install
 	cd modeltiers && make install

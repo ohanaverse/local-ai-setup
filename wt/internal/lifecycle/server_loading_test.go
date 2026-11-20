@@ -1195,7 +1195,7 @@ func stubProcessSeams(t *testing.T) (*procTable, string) {
 // nothing else: with a verified mtplx loading, LoadingServer reports it for
 // mtplx and reports nothing for omlx or ollama, and StopLoading for another
 // provider is refused as unsupported with no signal. Without the two guards
-// a refused omlx or ollama would be handed mtplx's pid, and `wt stop omlx`
+// a refused omlx or ollama would be handed mtplx's pid, and `wt-model stop omlx`
 // could end the mtplx server.
 func TestLoadingStopIsMtplxOnly(t *testing.T) {
 	pt, _ := stubProcessSeams(t)

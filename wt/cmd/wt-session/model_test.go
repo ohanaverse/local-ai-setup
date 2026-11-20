@@ -12,8 +12,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessioneditor"
 )
 
-// TestModelCommandGroup pins the `wt model` group as cobra serves it: bare
-// `wt model` points at `wt-model model` (TestBareWtModelPointsAtWtModel), an
+// TestModelCommandGroup pins wt's `model` group as cobra serves it: bare
+// `model` under wt points at `wt-model model` (TestBareWtModelPointsAtWtModel), an
 // unknown word under it is an error rather than a worktree name, `model
 // init` under it is the pointer stub (TestMovedCommandsPointAtWtModel; the command
 // itself is TestModelCommandGroupOnWtModel in cmd/wt-model), and the removed
@@ -23,10 +23,10 @@ func TestModelCommandGroup(t *testing.T) {
 	stubStdinTTY(t, false)
 	_, err := runWT(t, "model")
 	if err == nil || !strings.Contains(err.Error(), "run 'wt-model model'") {
-		t.Errorf("bare `wt model` with no terminal: err = %v, want the pointer to wt-model model", err)
+		t.Errorf("bare `model` under wt with no terminal: err = %v, want the pointer to wt-model model", err)
 	}
-	if _, err = runWT(t, "model", "bogus"); err == nil || !strings.Contains(err.Error(), `unknown command "bogus" for "wt model"`) {
-		t.Errorf("wt model bogus: err = %v, want an unknown-command error", err)
+	if _, err = runWT(t, "model", "bogus"); err == nil || !strings.Contains(err.Error(), `unknown command "bogus" for "wt `+`model"`) {
+		t.Errorf("model bogus under wt: err = %v, want an unknown-command error", err)
 	}
 	if _, err = runWT(t, "model", "init", "extra"); err == nil || !strings.Contains(err.Error(), "run 'wt-model model init'") {
 		t.Errorf("model init extra under wt: err = %v, want the pointer to wt-model model init", err)
@@ -48,7 +48,7 @@ func TestRegistryWriteGuardIsArmedHere(t *testing.T) {
 	}
 }
 
-// TestBareWtModelPointsAtWtModel pins bare `wt model` after the Models screen
+// TestBareWtModelPointsAtWtModel pins bare `model` under wt after the Models screen
 // moved to wt-model: on a terminal or not it opens no editor, prints the one
 // pointer line naming `wt-model model`, exits 1 and leaves config.toml and
 // registry.toml as they were.

@@ -151,7 +151,7 @@ func TestRealProcessTableDescribesAChild(t *testing.T) {
 // just listed is a process being taken apart (exiting, no argv, no error), any
 // other failure is an error, and a buffer is parsed. A dying mtplx spends a
 // quarter of a second and more in that state; read as an error, it made
-// `wt stop mtplx` print "failed" over a server that had stopped.
+// `wt-model stop mtplx` print "failed" over a server that had stopped.
 func TestProcArgvTreatsNoArgumentsAsExiting(t *testing.T) {
 	if argv, exiting, err := procArgv(nil, unix.EINVAL); argv != nil || !exiting || err != nil {
 		t.Errorf("EINVAL: argv %q exiting %v err %v, want exiting and no error", argv, exiting, err)

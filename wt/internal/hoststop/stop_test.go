@@ -232,7 +232,7 @@ func TestStopEntriesSettlesAfterFailureAndCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelled := &stopHarness{cancelOn: "a", cancel: cancel}
-	// The error is ErrStopCancelled itself: `wt stop --all` tells a Ctrl+C
+	// The error is ErrStopCancelled itself: `wt-model stop --all` tells a Ctrl+C
 	// from a failed stop by it, and halts the omlx service after the second
 	// only.
 	if err := stopEntries(ctx, io.Discard, &config.Config{}, cancelled.deps(), entries); !errors.Is(err, ErrStopCancelled) {
@@ -266,7 +266,7 @@ func TestStopEntriesSkipsSettleWhenNothingOwed(t *testing.T) {
 // in the stop picker. A user who sees the model occupying the pool must be able
 // to name it there. (omlx 0.7.0 refuses to unload a model mid-load, so the stop
 // itself reports that omlx is still loading <id> and will not unload it
-// mid-load; `wt stop omlx` is what calls a load off, and the message says so.)
+// mid-load; `wt-model stop omlx` is what calls a load off, and the message says so.)
 func TestStopCandidatesIncludeAModelMidLoad(t *testing.T) {
 	loading := runningEntry("omlx", "omlx/x", "x")
 	loading.Loading = true

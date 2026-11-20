@@ -2,7 +2,7 @@
 
 > Use this to: read and audit the LiteLLM proxy config, understand how `wt-model litellm sync` decides which models are on :4000 (and preview it with `--dry-run`), hand-edit rows and the proxy-only sections without fighting the tool, and use the admin dashboard at :4000/ui.
 >
-> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live)
+> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live; host commands renamed to `wt-model` 2026-11 and checked against `wt-model --help`)
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ ui:307
 
 ## TL;DR
 
-<!-- UNVERIFIED — not run as one block: a real `wt-model litellm sync` mutates the live ~/.config/litellm/config.yaml and restarts the proxy. `wt-model litellm sync --dry-run` and `wt-model litellm list` (both read-only) were run live 2026-10-03 (then as `wt litellm sync --dry-run` and `wt litellm list`, before the move to `wt-model`); the kickstart + confirm-curl portion was run live earlier, see §5 and Verification. -->
+<!-- UNVERIFIED — not run as one block: a real `wt-model litellm sync` mutates the live ~/.config/litellm/config.yaml and restarts the proxy. `wt-model litellm sync --dry-run` and `wt-model litellm list` (both read-only) were run live 2026-10-03 (then under `wt`, before `litellm sync` and `litellm list` moved to `wt-model`); the kickstart + confirm-curl portion was run live earlier, see §5 and Verification. -->
 
 There is no per-model "put this on the proxy" command. **wt derives the routes**: every cloud model `registry.toml` configures, plus each local model while it runs (an ollama model while it is pulled) — a local model needs no registry entry (#179 Phase B). So the workflow is: add a cloud model to the registry, or start a local one (guide 02), and the sync that follows writes its row. `wt-model model add|edit|rm` and the Models tab of `wt-model model` run that sync after their own write (guide 02 Step 1), `wt start`/`wt stop` update the routes themselves; run `wt-model litellm sync` yourself after a hand edit of `registry.toml`, or after starting a server outside wt when the client will not go through wt (a launch through wt writes a running model's missing route itself — §2).
 

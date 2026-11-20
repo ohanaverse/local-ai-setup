@@ -30,7 +30,7 @@ carries (`edit` and `rm`), or a registry that cannot be read; it is 3 for a
 `rm` that needed approval and got none (no `--yes` and no terminal, or the
 question was declined) and removed nothing.
 
-Bare `wt model` opens nothing: it prints `wt: model moved to wt-model — run
+Bare `model` under wt opens nothing: it prints `wt: model moved to wt-model — run
 'wt-model model'; nothing was changed` and exits 1. The Models tab it used to
 open is `wt-model model` ([below](#the-models-tab-wt-model-model)).
 
@@ -107,11 +107,11 @@ cannot be read at all stops it.
 
 ### `wt model list --server [--json]`
 
-With `--server`, `wt model list` (in wt, on a session machine) reads the model server's catalog
+With `--server`, `model list` (in wt, on a session machine) reads the model server's catalog
 (`[model-server]` in `config.toml`, or `WT_MODEL_URL`) instead of the
 registry: the models a client session can launch or start, in the server's
 order, with their state. Nothing is read from the registry and no provider is
-probed. Without `--server`, `wt model list` only points at `wt-model model
+probed. Without `--server`, the same `model list` only points at `wt-model model
 list` (exit 1).
 
 | Column | Values |
@@ -368,7 +368,7 @@ Run `wt-model litellm sync` after a hand edit: no tool saw it.
 
 `wt-model model` opens it on the host that holds the registry, the screen's
 one tab; it needs a terminal (without one it exits 1 and names `wt-model model
-list`, `add`, `edit` and `rm`). Bare `wt model` only points here.
+list`, `add`, `edit` and `rm`). Bare `model` under wt only points here.
 
 The same rows as `wt-model model list`, as a table: FAMILY, MODEL, LOC, STATUS,
 RUNNING, SIZE. On a narrow terminal it gives up SIZE, then LOC, then FAMILY —

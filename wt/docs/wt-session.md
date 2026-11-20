@@ -120,9 +120,9 @@ it tried and `check the server there, or change the url or mode in wt config
 `nothing was launched` (a launch that asks for a model: `-M`, `-T`, `-F`), `nothing was started`
 (`wt start`), `nothing was stopped` (`wt stop MODEL`), `the job was not read`
 or `nothing was cancelled` (`wt job`), `nothing was run` (`wt smoke`),
-`nothing was printed` (`wt rotate TAG`), `nothing was listed` (`wt model
-list --server`), `nothing was changed` (`wt profile slots add|set`), `no
-candidates were listed` (`wt profile slots candidates`) and `nothing was
+`nothing was printed` (`wt rotate TAG`), `nothing was listed`
+(`wt model list --server`), `nothing was changed` (`wt profile slots
+add|set`), `no candidates were listed` (`wt profile slots candidates`) and `nothing was
 shown` (`wt profile show -M ...`).
 
 The other refusals of a configuration that cannot be used, each exit 1 with
@@ -132,8 +132,8 @@ the same last clause:
   an `@` anywhere, with or without a scheme: `the model server url contains
   an @ (read as a user:password); wt does not use credentials in the url: use
   a token file (WT_MODEL_TOKEN_FILE or token_file under [model-server])`. No
-  part of the url is shown and no request is made; the rule is the Model
-  server tab's (any `@`, no parsing). A path that needs an `@` takes `%40`.
+  part of the url is shown and no request is made; the rule is the Mode
+  tab's (any `@`, no parsing). A path that needs an `@` takes `%40`.
   Native mode resolves no url, so it never refuses this.
 - A url with no host, or one that does not parse: `the model server url does
   not parse as a url with a host (it is not shown) — write it as
@@ -233,19 +233,48 @@ These run with no model server configured:
 - `wt profile list|status|on|off`, `wt profile slots rm|usage`;
 - `wt stats`: the survey table and the launch counts print, the spend cells
   show `-`, and one note says why (spend status `not_configured`);
-- every host command (below).
+- `wt litellm status|set` (the proxy pair's twins, below), and every
+  pointer to a command that moved to `wt-model` (below).
 
-## Host commands
+## Moved to wt-model
 
-These act on the machine they run on, reading `registry.toml` (and
-`config.yaml`) there, never the model server: `wt-model model
-init|add|edit|rm`, `wt-model model list` (the registry listing; `--json` is
-what modeltiers reads), `wt-model cloud-sync`, `wt-model litellm sync|list|providers|status|set|restart`
-(`wt litellm status|set` are its twins),
-`wt-model served`, `wt-model warm`, `wt-model stop <provider>` and `wt-model stop --all`, and `wt-model
-model` (the Models tab). `wt worktrees` and `wt remove` read the registry too,
-for the model artifacts they must never delete; with no registry at the
-default path there is nothing to protect.
+The host-admin commands now live in `wt-model`
+([wt-model-server.md](wt-model-server.md#commands)); under `wt` the old
+names print one line and exit 1, changing nothing: `wt: <old> moved to
+wt-model — run 'wt-model <new>'; nothing was changed`. A stray flag or
+argument after an old name gets the same line.
+
+| Old | New |
+|---|---|
+| `wt model init` | `wt-model model init` |
+| `wt model add` | `wt-model model add` |
+| `wt model edit` | `wt-model model edit` |
+| `wt model rm` | `wt-model model rm` |
+| `wt served` | `wt-model served` |
+| `wt warm` | `wt-model warm` |
+| `wt cloud-sync` | `wt-model cloud-sync` |
+| `wt litellm list` | `wt-model litellm list` |
+| `wt litellm providers` | `wt-model litellm providers` |
+| `wt litellm sync` | `wt-model litellm sync` |
+| `wt litellm restart` | `wt-model litellm restart` |
+| `wt model` | `wt-model model` |
+| `wt model list` | `wt-model model list` |
+| `wt stop <provider>` | `wt-model stop <provider>` |
+| `wt stop --all` | `wt-model stop --all` |
+
+The last four are conditional: bare `model` points at the Models tab,
+`model list` points only without `--server` (`wt model list --server` is a
+session command), and `stop` points only when given a provider name or
+`--all` (`wt stop MODEL` stops one model through the server). Those
+`wt-model` commands act on the machine they run on, reading `registry.toml`
+(and `config.yaml`) there, never the model server. `wt litellm status|set`
+stay in `wt` as twins of `wt-model litellm status|set`: on a session-only
+machine they read and write that machine's `wt-model` config home, not the
+server's.
+
+`wt worktrees` and `wt remove` read the registry too, for the model
+artifacts they must never delete; with no registry at the default path there
+is nothing to protect.
 
 ## `[litellm]` on a session
 
@@ -280,20 +309,11 @@ wt: litellm on is retired — every session routes through the model server; set
 ```
 
 Nothing is migrated, and `wt` itself never starts a server or writes
-`[model-server]` on a launch: only the Mode tab of `wt config` and `wt-model
-setup` do, on your confirmation.
+`[model-server]` on a launch: only `wt config`'s Mode tab (and `wt-model
+setup` for local) does, on your confirmation.
 
 ## Interim limits
 
-- **Two host twins still run here.** The model registry commands moved to
-  `wt-model model …`, and `served`, `warm`, `cloud-sync`, `litellm
-  sync|list|providers|restart` and the provider stops (`wt-model stop
-  <provider>|--all`) to `wt-model` (under `wt` those only point there);
-  `wt litellm status|set` stay here as twins of `wt-model litellm
-  status|set`, and the proxy url and key live in the `wt-model` config home of
-  whichever machine runs them (above; the `[litellm]` table of `config.toml`
-  is its read-only fallback). On a session-only machine
-  they read that machine's files, not the server's.
 - **A killed wt cannot end its client session.** wt does not trap `SIGHUP`
   or `SIGTERM` sent to itself, so a terminal closed under a running agent, or
   a `kill`, ends wt before it can tell the server. The server forgets the

@@ -389,7 +389,7 @@ func TestConfigLongTextNamesAgentsAndMode(t *testing.T) {
 		}
 	}
 	if strings.Contains(long, "Model server") {
-		t.Errorf("Long text still names the Model server tab:\n%s", long)
+		t.Errorf("Long text still names the old model-server tab:\n%s", long)
 	}
 }
 

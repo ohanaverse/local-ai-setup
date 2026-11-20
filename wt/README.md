@@ -101,29 +101,29 @@ Beyond launching, `wt` has subcommands; `wt --help` lists them. Each has a refer
 | `wt remove <worktree-path-or-branch>...` | Removes named worktrees and branches through the same engine, re-checking each; `--dry-run` first | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-remove-arguments-output-and-exit-codes) |
 | `wt rescue <worktree-path-or-branch>` | Copies a worktree's local-only work into a new branch and worktree before you remove it | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-rescue-keep-work-before-it-is-lost) |
 | `wt restore-root` | Moves the root's branch and uncommitted work into a worktree and puts the root back on the default branch | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-restore-root-move-the-roots-branch-into-a-worktree) |
-| `wt start`, `wt stop`, `wt-model served`, `wt-model warm` | Start and stop local models; list what a server serves, load an omlx model | [docs/wt-start-stop.md](docs/wt-start-stop.md) |
+| `wt start`, `wt stop` | Start and stop one local model through the model server | [docs/wt-start-stop.md](docs/wt-start-stop.md) |
 | `wt job` | Show or cancel a model server job | [docs/wt-job.md](docs/wt-job.md) |
 | `wt smoke` | One-shot prompt through every agent eligible for a model | [docs/wt-smoke.md](docs/wt-smoke.md) |
-| `wt-model model …`, `wt model list --server`, `wt config` | Registry and preferences | [docs/wt-model.md](docs/wt-model.md), [docs/wt-config.md](docs/wt-config.md) |
+| `wt model list --server`, `wt config` | The server's catalog as a session sees it; preferences and the mode | [docs/wt-model.md](docs/wt-model.md), [docs/wt-config.md](docs/wt-config.md) |
 | `wt-model serve` | The model server: a control API and a gateway for agent sessions on other machines | [docs/wt-model-server.md](docs/wt-model-server.md) |
 | `wt stats` | Launches and LiteLLM spend per model | [docs/wt-stats.md](docs/wt-stats.md) |
-| `wt-model cloud-sync` | Refresh cloud prices and the ollama catalog | [docs/wt-cloud-sync.md](docs/wt-cloud-sync.md) |
+| `wt-model …` | Host administration: registry, routes, cloud sync, provider stop, local setup | [docs/wt-model-server.md](docs/wt-model-server.md) |
 
 ## Configuration
 
 The Go tool uses `~/.config/agent-wt/config.toml` (TOML) for wt-owned state — Agents (AI coding tool with supported providers and optional default) and the default rotation tag, plus the legacy `[launch]` table (its `exit_prompt` key is tolerated and ignored; see [Exit prompt](#exit-prompt-for-an-untouched-worktree)).
 
-Providers (model source with auth config: ollama, openrouter, claude, copilot) and Models (a variant from a provider, grouped by family and tagged, e.g. `code`, `design`) are no longer stored in `config.toml`. They live in `~/.config/local-ai/registry.toml`. `wt-model model init` creates that file and adds the default provider rows; models are listed, added, edited and removed with `wt-model model list|add|edit|rm`, or on the Models tab of `wt-model model` — see `docs/wt-model.md`. `wt` joins the registry in memory with `config.toml`; nothing writes providers or models into `config.toml`.
+Providers (model source with auth config: ollama, openrouter, claude, copilot) and Models (a variant from a provider, grouped by family and tagged, e.g. `code`, `design`) are no longer stored in `config.toml`. They live in `~/.config/local-ai/registry.toml`. `wt-model model init` creates that file and adds the default provider rows; models are listed, added, edited and removed with `wt-model model list|add|edit|rm`, or on the Models tab of `wt-model model` — see `docs/wt-model.md`. A `wt` launch reads no registry (its models come from the model server); `wt worktrees` and `wt remove` read it when it exists, only to protect model artifacts from deletion, and `wt stats` reads it for model families when the server cannot be reached; `wt-model` reads it on the host, and nothing writes providers or models into `config.toml`.
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
 
 ### Migration from legacy `models.conf`
 
-On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically (parsing `CODE_MODELS`/`DESIGN_MODELS` bash arrays, creating `Provider`/`Agent` entries for each `native:X` model, merging models in both code and design rotations). It runs only once — skipped if `config.toml` already exists — and writes the full legacy shape, including Providers/Models, which nothing reads back (the sections are inert); `wt` itself reads Providers/Models back out of the registry, and writes that file through `wt-model model init`, `wt-model model add|edit|rm`, the Models tab of `wt-model model` and `wt-model cloud-sync`.
+On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically (parsing `CODE_MODELS`/`DESIGN_MODELS` bash arrays, creating `Provider`/`Agent` entries for each `native:X` model, merging models in both code and design rotations). It runs only once — skipped if `config.toml` already exists — and writes the full legacy shape, including Providers/Models, which nothing reads back (the sections are inert); `wt-model` reads Providers/Models out of the registry, and writes that file through `wt-model model init`, `wt-model model add|edit|rm`, the Models tab of `wt-model model` and `wt-model cloud-sync`.
 
 ## User preferences (`wt config`)
 
-Bare `wt config` opens an interactive editor with two tabs: Agents (the agents in `config.toml`) and Model server (checks and sets up the `wt-model` server). The models in `registry.toml` are edited on the Models tab of `wt-model model`, on the host; bare `wt model` only prints that pointer and exits 1. Its subcommands are `wt config path`, which prints the config directory, and `wt config theme` — four built-in color palettes with dark/light variants, stored in `~/.config/agent-wt/themes.toml`.
+Bare `wt config` opens an interactive editor with two tabs: Agents and Mode (the agents in `config.toml`, and how this machine's sessions reach a model server: native, remote, or local as a pointer to `wt-model setup`). The models in `registry.toml` are edited on the Models tab of `wt-model model`, on the host; `model` run bare under `wt` only prints that pointer and exits 1. Its subcommands are `wt config path`, which prints the config directory, and `wt config theme` — four built-in color palettes with dark/light variants, stored in `~/.config/agent-wt/themes.toml`.
 
 ```bash
 wt config theme              # show the active theme + available names

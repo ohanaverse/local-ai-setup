@@ -66,7 +66,7 @@ Every non-native launch goes through the model server's gateway and so through L
 One source per table — the survey table's first, then the usage table's two:
 
 - `~/.config/agent-wt/survey.jsonl` — the **survey table's** only source: one JSON object per answered post-session survey (agent, model, verdict, speed, quality, task). wt writes it at exit when the survey asks; the survey is switched off (#136), so it holds only older answers and thins out as they pass 30 days.
-- `~/.config/agent-wt/usage.jsonl` — one JSON object per wt model launch: `model_id`, `agent` and `timestamp` (no tokens, no cost, no keys). Each write drops lines older than 30 days; a line written before the `agent` field existed has none. Sample line quoted in Prerequisites.
+- `~/.config/agent-wt/usage.jsonl` — one JSON object per model launch by wt: `model_id`, `agent` and `timestamp` (no tokens, no cost, no keys). Each write drops lines older than 30 days; a line written before the `agent` field existed has none. Sample line quoted in Prerequisites.
 - Postgres table `LiteLLM_SpendLogs`, read for `wt stats` by the model server (`GET /control/v1/spend`) — LiteLLM's standard spend log (one row per proxy request: model, tokens, cost), on the machine that runs `wt-model serve`. Local Postgres allows passwordless access; the table lives in the `litellm` database, not the default `postgres` one. Probe (on that machine):
 
   ```bash
