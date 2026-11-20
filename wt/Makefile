@@ -3,7 +3,7 @@
 help:                   # Show available targets
 	@echo "Available targets:"
 	@echo "  build     - Build bin/wt-session, bin/wt (the same binary, a copy) and bin/wt-model"
-	@echo "  install   - Copy bin/* to ~/.local/bin/"
+	@echo "  install   - Copy bin/* (wt, wt-session, wt-model and the shims) to ~/.local/bin/"
 	@echo "  uninstall - Remove installed scripts from ~/.local/bin/"
 	@echo "  lint      - Run shellcheck on bin/*-wt and scripts/agents-smoke.sh"
 	@echo "  format    - Run shfmt on bin/*-wt and scripts/agents-smoke.sh, and gofmt on the Go tree"
@@ -114,6 +114,14 @@ test:                   # Run smoke tests
 	echo "Testing wt config path..."; \
 	$(BINDIR)/wt config path >/dev/null || { echo "  wt config path: FAILED"; exit 1; }; \
 	echo "wt config smoke tests passed."
+	@echo "Smoke testing wt-model..."
+	@echo "Testing wt-model --help..."; \
+	$(BINDIR)/wt-model --help >/dev/null || { echo "  wt-model --help: FAILED"; exit 1; }; \
+	echo "Testing wt-model setup --help..."; \
+	$(BINDIR)/wt-model setup --help >/dev/null || { echo "  wt-model setup --help: FAILED"; exit 1; }; \
+	echo "Testing wt-model model --help..."; \
+	$(BINDIR)/wt-model model --help >/dev/null || { echo "  wt-model model --help: FAILED"; exit 1; }; \
+	echo "wt-model smoke tests passed."
 	@echo "All tests complete."
 
 clean:                  # Remove build artifacts

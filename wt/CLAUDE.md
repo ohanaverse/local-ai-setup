@@ -14,7 +14,7 @@ The `wt` binary (`cmd/wt-session/`) launches an AI coding agent CLI (claude, cod
 
 ## Installation
 
-`make install` builds `bin/wt-session` and `bin/wt` (the same binary under two names: `wt` for the commands you type, `wt-session` for the session client's name beside `wt-model`; both print `wt <version>`) and copies them and the shims to `~/.local/bin/` (Go 1.26.7, see `go.mod`; `make help` lists targets). `make test` needs `make install` first — it exercises the installed binary.
+`make install` builds `bin/wt-session`, `bin/wt` (the same binary under two names: `wt` for the commands you type, `wt-session` for the session client's name beside `wt-model`; both print `wt <version>`) and `bin/wt-model` (the model server and every host-admin command) and copies them and the shims to `~/.local/bin/` (Go 1.26.7, see `go.mod`; `make help` lists targets). `make test` needs `make install` first — it exercises the installed binary.
 
 > **macOS codesign.** `make build`/`install` re-seal the ad-hoc signature (`codesign --force --sign -`); a drifted one is rejected by AMFI ("Taskgated Invalid Signature") and SIGKILLs the binary (exit 137).
 
