@@ -476,9 +476,10 @@ func TestVerdictColumnIsShort(t *testing.T) {
 }
 
 // TestPRLineNamesThePRWhenTheColumnIsGone pins the detail block's fallback
-// for a dropped PR# column: the PR and its state, "PR lookup unknown", and
-// nothing for no PR or a pending row. Why: the column is the first dropped on
-// a narrow terminal and is the only other place the PR fact reads.
+// for a PR cell that has lost its state word: the PR and its state, "PR
+// lookup unknown", and nothing for no PR or a pending row. Why: once the
+// state word is cut on a narrow terminal the detail line is the only other
+// place the PR's state reads.
 func TestPRLineNamesThePRWhenTheColumnIsGone(t *testing.T) {
 	for _, c := range []struct {
 		row  cleanup.Row
