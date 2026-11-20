@@ -283,7 +283,7 @@ type LoadingInstanceError struct {
 }
 
 func (e *LoadingInstanceError) Error() string {
-	return fmt.Sprintf("%s already has an instance (pid %d) still loading; wait for it to finish, or run `wt stop %s`", e.ProviderID, e.PID, e.ProviderID)
+	return fmt.Sprintf("%s already has an instance (pid %d) still loading; wait for it to finish, or run `wt-model stop %s`", e.ProviderID, e.PID, e.ProviderID)
 }
 
 // KeyRefusedError means a provider's server refused a request for want of a

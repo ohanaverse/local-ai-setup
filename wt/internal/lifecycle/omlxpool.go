@@ -34,7 +34,7 @@ type unloadRefusedError struct {
 }
 
 func (e *unloadRefusedError) Error() string {
-	return fmt.Sprintf("omlx will not unload %s without its API key (%s): set auth.secret_ref on the registry's omlx provider so wt can unload one model, or run `wt stop omlx` to stop the service and every model it has loaded", e.model, e.refused.Detail)
+	return fmt.Sprintf("omlx will not unload %s without its API key (%s): set auth.secret_ref on the registry's omlx provider so wt can unload one model, or run `wt-model stop omlx` to stop the service and every model it has loaded", e.model, e.refused.Detail)
 }
 
 func (e *unloadRefusedError) Unwrap() error { return e.refused }
@@ -197,7 +197,7 @@ func (e *env) awaitOmlxUnloaded(ctx context.Context, cfg *config.Config, id, mod
 		if err == nil {
 			switch m, ok := pool.Find(modelName); {
 			case ok && m.Loading && !m.Loaded:
-				return fmt.Errorf("omlx is still loading %s and will not unload it mid-load; `wt stop omlx` stops the service and the load with it", id)
+				return fmt.Errorf("omlx is still loading %s and will not unload it mid-load; `wt-model stop omlx` stops the service and the load with it", id)
 			case !ok || !m.Loaded:
 				return nil
 			}
