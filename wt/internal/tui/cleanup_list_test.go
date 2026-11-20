@@ -2922,13 +2922,16 @@ func TestRowListFitsWithFilterAndPendingFill(t *testing.T) {
 	if !strings.Contains(view, "filter: ma") {
 		t.Errorf("filter line missing:\n%s", view)
 	}
-	// Columns dropped whole: the header shows none of the droppable names
-	// (the never-drop WORKTREE heading is cut at the edge, never split
-	// into a partial droppable column).
-	for _, dropped := range []string{"PR#", "DIFF", "IGN", "STATUS"} {
+	// Columns dropped whole: the header shows none of the droppable names,
+	// and the PR# column is the one that stays (the worktree and branch
+	// merged into NAME at this width).
+	for _, dropped := range []string{"DIFF", "IGN", "STATUS", "VERDICT"} {
 		if strings.Contains(view, dropped) {
 			t.Errorf("dropped column %q still on screen at 40 columns:\n%s", dropped, view)
 		}
+	}
+	if !strings.Contains(view, "PR#") {
+		t.Errorf("the PR# column is gone at 40 columns:\n%s", view)
 	}
 	lines := strings.Split(view, "\n")
 	if last := lines[len(lines)-1]; !strings.Contains(last, "ctrl+c quit") {
