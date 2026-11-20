@@ -494,3 +494,38 @@ func TestPRLineNamesThePRWhenTheColumnIsGone(t *testing.T) {
 		}
 	}
 }
+
+// TestDetailLineHelpers pins the sentences the detail block uses for a fact
+// the table does not draw: the verdict word, the STATUS word, the ignored
+// count and the branch — each "" when the row has nothing to say (pending,
+// bare, no branch). Why: a hidden column's fact is only reachable through
+// these lines.
+func TestDetailLineHelpers(t *testing.T) {
+	rows := tableFixture()
+	if got := verdictLine(rows[0]); got != "verdict safe" {
+		t.Errorf("verdictLine(proven) = %q, want %q", got, "verdict safe")
+	}
+	if got := verdictLine(rows[3]); got != "" {
+		t.Errorf("verdictLine(pending) = %q, want empty", got)
+	}
+	if got := statusLine(rows[1]); !strings.HasPrefix(got, "status ") || !strings.Contains(got, string(rows[1].State)) {
+		t.Errorf("statusLine(dirty) = %q, want %q plus its state", got, "status ")
+	}
+	if got := statusLine(rows[3]); got != "" {
+		t.Errorf("statusLine(pending) = %q, want empty", got)
+	}
+	if got := ignoredLine(rows[0]); got != "12 ignored" {
+		t.Errorf("ignoredLine = %q, want %q", got, "12 ignored")
+	}
+	for _, i := range []int{2, 3, 4} { // bare, pending, branch row
+		if got := ignoredLine(rows[i]); got != "" {
+			t.Errorf("ignoredLine(row %d) = %q, want empty", i, got)
+		}
+	}
+	if got := branchLine(rows[0]); got != "branch feat/x" {
+		t.Errorf("branchLine = %q, want %q", got, "branch feat/x")
+	}
+	if got := branchLine(rows[1]); got != "" { // detached worktree: no branch
+		t.Errorf("branchLine(detached) = %q, want empty", got)
+	}
+}

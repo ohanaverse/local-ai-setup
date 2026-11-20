@@ -367,3 +367,49 @@ func diffLine(r cleanup.Row) string {
 	}
 	return fmt.Sprintf("+%d/-%d · %d ignored", r.Diff.Added, r.Diff.Removed, ign)
 }
+
+// verdictLine is the highlighted row's verdict for the detail block, used when
+// the VERDICT column is not drawn: "verdict safe", or "" for a pending row
+// (the table draws "-" for it too).
+func verdictLine(r cleanup.Row) string {
+	if r.Pending {
+		return ""
+	}
+	return "verdict " + verdictWord(r)
+}
+
+// statusLine is the highlighted row's STATUS word for the detail block, used
+// when the STATUS column is not drawn: "status dirty", or "" while pending.
+func statusLine(r cleanup.Row) string {
+	if r.Pending {
+		return ""
+	}
+	state := r.State
+	if state == "" {
+		state = cleanup.StateUnknown
+	}
+	return "status " + string(state)
+}
+
+// ignoredLine is the highlighted row's ignored count for the detail block,
+// used when IGN is not drawn but DIFF is (diffLine carries it with the
+// counts): "12 ignored", or "" where the table has no IGN cell either.
+func ignoredLine(r cleanup.Row) string {
+	if r.Kind != cleanup.KindWorktree || r.Bare || r.Pending {
+		return ""
+	}
+	losses := r.EffectiveLosses()
+	if losses.GatesUnknown {
+		return ""
+	}
+	return fmt.Sprintf("%d ignored", losses.IgnoredEntries)
+}
+
+// branchLine is the worktree row's branch for the detail block, used when
+// WORKTREE and BRANCH are merged into NAME and the branch is not drawn.
+func branchLine(r cleanup.Row) string {
+	if r.Kind != cleanup.KindWorktree || r.Branch == "" {
+		return ""
+	}
+	return "branch " + cleanup.OneLine(r.Branch)
+}

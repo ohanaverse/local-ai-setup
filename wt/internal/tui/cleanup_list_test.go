@@ -3056,3 +3056,77 @@ func TestListDropsIdentityTags(t *testing.T) {
 		}
 	}
 }
+
+// detailFixture is one worktree row with every fact the table can hide: a
+// PR, counts, an ignored count, a STATUS word, a verdict and a branch.
+func detailFixture() cleanup.Report {
+	r := cleanupFixture()
+	r.Rows = []cleanup.Row{{
+		Kind: cleanup.KindWorktree, Name: "wt-a", Path: "/repo/.worktrees/wt-a", Branch: "br-a",
+		Status: cleanup.StatusProven, Evidence: cleanup.EvPRTip, State: cleanup.StateInMain,
+		Diff: cleanup.DiffStat{Added: 3, Removed: 1}, Losses: cleanup.Losses{IgnoredEntries: 12},
+		PRTag: &cleanup.PRInfo{Number: 383, State: "MERGED"},
+	}}
+	return r
+}
+
+// detailAt is the highlighted row's detail block when the launch list is
+// drawn at width w: the view is rendered first, so the table is fitted.
+func detailAt(t *testing.T, w int) (string, *rowTable) {
+	t.Helper()
+	m := moveTo(t, newLaunchList(t, detailFixture(), w, 30), "wt-a")
+	_ = m.View()
+	return m.detail(), m.table
+}
+
+// widthWhere is the widest width at which the table's layout satisfies ok.
+func widthWhere(t *testing.T, ok func(*rowTable) bool) int {
+	t.Helper()
+	for w := 200; w >= 20; w-- {
+		if _, tbl := detailAt(t, w); ok(tbl) {
+			return w
+		}
+	}
+	t.Fatal("no width gives the wanted layout")
+	return 0
+}
+
+// TestDetailNamesWhatTheTableHides pins Review Focus "a hidden fact with no
+// way to see it": at each step of the narrow ladder the highlighted row's
+// detail block carries the fact that step took off the table — the ignored
+// count, the STATUS word, the verdict, the PR with its state, the branch —
+// and at full width it carries none of them (they are in the row). Widths come
+// from the table's own layout, and the comparison ignores line breaks (the
+// block wraps).
+func TestDetailNamesWhatTheTableHides(t *testing.T) {
+	has := func(detail, want string) bool { return strings.Contains(squash(detail), squash(want)) }
+
+	full := widthWhere(t, func(tbl *rowTable) bool { return tbl.Shown(rtIgn) && tbl.Shown(rtVerdict) && tbl.PRState() })
+	d, _ := detailAt(t, full)
+	for _, absent := range []string{"verdict safe", "ignored", "branch br-a", "PR #383"} {
+		if has(d, absent) {
+			t.Errorf("full width: detail %q already says %q, which the row shows", d, absent)
+		}
+	}
+
+	ign := widthWhere(t, func(tbl *rowTable) bool { return !tbl.Shown(rtIgn) && tbl.Shown(rtStatus) })
+	if d, _ := detailAt(t, ign); !has(d, "12 ignored") || has(d, "verdict safe") {
+		t.Errorf("IGN hidden (width %d): detail %q, want the ignored count and no verdict", ign, d)
+	}
+	status := widthWhere(t, func(tbl *rowTable) bool { return !tbl.Shown(rtStatus) && tbl.Shown(rtDiff) })
+	if d, _ := detailAt(t, status); !has(d, "status "+string(cleanup.StateInMain)) {
+		t.Errorf("STATUS hidden (width %d): detail %q, want its status", status, d)
+	}
+	verdict := widthWhere(t, func(tbl *rowTable) bool { return !tbl.Shown(rtVerdict) && tbl.PRState() })
+	if d, _ := detailAt(t, verdict); !has(d, "verdict safe") || !has(d, "+3/-1") {
+		t.Errorf("VERDICT and DIFF hidden (width %d): detail %q, want the verdict and the counts", verdict, d)
+	}
+	short := widthWhere(t, func(tbl *rowTable) bool { return !tbl.PRState() && !tbl.Merged() })
+	if d, _ := detailAt(t, short); !has(d, "PR #383 merged") {
+		t.Errorf("state word hidden (width %d): detail %q, want the PR and its state", short, d)
+	}
+	merged := widthWhere(t, func(tbl *rowTable) bool { return tbl.Merged() })
+	if d, _ := detailAt(t, merged); !has(d, "branch br-a") || !has(d, "PR #383 merged") {
+		t.Errorf("merged (width %d): detail %q, want the branch and the PR with its state", merged, d)
+	}
+}
