@@ -26,6 +26,11 @@ func modelCmdConfig() *config.Config {
 	return cfg
 }
 
+// sessionCommandFloor is the non-stub commands (the root included)
+// wt-session has after phase 4 stage 2; lower it only when a command leaves
+// on purpose.
+const sessionCommandFloor = 35
+
 // TestNoHelpTextNamesModelman pins success criterion 1 of the retirement for
 // wt's own help: no command's help may send a reader to modelman, which no
 // longer exists. It walks the whole command tree, so a command added later is
@@ -42,7 +47,9 @@ func TestNoHelpTextNamesModelman(t *testing.T) {
 	seen := 0
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
-		seen++
+		if _, stub := c.Annotations[removedCmdAnnotation]; !stub {
+			seen++
+		}
 		for _, text := range []string{c.Short, c.Long, c.Example, c.Deprecated, c.UsageString()} {
 			if strings.Contains(text, "modelman") {
 				t.Errorf("%s: help names modelman:\n%s", c.CommandPath(), text)
@@ -66,7 +73,7 @@ func TestNoHelpTextNamesModelman(t *testing.T) {
 		}
 	}
 	walk(rootCmdWith(testHooks()))
-	if seen < 20 {
-		t.Fatalf("walked %d commands, want the whole tree (wt has more than 20)", seen)
+	if seen < sessionCommandFloor {
+		t.Fatalf("walked %d commands, want at least %d", seen, sessionCommandFloor)
 	}
 }
