@@ -101,6 +101,7 @@ install-skill-codex: ## Install wt-repo-cleanup for Codex (~/.codex/skills)
 # on PATH (the test wt itself uses to launch an agent). An absent agent is skipped, not an error.
 install-all: install ## Install everything: make install, then the wt-repo-cleanup skill for each of claude, pi, codex on PATH
 	@$(MAKE) --no-print-directory install-skills
+	@echo "next: this installs no model server. On a machine that serves models, run 'wt-model setup' (Setup tab: choose local, then a); a session machine uses 'wt config' (Mode tab)."
 
 install-skills: ## Install wt-repo-cleanup for each of claude, pi and codex found on PATH
 	@installed=""; skipped=""; \

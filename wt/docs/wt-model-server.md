@@ -205,9 +205,11 @@ here, since a session's remote server is set on the Mode tab of `wt config`.
 - The rows show the platform, the LaunchAgent, the LiteLLM pair, the listener
   and each LiteLLM check. Keys (the footer names the ones that apply):
   `left`/`right`/`space` choose the mode, `down`/`enter` move through its
-  fields, `a` plans and applies, `c` checks, `r` re-reads, `s` / `x` / `R`
-  start, stop or restart the local server, `tab` switches tabs and `q`
-  quits. Two keys act on the LiteLLM LaunchAgent, each as a plan you
+  fields, `a` plans and applies (press it from the mode row: `enter` moves
+  into the listen field, where letters are typed as text and `esc` leaves
+  it), `c` checks, `r` re-reads, `s` / `x` / `R` start, stop or restart the
+  local server, `tab` switches tabs and `q` quits. Two keys act on the
+  LiteLLM LaunchAgent, each as a plan you
   confirm: `k` opens the master-key menu (use the key the plist already has,
   generate a new one, which rotates `LITELLM_MASTER_KEY` with a backup under
   `~/.config/wt-model/backups/`, or create the LiteLLM agent when it has no

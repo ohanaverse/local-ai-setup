@@ -126,6 +126,25 @@ func TestRestartOwedWhenConfigIsNewerThanTheProxy(t *testing.T) {
 	}
 }
 
+// TestRestartNotOwedWhenConfigAndProxyShareASecond pins that the proxy's start
+// time, which ps reports to the whole second, is not compared against the
+// config's sub-second mtime: `wt-model litellm sync` writes config.yaml and
+// restarts the proxy within one second, and that must not read as owed.
+func TestRestartNotOwedWhenConfigAndProxyShareASecond(t *testing.T) {
+	f, pair := llGood(t)
+	f.processStart = f.processStart.Truncate(time.Second)
+	f.modTimes[f.configPath] = f.processStart.Add(400 * time.Millisecond)
+	st := CheckLiteLLM(context.Background(), f.Env(), pair)
+	if st.RestartOwed.Status != CheckOK {
+		t.Errorf("same-second write = %+v, want ok", st.RestartOwed)
+	}
+	f.modTimes[f.configPath] = f.processStart.Add(time.Second)
+	st = CheckLiteLLM(context.Background(), f.Env(), pair)
+	if st.RestartOwed.Status != CheckWarn {
+		t.Errorf("write a second later = %+v, want warn", st.RestartOwed)
+	}
+}
+
 // TestPortMismatch pins that the plist's --port is compared with the port of
 // the configured proxy URL.
 func TestPortMismatch(t *testing.T) {

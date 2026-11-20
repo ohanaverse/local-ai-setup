@@ -282,7 +282,7 @@ The tab never installs LiteLLM, Postgres, Redis or Prisma, never touches the sal
 
 ### Optional: a wt-model LaunchAgent
 
-`wt-model serve` is a foreground process; this runs it at login beside the proxy. This is the file `wt-model setup` manages for `local` mode (`local.wt-model.serve`, token `~/.config/wt-model/server.token`); the tab recognises a plist with that label only when it carries wt's `managed by wt` marker comment, and otherwise reports it as not managed and never overwrites it, so a hand-made plist is yours to maintain. Use a token file (mode `0600`) that sessions also name (`token_file` under `[model-server]`, see [13-deployment-use-cases.md](13-deployment-use-cases.md)); a remote server's token is a separate file:
+`wt-model serve` is a foreground process; this runs it at login beside the proxy. The usual way is `wt-model setup` (choose `local`, press `a`, then `y`), which writes exactly this plist, the token file and `[model-server]` for you and loads the agent; the hand-written file below is the alternative. This is the file `wt-model setup` manages for `local` mode (`local.wt-model.serve`, token `~/.config/wt-model/server.token`); the tab recognises a plist with that label only when it carries wt's `managed by wt` marker comment, and otherwise reports it as not managed and never overwrites it, so a hand-made plist is yours to maintain. Use a token file (mode `0600`) that sessions also name (`token_file` under `[model-server]`, see [13-deployment-use-cases.md](13-deployment-use-cases.md)); a remote server's token is a separate file:
 
 ```bash
 mkdir -p ~/.config/wt-model
@@ -342,6 +342,7 @@ This plist carries no "managed by wt" marker, so wt's local-mode setup treats it
 | Stored provider keys fail to decrypt | `LITELLM_SALT_KEY` changed. Restore the original; there is no recovery otherwise. |
 | `wt` warns an `os.environ/NAME` is unset | `NAME` is missing from the plist's `EnvironmentVariables` (your shell does not count). Add it, then reload the job (row below). |
 | Edits to the plist have no effect | `launchd` reads it at load: `bootout`, then `bootstrap` again; a restart alone does not re-read it. |
+| `~/.litellm.err.log` shows `Prisma Client Exception connect(): 'Prisma' object has no attribute '_Prisma__engine'` at startup | A warning from LiteLLM's first connect attempt, seen on healthy installs (observed 2026-11-20 with the readiness `db` field `connected` and spend rows still written). Judge the database by the readiness `db` field and `wt-model setup`'s `database` check, not by this line; it is a fault only when those fail too. |
 | Plist is world-readable | `chmod 600`; it holds the master key, salt key and provider keys. |
 
 ## Going deeper
