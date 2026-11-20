@@ -114,10 +114,6 @@
   value `rescued` and the reason code `preserved` (additive, version 1
   unchanged); `remove-result` is unchanged. See `docs/wt-cleanup.md`.
 
-### Fixed
-
-- The Setup tab of `wt-model setup` no longer warns "config.yaml is newer than the proxy; restart it" right after a restart. `ps` reports the proxy's start to the whole second while `config.yaml`'s mtime has sub-second precision, so a `wt-model litellm sync` (which writes the config and restarts the proxy within one second) always read as owed; both are now compared to the second.
-
 ### Added
 
 - `wt job [ID] [--cancel]` lists the model server's queued and running
@@ -721,6 +717,12 @@
   shows what is on disk and running before a `wt start <id> --replace`.
 
 ### Fixed
+
+- The Setup tab of `wt-model setup` no longer warns "config.yaml is newer than
+  the proxy; restart it" right after a restart. `ps` reports the proxy's start
+  to the whole second while `config.yaml`'s mtime has sub-second precision, so
+  a `wt-model litellm sync` (which writes the config and restarts the proxy
+  within one second) always read as owed; both are now compared to the second.
 
 - `wt -W origin/<default>` (and `upstream/<default>`) never creates a linked
   worktree on a local branch literally named `origin/main`: the remote form
