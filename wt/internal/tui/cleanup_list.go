@@ -269,10 +269,11 @@ type cleanupListModel struct {
 	cursor int          // item index of the highlighted item; -1 with none
 	offset int          // the first list line on screen
 	rows   int          // number of row items (the new-worktree item excluded)
-	// table is the shared column layout every row line renders through
+	// table is the column layouts every row line renders through
 	// (rowtable): built from the report's rows once, refitted to m.width on
-	// every frame. Nil only before a report is loaded.
-	table         *tuilayout.Columns
+	// every frame (the layout it picks is what the header, the rows and
+	// detail() read). Nil only before a report is loaded.
+	table         *rowTable
 	width, height int
 	done          bool
 
@@ -1256,10 +1257,33 @@ func (m *cleanupListModel) detail() string {
 	if m.table != nil && !m.table.Shown(rtDiff) && it.row.Kind == cleanup.KindWorktree && !it.row.Bare && !it.row.Pending {
 		text += " · " + diffLine(it.row)
 	}
-	// Likewise the PR column: its fact is named here when the column is gone.
-	if m.table != nil && !m.table.Shown(rtPR) {
-		if pr := prLine(it.row); pr != "" {
-			text += " · " + pr
+	// Likewise every other fact the fitted layout does not draw is named here
+	// for the highlighted row: the ignored count while DIFF still shows, then
+	// STATUS, the verdict, the PR's state word (the number is always drawn)
+	// and, merged into NAME, the branch.
+	if m.table != nil {
+		add := func(line string) {
+			if line != "" {
+				text += " · " + line
+			}
+		}
+		if m.table.Shown(rtDiff) && !m.table.Shown(rtIgn) {
+			add(ignoredLine(it.row))
+		}
+		if !m.table.Shown(rtStatus) {
+			add(statusLine(it.row))
+		}
+		if !m.table.Shown(rtVerdict) {
+			add(verdictLine(it.row))
+		}
+		if !m.table.PRState() {
+			add(prLine(it.row))
+		}
+		if m.table.NameCut(it.row) {
+			add(nameLine(it.row))
+		}
+		if m.table.Merged() {
+			add(branchLine(it.row))
 		}
 	}
 	switch {

@@ -2922,13 +2922,16 @@ func TestRowListFitsWithFilterAndPendingFill(t *testing.T) {
 	if !strings.Contains(view, "filter: ma") {
 		t.Errorf("filter line missing:\n%s", view)
 	}
-	// Columns dropped whole: the header shows none of the droppable names
-	// (the never-drop WORKTREE heading is cut at the edge, never split
-	// into a partial droppable column).
-	for _, dropped := range []string{"PR#", "DIFF", "IGN", "STATUS"} {
+	// Columns dropped whole: the header shows none of the droppable names,
+	// and the PR# column is the one that stays (the worktree and branch
+	// merged into NAME at this width).
+	for _, dropped := range []string{"DIFF", "IGN", "STATUS", "VERDICT"} {
 		if strings.Contains(view, dropped) {
 			t.Errorf("dropped column %q still on screen at 40 columns:\n%s", dropped, view)
 		}
+	}
+	if !strings.Contains(view, "PR#") {
+		t.Errorf("the PR# column is gone at 40 columns:\n%s", view)
 	}
 	lines := strings.Split(view, "\n")
 	if last := lines[len(lines)-1]; !strings.Contains(last, "ctrl+c quit") {
@@ -3050,6 +3053,116 @@ func TestListDropsIdentityTags(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// detailFixture is one worktree row with every fact the table can hide: a
+// PR, counts, an ignored count, a STATUS word, a verdict and a branch.
+func detailFixture() cleanup.Report {
+	r := cleanupFixture()
+	r.Rows = []cleanup.Row{{
+		Kind: cleanup.KindWorktree, Name: "wt-a", Path: "/repo/.worktrees/wt-a", Branch: "br-a",
+		Status: cleanup.StatusProven, Evidence: cleanup.EvPRTip, State: cleanup.StateInMain,
+		Diff: cleanup.DiffStat{Added: 3, Removed: 1}, Losses: cleanup.Losses{IgnoredEntries: 12},
+		PRTag: &cleanup.PRInfo{Number: 383, State: "MERGED"},
+	}}
+	return r
+}
+
+// detailAt is the highlighted row's detail block when the launch list is
+// drawn at width w: the view is rendered first, so the table is fitted.
+func detailAt(t *testing.T, w int) (string, *rowTable) {
+	t.Helper()
+	m := moveTo(t, newLaunchList(t, detailFixture(), w, 30), "wt-a")
+	_ = m.View()
+	return m.detail(), m.table
+}
+
+// widthWhere is the widest width at which the table's layout satisfies ok.
+func widthWhere(t *testing.T, ok func(*rowTable) bool) int {
+	t.Helper()
+	for w := 200; w >= 20; w-- {
+		if _, tbl := detailAt(t, w); ok(tbl) {
+			return w
+		}
+	}
+	t.Fatal("no width gives the wanted layout")
+	return 0
+}
+
+// TestDetailNamesWhatTheTableHides pins Review Focus "a hidden fact with no
+// way to see it": at each step of the narrow ladder the highlighted row's
+// detail block carries the fact that step took off the table — the ignored
+// count, the STATUS word, the verdict, the PR with its state, the branch —
+// and at full width it carries none of them (they are in the row). Widths come
+// from the table's own layout, and the comparison ignores line breaks (the
+// block wraps).
+func TestDetailNamesWhatTheTableHides(t *testing.T) {
+	has := func(detail, want string) bool { return strings.Contains(squash(detail), squash(want)) }
+
+	full := widthWhere(t, func(tbl *rowTable) bool { return tbl.Shown(rtIgn) && tbl.Shown(rtVerdict) && tbl.PRState() })
+	d, _ := detailAt(t, full)
+	for _, absent := range []string{"verdict safe", "ignored", "branch br-a", "PR #383"} {
+		if has(d, absent) {
+			t.Errorf("full width: detail %q already says %q, which the row shows", d, absent)
+		}
+	}
+
+	ign := widthWhere(t, func(tbl *rowTable) bool { return !tbl.Shown(rtIgn) && tbl.Shown(rtStatus) })
+	if d, _ := detailAt(t, ign); !has(d, "12 ignored") || has(d, "verdict safe") {
+		t.Errorf("IGN hidden (width %d): detail %q, want the ignored count and no verdict", ign, d)
+	}
+	status := widthWhere(t, func(tbl *rowTable) bool { return !tbl.Shown(rtStatus) && tbl.Shown(rtDiff) })
+	if d, _ := detailAt(t, status); !has(d, "status "+string(cleanup.StateInMain)) {
+		t.Errorf("STATUS hidden (width %d): detail %q, want its status", status, d)
+	}
+	verdict := widthWhere(t, func(tbl *rowTable) bool { return !tbl.Shown(rtVerdict) && tbl.PRState() })
+	if d, _ := detailAt(t, verdict); !has(d, "verdict safe") || !has(d, "+3/-1") {
+		t.Errorf("VERDICT and DIFF hidden (width %d): detail %q, want the verdict and the counts", verdict, d)
+	}
+	short := widthWhere(t, func(tbl *rowTable) bool { return !tbl.PRState() && !tbl.Merged() })
+	if d, _ := detailAt(t, short); !has(d, "PR #383 merged") {
+		t.Errorf("state word hidden (width %d): detail %q, want the PR and its state", short, d)
+	}
+	merged := widthWhere(t, func(tbl *rowTable) bool { return tbl.Merged() })
+	if d, _ := detailAt(t, merged); !has(d, "branch br-a") || !has(d, "PR #383 merged") {
+		t.Errorf("merged (width %d): detail %q, want the branch and the PR with its state", merged, d)
+	}
+}
+
+// TestDetailRestatesANameTheTableCuts pins the carve-out in style guide L8:
+// when the merged NAME cell is cut with an ellipsis, the highlighted row's
+// detail text names it whole (it wraps, never cuts), for a worktree row and
+// for a branch row (which has no branch line to fall back on); and when the
+// cell is not cut the detail adds no such line. Why: the rule line above the
+// detail is cut at the same width, so without this the whole name is shown
+// nowhere on the list screen and two long names with a shared prefix cannot
+// be told apart.
+func TestDetailRestatesANameTheTableCuts(t *testing.T) {
+	long := "feature-a-rather-long-worktree-name-for-the-narrow-picker-end"
+	for _, kind := range []cleanup.Kind{cleanup.KindWorktree, cleanup.KindBranch} {
+		r := detailFixture()
+		r.Rows[0].Name, r.Rows[0].Branch, r.Rows[0].Path = long, long, "/repo/.worktrees/"+long
+		r.Rows[0].Kind = kind
+		if kind == cleanup.KindBranch {
+			r.Rows[0].Path = ""
+		}
+		at := func(w int) (string, *rowTable) {
+			m := moveTo(t, newLaunchList(t, r, w, 30), long)
+			_ = m.View()
+			return m.detail(), m.table
+		}
+		narrow, tbl := at(40)
+		if !tbl.Merged() {
+			t.Fatalf("kind %v: width 40 did not merge", kind)
+		}
+		if !strings.Contains(squash(narrow), squash("name "+long)) {
+			t.Errorf("kind %v: the cut name is not restated whole:\n%s", kind, narrow)
+		}
+		wide, tbl := at(200)
+		if tbl.Merged() || strings.Contains(squash(wide), squash("name "+long)) {
+			t.Errorf("kind %v: a name the table shows whole is restated anyway:\n%s", kind, wide)
 		}
 	}
 }

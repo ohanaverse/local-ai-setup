@@ -81,10 +81,7 @@ exists nowhere else) or `locked` (nothing can be done with it, and the detail
 screen says why), `-` while the row is still being read. `DIFF` is the uncommitted change
 counted diffstat-style (`+99/-55`; `-` when it could not be read, is over
 the caps or includes a binary, unreadable or non-regular file), `IGN` the ignored entries, `STATUS` one of `clean`, `dirty`,
-`in main`, `conflicted`, `-`. A narrow terminal gives columns up `PR#`, then
-`IGN`, `STATUS`, `DIFF`; the worktree, branch and verdict columns never drop,
-and the detail block then names the highlighted row's PR (`PR #3 open`, or
-`PR lookup unknown`) and `+N/-N · N ignored`.
+`in main`, `conflicted`, `-`. A narrow terminal takes the table down a ladder, each step only when the one before does not fit: `IGN`, `STATUS`, `DIFF` and `VERDICT` drop, in that order; then the PR cell loses its state word (`#383`, not `#383 merged`); then `WORKTREE` and `BRANCH` merge into one `NAME` column showing the worktree (the branch for a row with none); then `NAME` is cut with a trailing `…`, never the PR number. The detail block under the list names, for the highlighted row, whatever the table does not draw: `+N/-N · N ignored` (or `N ignored` alone), `status …`, `verdict …`, `PR #3 open` (or `PR lookup unknown`) and, once merged, `branch …` (plus `name …` when `NAME` is cut, since the rule line above the detail is cut at the same width).
 The list paints from the cheap git calls alone (`cleanup.GatherFacts`) and
 fills gates, ladder and PRs behind the first paint (`cleanup.FillDetails`,
 then the `gh` lookups); while that runs the removal keys (`enter`, `x`, `d`,

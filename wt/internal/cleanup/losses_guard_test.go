@@ -79,6 +79,7 @@ var lossSites = map[string]lossCounts{
 	// LossLines and RowTags.
 	"internal/tui/rowtable.go#rowCells":    {effective: 1},
 	"internal/tui/rowtable.go#diffLine":    {effective: 1},
+	"internal/tui/rowtable.go#ignoredLine": {effective: 1},
 	"internal/tui/cleanup_list.go#rowTags": {effective: 1},
 }
 

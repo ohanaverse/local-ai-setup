@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/charmbracelet/lipgloss"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -134,21 +135,21 @@ func TestRowTableWidthsAndRightAlignment(t *testing.T) {
 	rows := tableFixture()
 	cols := newRowTable(rows, rowPrefixWidthLaunch)
 
-	if len(cols.Widths) != 7 {
-		t.Fatalf("widths = %v, want 7 columns", cols.Widths)
+	if len(cols.full.Widths) != 7 {
+		t.Fatalf("widths = %v, want 7 columns", cols.full.Widths)
 	}
 	// Headings are the floor of every width.
 	for i, head := range []string{"WORKTREE", "BRANCH", "PR#", "DIFF", "IGN", "STATUS", "VERDICT"} {
-		if cols.Widths[i] < utf8.RuneCountInString(head) {
-			t.Errorf("column %d width %d is under its heading %q", i, cols.Widths[i], head)
+		if cols.full.Widths[i] < utf8.RuneCountInString(head) {
+			t.Errorf("column %d width %d is under its heading %q", i, cols.full.Widths[i], head)
 		}
 	}
 	// The widest cells set the rest: feat/x / #383 / +99/-55 / 12 / in main.
-	if cols.Widths[rtDiff] != utf8.RuneCountInString("+99/-55") {
-		t.Errorf("DIFF width = %d, want the widest cell %d", cols.Widths[rtDiff], utf8.RuneCountInString("+99/-55"))
+	if cols.full.Widths[rtDiff] != utf8.RuneCountInString("+99/-55") {
+		t.Errorf("DIFF width = %d, want the widest cell %d", cols.full.Widths[rtDiff], utf8.RuneCountInString("+99/-55"))
 	}
-	if cols.Widths[rtIgn] != utf8.RuneCountInString("IGN") && cols.Widths[rtIgn] != utf8.RuneCountInString("12") {
-		t.Errorf("IGN width = %d, want max(IGN, 12)", cols.Widths[rtIgn])
+	if cols.full.Widths[rtIgn] != utf8.RuneCountInString("IGN") && cols.full.Widths[rtIgn] != utf8.RuneCountInString("12") {
+		t.Errorf("IGN width = %d, want max(IGN, 12)", cols.full.Widths[rtIgn])
 	}
 
 	line := rowLine(rows[0], cols)
@@ -181,52 +182,199 @@ func TestRowTableWidthsAndRightAlignment(t *testing.T) {
 	}
 }
 
-// TestRowTableDropsColumnsInOrderAndWhole narrows the table width step by
-// step and records the width at which each column disappears: PR# first,
-// then IGN, then STATUS, then DIFF, while WORKTREE, BRANCH and VERDICT never
-// drop — not even at 10 columns. Why: the drop order is the contract for
-// what a narrow terminal keeps; a column dropped out of order hides the
-// wrong fact, and a half-shown column would break the alignment.
-func TestRowTableDropsColumnsInOrderAndWhole(t *testing.T) {
-	cols := newRowTable(tableFixture(), rowPrefixWidthLaunch)
+// TestRowTableLadder narrows the table one column of width at a time and
+// records the widest width at which each step of the ladder has happened:
+// IGN, STATUS, DIFF and VERDICT drop (in that order, VERDICT still drawn when
+// DIFF goes), then the PR state word, then WORKTREE and BRANCH merge into
+// NAME. The PR number is drawn at every width, and WORKTREE and BRANCH stay
+// until the merge. Why: the ladder is the contract for what a narrow terminal
+// keeps; a step taken out of order hides the wrong fact.
+func TestRowTableLadder(t *testing.T) {
+	for _, prefix := range []int{rowPrefixWidthLaunch, rowPrefixWidthManage} {
+		tbl := newRowTable(tableFixture(), prefix)
+		conds := map[string]func() bool{
+			"ign":     func() bool { return !tbl.Shown(rtIgn) },
+			"status":  func() bool { return !tbl.Shown(rtStatus) },
+			"diff":    func() bool { return !tbl.Shown(rtDiff) },
+			"verdict": func() bool { return !tbl.Shown(rtVerdict) },
+			"prstate": func() bool { return !tbl.PRState() },
+			"merged":  tbl.Merged,
+		}
+		first := map[string]int{} // step -> the widest width at which it has happened
+		for w := 200; w >= 1; w-- {
+			tbl.Fit(w)
+			if !tbl.Shown(rtPR) {
+				t.Fatalf("prefix %d width %d: the PR column is not drawn", prefix, w)
+			}
+			if !tbl.Merged() && (!tbl.Shown(rtWorktree) || !tbl.Shown(rtBranch)) {
+				t.Fatalf("prefix %d width %d: WORKTREE or BRANCH hidden before the merge", prefix, w)
+			}
+			for name, c := range conds {
+				if _, seen := first[name]; !seen && c() {
+					first[name] = w
+					if name == "diff" && !tbl.Shown(rtVerdict) {
+						t.Errorf("prefix %d: VERDICT already gone when DIFF first drops (width %d)", prefix, w)
+					}
+				}
+			}
+		}
+		prev := 201
+		for _, name := range []string{"ign", "status", "diff", "verdict", "prstate", "merged"} {
+			w, ok := first[name]
+			if !ok {
+				t.Fatalf("prefix %d: step %q never happened (%v)", prefix, name, first)
+			}
+			if w >= prev {
+				t.Fatalf("prefix %d: step %q at width %d is not after the previous step at %d (%v)", prefix, name, w, prev, first)
+			}
+			prev = w
+		}
+	}
+}
 
-	firstHide := map[int]int{} // column -> the widest width at which it is already hidden
-	for w := 200; w >= 10; w-- {
-		cols.Fit(w)
-		for c := range cols.Heads {
-			if !cols.Shown(c) {
-				if _, seen := firstHide[c]; !seen {
-					firstHide[c] = w
+// TestRowTableNeverWiderThanTheList fits the table at every width from the
+// narrowest the name floor allows up to 200 and checks the header (with its
+// title room) and every row line fit. Why: a line wider than the list is
+// cut at the terminal's edge — the PR number is what would be lost.
+func TestRowTableNeverWiderThanTheList(t *testing.T) {
+	for _, prefix := range []int{rowPrefixWidthLaunch, rowPrefixWidthManage} {
+		rows := tableFixture()
+		tbl := newRowTable(rows, prefix)
+		tbl.Fit(1) // the floor: the narrowest layout there is
+		floor := max(tbl.Width(), utf8.RuneCountInString(tbl.Header())+tuilayout.TitleRoom)
+		for w := floor; w <= 200; w++ {
+			tbl.Fit(w)
+			if got := utf8.RuneCountInString(tbl.Header()) + tuilayout.TitleRoom; got > w {
+				t.Fatalf("prefix %d width %d: header %q needs %d", prefix, w, tbl.Header(), got)
+			}
+			for i, r := range rows {
+				if got := prefix + utf8.RuneCountInString(rowLine(r, tbl)); got > w {
+					t.Fatalf("prefix %d width %d: row %d is %d wide: %q", prefix, w, i, got, rowLine(r, tbl))
 				}
 			}
 		}
 	}
-	for _, never := range []int{rtWorktree, rtBranch, rtVerdict} {
-		if w, hidden := firstHide[never]; hidden {
-			t.Errorf("column %d hidden at width %d: the never-drop columns stay", never, w)
+}
+
+// TestRowTableTruncatesNameKeepsPR narrows a table with one long name to one
+// rune under the untruncated merged layout: the NAME cell is cut with an
+// ellipsis, the PR number is whole and last on the line.
+func TestRowTableTruncatesNameKeepsPR(t *testing.T) {
+	long := "feature-very-long-worktree-name-x"
+	r := cleanup.Row{
+		Kind: cleanup.KindWorktree, Name: long, Branch: long,
+		Status: cleanup.StatusProven, State: cleanup.StateInMain,
+		PRTag: &cleanup.PRInfo{Number: 383, State: "MERGED"},
+	}
+	tbl := newRowTable([]cleanup.Row{r}, rowPrefixWidthLaunch)
+	w := tbl.merged.Width() - 1
+	tbl.Fit(w)
+	if !tbl.Merged() || tbl.PRState() {
+		t.Fatalf("merged=%v prstate=%v at width %d, want a merged layout without the state word", tbl.Merged(), tbl.PRState(), w)
+	}
+	line := rowLine(r, tbl)
+	if !strings.Contains(line, "…") || !strings.HasSuffix(line, "#383") {
+		t.Errorf("line %q: want a cut name and the PR number last", line)
+	}
+	if strings.Contains(line, long) {
+		t.Errorf("line %q still holds the whole name", line)
+	}
+	if got := rowPrefixWidthLaunch + utf8.RuneCountInString(line); got > w {
+		t.Errorf("line is %d wide at width %d: %q", got, w, line)
+	}
+}
+
+// TestRowTableWidensBack pins that the fit is recomputed from the whole
+// table: a frame that truncated the name leaves nothing behind once the
+// terminal is wide again.
+func TestRowTableWidensBack(t *testing.T) {
+	rows := tableFixture()
+	tbl := newRowTable(rows, rowPrefixWidthLaunch)
+	tbl.Fit(200)
+	header, line := tbl.Header(), rowLine(rows[0], tbl)
+	tbl.Fit(rowPrefixWidthLaunch + 12)
+	if !tbl.Merged() {
+		t.Fatalf("width %d did not merge", rowPrefixWidthLaunch+12)
+	}
+	tbl.Fit(200)
+	if tbl.Header() != header || rowLine(rows[0], tbl) != line {
+		t.Errorf("after widening: header %q line %q, want %q and %q", tbl.Header(), rowLine(rows[0], tbl), header, line)
+	}
+}
+
+// TestRowTableTinyWidthsDoNotPanic fits and renders at widths below any
+// layout: the line is cut by the list's own clip, but nothing panics (a
+// negative repeat count would).
+func TestRowTableTinyWidthsDoNotPanic(t *testing.T) {
+	for _, prefix := range []int{rowPrefixWidthLaunch, rowPrefixWidthManage} {
+		rows := tableFixture()
+		tbl := newRowTable(rows, prefix)
+		for w := 0; w <= 12; w++ {
+			tbl.Fit(w)
+			_ = tbl.Header()
+			for _, r := range rows {
+				_ = rowLine(r, tbl)
+			}
 		}
 	}
-	// PR# disappears at the widest width, then IGN, then STATUS, then DIFF.
-	prev := 200
-	for _, c := range []int{rtPR, rtIgn, rtStatus, rtDiff} {
-		w, ok := firstHide[c]
-		if !ok {
-			t.Fatalf("column %d never dropped", c)
-		}
-		if w >= prev {
-			t.Fatalf("drop order wrong: column %d hidden at %d after a column hidden at %d (map %v)", c, w, prev, firstHide)
-		}
-		prev = w
+}
+
+// TestPendingRowInMergedMode: a facts-only row keeps its name and reads "-"
+// for its PR in the merged layout.
+func TestPendingRowInMergedMode(t *testing.T) {
+	rows := tableFixture()
+	tbl := newRowTable(rows, rowPrefixWidthLaunch)
+	tbl.Fit(tbl.merged.Width()) // the widest merged layout: names whole
+	if !tbl.Merged() {
+		t.Fatalf("width %d did not merge", tbl.merged.Width())
 	}
-	// Columns are whole: Fit either shows a column or hides it, and the
-	// header names exactly the shown ones.
-	cols.Fit(40)
-	header := cols.Header()
-	for c, head := range cols.Heads {
-		name := strings.TrimSpace(head)
-		if cols.Shown(c) != strings.Contains(header, name) {
-			t.Errorf("column %d (%q) shown=%v but header %q disagrees", c, name, cols.Shown(c), header)
+	line := rowLine(rows[3], tbl) // pending-wt
+	if !strings.Contains(line, "pending") || !strings.HasSuffix(line, "-") {
+		t.Errorf("pending row in merged mode = %q, want its name and a - PR cell", line)
+	}
+}
+
+// TestShortPRCell: the PR cell without its state word.
+func TestShortPRCell(t *testing.T) {
+	for in, want := range map[string]string{"#12 merged": "#12", "#3 open": "#3", "?": "?", "-": "-", "": ""} {
+		if got := shortPRCell(in); got != want {
+			t.Errorf("shortPRCell(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestTruncateNameKeepsRunesWhole: the cut is on a rune boundary and the
+// ellipsis counts toward the width.
+func TestTruncateNameKeepsRunesWhole(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		w    int
+		want string
+	}{
+		{"feature-login", 8, "feature…"},
+		{"héllo-wörld", 6, "héllo…"},
+		{"日本語のブランチ", 4, "日…"}, // cells: 日 is two, the ellipsis one, one cell spare
+		{"abc", 3, "abc"},
+		{"abc", 1, "…"},
+	} {
+		got := truncateName(c.in, c.w)
+		if got != c.want || lipgloss.Width(got) > c.w || !utf8.ValidString(got) {
+			t.Errorf("truncateName(%q, %d) = %q, want %q", c.in, c.w, got, c.want)
+		}
+	}
+}
+
+// TestMergedNamePicksWorktreeElseBranch: the merged NAME is the worktree's
+// name when the row has one, else the branch cell.
+func TestMergedNamePicksWorktreeElseBranch(t *testing.T) {
+	rows := tableFixture()
+	for i, want := range []string{"feat/x", "wt-loose", "bare.git", "pending-wt", "solo", "origin/feat/y"} {
+		if got := mergedName(rows[i]); got != want {
+			t.Errorf("row %d: mergedName = %q, want %q", i, got, want)
+		}
+	}
+	if got := mergedName(cleanup.Row{Kind: cleanup.KindWorktree, Branch: "b"}); got != "b" {
+		t.Errorf("worktree row with no name: mergedName = %q, want the branch b", got)
 	}
 }
 
@@ -322,16 +470,17 @@ func TestVerdictColumnIsShort(t *testing.T) {
 		}
 	}
 	cols := newRowTable(rows, rowPrefixWidthManage)
-	cols.Fit(80)
+	cols.Fit(200)
 	if !cols.Shown(rtVerdict) || !strings.Contains(cols.Header(), "VERDICT") {
-		t.Errorf("VERDICT not drawn at 80 columns: %q", cols.Header())
+		t.Errorf("VERDICT not drawn on a wide terminal: %q", cols.Header())
 	}
 }
 
 // TestPRLineNamesThePRWhenTheColumnIsGone pins the detail block's fallback
-// for a dropped PR# column: the PR and its state, "PR lookup unknown", and
-// nothing for no PR or a pending row. Why: the column is the first dropped on
-// a narrow terminal and is the only other place the PR fact reads.
+// for a PR cell that has lost its state word: the PR and its state, "PR
+// lookup unknown", and nothing for no PR or a pending row. Why: once the
+// state word is cut on a narrow terminal the detail line is the only other
+// place the PR's state reads.
 func TestPRLineNamesThePRWhenTheColumnIsGone(t *testing.T) {
 	for _, c := range []struct {
 		row  cleanup.Row
@@ -344,6 +493,74 @@ func TestPRLineNamesThePRWhenTheColumnIsGone(t *testing.T) {
 	} {
 		if got := prLine(c.row); got != c.want {
 			t.Errorf("prLine(%+v) = %q, want %q", c.row, got, c.want)
+		}
+	}
+}
+
+// TestDetailLineHelpers pins the sentences the detail block uses for a fact
+// the table does not draw: the verdict word, the STATUS word, the ignored
+// count and the branch — each "" when the row has nothing to say (pending,
+// bare, no branch). Why: a hidden column's fact is only reachable through
+// these lines.
+func TestDetailLineHelpers(t *testing.T) {
+	rows := tableFixture()
+	if got := verdictLine(rows[0]); got != "verdict safe" {
+		t.Errorf("verdictLine(proven) = %q, want %q", got, "verdict safe")
+	}
+	if got := verdictLine(rows[3]); got != "" {
+		t.Errorf("verdictLine(pending) = %q, want empty", got)
+	}
+	if got := statusLine(rows[1]); !strings.HasPrefix(got, "status ") || !strings.Contains(got, string(rows[1].State)) {
+		t.Errorf("statusLine(dirty) = %q, want %q plus its state", got, "status ")
+	}
+	if got := statusLine(rows[3]); got != "" {
+		t.Errorf("statusLine(pending) = %q, want empty", got)
+	}
+	if got := ignoredLine(rows[0]); got != "12 ignored" {
+		t.Errorf("ignoredLine = %q, want %q", got, "12 ignored")
+	}
+	for _, i := range []int{2, 3, 4} { // bare, pending, branch row
+		if got := ignoredLine(rows[i]); got != "" {
+			t.Errorf("ignoredLine(row %d) = %q, want empty", i, got)
+		}
+	}
+	if got := branchLine(rows[0]); got != "branch feat/x" {
+		t.Errorf("branchLine = %q, want %q", got, "branch feat/x")
+	}
+	if got := branchLine(rows[1]); got != "" { // detached worktree: no branch
+		t.Errorf("branchLine(detached) = %q, want empty", got)
+	}
+}
+
+// TestWideNamesKeepThePRNumber fits a table holding a CJK worktree name (two
+// terminal cells per character) beside an ASCII one at every width from the
+// narrowest layout up: no line is wider than the list in cells, and wherever
+// the state word is gone the PR number ends the line whole. Why: the user's
+// rule is that the PR number is never cut; counting runes instead of cells
+// let a wide name push "#77" off the edge, or cut it to "#7".
+func TestWideNamesKeepThePRNumber(t *testing.T) {
+	wide := "日本語のブランチ名前がとても長い作業ツリー"
+	rows := []cleanup.Row{
+		{Kind: cleanup.KindWorktree, Name: wide, Branch: wide, Status: cleanup.StatusProven,
+			PRTag: &cleanup.PRInfo{Number: 77, State: "MERGED"}},
+		{Kind: cleanup.KindWorktree, Name: "feat/x", Branch: "feat/x", Status: cleanup.StatusProven,
+			PRTag: &cleanup.PRInfo{Number: 383, State: "MERGED"}},
+	}
+	for _, prefix := range []int{rowPrefixWidthLaunch, rowPrefixWidthManage} {
+		tbl := newRowTable(rows, prefix)
+		tbl.Fit(1)
+		floor := max(tbl.Width(), lipgloss.Width(tbl.Header())+tuilayout.TitleRoom)
+		for w := floor; w <= 160; w++ {
+			tbl.Fit(w)
+			for i, want := range []string{"#77", "#383"} {
+				line := strings.Repeat(" ", prefix) + rowLine(rows[i], tbl)
+				if got := lipgloss.Width(line); got > w {
+					t.Fatalf("prefix %d width %d: row %d is %d cells wide: %q", prefix, w, i, got, line)
+				}
+				if !tbl.PRState() && !strings.HasSuffix(strings.TrimRight(line, " "), want) {
+					t.Fatalf("prefix %d width %d: row %d lost its PR number %s: %q", prefix, w, i, want, line)
+				}
+			}
 		}
 	}
 }
