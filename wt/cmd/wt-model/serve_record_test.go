@@ -14,11 +14,11 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
 )
 
-// testRuntime is a runtime whose record lives in a scratch directory, never
+// testRuntime is a serveRuntime whose record lives in a scratch directory, never
 // the developer's wt-model home.
-func testRuntime(t *testing.T) runtime {
+func testRuntime(t *testing.T) serveRuntime {
 	t.Helper()
-	return runtime{Record: servestate.Store{Path: filepath.Join(t.TempDir(), "serve.json")}}
+	return serveRuntime{Record: servestate.Store{Path: filepath.Join(t.TempDir(), "serve.json")}}
 }
 
 // listeningAddr parses the bound address out of serve's announce line.
@@ -132,7 +132,7 @@ func TestServeKeepsServingWhenTheRecordCannotBeWritten(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rt := runtime{Record: servestate.Store{Path: filepath.Join(blocker, "serve.json")}}
+	rt := serveRuntime{Record: servestate.Store{Path: filepath.Join(blocker, "serve.json")}}
 	readErr, _, stop := serveUntilListeningWith(t, rt, writeToken(t, 0o600))
 	stderr := readErr()
 	if !strings.Contains(stderr, "wt-model: note: could not write the runtime record (") {
@@ -163,6 +163,9 @@ func TestMainKeepsTheRecordOffTheRealHome(t *testing.T) {
 	p := servestate.Default().Path
 	if p == "" {
 		t.Fatal("Default().Path is empty")
+	}
+	if os.Getenv("XDG_CONFIG_HOME") == "" {
+		t.Fatal("XDG_CONFIG_HOME is empty: the test isolation no longer redirects the config home")
 	}
 	if !strings.HasPrefix(p, os.Getenv("XDG_CONFIG_HOME")+string(filepath.Separator)) {
 		t.Fatalf("Default().Path = %q, not under XDG_CONFIG_HOME %q", p, os.Getenv("XDG_CONFIG_HOME"))

@@ -111,7 +111,7 @@ func serveUntilListening(t *testing.T) (readStderr, readStdout func() string, st
 // the announce line has landed, plus a stop function that cancels the run and
 // returns the command's error. A test that parses the startup lines stops the
 // run first, so no later line can interleave.
-func serveUntilListeningWith(t *testing.T, rt runtime, tokenPath string) (readStderr, readStdout func() string, stop func() error) {
+func serveUntilListeningWith(t *testing.T, rt serveRuntime, tokenPath string) (readStderr, readStdout func() string, stop func() error) {
 	t.Helper()
 	cmd := rootCmd(fakeDeps, rt)
 	readErr, pwErr := newLockedBuffer()

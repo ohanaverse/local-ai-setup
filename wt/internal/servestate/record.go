@@ -1,8 +1,8 @@
 // Package servestate is the runtime record wt-model serve writes while it
 // runs, so a host command can find the live server; it never holds the token.
 //
-// The record is serve.json in the wt-model home, mode 0600 in a 0700
-// directory, and names the server's pid, its bound listen address and the
+// The record is serve.json in the wt-model home, mode 0600 (the directory is
+// made 0700 only when it does not exist yet), and names the server's pid, its bound listen address and the
 // path of its token file. A stale record (a server that died without
 // removing it) is tolerated: a reader always verifies by pinging the address.
 package servestate

@@ -67,7 +67,7 @@ const recordNoteFormat = "wt-model: note: could not write the runtime record (%s
 
 // serveCmd is `wt-model serve`. rt.Record is where it keeps its runtime
 // record while it runs.
-func serveCmd(mk depsFactory, rt runtime) *cobra.Command {
+func serveCmd(mk depsFactory, rt serveRuntime) *cobra.Command {
 	var listen, tokenFile string
 	idle := defaultIdleGrace
 	cmd := &cobra.Command{

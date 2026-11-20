@@ -411,7 +411,8 @@ time; never the token itself or any key:
 {"version": 1, "pid": 4242, "listen": "127.0.0.1:8787", "token_file": "/Users/user_name/.config/wt-model/server.token", "started": "2026-11-19T10:00:00Z"}
 ```
 
-The file is mode 0600 in a 0700 home and is written (atomically) before the
+The file is mode 0600 (the home is made 0700 only when serve has to create it;
+an existing home keeps its mode) and is written (atomically) before the
 listening line, so whoever saw that line can read it. A record that cannot be
 written is one `wt-model: note: could not write the runtime record (…)` line on
 stderr and the server goes on serving; host commands then cannot see its
