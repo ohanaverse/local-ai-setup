@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
@@ -185,7 +186,10 @@ func checkRestartOwed(ctx context.Context, env Env) Check {
 	if err != nil {
 		return Check{Detail: "config.yaml not readable"}
 	}
-	if info.ModTime().After(started) {
+	// ps reports the start to the whole second, so compare whole seconds: a sync
+	// writes config.yaml and restarts the proxy within one second, and the
+	// config's sub-second mtime would otherwise always read as newer.
+	if info.ModTime().Truncate(time.Second).After(started.Truncate(time.Second)) {
 		return Check{CheckWarn, "config.yaml is newer than the proxy; restart it"}
 	}
 	return Check{CheckOK, "proxy has read config.yaml"}

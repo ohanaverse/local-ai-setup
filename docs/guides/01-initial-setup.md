@@ -70,6 +70,13 @@ ollama pull qwen3.8:27b-mlx
 wt-model model init
 wt start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it needs no `[[models]]` entry: with the `ollama` provider row in registry.toml, a pulled model starts by its `ollama/<name:tag>` id). No routing step: the start writes the model_list entry and restarts the proxy; a pulled ollama model stays routed after a stop
 
+# 4b. the model server: every session reaches its model through `wt-model serve`, and with no mode chosen every
+# command that needs a model refuses. `make install` / `make install-all` install the binaries but set none of this up.
+# On this machine, open the Setup tab, press space to choose `local`, `a` to plan, then `y` to apply: it writes the token
+# file, a LaunchAgent that starts `wt-model serve` at login (127.0.0.1:8787) and `[model-server]` in config.toml
+# (wt/docs/wt-model-server.md). A session machine uses the Mode tab of `wt config` instead.
+wt-model setup
+
 # 5. Restart the LiteLLM LaunchAgent (wt already restarted it after the sync — this is only needed if that restart was skipped or failed; it lets a request in flight finish, then waits for the proxy to answer when a LiteLLM url is configured — guide 14 section 10)
 wt-model litellm restart
 
