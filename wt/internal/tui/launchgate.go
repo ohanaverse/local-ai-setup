@@ -120,6 +120,10 @@ func foldRowFacts(t launchwarn.Target, row *launchwarn.Target) launchwarn.Target
 // a terminal the warnings print and the launch proceeds, stdin never read.
 func (m model) gateFor() func() (bool, error) {
 	return func() (bool, error) {
+		if m.gateAnswer != nil && m.gateTarget != nil {
+			// The popup asked and read the Target: consume it, never re-read.
+			return m.launchGate(m.gateTarget, stdinTTY())
+		}
 		t, readErr := m.launchTarget()
 		if readErr != nil {
 			fmt.Fprintf(os.Stderr, "wt: note: %v\n", readErr)
@@ -166,8 +170,10 @@ func (m model) launchGate(t *launchwarn.Target, isTTY bool) (ok bool, err error)
 		// informational line either, as confirmLaunch decides it.
 		info = ""
 	}
-	if !launchwarn.Check(os.Stdin, os.Stderr, isTTY, warnings, info, t.Creation) {
-		return false, nil
+	if m.gateAnswer == nil {
+		if !launchwarn.Check(os.Stdin, os.Stderr, isTTY, warnings, info, t.Creation) {
+			return false, nil
+		}
 	}
 	if t.Hint != "" {
 		fmt.Fprintf(os.Stderr, "wt: %s\n", t.Hint)

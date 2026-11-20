@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -165,6 +166,18 @@ type model struct {
 	// every selection, as creation and typedPlan are, so an abandoned pick's
 	// row never rides along with a later one.
 	pickedRow *cleanup.Row
+
+	// gateTarget is the Target the launch popup evaluated (nil: no popup
+	// path). The released-phase gate consumes it instead of reading again, so
+	// a session that appeared while the popup was open is never confirmed
+	// against questions that no longer match what the gate acts on. commitAsk
+	// resets it at every commit; a decline clears it.
+	gateTarget *launchwarn.Target
+
+	// gateAnswer is set (to true) when the popup answered yes: the
+	// released-phase gate then asks nothing raw and only creates and claims.
+	// Set together with gateTarget; reset at every commit, cleared by a decline.
+	gateAnswer *bool
 
 	// committed is the commit point's in-flight guard: the first selection
 	// that reaches a run command takes it (commitLaunch) and every further
