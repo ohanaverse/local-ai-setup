@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"io"
 	"os"
 	"strings"
@@ -11,17 +10,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
-
-// stubSignals replaces the signal-context seam with a plain cancellable
-// context, so a test can cancel a start without installing a real handler.
-func stubSignals(t *testing.T) context.CancelFunc {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	old := startSignalCtx
-	startSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, cancel }
-	t.Cleanup(func() { startSignalCtx = old; cancel() })
-	return cancel
-}
 
 // TestAskYesNoDefaultsToNo verifies the confirm rule the replace prompt
 // relies on: only an explicit y/yes consents; an empty line, other text, or

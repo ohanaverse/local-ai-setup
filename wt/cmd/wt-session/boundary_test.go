@@ -57,9 +57,8 @@ func boundarySessionFiles(t *testing.T) []string {
 // provider.X) is matched by the import path the file binds that local name
 // to, so a local variable that happens to be called provider is not flagged.
 // A method selector (.ResolveRoute, .IsLitellm, .LitellmBaseURL,
-// .LitellmAPIKey, and the host's registry wrapper .hostConfig and
-// .hostConfigErr, R3) is matched by name on any receiver, called or used as a
-// method value. A dot-import of a banned package is a violation of its own:
+// .LitellmAPIKey, and the host's registry wrapper .hostConfig, R3) is matched
+// by name on any receiver, called or used as a method value. A dot-import of a banned package is a violation of its own:
 // its names would be bare identifiers the selector match cannot see.
 func boundaryViolations(fset *token.FileSet, path string, src any) ([]string, error) {
 	f, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
@@ -92,7 +91,7 @@ func boundaryViolations(fset *token.FileSet, path string, src any) ([]string, er
 		}
 		return strings.TrimPrefix(p, modulePath+"/internal/")
 	}
-	bannedMethods := map[string]bool{"ResolveRoute": true, "IsLitellm": true, "LitellmBaseURL": true, "LitellmAPIKey": true, "hostConfig": true, "hostConfigErr": true}
+	bannedMethods := map[string]bool{"ResolveRoute": true, "IsLitellm": true, "LitellmBaseURL": true, "LitellmAPIKey": true, "hostConfig": true}
 	report := func(n ast.Node, fn, what string) {
 		out = append(out, fmt.Sprintf("%s:%d: %s: %s", path, fset.Position(n.Pos()).Line, fn, what))
 	}
@@ -319,8 +318,8 @@ func protectedPaths(a *app) {
 // every kind of banned use is one: a call or a
 // selector through an import alias (one per banned package, a package-level
 // `var _ = lc.X` included), a provider type, a banned method used as a value
-// rather than called, a call of the host config wrapper (hostConfig,
-// hostConfigErr) and a dot-import of a banned package. Without it a scanner
+// rather than called, a call of the host config wrapper (hostConfig) and a
+// dot-import of a banned package. Without it a scanner
 // regression would let TestSessionPathsNeverTouchTheRegistryOrLifecycle pass
 // over a real violation.
 func TestBoundaryScanSeesOnlyCode(t *testing.T) {
@@ -348,7 +347,6 @@ func f(a *app, p struct{ Name string }) string {
 	var _ provider.Family
 	key := a.cfg.LitellmAPIKey
 	_, _ = a.hostConfig()
-	_ = a.hostConfigErr()
 	_ = key
 	return p.Name
 }
@@ -368,7 +366,6 @@ func f(a *app, p struct{ Name string }) string {
 		"x.go:22: f: provider.Family",
 		"x.go:23: f: .LitellmAPIKey",
 		"x.go:24: f: .hostConfig",
-		"x.go:25: f: .hostConfigErr",
 	}
 	if strings.Join(vs, "\n") != strings.Join(want, "\n") {
 		t.Errorf("violations =\n%s\nwant\n%s", strings.Join(vs, "\n"), strings.Join(want, "\n"))

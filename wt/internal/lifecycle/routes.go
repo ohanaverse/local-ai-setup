@@ -536,9 +536,9 @@ func bounceRoutes(ctx context.Context, cfg *config.Config) {
 // done rather than at the end of the LiteLLM proxy machinery that is off the
 // model-serving path.
 //
-// This is not a wall-clock saving for a plain `wt start`/`wt stop`: main()
-// calls WaitPendingRoutes() before the process exits, so those commands still
-// pay the full restart. What it buys is that the work between the route write
+// This is not a wall-clock saving for a plain `wt-model stop`: wt-model's
+// main() calls WaitPendingRoutes() before the process exits, so it still pays
+// the full restart. What it buys is that the work between the route write
 // and that exit — the engine's own return, progress output, the stop picker,
 // the survey — no longer sits behind the proxy, and that each caller decides
 // for itself where it needs the proxy ready: the launch paths wait explicitly

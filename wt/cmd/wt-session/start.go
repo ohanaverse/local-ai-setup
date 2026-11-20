@@ -1,21 +1,12 @@
 package main
 
 import (
-	"context"
 	"io"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 )
-
-// startSignalCtx is a test seam over signal.NotifyContext: a test needs a
-// cancellable context without installing a real signal handler.
-var startSignalCtx = func() (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-}
 
 // startProgressInterval is how often the current stage is repeated while the
 // engine works, so a multi-minute warmup keeps showing signs of life.

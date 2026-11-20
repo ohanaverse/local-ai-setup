@@ -163,8 +163,7 @@ type app struct {
 	// silently overwrite the malformed file with just "enabled = false",
 	// destroying every hand-authored profile and comment) and
 	// list/show/status must report the error instead of rendering an
-	// empty/default profiles view. Mirrors how hostLoadErr/hostCfgErr
-	// separate "config.Load failed" from "config validation failed".
+	// empty/default profiles view.
 	profilesLoadErr error
 	// profilesValidateErr is set ONLY when profiles.Validate() fails, which
 	// only runs when Load succeeded — a.profiles therefore still holds the
@@ -201,39 +200,24 @@ type app struct {
 	builtSet bool
 
 	// The host's config (hostConfig): config.toml and registry.toml through
-	// config.Load, read on first use by a host command and cached. hostCfg is
-	// never nil once hostSet (an empty default when the load failed);
-	// hostLoadErr is config.Load's error alone (parse, I/O, a missing
-	// registry), which protectedPaths and noRegistry read; hostCfgErr is that
-	// error or else the validation error, for the commands that need a valid
-	// registry.
+	// config.Load, read on first use and cached. hostCfg is never nil once
+	// hostSet (an empty default when the load failed); hostLoadErr is
+	// config.Load's error alone (parse, I/O, a missing registry), which
+	// protectedPaths and noRegistry read.
 	hostCfg     *config.Config
 	hostLoadErr error
-	hostCfgErr  error
 	hostSet     bool
 }
 
-// hostConfig is the host's config: config.Load (config.toml and the
-// registry), read once, on first use, and cached; the error is config.Load's
-// alone. Only the host commands read it (R3:
-// `served`, `warm`, `stop <provider>|--all`, `litellm`, `wt config`,
-// `stats`' registry note) and protectedPaths
-// (R10): a session path reads sessionCfg, never the registry. The returned
-// config is never nil: an empty default stands in when the load failed, as
-// newApp's did before the flip, so a command that tolerates a load error
-// (the config editor) still has a value to hand on. The cache is
-// unsynchronized: the main goroutine only.
+// hostConfig is the host's config: config.Load, read once and cached; only
+// protectedPaths and noRegistry (R10, the cleanup commands' protected-path
+// read) and stats' family fallback (spendFromServer) read it, best-effort, on
+// a machine that may have no registry. A session path reads sessionCfg. The
+// returned config is never nil: an empty default stands in when the load
+// failed. The cache is unsynchronized: the main goroutine only.
 func (a *app) hostConfig() (*config.Config, error) {
 	a.loadHost()
 	return a.hostCfg, a.hostLoadErr
-}
-
-// hostConfigErr is hostConfig's load error, or else the loaded config's
-// validation error: what a host command that needs a valid registry (`wt
-// stop <provider>`, the config editor's banner) refuses on.
-func (a *app) hostConfigErr() error {
-	a.loadHost()
-	return a.hostCfgErr
 }
 
 // loadHost reads the host's config once.
@@ -245,11 +229,7 @@ func (a *app) loadHost() {
 	if cfg == nil {
 		cfg = &config.Config{DefaultTag: "code"}
 	}
-	verr := err
-	if verr == nil {
-		verr = cfg.Validate()
-	}
-	a.hostCfg, a.hostLoadErr, a.hostCfgErr, a.hostSet = cfg, err, verr, true
+	a.hostCfg, a.hostLoadErr, a.hostSet = cfg, err, true
 }
 
 // profileState packages a's already-loaded profiles.toml state for

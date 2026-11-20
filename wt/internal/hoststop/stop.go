@@ -1,6 +1,6 @@
-// Package hoststop is the host half of `wt stop`: one live inventory round
-// read into the stoppable candidates and provider families (ReadStopState),
-// and the stop loop that takes them down (StopEntries). It drives the
+// Package hoststop is `wt-model stop <provider>|--all`: one live inventory
+// round read into the stoppable candidates and provider families
+// (ReadStopState), and the stop loop that takes them down (StopEntries). It drives the
 // lifecycle engine and reads the local inventory, so it sits on the admin
 // side of the import graph (internal/depcheck): a session library package
 // never links it. The numbered picker a client session prompts with is
@@ -23,7 +23,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
-// stopDeps are `wt stop`'s seams: live inventory, the two live-session
+// stopDeps are `wt-model stop`'s seams: live inventory, the two live-session
 // reads, the batch of stops, the batch's single proxy restart and the pidfile
 // read behind a refused port. Tests substitute all six.
 type stopDeps struct {
@@ -127,7 +127,7 @@ type FamilyState struct {
 	Loading lifecycle.Loading
 }
 
-// StopState is the view `wt stop` acts on, from one inventory round:
+// StopState is the view `wt-model stop` acts on, from one inventory round:
 // Candidates is every running, trusted, stoppable model, in-use ones
 // included; Families is keyed by provider family (localmodels.Family).
 type StopState struct {
@@ -151,7 +151,7 @@ func (s StopState) Unknown() []string {
 // Loading returns, by family, what a pidfile behind a refused port said
 // (FamilyState.Loading) for the families where it said anything: a server
 // still loading, a live process that is not one, or a process table wt could
-// not read. None of them is a candidate, so `wt stop` cannot list them.
+// not read. None of them is a candidate, so `wt-model stop` cannot list them.
 func (s StopState) Loading() map[string]lifecycle.Loading {
 	out := map[string]lifecycle.Loading{}
 	for fam, fs := range s.Families {
@@ -163,7 +163,7 @@ func (s StopState) Loading() map[string]lifecycle.Loading {
 }
 
 // ReadStopState takes one live inventory snapshot and one read of the live
-// sessions and returns what `wt stop` needs from them.
+// sessions and returns what `wt-model stop` needs from them.
 func ReadStopState(cfg *config.Config) StopState {
 	return ReadStopStateSessions(cfg, nil)
 }
@@ -323,14 +323,12 @@ func candidatesFrom(snap localmodels.Snapshot, d stopDeps) []Candidate {
 }
 
 // stopSignalCtx is a test seam: production uses realStopSignalCtx, following the
-// var/realfunc shape wt/CLAUDE.md documents for package-level seams. (cmd/wt-session's
-// startSignalCtx covers the same ground for the start path but is an inline
-// closure, so what the two share is the intent, not the declaration form.)
+// var/realfunc shape wt/CLAUDE.md documents for package-level seams.
 var stopSignalCtx = realStopSignalCtx
 
 // realStopSignalCtx returns a context cancelled by Ctrl+C or SIGTERM. Without
 // a context of its own, a wedged `ollama stop`/`omlx stop`/`mtplx stop` would
-// block `wt stop` with no way out but killing the terminal. Cancelling is
+// block `wt-model stop` with no way out but killing the terminal. Cancelling is
 // deliberately not fatal — the stop in flight is killed, the rest are skipped,
 // and wt still prints its summary.
 func realStopSignalCtx() (context.Context, context.CancelFunc) {
@@ -339,11 +337,11 @@ func realStopSignalCtx() (context.Context, context.CancelFunc) {
 
 // ErrStopCancelled is what a stop loop returns when Ctrl+C or SIGTERM ended it
 // early. It is a value, not only a message, so a caller with more to stop
-// after the loop (`wt stop --all`, which halts the omlx service next) can tell
+// after the loop (`wt-model stop --all`, which halts the omlx service next) can tell
 // "the user asked to stop" from "a stop failed" and leave the rest alone.
 var ErrStopCancelled = errors.New("cancelled")
 
-// stopEntries is `wt stop`'s stop loop: stops with progress lines, one
+// stopEntries is `wt-model stop`'s stop loop: stops with progress lines, one
 // failure never blocks the rest, Ctrl+C (ctx) cancels the stop in flight and
 // skips the remainder. Returns nil, a "N of M stops failed" error, or
 // ErrStopCancelled.
@@ -352,7 +350,7 @@ var ErrStopCancelled = errors.New("cancelled")
 // first line, then each model is reported in order, an ollama model once
 // ollama has unloaded it. The waits share one bound, so ollama models
 // finishing long requests cost that bound once, not once each, before the
-// models after them and the caller's next step (`wt stop --all`'s halts, the
+// models after them and the caller's next step (`wt-model stop --all`'s halts, the
 // exit flow's summary). A wait that has lasted a couple of seconds says so on
 // the model's open line (lifecycle.StopNotice), so the line does not look
 // hung. A model ollama still lists when the bound is spent is "still
@@ -439,8 +437,8 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 // the caller owes a lifecycle.WaitPendingRoutes() before the process exits — a
 // goroutine does not survive main returning, and a restart killed mid-flight
 // leaves the proxy serving the removed routes — or before it hands the proxy to
-// anything else. Its one caller, `wt stop`, reaches the wait from main's exit
-// path.
+// anything else. Its one caller, `wt-model stop`, reaches the wait from
+// wt-model's main exit path.
 func StopEntries(w io.Writer, cfg *config.Config, entries []localmodels.Entry) error {
 	ctx, cancel := stopSignalCtx()
 	defer cancel()
