@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -704,6 +706,63 @@ func TestStopAsksAboutSessionsTheRecordNames(t *testing.T) {
 	}
 	if len(*stopped) != 0 {
 		t.Errorf("stopped = %v, want nothing", *stopped)
+	}
+}
+
+// defaultStopStateHost is testHost with newHost's own stopState kept: the
+// production read of the stop state, which hands the record's client
+// sessions to hoststop. The struct is overwritten in place, so the closure
+// newHost built still reads this host's stopSessions (the one `wt-model
+// stop` sets). Every other seam is testHost's stub; the stop engines stay
+// stubbed and TestMain isolates processes beneath them.
+func defaultStopStateHost() *host {
+	h := newHost()
+	def := h.stopState
+	*h = *testHost()
+	h.stopState = def
+	return h
+}
+
+// TestStopDefaultStateAsksAboutSessionsTheRecordNames is
+// TestStopAsksAboutSessionsTheRecordNames through newHost's real stop state
+// read: an httptest ollama with a:1 loaded, a record naming a server whose
+// catalog gives ollama/a:1 two client sessions. The question must be asked;
+// a default that dropped the record's sessions would stop a model in use
+// without asking, and no stubbed stop state could show it.
+func TestStopDefaultStateAsksAboutSessionsTheRecordNames(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags", "/api/ps":
+			_, _ = io.WriteString(w, `{"models":[{"name":"a:1"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ollama.Close()
+	srv, _ := fakeServer(t, "tok", modelapi.Row{ID: "ollama/a:1", Sessions: 2})
+	store := recordFor(t, srv, "tok")
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("ollama", ollama.URL, "")},
+		Models:    []config.Model{{ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal}},
+	}
+	h := defaultStopStateHost()
+	var stopped []localmodels.Entry
+	h.stopEntries = func(_ io.Writer, _ *config.Config, es []localmodels.Entry) error {
+		stopped = append(stopped, es...)
+		return nil
+	}
+	asked := stubStopConfirm(t, h, false)
+	_, _, err := runStopOn(h, cfg, store, "ollama")
+	const want = "ollama is in use by 2 live wt session(s) (ollama/a:1); stop anyway?"
+	if !slices.Equal(*asked, []string{want}) {
+		t.Errorf("asked = %q\n want  [%q]", *asked, want)
+	}
+	if err == nil || exitcode.Of(err) != 3 {
+		t.Errorf("err = %v (exit %d), want the decline, exit 3", err, exitcode.Of(err))
+	}
+	if len(stopped) != 0 {
+		t.Errorf("stopped = %v, want nothing", stopped)
 	}
 }
 
