@@ -97,7 +97,7 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 ├── wt/                 # worktree agent launcher (Go) — has its own CLAUDE.md
 ├── .github/workflows/ # CI: shell-ci, wt-ci, llmbench-ci, modeltiers-ci
 ├── CLAUDE.md           # agent entry point
-├── Makefile            # make lint (shellcheck), make check-links, make test-all, make install, make update-tools
+├── Makefile            # make lint (shellcheck), make check-links, make test-all, make install, make install-all, make update-tools
 └── README.md           # this file — index only
 ```
 

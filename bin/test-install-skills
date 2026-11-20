@@ -1,0 +1,107 @@
+#!/bin/bash
+# test-install-skills — `make install-skills` installs wt-repo-cleanup only for agents on PATH.
+#
+# Runs the target in a scratch HOME with a scratch PATH that holds only fake agent commands and
+# symlinks to the few tools the recipe needs (sh, cp, rm, mkdir), so it never touches the real
+# ~/.claude, ~/.agents or ~/.codex, and an agent installed in /usr/bin cannot change the result.
+# Cases: some agents present, none present, all present, and a failing copy (non-zero exit).
+#
+# Usage:
+#   test-install-skills        # exit 0 all cases pass, 1 a case failed
+
+# When run from `make test-all`, make's own variables (a command-line HOME=, -n) would otherwise
+# reach the inner make and override the scratch HOME.
+unset MAKEFLAGS MFLAGS MAKELEVEL GNUMAKEFLAGS
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+make_bin=$(command -v make) || { echo "test-install-skills: make not on PATH" >&2; exit 2; }
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/test-install-skills.XXXXXX") || exit 1
+trap 'rm -rf "$scratch"' EXIT
+failed=0
+
+fail() { echo "FAIL: $*" >&2; failed=1; }
+
+# A tools directory with only what the recipe runs besides shell builtins.
+tools="$scratch/tools"
+mkdir -p "$tools"
+for t in sh cp rm mkdir; do
+    p=$(command -v "$t") || { echo "test-install-skills: $t not found" >&2; exit 2; }
+    ln -s "$p" "$tools/$t"
+done
+
+skill_src="$root/.claude/skills/wt-repo-cleanup/SKILL.md"
+
+# skill_path AGENT HOME -> where install-skill-AGENT puts the skill.
+skill_path() {
+    case $1 in
+        claude) echo "$2/.claude/skills/wt-repo-cleanup/SKILL.md" ;;
+        pi) echo "$2/.agents/skills/wt-repo-cleanup/SKILL.md" ;;
+        codex) echo "$2/.codex/skills/wt-repo-cleanup/SKILL.md" ;;
+    esac
+}
+
+# run_case NAME "agents on PATH" "agents expected installed" [setup-hook]
+run_case() {
+    local name=$1 present=$2 expect=$3 hook=${4:-}
+    local home="$scratch/$name/home" bindir="$scratch/$name/bin" out rc
+    mkdir -p "$home" "$bindir"
+    for a in $present; do printf '#!/bin/sh\nexit 0\n' > "$bindir/$a"; chmod +x "$bindir/$a"; done
+    [ -z "$hook" ] || "$hook" "$home"
+    out=$(cd "$root" && HOME="$home" PATH="$bindir:$tools" "$make_bin" install-skills 2>&1)
+    rc=$?
+    echo "$rc" > "$scratch/$name/rc"
+    echo "$out" > "$scratch/$name/out"
+}
+
+check_case() {
+    local name=$1 expect=$2
+    local home="$scratch/$name/home" out rc
+    out=$(cat "$scratch/$name/out"); rc=$(cat "$scratch/$name/rc")
+    [ "$rc" = 0 ] || fail "$name: make install-skills exited $rc: $out"
+    local installed="" skipped="" want_dirs=""
+    for a in claude pi codex; do
+        local f; f=$(skill_path "$a" "$home")
+        case " $expect " in
+            *" $a "*)
+                cmp -s "$skill_src" "$f" || fail "$name: $a should have the skill copied to $f"
+                installed="$installed $a"
+                case $a in claude) want_dirs="$want_dirs ./.claude" ;; pi) want_dirs="$want_dirs ./.agents" ;; codex) want_dirs="$want_dirs ./.codex" ;; esac
+                ;;
+            *)
+                [ ! -e "$f" ] || fail "$name: $a is not on PATH but got the skill"
+                case "$out" in *"skipped $a: not on PATH"*) ;; *) fail "$name: no 'skipped $a' line in: $out" ;; esac
+                skipped="$skipped $a"
+                ;;
+        esac
+    done
+    # Nothing but the expected skill directories may appear under the scratch home.
+    local extra
+    extra=$(cd "$home" && find . -mindepth 1 -maxdepth 1 | sort | tr '\n' ' ')
+    want_dirs=$(printf '%s\n' $want_dirs | sort | tr '\n' ' ')
+    extra=${extra% }; want_dirs=${want_dirs% }; want_dirs=${want_dirs# }
+    [ "$extra" = "$want_dirs" ] || fail "$name: scratch home holds '$extra', want '$want_dirs'"
+    local summary="skills: installed:${installed:- none}; skipped:${skipped:- none}"
+    case "$out" in *"$summary"*) ;; *) fail "$name: summary line '$summary' missing in: $out" ;; esac
+}
+
+run_case some "claude codex" "claude codex";  check_case some "claude codex"
+run_case none "" "";                          check_case none ""
+run_case all "claude pi codex" "claude pi codex"; check_case all "claude pi codex"
+
+# A failing copy must fail the target and must not print the summary.
+break_codex() { mkdir -p "$1" && : > "$1/.codex"; }
+run_case broken "claude codex" "" break_codex
+rc=$(cat "$scratch/broken/rc"); out=$(cat "$scratch/broken/out")
+[ "$rc" != 0 ] || fail "broken: a failing install-skill-codex must make install-skills exit non-zero"
+case "$out" in *"skills: installed:"*) fail "broken: the summary must not print after a failure: $out" ;; esac
+
+# uninstall-skills removes the skill for every agent, on PATH or not, and nothing else.
+home="$scratch/all/home"
+mkdir -p "$home/.claude/skills/other"; : > "$home/.claude/skills/other/SKILL.md"
+out=$(cd "$root" && HOME="$home" PATH="$tools" "$make_bin" uninstall-skills 2>&1) || fail "uninstall-skills exited non-zero: $out"
+for a in claude pi codex; do
+    [ ! -e "$(dirname "$(skill_path "$a" "$home")")" ] || fail "uninstall-skills left the $a skill"
+done
+[ -e "$home/.claude/skills/other/SKILL.md" ] || fail "uninstall-skills removed an unrelated skill"
+
+if [ "$failed" = 0 ]; then echo "test-install-skills: ok"; else exit 1; fi
