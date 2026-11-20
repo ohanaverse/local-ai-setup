@@ -2,9 +2,10 @@
 
 User-level preferences for the `wt` launcher.
 
-- **`wt config`** (no subcommand) — interactive TUI with two tabs: the agents
-  in `config.toml` and the mode (how this machine's sessions reach a model
-  server; the models in `registry.toml` are `wt-model model`'s, below)
+- **`wt config`** (no subcommand) — interactive TUI with two tabs: Agents
+  and Mode (the agents in `config.toml`, and how this machine's sessions
+  reach a model server; the models in `registry.toml` are `wt-model model`'s,
+  below)
 - **`wt config theme`** — color theme management
 - **`wt config path`** — print the config directory
 
@@ -24,14 +25,11 @@ rules (no two agents with one name, a default provider inside the agent's
 supported list); provider ids are not checked against a registry, and an
 agent `wt` only infers (one with no entry) is never written.
 
-The Models tab that used to be here (the models in `registry.toml`) moved to
-`wt-model model`, an admin screen run on the host
-([`wt-model-server.md`](wt-model-server.md), "`wt-model model`"); its keys,
-columns and form are in [`wt-model.md`](wt-model.md). Bare `wt model` now
-only prints where it went. The local-setup half of the old Model server tab
-(the LaunchAgent, the token file, the LiteLLM checks and key actions) moved
-to `wt-model setup` ([`wt-model-server.md`](wt-model-server.md),
-"`wt-model setup`").
+The models in `registry.toml` are edited on the host, on the Models tab of
+`wt-model model` ([`wt-model.md`](wt-model.md), "The Models tab"), and this
+machine's local server is set up with `wt-model setup`
+([`wt-model-server.md`](wt-model-server.md), "`wt-model setup`": the
+LaunchAgent, the token file, the LiteLLM checks and key actions).
 
 ### Mode tab
 
@@ -39,9 +37,10 @@ The tab shows the stored mode and where it comes from (stored, or a
 `WT_MODEL_MODE` override), the url, the token file (`ok`, `loose` or
 `missing`), the server's answer and any problems, and the choice of mode. It
 is where `wt` writes the `[model-server]` table of `config.toml` (`mode`,
-`url`, `token_file`; [`wt-session.md`](wt-session.md)), and every change is a
-plan listed first: nothing is written until you answer `y` to "Apply this
-plan?" (default no).
+`url`, `token_file`; [`wt-session.md`](wt-session.md)). The mode is chosen
+from `native local remote`, in that order. Every change is a plan listed
+first (`a` plans, `c` checks without planning): nothing is written until you
+answer `y` to `Apply this plan? [y/N]` (default no).
 
 - `native` stores `mode = "native"` and no url or token: wt launches agents
   with their own configuration and uses no model server.
@@ -55,15 +54,16 @@ plan?" (default no).
   fields and stores `mode = "local"` with the default url
   (`http://127.0.0.1:8787`) and token file (`~/.config/wt-model/server.token`).
   A stored url and token file are kept only when the stored mode is already
-  `local`, so a remote machine's url never becomes local's. It sets nothing
+  `local`: switching from remote writes the defaults, so a remote machine's
+  url never becomes local's. It sets nothing
   up on the machine; the tab says "run `wt-model setup` to set up wt-model on
   this machine". When `wt-model` is on `PATH`, applying local then asks
   ``wt-model is on PATH: run `wt-model setup` now? [y/N]`` (default no): `y`
   runs `wt-model setup` once the editor has closed, on the same terminal.
 
 Leaving local (for native or remote) from this tab never touches wt-model's
-LaunchAgent: the plan notes that it is untouched and that `wt-model setup`
-removes it.
+LaunchAgent: the plan notes ``wt-model's LaunchAgent is untouched; remove it
+with `wt-model setup` ``.
 
 Keys (the footer names the ones that apply): `left`/`right`/`space` choose the
 mode, `down` and `enter` move through its fields, `a` plans and applies, `c`
@@ -153,8 +153,9 @@ All `wt config` settings live in `~/.config/agent-wt/` (or
 
 > **The Agents tab's save writes only the agents and `default_tag`.** The
 > `[model-server]` table (`mode`, `url`, `token_file`;
-> [`wt-session.md`](wt-session.md)) is written by the Mode tab here or by
-> `wt-model setup`, as the plan each shows, and a save keeps it as it is. The proxy's url and key
+> [`wt-session.md`](wt-session.md)) is written by the Mode tab and
+> `wt-model setup`, as the plan each shows, and a save keeps it as it is.
+> The proxy's url and key
 > are not `config.toml` settings: they live in the `wt-model` config home
 > (`~/.config/wt-model/`), which the model server reads; `wt-model litellm
 > status` / `wt-model litellm set` show and change them (the `[litellm]`
