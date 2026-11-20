@@ -16,6 +16,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 	"github.com/spf13/cobra"
@@ -139,26 +140,31 @@ func runLaunchPath(
 		return remoteExit(modelclient.Still(serr, launchStill))
 	}
 
-	// applyProfile closes over a's already-loaded profiles.toml state
+	// profileLayer closes over a's already-loaded profiles.toml state
 	// (newApp() loaded and validated it once) so the TUI launch path
 	// applies local-model launch profiles exactly like the non-TUI path
 	// does, via the same applyProfileForLaunch — internal/tui cannot call
 	// it directly (import-cycle/package-boundary reasons documented on
-	// tui.ProfileApplier), so it is handed in as a closure instead.
-	// A slot-profile launch never reaches applyProfile. The TUI is handed
+	// tui.ProfileLayer), so it is handed in as a closure instead.
+	// A slot-profile launch never reaches profileLayer. The TUI is handed
 	// the loaded slot profiles and applySlotProfile, the fail-closed applier
 	// the non-TUI path calls directly, as tui.SlotProfiles. The profile
 	// layer reads the session config, as launchFilteredRemote's runLaunch
 	// does.
-	applyProfile := func(cmd *exec.Cmd, agentName string, m config.Model) (func() error, error) {
-		return applyProfileForLaunch(cmd, agentName, m, scfg, a.profileState())
+	profileLayer := tui.ProfileLayer{
+		Resolve: func(agentName string, m config.Model) (profiles.ResolvedProfile, bool, error) {
+			return resolveLaunchProfile(agentName, m, scfg, a.profileState())
+		},
+		Apply: func(cmd *exec.Cmd, agentName string, m config.Model, rp *profiles.ResolvedProfile, apply bool) (func() error, error) {
+			return applyProfileForLaunchCarried(cmd, agentName, m, scfg, a.profileState(), rp, apply)
+		},
 	}
 
 	// removeFuncs gives every picker load's row actions the same removal
 	// engine `wt cleanup`'s list takes (cleanupRemoveFuncs, tui's
 	// RemoveFuncsBuilder — internal/tui cannot build it without the registry,
 	// which is this package's, so it is handed in as a closure like
-	// applyProfile), from that load's own snapshot and inputs in `wt
+	// profileLayer), from that load's own snapshot and inputs in `wt
 	// cleanup`'s shape: the registry's protected paths (R10: read through
 	// hostConfig, best-effort; the picker's gather reads no registry, so the
 	// engine's re-check is what refuses a row holding an artifact) and PR
@@ -191,7 +197,7 @@ func runLaunchPath(
 	// for as long as a picker is up, so a launch that went through the TUI
 	// says it again once the TUI has returned and the terminal is the
 	// user's.
-	err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, models, scfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
+	err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, models, scfg, profileLayer, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
 	printSlotNotes()
 	// tui.Run returns the agent's run error after its post-exit flow; a
 	// non-zero exit becomes wt's own status, as on the non-TUI path, and

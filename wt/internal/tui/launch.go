@@ -104,26 +104,44 @@ type pendingSurvey struct {
 // Run() before launch.
 var pendingSurveyState pendingSurvey
 
-// ProfileApplier applies a local-model launch profile (env/args/
-// config_content/wrapper) to cmd before it runs, returning a cleanup func
-// the caller MUST invoke after cmd.Run() returns (success or failure) to
-// restore anything the profile's config_content mechanism rewrote. It
-// mirrors cmd/wt-session's applyProfileForLaunch signature, minus cfg/pp: this
-// package cannot import cmd/wt-session (package main — not importable, and it
-// would be a cycle regardless, since cmd/wt-session already imports internal/tui)
-// or internal/profiles directly (mechanism validation needs an
-// agent-driver lookup that lives with cmd/wt-session's own app state). Run's
-// caller builds the real implementation as a closure over its own
-// cfg/precomputedProfiles.
-type ProfileApplier func(cmd *exec.Cmd, agent string, m config.Model) (cleanup func() error, err error)
+// ProfileLayer is the local-model launch profile layer, a Resolve/Apply pair
+// like SlotProfiles' Checks/Apply (this package cannot import cmd/wt-session or
+// own the agent-driver lookup profile validation needs, so both arrive as
+// closures over cmd/wt-session's already-loaded profiles.toml state).
+//
+// Resolve is the pure match: does a profile apply to this launch, which one,
+// or the error that disables profiles for it. The picker calls it at the
+// commit point to ask "apply?" as a popup. Apply applies the profile to cmd
+// before it runs, returning a cleanup func the caller MUST invoke after
+// cmd.Run() returns (success or failure) to restore anything the profile's
+// config_content mechanism rewrote. rp and apply are the popup's answer; a
+// nil rp means the popup did not ask, and Apply resolves and confirms for
+// itself (the legacy path: a /dev/tty prompt, or yes with no terminal).
+type ProfileLayer struct {
+	Resolve func(agent string, m config.Model) (profiles.ResolvedProfile, bool, error)
+	Apply   ProfileApplier
+}
 
-// profileApplier is a seam: production is set by Run() from its
-// ProfileApplier parameter before p.Run() starts. nil — the zero value
-// every test in this file that calls runAndWaitCmd directly (without going
-// through Run()) runs under — means "no profile layer available", and
-// runAndWaitCmd treats that as a no-op, matching the non-TUI path's own
-// graceful-degradation posture for a missing/disabled profiles.toml.
-var profileApplier ProfileApplier
+// ProfileApplier is ProfileLayer.Apply's shape.
+type ProfileApplier func(cmd *exec.Cmd, agent string, m config.Model, rp *profiles.ResolvedProfile, apply bool) (cleanup func() error, err error)
+
+// profileCarry is the profile popup's answer, carried on the model from the
+// commit point to the released-phase applier.
+type profileCarry struct {
+	rp    *profiles.ResolvedProfile
+	apply bool
+}
+
+// profileApplier and profileResolver are seams: production sets them from Run's
+// ProfileLayer before p.Run() starts. nil — the zero value every test that
+// calls runAndWaitCmd directly (without going through Run()) runs under —
+// means "no profile layer available": runAndWaitCmd treats a nil applier as a
+// no-op, and commitAsk asks nothing without a resolver, matching the non-TUI
+// path's own graceful-degradation posture for a missing/disabled profiles.toml.
+var (
+	profileApplier  ProfileApplier
+	profileResolver func(agent string, m config.Model) (profiles.ResolvedProfile, bool, error)
+)
 
 // SlotProfileApplier applies a slot profile's args and wrapper to cmd. It
 // fails closed: an error aborts the launch. cmd/wt-session hands in applySlotProfile.
@@ -182,7 +200,7 @@ func queueLaunchNotes(agent string, cmd *exec.Cmd, extraArgs []string) {
 // pendingSummary (consumed by Run() after p.Run() returns), and returns a
 // launchDoneMsg. It records nothing: a command launch has no model to record.
 func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() (bool, error)) tea.Cmd {
-	return runRecordAndWaitWith(cmd, agent, m, nil, gate, func() {})
+	return runRecordAndWaitWith(cmd, agent, m, nil, gate, func() {}, nil)
 }
 
 // runRecordAndWaitWith is runAndWaitCmd with the launch's state writes and
@@ -194,8 +212,9 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() (boo
 // question (m.launchGate, through m.gateFor) at the commit point; a decline
 // calls record never, so it leaves no trace. A nil gate is a direct test
 // call: it asks nothing — the claim is the run's own and is taken either way,
-// once the gate (if any) is past.
-func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error), release func()) tea.Cmd {
+// once the gate (if any) is past. carry, when non-nil, is the profile popup's
+// answer, handed to the applier so the released phase never asks it again.
+func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error), release func(), carry *profileCarry) tea.Cmd {
 	if record == nil {
 		record = func() string { return "" }
 	}
@@ -219,7 +238,12 @@ func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record fu
 		var profileCleanup func() error
 		if profileApplier != nil {
 			var perr error
-			profileCleanup, perr = profileApplier(cmd, agent, m)
+			var rp *profiles.ResolvedProfile
+			apply := false
+			if carry != nil {
+				rp, apply = carry.rp, carry.apply
+			}
+			profileCleanup, perr = profileApplier(cmd, agent, m, rp, apply)
 			if perr != nil {
 				// Mirrors cmd/wt-session's runAgentCmd: a pre-launch profile
 				// application error (e.g. a wrapper profile naming a
@@ -338,12 +362,12 @@ func (m model) commitAsk(mdl config.Model, bind func(model) (model, tea.Cmd), dr
 	if m.committed {
 		return m, nil
 	}
-	m.gateTarget, m.gateAnswer = nil, nil
+	m.gateTarget, m.gateAnswer, m.profileCarry = nil, nil, nil
 	back := m.phase
 	decline := func(mm model) (model, tea.Cmd) {
 		mm.committed = false
 		mm.ask = nil
-		mm.gateTarget, mm.gateAnswer = nil, nil
+		mm.gateTarget, mm.gateAnswer, mm.profileCarry = nil, nil, nil
 		mm.phase = back
 		return mm, tea.Batch(drop...)
 	}
@@ -351,8 +375,13 @@ func (m model) commitAsk(mdl config.Model, bind func(model) (model, tea.Cmd), dr
 		mm.committed = false // commitLaunch takes the guard for the run
 		return bind(mm)
 	}
+	// The profile question comes after the gate's (a gate decline must not
+	// waste a profile answer) and is independent of it.
+	profile := func(mm model) (model, tea.Cmd) {
+		return mm.profileStep(mdl, back, final, decline)
+	}
 	if m.prePath != "" || !stdinTTY() {
-		return final(m)
+		return profile(m)
 	}
 	t, readErr := m.launchTarget()
 	warnings, info := launchwarn.Collect(t)
@@ -360,7 +389,7 @@ func (m model) commitAsk(mdl config.Model, bind func(model) (model, tea.Cmd), dr
 		info = ""
 	}
 	if len(warnings) == 0 {
-		return final(m)
+		return profile(m)
 	}
 	if readErr != nil {
 		// stderr is not visible under the alt screen: the note reaches the
@@ -376,7 +405,7 @@ func (m model) commitAsk(mdl config.Model, bind func(model) (model, tea.Cmd), dr
 	}
 	m.committed = true
 	yes := func(mm model) (model, tea.Cmd) {
-		return mm.afterGate(final, mdl, &t, info)
+		return mm.afterGate(profile, &t, info)
 	}
 	return m.seedAsk(newAskStateFor(askGate, m.theme, m.width, m.height, "launch here?", body, back, yes, decline))
 }
@@ -385,8 +414,9 @@ func (m model) commitAsk(mdl config.Model, bind func(model) (model, tea.Cmd), dr
 // pre-answered against the popup's own Target (set together, so the
 // released-phase gate consumes it and never reads again), the one factual line
 // the raw gate would have printed (the creation line, else "launching in …")
-// is queued for after the release, and the launch goes on to bind.
-func (m model) afterGate(bind func(model) (model, tea.Cmd), mdl config.Model, t *launchwarn.Target, info string) (model, tea.Cmd) {
+// is queued for after the release, and the launch goes on (the profile question,
+// then the bind).
+func (m model) afterGate(next func(model) (model, tea.Cmd), t *launchwarn.Target, info string) (model, tea.Cmd) {
 	yes := true
 	m.gateTarget, m.gateAnswer = t, &yes
 	if t.Creation != nil {
@@ -394,5 +424,29 @@ func (m model) afterGate(bind func(model) (model, tea.Cmd), mdl config.Model, t 
 	} else if info != "" {
 		m.recordRouteNotes("wt: " + info + "\n")
 	}
-	return bind(m)
+	return next(m)
+}
+
+// profileStep asks the local-model profile question as a popup when one
+// applies: a model-driven launch on a terminal whose Resolve matches. A
+// resolve error, no match, no resolver or no terminal asks nothing and leaves
+// profileCarry nil, so the released-phase applier resolves for itself (its
+// legacy path reports a profiles.toml error once and still starts the agent;
+// with no terminal it defaults to yes, as today). The popup's yes carries the
+// answer to the applier; its no is the launch's decline, like the gate's.
+func (m model) profileStep(mdl config.Model, back phase, final, decline func(model) (model, tea.Cmd)) (model, tea.Cmd) {
+	if profileResolver == nil || mdl.ID == "" || !stdinTTY() {
+		return final(m)
+	}
+	rp, matched, err := profileResolver(m.agent, mdl)
+	if err != nil || !matched {
+		return final(m)
+	}
+	body := []string{"local-model profile available for this launch (" + strings.Join(rp.Sources, ", ") + ")"}
+	yes := func(mm model) (model, tea.Cmd) {
+		mm.profileCarry = &profileCarry{rp: &rp, apply: true}
+		return final(mm)
+	}
+	m.committed = true
+	return m.seedAsk(newAskStateFor(askProfile, m.theme, m.width, m.height, "apply local-model profile?", body, back, yes, decline))
 }

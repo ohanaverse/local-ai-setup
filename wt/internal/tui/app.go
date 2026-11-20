@@ -181,6 +181,11 @@ type model struct {
 	// Set together with gateTarget; reset at every commit, cleared by a decline.
 	gateAnswer *bool
 
+	// profileCarry is the profile popup's answer (nil: the popup did not ask,
+	// and the applier resolves and confirms for itself). Reset at every commit,
+	// cleared by a decline; the run command hands it to profileApplier.
+	profileCarry *profileCarry
+
 	// committed is the commit point's in-flight guard: the first selection
 	// that reaches a run command takes it (commitLaunch) and every further
 	// Enter is ignored while that launch runs. It releases on exactly one
@@ -902,21 +907,22 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // point. models, when non-nil, is the model server the picker reads its
 // table from; nil is the legacy registry path. cfg is the already-loaded config from cmd/wt-session's newApp (validated
 // before Run is called); it is not re-loaded here.
-// applyProfile, when non-nil, applies a local-model launch profile before
-// the agent's cmd.Run() and is called from runAndWaitCmd for every launch
-// this session makes; cmd/wt-session's main.go builds it as a closure over the
+// profileLayer, when its funcs are non-nil, resolves a local-model launch
+// profile at the commit point (asked as a popup) and applies it before the
+// agent's cmd.Run(), called from runAndWaitCmd for every launch this session
+// makes; cmd/wt-session's main.go builds it as closures over the
 // already-loaded profiles.toml state (mirrors the non-TUI path's
 // applyProfileForLaunch).
 // slots carries the slot profiles: the picker shows a row for each one that
 // names this agent, and a profile launch applies slots.Apply in place of
-// applyProfile.
+// profileLayer.
 // removeFuncs builds the row actions of each picker load (the removal
 // engine's window, `wt cleanup`'s cleanupRemoveFuncs in cmd/wt-session's closure):
 // nil leaves every row action saying it is unavailable.
 // When the launched agent's run failed, Run returns that error (an
 // *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
 // cmd/wt-session exits with the agent's status (#412).
-func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
+func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, profileLayer ProfileLayer, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
 	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, models, cfg, removeFuncs), slots)
 	p := tea.NewProgram(initial, tea.WithAltScreen())
 	currentProgram = p
@@ -926,7 +932,7 @@ func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, ex
 	pendingRouteNotes = ""
 	clientNotes = &startOutput{what: "client session"}
 	pendingSurveyState = pendingSurvey{}
-	profileApplier = applyProfile
+	profileApplier, profileResolver = profileLayer.Apply, profileLayer.Resolve
 	finalModel, err := p.Run()
 	// A start or a catalog fetch the user quit out of on the API path stops
 	// waiting first (the job keeps running on the server), so its goroutine

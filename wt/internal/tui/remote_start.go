@@ -669,7 +669,7 @@ func (m model) handlePrepared(msg remotePreparedMsg) (model, tea.Cmd) {
 	// A decline takes the prep's model out of the client session: nothing
 	// will use it.
 	return m.commitAsk(launchModel, func(mm model) (model, tea.Cmd) {
-		return mm.commitLaunch(runRecordAndWaitWith(msg.cmd, agent, launchModel, record, mm.gateFor(), func() { h.end(os.Stderr) }))
+		return mm.commitLaunch(runRecordAndWaitWith(msg.cmd, agent, launchModel, record, mm.gateFor(), func() { h.end(os.Stderr) }, mm.profileCarry))
 	}, dropAllCmd(h, []string{id}))
 }
 
