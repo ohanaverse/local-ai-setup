@@ -120,6 +120,10 @@ func foldRowFacts(t launchwarn.Target, row *launchwarn.Target) launchwarn.Target
 // a terminal the warnings print and the launch proceeds, stdin never read.
 func (m model) gateFor() func() (bool, error) {
 	return func() (bool, error) {
+		if m.gateAnswer != nil && m.gateTarget != nil {
+			// The popup asked and read the Target: consume it, never re-read.
+			return m.launchGate(m.gateTarget, stdinTTY())
+		}
 		t, readErr := m.launchTarget()
 		if readErr != nil {
 			fmt.Fprintf(os.Stderr, "wt: note: %v\n", readErr)
@@ -130,8 +134,9 @@ func (m model) gateFor() func() (bool, error) {
 
 // stdinTTY is the interactive-invocation probe cmd/wt-session's confirmLaunch uses:
 // stdin is a terminal. It is called at the ask, so a redirected stdin (a
-// script, a test) is honestly no terminal and can never be read.
-func stdinTTY() bool { return term.IsTerminal(os.Stdin.Fd()) }
+// script, a test) is honestly no terminal and can never be read. It is a
+// variable only so a test can force the popup path.
+var stdinTTY = func() bool { return term.IsTerminal(os.Stdin.Fd()) }
 
 // launchGate is the one question before a launch commits, asked at the
 // commit point with the terminal the user's again (the run commands call it
@@ -166,8 +171,10 @@ func (m model) launchGate(t *launchwarn.Target, isTTY bool) (ok bool, err error)
 		// informational line either, as confirmLaunch decides it.
 		info = ""
 	}
-	if !launchwarn.Check(os.Stdin, os.Stderr, isTTY, warnings, info, t.Creation) {
-		return false, nil
+	if m.gateAnswer == nil {
+		if !launchwarn.Check(os.Stdin, os.Stderr, isTTY, warnings, info, t.Creation) {
+			return false, nil
+		}
 	}
 	if t.Hint != "" {
 		fmt.Fprintf(os.Stderr, "wt: %s\n", t.Hint)

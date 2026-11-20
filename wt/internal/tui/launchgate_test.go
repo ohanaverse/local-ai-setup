@@ -592,3 +592,55 @@ func TestZeroTargetGateClaimsNothing(t *testing.T) {
 		t.Error("the zero Target claimed the working directory's repository root")
 	}
 }
+
+// TestLaunchGateAnsweredSkipsCheckAndClaims: a pre-answered gate (gateAnswer
+// non-nil) asks nothing raw — no "continue?" line is printed or read — and
+// still claims, when pointed at the popup's captured target. It matters
+// because the popup already asked; a second raw y/n would be the anti-goal.
+func TestLaunchGateAnsweredSkipsCheckAndClaims(t *testing.T) {
+	t.Cleanup(releaseRootClaim)
+	root := rootRepo(t)
+	stderr := answerOnStdio(t, "")
+	m := model{agent: "claude", selectedPath: root}
+	tg, err := m.launchTarget()
+	if err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	m.gateTarget, m.gateAnswer = &tg, &yes
+	if ok, gerr := m.launchGate(m.gateTarget, true); !ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); the answered gate proceeds", ok, gerr)
+	}
+	if got := stderr(); strings.Contains(got, "continue?") || strings.Contains(got, "repository root") {
+		t.Errorf("answered gate printed %q; want nothing (the popup asked)", got)
+	}
+	if !claimExists(root) {
+		t.Error("the answered gate claimed nothing")
+	}
+}
+
+// TestGateForConsumesGateTarget: gateFor's closure uses gateTarget and never
+// re-reads, so a state change after the popup cannot surface in the gate. It
+// matters because the confirm must bind against the Target the popup showed.
+func TestGateForConsumesGateTarget(t *testing.T) {
+	t.Cleanup(releaseRootClaim)
+	root := rootRepo(t)
+	stderr := answerOnStdio(t, "")
+	m := model{agent: "claude", selectedPath: root}
+	tg, err := m.launchTarget()
+	if err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	m.gateTarget, m.gateAnswer = &tg, &yes
+	cmd := m.gateFor()
+	if ok, gerr := cmd(); !ok || gerr != nil {
+		t.Fatalf("gateFor = (%v, %v)", ok, gerr)
+	}
+	if got := stderr(); got != "" {
+		t.Errorf("gate printed %q; the popup path asks nothing", got)
+	}
+	if !claimExists(root) {
+		t.Error("gateFor claimed nothing on the popup path")
+	}
+}

@@ -1165,7 +1165,7 @@ func runClaimLaunch(t *testing.T, dir string, where []string, extra ...string) c
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	oldTUI, oldGuard := tuiRun, maybeInstallGuard
-	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
+	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileLayer, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
 		t.Error("tuiRun was called: a launch pinned with -A and -M never opens the picker")
 		return nil
 	}
@@ -1457,5 +1457,85 @@ func TestLaunchRecordsUsageForAgent(t *testing.T) {
 	}
 	if got := store.CountsForAgent("codex", []string{"claude/opus"})["claude/opus"]; got.ThirtyDay != 0 {
 		t.Fatalf("codex pair 30d = %d, want 0", got.ThirtyDay)
+	}
+}
+
+// profileFixture writes a one-profile profiles.toml (a local-location env
+// overlay for claude) and returns the config and model it matches.
+func profileFixture(t *testing.T) (*config.Config, config.Model) {
+	t.Helper()
+	writeProfilesTOML(t, `
+[[profiles]]
+agent = "claude"
+match = "location"
+location = "local"
+env = { WT_TEST_PROFILE_APPLIED = "1" }
+`)
+	cfg := &config.Config{Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}}}
+	return cfg, config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
+}
+
+// TestResolveLaunchProfileGuards: the pure match half of applyProfileForLaunch.
+// A command (no model id), a native model and a nil config are no-match; a
+// matching store resolves; a store load error is the error. It matters
+// because the picker's popup asks only when this says a profile applies, and
+// a resolve error must reach it as an error (no popup) rather than a match.
+func TestResolveLaunchProfileGuards(t *testing.T) {
+	cfg, m := profileFixture(t)
+	if _, ok, err := resolveLaunchProfile("claude", config.Model{}, cfg, nil); ok || err != nil {
+		t.Errorf("command model: (%v, %v), want no match", ok, err)
+	}
+	if _, ok, err := resolveLaunchProfile("claude", config.Model{ID: "x", Native: true}, cfg, nil); ok || err != nil {
+		t.Errorf("native model: (%v, %v), want no match", ok, err)
+	}
+	if _, ok, err := resolveLaunchProfile("claude", m, nil, nil); ok || err != nil {
+		t.Errorf("nil cfg: (%v, %v), want no match", ok, err)
+	}
+	rp, ok, err := resolveLaunchProfile("claude", m, cfg, nil)
+	if !ok || err != nil || rp.Empty() {
+		t.Errorf("matching store: (%+v, %v, %v), want a match", rp, ok, err)
+	}
+	oldLoad := loadProfileStore
+	loadProfileStore = func() (profiles.Store, error) { return profiles.Store{}, errors.New("bad toml") }
+	t.Cleanup(func() { loadProfileStore = oldLoad })
+	if _, ok, err := resolveLaunchProfile("claude", m, cfg, nil); ok || err == nil {
+		t.Errorf("load error: (%v, %v), want the error", ok, err)
+	}
+}
+
+// TestApplyProfileForLaunchCarried: a carried (rp, apply) never reaches
+// confirmProfile (a stub that fails the test proves it): apply=true applies
+// the carried profile, apply=false applies nothing, and no carry falls back to
+// applyProfileForLaunch's own resolve and confirm. It matters because the
+// popup already asked; a second raw prompt is the anti-goal.
+func TestApplyProfileForLaunchCarried(t *testing.T) {
+	cfg, m := profileFixture(t)
+	oldConfirm := confirmProfile
+	confirmed := 0
+	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { confirmed++; return true, nil }
+	t.Cleanup(func() { confirmProfile = oldConfirm })
+	rp, ok, err := resolveLaunchProfile("claude", m, cfg, nil)
+	if !ok || err != nil {
+		t.Fatalf("resolve: (%v, %v)", ok, err)
+	}
+
+	cmd := exec.Command("true")
+	cleanup, err := applyProfileForLaunchCarried(cmd, "claude", m, cfg, nil, &rp, true)
+	if err != nil || !slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
+		t.Errorf("carried yes: err %v env %v; want the profile applied", err, cmd.Env)
+	}
+	if cleanup != nil {
+		_ = cleanup()
+	}
+	cmd = exec.Command("true")
+	if _, err := applyProfileForLaunchCarried(cmd, "claude", m, cfg, nil, &rp, false); err != nil || slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
+		t.Errorf("carried no: err %v env %v; want nothing applied", err, cmd.Env)
+	}
+	if confirmed != 0 {
+		t.Errorf("confirmProfile called %d times on a carried answer; want 0", confirmed)
+	}
+	cmd = exec.Command("true")
+	if _, err := applyProfileForLaunchCarried(cmd, "claude", m, cfg, nil, nil, false); err != nil || confirmed != 1 || !slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
+		t.Errorf("no carry: err %v confirmed %d env %v; want the legacy resolve+confirm", err, confirmed, cmd.Env)
 	}
 }

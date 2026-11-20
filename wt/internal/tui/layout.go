@@ -350,6 +350,10 @@ func (m *model) fitLists() {
 		}
 	case phaseAgent:
 		m.fitTo(&m.agentList, m.agentFrames()...)
+	case phaseAsk:
+		if m.ask != nil {
+			m.fitTo(&m.ask.choices, m.askFrames()...)
+		}
 	}
 }
 

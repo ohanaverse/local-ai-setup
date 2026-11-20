@@ -354,10 +354,13 @@ the same entry matches an `ollama`, `omlx`, or `mtplx` model.
 
 ## Confirm prompt
 
-An interactive launch (`wt -A <agent> -M <model>`, or the worktree/agent/
-model picker) that resolves a non-empty profile asks before applying it —
-default **yes** on a bare Enter. A non-interactive launch (no controlling
-terminal: scripts, CI) applies automatically with no prompt.
+An interactive launch that resolves a non-empty profile asks before applying
+it — default **yes**. In the worktree/agent/model picker the question is a
+popup inside the picker ("apply local-model profile?", answered before the
+terminal is released; "go back" returns to the picker and launches
+nothing); `wt -A <agent> -M <model>` and the other flag paths ask on
+`/dev/tty`, default yes on a bare Enter. A non-interactive launch (no
+controlling terminal: scripts, CI) applies automatically with no prompt.
 
 **`wt smoke` applies profiles too.** For each agent × model row it
 resolves the profile from the same already-loaded profiles.toml state and

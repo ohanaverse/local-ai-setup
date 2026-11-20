@@ -99,3 +99,19 @@ func TestCheckLinesStartWithWtPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestCreationLineMatchesCheck(t *testing.T) {
+	for _, c := range []*Creation{
+		{Branch: "b", Tracks: "origin/b", NewBranch: true, Path: "/p"},
+		{Branch: "b", NewBranch: true, Path: "/p"},
+		{Branch: "b", Tracks: "origin/b", Path: "/p"},
+		{Branch: "b", Path: "/p"},
+	} {
+		var buf bytes.Buffer
+		Check(strings.NewReader("\n"), &buf, true, nil, "", c)
+		want := strings.TrimPrefix(strings.TrimRight(buf.String(), "\n"), "wt: ")
+		if got := CreationLine(c); got != want {
+			t.Errorf("CreationLine(%+v) = %q, Check printed %q", c, got, want)
+		}
+	}
+}

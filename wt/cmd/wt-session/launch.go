@@ -134,34 +134,12 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 	// class the guard below skips for THIS launch's own profile
 	// resolution.
 	selfHealAgentConfigContentTarget(agent, cmd.Dir)
-	if m.ID == "" || m.Native || cfg == nil {
-		return noop, nil
-	}
-
-	// A load error wins over a validation error, and a store that failed to
-	// load is not validated.
-	var store profiles.Store
-	var perr error
-	if pp != nil {
-		store, perr = pp.store, pp.loadErr
-		if perr == nil {
-			perr = pp.validateErr
-		}
-	} else {
-		store, perr = loadProfileStore()
-		if perr == nil {
-			perr = profiles.Validate(store, agentProfileMechanisms, agentRequiredMechanism)
-		}
-	}
+	rp, matched, perr := resolveLaunchProfile(agent, m, cfg, pp)
 	if perr != nil {
 		fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", perr)
 		return noop, nil
 	}
-	if !store.Enabled {
-		return noop, nil
-	}
-	rp := profiles.Resolve(store, agent, cfg, m)
-	if rp.Empty() {
+	if !matched {
 		return noop, nil
 	}
 	apply, err := confirmProfile(rp)
@@ -178,6 +156,59 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 		return noop, nil
 	}
 	return applyResolvedProfile(cmd, agent, rp, nil)
+}
+
+// resolveLaunchProfile is the pure match half of applyProfileForLaunch: does a
+// profile apply to this launch, and which. A command (no model id), a native
+// model or a nil config matches nothing; a load or validation error of
+// profiles.toml is the error (a load error wins over a validation error, and
+// a store that failed to load is not validated); a disabled store or an empty
+// resolution matches nothing. It prints nothing, so the picker can ask the
+// question as a popup before the terminal is released.
+func resolveLaunchProfile(agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles) (profiles.ResolvedProfile, bool, error) {
+	if m.ID == "" || m.Native || cfg == nil {
+		return profiles.ResolvedProfile{}, false, nil
+	}
+	var store profiles.Store
+	var perr error
+	if pp != nil {
+		store, perr = pp.store, pp.loadErr
+		if perr == nil {
+			perr = pp.validateErr
+		}
+	} else {
+		store, perr = loadProfileStore()
+		if perr == nil {
+			perr = profiles.Validate(store, agentProfileMechanisms, agentRequiredMechanism)
+		}
+	}
+	if perr != nil {
+		return profiles.ResolvedProfile{}, false, perr
+	}
+	if !store.Enabled {
+		return profiles.ResolvedProfile{}, false, nil
+	}
+	rp := profiles.Resolve(store, agent, cfg, m)
+	if rp.Empty() {
+		return profiles.ResolvedProfile{}, false, nil
+	}
+	return rp, true, nil
+}
+
+// applyProfileForLaunchCarried is the picker's applier: when the popup already
+// resolved and asked (rp non-nil), it applies that answer (apply true) or
+// nothing (false) and never reaches confirmProfile; with no carried answer it
+// is applyProfileForLaunch (resolve, warn, confirm on /dev/tty or default to
+// yes with no terminal).
+func applyProfileForLaunchCarried(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, rp *profiles.ResolvedProfile, apply bool) (func() error, error) {
+	if rp == nil {
+		return applyProfileForLaunch(cmd, agent, m, cfg, pp)
+	}
+	selfHealAgentConfigContentTarget(agent, cmd.Dir)
+	if m.ID == "" || m.Native || cfg == nil || !apply {
+		return func() error { return nil }, nil
+	}
+	return applyResolvedProfile(cmd, agent, *rp, nil)
 }
 
 // applyResolvedProfile applies an already-confirmed ResolvedProfile to

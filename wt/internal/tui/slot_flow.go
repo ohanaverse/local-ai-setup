@@ -278,5 +278,11 @@ func (m model) launchRemoteSlot() (model, tea.Cmd) {
 	}
 	m.startNote = ""
 	queueLaunchNotes(m.agent, cmd, m.extraArgs)
-	return m.commitLaunch(runSlotAndWaitCmd(cmd, m.agent, row, m.gateFor()))
+	agent := m.agent
+	h, ids := m.hold, slotModelIDs(row)
+	// A decline takes every slot model the prep held out of the client
+	// session; rslot was already cleared above.
+	return m.commitAsk(config.Model{}, func(mm model) (model, tea.Cmd) {
+		return mm.commitLaunch(runSlotAndWaitCmd(cmd, agent, row, mm.gateFor()))
+	}, dropAllCmd(h, ids))
 }

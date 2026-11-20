@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -31,6 +32,7 @@ const (
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
 	phaseLaunching                   // the API path's launch prepares on the model server (remote_start.go)
 	phaseCatalog                     // the model server's catalog is loading, or its fetch failed (F retries)
+	phaseAsk                         // the launch gate / profile popups (ask_popup.go)
 )
 
 // model holds the entire UI state.
@@ -141,6 +143,7 @@ type model struct {
 	start    *startState   // in-flight start (phaseStarting); nil when idle
 	startRun int           // monotonically increasing run id; stale messages are dropped by id
 	replace  *replaceState // replace-confirm dialog (phaseReplaceConfirm)
+	ask      *askState     // launch gate / profile popup (phaseAsk)
 
 	// creation is the pick that owes its worktree at the commit point (a bare
 	// branch, a remote-only branch, or a typed name that owes one): resolved
@@ -165,6 +168,29 @@ type model struct {
 	// every selection, as creation and typedPlan are, so an abandoned pick's
 	// row never rides along with a later one.
 	pickedRow *cleanup.Row
+
+	// gateTarget is the Target the launch popup evaluated (nil: no popup
+	// path). The released-phase gate consumes it instead of reading again, so
+	// a session that appeared while the popup was open is never confirmed
+	// against questions that no longer match what the gate acts on. commitAsk
+	// resets it at every commit; a decline clears it.
+	gateTarget *launchwarn.Target
+
+	// gateAnswer is set (to true) when the popup answered yes: the
+	// released-phase gate then asks nothing raw and only creates and claims.
+	// Set together with gateTarget; reset at every commit, cleared by a decline.
+	gateAnswer *bool
+
+	// profileCarry is the profile popup's answer (nil: the popup did not ask,
+	// and the applier resolves and confirms for itself). Reset at every commit,
+	// cleared by a decline; the run command hands it to profileApplier.
+	profileCarry *profileCarry
+
+	// gateNotes are the route-note lines a gate popup's yes (and a read
+	// failure) owe the terminal after the release. They ride the model and
+	// reach pendingRouteNotes only when the launch binds, so a decline after
+	// them (the profile popup's "no") leaves nothing behind.
+	gateNotes string
 
 	// committed is the commit point's in-flight guard: the first selection
 	// that reaches a run command takes it (commitLaunch) and every further
@@ -399,6 +425,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// may interrupt.
 		if m.phase == phaseLaunching && m.prep != nil {
 			return m.handleLaunchingKey(msg)
+		}
+		// The launch gate / profile popups own the keyboard, q and ctrl+c
+		// included: they quit through the decline's releases.
+		if m.phase == phaseAsk && m.ask != nil {
+			return m.updateAsk(msg)
 		}
 		// The worktree picker is the row list: every key is its own (q and
 		// esc quit there, `/` filters, and while the filter is typed every
@@ -638,6 +669,12 @@ func (m model) View() string {
 		}
 		return clip(m.launchingView(), m.width)
 	}
+	if m.phase == phaseAsk && m.ask != nil {
+		if m.width <= 0 || m.height <= 0 {
+			return "confirm (waiting for window size)"
+		}
+		return drawnFrame(&m.ask.choices, m.height, m.askFrames()...)(m.ask.choices.View())
+	}
 	if m.phase == phaseReplaceConfirm {
 		if m.width <= 0 || m.height <= 0 {
 			return "replace confirm (waiting for window size)"
@@ -679,7 +716,9 @@ func (m model) launchCommand(name string) (model, tea.Cmd) {
 		m.status = "launch failed: " + err.Error()
 		return m, nil
 	}
-	return m.commitLaunch(runAndWaitCmd(cmd, name, config.Model{}, m.gateFor()))
+	return m.commitAsk(config.Model{}, func(mm model) (model, tea.Cmd) {
+		return mm.commitLaunch(runAndWaitCmd(cmd, name, config.Model{}, mm.gateFor()))
+	})
 }
 
 // commitLaunch binds a run command to the launch in flight. The first caller
@@ -774,9 +813,11 @@ func (m model) launchNative() (model, tea.Cmd) {
 		return m, nil
 	}
 	queueLaunchNotes(m.agent, cmd, m.extraArgs)
-	gate := m.gateFor()
 	agent := m.agent
-	return m.commitLaunch(runAndWaitCmd(cmd, agent, mdl, sayAfterGate(gate, os.Stderr, agents.NativeNote(agent))))
+	return m.commitAsk(mdl, func(mm model) (model, tea.Cmd) {
+		// The gate is built at bind time: it reads the answer the popup left.
+		return mm.commitLaunch(runAndWaitCmd(cmd, agent, mdl, sayAfterGate(mm.gateFor(), os.Stderr, agents.NativeNote(agent))))
+	})
 }
 
 // sayAfterGate wraps a launch gate so line is written to w only once the gate
@@ -872,21 +913,22 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // point. models, when non-nil, is the model server the picker reads its
 // table from; nil is the legacy registry path. cfg is the already-loaded config from cmd/wt-session's newApp (validated
 // before Run is called); it is not re-loaded here.
-// applyProfile, when non-nil, applies a local-model launch profile before
-// the agent's cmd.Run() and is called from runAndWaitCmd for every launch
-// this session makes; cmd/wt-session's main.go builds it as a closure over the
+// profileLayer, when its funcs are non-nil, resolves a local-model launch
+// profile at the commit point (asked as a popup) and applies it before the
+// agent's cmd.Run(), called from runAndWaitCmd for every launch this session
+// makes; cmd/wt-session's main.go builds it as closures over the
 // already-loaded profiles.toml state (mirrors the non-TUI path's
 // applyProfileForLaunch).
 // slots carries the slot profiles: the picker shows a row for each one that
 // names this agent, and a profile launch applies slots.Apply in place of
-// applyProfile.
+// profileLayer.
 // removeFuncs builds the row actions of each picker load (the removal
 // engine's window, `wt cleanup`'s cleanupRemoveFuncs in cmd/wt-session's closure):
 // nil leaves every row action saying it is unavailable.
 // When the launched agent's run failed, Run returns that error (an
 // *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
 // cmd/wt-session exits with the agent's status (#412).
-func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
+func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, profileLayer ProfileLayer, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
 	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, models, cfg, removeFuncs), slots)
 	p := tea.NewProgram(initial, tea.WithAltScreen())
 	currentProgram = p
@@ -896,7 +938,7 @@ func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, ex
 	pendingRouteNotes = ""
 	clientNotes = &startOutput{what: "client session"}
 	pendingSurveyState = pendingSurvey{}
-	profileApplier = applyProfile
+	profileApplier, profileResolver = profileLayer.Apply, profileLayer.Resolve
 	finalModel, err := p.Run()
 	// A start or a catalog fetch the user quit out of on the API path stops
 	// waiting first (the job keeps running on the server), so its goroutine

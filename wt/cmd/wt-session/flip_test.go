@@ -69,7 +69,7 @@ func noServerHome(t *testing.T) (home, marker string, h hooks) {
 		t.Error("an agent was built against a gateway")
 		return nil, agents.LaunchInfo{}, os.ErrInvalid
 	}
-	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
+	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileLayer, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
 		t.Error("the TUI opened")
 		return nil
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // keepPendingPostExit saves and restores the post-exit state a launch
@@ -101,7 +102,7 @@ func TestPickerLaunchReturnsTheAgentsExitStatus(t *testing.T) {
 // exits 1 as a launch without the picker does (runAgentCmd returns it).
 func TestPickerProfileErrorIsReturned(t *testing.T) {
 	keepPendingPostExit(t)
-	profileApplier = func(*exec.Cmd, string, config.Model) (func() error, error) {
+	profileApplier = func(*exec.Cmd, string, config.Model, *profiles.ResolvedProfile, bool) (func() error, error) {
 		return nil, errors.New("wrapper missing")
 	}
 	msg := runAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "shell", config.Model{}, nil)()

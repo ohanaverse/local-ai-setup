@@ -665,7 +665,12 @@ func (m model) handlePrepared(msg remotePreparedMsg) (model, tea.Cmd) {
 	}
 	// A launch that never reached the agent (the profile failed) ends the
 	// client session where the registry path releases its wt session.
-	return m.commitLaunch(runRecordAndWaitWith(msg.cmd, agent, m.launchModel, record, m.gateFor(), func() { h.end(os.Stderr) }))
+	launchModel := m.launchModel
+	// A decline takes the prep's model out of the client session: nothing
+	// will use it.
+	return m.commitAsk(launchModel, func(mm model) (model, tea.Cmd) {
+		return mm.commitLaunch(runRecordAndWaitWith(msg.cmd, agent, launchModel, record, mm.gateFor(), func() { h.end(os.Stderr) }, mm.profileCarry))
+	}, dropAllCmd(h, []string{id}))
 }
 
 // staleDropCmd takes a stale prep's model out of the client session: nothing
