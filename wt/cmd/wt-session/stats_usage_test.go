@@ -48,14 +48,10 @@ var statsFake struct {
 // (collectUsageRemote) against it; the catalog the collector reads its
 // families from is the host registry's models, filled in by runStatsDirect.
 // The returned record is filled in after each runStatsDirect.
-func stubSpend(t *testing.T, res spend.Result, err error) *spendCall {
+func stubSpend(t *testing.T, res modelapi.SpendReport, err error) *spendCall {
 	t.Helper()
 	f := newFakeModelServer(t)
-	rep := modelapi.SpendReport{Unattributed: res.Unattributed}
-	for _, r := range res.Rows {
-		rep.Rows = append(rep.Rows, modelapi.SpendRow{Model: r.Model, Requests: r.Requests, PromptTokens: r.PromptTokens, CompletionTokens: r.CompletionTokens, Spend: r.Spend})
-	}
-	f.Spend = rep
+	f.Spend = res
 	if err != nil {
 		f.SpendCode, f.SpendMsg = modelapi.CodeSpendUnavailable, err.Error()
 		if errors.Is(err, litellm.ErrNoDatabase) || errors.Is(err, spend.ErrNoConnectionString) {
@@ -149,7 +145,7 @@ func pinnedSpend(cmd *cobra.Command, a *app, window time.Duration, asOf time.Tim
 func runStatsDirect(t *testing.T, a *app, args ...string) (stdout, stderr string) {
 	t.Helper()
 	if statsFake.f == nil {
-		stubSpend(t, spend.Result{}, errors.New("spend not stubbed in this test"))
+		stubSpend(t, modelapi.SpendReport{}, errors.New("spend not stubbed in this test"))
 	}
 	f := statsFake.f
 	// The app read config.toml before stubSpend named the server in it.
@@ -212,7 +208,7 @@ func TestStatsCmdPrintsTheUsageTable(t *testing.T) {
 		launch{"ollama/gemma4:9b", "codex", 3 * 24 * time.Hour},
 		launch{"ollama/old", "claude", 10 * 24 * time.Hour},
 	)
-	call := stubSpend(t, spend.Result{Rows: []spend.Row{
+	call := stubSpend(t, modelapi.SpendReport{Rows: []modelapi.SpendRow{
 		{Model: "ollama/gemma4:9b", Requests: 1204, PromptTokens: 1234567, CompletionTokens: 630, Spend: 0},
 		{Model: "openrouter/qwen/qwen3.8-27b", Requests: 5, PromptTokens: 517, CompletionTokens: 3135, Spend: 0.0085},
 	}}, nil)
@@ -300,7 +296,7 @@ func TestStatsLaunchesAndSpendShareOneInstant(t *testing.T) {
 			// The spend side: one request per event, kept when it is inside
 			// the window the report asks for, by the rule spend.Query's SQL
 			// follows: after start, up to and including end.
-			stubSpend(t, spend.Result{}, nil)
+			stubSpend(t, modelapi.SpendReport{}, nil)
 			statsFake.f.SpendFn = func(start, end time.Time) modelapi.SpendReport {
 				var res modelapi.SpendReport
 				for _, e := range events {
@@ -358,7 +354,7 @@ func TestStatsCmdFoldsTheSlashSpelling(t *testing.T) {
 		launch{"mtplx/Org--Qwen-Balance", "claude", time.Hour},
 		launch{"mtplx/Org--Qwen-Balance", "pi", 2 * time.Hour},
 	)
-	stubSpend(t, spend.Result{Rows: []spend.Row{
+	stubSpend(t, modelapi.SpendReport{Rows: []modelapi.SpendRow{
 		{Model: "mtplx/Org--Qwen-Balance", Requests: 4, PromptTokens: 100, CompletionTokens: 10},
 		{Model: "mtplx/Org/Qwen-Balance", Requests: 5, PromptTokens: 23, CompletionTokens: 5, Spend: 0.5},
 		{Model: "openrouter/qwen/qwen3.8-27b", Requests: 1},
@@ -409,7 +405,7 @@ func TestStatsCmdDegradesWhenSpendIsUnavailable(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			a, tmp := newTestApp(t)
 			seedLaunches(t, tmp, launch{"ollama/gemma4:9b", "claude", time.Hour})
-			stubSpend(t, spend.Result{}, c.err)
+			stubSpend(t, modelapi.SpendReport{}, c.err)
 
 			stdout, stderr := runStatsDirect(t, a)
 
@@ -437,7 +433,7 @@ func TestStatsCmdNotesRequestsWithNoModel(t *testing.T) {
 		1234: "wt: 1,234 requests had no model and are not shown\n",
 	} {
 		a, _ := newTestApp(t)
-		stubSpend(t, spend.Result{Rows: []spend.Row{{Model: "m", Requests: 2}}, Unattributed: n}, nil)
+		stubSpend(t, modelapi.SpendReport{Rows: []modelapi.SpendRow{{Model: "m", Requests: 2}}, Unattributed: n}, nil)
 		stdout, stderr := runStatsDirect(t, a)
 		if stderr != want {
 			t.Errorf("stderr = %q, want %q", stderr, want)
@@ -451,7 +447,7 @@ func TestStatsCmdNotesRequestsWithNoModel(t *testing.T) {
 	// query is never filtered), so beside one model's rows the note would
 	// read as that model's. It is left out.
 	a, _ := newTestApp(t)
-	stubSpend(t, spend.Result{Rows: []spend.Row{{Model: "ollama/m", Requests: 2}}, Unattributed: 7}, nil)
+	stubSpend(t, modelapi.SpendReport{Rows: []modelapi.SpendRow{{Model: "ollama/m", Requests: 2}}, Unattributed: 7}, nil)
 	for _, args := range [][]string{{"--model", "ollama/m"}, {"--family", "ollama"}} {
 		stdout, stderr := runStatsDirect(t, a, args...)
 		if stderr != "" {
@@ -475,7 +471,7 @@ func TestStatsCmdAgentFilterSkipsSpend(t *testing.T) {
 		launch{"ollama/gemma4:9b", "codex", 2 * time.Hour},
 		launch{"ollama/other", "claude", time.Hour},
 	)
-	call := stubSpend(t, spend.Result{Rows: []spend.Row{{Model: "ollama/gemma4:9b", Requests: 9}}}, nil)
+	call := stubSpend(t, modelapi.SpendReport{Rows: []modelapi.SpendRow{{Model: "ollama/gemma4:9b", Requests: 9}}}, nil)
 
 	stdout, stderr := runStatsDirect(t, a, "--agent", "codex")
 
@@ -504,7 +500,7 @@ func TestStatsCmdFamilyFiltersOnlyTheUsageTable(t *testing.T) {
 		{Agent: "claude", ModelID: "openrouter/b", Timestamp: time.Now().Add(-time.Hour), Worked: boolPtr(true)},
 	})
 	seedLaunches(t, tmp, launch{"ollama/a", "claude", time.Hour}, launch{"openrouter/b", "claude", time.Hour})
-	stubSpend(t, spend.Result{}, nil)
+	stubSpend(t, modelapi.SpendReport{}, nil)
 
 	split := func(args ...string) (surveyPart, usagePart string) {
 		stdout, _ := runStatsDirect(t, a, args...)
@@ -606,7 +602,7 @@ func TestStatsCmdWorksWithoutARegistry(t *testing.T) {
 
 			// A model server: its spend, prefixes for the families it does
 			// not name, and no word about this machine's registry.
-			stubSpend(t, spend.Result{Rows: []spend.Row{{Model: "ollama/gone:cloud", Requests: 3}}}, nil)
+			stubSpend(t, modelapi.SpendReport{Rows: []modelapi.SpendRow{{Model: "ollama/gone:cloud", Requests: 3}}}, nil)
 			stdout, stderr = runStatsDirect(t, a, "--family", "ollama")
 			want = "no survey data\n\n" +
 				"MODEL              LAUNCHES  REQUESTS  PROMPT  COMPLETION    SPEND\n" +
@@ -664,7 +660,7 @@ func TestStatsCmdUsesTheTerminalWidth(t *testing.T) {
 	a, tmp := newTestApp(t)
 	const long = "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
 	seedLaunches(t, tmp, launch{long, "claude", time.Hour})
-	stubSpend(t, spend.Result{Rows: []spend.Row{{Model: long, Requests: 1204, PromptTokens: 12345678, CompletionTokens: 1234567}}}, nil)
+	stubSpend(t, modelapi.SpendReport{Rows: []modelapi.SpendRow{{Model: long, Requests: 1204, PromptTokens: 12345678, CompletionTokens: 1234567}}}, nil)
 	old := stdoutWidth
 	stdoutWidth = func() int { return 80 }
 	t.Cleanup(func() { stdoutWidth = old })

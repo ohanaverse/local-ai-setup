@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -24,7 +24,7 @@ func counts(d1, d7, d30 int) usage.UsageCounts {
 // things the report exists to show — traffic through the proxy, launches
 // that bypassed it, and proxy use that did not come from wt.
 func TestBuildUsageRowsJoinsLaunchesAndSpend(t *testing.T) {
-	sp := &spend.Result{Rows: []spend.Row{
+	sp := &modelapi.SpendReport{Rows: []modelapi.SpendRow{
 		{Model: "openrouter/qwen/qwen3.8-27b", Requests: 5, PromptTokens: 517, CompletionTokens: 3135, Spend: 0.0085},
 		{Model: "ollama/both", Requests: 4, PromptTokens: 152, CompletionTokens: 630},
 	}}
@@ -109,7 +109,7 @@ func TestBuildUsageRowsFamilyAndFilters(t *testing.T) {
 		"ollama/blank":      counts(1, 1, 1),
 	}
 	families["ollama/blank"] = "" // a registry entry with no family
-	sp := &spend.Result{Rows: []spend.Row{{Model: "openrouter/x/y", Requests: 1}}}
+	sp := &modelapi.SpendReport{Rows: []modelapi.SpendRow{{Model: "openrouter/x/y", Requests: 1}}}
 
 	got := map[string]string{}
 	for _, r := range buildUsageRows(c, survey.Window30d, sp, families, statsFilter{}) {
@@ -162,8 +162,8 @@ func TestBuildUsageRowsFamilyAndFilters(t *testing.T) {
 // untouched.
 func TestBuildUsageRowsNeverMakesANamelessRow(t *testing.T) {
 	c := map[string]usage.UsageCounts{"": counts(1, 1, 1), "ollama/a": counts(2, 2, 2)}
-	sp := &spend.Result{Rows: []spend.Row{{Model: "", Requests: 9}, {Model: "ollama/a", Requests: 4}}}
-	for name, s := range map[string]*spend.Result{"with spend": sp, "without spend": nil} {
+	sp := &modelapi.SpendReport{Rows: []modelapi.SpendRow{{Model: "", Requests: 9}, {Model: "ollama/a", Requests: 4}}}
+	for name, s := range map[string]*modelapi.SpendReport{"with spend": sp, "without spend": nil} {
 		rows := buildUsageRows(c, survey.Window30d, s, nil, statsFilter{})
 		if len(rows) != 1 || rows[0].Model != "ollama/a" || rows[0].Launches != 2 {
 			t.Errorf("%s: rows = %+v, want the one ollama/a row and none with an empty id", name, rows)
@@ -194,43 +194,43 @@ func TestBuildUsageRowsFoldsTheSlashSpelling(t *testing.T) {
 		name     string
 		launched []string // ids with one launch each
 		registry []string // registry ids, with no launch
-		spend    []spend.Row
+		spend    []modelapi.SpendRow
 		want     []want
 	}{
 		{
 			name:     "the slash spelling folds into the launched id",
 			launched: []string{"mtplx/Org--Name"},
-			spend:    []spend.Row{{Model: "mtplx/Org--Name", Requests: 4}, {Model: "mtplx/Org/Name", Requests: 5}},
+			spend:    []modelapi.SpendRow{{Model: "mtplx/Org--Name", Requests: 4}, {Model: "mtplx/Org/Name", Requests: 5}},
 			want:     []want{{"mtplx/Org--Name", 1, 9, "mtplx/Org/Name"}},
 		},
 		{
 			name:     "a registry id with no launch is known too",
 			registry: []string{"mtplx/Org--Name"},
-			spend:    []spend.Row{{Model: "mtplx/Org/Name", Requests: 5}},
+			spend:    []modelapi.SpendRow{{Model: "mtplx/Org/Name", Requests: 5}},
 			want:     []want{{"mtplx/Org--Name", 0, 5, "mtplx/Org/Name"}},
 		},
 		{
 			name:     "no fold when the logged id is itself known",
 			launched: []string{"openrouter/z-ai--glm"},
 			registry: []string{"openrouter/z-ai/glm"},
-			spend:    []spend.Row{{Model: "openrouter/z-ai/glm", Requests: 5}},
+			spend:    []modelapi.SpendRow{{Model: "openrouter/z-ai/glm", Requests: 5}},
 			want:     []want{{"openrouter/z-ai--glm", 1, 0, ""}, {"openrouter/z-ai/glm", 0, 5, ""}},
 		},
 		{
 			name:  "no fold when the -- spelling is not known",
-			spend: []spend.Row{{Model: "openrouter/qwen/qwen3.8-27b", Requests: 5}},
+			spend: []modelapi.SpendRow{{Model: "openrouter/qwen/qwen3.8-27b", Requests: 5}},
 			want:  []want{{"openrouter/qwen/qwen3.8-27b", 0, 5, ""}},
 		},
 		{
 			name:     "no fold across providers",
 			launched: []string{"omlx/Org--Name"},
-			spend:    []spend.Row{{Model: "mtplx/Org/Name", Requests: 5}},
+			spend:    []modelapi.SpendRow{{Model: "mtplx/Org/Name", Requests: 5}},
 			want:     []want{{"mtplx/Org/Name", 0, 5, ""}, {"omlx/Org--Name", 1, 0, ""}},
 		},
 		{
 			name:     "the provider prefix's own slash is never rewritten",
 			launched: []string{"mtplx--Org--Name", "mtplx--Name"},
-			spend:    []spend.Row{{Model: "mtplx/Org/Name", Requests: 5}, {Model: "mtplx/Name", Requests: 2}},
+			spend:    []modelapi.SpendRow{{Model: "mtplx/Org/Name", Requests: 5}, {Model: "mtplx/Name", Requests: 2}},
 			want: []want{
 				{"mtplx--Name", 1, 0, ""}, {"mtplx--Org--Name", 1, 0, ""},
 				{"mtplx/Name", 0, 2, ""}, {"mtplx/Org/Name", 0, 5, ""},
@@ -239,7 +239,7 @@ func TestBuildUsageRowsFoldsTheSlashSpelling(t *testing.T) {
 		{
 			name:     "every slash after the prefix is rewritten, or none",
 			launched: []string{"mtplx/a--b--c", "mtplx/x/y--z"},
-			spend:    []spend.Row{{Model: "mtplx/a/b/c", Requests: 3}, {Model: "mtplx/x/y/z", Requests: 7}},
+			spend:    []modelapi.SpendRow{{Model: "mtplx/a/b/c", Requests: 3}, {Model: "mtplx/x/y/z", Requests: 7}},
 			want: []want{
 				{"mtplx/a--b--c", 1, 3, "mtplx/a/b/c"},
 				{"mtplx/x/y--z", 1, 0, ""}, {"mtplx/x/y/z", 0, 7, ""},
@@ -248,13 +248,13 @@ func TestBuildUsageRowsFoldsTheSlashSpelling(t *testing.T) {
 		{
 			name:     "a mixed spelling folds as well",
 			launched: []string{"mtplx/a--b--c"},
-			spend:    []spend.Row{{Model: "mtplx/a/b--c", Requests: 2}},
+			spend:    []modelapi.SpendRow{{Model: "mtplx/a/b--c", Requests: 2}},
 			want:     []want{{"mtplx/a--b--c", 1, 2, "mtplx/a/b--c"}},
 		},
 		{
 			name:     "an id with no provider prefix never folds",
 			launched: []string{"/Org--Name"},
-			spend:    []spend.Row{{Model: "/Org/Name", Requests: 5}},
+			spend:    []modelapi.SpendRow{{Model: "/Org/Name", Requests: 5}},
 			want:     []want{{"/Org--Name", 1, 0, ""}, {"/Org/Name", 0, 5, ""}},
 		},
 	} {
@@ -266,7 +266,7 @@ func TestBuildUsageRowsFoldsTheSlashSpelling(t *testing.T) {
 		for _, id := range tc.registry {
 			families[id] = "fam"
 		}
-		rows := buildUsageRows(c, survey.Window30d, &spend.Result{Rows: tc.spend}, families, statsFilter{})
+		rows := buildUsageRows(c, survey.Window30d, &modelapi.SpendReport{Rows: tc.spend}, families, statsFilter{})
 		if len(rows) != len(tc.want) {
 			t.Errorf("%s: rows = %+v, want %d", tc.name, rows, len(tc.want))
 			continue
@@ -293,13 +293,13 @@ func TestBuildUsageRowsFoldsTheSlashSpelling(t *testing.T) {
 func TestBuildUsageRowsSumsFoldedSpellings(t *testing.T) {
 	c := map[string]usage.UsageCounts{"mtplx/a--b--c": counts(2, 2, 2)}
 	families := map[string]string{"mtplx/a--b--c": "qwen"}
-	in := []spend.Row{
+	in := []modelapi.SpendRow{
 		{Model: "mtplx/a/b/c", Requests: 5, PromptTokens: 100, CompletionTokens: 10, Spend: 0.5},
 		{Model: "mtplx/a--b--c", Requests: 4, PromptTokens: 20, CompletionTokens: 2, Spend: 0.25},
 		{Model: "mtplx/a--b/c", Requests: 1, PromptTokens: 3, CompletionTokens: 1, Spend: 0.125},
 	}
 	for _, order := range [][]int{{0, 1, 2}, {2, 1, 0}, {1, 2, 0}} {
-		sp := &spend.Result{}
+		sp := &modelapi.SpendReport{}
 		for _, i := range order {
 			sp.Rows = append(sp.Rows, in[i])
 		}
@@ -308,7 +308,7 @@ func TestBuildUsageRowsSumsFoldedSpellings(t *testing.T) {
 			t.Fatalf("order %v: rows = %+v, want one", order, rows)
 		}
 		r := rows[0]
-		wantSpend := spend.Row{Model: "mtplx/a--b--c", Requests: 10, PromptTokens: 123, CompletionTokens: 13, Spend: 0.875}
+		wantSpend := modelapi.SpendRow{Model: "mtplx/a--b--c", Requests: 10, PromptTokens: 123, CompletionTokens: 13, Spend: 0.875}
 		if r.Model != "mtplx/a--b--c" || r.Family != "qwen" || r.Launches != 2 || *r.Spend != wantSpend {
 			t.Errorf("order %v: row = %+v with spend %+v, want family qwen, 2 launches and %+v", order, r, *r.Spend, wantSpend)
 		}
@@ -330,7 +330,7 @@ func TestBuildUsageRowsSumsFoldedSpellings(t *testing.T) {
 func TestBuildUsageRowsFiltersApplyAfterFolding(t *testing.T) {
 	c := map[string]usage.UsageCounts{"mtplx/Org--Name": counts(1, 1, 1)}
 	families := map[string]string{"mtplx/Org--Name": "qwen", "openrouter/z-ai/glm": "glm"}
-	sp := &spend.Result{Rows: []spend.Row{
+	sp := &modelapi.SpendReport{Rows: []modelapi.SpendRow{
 		{Model: "mtplx/Org--Name", Requests: 4},
 		{Model: "mtplx/Org/Name", Requests: 5},
 		{Model: "openrouter/z-ai/glm", Requests: 2},
@@ -365,7 +365,7 @@ func TestBuildUsageRowsFiltersApplyAfterFolding(t *testing.T) {
 // (--window 1d, 7d) where a launch is most likely to fall outside.
 func TestBuildUsageRowsFoldsIntoAnIdLaunchedOutsideTheWindow(t *testing.T) {
 	c := map[string]usage.UsageCounts{"mtplx/Org--Name": counts(0, 0, 1)}
-	sp := &spend.Result{Rows: []spend.Row{{Model: "mtplx/Org/Name", Requests: 5}}}
+	sp := &modelapi.SpendReport{Rows: []modelapi.SpendRow{{Model: "mtplx/Org/Name", Requests: 5}}}
 	for _, window := range []time.Duration{survey.Window1d, survey.Window7d} {
 		rows := buildUsageRows(c, window, sp, nil, statsFilter{})
 		if len(rows) != 1 {
@@ -385,7 +385,7 @@ func TestBuildUsageRowsFoldsIntoAnIdLaunchedOutsideTheWindow(t *testing.T) {
 // in the profile's spend cells would read as "this profile cost nothing"; a
 // nil Spend prints "-" and is null in --json.
 func TestBuildUsageRowsProfileRowHasNoSpend(t *testing.T) {
-	sp := &spend.Result{Rows: []spend.Row{
+	sp := &modelapi.SpendReport{Rows: []modelapi.SpendRow{
 		{Model: "ollama/glm:cloud", Requests: 40, PromptTokens: 1000, CompletionTokens: 200, Spend: 0.01},
 	}}
 	families := map[string]string{"ollama/glm:cloud": "glm", "ollama/idle": "glm"}
@@ -432,7 +432,7 @@ func TestBuildUsageRowsProfileRowHasNoSpend(t *testing.T) {
 // under a profile's id is kept, not thrown away: wt does not write it there,
 // but hiding real money would be worse than an odd row.
 func TestBuildUsageRowsProfileIDEdges(t *testing.T) {
-	sp := &spend.Result{Rows: []spend.Row{{Model: "profile/logged", Requests: 3, Spend: 0.5}}}
+	sp := &modelapi.SpendReport{Rows: []modelapi.SpendRow{{Model: "profile/logged", Requests: 3, Spend: 0.5}}}
 	families := map[string]string{"profile/registered": "odd"}
 	rows := buildUsageRows(map[string]usage.UsageCounts{
 		"profile/registered": counts(1, 1, 1),

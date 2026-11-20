@@ -103,7 +103,7 @@ func spendFromServer(cmd *cobra.Command, a *app, window time.Duration, asOf time
 // all exit 0. Only a malformed --window value is an error.
 func statsCmd(a *app) *cobra.Command { return statsCmdWith(a, serverSpend) }
 
-// statsCmdWith is statsCmd reading its spend through spend.
+// statsCmdWith is statsCmd reading its spend through the statsSpend source spend.
 func statsCmdWith(a *app, spend statsSpend) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stats",

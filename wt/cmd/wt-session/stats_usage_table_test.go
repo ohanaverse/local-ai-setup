@@ -6,21 +6,21 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
 // realisticRows are usage rows with model ids of the lengths wt really
 // routes (16 to 51 characters) and large token counts.
 func realisticRows() []usageRow {
-	row := func(id string, launches int, s *spend.Row) usageRow {
+	row := func(id string, launches int, s *modelapi.SpendRow) usageRow {
 		return usageRow{Model: id, Launches: launches, Spend: s}
 	}
 	return []usageRow{
-		row("mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality", 3, &spend.Row{Requests: 1204, PromptTokens: 12345678, CompletionTokens: 1234567}),
-		row("ollama/deepseek-v4-flash:cloud", 17, &spend.Row{}),
-		row("ollama/gemma4:9b", 5, &spend.Row{Requests: 4, PromptTokens: 152, CompletionTokens: 630}),
-		row("omlx/mlx-community--Qwen3.8-27B-4bit", 2, &spend.Row{Requests: 88, PromptTokens: 912004, CompletionTokens: 40117}),
-		row("openrouter/qwen/qwen3.8-27b", 0, &spend.Row{Requests: 5, PromptTokens: 517, CompletionTokens: 3135, Spend: 12.3456}),
+		row("mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality", 3, &modelapi.SpendRow{Requests: 1204, PromptTokens: 12345678, CompletionTokens: 1234567}),
+		row("ollama/deepseek-v4-flash:cloud", 17, &modelapi.SpendRow{}),
+		row("ollama/gemma4:9b", 5, &modelapi.SpendRow{Requests: 4, PromptTokens: 152, CompletionTokens: 630}),
+		row("omlx/mlx-community--Qwen3.8-27B-4bit", 2, &modelapi.SpendRow{Requests: 88, PromptTokens: 912004, CompletionTokens: 40117}),
+		row("openrouter/qwen/qwen3.8-27b", 0, &modelapi.SpendRow{Requests: 5, PromptTokens: 517, CompletionTokens: 3135, Spend: 12.3456}),
 	}
 }
 
@@ -132,7 +132,7 @@ func TestRenderUsageTableOnANarrowTerminal(t *testing.T) {
 // which wt does not write; printed raw, such an id recolours the terminal
 // and splits its own row in two.
 func TestRenderUsageTableEscapesControlCharacters(t *testing.T) {
-	got := renderUsageTable([]usageRow{{Model: "evil\x1b[31mred\nline2", Launches: 1234, Spend: &spend.Row{Requests: 1}}}, 80)
+	got := renderUsageTable([]usageRow{{Model: "evil\x1b[31mred\nline2", Launches: 1234, Spend: &modelapi.SpendRow{Requests: 1}}}, 80)
 	want := "MODEL                   LAUNCHES  REQUESTS  PROMPT  COMPLETION    SPEND\n" +
 		`evil\x1b[31mred\nline2     1,234         1       0           0  $0.0000`
 	if got != want {

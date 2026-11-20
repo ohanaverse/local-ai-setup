@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
 // psqlCall records what a stubbed psql was run with.
@@ -682,5 +684,17 @@ func TestSeamsFailClosedByDefault(t *testing.T) {
 	}
 	if _, _, _, err := runPsql(context.Background(), "psql", nil, nil); err == nil {
 		t.Fatal("the default runPsql ran something; want a hard failure")
+	}
+}
+
+// TestSpendTypesAreTheWireTypes pins spend.Row and spend.Result as aliases
+// of modelapi.SpendRow and SpendReport: wt stats reads the wire types, the
+// server hands Query's result on unconverted, and a field added to one side
+// only would otherwise drift silently.
+func TestSpendTypesAreTheWireTypes(t *testing.T) {
+	var r Row = modelapi.SpendRow{Model: "m", Requests: 2}
+	var res Result = modelapi.SpendReport{Rows: []modelapi.SpendRow{r}, Unattributed: 1}
+	if res.Rows[0].Model != "m" || res.Unattributed != 1 {
+		t.Fatalf("got %+v", res)
 	}
 }
