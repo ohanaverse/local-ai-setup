@@ -162,6 +162,30 @@ func TestProxyHomeFollowsTheConfigHome(t *testing.T) {
 	}
 }
 
+// TestModelHomeIsTheProxyHomesDirectory pins that servestate and the proxy
+// pair name one directory: ModelHome is the directory ProxyHomePath's
+// config.toml sits in, so serve's runtime record never lands beside a
+// different home. With no config home at all both are "" (nothing resolves
+// or writes).
+func TestModelHomeIsTheProxyHomesDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if got, want := ModelHome(), filepath.Join(dir, "wt-model"); got != want {
+		t.Errorf("ModelHome() = %q, want %q", got, want)
+	}
+	if got, want := ProxyHomePath(), filepath.Join(ModelHome(), "config.toml"); got != want {
+		t.Errorf("ProxyHomePath() = %q, want %q", got, want)
+	}
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
+	if got := ModelHome(); got != "" {
+		t.Errorf("ModelHome() with no home = %q, want \"\"", got)
+	}
+	if got := ProxyHomePath(); got != "" {
+		t.Errorf("ProxyHomePath() with no home = %q, want \"\"", got)
+	}
+}
+
 // TestResolveProxyPrefersTheHomeTable pins rule 1 of the merge: a home
 // [litellm] table is authoritative and complete — its url and its key file's
 // content win over a differently-valued legacy [litellm] table. The home is

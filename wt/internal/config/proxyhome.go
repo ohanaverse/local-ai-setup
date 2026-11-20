@@ -75,15 +75,26 @@ type proxyHomeLitellm struct {
 	KeyFile string `toml:"key_file,omitempty"`
 }
 
-// ProxyHomePath returns the wt-model home's config.toml —
-// <baseConfigHome>/wt-model/config.toml — or "" when there is no home, in
-// which case nothing resolves or writes.
-func ProxyHomePath() string {
+// ModelHome returns the wt-model home directory — <baseConfigHome>/wt-model:
+// the proxy pair's config.toml and key, and serve's runtime record — or ""
+// when there is no config home.
+func ModelHome() string {
 	base := baseConfigHome()
 	if base == "" {
 		return ""
 	}
-	return filepath.Join(base, "wt-model", "config.toml")
+	return filepath.Join(base, "wt-model")
+}
+
+// ProxyHomePath returns the wt-model home's config.toml —
+// <ModelHome>/config.toml — or "" when there is no home, in which case
+// nothing resolves or writes.
+func ProxyHomePath() string {
+	home := ModelHome()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "config.toml")
 }
 
 // ResolveProxy resolves the LiteLLM proxy pair: the wt-model home's
