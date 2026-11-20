@@ -32,6 +32,7 @@ const (
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
 	phaseLaunching                   // the API path's launch prepares on the model server (remote_start.go)
 	phaseCatalog                     // the model server's catalog is loading, or its fetch failed (F retries)
+	phaseAsk                         // the launch gate / profile popups (ask_popup.go)
 )
 
 // model holds the entire UI state.
@@ -142,6 +143,7 @@ type model struct {
 	start    *startState   // in-flight start (phaseStarting); nil when idle
 	startRun int           // monotonically increasing run id; stale messages are dropped by id
 	replace  *replaceState // replace-confirm dialog (phaseReplaceConfirm)
+	ask      *askState     // launch gate / profile popup (phaseAsk)
 
 	// creation is the pick that owes its worktree at the commit point (a bare
 	// branch, a remote-only branch, or a typed name that owes one): resolved
@@ -413,6 +415,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		if m.phase == phaseLaunching && m.prep != nil {
 			return m.handleLaunchingKey(msg)
 		}
+		// The launch gate / profile popups own the keyboard, q and ctrl+c
+		// included: they quit through the decline's releases.
+		if m.phase == phaseAsk && m.ask != nil {
+			return m.updateAsk(msg)
+		}
 		// The worktree picker is the row list: every key is its own (q and
 		// esc quit there, `/` filters, and while the filter is typed every
 		// printable key goes into it). ctrl+c quits from rest. A double Enter
@@ -650,6 +657,12 @@ func (m model) View() string {
 			return "launch (waiting for window size)"
 		}
 		return clip(m.launchingView(), m.width)
+	}
+	if m.phase == phaseAsk && m.ask != nil {
+		if m.width <= 0 || m.height <= 0 {
+			return "confirm (waiting for window size)"
+		}
+		return drawnFrame(&m.ask.choices, m.height, m.askFrames()...)(m.ask.choices.View())
 	}
 	if m.phase == phaseReplaceConfirm {
 		if m.width <= 0 || m.height <= 0 {
