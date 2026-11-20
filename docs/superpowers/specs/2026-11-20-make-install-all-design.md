@@ -35,4 +35,5 @@ Status: approved by the user in conversation, 2026-11-20 (short design for a sma
 - `install-all` is `install` followed by `install-skills`. No agent found is not an error (exit 0, the binaries installed fine) and the summary says so (my call).
 - Target name `install-all` (my call; matches `test-all`).
 - A test, `bin/test-install-skills`, runs `make install-skills` in a scratch `HOME` with a scratch `PATH` holding only fake agent commands, and checks that exactly the present agents get the skill, the absent ones get nothing, and no other directory appears. It runs in `make test-all` (so in `make pre-pr`).
-- Docs: root `CLAUDE.md` (Commands and the skills line), guide 08 §9, `wt/CLAUDE.md` Installation.
+- Docs: root `CLAUDE.md` (Commands and the skills line), guide 08 §9, `wt/CLAUDE.md` Installation, and the README's Makefile tree comment.
+- The test unsets make's own variables (`MAKEFLAGS`, `MAKELEVEL`) and runs with a scratch `PATH` of fake agents plus symlinks to `sh`, `cp`, `rm` and `mkdir` only, so neither a command-line `HOME=` nor an agent in `/usr/bin` can change the result; it also covers a failing copy (non-zero exit, no summary line).
