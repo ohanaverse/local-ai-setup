@@ -137,8 +137,9 @@ _NOT_CONFIGURED_HINT = (
 
 
 def stop(model_ref: str, timeout: float = STOP_TIMEOUT) -> None:
-    """Stop one running local model (`wt stop <provider>/<name>`). On omlx
-    that unloads the model and leaves the service and its other models up.
+    """Stop one running local model (`wt stop <model-id>`, a `<provider>/<name>`
+    id). On omlx that unloads the model and leaves the service and its other
+    models up.
 
     `--yes` is passed because `wt stop` otherwise asks "stop anyway? [y/N]"
     on /dev/tty when a live wt session has the model in use — a prompt

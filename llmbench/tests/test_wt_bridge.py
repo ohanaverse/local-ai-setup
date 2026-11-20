@@ -180,8 +180,8 @@ def test_served_lists_the_models_wt_reports(monkeypatch, wt_on_path):
 
 
 def test_stop_runs_wt_stop_and_reports_its_failure(monkeypatch, wt_on_path):
-    """`wt stop <provider>/<name> --yes` unloads one model; on omlx it leaves
-    the service and its other models up. `--yes` is what keeps a model a live
+    """`wt stop <model-id> --yes` (a `<provider>/<name>` id) unloads one model;
+    on omlx it leaves the service and its other models up. `--yes` is what keeps a model a live
     wt session holds from turning the call into a /dev/tty prompt nothing here
     can answer (it would block until STOP_TIMEOUT). The timeout outlasts the
     LiteLLM proxy restart wt may wait for after a route change."""

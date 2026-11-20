@@ -976,3 +976,13 @@ func TestStartIsANoOpOnlyWhenTheSushiPackIsLoaded(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadingInstanceErrorNamesWtModelStop: the hint must name the command
+// that exists after the cut (provider stops moved to wt-model).
+func TestLoadingInstanceErrorNamesWtModelStop(t *testing.T) {
+	got := (&LoadingInstanceError{ProviderID: "mtplx", PID: 7}).Error()
+	const want = "mtplx already has an instance (pid 7) still loading; wait for it to finish, or run `wt-model stop mtplx`"
+	if got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}

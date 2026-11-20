@@ -2,7 +2,10 @@ package servestate
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
+	"syscall"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
@@ -15,8 +18,14 @@ import (
 // *tokenfile.Error returned as is, before any request); the address dialled
 // is r.Listen, on loopback when it is bound to every interface. A stale
 // record is the caller's to tolerate: it is an unreachable server, an error.
+// A record whose pid is no longer running is stale (the server died without
+// removing it, and another process may own the port now), so it is an error
+// before the token is read or any request is made.
 // ctx bounds the whole exchange. No error carries the token.
 func Sessions(ctx context.Context, r Record) (map[string]int, error) {
+	if !pidAlive(r.PID) {
+		return nil, fmt.Errorf("the model server (pid %d) is not running: stale record", r.PID)
+	}
 	tok, err := tokenfile.Load(r.TokenFile)
 	if err != nil {
 		return nil, err
@@ -43,4 +52,14 @@ func dialURL(listen string) string {
 		}
 	}
 	return "http://" + listen
+}
+
+// pidAlive reports whether pid is a running process (EPERM means alive).
+// Package-level var so tests can inject liveness without real processes.
+var pidAlive = func(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

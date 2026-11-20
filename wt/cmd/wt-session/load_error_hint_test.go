@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -189,61 +188,5 @@ func TestStatsFamilyNoteNamesTheRepairThatWorks(t *testing.T) {
 			c.check(t, note, "wt: wt's configuration did not load (", "; %s",
 				"), so --family matched each id's provider prefix\n", registry)
 		})
-	}
-}
-
-// TestRegistryRowErrorNamesTheRegistry runs the commands that refuse on a
-// validation error against a registry whose rows are wrong (since the flip
-// those are the host's `wt stop <provider>` and `wt stop --all`: start, a
-// model's stop, smoke and a launch read no registry), and pins that the
-// refusal sends the user to registry.toml. The rows parse, so this is not a
-// load error, and it used to fall through to "run `wt config` to repair" —
-// for a model with no model_name right after the same line had said to edit
-// registry.toml. `wt config` edits config.toml and cannot repair a provider
-// or model row (#291).
-func TestRegistryRowErrorNamesTheRegistry(t *testing.T) {
-	const provider = "[[providers]]\nid = \"omlx\"\nlocation = \"local\"\n\n"
-	for name, c := range map[string]struct{ body, want string }{
-		"model without model_name": {
-			provider + "[[models]]\nid = \"omlx/m\"\nprovider_id = \"omlx\"\n",
-			`model "omlx/m": model_name is required`,
-		},
-		"model with an unknown provider": {
-			provider + "[[models]]\nid = \"ghost/m\"\nprovider_id = \"ghost\"\nmodel_name = \"m\"\n",
-			`model "ghost/m": unknown provider "ghost"`,
-		},
-		"duplicate provider id": {provider + provider, `duplicate provider id "omlx"`},
-		"model with no location": {
-			"[[providers]]\nid = \"omlx\"\n\n[[models]]\nid = \"omlx/m\"\nprovider_id = \"omlx\"\nmodel_name = \"m\"\n",
-			`model "omlx/m": no location on model or provider "omlx"`,
-		},
-	} {
-		for _, args := range [][]string{{"stop", "omlx"}, {"stop", "--all"}} {
-			t.Run(name+"/"+strings.Join(args, " "), func(t *testing.T) {
-				home := t.TempDir()
-				withCleanConfigEnv(t, home)
-				litellmEnv(t, "model_list: []\n")
-				registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
-				if err := os.MkdirAll(filepath.Dir(registry), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(registry, []byte(c.body), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				root := rootCmdWith(testHooks())
-				var out, errOut bytes.Buffer
-				root.SetOut(&out)
-				root.SetErr(&errOut)
-				root.SetArgs(args)
-				err := root.Execute()
-				if err == nil {
-					t.Fatalf("wt %v ran on an invalid registry (stdout %q)", args, out.String())
-				}
-				want := "config error: " + c.want + " (fix the entry in " + registry + ")"
-				if got := err.Error(); got != want {
-					t.Errorf("wt %v:\n  %q\nwant\n  %q", args, got, want)
-				}
-			})
-		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/hoststop"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeleditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -27,7 +29,8 @@ import (
 // from PATH, stdin is no terminal, the Models screen cannot open and a
 // registry write's route sync reports that it was not stubbed, no terminal
 // opens and a removal's question fails unanswered, cloud-sync fetches no
-// page, runs no ollama and asks nothing, and stdout is no terminal (width 0,
+// page, runs no ollama and asks nothing, a stop probes nothing, stops
+// nothing and is declined when it asks, and stdout is no terminal (width 0,
 // so a table does not depend on where `go test` was started). A test replaces the fields it exercises; each test owns its
 // host, so nothing is shared between parallel tests.
 func testHost() *host {
@@ -60,6 +63,23 @@ func testHost() *host {
 	h.confirmCloudSync = func(string) (bool, error) {
 		return false, errors.New("confirmCloudSync not stubbed in this test")
 	}
+	// `wt-model stop` seams: no test may probe live servers or stop a real
+	// model. The stop of a loading server is refused here, and the engine's
+	// own process seams are closed beneath it (TestMain's
+	// lifecycle.IsolateProcessesForTest) for a test that swaps the real stop
+	// state back in (liveStopState). Tests use stubStop, stubStopState,
+	// stubHalt, stubStopLoading and stubStopConfirm.
+	h.stopState = func(*config.Config) hoststop.StopState { return hoststop.StopState{} }
+	h.stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error {
+		return errors.New("stopEntries not stubbed in this test")
+	}
+	h.stopProvider = func(context.Context, *config.Config, string) error {
+		return errors.New("stopProvider not stubbed in this test")
+	}
+	h.stopLoading = func(_ context.Context, _ *config.Config, id string, pid int) error {
+		return fmt.Errorf("stopLoading not stubbed in this test (%s, pid %d)", id, pid)
+	}
+	h.confirmStop = func(string) (bool, error) { return false, nil }
 	return h
 }
 

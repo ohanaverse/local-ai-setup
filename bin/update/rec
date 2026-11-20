@@ -4,7 +4,7 @@
 # rec is a single self-updating binary (~/.local/bin/rec); `rec update -y`
 # replaces it with the latest GitHub release. The one thing that must not
 # happen is replacing it under a running server, so a live `rec status`
-# ("ready":true) turns the update into a manual step: `wt stop rec` first.
+# ("ready":true) turns the update into a manual step: `wt-model stop rec` first.
 # --check reports stale when a newer release exists (the update is available,
 # not applied), whether or not a server runs; --check and --dry-run go through
 # the common `run`/finish helpers, so they change nothing.
@@ -81,7 +81,7 @@ fi
 
 # A running server must never be updated underneath.
 if rec status 2> /dev/null | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'; then
-    update_finish manual "$installed installed, $latest available, but a rec server is running — stop rec first (\`wt stop rec\`), then rerun"
+    update_finish manual "$installed installed, $latest available, but a rec server is running — stop rec first (\`wt-model stop rec\`), then rerun"
 fi
 
 run rec update -y || update_fail "rec update failed"

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cloudsync"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/spf13/cobra"
 )
 
@@ -26,11 +28,13 @@ func execOn(c *cobra.Command, args ...string) (string, error) {
 }
 
 // TestHostCommandsStillLoadTheRegistry pins R3 and R17 for the host commands
-// that moved to wt-model (`served`, `warm`, `cloud-sync --dry-run`; later PRs
-// add stop): each reads registry.toml through the host's hostConfig and behaves
+// that moved to wt-model (`served`, `warm`, `cloud-sync --dry-run`, `stop
+// <provider>`): each reads registry.toml through the host's hostConfig and behaves
 // as it did under wt, its error equal to the run function's over
 // config.Load()'s config. A registry that does not parse is the config
-// error of the load, as it was under wt.
+// error of the load, as it was under wt. The stop row runs with no server
+// record (testRuntime's store is empty), so it has no client session to ask
+// about and asks nothing.
 func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 	type hostCase struct {
 		name  string
@@ -69,6 +73,17 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 					t.Errorf("output = %q, want the registry's one priced model", out)
 				}
 			}},
+		{name: "stop provider", build: func(h *host) *cobra.Command { return stopCmd(h, testRuntime(t).Record) }, args: []string{"ollama", "--yes"},
+			before: func(t *testing.T, cfg *config.Config) (string, error) {
+				var out bytes.Buffer
+				err := testHost().runStop(&out, cfg, "ollama", true)
+				return out.String(), err
+			},
+			check: func(t *testing.T, out string) {
+				if strings.Contains(out, "unknown provider") {
+					t.Errorf("the registry's ollama provider was not found:\n%s", out)
+				}
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			registry := tc.registry
@@ -84,6 +99,20 @@ func TestHostCommandsStillLoadTheRegistry(t *testing.T) {
 			h := testHost()
 			stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: openRouterBody})
 			stubRouteSync(h, "")
+			// No row may stop anything or ask: the stop row's record store
+			// is empty, so no client session is known.
+			h.stopProvider = func(_ context.Context, _ *config.Config, id string) error {
+				t.Errorf("halted %s", id)
+				return nil
+			}
+			h.stopEntries = func(_ io.Writer, _ *config.Config, es []localmodels.Entry) error {
+				t.Errorf("stopped %v", es)
+				return nil
+			}
+			h.confirmStop = func(q string) (bool, error) {
+				t.Errorf("asked %q", q)
+				return false, nil
+			}
 			out, err := execOn(tc.build(h), tc.args...)
 			if fmt.Sprint(err) != fmt.Sprint(wantErr) {
 				t.Errorf("err = %v, want %v", err, wantErr)

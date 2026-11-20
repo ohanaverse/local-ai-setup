@@ -20,7 +20,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
-// Tests for `wt stop` on an mtplx that is still loading (#308): its port
+// Tests for `wt-model stop` on an mtplx that is still loading (#308): its port
 // refuses, and the stop state carries what wt's pidfile said about it
 // (hoststop.FamilyState.Loading). The stop itself is stubbed (stubStopLoading);
 // internal/lifecycle tests what it signals.
@@ -32,34 +32,33 @@ func loadingFS(sessions int, users ...string) hoststop.FamilyState {
 
 // stubStopLoading records each stop of a loading server as "<provider>:<pid>"
 // and returns err from it.
-func stubStopLoading(t *testing.T, err error) *[]string {
+func stubStopLoading(t *testing.T, h *host, err error) *[]string {
 	t.Helper()
 	var calls []string
-	old := stopLoading
-	stopLoading = func(_ context.Context, _ *config.Config, id string, pid int) error {
+	h.stopLoading = func(_ context.Context, _ *config.Config, id string, pid int) error {
 		calls = append(calls, fmt.Sprintf("%s:%d", id, pid))
 		return err
 	}
-	t.Cleanup(func() { stopLoading = old })
 	return &calls
 }
 
-// TestStopEndsAnMtplxThatIsStillLoading verifies `wt stop mtplx` and `wt stop
+// TestStopEndsAnMtplxThatIsStillLoading verifies `wt-model stop mtplx` and `wt-model stop
 // --all` stop an mtplx whose port refuses when wt's pidfile names the live
 // server: by that pid, not through `mtplx stop` (which needs the port), with
 // a line that says what was found, and with no question when no live wt
 // session uses mtplx. Both commands used to print that nothing was running
 // and exit 0 while the process read tens of gigabytes of weights.
 func TestStopEndsAnMtplxThatIsStillLoading(t *testing.T) {
+	h := testHost()
 	for name, run := range map[string]func(io.Writer) error{
-		"wt stop mtplx": func(w io.Writer) error { return runStop(w, mtplxOnlyCfg(), "mtplx", false) },
-		"wt stop --all": func(w io.Writer) error { return runStopAll(w, mtplxOnlyCfg(), false) },
+		"wt-model stop mtplx": func(w io.Writer) error { return h.runStop(w, mtplxOnlyCfg(), "mtplx", false) },
+		"wt-model stop --all": func(w io.Writer) error { return h.runStopAll(w, mtplxOnlyCfg(), false) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			stopped := stubStopState(t, families("mtplx", loadingFS(0)))
-			halted := stubHalt(t)
-			loading := stubStopLoading(t, nil)
-			asked := stubStopConfirm(t, false)
+			stopped := stubStopState(t, h, families("mtplx", loadingFS(0)))
+			halted := stubHalt(t, h)
+			loading := stubStopLoading(t, h, nil)
+			asked := stubStopConfirm(t, h, false)
 			var out bytes.Buffer
 			if err := run(&out); err != nil {
 				t.Fatal(err)
@@ -80,9 +79,10 @@ func TestStopEndsAnMtplxThatIsStillLoading(t *testing.T) {
 // TestStopAsksBeforeEndingALoadingMtplxInUse verifies the in-use question
 // comes first when live wt sessions are on mtplx, says that mtplx is still
 // loading and which pid, and that declining signals nothing while --yes
-// skips it — for `wt stop mtplx` and, beside the other providers' sessions,
-// `wt stop --all`. The session waiting on that load is the one that loses it.
+// skips it — for `wt-model stop mtplx` and, beside the other providers' sessions,
+// `wt-model stop --all`. The session waiting on that load is the one that loses it.
 func TestStopAsksBeforeEndingALoadingMtplxInUse(t *testing.T) {
+	h := testHost()
 	st := hoststop.StopState{
 		Candidates: []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 2)},
 		Families: map[string]hoststop.FamilyState{
@@ -90,25 +90,23 @@ func TestStopAsksBeforeEndingALoadingMtplxInUse(t *testing.T) {
 			"omlx":  {Probed: true, Untrusted: true, Down: true},
 		},
 	}
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() {}
-	t.Cleanup(func() { waitPendingRoutes = oldWait })
+	h.waitPendingRoutes = func() {}
 	for _, tc := range []struct {
 		name     string
 		run      func(yes bool) error
 		question string
 		declined string
 	}{
-		{"wt stop mtplx", func(yes bool) error { return runStop(io.Discard, stopCfg(), "mtplx", yes) },
+		{"wt-model stop mtplx", func(yes bool) error { return h.runStop(io.Discard, stopCfg(), "mtplx", yes) },
 			"mtplx is still loading (pid 4242) and is in use by 1 live wt session(s) (mtplx/big); stop anyway?", "mtplx is still running"},
-		{"wt stop --all", func(yes bool) error { return runStopAll(io.Discard, stopCfg(), yes) },
+		{"wt-model stop --all", func(yes bool) error { return h.runStopAll(io.Discard, stopCfg(), yes) },
 			"running local models are in use by 3 live wt session(s) (ollama/a:1, mtplx/big), and mtplx is still loading (pid 4242); stop them all?", "nothing was stopped"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stopped := stubStopState(t, st)
-			stubHalt(t)
-			loading := stubStopLoading(t, nil)
-			asked := stubStopConfirm(t, false)
+			stopped := stubStopState(t, h, st)
+			stubHalt(t, h)
+			loading := stubStopLoading(t, h, nil)
+			asked := stubStopConfirm(t, h, false)
 			err := tc.run(false)
 			if err == nil || !strings.Contains(err.Error(), "approval missing: declined") || !strings.Contains(err.Error(), tc.declined) || exitcode.Of(err) != 3 {
 				t.Fatalf("declined: err = %v (exit %d), want a decline saying %q, exit 3", err, exitcode.Of(err), tc.declined)
@@ -135,16 +133,15 @@ func TestStopAsksBeforeEndingALoadingMtplxInUse(t *testing.T) {
 // fails naming --yes and signals nothing, through the real prompt. A script
 // must not end a load under a session by accident.
 func TestStopOfALoadingMtplxRefusesWithoutATerminal(t *testing.T) {
-	oldTTY, oldConfirm := openTTY, confirmStop
-	openTTY = func() (*os.File, error) { return nil, errors.New("open /dev/tty: device not configured") }
-	confirmStop = promptStop
-	t.Cleanup(func() { openTTY, confirmStop = oldTTY, oldConfirm })
+	h := testHost()
+	h.openTTY = func() (*os.File, error) { return nil, errors.New("open /dev/tty: device not configured") }
+	h.confirmStop = h.realConfirmRemove
 	for name, run := range map[string]func() error{
-		"wt stop mtplx": func() error { return runStop(io.Discard, mtplxOnlyCfg(), "mtplx", false) },
-		"wt stop --all": func() error { return runStopAll(io.Discard, mtplxOnlyCfg(), false) },
+		"wt-model stop mtplx": func() error { return h.runStop(io.Discard, mtplxOnlyCfg(), "mtplx", false) },
+		"wt-model stop --all": func() error { return h.runStopAll(io.Discard, mtplxOnlyCfg(), false) },
 	} {
-		stubStopState(t, families("mtplx", loadingFS(1, "mtplx/big")))
-		loading := stubStopLoading(t, nil)
+		stubStopState(t, h, families("mtplx", loadingFS(1, "mtplx/big")))
+		loading := stubStopLoading(t, h, nil)
 		err := run()
 		if err == nil || err.Error() != "approval missing: pass --yes (there is no terminal to ask); nothing was stopped" || exitcode.Of(err) != 3 {
 			t.Fatalf("%s: err = %v (exit %d), want --yes named, exit 3", name, err, exitcode.Of(err))
@@ -163,50 +160,47 @@ func TestStopOfALoadingMtplxRefusesWithoutATerminal(t *testing.T) {
 // not stopped" would be the opposite of what happened — and in --all the
 // servers after it, which wt did not touch, are still named as not stopped.
 func TestStopOfALoadingMtplxThatFailsExitsNonZero(t *testing.T) {
-	stubStopState(t, families("mtplx", loadingFS(0)))
-	stubStopLoading(t, errors.New("mtplx (pid 4242) is still running after SIGKILL"))
+	h := testHost()
+	stubStopState(t, h, families("mtplx", loadingFS(0)))
+	stubStopLoading(t, h, errors.New("mtplx (pid 4242) is still running after SIGKILL"))
 	var out bytes.Buffer
-	err := runStop(&out, mtplxOnlyCfg(), "mtplx", false)
+	err := h.runStop(&out, mtplxOnlyCfg(), "mtplx", false)
 	if err == nil || !strings.Contains(err.Error(), "still running") || out.String() != "Stopping mtplx (still loading, pid 4242)... failed\n" {
-		t.Errorf("wt stop mtplx: err = %v out = %q, want the failure returned and printed", err, out.String())
+		t.Errorf("wt-model stop mtplx: err = %v out = %q, want the failure returned and printed", err, out.String())
 	}
 	out.Reset()
-	err = runStopAll(&out, mtplxOnlyCfg(), false)
+	err = h.runStopAll(&out, mtplxOnlyCfg(), false)
 	if err == nil || !strings.Contains(err.Error(), "mtplx: mtplx (pid 4242) is still running") || !strings.Contains(out.String(), "... failed") {
-		t.Errorf("wt stop --all: err = %v out = %q, want mtplx's failure named", err, out.String())
+		t.Errorf("wt-model stop --all: err = %v out = %q, want mtplx's failure named", err, out.String())
 	}
 
-	oldCtx := startSignalCtx
-	t.Cleanup(func() { startSignalCtx = oldCtx })
 	ctx, cancel := context.WithCancel(context.Background())
-	startSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
-	old := stopLoading
-	stopLoading = func(context.Context, *config.Config, string, int) error { cancel(); return context.Canceled }
-	t.Cleanup(func() { stopLoading = old })
+	h.startSignalCtx = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
+	h.stopLoading = func(context.Context, *config.Config, string, int) error { cancel(); return context.Canceled }
 	out.Reset()
-	err = runStop(&out, mtplxOnlyCfg(), "mtplx", false)
+	err = h.runStop(&out, mtplxOnlyCfg(), "mtplx", false)
 	if !errors.Is(err, hoststop.ErrStopCancelled) || !strings.Contains(err.Error(), "mtplx was not stopped") || !strings.HasSuffix(out.String(), "... cancelled\n") {
 		t.Errorf("Ctrl+C: err = %v out = %q, want a cancellation naming mtplx", err, out.String())
 	}
 
-	stopLoading = func(context.Context, *config.Config, string, int) error {
+	h.stopLoading = func(context.Context, *config.Config, string, int) error {
 		cancel()
 		return &lifecycle.StopInterruptedError{PID: 4242, Signal: "SIGTERM", Err: context.Canceled}
 	}
-	const signalled = `cancelled — mtplx (pid 4242) was sent SIGTERM and wt did not wait for it to exit; run "wt stop mtplx" again to confirm`
+	const signalled = `cancelled — mtplx (pid 4242) was sent SIGTERM and wt did not wait for it to exit; run "wt-model stop mtplx" again to confirm`
 	out.Reset()
-	err = runStop(&out, mtplxOnlyCfg(), "mtplx", false)
+	err = h.runStop(&out, mtplxOnlyCfg(), "mtplx", false)
 	if !errors.Is(err, hoststop.ErrStopCancelled) || err.Error() != signalled || out.String() != "Stopping mtplx (still loading, pid 4242)... cancelled\n" {
 		t.Errorf("Ctrl+C after the signal: err = %v out = %q\nwant %s", err, out.String(), signalled)
 	}
 	st := families("mtplx", loadingFS(0))
 	st.Families["omlx"] = hoststop.FamilyState{Probed: true}
-	stubStopState(t, st)
-	halted := stubHalt(t)
+	stubStopState(t, h, st)
+	halted := stubHalt(t, h)
 	ctx, cancel = context.WithCancel(context.Background()) // the one above is spent
 	defer cancel()
 	out.Reset()
-	err = runStopAll(&out, stopCfg(), false)
+	err = h.runStopAll(&out, stopCfg(), false)
 	if !errors.Is(err, hoststop.ErrStopCancelled) || err.Error() != signalled+"\ncancelled — omlx was not stopped" {
 		t.Errorf("--all, Ctrl+C after the signal: err = %v\nwant %s, then omlx named as not stopped", err, signalled)
 	}
@@ -223,20 +217,21 @@ func TestStopOfALoadingMtplxThatFailsExitsNonZero(t *testing.T) {
 // saying they cannot tell. Signalling on the pid alone would be the worst
 // thing this command could do.
 func TestStopLeavesAloneWhatItCannotVerifyAsMtplx(t *testing.T) {
+	h := testHost()
 	const stray = "the mtplx pidfile names pid 77, which is not an mtplx server on port 8003 — left alone"
 	t.Run("a live process that is not mtplx", func(t *testing.T) {
-		stubStopState(t, families("mtplx", hoststop.FamilyState{Untrusted: true, Down: true, Sessions: 1, Users: []string{"mtplx/big"}, Loading: lifecycle.Loading{Stray: stray}}))
-		halted := stubHalt(t)
-		loading := stubStopLoading(t, nil)
-		asked := stubStopConfirm(t, false)
+		stubStopState(t, h, families("mtplx", hoststop.FamilyState{Untrusted: true, Down: true, Sessions: 1, Users: []string{"mtplx/big"}, Loading: lifecycle.Loading{Stray: stray}}))
+		halted := stubHalt(t, h)
+		loading := stubStopLoading(t, h, nil)
+		asked := stubStopConfirm(t, h, false)
 		var out bytes.Buffer
-		if err := runStop(&out, mtplxOnlyCfg(), "mtplx", false); err != nil {
+		if err := h.runStop(&out, mtplxOnlyCfg(), "mtplx", false); err != nil {
 			t.Fatal(err)
 		}
-		if err := runStopAll(&out, mtplxOnlyCfg(), false); err != nil {
+		if err := h.runStopAll(&out, mtplxOnlyCfg(), false); err != nil {
 			t.Fatal(err)
 		}
-		want := "wt: nothing running on mtplx\nwt: " + stray + "\nwt: no running local models\nwt: " + stray + "\n"
+		want := "wt-model: nothing running on mtplx\nwt-model: " + stray + "\nwt-model: no running local models\nwt-model: " + stray + "\n"
 		if out.String() != want {
 			t.Errorf("out = %q\nwant  %q", out.String(), want)
 		}
@@ -246,12 +241,12 @@ func TestStopLeavesAloneWhatItCannotVerifyAsMtplx(t *testing.T) {
 	})
 	t.Run("a process table wt could not read", func(t *testing.T) {
 		cannot := errors.New("the mtplx pidfile names pid 77 and wt could not inspect it: boom")
-		stubStopState(t, families("mtplx", hoststop.FamilyState{Untrusted: true, Down: true, Loading: lifecycle.Loading{Err: cannot}}))
-		halted := stubHalt(t)
-		loading := stubStopLoading(t, nil)
+		stubStopState(t, h, families("mtplx", hoststop.FamilyState{Untrusted: true, Down: true, Loading: lifecycle.Loading{Err: cannot}}))
+		halted := stubHalt(t, h)
+		loading := stubStopLoading(t, h, nil)
 		for name, run := range map[string]func(io.Writer) error{
-			"wt stop mtplx": func(w io.Writer) error { return runStop(w, mtplxOnlyCfg(), "mtplx", false) },
-			"wt stop --all": func(w io.Writer) error { return runStopAll(w, mtplxOnlyCfg(), false) },
+			"wt-model stop mtplx": func(w io.Writer) error { return h.runStop(w, mtplxOnlyCfg(), "mtplx", false) },
+			"wt-model stop --all": func(w io.Writer) error { return h.runStopAll(w, mtplxOnlyCfg(), false) },
 		} {
 			var out bytes.Buffer
 			err := run(&out)
@@ -268,21 +263,19 @@ func TestStopLeavesAloneWhatItCannotVerifyAsMtplx(t *testing.T) {
 		// With nothing else to stop, both commands end the error the same
 		// way. --all goes on to stop everything else, so there the error
 		// may not say that nothing was stopped: only that mtplx was not.
-		if err := runStop(io.Discard, mtplxOnlyCfg(), "mtplx", false); err == nil || !strings.HasSuffix(err.Error(), "boom — nothing was stopped") {
-			t.Errorf("wt stop mtplx: err = %v, want it to end in \"nothing was stopped\"", err)
+		if err := h.runStop(io.Discard, mtplxOnlyCfg(), "mtplx", false); err == nil || !strings.HasSuffix(err.Error(), "boom — nothing was stopped") {
+			t.Errorf("wt-model stop mtplx: err = %v, want it to end in \"nothing was stopped\"", err)
 		}
 		st := families("mtplx", hoststop.FamilyState{Untrusted: true, Down: true, Loading: lifecycle.Loading{Err: cannot}})
 		st.Candidates = []hoststop.Candidate{cand("ollama", "ollama/a:1", "a:1", 0)}
 		st.Families["omlx"] = hoststop.FamilyState{Probed: true}
-		stopped := stubStopState(t, st)
-		oldWait := waitPendingRoutes
-		waitPendingRoutes = func() {}
-		t.Cleanup(func() { waitPendingRoutes = oldWait })
+		stopped := stubStopState(t, h, st)
+		h.waitPendingRoutes = func() {}
 		var out bytes.Buffer
-		err := runStopAll(&out, stopCfg(), false)
+		err := h.runStopAll(&out, stopCfg(), false)
 		want := "cannot tell whether mtplx is still loading: " + cannot.Error() + " — nothing was stopped there"
 		if err == nil || err.Error() != want {
-			t.Errorf("wt stop --all: err = %v\nwant  %s", err, want)
+			t.Errorf("wt-model stop --all: err = %v\nwant  %s", err, want)
 		}
 		if len(*stopped) != 1 || !slices.Equal(*halted, []string{"omlx"}) || !strings.Contains(out.String(), "Stopping omlx... done") {
 			t.Errorf("model stops = %v halts = %v out = %q, want ollama/a:1 and omlx stopped all the same", *stopped, *halted, out.String())
@@ -293,7 +286,7 @@ func TestStopLeavesAloneWhatItCannotVerifyAsMtplx(t *testing.T) {
 // TestMainIsolatesEveryProcessPidfile checks TestMain's
 // lifecycle.IsolateProcessesForTest() redirects every process family's
 // pidfile env var to a scratch path that is not the real
-// /tmp/local-ai-setup-* default: a cmd/wt-session test must never read or signal a
+// /tmp/local-ai-setup-* default: a cmd/wt-model test must never read or signal a
 // developer's real server, and sushi's stop reads its pidfile to find the pid
 // it signals.
 func TestMainIsolatesEveryProcessPidfile(t *testing.T) {
@@ -313,15 +306,17 @@ func TestMainIsolatesEveryProcessPidfile(t *testing.T) {
 	}
 }
 
-// TestStopLoadingSeamFailsClosed pins TestMain's defaults: an unstubbed test
-// that gets as far as stopping a loading server is refused, and beneath that
+// TestStopLoadingSeamFailsClosed pins testHost's and TestMain's defaults: an
+// unstubbed test that gets as far as stopping a loading server is refused by
+// testHost's stopLoading seam, and beneath that
 // seam the engine's own are closed — the pidfile is a scratch path, and the
 // process-table read fails even with a live pid in that pidfile. The second
 // half is what notices lifecycle.IsolateProcessesForTest() being removed
-// from TestMain: without it a cmd/wt-session test that swaps the real stop state in
+// from TestMain: without it a cmd/wt-model test that swaps the real stop state in
 // would read the developer's mtplx pidfile and could signal their server.
 func TestStopLoadingSeamFailsClosed(t *testing.T) {
-	if err := stopLoading(context.Background(), mtplxOnlyCfg(), "mtplx", os.Getpid()); err == nil || !strings.Contains(err.Error(), "not stubbed") {
+	h := testHost()
+	if err := h.stopLoading(context.Background(), mtplxOnlyCfg(), "mtplx", os.Getpid()); err == nil || !strings.Contains(err.Error(), "not stubbed") {
 		t.Errorf("err = %v, want the seam's refusal", err)
 	}
 	pidfile := os.Getenv("WT_MTPLX_PIDFILE")

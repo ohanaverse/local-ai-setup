@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,16 +13,15 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/hoststop"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
-// TestMain stubs the live seams a cmd/wt-session test would otherwise hit:
-// the host `wt stop`'s engine (no test may stop a real model). This binary
+// TestMain stubs the live seams a cmd/wt-session test would otherwise hit
+// (no test may stop a real model: the host stop moved to wt-model). This binary
 // has no local-model inventory probe left to stub: litellm sync, its last
 // reader, moved to wt-model. Every test app's model-server client
 // is loopback-only because hooks.client guards it in a test binary.
@@ -64,24 +62,9 @@ func TestMain(m *testing.M) {
 	// "installed" so existing tests that pin an agent are unaffected; tests
 	// that need to exercise the not-installed path stub this explicitly.
 	installed = func(string) bool { return true }
-	// `wt stop` seams: no test may probe live servers or stop a real model.
-	stopState = func(*config.Config) hoststop.StopState { return hoststop.StopState{} }
-	stopEntries = func(io.Writer, *config.Config, []localmodels.Entry) error {
-		return errors.New("stopEntries not stubbed in this test")
-	}
-	stopProvider = func(context.Context, *config.Config, string) error {
-		return errors.New("stopProvider not stubbed in this test")
-	}
-	// No test may read the developer's mtplx pidfile or signal one of their
-	// processes: the stop of a loading server is refused here, and the
-	// engine's own process seams are closed beneath it for a test that
-	// swaps the real stop state back in (liveStopState). Tests call
-	// stubStopLoading.
-	stopLoading = func(_ context.Context, _ *config.Config, id string, pid int) error {
-		return fmt.Errorf("stopLoading not stubbed in this test (%s, pid %d)", id, pid)
-	}
+	// No test may read the developer's process pidfiles or signal one of
+	// their servers (5a removes the last lifecycle use from this binary).
 	lifecycle.IsolateProcessesForTest()
-	confirmStop = func(string) (bool, error) { return false, nil }
 	// `wt stats` and `wt model list --server` seam: the width is pinned to
 	// "not a terminal" so a table does not depend on where `go test` was
 	// started.
@@ -136,5 +119,28 @@ func TestGitConfigIsNotTheDevelopersOwn(t *testing.T) {
 	out, _ := exec.Command("git", "config", "--global", "--list").CombinedOutput()
 	if strings.TrimSpace(string(out)) != "" {
 		t.Errorf("git config --global --list = %q, want nothing", out)
+	}
+}
+
+// TestMainIsolatesEveryProcessPidfile checks TestMain's
+// lifecycle.IsolateProcessesForTest() redirects every process family's
+// pidfile env var to a scratch path that is not the real
+// /tmp/local-ai-setup-* default: a cmd/wt-session test must never read or signal a
+// developer's real server, and sushi's stop reads its pidfile to find the pid
+// it signals.
+func TestMainIsolatesEveryProcessPidfile(t *testing.T) {
+	for _, family := range provider.ProcessFamilies() {
+		spec, ok := provider.ProcessFor(family)
+		if !ok || spec.PidfileEnv == "" {
+			t.Errorf("family %q has no pidfile env var", family)
+			continue
+		}
+		got := os.Getenv(spec.PidfileEnv)
+		if got == "" || got == spec.PidfileDefault || !strings.Contains(got, "wt-test-no-"+family+"-") {
+			t.Errorf("%s = %q, want a wt-test-no-%s- scratch path, not %q", spec.PidfileEnv, got, family, spec.PidfileDefault)
+		}
+	}
+	if os.Getenv("WT_SUSHI_PIDFILE") == "" {
+		t.Error("WT_SUSHI_PIDFILE is unset: TestMain does not isolate the sushi pidfile")
 	}
 }

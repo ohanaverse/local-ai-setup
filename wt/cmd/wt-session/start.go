@@ -29,9 +29,9 @@ var confirmReplace = promptReplace
 // hook's proxy restart runs asynchronously, and a launch hands straight off to
 // an agent that dials the model THROUGH the LiteLLM proxy. Returning before
 // the restart has finished lets the agent hit a refused connection or the
-// pre-restart route table, in which the model is not listed yet. It is the
-// wait of `wt stop <provider>|--all` between halts (the one host path that
-// waits on it). Tests stub it to observe that ordering without a proxy.
+// pre-restart route table, in which the model is not listed yet. Nothing in
+// this binary calls it since `wt stop <provider>|--all` moved to wt-model
+// (which has its own waitPendingRoutes seam).
 var waitPendingRoutes = lifecycle.WaitPendingRoutes
 
 // osStderr is the progress stream, a seam so tests can capture it.

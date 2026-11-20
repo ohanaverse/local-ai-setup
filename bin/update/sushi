@@ -11,7 +11,7 @@
 #     <install>.previous.
 #
 # Neither path may replace sushi under a running server, so a live
-# `sushi serve` turns the update into a manual step: `wt stop sushi` first
+# `sushi serve` turns the update into a manual step: `wt-model stop sushi` first
 # (sushi's own --force override is deliberately not used). There is no service
 # to restart: wt starts sushi on demand. The packs under ~/.sushi/models are
 # not touched. beamivalice/tap is a third-party tap, so a --check refreshes the
@@ -115,7 +115,7 @@ fi
 
 # A running server must never be updated underneath.
 if pgrep -f 'sushi serve' > /dev/null 2>&1; then
-    update_finish manual "$installed installed; $offer, but a sushi server is running — stop it first (\`wt stop sushi\`), then rerun"
+    update_finish manual "$installed installed; $offer, but a sushi server is running — stop it first (\`wt-model stop sushi\`), then rerun"
 fi
 
 if [ "$via" = brew ]; then

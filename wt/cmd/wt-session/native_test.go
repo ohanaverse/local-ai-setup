@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -612,8 +611,7 @@ func inlineTokenTable(mode string) string {
 // TestStoredNativeIgnoresAStrayInlineToken pins the spec's "an explicit
 // native ignores stray url/token values" for the inline token too: with
 // mode = "native" beside a url and a plaintext token, a launch runs
-// natively (nothing refused), `wt stop`'s session reader prints no
-// unreadable-server note and `wt stats` reads not_configured, never
+// natively (nothing refused) and `wt stats` reads not_configured, never
 // unavailable. One note says the token is ignored and should be removed,
 // without its value. Refusing there would block every native launch over a
 // value native never uses.
@@ -631,10 +629,6 @@ func TestStoredNativeIgnoresAStrayInlineToken(t *testing.T) {
 		t.Errorf("the output carries the token:\n%s", out)
 	}
 
-	var w bytes.Buffer
-	if got := (&app{hooks: testHooks()}).hostSessionReader(context.Background(), &w)(); got != nil || strings.Contains(w.String(), "could not read client sessions") {
-		t.Errorf("stop's session reader: sessions %v, note %q; want nothing to ask and no note", got, w.String())
-	}
 	a, err := newApp()
 	if err != nil {
 		t.Fatal(err)

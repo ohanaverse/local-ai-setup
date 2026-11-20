@@ -403,7 +403,9 @@ shutdown kills it.
 
 While it runs the server keeps a runtime record, `~/.config/wt-model/serve.json`
 (in the wt-model home, so `XDG_CONFIG_HOME` moves it), which is how a host
-command finds the live server. It holds the record version, the server's pid,
+command finds the live server: it is read by `wt-model stop`, which asks the
+server named there for its client sessions before stopping a model they use
+([wt-start-stop.md](wt-start-stop.md#in-use-confirmation)). It holds the record version, the server's pid,
 the bound listen address, the absolute path of the token file and the start
 time; never the token itself or any key:
 

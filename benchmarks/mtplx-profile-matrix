@@ -66,7 +66,7 @@ log() { echo "[$(date +%H:%M:%S)] $*"; }
 cleanup() {
     log "cleaning up: clearing serve_args, stopping mtplx"
     run wt-model model edit "$MODEL" --clear-serve-args > /dev/null 2>&1
-    run wt stop mtplx > /dev/null 2>&1
+    run wt-model stop mtplx > /dev/null 2>&1
 }
 
 preflight() {
@@ -219,7 +219,7 @@ for round in $(seq 1 "$RUNS"); do
         label="$PREFIX$cond-$round"
         log "=== $label"
         set_condition "$cond"
-        run wt stop mtplx > /dev/null 2>&1 # a cold server for every run
+        run wt-model stop mtplx > /dev/null 2>&1 # a cold server for every run
         run rm -rf "$TASK_DIR"
         run cp -R "$TASK_SRC" "$TASK_DIR"
         [ $DRY = 1 ] || measure_start

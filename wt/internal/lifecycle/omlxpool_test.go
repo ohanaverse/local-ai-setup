@@ -460,14 +460,14 @@ func TestStopModelOnPoolUnloadsOnlyThatModel(t *testing.T) {
 // omlx 0.7.0 answers that unload "400 Model not loaded" and goes on loading,
 // so the stop fails; it used to say "omlx still has <id> loaded" about a model
 // that is not loaded yet, and gave no way out. The message now says omlx is
-// loading it, that it will not unload it mid-load, and that `wt stop omlx`
+// loading it, that it will not unload it mid-load, and that `wt-model stop omlx`
 // halts the service. A model that is loaded and still there after the unload
 // keeps the old wording.
 func TestStopModelOnALoadingModelSaysOmlxIsStillLoadingIt(t *testing.T) {
 	fp := &fakePool{loaded: map[string]bool{"A": true, "B": false}, loading: map[string]bool{"B": true}}
 	e, stopped := poolEnv(t, localmodels.Snapshot{})
 	err := stopModel(context.Background(), e, provCfg("omlx", fp.serve(t)), "omlx", "B")
-	const want = "omlx is still loading B and will not unload it mid-load; `wt stop omlx` stops the service and the load with it"
+	const want = "omlx is still loading B and will not unload it mid-load; `wt-model stop omlx` stops the service and the load with it"
 	if err == nil || err.Error() != want {
 		t.Errorf("stop of a loading model = %v, want %q", err, want)
 	}
@@ -722,8 +722,8 @@ func TestStopModelOnPoolWithoutAKeySaysHowToProceed(t *testing.T) {
 	if !errors.As(err, &kr) || kr.KeySent {
 		t.Fatalf("stopModel = %v, want an error wrapping *KeyRefusedError with no key sent", err)
 	}
-	if msg := err.Error(); strings.Count(msg, "secret_ref") != 1 || strings.Count(msg, "wt stop omlx") != 1 {
-		t.Errorf("message = %q, want it to name auth.secret_ref and `wt stop omlx` once each", msg)
+	if msg := err.Error(); strings.Count(msg, "secret_ref") != 1 || strings.Count(msg, "wt-model stop omlx") != 1 {
+		t.Errorf("message = %q, want it to name auth.secret_ref and `wt-model stop omlx` once each", msg)
 	}
 	if !fp.isLoaded("A") || !fp.isLoaded("B") || len(fp.unloads) != 0 {
 		t.Errorf("A = %v, B = %v, accepted unloads = %v; want both still loaded", fp.isLoaded("A"), fp.isLoaded("B"), fp.unloads)

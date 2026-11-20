@@ -44,9 +44,9 @@ func main() {
 	// Never exit while an async LiteLLM proxy restart a route write kicked off
 	// (internal/lifecycle/routes.go) is still in flight: goroutines do not
 	// survive main returning, so the restart would be killed mid-flight and
-	// the proxy would never pick up the route change. Only the host ones
-	// (`wt stop <provider>`, `--all`) write routes; a session writes none, so
-	// for it this returns at once, and the session's other exits
+	// the proxy would never pick up the route change. Only the host commands
+	// (wt-model's, which waits on its own) write routes; a session writes none,
+	// so for it this returns at once, and the session's other exits
 	// (runAgentCmd's exit-code propagation, wt smoke's failure exit) need no
 	// wait of their own.
 	lifecycle.WaitPendingRoutes()
@@ -268,7 +268,7 @@ func rootCmdWith(h hooks) *cobra.Command {
 			"                               # resolved from the directory the agent starts in)\n" +
 			"  wt --init                    # seed agent instruction files\n" +
 			"  wt start [model]             # start a local model (picker when omitted)\n" +
-			"  wt stop [model|provider]     # stop a local model or provider (picker when omitted)\n" +
+			"  wt stop [model]              # stop a local model (picker when omitted)\n" +
 			"  wt smoke [model]             # smoke-test every agent that supports a model",
 		// ArbitraryArgs overrides cobra's default legacyArgs validator, which
 		// rejects any leading positional arg that isn't a registered

@@ -210,3 +210,20 @@ func TestSessionsGivesUpOnAServerThatNeverAnswers(t *testing.T) {
 		t.Fatalf("error carries the token: %v", err)
 	}
 }
+
+// TestSessionsStaleRecordSendsNothing checks that a record whose pid is not
+// running is an error and no request, token-bearing or not, reaches its address.
+func TestSessionsStaleRecordSendsNothing(t *testing.T) {
+	srv, hits := fakeServer(t, "tok", modelapi.Row{ID: "omlx/busy", Sessions: 1})
+	r := rec(t, srv.Listener.Addr().String(), "tok")
+	old := pidAlive
+	pidAlive = func(int) bool { return false }
+	t.Cleanup(func() { pidAlive = old })
+	got, err := Sessions(context.Background(), r)
+	if err == nil || got != nil {
+		t.Fatalf("Sessions = %v, %v; want nil, error", got, err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("catalog hit %d times, want 0", hits.Load())
+	}
+}
