@@ -133,7 +133,7 @@ type rowTable struct {
 }
 
 // newRowTable builds the layouts for the header and every row: the widest
-// cell or heading sets each column's width (runes), and rtDropOrder decides
+// cell or heading sets each column's width (terminal cells), and rtDropOrder decides
 // what a narrow list gives up first. prefix is the row prefix's width
 // (rowPrefixWidthLaunch or rowPrefixWidthManage).
 func newRowTable(rows []cleanup.Row, prefix int) *rowTable {
@@ -286,7 +286,9 @@ func padCells(s string, w int) string {
 }
 
 // truncateName cuts s to at most w cells, the last of them an ellipsis, on a
-// rune boundary; a name that fits is returned whole.
+// rune boundary; a name that fits is returned whole. The cut is not on a
+// grapheme-cluster boundary, so a combining mark or ZWJ emoji sequence can be
+// split before the ellipsis. The width bound still holds; only the look is off.
 func truncateName(s string, w int) string {
 	if cellWidth(s) <= w {
 		return s
