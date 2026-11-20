@@ -76,6 +76,23 @@ The session-side `[litellm]` table (`enabled/url/api_key`) is a **read-only lega
 
 **Command homes.** On the host (`wt-model`): `model init|add|edit|rm|list`, `cloud-sync`, `litellm sync|list|providers|status|set|restart`, `start`, `stop`, the Models-tab TUI. In `wt-session`: the launcher, `start`/`stop` (API clients), `smoke`, `model list` (read-only), `litellm list|status` (read-only), `profile slots`, `stats`, and the cleanup commands. `litellm set|status` live in **both** names in stage 1 (2026-11-17): `wt-model litellm set --url URL --api-key KEY` and the `wt litellm set|status` twins write and read one home, `~/.config/wt-model/config.toml` and its 0600 key file. The admin commands on the old `wt` name (`model add|edit|rm|init`, `cloud-sync`, `litellm sync|restart|on|off`, the `wt config` Models tab) stop working in `wt-session` and print a pointer to `wt-model`; read-only and start/stop/smoke commands keep today's flags, output, JSON shapes and exit codes (the `wt-manage-slot-profiles` skill depends on them). The `wt-cloud-sync` skill is updated to drive `wt-model cloud-sync` on the host.
 
+**Amended 2026-11-20 (phase 4 stage 2, as built):** the command homes are this table. The paragraph's earlier `start`, `stop` and `litellm list` on the host, and `model list` read-only in the session, are superseded by it.
+
+| Command | Binary |
+|---|---|
+| `model init\|list\|add\|edit\|rm` | `wt-model` |
+| bare `model` (Models tab) | `wt-model` |
+| `setup` (Setup tab) | `wt-model` |
+| `cloud-sync` | `wt-model` |
+| `litellm sync\|list\|providers\|restart` | `wt-model` |
+| `served`, `warm` | `wt-model` |
+| `stop <provider>\|--all` | `wt-model` |
+| `serve` | `wt-model` |
+| `litellm status\|set` | both |
+| the launcher, `config` (Agents, Mode), `start`, `stop <model>`, `smoke`, `job`, `rotate`, `profile …`, `stats`, `model list --server`, the cleanup commands (`worktrees`, `remove`, `rescue`, `restore-root`) | `wt` (`wt-session`) |
+
+Under `wt`, each moved name prints `wt: <old> moved to wt-model — run 'wt-model <new>'; nothing was changed` and exits 1 (`wt/cmd/wt-session/moved.go`).
+
 ### Control API (JSON over HTTP)
 
 All under `/control/`, bearer token required. The builder shapes the exact schema; the capabilities are fixed. **There are no registry-write, price-update, tier-update or cloud-sync endpoints.**

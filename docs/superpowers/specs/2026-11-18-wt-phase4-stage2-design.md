@@ -169,3 +169,46 @@ Package and file names where not given; the exact `modelmode` API and how its te
 - Test helpers (`fakeEnv` and the recording fakes) are test-only and cannot be shared across packages.
 - A hand-written `mode = local` with no url used to fall back to the agent's listen address in the tab; the session Mode tab uses the documented default instead. Choosing local over a stored remote or native mode writes the defaults over the stored url and token file; a user whose local server listens elsewhere must save local once and then edit the url by hand (or re-save over a stored `mode = local`, which keeps it). Session resolution itself (`ResolveEndpoint`) is unchanged.
 - Hard cuts break unmigrated scripts outside this repository; the pointer line is the only mitigation.
+
+## As built
+
+Recorded after the build (2026-11-20). Everything above stays as approved; this section lists where the shipped code differs from it and what was decided on the way.
+
+### PRs
+
+- 1a #648: `urlrule` and `modelping` leaves under `modelclient`.
+- 1b #651: `modelmode` mode rules, words and seams.
+- 1c #652: the session-safe `modelmode` leaf (state, observe, plans, apply).
+- 2 #653: `editorkit`, the UI plumbing both editors share.
+- 3a #654: the litellm sync helpers, `config.ValidateSession` and the `modeview` leaf.
+- 3b #656: `modeleditor` takes the Models tab; `wt-model model`; bare `model` under `wt` points there.
+- 3c #657: `sessioneditor` and `wt-model setup`; `wt config` switched; `configeditor` deleted.
+- 4a-i #658: `internal/cli` and the pointer stub family.
+- 4a-ii #659: `model init|list|add|edit|rm` move to `wt-model model`.
+- 4a-iii #660: `served` and `warm` move to `wt-model`.
+- 4b #661: `cloud-sync` moves to `wt-model`.
+- 4c #662: `litellm list|providers|sync|restart` move to `wt-model`.
+- 4d-i #663: the serve runtime record and `servestate`.
+- 4d-ii #664: `stop <provider>|--all` move to `wt-model`; the session binary ratchet.
+- 5a #665: close-out code; the session binary links no admin package.
+- 5b (this change; its number is given when it is opened): install, update and Makefiles name `wt-model`, the docs sweep, the split spec's command homes, this section.
+
+### Deviations and builder decisions
+
+- **Two leaves the design did not name, and a third package.** `internal/modeview` holds the mode, url, token and server lines both editors show, so `editorkit` stays domain-free. `internal/cli` is the one shared command-line leaf (approval refusals, terminal questions, the plain table, `Dash`, `VisibleID`, `WithSessions`); prompt seams stay per binary and are passed in. `internal/servestate` is the serve runtime record: `serve.json` in the `~/.config/wt-model/` home, mode 0600, written before the listening line and removed on a clean stop only while it names this pid; a second concurrent serve overwrites it.
+- **The Setup tab offers local and native only.** Remote is set in the Mode tab of `wt config`; this avoids a second copy of the remote form, and leaving local in `wt-model setup` keeps the bootout and remove-plist prompt.
+- **Host stop reads sessions through `GET /control/v1/catalog`** (`Row.Sessions`, via `modelping.GetJSON`); no API change was needed and no sessions-list endpoint was added.
+- **`wt-model stop <model-id>` is a usage error** naming `wt stop <model>`: `wt-model` stops providers only, and a model is the model server's to stop.
+- **`spend.Row` and `spend.Result` are aliases** of `modelapi.SpendRow` and `modelapi.SpendReport` (identical fields), so `wt stats` reads the wire types and links no `spend`.
+- **`WithSessions` lives in `cli`**, and `wt-session` no longer calls `WaitPendingRoutes`: it writes no route once the host commands are gone. Only `wt-model` waits on exit.
+- **The binary ratchet is a shrinking allow-list.** The design's "a list that starts with the cut-loose packages and adds `spend` and `lifecycle`" is `sessionBinaryAllow` in `internal/depcheck` (`TestSessionBinaryStaysOffTheAdminPackages`), introduced in 4d-ii with four entries and empty since 5a; it only shrinks.
+- **Size exceptions.** 1c (about 2,400 changed lines) and 3c (about 1,800 new or changed plus about 4,000 moved) exceed the ~1,500-line bar, since neither can be cut without a broken intermediate (a half-split `Observe`; a `wt config` with no local path). Each shipped as one PR reviewed commit by commit.
+- **4a and 4d were split** into 4a-i, 4a-ii, 4a-iii and 4d-i, 4d-ii, for size and so the runtime record ships before the provider-stop move.
+- **The boundary scan covers every file.** `TestSessionPathsNeverTouchTheRegistryOrLifecycle` (`cmd/wt-session/boundary_test.go`) scans every non-test file of `cmd/wt-session` and of the session packages, not a listed set, and allows exactly four host-config reads: `app.go`'s `loadHost`, `cleanup.go`'s `noRegistry` and `protectedPaths`, and `stats.go`'s `spendFromServer` (stats' family fallback when no server answers).
+- **The vacuity floors were re-based** to the counted commands: `sessionRunnableFloor = 31` (`error_line_test.go`), `sessionCommandFloor = 35` (`model_cmds_test.go`), and a twin `wtModelCommandFloor = 20` in `cmd/wt-model/help_test.go`, whose `TestWtModelHelpNamesNoOldCommand` checks that no `wt-model` help text names an old command.
+
+### Left open
+
+- #641 (modelsetup: Create's listener-pid check and Rotate's one-shot key check can report a failure for a correct setup), #642 (modelsetup: no lock around `Apply`, and Create's absent-then-rename window can race) and #643 (verify the LiteLLM and wt-model LaunchAgent actions against real launchd), all unchanged by this stage.
+- `issues.md` #6 (`piCompat` full-pointer replacement in `wt/internal/agents/pi_models.go`), unchanged by this stage.
+
