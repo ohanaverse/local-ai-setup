@@ -21,7 +21,7 @@ func Check(in io.Reader, out io.Writer, isTTY bool, w []Warning, info string, cr
 		fmt.Fprintf(out, "wt: %s\n", info)
 	}
 	if creation != nil {
-		fmt.Fprintf(out, "wt: %s\n", creationLine(creation))
+		fmt.Fprintf(out, "wt: %s\n", CreationLine(creation))
 	}
 	for _, x := range w {
 		fmt.Fprintf(out, "wt: %s\n", x.Text)
@@ -33,7 +33,9 @@ func Check(in io.Reader, out io.Writer, isTTY bool, w []Warning, info string, cr
 	return rootclaim.AskContinue(in, out)
 }
 
-func creationLine(c *Creation) string {
+// CreationLine is the one-line description of what a launch will create. Check
+// prints it and the picker's launch popup shows it, so the wording lives here.
+func CreationLine(c *Creation) string {
 	switch {
 	case c.NewBranch && c.Tracks != "":
 		return fmt.Sprintf("creating branch %s tracking %s and worktree %s", c.Branch, c.Tracks, c.Path)

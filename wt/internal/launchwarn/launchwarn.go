@@ -25,7 +25,7 @@ type Creation struct {
 	Branch string // the branch the new worktree checks out
 	Tracks string // the ref it tracks, "" for none
 	// NewBranch selects the `creating branch <b> and worktree <p>` line
-	// (creationLine). It is not "the branch does not exist yet": a tracking
+	// (CreationLine). It is not "the branch does not exist yet": a tracking
 	// creation — a new local branch on a remote-tracking ref — is false even
 	// though its local branch is new, because its line is the `creating
 	// worktree <p> for branch <b> tracking <r>` shape (worktree.Plan.Creates
