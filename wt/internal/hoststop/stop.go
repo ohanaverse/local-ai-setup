@@ -1,10 +1,10 @@
 // Package hoststop is `wt-model stop <provider>|--all`: one live inventory
 // round read into the stoppable candidates and provider families
-// (ReadStopState), and the stop loop that takes them down (StopEntries). It drives the
-// lifecycle engine and reads the local inventory, so it sits on the admin
-// side of the import graph (internal/depcheck): a session library package
-// never links it. The numbered picker a client session prompts with is
-// survey.Select, which needs neither.
+// (ReadStopState), and the stop loop that takes them down (StopEntries).
+// It drives the lifecycle engine and reads the local inventory, so it sits
+// on the admin side of the import graph (internal/depcheck): a session
+// library package never links it. The numbered picker a client session
+// prompts with is survey.Select, which needs neither.
 package hoststop
 
 import (
