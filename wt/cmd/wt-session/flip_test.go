@@ -9,7 +9,6 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -32,8 +31,9 @@ auth = { type = "native" }
 // noServerHome is a scratch home with config.toml naming no model server (and
 // a claude agent the registry could serve), the registry above present at the
 // default path, a scratch config.yaml, and a fake claude on PATH that touches
-// the returned marker if it ever runs. Every registry and local-provider seam
-// fails the test if it is reached, and so does the gateway build.
+// the returned marker if it ever runs. The TUI fails the test if it opens,
+// and so does the gateway build (this binary has no local-provider probe
+// left to stub).
 func noServerHome(t *testing.T) (home, marker string, h hooks) {
 	t.Helper()
 	home = t.TempDir()
@@ -63,11 +63,7 @@ func noServerHome(t *testing.T) (home, marker string, h hooks) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubStdinTTY(t, false)
 
-	oldProbe, oldTUI := probeInventory, tuiRun
-	probeInventory = func(*config.Config) localmodels.Snapshot {
-		t.Error("a local provider was probed")
-		return localmodels.Snapshot{}
-	}
+	oldTUI := tuiRun
 	h = testHooks()
 	h.buildGateway = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		t.Error("an agent was built against a gateway")
@@ -78,7 +74,7 @@ func noServerHome(t *testing.T) (home, marker string, h hooks) {
 		return nil
 	}
 	t.Cleanup(func() {
-		probeInventory, tuiRun = oldProbe, oldTUI
+		tuiRun = oldTUI
 	})
 	t.Chdir(t.TempDir())
 	return home, marker, h

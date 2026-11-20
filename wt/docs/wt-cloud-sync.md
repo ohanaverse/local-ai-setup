@@ -435,12 +435,12 @@ finished (exit 0). This is never an error, however the flow was asked for.
    prices that were already current does not sync, so it cannot restart the
    proxy. On a machine with no LiteLLM `config.yaml` there is nothing to
    sync, and no warning. A sync that fails is a `routes: warning:` and
-   never changes the exit status; run `wt litellm sync`.
+   never changes the exit status; run `wt-model litellm sync`.
 
 The route sync is the last step. A run interrupted before it (Ctrl-C during
 a pull) leaves the routes behind the registry; the next `wt-model cloud-sync`
 syncs them only if it still has a tag to pull or remove, so after an
-interrupted run, run `wt litellm sync`.
+interrupted run, run `wt-model litellm sync`.
 
 An illustrative dry run (made-up models and prices; yours will differ):
 
@@ -670,7 +670,7 @@ the job.
   for an rm, `30s` for `ollama list` (which is exit 2). The limit is wt's,
   not ollama's.
 - **An interrupted run.** Run `wt-model cloud-sync --dry-run` again to see what is
-  left, and `wt litellm sync` for the routes.
+  left, and `wt-model litellm sync` for the routes.
 
 ## What it reads and writes
 

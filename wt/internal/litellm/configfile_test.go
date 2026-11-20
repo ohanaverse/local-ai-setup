@@ -766,7 +766,7 @@ func TestRowsReportsManaged(t *testing.T) {
 
 // TestRowsToleratesNonSequenceModelList pins that a hand-edited
 // `model_list: nope` (a scalar, not a list) leaves the row readers empty
-// instead of panicking or fabricating a row: `wt litellm list` and `sync` must
+// instead of panicking or fabricating a row: `wt-model litellm list` and `sync` must
 // not crash on a config a user can trivially mistype, and no phantom row may be
 // classified as wt's.
 func TestRowsToleratesNonSequenceModelList(t *testing.T) {

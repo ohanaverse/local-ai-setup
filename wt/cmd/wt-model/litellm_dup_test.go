@@ -7,12 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // dupSyncRegistry is a registry wt's validation refuses ("duplicate model
-// id") and `wt litellm sync` still runs on: the id "local/qwen" is on two
+// id") and `wt-model litellm sync` still runs on: the id "local/qwen" is on two
 // rows, the first under ollama and the second under omlx.
 const dupSyncRegistry = `[[providers]]
 id = "ollama"
@@ -53,19 +54,20 @@ const (
 	dupOmlxRoute   = "model: openai/Qwen-4bit"
 )
 
-// dupSyncApp loads dupSyncRegistry from a throwaway home through newApp, as
-// the command does, and returns the app and the registry's path.
-func dupSyncApp(t *testing.T) (*app, string) {
+// dupSyncConfig loads dupSyncRegistry from a throwaway home through
+// config.Load, as the command does, and returns the config and the
+// registry's path. The load succeeds; validation fails on the id.
+func dupSyncConfig(t *testing.T) (*config.Config, string) {
 	t.Helper()
 	registry := modelHome(t, dupSyncRegistry)
-	a, err := newApp()
+	cfg, err := config.Load()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("fixture: loadErr = %v, want a registry that loads", err)
 	}
-	if hostLoadErrOf(a) != nil || a.hostConfigErr() == nil || !strings.Contains(a.hostConfigErr().Error(), `duplicate model id "local/qwen"`) {
-		t.Fatalf("fixture: loadErr = %v, cfgErr = %v, want a validation-only duplicate-id error", hostLoadErrOf(a), a.hostConfigErr())
+	if verr := cfg.Validate(); verr == nil || !strings.Contains(verr.Error(), `duplicate model id "local/qwen"`) {
+		t.Fatalf("fixture: cfgErr = %v, want a validation-only duplicate-id error", verr)
 	}
-	return a, registry
+	return cfg, registry
 }
 
 // dupSnapshot is the inventory for dupSyncRegistry with each provider's row
@@ -94,6 +96,7 @@ func dupSyncWarning(registry string) string {
 // the second provider was handed to sync as the first provider's row, and the
 // route for the id could name a server that was not serving it.
 func TestDesiredLocalModelsPairADuplicatedIDByProvider(t *testing.T) {
+	h := testHost()
 	for _, tc := range []struct {
 		name          string
 		ollama, omlx  bool
@@ -108,11 +111,11 @@ func TestDesiredLocalModelsPairADuplicatedIDByProvider(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			yaml := litellmEnv(t, "model_list: []\n")
-			a, registry := dupSyncApp(t)
+			cfg, registry := dupSyncConfig(t)
 			snap := dupSnapshot(tc.ollama, tc.omlx)
-			stubProbeInventory(t, snap)
+			stubProbeInventory(h, snap)
 			var got []string
-			for _, m := range desiredModels(hostCfgOf(a), snap) {
+			for _, m := range desiredModels(cfg, snap) {
 				if m.ID != "local/qwen" {
 					t.Errorf("desired model %q, want only local/qwen", m.ID)
 				}
@@ -126,7 +129,7 @@ func TestDesiredLocalModelsPairADuplicatedIDByProvider(t *testing.T) {
 				t.Errorf("desired rows' providers = %v, want %v", got, tc.wantProviders)
 			}
 			var out, errOut bytes.Buffer
-			if err := runLitellmSync(&out, &errOut, hostCfgOf(a), false, false); err != nil {
+			if err := h.runLitellmSync(&out, &errOut, cfg, false, false); err != nil {
 				t.Fatal(err)
 			}
 			body := mustRead(t, yaml)
@@ -147,7 +150,7 @@ func TestDesiredLocalModelsPairADuplicatedIDByProvider(t *testing.T) {
 	}
 }
 
-// TestLitellmSyncLeavesTheRouteOfADuplicatedIDAlone runs `wt litellm sync`,
+// TestLitellmSyncLeavesTheRouteOfADuplicatedIDAlone runs `wt-model litellm sync`,
 // `--dry-run` and `--json` on a registry with an id on two rows while both
 // providers serve it: the route the id already has stays byte for byte, no
 // line reports a change to it, and one warning — on stderr, and in the JSON
@@ -155,22 +158,19 @@ func TestDesiredLocalModelsPairADuplicatedIDByProvider(t *testing.T) {
 // the id, both providers and the registry file. Before this the route was
 // rewritten to the last row's server on every sync, without a word.
 func TestLitellmSyncLeavesTheRouteOfADuplicatedIDAlone(t *testing.T) {
+	h := testHost()
 	yaml := litellmEnv(t, "model_list: []\n")
-	a, registry := dupSyncApp(t)
+	_, registry := dupSyncConfig(t)
 	run := func(args ...string) (stdout, stderr string) {
 		t.Helper()
-		c := litellmCmd(a)
-		var out, errOut bytes.Buffer
-		c.SetOut(&out)
-		c.SetErr(&errOut)
-		c.SetArgs(args)
-		if err := c.Execute(); err != nil {
-			t.Fatalf("wt litellm %v: %v", args, err)
+		out, errOut, err := execWTModel(t, h, append([]string{"litellm"}, args...)...)
+		if err != nil {
+			t.Fatalf("wt-model litellm %v: %v", args, err)
 		}
-		return out.String(), errOut.String()
+		return out, errOut
 	}
 	// The route as a sync wrote it while only ollama served the id.
-	stubProbeInventory(t, dupSnapshot(true, false))
+	stubProbeInventory(h, dupSnapshot(true, false))
 	if out, errOut := run("sync"); out != "local/qwen: routed\n" || errOut != "" {
 		t.Fatalf("first sync: stdout = %q, stderr = %q", out, errOut)
 	}
@@ -179,7 +179,7 @@ func TestLitellmSyncLeavesTheRouteOfADuplicatedIDAlone(t *testing.T) {
 		t.Fatalf("fixture: the route is not the ollama row's:\n%s", before)
 	}
 
-	stubProbeInventory(t, dupSnapshot(true, true))
+	stubProbeInventory(h, dupSnapshot(true, true))
 	warning := dupSyncWarning(registry)
 	for _, args := range [][]string{{"sync", "--dry-run"}, {"sync"}} {
 		out, errOut := run(args...)
@@ -226,7 +226,7 @@ func TestLitellmSyncLeavesTheRouteOfADuplicatedIDAlone(t *testing.T) {
 
 	// With only omlx serving it the id names one server again, and the route
 	// follows it — from omlx's row.
-	stubProbeInventory(t, dupSnapshot(false, true))
+	stubProbeInventory(h, dupSnapshot(false, true))
 	if out, errOut := run("sync"); out != "local/qwen: rewritten\n" || errOut != "" {
 		t.Errorf("sync with one provider serving: stdout = %q, stderr = %q", out, errOut)
 	}

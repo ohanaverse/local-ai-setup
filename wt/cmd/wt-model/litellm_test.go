@@ -2,16 +2,22 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 )
 
 // asWTModel sets config.BinaryName to "wt-model" the way main() does, so a
@@ -316,6 +322,347 @@ func TestLitellmSetRefusesAnAtURL(t *testing.T) {
 		}
 		if _, serr := os.Stat(filepath.Join(home, "wt-model")); !os.IsNotExist(serr) {
 			t.Errorf("%q: the wt-model home was written (%v)", raw, serr)
+		}
+	}
+}
+
+// TestLitellmListAndProviders pins the read-only commands' JSON shapes: the
+// "routed" id list and ownership rows of `list --json`, and the per-provider
+// policy of `providers --json` (cloud or not). They are what a script reads
+// to learn what the proxy serves; a renamed key breaks it.
+func TestLitellmListAndProviders(t *testing.T) {
+	litellmEnv(t, "model_list:\n  - model_name: a/b\n    litellm_params: {model: x}\n")
+	var out bytes.Buffer
+	if err := runLitellmList(&out, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out.String()) != `{"routed":["a/b"],"rows":[{"id":"a/b","managed":false}]}` {
+		t.Fatalf("list = %s", out.String())
+	}
+	out.Reset()
+	if err := runLitellmProviders(&out, true); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Providers map[string]struct{ Cloud bool } `json:"providers"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil || !got.Providers["openrouter"].Cloud || got.Providers["ollama"].Cloud {
+		t.Fatalf("providers = %s (%v)", out.String(), err)
+	}
+}
+
+// TestLitellmListTextOutput pins list's human-readable output: one line per
+// row, a wt row as its bare id (so `wt-model litellm list | grep -x <id>` and the
+// guides' "list of routed ids" still hold) and a hand-written row as
+// "id<TAB>(hand-written)". A user reads the marker to tell which rows are
+// their own; a missing one misleads them about which rows wt may rewrite or
+// remove.
+func TestLitellmListTextOutput(t *testing.T) {
+	litellmEnv(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+    model_info: {wt_managed: true}
+  - model_name: hand/alias
+    litellm_params: {model: openrouter/x}
+`)
+	var out bytes.Buffer
+	if err := runLitellmList(&out, false); err != nil {
+		t.Fatal(err)
+	}
+	const want = "ollama/gemma:9b\nhand/alias\t(hand-written)\n"
+	if got := out.String(); got != want {
+		t.Fatalf("list = %q, want %q", got, want)
+	}
+}
+
+// TestLitellmListJSONRows pins list's ownership rows next to the older
+// "routed" id list, which stays for scripts that already read it.
+func TestLitellmListJSONRows(t *testing.T) {
+	litellmEnv(t, `model_list:
+  - model_name: ollama/gemma:9b
+    litellm_params: {model: ollama_chat/gemma:9b}
+    model_info: {wt_managed: true}
+  - model_name: hand/alias
+    litellm_params: {model: openrouter/x}
+`)
+	var out bytes.Buffer
+	if err := runLitellmList(&out, true); err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"routed":["ollama/gemma:9b","hand/alias"],"rows":[{"id":"ollama/gemma:9b","managed":true},{"id":"hand/alias","managed":false}]}`
+	if got := strings.TrimSpace(out.String()); got != want {
+		t.Fatalf("list = %s\nwant   %s", got, want)
+	}
+}
+
+// TestLitellmListReadsNoRegistry pins that `wt-model litellm list` and
+// `providers` read only config.yaml and the provider policy table: a
+// registry.toml that does not parse must not stop the one read-only answer
+// to "is this model routed?" (they never had a config gate in wt either).
+func TestLitellmListReadsNoRegistry(t *testing.T) {
+	home := proxyEnv(t)
+	reg := filepath.Join(home, "local-ai", "registry.toml")
+	if err := os.MkdirAll(filepath.Dir(reg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reg, []byte("models = [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	litellmEnv(t, "model_list:\n  - model_name: a/b\n    litellm_params: {model: x}\n")
+	stdout, stderr, err := execLitellm(t, "list")
+	if err != nil || stdout != "a/b\t(hand-written)\n" || stderr != "" {
+		t.Fatalf("list: err %v stdout %q stderr %q", err, stdout, stderr)
+	}
+	stdout, _, err = execLitellm(t, "providers", "--json")
+	if err != nil {
+		t.Fatalf("providers --json: %v", err)
+	}
+	var got struct {
+		Providers map[string]struct{ Cloud bool } `json:"providers"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil || !got.Providers["openrouter"].Cloud || got.Providers["ollama"].Cloud {
+		t.Fatalf("providers = %s (%v)", stdout, err)
+	}
+}
+
+// TestLitellmRestartWaitsAndReports pins `wt-model litellm restart`: the
+// restart `wt-model litellm sync` runs (here the WT_LITELLM_RESTART_CMD
+// override) and the wait after it, taken with no pre-restart probe so a proxy
+// that was down is waited for too (the probe stub says nothing is listening),
+// one line on stdout when the proxy answers again, and an error naming the
+// cause when the restart command fails or the proxy never answers.
+// bin/update/litellm runs it after an upgrade in place of `launchctl
+// kickstart -k`, which kills a request in flight after 5 seconds; a failure
+// that exited 0 would leave the updater reporting a proxy it never restarted.
+func TestLitellmRestartWaitsAndReports(t *testing.T) {
+	const url = "http://proxy.test:4000"
+	for _, tc := range []struct {
+		name, cmd string
+		waitErr   error
+		wantErr   string
+	}{
+		{name: "restarted and answering", cmd: "echo restart >> RESTARTS"},
+		{name: "the restart command fails", cmd: "echo restart >> RESTARTS; exit 3", wantErr: "exit status 3"},
+		{name: "the proxy never answers", cmd: "echo restart >> RESTARTS", waitErr: errors.New("LiteLLM proxy not ready at " + url + "/health/liveliness: context deadline exceeded"),
+			wantErr: "LiteLLM proxy not ready at " + url},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restarts := filepath.Join(t.TempDir(), "restarts")
+			t.Setenv("WT_LITELLM_RESTART_CMD", strings.ReplaceAll(tc.cmd, "RESTARTS", restarts))
+			var steps []string
+			t.Cleanup(litellm.StubProxyReadinessForTest(
+				func(_ context.Context, u string, _ time.Duration) bool {
+					steps = append(steps, "probe "+u)
+					return false
+				},
+				func(_ context.Context, u string, _ time.Duration) error {
+					b, _ := os.ReadFile(restarts)
+					steps = append(steps, fmt.Sprintf("wait %s after %q", u, b))
+					return tc.waitErr
+				},
+			))
+
+			var out bytes.Buffer
+			err := runLitellmRestart(&out, config.ProxyPair{URL: url}, nil)
+			if want := []string{fmt.Sprintf("wait %s after %q", url, "restart\n")}; !slices.Equal(steps, want) {
+				t.Errorf("steps = %q, want %q", steps, want)
+			}
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				if got, want := out.String(), "restarted the LiteLLM proxy at "+url+"\n"; got != want {
+					t.Errorf("stdout = %q, want %q", got, want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+			}
+			if out.Len() != 0 {
+				t.Errorf("a failed restart printed %q on stdout", out.String())
+			}
+		})
+	}
+}
+
+// TestLitellmRestartHidesAnAtURL pins the success line's one url rule
+// (#640): a stored pair url holding an '@' (hand-written, or set by an older
+// wt) is printed only as config.ProxyURLHidden, never in part.
+func TestLitellmRestartHidesAnAtURL(t *testing.T) {
+	const url = "http://USERX:PASSX@proxy.test:4000"
+	t.Setenv("WT_LITELLM_RESTART_CMD", "true")
+	t.Cleanup(litellm.StubProxyReadinessForTest(
+		func(context.Context, string, time.Duration) bool { return false },
+		func(context.Context, string, time.Duration) error { return nil },
+	))
+	var out bytes.Buffer
+	if err := runLitellmRestart(&out, config.ProxyPair{URL: url}, nil); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if got, want := out.String(), "restarted the LiteLLM proxy at "+config.ProxyURLHidden+"\n"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
+}
+
+// TestLitellmRestartReadsOnlyTheProxyPair pins what the restart reads: the
+// pair alone. An unresolvable pair refuses before anything restarts (a
+// restart that skipped its wait as "no url" would hide the broken pair);
+// no url restarts unwaited with today's line; a trailing slash is trimmed
+// as Config.LitellmBaseURL trimmed it.
+func TestLitellmRestartReadsOnlyTheProxyPair(t *testing.T) {
+	stubSteps := func(t *testing.T) *[]string {
+		var steps []string
+		t.Cleanup(litellm.StubProxyReadinessForTest(
+			func(_ context.Context, u string, _ time.Duration) bool {
+				steps = append(steps, "probe "+u)
+				return false
+			},
+			func(_ context.Context, u string, _ time.Duration) error {
+				b, _ := os.ReadFile(os.Getenv("RESTARTS_FILE"))
+				steps = append(steps, fmt.Sprintf("wait %s after %q", u, b))
+				return nil
+			},
+		))
+		return &steps
+	}
+	restartsIn := func(t *testing.T) string {
+		restarts := filepath.Join(t.TempDir(), "restarts")
+		t.Setenv("RESTARTS_FILE", restarts)
+		t.Setenv("WT_LITELLM_RESTART_CMD", "echo restart >> "+restarts)
+		return restarts
+	}
+	t.Run("unresolvable pair", func(t *testing.T) {
+		restarts := restartsIn(t)
+		steps := stubSteps(t)
+		var out bytes.Buffer
+		err := runLitellmRestart(&out, config.ProxyPair{}, errors.New("bad home"))
+		if err == nil || !strings.HasPrefix(err.Error(), "config error: ") {
+			t.Fatalf("err = %v, want a config error", err)
+		}
+		if out.Len() != 0 || len(*steps) != 0 {
+			t.Errorf("stdout %q, steps %q; want neither", out.String(), *steps)
+		}
+		if _, statErr := os.Stat(restarts); !os.IsNotExist(statErr) {
+			t.Errorf("the restart ran over an unresolvable pair (%v)", statErr)
+		}
+	})
+	t.Run("no url", func(t *testing.T) {
+		restartsIn(t)
+		steps := stubSteps(t)
+		var out bytes.Buffer
+		if err := runLitellmRestart(&out, config.ProxyPair{}, nil); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if got, want := out.String(), "restarted the LiteLLM proxy (no [litellm] url, so it was not waited for)\n"; got != want {
+			t.Errorf("stdout = %q, want %q", got, want)
+		}
+		if len(*steps) != 0 {
+			t.Errorf("steps = %q, want none", *steps)
+		}
+	})
+	t.Run("trailing slash", func(t *testing.T) {
+		restartsIn(t)
+		steps := stubSteps(t)
+		var out bytes.Buffer
+		if err := runLitellmRestart(&out, config.ProxyPair{URL: "http://proxy.test:4000/"}, nil); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if want := []string{"wait http://proxy.test:4000 after \"restart\\n\""}; !slices.Equal(*steps, want) {
+			t.Errorf("steps = %q, want %q", *steps, want)
+		}
+		if got, want := out.String(), "restarted the LiteLLM proxy at http://proxy.test:4000\n"; got != want {
+			t.Errorf("stdout = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestLitellmRestartNeedsNoRegistry runs `wt-model litellm restart` through
+// the real tree over a registry.toml that does not parse: the restart reads
+// only the proxy pair, never the registry, so bin/update/litellm can restart
+// the proxy on a machine whose registry is broken. With a pair set the
+// restart still waits for the pair's url (a registry read would lose the
+// pair and skip the wait); with none it restarts unwaited.
+func TestLitellmRestartNeedsNoRegistry(t *testing.T) {
+	brokenRegistry := func(t *testing.T, home string) {
+		t.Helper()
+		registry := filepath.Join(home, "local-ai", "registry.toml")
+		if err := os.MkdirAll(filepath.Dir(registry), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(registry, []byte("models = [\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restartsFile := func(t *testing.T) string {
+		t.Helper()
+		restarts := filepath.Join(t.TempDir(), "restarts")
+		t.Setenv("WT_LITELLM_RESTART_CMD", "echo restart >> "+restarts)
+		return restarts
+	}
+	t.Run("pair set", func(t *testing.T) {
+		home := proxyEnv(t)
+		setPair(t, "--url", "http://proxy.test:4000", "--api-key", "sk-abcdef")
+		brokenRegistry(t, home)
+		restarts := restartsFile(t)
+		var waited []string
+		t.Cleanup(litellm.StubProxyReadinessForTest(
+			func(context.Context, string, time.Duration) bool { return false },
+			func(_ context.Context, u string, _ time.Duration) error {
+				waited = append(waited, u)
+				return nil
+			},
+		))
+		stdout, _, err := execLitellm(t, "restart")
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if want := []string{"http://proxy.test:4000"}; !slices.Equal(waited, want) {
+			t.Errorf("waited for %q, want %q", waited, want)
+		}
+		if want := "restarted the LiteLLM proxy at http://proxy.test:4000\n"; stdout != want {
+			t.Errorf("stdout = %q, want %q", stdout, want)
+		}
+		if b, _ := os.ReadFile(restarts); string(b) != "restart\n" {
+			t.Errorf("restarts = %q, want one restart", b)
+		}
+	})
+	t.Run("no pair", func(t *testing.T) {
+		home := proxyEnv(t)
+		brokenRegistry(t, home)
+		restarts := restartsFile(t)
+		t.Cleanup(litellm.StubProxyReadinessForTest(
+			func(context.Context, string, time.Duration) bool { return false },
+			func(_ context.Context, u string, _ time.Duration) error {
+				t.Errorf("waited for %s with no pair url", u)
+				return nil
+			},
+		))
+		stdout, _, err := execLitellm(t, "restart")
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if want := "restarted the LiteLLM proxy (no [litellm] url, so it was not waited for)\n"; stdout != want {
+			t.Errorf("stdout = %q, want %q", stdout, want)
+		}
+		if b, _ := os.ReadFile(restarts); string(b) != "restart\n" {
+			t.Errorf("restarts = %q, want one restart", b)
+		}
+	})
+}
+
+// TestWtModelLitellmHelpListsRestart pins the line bin/update/litellm
+// feature-detects (`wt-model litellm --help | grep -Eq
+// '^[[:space:]]+restart[[:space:]]'`): without it the updater falls back to
+// launchctl kickstart -k, which cuts off a request in flight.
+func TestWtModelLitellmHelpListsRestart(t *testing.T) {
+	stdout, _, err := execLitellm(t, "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"restart", "sync", "list", "providers", "status", "set"} {
+		if !regexp.MustCompile(`(?m)^\s+` + sub + `\s`).MatchString(stdout) {
+			t.Errorf("help has no %q line:\n%s", sub, stdout)
 		}
 	}
 }

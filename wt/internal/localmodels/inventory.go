@@ -73,7 +73,7 @@ type Entry struct {
 	ProviderID string // registry provider id (omlx-6bit rows keep theirs); for discovered entries the family's registry provider id (familyProviderID), so the id resolves in the registry
 	Artifact   string // pulled/on-disk name in the provider's spelling; "" for a registered model not found on disk
 	// ModelID: the registry id when registered, else the FAMILY-prefixed
-	// config.DiscoveredModelID(family, Artifact) — the id `wt litellm sync`,
+	// config.DiscoveredModelID(family, Artifact) — the id `wt-model litellm sync`,
 	// the lifecycle route hook, -M, usage and the picker all key on, so it
 	// must not depend on which provider row of the family the registry
 	// happens to define (litellm.DiscoveredModel derives it the same way).

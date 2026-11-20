@@ -44,6 +44,10 @@ var movedCommands = []movedCommand{
 	{"served", "served"},
 	{"warm", "warm"},
 	{"cloud-sync", "cloud-sync"},
+	{"litellm list", "litellm list"},
+	{"litellm providers", "litellm providers"},
+	{"litellm sync", "litellm sync"},
+	{"litellm restart", "litellm restart"},
 }
 
 // movedError is the one wording of a command that moved to wt-model: exit 1, one line, nothing changed.

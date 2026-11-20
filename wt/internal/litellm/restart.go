@@ -386,7 +386,7 @@ const (
 // Bounce is a proxy restart followed by the wait for the proxy to answer
 // again. Each field is one step, so a caller with seams of its own (the
 // lifecycle package's asynchronous restart) runs the same sequence over them
-// that `wt litellm sync` runs over this package's (bounce).
+// that `wt-model litellm sync` runs over this package's (bounce).
 type Bounce struct {
 	// Restart restarts the proxy; every warning it returns is a failed
 	// restart (RestartContext).
@@ -438,9 +438,9 @@ func (b Bounce) RunWaiting(ctx context.Context, baseURL string) (warnings []stri
 // the restart and the readiness steps (StubProxyReadinessForTest).
 var bounce = Bounce{Restart: RestartContext, Listening: Listening, WaitReady: WaitReady}
 
-// RestartAndWait is the Apply default when Options.Restart is nil (`wt
+// RestartAndWait is the Apply default when Options.Restart is nil (`wt-model
 // litellm sync`, and through it `wt-model cloud-sync`, `wt-model model add|edit|rm|init`
-// and the Models screen (`wt-model model`)), and all of `wt litellm restart`:
+// and the Models screen (`wt-model model`)), and all of `wt-model litellm restart`:
 // bounce.Run, with a failed wait made one more warning, which the command
 // prints like the restart's own. Every warning is a restart that failed or a
 // proxy that did not answer again.
@@ -452,7 +452,7 @@ func RestartAndWait(baseURL string) []string {
 	return warnings
 }
 
-// RestartAndAwait is `wt litellm restart`: bounce.RunWaiting, with a failed
+// RestartAndAwait is `wt-model litellm restart`: bounce.RunWaiting, with a failed
 // wait made one more warning like RestartAndWait's. Unlike RestartAndWait it
 // waits even when nothing was listening before the restart.
 func RestartAndAwait(baseURL string) []string {

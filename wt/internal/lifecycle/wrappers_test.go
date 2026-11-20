@@ -336,7 +336,7 @@ func TestStartWrapperIsIdempotent(t *testing.T) {
 // hole: Start stops the running occupant, the new model then fails to load,
 // and the wrapper returns the error with no route hook. The occupant is dead,
 // so its row must be gone — otherwise agents keep routing to a stopped model
-// and `wt litellm sync` cannot repair it (a stopped provider probes partial
+// and `wt-model litellm sync` cannot repair it (a stopped provider probes partial
 // and is deliberately left untouched).
 func TestStartWrapperReplaceThenFailDropsOccupantRoute(t *testing.T) {
 	path, _, warn := realRoutes(t, staleSiblingYAML) // routes mtplx/Y--Q27, the occupant

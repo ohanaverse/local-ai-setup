@@ -162,7 +162,7 @@ func TestBuildPlanRefusesAConfigFileItCannotWrite(t *testing.T) {
 
 // TestPlansSayARestartCutsRequestsInFlight pins that a plan that restarts a
 // running LiteLLM or wt-model (kickstart -k, or a bootout) says the requests
-// in flight are cut, unlike `wt litellm restart`, and that a plan that only
+// in flight are cut, unlike `wt-model litellm restart`, and that a plan that only
 // loads a job does not.
 func TestPlansSayARestartCutsRequestsInFlight(t *testing.T) {
 	rot := mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}})

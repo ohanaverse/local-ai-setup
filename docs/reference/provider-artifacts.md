@@ -162,9 +162,9 @@ the plist is installed, `launchctl unload` it by hand:
 - Proxy: `litellm --config ~/.config/litellm/config.yaml --port 4000`, kept
   alive by `~/Library/LaunchAgents/local.litellm.proxy.plist` (artifact:
   redacted copy — see inventory for the five keys to re-fill).
-- `model_list`: wt (`wt litellm sync`) writes the routes for every configured cloud model and the
+- `model_list`: wt (`wt-model litellm sync`) writes the routes for every configured cloud model and the
   running (or, for ollama, pulled) local models, each marked `model_info.wt_managed: true`; any other
-  row is hand-managed — `wt litellm list` marks those `(hand-written)`. (The 2 llama.cpp rows were retired — kept in
+  row is hand-managed — `wt-model litellm list` marks those `(hand-written)`. (The 2 llama.cpp rows were retired — kept in
   [`artifacts/litellm/llamacpp-model-rows.yaml`](artifacts/litellm/llamacpp-model-rows.yaml).)
 - Setup/deep-dive: [01-initial-setup.md](../guides/01-initial-setup.md),
   [04-litellm-config.md](../guides/04-litellm-config.md).
@@ -238,7 +238,7 @@ the plist is installed, `launchctl unload` it by hand:
   (the local API key `rec auth token` prints — a secret: never paste or
   commit it), `state/` (instance and launch locks, a launch log), plus
   `releases/` and `clients/`. The key also ends up in the LiteLLM route's
-  `api_key` (`wt litellm sync`), so the live `config.yaml` holds it too.
+  `api_key` (`wt-model litellm sync`), so the live `config.yaml` holds it too.
 - **wt never deletes any of it**: `wt-model model rm rec/flint` removes the
   registry entry only, and no wt command touches `~/.local/share/rec`.
   `rec uninstall` (it asks; `-y` skips the question) removes rec, its models

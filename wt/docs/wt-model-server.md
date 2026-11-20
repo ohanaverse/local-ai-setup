@@ -140,7 +140,7 @@ reader resolves it — the key is never printed, only masked.
 - A home that cannot be read (a loose or unreadable key file, a `config.toml`
   that does not parse, a dangling link) is never replaced by the legacy pair.
   Only what uses the pair refuses on it: `wt-model serve` at startup,
-  `litellm status|set`, and `wt litellm restart` and the slot-profile proxy
+  `litellm status|set`, and `wt-model litellm restart` and the slot-profile proxy
   checks. Every other command, and every session, runs as usual.
 - The key is the file's content with surrounding whitespace trimmed. A
   missing or empty key file is no key at all, and `--api-key ""` clears the
@@ -197,7 +197,7 @@ here, since a session's remote server is set on the Mode tab of `wt config`.
   plist), and `t` tightens a LiteLLM plist looser than 0600 to 0600 and
   changes nothing else. A plan that restarts or unloads a running LiteLLM or
   wt-model (`launchctl kickstart -k`, `bootout`) says so: requests in flight
-  are cut at once, unlike `wt litellm restart`, which lets them finish.
+  are cut at once, unlike `wt-model litellm restart`, which lets them finish.
 - It needs a terminal. Without one it exits 1 with `wt-model setup needs a
   terminal to open the Setup tab`.
 
@@ -301,7 +301,7 @@ path or method the control API does not route also answers this object, with
 | 404 | `unknown_job` | A job id, polled or cancelled, the server does not hold: unknown, finished and dropped from the list, or the server restarted |
 | 405 | `method_not_allowed` | The path exists for other methods |
 | 410 | `unknown_session` | A heartbeat for a client session that is unknown or lapsed: register again |
-| 503 | `spend_not_configured` | `spend`: nothing names the LiteLLM database (see `wt litellm` for where wt looks); the message is the fixed text `spend is not configured on the model server`, never the wrapped error, which can name host paths |
+| 503 | `spend_not_configured` | `spend`: nothing names the LiteLLM database (see `wt-model litellm` for where wt looks); the message is the fixed text `spend is not configured on the model server`, never the wrapped error, which can name host paths |
 | 503 | `spend_unavailable` | `spend`: the database is named but could not be queried; the message is `spend unavailable: <reason>` and never carries the connection string |
 
 A job that cannot do what was asked finishes `failed` with one of these

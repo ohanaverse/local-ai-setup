@@ -202,7 +202,7 @@ Step 7 edited the plist, and launchd reads a plist only at load, so a restart al
 launchctl bootout gui/$(id -u)/local.litellm.proxy 2> /dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.litellm.proxy.plist
 ```
 
-For a later reload of a changed `config.yaml` (no plist edit), `wt litellm restart` is enough — when a LiteLLM url is configured it also waits for the proxy to answer again.
+For a later reload of a changed `config.yaml` (no plist edit), `wt-model litellm restart` is enough — when a LiteLLM url is configured it also waits for the proxy to answer again.
 
 Verify the proxy is running and the database is connected:
 
@@ -273,7 +273,7 @@ PATH="$HOME/.local/share/uv/tools/litellm/bin:$PATH" \
 
 ### `relation "LiteLLM_SpendLogs" does not exist`
 
-The proxy has not yet created its tables. On LiteLLM ≥1.98 it runs `prisma migrate deploy` against `$DATABASE_URL` at every startup, so check that `DATABASE_URL` is set in the plist's `EnvironmentVariables` and that PostgreSQL is running (`pg_isready -h localhost -p 5432`), then restart with `wt litellm restart` and read `~/.litellm.err.log` for the migration error. Do not run `prisma db push`.
+The proxy has not yet created its tables. On LiteLLM ≥1.98 it runs `prisma migrate deploy` against `$DATABASE_URL` at every startup, so check that `DATABASE_URL` is set in the plist's `EnvironmentVariables` and that PostgreSQL is running (`pg_isready -h localhost -p 5432`), then restart with `wt-model litellm restart` and read `~/.litellm.err.log` for the migration error. Do not run `prisma db push`.
 
 ### `/v1/models` returns 500
 
@@ -288,7 +288,7 @@ This is correct behavior — the master key is now set, so API calls require `Au
 `launchctl unload/load` with `KeepAlive=true` may not fully restart. Use:
 
 ```bash
-wt litellm restart   # fallback if wt cannot run it: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
+wt-model litellm restart   # fallback if wt-model cannot run it: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
 ```
 
 ### PostgreSQL not running after reboot

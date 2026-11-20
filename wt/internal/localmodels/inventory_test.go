@@ -217,7 +217,7 @@ func TestInventoryOllamaLatestFallback(t *testing.T) {
 // TestInventoryOllamaDownWhenDaemonDiesBetweenProbes covers the daemon dying
 // between the two ollama probes: /api/tags answers (so status is Partial, not
 // Unreachable) but /api/ps is refused. That refusal still proves nothing is
-// listening, so the family must be Down — otherwise `wt litellm sync`, which
+// listening, so the family must be Down — otherwise `wt-model litellm sync`, which
 // removes routes only for Down families, would keep routes pointing at a dead
 // daemon. Both probes hit the same origin, so a refused second probe can only
 // mean the server went away.
@@ -393,7 +393,7 @@ func TestInventoryMlxLMServerMatchedPairingIsOK(t *testing.T) {
 
 // TestInventoryMlxLMServerRefusedIsDown verifies a stopped mlx_lm_server (its
 // port refuses the connection) marks the family Down with nothing running.
-// Down is what lets `wt litellm sync` remove the stale route of a stopped
+// Down is what lets `wt-model litellm sync` remove the stale route of a stopped
 // pairing; without it the route would keep pointing at a dead :8001.
 func TestInventoryMlxLMServerRefusedIsDown(t *testing.T) {
 	gone := modelsServer(t, "x")
@@ -696,7 +696,7 @@ func TestInventoryOmlxProbeFailureIsPartial(t *testing.T) {
 // TestInventoryDownOnlyForRefusedConnections pins the Down signal: a closed
 // port (connection refused) marks its family Down for both omlx (Partial) and
 // ollama (Unreachable), while a live server that answers 500 is Partial but
-// NOT Down. `wt litellm sync` removes routes only for Down families, so
+// NOT Down. `wt-model litellm sync` removes routes only for Down families, so
 // conflating "erroring" with "not running" would delete a live route.
 func TestInventoryDownOnlyForRefusedConnections(t *testing.T) {
 	dir := t.TempDir()

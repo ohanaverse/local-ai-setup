@@ -10,7 +10,6 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
@@ -32,10 +31,10 @@ func runProfileCmd(t *testing.T, a *app, args ...string) (string, error) {
 // list`: one line per profile with its agent, its id and "ok" or its static
 // error; a profile with no usable name or agent listed by its position in the
 // file; and the section printed whatever state profiles.toml is in, missing,
-// failing validation or unparseable. It needs no running provider, so the
-// inventory probe must not run. If the section depended on profiles.toml, a
-// user with a broken automatic-profile file could not see why a slot profile
-// is missing from the picker.
+// failing validation or unparseable. It needs no running provider (this
+// binary has no inventory probe to run). If the section depended on
+// profiles.toml, a user with a broken automatic-profile file could not see
+// why a slot profile is missing from the picker.
 func TestProfileListSlotSection(t *testing.T) {
 	ok := slotFixtureCheck(0, "cloud", "opus", slotCloud())
 	broken := slotFixtureCheck(1, "broken", "x", slotCloud())
@@ -106,13 +105,6 @@ func TestProfileListSlotSection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			old := probeInventory
-			probeInventory = func(*config.Config) localmodels.Snapshot {
-				t.Error("`wt profile list` probed the providers")
-				return localmodels.Snapshot{}
-			}
-			t.Cleanup(func() { probeInventory = old })
-
 			out, err := runProfileCmd(t, tc.a, "list")
 
 			if out != tc.want {

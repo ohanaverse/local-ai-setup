@@ -19,7 +19,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
@@ -103,9 +102,9 @@ func fastModelClient(ep modelclient.Endpoint) *modelclient.Client {
 	return loopbackOnlyClient(ep, modelclient.WithSleep(func(time.Duration) {}))
 }
 
-// failOnRegistry makes every registry and local-provider seam fail the test
-// if it is reached: the registry file is garbage and the local inventory
-// probe reports.
+// failOnRegistry makes the registry fail the test if it is read: the
+// registry file is garbage. (This binary has no local inventory probe left
+// to stub.)
 func failOnRegistry(t *testing.T) {
 	t.Helper()
 	reg := filepath.Join(t.TempDir(), "registry.toml")
@@ -113,12 +112,6 @@ func failOnRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WT_REGISTRY", reg)
-	oldProbe := probeInventory
-	probeInventory = func(*config.Config) localmodels.Snapshot {
-		t.Error("the remote path probed a local provider")
-		return localmodels.Snapshot{}
-	}
-	t.Cleanup(func() { probeInventory = oldProbe })
 }
 
 // TestLaunchRemoteRegistersBeforeStart pins the body order of a remote launch
@@ -269,16 +262,15 @@ func TestLaunchRemoteEndsTheSessionBeforeExit(t *testing.T) {
 }
 
 // TestLaunchRemoteReachesNoHostSeam proves a launch through runLaunchPath
-// with an endpoint configured reaches none of the host's set-up: the local
-// inventory probe panics if reached (the stop picker, the refcount, the
-// registry's price notice, the ollama check and the route check of the old
-// registry path are gone, and the boundary test keeps them out), and the
-// agent still launches.
+// with an endpoint configured reaches none of the host's set-up (the stop
+// picker, the refcount, the registry's price notice, the ollama check and the
+// route check of the old registry path are gone, the boundary test keeps them
+// out, and this binary has no local inventory probe left to reach): the TUI
+// panics if opened, and the agent still launches.
 func TestLaunchRemoteReachesNoHostSeam(t *testing.T) {
 	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
-	oldProbe, oldTUI := probeInventory, tuiRun
-	t.Cleanup(func() { probeInventory, tuiRun = oldProbe, oldTUI })
-	probeInventory = func(*config.Config) localmodels.Snapshot { panic("probeInventory reached on the remote path") }
+	oldTUI := tuiRun
+	t.Cleanup(func() { tuiRun = oldTUI })
 	tuiRun = nil // a nil func panics if called
 
 	cmd := &cobra.Command{}

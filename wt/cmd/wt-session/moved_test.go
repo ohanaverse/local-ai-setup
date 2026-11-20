@@ -46,6 +46,10 @@ var wantMoved = []movedCommand{
 	{"served", "served"},
 	{"warm", "warm"},
 	{"cloud-sync", "cloud-sync"},
+	{"litellm list", "litellm list"},
+	{"litellm providers", "litellm providers"},
+	{"litellm sync", "litellm sync"},
+	{"litellm restart", "litellm restart"},
 }
 
 // explicitMoves are argument rows written out by hand (not derived from
@@ -61,6 +65,18 @@ var explicitMoves = []struct {
 	// cloud-sync's own flags reach the pointer unparsed: a reviewed
 	// `--approve-removals` run changes nothing under wt.
 	{[]string{"cloud-sync", "--only", "ollama", "--yes", "--approve-removals", "0bcc560b956e"}, "cloud-sync", "cloud-sync"},
+	// litellm list|providers sit under a live parent with no Run: without the
+	// stub, a bare `wt litellm list` would print the litellm help and exit 0.
+	{[]string{"litellm", "list"}, "litellm list", "litellm list"},
+	{[]string{"litellm", "list", "--json"}, "litellm list", "litellm list"},
+	{[]string{"litellm", "providers", "--json"}, "litellm providers", "litellm providers"},
+	// sync's own flags reach the pointer unparsed: a scripted
+	// `wt litellm sync --dry-run --json` gets the pointer, not a plan.
+	{[]string{"litellm", "sync"}, "litellm sync", "litellm sync"},
+	{[]string{"litellm", "sync", "--dry-run", "--json"}, "litellm sync", "litellm sync"},
+	// An old bin/update/litellm runs a bare `wt litellm restart`: it must
+	// fail with the pointer, never restart the proxy from a session.
+	{[]string{"litellm", "restart"}, "litellm restart", "litellm restart"},
 }
 
 // TestMovedCommandsPointAtWtModel is the one table test of every moved-command

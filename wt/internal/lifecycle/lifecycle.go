@@ -666,7 +666,7 @@ func (e *env) stopOthers(ctx context.Context, cfg *config.Config, t Target, othe
 // aliased model its alias: a sibling that is still loaded is then missing from
 // it by directory name, and reading that as "unloaded" would remove the route
 // of a model that is serving. So a pool that cannot be read now, or that
-// answers only through the fallback, changes nothing: `wt litellm sync`
+// answers only through the fallback, changes nothing: `wt-model litellm sync`
 // reconciles the routes.
 func (e *env) reconcilePool(ctx context.Context, cfg *config.Config, before, planned []localmodels.Entry) {
 	if len(before) == 0 {

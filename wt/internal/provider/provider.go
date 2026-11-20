@@ -42,7 +42,7 @@ const (
 //   - SecretRef  — api_key comes from resolving the provider's
 //     auth.secret_ref (config.ResolveSecret — env, exec:, or
 //     literal) instead.
-//   - Cloud      — the model lives remotely (`wt litellm providers` reports it).
+//   - Cloud      — the model lives remotely (`wt-model litellm providers` reports it).
 //   - V1Base     — OpenAI-compatible server: api_base is the provider's
 //     origin plus "/v1" whichever form the registry stores, because
 //     LiteLLM's openai/ provider appends only /chat/completions (#168).

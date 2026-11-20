@@ -71,7 +71,7 @@ wt-model model init
 wt start ollama/qwen3.8:27b-mlx   # example id — use the one you pulled (it needs no `[[models]]` entry: with the `ollama` provider row in registry.toml, a pulled model starts by its `ollama/<name:tag>` id). No routing step: the start writes the model_list entry and restarts the proxy; a pulled ollama model stays routed after a stop
 
 # 5. Restart the LiteLLM LaunchAgent (wt already restarted it after the sync — this is only needed if that restart was skipped or failed; it lets a request in flight finish, then waits for the proxy to answer when a LiteLLM url is configured — guide 14 section 10)
-wt litellm restart
+wt-model litellm restart
 
 # 6. Smoke curls
 LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<string>/,""); sub(/<\/string>.*/,""); print}' ~/Library/LaunchAgents/local.litellm.proxy.plist)
@@ -87,7 +87,7 @@ ollama/qwen3.8:27b-mlx
 openrouter/qwen/qwen3.8-flash
 ```
 
-Local-model routes (`omlx/*`, `mtplx/*`, …) appear only while that model runs — `wt start` writes the route, `wt stop` removes it. ollama is the exception: a pulled ollama model stays routed after a stop. `wt litellm list` prints the same set from `config.yaml` without needing the master key.
+Local-model routes (`omlx/*`, `mtplx/*`, …) appear only while that model runs — `wt start` writes the route, `wt stop` removes it. ollama is the exception: a pulled ollama model stays routed after a stop. `wt-model litellm list` prints the same set from `config.yaml` without needing the master key.
 
 ## Steps
 
@@ -108,7 +108,7 @@ LiteLLM: Current Version = 1.103.1
 
 Create the config (fresh machine only):
 
-<!-- UNVERIFIED — `~/.config/litellm/config.yaml` already exists here and wt manages it (`wt litellm ...`); running this on this machine would discard the live `model_list`. -->
+<!-- UNVERIFIED — `~/.config/litellm/config.yaml` already exists here and wt manages it (`wt-model litellm ...`); running this on this machine would discard the live `model_list`. -->
 
 ```bash
 mkdir -p ~/.config/litellm
@@ -393,7 +393,7 @@ launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'
 After an edit to `~/.config/litellm/config.yaml`, restart the proxy:
 
 ```bash
-wt litellm restart   # waits for the proxy to answer again when a LiteLLM url is configured (the pair, or the [litellm] fallback); a fresh install has none until guide 14 section 10
+wt-model litellm restart   # waits for the proxy to answer again when a LiteLLM url is configured (the pair, or the [litellm] fallback); a fresh install has none until guide 14 section 10
 ```
 
 Expect the port to refuse connections while a request in flight finishes (up to 3 minutes) and then for ~15 s while it starts. If wt's own restart cannot run, the fallback is `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`.
@@ -432,7 +432,7 @@ ollama/qwen3.8:27b-mlx
 openrouter/qwen/qwen3.8-flash
 ```
 
-Local-model routes (`omlx/*`, `mtplx/*`, …) appear only while that model runs — `wt start` writes the route, `wt stop` removes it. ollama is the exception: a pulled ollama model stays routed after a stop. `wt litellm list` prints the same set from `config.yaml` without needing the master key.
+Local-model routes (`omlx/*`, `mtplx/*`, …) appear only while that model runs — `wt start` writes the route, `wt stop` removes it. ollama is the exception: a pulled ollama model stays routed after a stop. `wt-model litellm list` prints the same set from `config.yaml` without needing the master key.
 
 A model must appear in this list **and** in `~/.config/litellm/config.yaml` `model_list` to be routable. Real generation through the proxy — set `MODEL` to one id from the listing above (a local model must be running; a cloud/OpenRouter id always works if its key is set):
 
@@ -488,7 +488,7 @@ claude-wt -W smoke-test --new -M ollama/qwen3.8:27b-mlx   # --new is accepted an
 ## Gotchas
 
 - **oMLX routes are wt-written and exist only while the model runs.** `wt start omlx/<model-id>` (e.g. `omlx/mlx-community--Qwen3.8-27B-4bit`) writes a `model_list` row named after the registry id — or, for a model directory with no registry entry, after its discovered id `omlx/<directory name>` — with `api_base: http://localhost:8000/v1`; `wt stop` removes it. The old hand-written omlx rows (`omlx/Qwen3.8-27B-4bit`, `omlx/Ornith-1.5-35B-A3B-MLX-{4,6}bit`) were removed 2026-09-30 (#168). Don't add rows by hand: wt never removes or replaces an unmarked row whose name is not a registry id, so a hand-written row under a discovered model's id blocks wt's own. oMLX serves only models present in `~/.omlx/models/`; for benchmark isolation, `uv run --directory llmbench llmbench provider isolate omlx` (4-bit) or `... omlx-6bit` (6-bit), then `... provider restore`.
-- **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); LiteLLM: `wt litellm restart`.
+- **Per-backend stop mechanics differ.** Ollama model: `ollama stop <model-id>` (daemon stays up); oMLX: `omlx stop` (halts the service); LiteLLM: `wt-model litellm restart`.
 - **Postgres credentials are not in this repo.** The proxy gets them from `DATABASE_URL` in `~/Library/LaunchAgents/local.litellm.proxy.plist` and `general_settings.database_url` in `~/.config/litellm/config.yaml` (`postgresql://keith@localhost:5432/litellm`, trust auth, no password on local socket connections).
 - **"Installed ≠ loaded" for LaunchAgents.** A plist sitting in `~/Library/LaunchAgents/` proves nothing; check `launchctl list | grep -E 'litellm|omlx|ollama|redis|postgres'`. If a job shows `-` in the PID column it is loaded but exited (check the plist's `StandardErrorPath` log: `~/.litellm.err.log`).
 - **Discrepancies in the archive doc, reality wins:** (1) it says `omlx status` — oMLX 0.6.3rc3 has no `status` subcommand (`start|stop|restart|serve|launch|diagnose|cluster` only); (2) its `sk-1234` Bearer examples are placeholders — real key is `LITELLM_MASTER_KEY` from the plist; (3) its `hf login` is stale — current huggingface-hub v1.28.0 CLI says `hf auth login`. (The archive doc's llama.cpp items are moot — llama.cpp was retired 2026-09-07, see [provider-artifacts.md](../reference/provider-artifacts.md).)

@@ -55,7 +55,7 @@ supports_vision = true
 Routing (not a stored flag) is what decides whether a local model appears in
 the proxy's `model_list`: wt derives it from `registry.toml` plus live probes,
 so a cloud model is routed whenever it is configured, with no toggle to flip
-(#179). `wt litellm list` is the answer to "is it routed?"; there is no
+(#179). `wt-model litellm list` is the answer to "is it routed?"; there is no
 hand-write command any more (`wt litellm expose`/`unexpose` went with the flag),
 and there is no routing toggle either: every session routes through the model
 server's gateway ([wt-session.md](../../wt/docs/wt-session.md)). `wt litellm on|off`
@@ -123,7 +123,7 @@ Ask the files and wt:
 
 ```bash
 grep -n -A6 'id = "openrouter/z-ai/glm-5.3-flash"' ~/.config/local-ai/registry.toml   # its [[models]] block
-wt litellm list | grep glm-5.3-flash                                                   # its route
+wt-model litellm list | grep glm-5.3-flash                                             # its route
 ```
 
 ## Model Characteristics
@@ -282,7 +282,7 @@ cd ~/github/ohanaverse/local-ai-setup
 grep "openrouter/z-ai/glm-5.3-flash" ~/.config/local-ai/registry.toml
 
 # Check model is routed (nothing stores routing state)
-wt litellm list | grep "openrouter/z-ai/glm-5.3-flash"
+wt-model litellm list | grep "openrouter/z-ai/glm-5.3-flash"
 
 # Check LiteLLM config
 grep "openrouter/z-ai/glm-5.3-flash" ~/.config/litellm/config.yaml
@@ -352,7 +352,7 @@ grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
 ## Related Documentation
 
 - [02-providers-and-models.md](../guides/02-providers-and-models.md) — Provider configuration overview
-- [04-litellm-config.md](../guides/04-litellm-config.md) — LiteLLM routing (`wt litellm sync`) and management
+- [04-litellm-config.md](../guides/04-litellm-config.md) — LiteLLM routing (`wt-model litellm sync`) and management
 - [06-wt-agents-and-models.md](../guides/06-wt-agents-and-models.md) — wt agent model selection
 - [OpenRouter GLM-5.3-Flash page](https://openrouter.ai/z-ai/glm-5.3-flash) — Pricing and benchmarks
 

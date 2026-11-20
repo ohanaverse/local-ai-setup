@@ -131,7 +131,7 @@ func lastRestartErr() error {
 
 const (
 	// proxyReadyTimeout bounds the wait for the proxy after a route change;
-	// litellm's own, so this package and `wt litellm sync` wait as long.
+	// litellm's own, so this package and `wt-model litellm sync` wait as long.
 	proxyReadyTimeout = litellm.ProxyReadyTimeout
 	// ensureRouteLockTimeout bounds the config.yaml lock wait of a launch-time
 	// route check. A launch must not hang behind another wt process holding
@@ -174,7 +174,7 @@ func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartO
 // its family to clear. A Pool start adds its model and clears nothing: clearing
 // the family there is what made sync and the start hook undo each other with
 // two models loaded (#213). It is exported so the id the
-// start hook writes can be pinned against the id `wt litellm sync` desires
+// start hook writes can be pinned against the id `wt-model litellm sync` desires
 // for the same model (cmd/wt-session) — if the two derivations drift, every sync
 // after a start removes the hook's route and adds its own.
 func StartRouteChange(cfg *config.Config, t Target) litellm.Change {
@@ -283,7 +283,7 @@ func reportEnsured(ctx context.Context, w routeWrite, id string) {
 // the one sync writes. Sync is still what keeps cloud routes current; this is
 // the repair for a config.yaml that lost them, which would otherwise answer
 // every cloud launch with "Invalid model name" until someone ran
-// `wt litellm sync`. So the cloud change is AddMissingOnly: a row that is
+// `wt-model litellm sync`. So the cloud change is AddMissingOnly: a row that is
 // there is sync's, and is neither rebuilt nor compared. Rebuilding it on every
 // launch would resolve the provider's secret_ref each time — a warning per
 // launch in a shell that does not hold the key, though the route works, and a
@@ -608,7 +608,7 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 			w.said = true
 			// Any write repairs an ollama row with no api_base (#202), and the
 			// row can be one the user wrote by hand that this start, stop or
-			// launch never named. `wt litellm sync` prints it; a write made
+			// launch never named. `wt-model litellm sync` prints it; a write made
 			// here must not change such a row without saying so.
 			routePrintf(ctx, "wt: LiteLLM route for %s: api_base set\n", o.ID)
 		}
@@ -654,7 +654,7 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		// the caller's post-return cancellation regardless.
 		//
 		// The probe before the restart, the restart and the readiness wait
-		// are litellm.Bounce.Run, the sequence `wt litellm sync` runs too,
+		// are litellm.Bounce.Run, the sequence `wt-model litellm sync` runs too,
 		// here over this package's seams. The proxy is probed once, lazily,
 		// just before the restart (Listening: only a refused connection
 		// counts as down, so a slow proxy is still waited for). Waiting for

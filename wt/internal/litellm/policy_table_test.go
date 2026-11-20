@@ -32,7 +32,7 @@ func TestPoliciesPinned(t *testing.T) {
 	}
 }
 
-// TestProvidersPinned pins `wt litellm providers`: the provider ids wt can
+// TestProvidersPinned pins `wt-model litellm providers`: the provider ids wt can
 // route and which of them are cloud.
 func TestProvidersPinned(t *testing.T) {
 	want := map[string]bool{

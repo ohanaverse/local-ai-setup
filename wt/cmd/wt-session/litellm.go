@@ -1,86 +1,18 @@
-// wt litellm — the primitives that manage LiteLLM's config.yaml and the proxy.
-// wt owns this since the 2026-09-21 ownership move: nothing else writes
-// config.yaml (see docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md).
+// wt litellm — the proxy pair commands (status, set) and the hidden stubs of
+// retired and removed subcommands. The route commands (sync, list,
+// providers) and the proxy restart moved to `wt-model litellm` in phase 4
+// stage 2; their wt names are pointer stubs (moved.go).
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"sort"
-	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/spf13/cobra"
 )
-
-// probeInventory is a test seam for the host code still in wt-session
-// (litellm sync, until it moves in 4c):
-// production probes the live local-model inventory. cmd/wt-session's TestMain
-// stubs it to localmodels.OnDiskSnapshotForTest so no test dials the
-// developer's real ollama/omlx/mtplx servers, and tests that need a verdict
-// stub it with their own snapshot. No session path reads it (the boundary
-// test).
-var probeInventory = localmodels.Inventory
-
-func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
-	return litellm.RunSync(out, errOut, cfg, probeInventory, asJSON, dryRun)
-}
-
-func runLitellmList(out io.Writer, asJSON bool) error {
-	f, err := litellm.Open(litellm.DefaultPath())
-	if err != nil {
-		return err
-	}
-	rows := f.Rows()
-	ids := make([]string, 0, len(rows))
-	type rowJSON struct {
-		ID      string `json:"id"`
-		Managed bool   `json:"managed"`
-	}
-	jrows := make([]rowJSON, 0, len(rows))
-	for _, r := range rows {
-		ids = append(ids, r.ID)
-		jrows = append(jrows, rowJSON{r.ID, r.Managed})
-	}
-	if asJSON {
-		return json.NewEncoder(out).Encode(map[string]any{"routed": ids, "rows": jrows})
-	}
-	// A wt row prints as its bare id, as list always has, so `grep -x <id>`
-	// keeps working; only a hand-written row carries a marker.
-	for _, r := range rows {
-		if r.Managed {
-			fmt.Fprintln(out, r.ID)
-		} else {
-			fmt.Fprintf(out, "%s\t(hand-written)\n", r.ID)
-		}
-	}
-	return nil
-}
-
-func runLitellmProviders(out io.Writer, asJSON bool) error {
-	provs := litellm.Providers()
-	if asJSON {
-		doc := map[string]map[string]map[string]bool{"providers": {}}
-		for id, cloud := range provs {
-			doc["providers"][id] = map[string]bool{"cloud": cloud}
-		}
-		return json.NewEncoder(out).Encode(doc)
-	}
-	ids := make([]string, 0, len(provs))
-	for id := range provs {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		fmt.Fprintf(out, "%s cloud=%v\n", id, provs[id])
-	}
-	return nil
-}
 
 // runLitellmStatus is `wt litellm status`: the shared status body
 // (config.ShowProxyStatus) — the pair as every reader resolves it, never the
@@ -101,34 +33,15 @@ func runLitellmSet(out io.Writer, url, key *string) error {
 	return nil
 }
 
-func litellmCmd(a *app) *cobra.Command {
+// litellmCmd is `wt litellm`: the proxy pair's status and set. The route
+// commands and the proxy restart moved to `wt-model litellm` (their wt names
+// are hidden pointers the root adds); no subcommand here reads the host
+// config.
+func litellmCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "litellm",
-		Short: "Manage LiteLLM routes for registry models, and the proxy url and key",
+		Short: "Show and set the LiteLLM proxy url and key",
 	}
-	var syncJSON, listJSON, provJSON, syncDryRun bool
-	syncC := &cobra.Command{
-		Use: "sync", Short: "Make LiteLLM routes match the registry's cloud models and the running (or pulled ollama) local models", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, loadErr := a.hostConfig()
-			if loadErr != nil {
-				return configError(loadErr)
-			}
-			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, syncJSON, syncDryRun)
-		},
-	}
-	syncC.Flags().BoolVar(&syncJSON, "json", false, "machine-readable output")
-	syncC.Flags().BoolVar(&syncDryRun, "dry-run", false, "print the route plan and the probe warnings the real sync would report; change nothing (does not report litellm_settings fixes)")
-	listC := &cobra.Command{
-		Use: "list", Short: "List routed model ids from config.yaml", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error { return runLitellmList(cmd.OutOrStdout(), listJSON) },
-	}
-	listC.Flags().BoolVar(&listJSON, "json", false, "machine-readable output")
-	provC := &cobra.Command{
-		Use: "providers", Short: "List providers with a LiteLLM mapping", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error { return runLitellmProviders(cmd.OutOrStdout(), provJSON) },
-	}
-	provC.Flags().BoolVar(&provJSON, "json", false, "machine-readable output")
 	// status and set carry no config gate (ruling 8): they reach only the
 	// proxy pair — the wt-model home and its legacy fallback — so a broken
 	// registry or config.toml cannot lock the user out of the one surface
@@ -161,26 +74,8 @@ func litellmCmd(a *app) *cobra.Command {
 	}
 	setC.Flags().StringVar(&setURL, "url", "", "LiteLLM proxy base URL")
 	setC.Flags().StringVar(&setKey, "api-key", "", "LiteLLM proxy API key")
-	restartC := &cobra.Command{
-		Use:   "restart",
-		Short: "Restart the LiteLLM proxy, letting a request in flight finish, and wait for it to answer",
-		Long: "Restart the LiteLLM proxy the way `wt litellm sync` does after a route change.\n\n" +
-			"With WT_LITELLM_RESTART_CMD set, that command is run as given. Otherwise wt sends the\n" +
-			"proxy's process one SIGTERM, waits up to 3 minutes for a request in flight to finish,\n" +
-			"and has launchd start it again; `launchctl kickstart -k` would kill that request after\n" +
-			"5 seconds. It then waits up to 30 seconds for the proxy at the [litellm] url to answer.\n" +
-			"A restart that fails, or a proxy that does not answer again, exits 1.",
-		Args: cobra.NoArgs, SilenceUsage: true,
-		// No config gate: the restart reads only the [litellm] url, and a
-		// config.toml that does not load leaves it empty, so the restart is
-		// made and not waited for.
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, _ := a.hostConfig()
-			return runLitellmRestart(cmd.OutOrStdout(), cfg)
-		},
-	}
 	c.AddCommand(
-		syncC, listC, provC, statusC, setC, restartC,
+		statusC, setC,
 		removedLitellmCmd("expose"), removedLitellmCmd("unexpose"),
 		retiredLitellmToggleCmd("on"), retiredLitellmToggleCmd("off"),
 	)
@@ -212,7 +107,8 @@ func retiredLitellmToggleCmd(name string) *cobra.Command {
 // it cobra prints the parent's help and exits 0 for the unknown name, so a
 // script running `wt litellm expose X && ...` would "succeed" having written
 // nothing. Flag parsing is off so legacy flags (--json, --dry-run,
-// --skip-ready-gate) reach the same pointer to sync instead of "unknown flag".
+// --skip-ready-gate) reach the same pointer to `wt-model litellm sync`
+// instead of "unknown flag".
 // The removedCmdAnnotation marks the Hidden as deliberate for
 // TestNoWtCommandIsHidden.
 func removedLitellmCmd(name string) *cobra.Command {
@@ -223,33 +119,7 @@ func removedLitellmCmd(name string) *cobra.Command {
 			// Mirrors sync's own wording: a pulled ollama model is routed
 			// whether or not it is loaded, so "running" alone understates
 			// what sync does.
-			return fmt.Errorf("`wt litellm %s` was removed (#179): configured cloud models and running (or pulled ollama) local models are routed automatically — run `wt litellm sync`", name)
+			return fmt.Errorf("`wt litellm %s` was removed (#179): configured cloud models and running (or pulled ollama) local models are routed automatically — run `wt-model litellm sync`", name)
 		},
 	}
-}
-
-// runLitellmRestart is `wt litellm restart`: litellm.RestartAndAwait on the
-// [litellm] url, waiting for the proxy to answer even if it was down before. Its notices (a request in flight being waited for, or cut
-// off at the bound) go to os.Stderr as they happen (litellm.RestartNotice's
-// default); any warning it returns is the command's error, so a script that
-// restarts the proxy learns it failed.
-func runLitellmRestart(out io.Writer, cfg *config.Config) error {
-	url := ""
-	if cfg != nil {
-		// A pair the load could not resolve would make the restart skip
-		// its readiness wait as "no url": say why instead.
-		if perr := cfg.ProxyErr(); perr != nil {
-			return config.ConfigError(perr)
-		}
-		url = cfg.LitellmBaseURL()
-	}
-	if warnings := litellm.RestartAndAwait(url); len(warnings) > 0 {
-		return fmt.Errorf("LiteLLM proxy restart: %s", strings.Join(warnings, "; "))
-	}
-	if url == "" {
-		fmt.Fprintln(out, "restarted the LiteLLM proxy (no [litellm] url, so it was not waited for)")
-		return nil
-	}
-	fmt.Fprintf(out, "restarted the LiteLLM proxy at %s\n", config.ShownProxyURL(url))
-	return nil
 }

@@ -669,7 +669,7 @@ func TestEnsureRouteAddsOnlyTheModelsRoute(t *testing.T) {
 // TestRouteWriteReportsTheAPIBaseRepair pins that a start, stop or launch
 // says so when its write fills an ollama row's empty api_base (#202). Any
 // write of config.yaml makes that repair, and the row is usually one the user
-// wrote by hand that the operation never named: only `wt litellm sync` listed
+// wrote by hand that the operation never named: only `wt-model litellm sync` listed
 // it, so the first write after an upgrade — most often a launch — changed a
 // hand-written row with nothing on screen but the launched model's own
 // "updated" line. That line stays last: it is what the picker's status shows.
@@ -837,7 +837,7 @@ func cloudRoutesCfg() *config.Config {
 // skip them — and a config.yaml that had lost its cloud rows (a sync against
 // the wrong registry removed all of them) stayed broken: every launch on a
 // cloud model got "Invalid model name" from the proxy until someone ran
-// `wt litellm sync` by hand, while local launches repaired themselves. The
+// `wt-model litellm sync` by hand, while local launches repaired themselves. The
 // check now adds the launched cloud model's route too, and still removes
 // nothing.
 func TestEnsureModelRouteRoutesARegistryCloudModel(t *testing.T) {

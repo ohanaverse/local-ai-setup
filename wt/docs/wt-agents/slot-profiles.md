@@ -729,7 +729,7 @@ for `insufficient memory`, and in the log of the mtplx server wt started,
 `/tmp/local-ai-setup-mtplx.log`, for its `memory guard` lines (`action`
 `prefill_admission_shed`, `allocation_failure_shed`, `prefill_system_abort`).
 Under each `Runtime contract verified — profile:` line the log says which
-profile that server ran. `wt litellm list` shows which local models the proxy
+profile that server ran. `wt-model litellm list` shows which local models the proxy
 routes.
 
 ## Limits

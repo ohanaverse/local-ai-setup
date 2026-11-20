@@ -217,7 +217,8 @@ func TestRoutedPollsUntilListed(t *testing.T) {
 }
 
 // TestRoutedTimesOut pins that the gateway wait gives up after its timeout
-// with an error naming the id, and returns the context's error on a cancel.
+// with an error naming the id and the host command that shows the routes
+// ('wt-model litellm list'), and returns the context's error on a cancel.
 func TestRoutedTimesOut(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[]}`))
@@ -228,6 +229,9 @@ func TestRoutedTimesOut(t *testing.T) {
 	err := w.wait(context.Background(), "omlx/a")
 	if err == nil || !strings.Contains(err.Error(), "omlx/a") {
 		t.Fatalf("wait = %v, want a timeout naming omlx/a", err)
+	}
+	if !strings.Contains(err.Error(), "'wt-model litellm list'") {
+		t.Errorf("wait = %v, want the hint naming 'wt-model litellm list'", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
