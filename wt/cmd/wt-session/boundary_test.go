@@ -18,7 +18,8 @@ const modulePath = "github.com/ohanaverse/local-ai-setup/wt"
 // boundarySessionFiles are the session files TestSessionPathsNeverTouchTheRegistryOrLifecycle
 // scans, relative to cmd/wt-session: the launch, resolve, smoke and profile paths of
 // cmd/wt-session (main.go's root command and runLaunchPath, the model-server
-// start/stop/job commands of model_cmds_remote.go, commands.go's rotate and
+// start/stop/job commands of model_cmds.go (startCmd and the session
+// stopCmd) and model_cmds_remote.go, commands.go's rotate and
 // the shared helpers.go included) and every non-test file of internal/tui
 // (except the host Models tab, models_tab*), internal/agents, internal/smoke,
 // internal/profiles and internal/modelclient. A pattern that matches no file fails the test, so a
@@ -26,7 +27,7 @@ const modulePath = "github.com/ohanaverse/local-ai-setup/wt"
 func boundarySessionFiles(t *testing.T) []string {
 	t.Helper()
 	var out []string
-	for _, f := range []string{"launch", "resolve", "slot_launch", "smoke", "models", "resolve_remote", "launch_remote", "answerer", "job", "model_list_server", "app", "main", "model_cmds_remote", "commands", "helpers"} {
+	for _, f := range []string{"launch", "resolve", "slot_launch", "smoke", "models", "resolve_remote", "launch_remote", "answerer", "job", "model_list_server", "app", "main", "model_cmds", "model_cmds_remote", "commands", "helpers"} {
 		if _, err := os.Stat(f + ".go"); err != nil {
 			t.Fatalf("session file %s.go: %v", f, err)
 		}
