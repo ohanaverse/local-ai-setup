@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
@@ -39,7 +40,7 @@ func TestStatsJSONDocument(t *testing.T) {
 		launch{"ollama/gemma4:9b", "claude", time.Hour},
 		launch{"ollama/launch-only", "claude", time.Hour},
 	)
-	stubSpend(t, spend.Result{Unattributed: 3, Rows: []spend.Row{
+	stubSpend(t, modelapi.SpendReport{Unattributed: 3, Rows: []modelapi.SpendRow{
 		{Model: "ollama/gemma4:9b", Requests: 4, PromptTokens: 152, CompletionTokens: 630, Spend: 0},
 		{Model: "openrouter/qwen/qwen3.8-27b", Requests: 5, PromptTokens: 517, CompletionTokens: 3135, Spend: 0.0085},
 	}}, nil)
@@ -87,7 +88,7 @@ func TestStatsJSONIsOneDocumentInEveryMode(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			a, tmp := newTestApp(t)
 			seedLaunches(t, tmp, launch{"ollama/gemma4:9b", "claude", time.Hour})
-			stubSpend(t, spend.Result{}, c.err)
+			stubSpend(t, modelapi.SpendReport{}, c.err)
 
 			stdout, stderr := runStatsDirect(t, a, append([]string{"--json"}, c.args...)...)
 
@@ -120,7 +121,7 @@ func TestStatsJSONIsOneDocumentInEveryMode(t *testing.T) {
 
 	t.Run("nothing at all", func(t *testing.T) {
 		a, _ := newTestApp(t)
-		stubSpend(t, spend.Result{}, nil)
+		stubSpend(t, modelapi.SpendReport{}, nil)
 		pinStatsNow(t, time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC))
 		stdout, stderr := runStatsDirect(t, a, "--json")
 		want := `{"window":"30d","as_of":"2026-10-07T12:00:00Z","survey":[],` +
@@ -145,7 +146,7 @@ func TestStatsJSONNullsWhereTheTableShowsADash(t *testing.T) {
 		{Agent: "claude", ModelID: "m/skipped", Timestamp: asOf.Add(-time.Hour), Skipped: true},
 		{Agent: "claude", ModelID: "m/unrated", Timestamp: asOf.Add(-time.Hour), Worked: boolPtr(true)},
 	})
-	stubSpend(t, spend.Result{}, nil)
+	stubSpend(t, modelapi.SpendReport{}, nil)
 
 	stdout, _ := runStatsDirect(t, a, "--json", "--agent", "claude")
 	var doc statsJSON
@@ -177,7 +178,7 @@ func TestStatsJSONNullsWhereTheTableShowsADash(t *testing.T) {
 func TestStatsJSONListsFoldedSpellings(t *testing.T) {
 	a, tmp := newTestApp(t)
 	seedLaunches(t, tmp, launch{"mtplx/Org--Name", "claude", time.Hour})
-	stubSpend(t, spend.Result{Rows: []spend.Row{
+	stubSpend(t, modelapi.SpendReport{Rows: []modelapi.SpendRow{
 		{Model: "mtplx/Org--Name", Requests: 4, PromptTokens: 100, CompletionTokens: 10},
 		{Model: "mtplx/Org/Name", Requests: 5, PromptTokens: 23, CompletionTokens: 5, Spend: 0.5},
 		{Model: "openrouter/x/y", Requests: 1},
@@ -271,7 +272,7 @@ func TestStatsJSONAgreesWithTheTable(t *testing.T) {
 		launch{"ollama/a", "claude", time.Hour},
 		launch{"openrouter/b", "claude", time.Hour}, launch{"openrouter/b", "codex", 2 * time.Hour},
 	)
-	stubSpend(t, spend.Result{Rows: []spend.Row{
+	stubSpend(t, modelapi.SpendReport{Rows: []modelapi.SpendRow{
 		{Model: "ollama/a", Requests: 7, PromptTokens: 70, CompletionTokens: 700, Spend: 0},
 		{Model: "openrouter/b", Requests: 1204, PromptTokens: 51700, CompletionTokens: 3135, Spend: 0.0085},
 	}}, nil)
@@ -434,7 +435,7 @@ func TestStatsJSONKeepsAnAgentNamedAll(t *testing.T) {
 	seedSurveyEvents(t, tmp, []survey.Event{
 		{Agent: "(all)", ModelID: "m/one", Timestamp: time.Now().Add(-time.Hour), Worked: boolPtr(true)},
 	})
-	stubSpend(t, spend.Result{}, nil)
+	stubSpend(t, modelapi.SpendReport{}, nil)
 
 	stdout, _ := runStatsDirect(t, a, "--json")
 	var doc statsJSON

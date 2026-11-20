@@ -149,7 +149,7 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 		if spawnErr != nil {
 			return spawnErr
 		}
-		// What a later `wt stop` identifies this process by while its port is
+		// What a later `wt-model stop` identifies this process by while its port is
 		// still closed (server_loading.go).
 		e.recordStart(b.family, sp.cmd.Process.Pid)
 		defer func() {

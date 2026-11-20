@@ -15,7 +15,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -40,17 +39,7 @@ var tuiRun = tui.Run
 var installed = agents.Installed
 
 func main() {
-	err := rootCmd().Execute()
-	// Never exit while an async LiteLLM proxy restart a route write kicked off
-	// (internal/lifecycle/routes.go) is still in flight: goroutines do not
-	// survive main returning, so the restart would be killed mid-flight and
-	// the proxy would never pick up the route change. Only the host commands
-	// (wt-model's, which waits on its own) write routes; a session writes none,
-	// so for it this returns at once, and the session's other exits
-	// (runAgentCmd's exit-code propagation, wt smoke's failure exit) need no
-	// wait of their own.
-	lifecycle.WaitPendingRoutes()
-	if err != nil {
+	if err := rootCmd().Execute(); err != nil {
 		os.Exit(reportExit(err, os.Stderr))
 	}
 }

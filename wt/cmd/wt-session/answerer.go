@@ -13,7 +13,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
@@ -179,7 +178,7 @@ func othersQuestion(id string, others []modelapi.Resident, unknown []string, cou
 	fmt.Fprintf(&b, "starting %s loads it beside models of other providers:\n", id)
 	for _, r := range others {
 		line := fmt.Sprintf("%s — %s", r.Label, r.Figure)
-		fmt.Fprintf(&b, "  %s\n", lifecycle.WithSessions(line, counts[r.ID]))
+		fmt.Fprintf(&b, "  %s\n", cli.WithSessions(line, counts[r.ID]))
 	}
 	for _, f := range unknown {
 		fmt.Fprintf(&b, "  cannot tell whether %s is serving a model\n", f)

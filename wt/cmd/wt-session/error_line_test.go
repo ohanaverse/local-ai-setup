@@ -82,6 +82,10 @@ func TestOneErrorLineThroughTheRealTree(t *testing.T) {
 	}
 }
 
+// sessionRunnableFloor is the runnable non-stub commands wt-session has after
+// phase 4 stage 2; lower it only when a command leaves on purpose.
+const sessionRunnableFloor = 31
+
 // TestEveryRunnableCommandSilencesUsage: a command that runs code and fails
 // must not bury its error under usage text, so the walk in rootCmd silences
 // usage on every runnable subcommand, except the ones that print usage
@@ -94,7 +98,9 @@ func TestEveryRunnableCommandSilencesUsage(t *testing.T) {
 	walk = func(c *cobra.Command) {
 		for _, sub := range c.Commands() {
 			if sub.Runnable() {
-				seen++
+				if _, stub := sub.Annotations[removedCmdAnnotation]; !stub {
+					seen++
+				}
 				path := sub.CommandPath()
 				if exempt[path] {
 					if sub.SilenceUsage {
@@ -112,8 +118,8 @@ func TestEveryRunnableCommandSilencesUsage(t *testing.T) {
 		t.Error("the root does not silence cobra's Error: line")
 	}
 	walk(root)
-	if seen < 20 {
-		t.Fatalf("walked %d runnable commands; the walk is vacuous", seen)
+	if seen < sessionRunnableFloor {
+		t.Fatalf("walked %d runnable commands, want at least %d; the walk is vacuous", seen, sessionRunnableFloor)
 	}
 }
 

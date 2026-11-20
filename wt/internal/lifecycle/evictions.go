@@ -269,7 +269,7 @@ func residentOthers(snap localmodels.Snapshot, family string, t Target) (others 
 }
 
 // loadingOmlx reports whether en is an omlx model still loading. omlx refuses
-// to unload one mid-load (omlxUnload says so, and points at `wt stop omlx`), so
+// to unload one mid-load (omlxUnload says so, and points at `wt-model stop omlx`), so
 // wt cannot stop it: offering it to the user as stoppable would fail the start
 // it was asked to make room for. It is still listed — it holds memory already.
 func loadingOmlx(family string, en localmodels.Entry) bool {

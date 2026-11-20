@@ -126,8 +126,6 @@ func (s *Server) spend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rep := modelapi.SpendReport{Rows: []modelapi.SpendRow{}, Unattributed: res.Unattributed}
-	for _, row := range res.Rows {
-		rep.Rows = append(rep.Rows, modelapi.SpendRow(row))
-	}
+	rep.Rows = append(rep.Rows, res.Rows...)
 	writeJSON(w, http.StatusOK, rep)
 }

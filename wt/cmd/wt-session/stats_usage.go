@@ -16,7 +16,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -28,7 +27,7 @@ type usageRow struct {
 	Model    string
 	Family   string
 	Launches int
-	Spend    *spend.Row
+	Spend    *modelapi.SpendRow
 	// AlsoLoggedAs lists the other spellings of Model whose spend rows were
 	// folded into Spend (see foldTarget), sorted; nil when there are none.
 	AlsoLoggedAs []string
@@ -119,17 +118,17 @@ func isSlotProfileID(id string, families map[string]string) bool {
 //
 // An empty id never gets a row, from either side: it would print as a line
 // with a blank MODEL cell that no --model value can name. usage.AllCounts
-// and spend.Query both leave such entries out already (spend counts them as
-// Unattributed); this is the join's own guarantee, for whatever else fills
-// the two inputs.
-func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, sp *spend.Result, families map[string]string, f statsFilter) []usageRow {
+// and the model server's spend both leave such entries out already (spend
+// counts them as Unattributed); this is the join's own guarantee, for
+// whatever else fills the two inputs.
+func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, sp *modelapi.SpendReport, families map[string]string, f statsFilter) []usageRow {
 	byModel := map[string]*usageRow{}
 	row := func(id string) *usageRow {
 		r, ok := byModel[id]
 		if !ok {
 			r = &usageRow{Model: id, Family: familyFor(id, families)}
 			if sp != nil {
-				r.Spend = &spend.Row{Model: id}
+				r.Spend = &modelapi.SpendRow{Model: id}
 			}
 			byModel[id] = r
 		}
@@ -176,7 +175,7 @@ func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, s
 	// spend the join gave this row would read as "this profile cost nothing".
 	// Spend the proxy did log under the id is kept.
 	for _, r := range byModel {
-		if r.Spend != nil && isSlotProfileID(r.Model, families) && *r.Spend == (spend.Row{Model: r.Model}) {
+		if r.Spend != nil && isSlotProfileID(r.Model, families) && *r.Spend == (modelapi.SpendRow{Model: r.Model}) {
 			r.Spend = nil
 		}
 	}
@@ -271,11 +270,7 @@ func collectUsageRemote(ctx context.Context, ms *modelSession, window time.Durat
 			}
 			return out
 		}
-		r := spend.Result{Unattributed: res.Unattributed}
-		for _, s := range res.Rows {
-			r.Rows = append(r.Rows, spend.Row{Model: s.Model, Requests: s.Requests, PromptTokens: s.PromptTokens, CompletionTokens: s.CompletionTokens, Spend: s.Spend})
-		}
-		return spendOutcome{status: spendOK, result: &r}
+		return spendOutcome{status: spendOK, result: &res}
 	})
 }
 
@@ -302,7 +297,7 @@ func collectUsageNoServer(openErr error, window time.Duration, asOf time.Time, f
 type spendOutcome struct {
 	status string
 	reason string
-	result *spend.Result // nil unless status is spendOK
+	result *modelapi.SpendReport // nil unless status is spendOK
 }
 
 // collectUsage is the tail both collectors share, so how --agent, --model and
@@ -313,7 +308,7 @@ type spendOutcome struct {
 // reads as none: every id takes its provider prefix).
 func collectUsage(window time.Duration, asOf time.Time, f statsFilter, families map[string]string, getSpend func() spendOutcome) usageReport {
 	rep := usageReport{Narrowed: f.model != "" || f.family != ""}
-	var sp *spend.Result
+	var sp *modelapi.SpendReport
 	if f.agent != "" {
 		rep.SpendStatus, rep.SpendReason = spendSkipped, spendSkippedReason
 	} else {

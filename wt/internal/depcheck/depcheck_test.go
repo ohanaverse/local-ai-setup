@@ -10,10 +10,11 @@ import (
 const modulePath = "github.com/ohanaverse/local-ai-setup/wt/"
 
 // adminBanned is the set of packages the session library packages, and
-// cmd/wt-session itself (beyond sessionBinaryAllow), must not link: the model administration half (lifecycle, litellm, localmodels,
-// cloudsync, spend, modeladmin, the model editor modeleditor and its setup
-// engine modelsetup) and the model server's own packages (modelserver,
-// modelgateway, modeljobs, sessionreg, candidates, hoststop, servestate).
+// cmd/wt-session itself, must not link: the model administration half
+// (lifecycle, litellm, localmodels, cloudsync, spend, modeladmin, the model
+// editor modeleditor and its setup engine modelsetup) and the model server's
+// own packages (modelserver, modelgateway, modeljobs, sessionreg, candidates,
+// hoststop, servestate).
 var adminBanned = []string{
 	"internal/lifecycle", "internal/litellm", "internal/localmodels",
 	"internal/cloudsync", "internal/spend", "internal/modeladmin",
@@ -274,16 +275,13 @@ func TestModeLeavesStayOffTheClient(t *testing.T) {
 	}
 }
 
-// sessionBinaryAllow names the admin packages cmd/wt-session still links:
-// lifecycle (start.go's waitPendingRoutes, main.go's WaitPendingRoutes, the
-// answerer's WithSessions) drags litellm and localmodels; spend is stats'
-// types. It only shrinks; 5a empties it.
-var sessionBinaryAllow = []string{"internal/lifecycle", "internal/litellm", "internal/localmodels", "internal/spend"}
+// sessionBinaryAllow names the admin packages cmd/wt-session still links.
+// It only shrinks (empty since phase 4 stage 2, PR 5a).
+var sessionBinaryAllow = []string{}
 
 // TestSessionBinaryStaysOffTheAdminPackages holds the session binary itself:
-// after the hard cut cmd/wt-session links no administration code but what
-// sessionBinaryAllow names, and the list only shrinks: a gone edge fails until
-// its entry is deleted.
+// cmd/wt-session links no admin package (adminBanned); the allow-list is
+// empty and only shrinks.
 func TestSessionBinaryStaysOffTheAdminPackages(t *testing.T) {
 	for _, p := range ratchetProblems("cmd/wt-session", closure(t, "cmd/wt-session"), adminBanned, sessionBinaryAllow) {
 		t.Error(p)

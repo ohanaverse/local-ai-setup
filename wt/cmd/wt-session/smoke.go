@@ -152,9 +152,8 @@ func validateSmokeToolFlags(cmd *cobra.Command) (smokeToolFlags, error) {
 	return f, nil
 }
 
-// smokeSignalCtx is a test seam over signal.NotifyContext, as startSignalCtx
-// is for the start step: the context the rows run under, cancelled by Ctrl+C
-// or SIGTERM.
+// smokeSignalCtx is a test seam over signal.NotifyContext: the context the
+// rows run under, cancelled by Ctrl+C or SIGTERM.
 var smokeSignalCtx = func() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }

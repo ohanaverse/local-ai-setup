@@ -5,7 +5,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -16,30 +15,20 @@ import (
 const modulePath = "github.com/ohanaverse/local-ai-setup/wt"
 
 // boundarySessionFiles are the session files TestSessionPathsNeverTouchTheRegistryOrLifecycle
-// scans, relative to cmd/wt-session: the launch, resolve, smoke and profile paths of
-// cmd/wt-session (main.go's root command and runLaunchPath, the model-server
-// start/stop/job commands of model_cmds.go (startCmd and the session
-// stopCmd) and model_cmds_remote.go, commands.go's rotate and
-// the shared helpers.go included) and every non-test file of internal/tui
-// (except the host Models tab, models_tab*), internal/agents, internal/smoke,
-// internal/profiles and internal/modelclient. A pattern that matches no file fails the test, so a
-// renamed file cannot drop out of the scan unnoticed.
+// scans, relative to cmd/wt-session: every non-test file of cmd/wt-session (no
+// host command is left in it since phase 4 stage 2) and of the session
+// packages internal/tui (except the host Models tab, models_tab*),
+// internal/agents, internal/smoke, internal/profiles, internal/modelclient,
+// internal/modelmode, internal/modelping, internal/urlrule, internal/editorkit,
+// internal/modeview, internal/sessioneditor and internal/cli. A pattern that
+// matches no file fails the test, so a renamed file or package cannot drop out
+// of the scan unnoticed.
 func boundarySessionFiles(t *testing.T) []string {
 	t.Helper()
 	var out []string
-	for _, f := range []string{"launch", "resolve", "slot_launch", "smoke", "models", "resolve_remote", "launch_remote", "answerer", "job", "model_list_server", "app", "main", "model_cmds", "model_cmds_remote", "commands", "helpers"} {
-		if _, err := os.Stat(f + ".go"); err != nil {
-			t.Fatalf("session file %s.go: %v", f, err)
-		}
-		out = append(out, f+".go")
-	}
-	globs := []string{
-		"profile*.go",
-		filepath.Join("..", "..", "internal", "tui", "*.go"),
-		filepath.Join("..", "..", "internal", "agents", "*.go"),
-		filepath.Join("..", "..", "internal", "smoke", "*.go"),
-		filepath.Join("..", "..", "internal", "profiles", "*.go"),
-		filepath.Join("..", "..", "internal", "modelclient", "*.go"),
+	globs := []string{"*.go"}
+	for _, pkg := range []string{"tui", "agents", "smoke", "profiles", "modelclient", "modelmode", "modelping", "urlrule", "editorkit", "modeview", "sessioneditor", "cli"} {
+		globs = append(globs, filepath.Join("..", "..", "internal", pkg, "*.go"))
 	}
 	for _, g := range globs {
 		files, err := filepath.Glob(g)
@@ -68,9 +57,8 @@ func boundarySessionFiles(t *testing.T) []string {
 // provider.X) is matched by the import path the file binds that local name
 // to, so a local variable that happens to be called provider is not flagged.
 // A method selector (.ResolveRoute, .IsLitellm, .LitellmBaseURL,
-// .LitellmAPIKey, and the host's registry wrapper .hostConfig and
-// .hostConfigErr, R3) is matched by name on any receiver, called or used as a
-// method value. A dot-import of a banned package is a violation of its own:
+// .LitellmAPIKey, and the host's registry wrapper .hostConfig, R3) is matched
+// by name on any receiver, called or used as a method value. A dot-import of a banned package is a violation of its own:
 // its names would be bare identifiers the selector match cannot see.
 func boundaryViolations(fset *token.FileSet, path string, src any) ([]string, error) {
 	f, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
@@ -103,7 +91,7 @@ func boundaryViolations(fset *token.FileSet, path string, src any) ([]string, er
 		}
 		return strings.TrimPrefix(p, modulePath+"/internal/")
 	}
-	bannedMethods := map[string]bool{"ResolveRoute": true, "IsLitellm": true, "LitellmBaseURL": true, "LitellmAPIKey": true, "hostConfig": true, "hostConfigErr": true}
+	bannedMethods := map[string]bool{"ResolveRoute": true, "IsLitellm": true, "LitellmBaseURL": true, "LitellmAPIKey": true, "hostConfig": true}
 	report := func(n ast.Node, fn, what string) {
 		out = append(out, fmt.Sprintf("%s:%d: %s: %s", path, fset.Position(n.Pos()).Line, fn, what))
 	}
@@ -156,21 +144,24 @@ var boundaryBannedPkgs = map[string]bool{
 	"internal/refcount": true, "internal/provider": true,
 }
 
-// boundaryAllowed names the exceptions, each with its reason:
+// boundaryAllowed names the exceptions, each with its reason (design "Shared
+// helpers": hostConfig stays for the cleanup commands and stats):
 //
-//   - app.go:loadHost:config.Load — hostConfig (app.go) is the host commands'
+//   - app.go:loadHost:config.Load — hostConfig (app.go) is the host config's
 //     registry read (R3, R17); it reads it through loadHost, which holds the
-//     module's one config.Load a session file may name. protectedPaths
-//     (cleanup.go, R10) reaches the registry only through hostConfig, which
-//     the test checks separately.
-//   - main.go:main:lifecycle.WaitPendingRoutes — main is the process exit of
-//     every command, the host ones (`wt stop <provider>`, `--all`)
-//     included, and a host route write's proxy restart must finish before
-//     the process does. A session writes no route, so the wait
-//     returns at once for it.
+//     module's one config.Load a session file may name.
+//   - cleanup.go:noRegistry:.hostConfig and cleanup.go:protectedPaths:.hostConfig
+//     — R10's best-effort protected-path read: the cleanup commands protect
+//     the registry's local model paths when this machine has a registry, and
+//     protectedPaths reaches it only through hostConfig, which the test
+//     checks separately.
+//   - stats.go:spendFromServer:.hostConfig — stats' family fallback when no
+//     model server answers.
 var boundaryAllowed = map[string]bool{
-	"app.go:loadHost:config.Load":              true,
-	"main.go:main:lifecycle.WaitPendingRoutes": true,
+	"app.go:loadHost:config.Load":           true,
+	"cleanup.go:noRegistry:.hostConfig":     true,
+	"cleanup.go:protectedPaths:.hostConfig": true,
+	"stats.go:spendFromServer:.hostConfig":  true,
 }
 
 // TestSessionPathsNeverTouchTheRegistryOrLifecycle pins R3, R4 and R10 and the
@@ -182,10 +173,10 @@ var boundaryAllowed = map[string]bool{
 // (lifecycle.Start, EnsureModelRoute, WaitPendingRoutes), probe local
 // inventory (localmodels.Inventory), keep a local refcount, or reach the
 // provider table. It is a go/ast scan of selector expressions and calls, so
-// comments and strings do not count. The allowed exceptions are the
-// config.Load in app.go's hostConfig loader (the host commands' read) and
-// protectedPaths (cleanup.go), which may reach the registry only through
-// hostConfig; the test asserts both.
+// comments and strings do not count. The allowed exceptions are the four in
+// boundaryAllowed (app.go's loadHost, cleanup.go's noRegistry and
+// protectedPaths, stats.go's spendFromServer); each must still be found, and
+// protectedPaths may reach the registry only through hostConfig.
 func TestSessionPathsNeverTouchTheRegistryOrLifecycle(t *testing.T) {
 	fset := token.NewFileSet()
 	var violations []string
@@ -327,8 +318,8 @@ func protectedPaths(a *app) {
 // every kind of banned use is one: a call or a
 // selector through an import alias (one per banned package, a package-level
 // `var _ = lc.X` included), a provider type, a banned method used as a value
-// rather than called, a call of the host config wrapper (hostConfig,
-// hostConfigErr) and a dot-import of a banned package. Without it a scanner
+// rather than called, a call of the host config wrapper (hostConfig) and a
+// dot-import of a banned package. Without it a scanner
 // regression would let TestSessionPathsNeverTouchTheRegistryOrLifecycle pass
 // over a real violation.
 func TestBoundaryScanSeesOnlyCode(t *testing.T) {
@@ -356,7 +347,6 @@ func f(a *app, p struct{ Name string }) string {
 	var _ provider.Family
 	key := a.cfg.LitellmAPIKey
 	_, _ = a.hostConfig()
-	_ = a.hostConfigErr()
 	_ = key
 	return p.Name
 }
@@ -376,7 +366,6 @@ func f(a *app, p struct{ Name string }) string {
 		"x.go:22: f: provider.Family",
 		"x.go:23: f: .LitellmAPIKey",
 		"x.go:24: f: .hostConfig",
-		"x.go:25: f: .hostConfigErr",
 	}
 	if strings.Join(vs, "\n") != strings.Join(want, "\n") {
 		t.Errorf("violations =\n%s\nwant\n%s", strings.Join(vs, "\n"), strings.Join(want, "\n"))

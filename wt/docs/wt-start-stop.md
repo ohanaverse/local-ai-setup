@@ -212,12 +212,10 @@ together with `--all`) prints one error line naming the valid form and exits 1.
     missing, unreadable or names a dead pid is "nothing running"; wt does
     not delete it.
     `wt stop <model>` for an mtplx model during a load stops
-    nothing — wt does not know which model the loading process holds — and
-    fails with
-    `model "<id>" is not running — mtplx is still loading (pid N); "wt-model stop mtplx" stops it`
-    (or with `cannot tell whether mtplx is still loading` when wt could not
-    read the process table, or with the `left alone` line when the pidfile
-    names a live process that is not an mtplx server on the provider's port).
+    nothing — the model server's inventory does not show which model the
+    loading process holds — and the server's stop job reports
+    `<id> is not running`; `wt-model stop mtplx`, on the machine that runs
+    the model server, is what stops the loading server.
     Limits:
     - Only a server wt or llmbench started has a pidfile. An mtplx started by
       hand is invisible while it loads: `wt-model stop mtplx` and `--all` print

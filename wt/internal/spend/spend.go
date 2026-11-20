@@ -21,6 +21,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
 var (
@@ -39,24 +41,17 @@ var (
 	ErrNoConnectionString = errors.New("no connection string for the LiteLLM database")
 )
 
-// Row is one model's totals in the window.
-type Row struct {
-	Model            string  `json:"model"`
-	Requests         int64   `json:"requests"`
-	PromptTokens     int64   `json:"prompt_tokens"`
-	CompletionTokens int64   `json:"completion_tokens"`
-	Spend            float64 `json:"spend"`
-}
+// Row is one model's totals in the window: an alias of the wire type, so the
+// server and `wt stats` share one definition.
+type Row = modelapi.SpendRow
 
 // Result is the answer to one Query. Rows never holds a row with an empty
 // Model: requests the proxy logged without a model group are counted in
 // Unattributed instead. Rows comes in the order the database returned it —
 // its collation, which is not Go's byte order — so a caller that needs an
-// order sorts.
-type Result struct {
-	Rows         []Row
-	Unattributed int64
-}
+// order sorts. It is an alias of the wire type, so the server and `wt stats`
+// share one definition.
+type Result = modelapi.SpendReport
 
 // connectTimeout is PGCONNECT_TIMEOUT, in seconds: how long psql waits for
 // a host that does not answer at all. A refused connection fails at once.
