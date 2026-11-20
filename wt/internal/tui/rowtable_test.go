@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/charmbracelet/lipgloss"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -352,12 +353,12 @@ func TestTruncateNameKeepsRunesWhole(t *testing.T) {
 	}{
 		{"feature-login", 8, "feature…"},
 		{"héllo-wörld", 6, "héllo…"},
-		{"日本語のブランチ", 4, "日本語…"},
+		{"日本語のブランチ", 4, "日…"}, // cells: 日 is two, the ellipsis one, one cell spare
 		{"abc", 3, "abc"},
 		{"abc", 1, "…"},
 	} {
 		got := truncateName(c.in, c.w)
-		if got != c.want || utf8.RuneCountInString(got) > c.w || !utf8.ValidString(got) {
+		if got != c.want || lipgloss.Width(got) > c.w || !utf8.ValidString(got) {
 			t.Errorf("truncateName(%q, %d) = %q, want %q", c.in, c.w, got, c.want)
 		}
 	}
@@ -528,5 +529,38 @@ func TestDetailLineHelpers(t *testing.T) {
 	}
 	if got := branchLine(rows[1]); got != "" { // detached worktree: no branch
 		t.Errorf("branchLine(detached) = %q, want empty", got)
+	}
+}
+
+// TestWideNamesKeepThePRNumber fits a table holding a CJK worktree name (two
+// terminal cells per character) beside an ASCII one at every width from the
+// narrowest layout up: no line is wider than the list in cells, and wherever
+// the state word is gone the PR number ends the line whole. Why: the user's
+// rule is that the PR number is never cut; counting runes instead of cells
+// let a wide name push "#77" off the edge, or cut it to "#7".
+func TestWideNamesKeepThePRNumber(t *testing.T) {
+	wide := "日本語のブランチ名前がとても長い作業ツリー"
+	rows := []cleanup.Row{
+		{Kind: cleanup.KindWorktree, Name: wide, Branch: wide, Status: cleanup.StatusProven,
+			PRTag: &cleanup.PRInfo{Number: 77, State: "MERGED"}},
+		{Kind: cleanup.KindWorktree, Name: "feat/x", Branch: "feat/x", Status: cleanup.StatusProven,
+			PRTag: &cleanup.PRInfo{Number: 383, State: "MERGED"}},
+	}
+	for _, prefix := range []int{rowPrefixWidthLaunch, rowPrefixWidthManage} {
+		tbl := newRowTable(rows, prefix)
+		tbl.Fit(1)
+		floor := max(tbl.Width(), lipgloss.Width(tbl.Header())+tuilayout.TitleRoom)
+		for w := floor; w <= 160; w++ {
+			tbl.Fit(w)
+			for i, want := range []string{"#77", "#383"} {
+				line := strings.Repeat(" ", prefix) + rowLine(rows[i], tbl)
+				if got := lipgloss.Width(line); got > w {
+					t.Fatalf("prefix %d width %d: row %d is %d cells wide: %q", prefix, w, i, got, line)
+				}
+				if !tbl.PRState() && !strings.HasSuffix(strings.TrimRight(line, " "), want) {
+					t.Fatalf("prefix %d width %d: row %d lost its PR number %s: %q", prefix, w, i, want, line)
+				}
+			}
+		}
 	}
 }

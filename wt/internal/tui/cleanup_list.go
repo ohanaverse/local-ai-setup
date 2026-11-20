@@ -1279,6 +1279,9 @@ func (m *cleanupListModel) detail() string {
 		if !m.table.PRState() {
 			add(prLine(it.row))
 		}
+		if m.table.NameCut(it.row) {
+			add(nameLine(it.row))
+		}
 		if m.table.Merged() {
 			add(branchLine(it.row))
 		}

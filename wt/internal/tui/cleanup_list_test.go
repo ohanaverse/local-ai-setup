@@ -3130,3 +3130,39 @@ func TestDetailNamesWhatTheTableHides(t *testing.T) {
 		t.Errorf("merged (width %d): detail %q, want the branch and the PR with its state", merged, d)
 	}
 }
+
+// TestDetailRestatesANameTheTableCuts pins the carve-out in style guide L8:
+// when the merged NAME cell is cut with an ellipsis, the highlighted row's
+// detail text names it whole (it wraps, never cuts), for a worktree row and
+// for a branch row (which has no branch line to fall back on); and when the
+// cell is not cut the detail adds no such line. Why: the rule line above the
+// detail is cut at the same width, so without this the whole name is shown
+// nowhere on the list screen and two long names with a shared prefix cannot
+// be told apart.
+func TestDetailRestatesANameTheTableCuts(t *testing.T) {
+	long := "feature-a-rather-long-worktree-name-for-the-narrow-picker-end"
+	for _, kind := range []cleanup.Kind{cleanup.KindWorktree, cleanup.KindBranch} {
+		r := detailFixture()
+		r.Rows[0].Name, r.Rows[0].Branch, r.Rows[0].Path = long, long, "/repo/.worktrees/"+long
+		r.Rows[0].Kind = kind
+		if kind == cleanup.KindBranch {
+			r.Rows[0].Path = ""
+		}
+		at := func(w int) (string, *rowTable) {
+			m := moveTo(t, newLaunchList(t, r, w, 30), long)
+			_ = m.View()
+			return m.detail(), m.table
+		}
+		narrow, tbl := at(40)
+		if !tbl.Merged() {
+			t.Fatalf("kind %v: width 40 did not merge", kind)
+		}
+		if !strings.Contains(squash(narrow), squash("name "+long)) {
+			t.Errorf("kind %v: the cut name is not restated whole:\n%s", kind, narrow)
+		}
+		wide, tbl := at(200)
+		if tbl.Merged() || strings.Contains(squash(wide), squash("name "+long)) {
+			t.Errorf("kind %v: a name the table shows whole is restated anyway:\n%s", kind, wide)
+		}
+	}
+}

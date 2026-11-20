@@ -36,8 +36,9 @@ block under the list, which already does this for DIFF and PR:
 - PR state hidden: `PR #12 merged` (`prLine`, as when the column is gone).
 - STATUS hidden: `status <state>`; IGN hidden while DIFF is shown: `N ignored`
   (both are my additions; today nothing names them).
-- Merged: `branch <name>` and the worktree name (the rule line above the detail
-  already shows the full display name, which is also what an ellipsis cut hides).
+- Merged: `branch <name>`; and `name <full name>` when NAME is cut (added after
+  the final review: the rule line above the detail is cut at the same width, so
+  it does not restate the name).
 
 ## Non-goals and anti-goals
 
@@ -57,8 +58,9 @@ block under the list, which already does this for DIFF and PR:
 
 - `internal/tuilayout` is a leaf and `Columns` is shared; the new logic lives
   in `internal/tui` (`rowtable.go`, `cleanup_list.go`'s `detail()`).
-- Widths are rune counts, as everywhere in the table today; a wide-character
-  name can still misalign (already true, not changed here).
+- Widths are terminal cells (a CJK character takes two), as style guide L5
+  says. The design first kept the table's rune counts; the final review showed
+  a wide name then pushes the PR number off the edge, which the goal forbids.
 - The header must fit with `tuilayout.TitleRoom` at every step.
 - The documented rule "tables drop whole columns, never part of one; no cell is
   abbreviated" (`docs/style-guide.md` L6/L8, `docs/wt-cleanup.md`, guide 08,

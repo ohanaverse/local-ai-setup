@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
@@ -139,31 +140,31 @@ func newRowTable(rows []cleanup.Row, prefix int) *rowTable {
 	raw := make([][]string, len(rows))
 	widths := make([]int, len(rowHeads))
 	for i, head := range rowHeads {
-		widths[i] = utf8.RuneCountInString(head)
+		widths[i] = cellWidth(head)
 	}
-	nameFull := utf8.RuneCountInString("NAME")
-	prShort := utf8.RuneCountInString(rowHeads[rtPR])
+	nameFull := cellWidth("NAME")
+	prShort := cellWidth(rowHeads[rtPR])
 	for i, r := range rows {
 		raw[i] = rowCells(r)
 		for c, cell := range raw[i] {
-			if n := utf8.RuneCountInString(cell); n > widths[c] {
+			if n := cellWidth(cell); n > widths[c] {
 				widths[c] = n
 			}
 		}
-		nameFull = max(nameFull, utf8.RuneCountInString(mergedName(r)))
-		prShort = max(prShort, utf8.RuneCountInString(shortPRCell(raw[i][rtPR])))
+		nameFull = max(nameFull, cellWidth(mergedName(r)))
+		prShort = max(prShort, cellWidth(shortPRCell(raw[i][rtPR])))
 	}
 	heads := make([]string, len(rowHeads))
 	for i, head := range rowHeads {
-		heads[i] = tuilayout.PadRunes(head, widths[i])
+		heads[i] = padCells(head, widths[i])
 	}
 	return &rowTable{
 		full: tuilayout.NewColumns(heads, widths, prefix, rtDropOrder),
 		short: tuilayout.NewColumns(
-			[]string{heads[rtWorktree], heads[rtBranch], tuilayout.PadRunes(rowHeads[rtPR], prShort)},
+			[]string{heads[rtWorktree], heads[rtBranch], padCells(rowHeads[rtPR], prShort)},
 			[]int{widths[rtWorktree], widths[rtBranch], prShort}, prefix, nil),
 		merged: tuilayout.NewColumns(
-			[]string{tuilayout.PadRunes("NAME", nameFull), tuilayout.PadRunes(rowHeads[rtPR], prShort)},
+			[]string{padCells("NAME", nameFull), padCells(rowHeads[rtPR], prShort)},
 			[]int{nameFull, prShort}, prefix, nil),
 		nameFull: nameFull,
 	}
@@ -172,7 +173,7 @@ func newRowTable(rows []cleanup.Row, prefix int) *rowTable {
 // fitsWidth reports whether c's rows fit width and its header does with the
 // title room the list's title bar needs (Columns.Fit's own test).
 func fitsWidth(c *tuilayout.Columns, width int) bool {
-	return c.Width() <= width && utf8.RuneCountInString(c.Header())+tuilayout.TitleRoom <= width
+	return c.Width() <= width && cellWidth(c.Header())+tuilayout.TitleRoom <= width
 }
 
 // Fit chooses the layout for a list of the given width, trying each step only
@@ -195,14 +196,14 @@ func (t *rowTable) Fit(width int) {
 	t.mode = rowModeMerged
 	t.setNameWidth(t.nameFull)
 	deficit := max(0, t.merged.Width()-width,
-		utf8.RuneCountInString(t.merged.Header())+tuilayout.TitleRoom-width)
+		cellWidth(t.merged.Header())+tuilayout.TitleRoom-width)
 	t.setNameWidth(min(t.nameFull, max(rowNameFloor, t.nameFull-deficit)))
 }
 
 // setNameWidth sets the merged NAME column's width and its heading's padding.
 func (t *rowTable) setNameWidth(w int) {
 	t.merged.Widths[0] = w
-	t.merged.Heads[0] = tuilayout.PadRunes("NAME", w)
+	t.merged.Heads[0] = padCells("NAME", w)
 }
 
 func (t *rowTable) active() *tuilayout.Columns {
@@ -271,17 +272,49 @@ func shortPRCell(cell string) string {
 	return cell
 }
 
-// truncateName cuts s to w runes, the last of them an ellipsis, on a rune
-// boundary; a name that fits is returned whole.
+// cellWidth is s's width in terminal cells (a CJK character takes two), the
+// measure every width in this table uses: a rune count lets a wide name push
+// the PR number off the edge (style guide L5).
+func cellWidth(s string) int { return lipgloss.Width(s) }
+
+// padCells pads s with spaces to w cells; a wider s is returned as it is.
+func padCells(s string, w int) string {
+	if n := cellWidth(s); n < w {
+		return s + strings.Repeat(" ", w-n)
+	}
+	return s
+}
+
+// truncateName cuts s to at most w cells, the last of them an ellipsis, on a
+// rune boundary; a name that fits is returned whole.
 func truncateName(s string, w int) string {
-	if utf8.RuneCountInString(s) <= w {
+	if cellWidth(s) <= w {
 		return s
 	}
 	if w <= 1 {
 		return "…"
 	}
-	return string([]rune(s)[:w-1]) + "…"
+	var out []rune
+	used := 0
+	for _, r := range s {
+		rw := cellWidth(string(r))
+		if used+rw > w-1 {
+			break
+		}
+		out, used = append(out, r), used+rw
+	}
+	return string(out) + "…"
 }
+
+// NameCut reports whether the merged NAME cell shows less than r's whole name.
+func (t *rowTable) NameCut(r cleanup.Row) bool {
+	return t.Merged() && cellWidth(mergedName(r)) > t.merged.Widths[0]
+}
+
+// nameLine is the whole name for the detail block, used when NAME is cut: the
+// rule line above the detail is cut at the same width, so this wrapped text is
+// where a long name reads whole.
+func nameLine(r cleanup.Row) string { return "name " + mergedName(r) }
 
 // rowLine renders one row through the layout Fit chose: number cells (DIFF,
 // IGN) sit on their column's right edge, name cells (PR# is free text, "#3
@@ -292,15 +325,15 @@ func rowLine(r cleanup.Row, t *rowTable) string {
 		cells := rowCells(r)
 		w := t.short.Widths
 		return t.short.Line([]string{
-			tuilayout.PadRunes(cells[rtWorktree], w[0]),
-			tuilayout.PadRunes(cells[rtBranch], w[1]),
-			tuilayout.PadRunes(shortPRCell(cells[rtPR]), w[2]),
+			padCells(cells[rtWorktree], w[0]),
+			padCells(cells[rtBranch], w[1]),
+			padCells(shortPRCell(cells[rtPR]), w[2]),
 		})
 	case rowModeMerged:
 		w := t.merged.Widths
 		return t.merged.Line([]string{
-			tuilayout.PadRunes(truncateName(mergedName(r), w[0]), w[0]),
-			tuilayout.PadRunes(shortPRCell(rowCells(r)[rtPR]), w[1]),
+			padCells(truncateName(mergedName(r), w[0]), w[0]),
+			padCells(shortPRCell(rowCells(r)[rtPR]), w[1]),
 		})
 	}
 	cols := t.full
@@ -310,12 +343,12 @@ func rowLine(r cleanup.Row, t *rowTable) string {
 		w := cols.Widths[i]
 		switch i {
 		case rtDiff, rtIgn:
-			if n := utf8.RuneCountInString(cell); n < w {
+			if n := cellWidth(cell); n < w {
 				cell = strings.Repeat(" ", w-n) + cell
 			}
 			padded[i] = cell
 		default:
-			padded[i] = tuilayout.PadRunes(cell, w)
+			padded[i] = padCells(cell, w)
 		}
 	}
 	return cols.Line(padded)
