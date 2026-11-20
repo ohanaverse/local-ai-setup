@@ -1,0 +1,59 @@
+#!/bin/bash
+# test-install-skills — `make install-skills` installs wt-repo-cleanup only for agents on PATH.
+#
+# Runs the target in a scratch HOME with a scratch PATH that holds only fake agent commands
+# (plus /usr/bin:/bin for cp, rm and mkdir), so it never touches the real ~/.claude, ~/.agents or
+# ~/.codex. Three cases: some agents present, none present, all present.
+#
+# Usage:
+#   test-install-skills        # exit 0 all cases pass, 1 a case failed
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+make_bin=$(command -v make) || { echo "test-install-skills: make not on PATH" >&2; exit 2; }
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/test-install-skills.XXXXXX") || exit 1
+trap 'rm -rf "$scratch"' EXIT
+failed=0
+
+fail() { echo "FAIL: $*" >&2; failed=1; }
+
+# run_case NAME "agents on PATH" "agents expected" -> installs for exactly the expected ones.
+run_case() {
+    local name=$1 present=$2 expect=$3
+    local home="$scratch/$name/home" bindir="$scratch/$name/bin" out
+    mkdir -p "$home" "$bindir"
+    for a in $present; do printf '#!/bin/sh\nexit 0\n' > "$bindir/$a"; chmod +x "$bindir/$a"; done
+    out=$(cd "$root" && HOME="$home" PATH="$bindir:/usr/bin:/bin" "$make_bin" install-skills 2>&1) \
+        || fail "$name: make install-skills exited non-zero: $out"
+    local dir_claude="$home/.claude/skills/wt-repo-cleanup/SKILL.md"
+    local dir_pi="$home/.agents/skills/wt-repo-cleanup/SKILL.md"
+    local dir_codex="$home/.codex/skills/wt-repo-cleanup/SKILL.md"
+    for a in claude pi codex; do
+        local f; case $a in claude) f=$dir_claude ;; pi) f=$dir_pi ;; codex) f=$dir_codex ;; esac
+        case " $expect " in
+            *" $a "*) [ -s "$f" ] || fail "$name: $a should have the skill at $f" ;;
+            *)
+                [ ! -e "$f" ] || fail "$name: $a is not on PATH but got the skill"
+                case "$out" in *"skipped $a: not on PATH"*) ;; *) fail "$name: no 'skipped $a' line in: $out" ;; esac
+                ;;
+        esac
+    done
+    # Nothing but the expected skill directories may appear under the scratch home.
+    local extra
+    extra=$(cd "$home" && find . -mindepth 1 -maxdepth 1 | sort | tr '\n' ' ')
+    local want=""
+    for a in $expect; do
+        case $a in claude) want="$want ./.claude" ;; pi) want="$want ./.agents" ;; codex) want="$want ./.codex" ;; esac
+    done
+    want=$(printf '%s\n' $want | sort | tr '\n' ' ')
+    extra=${extra% }; want=${want% }; want=${want# }
+    [ "$extra" = "$want" ] || fail "$name: scratch home holds '$extra', want '$want'"
+    local summary="skills: installed:"
+    if [ -z "$expect" ]; then summary="$summary none;"; else summary="$summary $expect;"; fi
+    case "$out" in *"$summary"*) ;; *) fail "$name: summary line '$summary' missing in: $out" ;; esac
+}
+
+run_case some "claude codex" "claude codex"
+run_case none "" ""
+run_case all "claude pi codex" "claude pi codex"
+
+if [ "$failed" = 0 ]; then echo "test-install-skills: ok"; else exit 1; fi
