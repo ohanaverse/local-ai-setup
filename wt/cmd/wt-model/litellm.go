@@ -3,10 +3,10 @@
 // litellm`'s proxy pair commands. sync reads the registry through the host
 // and writes config.yaml (litellm.RunSync, the one route sync); list and
 // providers read only LiteLLM's config.yaml and the provider policy table,
-// never the registry; restart reads only the proxy pair. The pair wt-model's gateway
-// forwards to LiteLLM with lives in the wt-model config home: `set` is its one
-// writer (config.SetProxy) and `status` resolves it home-first against the
-// legacy [litellm] fallback (config.ResolveProxy). Command definitions are
+// never the registry; restart reads only the proxy pair. The pair wt-model's
+// gateway forwards to LiteLLM with lives in the wt-model config home: `set` is
+// its one writer (config.SetProxy) and `status` resolves it home-first against
+// the legacy [litellm] fallback (config.ResolveProxy). Command definitions are
 // per-binary (each help names its own binary); the documents are shared
 // config code (WriteProxyStatus, MaskKey, ProxyFallbackNote), so the twins
 // cannot diverge.
@@ -27,8 +27,7 @@ import (
 
 // litellmCmd is `wt-model litellm`: sync and list the routes, list the
 // mapped providers, restart the proxy, and set and show the LiteLLM proxy
-// url and key. h is the
-// host config sync reads the registry through.
+// url and key. h is the host config sync reads the registry through.
 func litellmCmd(h *host) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "litellm",
