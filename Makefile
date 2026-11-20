@@ -55,10 +55,10 @@ check-links: ## Validate repo-relative links in tracked *.md
 
 # Aggregate local verification across all monorepo components (mirrors CI).
 test-all: lint ## CI-equivalent: lint + llmbench + modeltiers + wt
+	@$(MAKE) --no-print-directory test-install-skills
 	cd llmbench && uv sync && make check && make test
 	cd modeltiers && uv sync && make check && make test
 	cd wt && go build ./... && go vet ./... && go test -count=1 ./... && make single-p
-	@$(MAKE) --no-print-directory test-install-skills
 
 test-install-skills: ## Check install-skills installs only for agents on PATH (scratch HOME)
 	@bin/test-install-skills
@@ -103,16 +103,16 @@ install-all: install ## Install everything: make install, then the wt-repo-clean
 	@$(MAKE) --no-print-directory install-skills
 
 install-skills: ## Install wt-repo-cleanup for each of claude, pi and codex found on PATH
-	@done=""; skipped=""; \
+	@installed=""; skipped=""; \
 	for a in claude pi codex; do \
 		if command -v $$a > /dev/null 2>&1; then \
 			$(MAKE) --no-print-directory install-skill-$$a || exit 1; \
-			done="$$done $$a"; \
+			installed="$$installed $$a"; \
 		else \
 			echo "skipped $$a: not on PATH"; skipped="$$skipped $$a"; \
 		fi; \
 	done; \
-	echo "skills: installed:$${done:- none}; skipped:$${skipped:- none}"
+	echo "skills: installed:$${installed:- none}; skipped:$${skipped:- none}"
 
 uninstall-skill-claude: ## Remove wt-repo-cleanup from Claude Code
 	@rm -rf $(HOME)/.claude/skills/wt-repo-cleanup
@@ -122,3 +122,7 @@ uninstall-skill-pi: ## Remove wt-repo-cleanup from Pi
 
 uninstall-skill-codex: ## Remove wt-repo-cleanup from Codex
 	@rm -rf $(HOME)/.codex/skills/wt-repo-cleanup
+
+# Removal ignores PATH: an agent uninstalled since the install still has its copy to clean up.
+uninstall-skills: uninstall-skill-claude uninstall-skill-pi uninstall-skill-codex ## Remove wt-repo-cleanup from claude, pi and codex, whether or not they are on PATH
+	@echo "removed wt-repo-cleanup from claude, pi and codex"

@@ -95,4 +95,13 @@ rc=$(cat "$scratch/broken/rc"); out=$(cat "$scratch/broken/out")
 [ "$rc" != 0 ] || fail "broken: a failing install-skill-codex must make install-skills exit non-zero"
 case "$out" in *"skills: installed:"*) fail "broken: the summary must not print after a failure: $out" ;; esac
 
+# uninstall-skills removes the skill for every agent, on PATH or not, and nothing else.
+home="$scratch/all/home"
+mkdir -p "$home/.claude/skills/other"; : > "$home/.claude/skills/other/SKILL.md"
+out=$(cd "$root" && HOME="$home" PATH="$tools" "$make_bin" uninstall-skills 2>&1) || fail "uninstall-skills exited non-zero: $out"
+for a in claude pi codex; do
+    [ ! -e "$(dirname "$(skill_path "$a" "$home")")" ] || fail "uninstall-skills left the $a skill"
+done
+[ -e "$home/.claude/skills/other/SKILL.md" ] || fail "uninstall-skills removed an unrelated skill"
+
 if [ "$failed" = 0 ]; then echo "test-install-skills: ok"; else exit 1; fi
