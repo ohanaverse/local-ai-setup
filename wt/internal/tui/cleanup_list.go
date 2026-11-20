@@ -269,10 +269,11 @@ type cleanupListModel struct {
 	cursor int          // item index of the highlighted item; -1 with none
 	offset int          // the first list line on screen
 	rows   int          // number of row items (the new-worktree item excluded)
-	// table is the shared column layout every row line renders through
+	// table is the column layouts every row line renders through
 	// (rowtable): built from the report's rows once, refitted to m.width on
-	// every frame. Nil only before a report is loaded.
-	table         *tuilayout.Columns
+	// every frame (the layout it picks is what the header, the rows and
+	// detail() read). Nil only before a report is loaded.
+	table         *rowTable
 	width, height int
 	done          bool
 

@@ -10,8 +10,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
-// The worktree/branch table's columns, left to right. WORKTREE, BRANCH and
-// VERDICT are never dropped; the others go in rtDropOrder's order.
+// The worktree/branch table's columns, left to right. The four after PR# go in
+// rtDropOrder's order; WORKTREE, BRANCH and PR# are never dropped by Columns
+// (rowTable then shortens the PR cell and merges WORKTREE and BRANCH).
 const (
 	rtWorktree = iota
 	rtBranch
@@ -23,12 +24,14 @@ const (
 )
 
 // rtDropOrder is the order the columns are given up when the list is
-// narrower than the table: PR first, then the ignored count, then STATUS,
-// then DIFF. The PR column goes first because the highlighted row's detail
-// block names its PR and state when the column is not drawn (prLine); the
-// counts least — DIFF is given up last because it is the work itself, and
-// then the detail block names the highlighted row's counts (diffLine).
-var rtDropOrder = []int{rtPR, rtIgn, rtStatus, rtDiff}
+// narrower than the table: the ignored count, then STATUS, then DIFF (the
+// work itself), then VERDICT. The PR is kept longest: it is what the user
+// picks a row by, with the worktree and the branch. Whatever a step hides the
+// highlighted row's detail block names (detail in cleanup_list.go).
+var rtDropOrder = []int{rtIgn, rtStatus, rtDiff, rtVerdict}
+
+// rowNameFloor is the narrowest the merged NAME column is cut to.
+const rowNameFloor = 6
 
 // The prefix widths: the session digit and cursor in launch mode, plus the
 // checkbox and its space in manage mode (spec §1).
@@ -51,15 +54,9 @@ var rowHeads = []string{"WORKTREE", "BRANCH", "PR#", "DIFF", "IGN", "STATUS", "V
 // PR fact alone (prCell): "#N state", "?" while unknown — overridden by
 // "-" while the row is pending, like every verdict-shaped cell.
 func rowCells(r cleanup.Row) []string {
-	wt, branch := "", ""
-	switch r.Kind {
-	case cleanup.KindWorktree:
+	wt, branch := "", branchCell(r)
+	if r.Kind == cleanup.KindWorktree {
 		wt = cleanup.DisplayName(r)
-		branch = cleanup.OneLine(r.Branch)
-	case cleanup.KindBranch:
-		branch = cleanup.OneLine(r.Branch)
-	case cleanup.KindRemote:
-		branch = cleanup.OneLine(r.Remote + "/" + r.Branch)
 	}
 	state := r.State
 	if state == "" {
@@ -110,16 +107,42 @@ func prCell(r cleanup.Row) string {
 	return ""
 }
 
-// newRowTable builds the shared layout for the header and every row: the
-// widest cell or heading sets each column's width (runes), and rtDropOrder
-// decides what a narrow list gives up first. prefix is the row prefix's
-// width (rowPrefixWidthLaunch or rowPrefixWidthManage).
-func newRowTable(rows []cleanup.Row, prefix int) *tuilayout.Columns {
+// rowMode is which of the table's three layouts a width fits.
+type rowMode int
+
+const (
+	// rowModeFull is every column, less the ones rtDropOrder gave up.
+	rowModeFull rowMode = iota
+	// rowModeShortPR is WORKTREE, BRANCH and PR# with the PR cell cut to its
+	// number ("#12": the state word is gone).
+	rowModeShortPR
+	// rowModeMerged is NAME (the worktree if the row has one, else the
+	// branch, cut with an ellipsis to what is left) and the short PR#.
+	rowModeMerged
+)
+
+// rowTable is the worktree list's table: three layouts built from the same
+// rows, of which Fit picks the first that fits the list. Columns stays a
+// drop-whole-columns engine shared with the model tables; the ladder past its
+// drops (short PR cell, merge, cut) lives here. The zero mode is full.
+type rowTable struct {
+	full, short, merged *tuilayout.Columns
+	mode                rowMode
+	nameFull            int // the widest merged name, before any cut
+}
+
+// newRowTable builds the layouts for the header and every row: the widest
+// cell or heading sets each column's width (runes), and rtDropOrder decides
+// what a narrow list gives up first. prefix is the row prefix's width
+// (rowPrefixWidthLaunch or rowPrefixWidthManage).
+func newRowTable(rows []cleanup.Row, prefix int) *rowTable {
 	raw := make([][]string, len(rows))
 	widths := make([]int, len(rowHeads))
 	for i, head := range rowHeads {
 		widths[i] = utf8.RuneCountInString(head)
 	}
+	nameFull := utf8.RuneCountInString("NAME")
+	prShort := utf8.RuneCountInString(rowHeads[rtPR])
 	for i, r := range rows {
 		raw[i] = rowCells(r)
 		for c, cell := range raw[i] {
@@ -127,19 +150,160 @@ func newRowTable(rows []cleanup.Row, prefix int) *tuilayout.Columns {
 				widths[c] = n
 			}
 		}
+		nameFull = max(nameFull, utf8.RuneCountInString(mergedName(r)))
+		prShort = max(prShort, utf8.RuneCountInString(shortPRCell(raw[i][rtPR])))
 	}
 	heads := make([]string, len(rowHeads))
 	for i, head := range rowHeads {
 		heads[i] = tuilayout.PadRunes(head, widths[i])
 	}
-	return tuilayout.NewColumns(heads, widths, prefix, rtDropOrder)
+	return &rowTable{
+		full: tuilayout.NewColumns(heads, widths, prefix, rtDropOrder),
+		short: tuilayout.NewColumns(
+			[]string{heads[rtWorktree], heads[rtBranch], tuilayout.PadRunes(rowHeads[rtPR], prShort)},
+			[]int{widths[rtWorktree], widths[rtBranch], prShort}, prefix, nil),
+		merged: tuilayout.NewColumns(
+			[]string{tuilayout.PadRunes("NAME", nameFull), tuilayout.PadRunes(rowHeads[rtPR], prShort)},
+			[]int{nameFull, prShort}, prefix, nil),
+		nameFull: nameFull,
+	}
 }
 
-// rowLine renders one row through the table's shared layout: number cells
-// (DIFF, IGN) sit on their column's right edge, name cells (PR# is free text,
-// "#3 open" or "?") on the left,
-// and Columns keeps every shown column whole.
-func rowLine(r cleanup.Row, cols *tuilayout.Columns) string {
+// fitsWidth reports whether c's rows fit width and its header does with the
+// title room the list's title bar needs (Columns.Fit's own test).
+func fitsWidth(c *tuilayout.Columns, width int) bool {
+	return c.Width() <= width && utf8.RuneCountInString(c.Header())+tuilayout.TitleRoom <= width
+}
+
+// Fit chooses the layout for a list of the given width, trying each step only
+// when the one before does not fit: the full table with rtDropOrder's columns
+// given up, then the short PR cell, then the merged NAME column, whose name is
+// cut (never below rowNameFloor, and never wider than the widest name) to
+// what is left. Below the floor the list's own clip applies, as it does for
+// any table too narrow for its never-dropped columns. It recomputes from the
+// whole table every call, so a resize widens the layout back.
+func (t *rowTable) Fit(width int) {
+	t.full.Fit(width)
+	switch {
+	case fitsWidth(t.full, width):
+		t.mode = rowModeFull
+		return
+	case fitsWidth(t.short, width):
+		t.mode = rowModeShortPR
+		return
+	}
+	t.mode = rowModeMerged
+	t.setNameWidth(t.nameFull)
+	deficit := max(0, t.merged.Width()-width,
+		utf8.RuneCountInString(t.merged.Header())+tuilayout.TitleRoom-width)
+	t.setNameWidth(min(t.nameFull, max(rowNameFloor, t.nameFull-deficit)))
+}
+
+// setNameWidth sets the merged NAME column's width and its heading's padding.
+func (t *rowTable) setNameWidth(w int) {
+	t.merged.Widths[0] = w
+	t.merged.Heads[0] = tuilayout.PadRunes("NAME", w)
+}
+
+func (t *rowTable) active() *tuilayout.Columns {
+	switch t.mode {
+	case rowModeShortPR:
+		return t.short
+	case rowModeMerged:
+		return t.merged
+	}
+	return t.full
+}
+
+// Header is the header line for the layout now chosen.
+func (t *rowTable) Header() string { return t.active().Header() }
+
+// Width is the widest a row of the layout now chosen can be.
+func (t *rowTable) Width() int { return t.active().Width() }
+
+// Shown reports whether the rt* column col is drawn on its own: in the merged
+// layout only PR# is (WORKTREE and BRANCH share NAME).
+func (t *rowTable) Shown(col int) bool {
+	switch t.mode {
+	case rowModeShortPR:
+		return col == rtWorktree || col == rtBranch || col == rtPR
+	case rowModeMerged:
+		return col == rtPR
+	}
+	return t.full.Shown(col)
+}
+
+// PRState reports whether the PR cell still carries its state word.
+func (t *rowTable) PRState() bool { return t.mode == rowModeFull }
+
+// Merged reports whether WORKTREE and BRANCH are one NAME column.
+func (t *rowTable) Merged() bool { return t.mode == rowModeMerged }
+
+// branchCell is the BRANCH cell: the branch, a remote row's remote/branch,
+// blank for a kind with none.
+func branchCell(r cleanup.Row) string {
+	switch r.Kind {
+	case cleanup.KindWorktree, cleanup.KindBranch:
+		return cleanup.OneLine(r.Branch)
+	case cleanup.KindRemote:
+		return cleanup.OneLine(r.Remote + "/" + r.Branch)
+	}
+	return ""
+}
+
+// mergedName is the NAME cell: the worktree's name if the row has one, else
+// the branch cell.
+func mergedName(r cleanup.Row) string {
+	if r.Kind == cleanup.KindWorktree {
+		if n := cleanup.DisplayName(r); n != "" {
+			return n
+		}
+	}
+	return branchCell(r)
+}
+
+// shortPRCell is the PR cell without its state word: "#12 merged" is "#12";
+// "?", "-" and "" are as they are.
+func shortPRCell(cell string) string {
+	if i := strings.IndexByte(cell, ' '); i >= 0 {
+		return cell[:i]
+	}
+	return cell
+}
+
+// truncateName cuts s to w runes, the last of them an ellipsis, on a rune
+// boundary; a name that fits is returned whole.
+func truncateName(s string, w int) string {
+	if utf8.RuneCountInString(s) <= w {
+		return s
+	}
+	if w <= 1 {
+		return "…"
+	}
+	return string([]rune(s)[:w-1]) + "…"
+}
+
+// rowLine renders one row through the layout Fit chose: number cells (DIFF,
+// IGN) sit on their column's right edge, name cells (PR# is free text, "#3
+// open" or "?") on the left, and Columns keeps every shown column whole.
+func rowLine(r cleanup.Row, t *rowTable) string {
+	switch t.mode {
+	case rowModeShortPR:
+		cells := rowCells(r)
+		w := t.short.Widths
+		return t.short.Line([]string{
+			tuilayout.PadRunes(cells[rtWorktree], w[0]),
+			tuilayout.PadRunes(cells[rtBranch], w[1]),
+			tuilayout.PadRunes(shortPRCell(cells[rtPR]), w[2]),
+		})
+	case rowModeMerged:
+		w := t.merged.Widths
+		return t.merged.Line([]string{
+			tuilayout.PadRunes(truncateName(mergedName(r), w[0]), w[0]),
+			tuilayout.PadRunes(shortPRCell(rowCells(r)[rtPR]), w[1]),
+		})
+	}
+	cols := t.full
 	cells := rowCells(r)
 	padded := make([]string, len(cells))
 	for i, cell := range cells {
