@@ -275,8 +275,8 @@ func TestModeLeavesStayOffTheClient(t *testing.T) {
 }
 
 // sessionBinaryAllow names the admin packages cmd/wt-session still links:
-// lifecycle (start.go's waitPendingRoutes, main.go's WaitPendingRoutes, the
-// answerer's WithSessions) drags litellm and localmodels. It only shrinks;
+// lifecycle (start.go's waitPendingRoutes, main.go's WaitPendingRoutes)
+// drags litellm and localmodels. It only shrinks;
 // 5a empties it.
 var sessionBinaryAllow = []string{"internal/lifecycle", "internal/litellm", "internal/localmodels"}
 
