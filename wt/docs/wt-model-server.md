@@ -401,6 +401,28 @@ for open requests), the running job (up to 30 seconds), then any LiteLLM
 restart a route write started. It exits 0. A second signal during a hung
 shutdown kills it.
 
+While it runs the server keeps a runtime record, `~/.config/wt-model/serve.json`
+(in the wt-model home, so `XDG_CONFIG_HOME` moves it), which is how a host
+command finds the live server. It holds the record version, the server's pid,
+the bound listen address, the absolute path of the token file and the start
+time; never the token itself or any key:
+
+```json
+{"version": 1, "pid": 4242, "listen": "127.0.0.1:8787", "token_file": "/Users/user_name/.config/wt-model/server.token", "started": "2026-11-19T10:00:00Z"}
+```
+
+The file is mode 0600 (the home is made 0700 only when serve has to create it;
+an existing home keeps its mode) and is written (atomically) before the
+listening line, so whoever saw that line can read it. A record that cannot be
+written is one `wt-model: note: could not write the runtime record (…)` line on
+stderr and the server goes on serving; host commands then cannot see its
+client sessions. On a clean stop (SIGINT or SIGTERM) the server removes the
+record only when it still names its own pid; a second serve overwrites the
+record, and the first one's exit then leaves the second's in place. A serve
+that cannot bind its address neither writes nor removes it. A killed server
+leaves its record behind: a later reader finds the address unreachable and says
+so.
+
 ## Known limits
 
 - **The gateway cannot scope agent traffic per client.** One shared token

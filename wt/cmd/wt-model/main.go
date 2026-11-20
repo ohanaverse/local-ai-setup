@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelserver"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
 	"github.com/spf13/cobra"
 )
 
@@ -21,15 +22,25 @@ import (
 //	go build -ldflags "-X main.version=1.2.3" ./cmd/wt-model
 var version = "0.1.0"
 
+// serveRuntime holds the per-call seams of the commands: tests pass a scratch
+// store. Record is where serve keeps its runtime record (serve.json).
+type serveRuntime struct{ Record servestate.Store }
+
 // rootCmd builds the wt-model command tree; mk supplies the server's
-// dependencies.
-func rootCmd(mk depsFactory) *cobra.Command {
-	return rootCmdWith(mk, newHost())
+// dependencies and rt where serve keeps its runtime record.
+func rootCmd(mk depsFactory, rt serveRuntime) *cobra.Command {
+	return rootCmdOver(mk, newHost(), rt)
 }
 
 // rootCmdWith is rootCmd over a given host: tests hand in one whose seams
-// reach nothing on the machine.
+// reach nothing on the machine. Its runtime is the zero one, whose empty
+// record store writes, reads and removes nothing.
 func rootCmdWith(mk depsFactory, h *host) *cobra.Command {
+	return rootCmdOver(mk, h, serveRuntime{})
+}
+
+// rootCmdOver is the command tree over a given host and runtime.
+func rootCmdOver(mk depsFactory, h *host, rt serveRuntime) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "wt-model",
 		Short:         "Serve wt's models and administer the registry, routes and this machine's setup",
@@ -39,7 +50,7 @@ func rootCmdWith(mk depsFactory, h *host) *cobra.Command {
 	root.SetVersionTemplate("wt-model {{.Version}}\n")
 	// One host config for the whole tree: every admin command reads the
 	// registry through the same h.
-	root.AddCommand(serveCmd(mk), litellmCmd(h), modelCmd(h), setupCmd(h), servedCmd(h), warmCmd(h), cloudSyncCmd(h))
+	root.AddCommand(serveCmd(mk, rt), litellmCmd(h), modelCmd(h), setupCmd(h), servedCmd(h), warmCmd(h), cloudSyncCmd(h))
 	silenceUsageOnError(root)
 	return root
 }
@@ -67,7 +78,7 @@ func main() {
 	// SIGINT and SIGTERM end the serve context, which shuts the server down.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	root := rootCmd(modelserver.DefaultDeps)
+	root := rootCmd(modelserver.DefaultDeps, serveRuntime{Record: servestate.Default()})
 	// After the first signal cancels ctx, stop() restores the default signal
 	// behavior, so a second SIGINT/SIGTERM kills the process even when the
 	// graceful shutdown hangs.

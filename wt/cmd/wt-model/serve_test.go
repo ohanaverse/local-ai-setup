@@ -98,19 +98,27 @@ func seedProxyHome(t *testing.T, url, key string, keyMode os.FileMode) {
 	}
 }
 
-// serveUntilListening runs `wt-model serve` on an ephemeral port over the real
-// command tree with a fake deps factory and returns readers of its captured
-// stderr and stdout once the announce line has landed, plus a stop function
-// that cancels the run and returns the command's error. A test that parses the
-// startup lines stops the run first, so no later line can interleave.
+// serveUntilListening is serveUntilListeningWith over a scratch runtime and a
+// fresh 0600 token file.
 func serveUntilListening(t *testing.T) (readStderr, readStdout func() string, stop func() error) {
 	t.Helper()
-	cmd := rootCmd(fakeDeps)
+	return serveUntilListeningWith(t, testRuntime(t), writeToken(t, 0o600))
+}
+
+// serveUntilListeningWith runs `wt-model serve` on an ephemeral port over the
+// real command tree with a fake deps factory, the runtime rt and the token
+// file tokenPath, and returns readers of its captured stderr and stdout once
+// the announce line has landed, plus a stop function that cancels the run and
+// returns the command's error. A test that parses the startup lines stops the
+// run first, so no later line can interleave.
+func serveUntilListeningWith(t *testing.T, rt serveRuntime, tokenPath string) (readStderr, readStdout func() string, stop func() error) {
+	t.Helper()
+	cmd := rootCmd(fakeDeps, rt)
 	readErr, pwErr := newLockedBuffer()
 	readOut, pwOut := newLockedBuffer()
 	cmd.SetOut(pwOut)
 	cmd.SetErr(pwErr)
-	cmd.SetArgs([]string{"serve", "--listen", "127.0.0.1:0", "--token-file", writeToken(t, 0o600)})
+	cmd.SetArgs([]string{"serve", "--listen", "127.0.0.1:0", "--token-file", tokenPath})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- cmd.ExecuteContext(ctx) }()
@@ -159,7 +167,7 @@ func fakeDeps(cfg *config.Config, _ func() (*config.Config, error), _ *url.URL, 
 
 func run(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	cmd := rootCmd(fakeDeps)
+	cmd := rootCmd(fakeDeps, testRuntime(t))
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
@@ -290,7 +298,7 @@ func TestServeNotesTheLegacyFallback(t *testing.T) {
 func TestServeAnswersPingOnEphemeralPort(t *testing.T) {
 	seedConfig(t, true)
 	tokenPath := writeToken(t, 0o600)
-	cmd := rootCmd(fakeDeps)
+	cmd := rootCmd(fakeDeps, testRuntime(t))
 	pr, pw := newLockedBuffer()
 	cmd.SetOut(pw)
 	cmd.SetErr(pw)

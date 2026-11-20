@@ -12,13 +12,15 @@ const modulePath = "github.com/ohanaverse/local-ai-setup/wt/"
 // adminBanned is the set of packages the session library packages must not
 // link: the model administration half (lifecycle, litellm, localmodels,
 // cloudsync, spend, modeladmin, the model editor modeleditor and its setup
-// engine modelsetup) and the model server's own packages.
+// engine modelsetup) and the model server's own packages (modelserver,
+// modelgateway, modeljobs, sessionreg, candidates, hoststop, servestate).
 var adminBanned = []string{
 	"internal/lifecycle", "internal/litellm", "internal/localmodels",
 	"internal/cloudsync", "internal/spend", "internal/modeladmin",
 	"internal/modelserver", "internal/modelgateway",
 	"internal/modeljobs", "internal/sessionreg", "internal/candidates",
-	"internal/hoststop", "internal/modelsetup", "internal/modeleditor",
+	"internal/hoststop", "internal/modelsetup", "internal/servestate",
+	"internal/modeleditor",
 }
 
 // sessionBanned is the set cmd/wt-model must not link: the session half.
