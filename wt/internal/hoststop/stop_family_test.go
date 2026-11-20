@@ -66,7 +66,7 @@ func TestStopStateCountsSessionsFamilyWide(t *testing.T) {
 // TestStopStateMarksOnlyProbedFamilies verifies FamilyState.Probed is set for
 // the families the inventory probed and for no other: a family known only
 // from a live session's model id, and a provider row the inventory does not
-// probe (no location, no local model), have none. `wt stop --all` halts mtplx
+// probe (no location, no local model), have none. `wt-model stop --all` halts mtplx
 // unless its port refused, and a family nobody probed must not read as "did
 // not refuse" — that ran `mtplx stop` on machines where mtplx is only a row.
 func TestStopStateMarksOnlyProbedFamilies(t *testing.T) {
@@ -100,7 +100,7 @@ func TestStopStateMarksOnlyProbedFamilies(t *testing.T) {
 // asks what a family's pidfile says exactly when its port refused, and
 // carries the answer: mtplx reads its weights before it opens its port, so a
 // refused port with a verified live server behind it is a server still
-// loading, which `wt stop mtplx` and `wt stop --all` must be able to see
+// loading, which `wt-model stop mtplx` and `wt-model stop --all` must be able to see
 // (#308). A family that answered, or gave an unusable answer, is stopped
 // through its port and the pidfile is not consulted.
 func TestStopStateReadsThePidfileOnlyBehindARefusedPort(t *testing.T) {
@@ -171,8 +171,8 @@ func TestProcessSeamsAreClosedInThisPackage(t *testing.T) {
 // lists a ScopeMachine family's instance the registry-port probe cannot see
 // (#457): rec started by hand on another port answers `rec status` but
 // refuses the registry port, so the snapshot has no running entry and marks
-// the family Down. Without the machine read `wt stop rec` said "nothing
-// running", and `wt stop --all` and the picker left it up. The instance is a
+// the family Down. Without the machine read `wt-model stop rec` said "nothing
+// running", and `wt-model stop --all` and the picker left it up. The instance is a
 // candidate with its sessions counted, and the family stops reading as Down.
 func TestStopStateFindsAMachineInstanceOnAnotherPort(t *testing.T) {
 	found := runningEntry("rec", "rec/flint", "flint")

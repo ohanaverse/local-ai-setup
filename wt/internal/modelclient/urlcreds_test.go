@@ -12,7 +12,7 @@ import (
 )
 
 // hostileAtURLs are model-server urls that each hold an ASCII '@': the
-// bypasses of every span-cutting design the Model server tab tried (copied
+// bypasses of every span-cutting design the old model-server tab tried (copied
 // from internal/modelsetup's list), with distinctive user and password tokens
 // (USERX, PASSX, SECRETPW, s3cr, hunter2, ...) that no fixed text holds.
 // "et" and "file" are spelled "etQ" and "smbq" because they occur in

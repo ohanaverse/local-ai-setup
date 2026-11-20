@@ -380,7 +380,7 @@ func TestModelInitReportsABrokenRegistryLink(t *testing.T) {
 // model` group as cobra serves it: `wt-model model init` runs with no
 // registry (the case it exists for), an unknown word under the group is an
 // error rather than a silent help page, and init takes no arguments. The
-// commands moved here from `wt model`, whose names now only print a pointer.
+// commands moved here from the model group under wt, whose names now only print a pointer.
 func TestModelCommandGroupOnWtModel(t *testing.T) {
 	h := testHost()
 	modelHome(t, "")

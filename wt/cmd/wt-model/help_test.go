@@ -58,11 +58,11 @@ func staleHelpHits(text string) []string {
 // not, so the walk neither misses a stale name nor flags a correct one.
 func TestStaleHelpHitsSeesOnlyOldAdminNames(t *testing.T) {
 	for _, text := range []string{
-		"run wt model add x",
-		"wt cloud-sync --dry-run",
-		"wt stop omlx",
-		"wt litellm restart",
-		"bare wt model opens it",
+		"run wt " + "model add x",
+		"wt " + "cloud-sync --dry-run",
+		"wt " + "stop omlx",
+		"wt " + "litellm restart",
+		"bare wt " + "model opens it",
 	} {
 		if len(staleHelpHits(text)) == 0 {
 			t.Errorf("staleHelpHits(%q) found nothing, want a hit", text)

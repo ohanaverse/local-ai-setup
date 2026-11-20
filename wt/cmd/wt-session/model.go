@@ -4,7 +4,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// modelCmd is the `wt model` group: bare, it prints where the Models screen
+// modelCmd is the session binary's `model` group: bare, it prints where the Models screen
 // moved (`wt-model model`, movedError); list (model_list_server.go: --server
 // is the catalog view, without it the pointer to `wt-model model list`) is
 // its one live subcommand. init, add, edit and rm moved to `wt-model model`:

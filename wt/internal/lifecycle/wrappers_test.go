@@ -435,7 +435,7 @@ func TestStartWrapperRestartSurvivesCancelledCaller(t *testing.T) {
 	}
 }
 
-// TestStopRemovesOmlx6bitSibling verifies `wt stop omlx` — the public Stop of
+// TestStopRemovesOmlx6bitSibling verifies `wt-model stop omlx` — the public Stop of
 // the provider, through the real litellm.ApplyChange — drops the omlx-6bit
 // variant's route too: one physical oMLX server serves both quantizations, so
 // halting the service takes both down. Before omlx-6bit had a LiteLLM policy

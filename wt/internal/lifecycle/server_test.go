@@ -603,8 +603,8 @@ func TestLogTailClampsWhatArrivedAfterTheSizeWasSampled(t *testing.T) {
 	}
 }
 
-// TestMtplxStopNeverReportsAServerItLeftUp pins what `wt stop mtplx` and `wt
-// stop --all` rely on when they halt an mtplx whose probe they could not
+// TestMtplxStopNeverReportsAServerItLeftUp pins what `wt-model stop mtplx` and
+// `wt-model stop --all` rely on when they halt an mtplx whose probe they could not
 // read (#308): the stop is an error whenever the port still answers
 // afterwards — `mtplx stop` exited 0 (a stale pidfile, or a server it does
 // not own), or the mtplx binary is missing — so the command cannot print

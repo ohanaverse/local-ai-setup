@@ -17,7 +17,7 @@ import (
 
 // sessionHostileAtURLs is internal/modelclient's hostileAtURLs (a test file
 // there, which this package cannot import): urls that each hold an ASCII '@',
-// the bypasses of every span-cutting design the Model server tab tried, with
+// the bypasses of every span-cutting design the old model-server tab tried, with
 // distinctive user and password tokens no fixed text holds.
 var sessionHostileAtURLs = []string{
 	"u:SECRETPW@host:8787", "https://u:SECRETPW@host%zz", "https://u:SECRETPW@[::1",
