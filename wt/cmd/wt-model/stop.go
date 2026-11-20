@@ -76,6 +76,7 @@ func stopCmd(h *host, rec servestate.Store) *cobra.Command {
 			if cerr := h.hostConfigErr(); cerr != nil {
 				return config.ConfigError(cerr)
 			}
+			h.stopCtx = cmd.Context()
 			h.stopSessions = hostSessionReader(cmd.Context(), cmd.ErrOrStderr(), rec)
 			if all {
 				if arg != "" {
@@ -239,6 +240,9 @@ func unreadClause(names []string, it bool) string {
 // is not followed by another.
 func (h *host) runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 	st := h.stopState(cfg)
+	if err := h.stopCancelled(); err != nil {
+		return err
+	}
 	halts := haltProviders(cfg, st)
 	halted := map[string]bool{}
 	for _, id := range halts {
@@ -277,6 +281,9 @@ func (h *host) runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 		if !ok {
 			return cli.Declined("nothing was stopped")
 		}
+	}
+	if err := h.stopCancelled(); err != nil {
+		return err
 	}
 	var failures []error
 	if fams := unreadShared(cfg, st); len(fams) > 0 {
@@ -369,6 +376,20 @@ func (h *host) haltProvider(ctx context.Context, out io.Writer, cfg *config.Conf
 	return false, err
 }
 
+// stopCancelled is the error of a stop whose command context Ctrl+C
+// cancelled before anything was stopped (h.stopCtx; main runs the tree under
+// signal.NotifyContext, so the first Ctrl+C only cancels it), nil otherwise.
+// It is checked once the client sessions and the inventory are read and once
+// the in-use question is answered: a session read cut short knows no
+// sessions, and going on would stop models client sessions use without
+// asking after the user asked to abort.
+func (h *host) stopCancelled() error {
+	if h.stopCtx == nil || h.stopCtx.Err() == nil {
+		return nil
+	}
+	return fmt.Errorf("%w — nothing was stopped", hoststop.ErrStopCancelled)
+}
+
 // notHalted is the error of a stop cut short by Ctrl+C: it names the servers
 // the command did not halt, so "cancelled" alone cannot be read as
 // "everything else is down".
@@ -430,6 +451,9 @@ func (h *host) runStop(out io.Writer, cfg *config.Config, arg string, yes bool) 
 		return err
 	}
 	st := h.stopState(cfg)
+	if err := h.stopCancelled(); err != nil {
+		return err
+	}
 	cands := st.Candidates
 	var targets []hoststop.Candidate
 	pool := lifecycle.TenancyOf(arg) == lifecycle.Pool
@@ -487,6 +511,9 @@ func (h *host) runStop(out io.Writer, cfg *config.Config, arg string, yes bool) 
 		if !ok {
 			return cli.Declined(arg + " is still running")
 		}
+	}
+	if err := h.stopCancelled(); err != nil {
+		return err
 	}
 	if halt {
 		// A model stop on a pool only unloads; the bare provider halts the

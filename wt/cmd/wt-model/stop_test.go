@@ -852,3 +852,51 @@ func TestStopRegistryRowErrorNamesTheRegistry(t *testing.T) {
 		}
 	}
 }
+
+// TestStopCtrlCBeforeAnyStopStopsNothing verifies a Ctrl+C that lands while
+// `wt-model stop` reads the client sessions or probes what is running (main
+// runs the tree under signal.NotifyContext, so the first Ctrl+C only cancels
+// the command's context) ends the command cancelled with nothing stopped:
+// no model stop, no halt, no question, and no line saying a stop began.
+// Read as "no sessions known", it used to stop models client sessions use
+// without asking, after the user had asked to abort.
+func TestStopCtrlCBeforeAnyStopStopsNothing(t *testing.T) {
+	for _, args := range [][]string{{"ollama"}, {"omlx"}, {"--all"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			h := testHost()
+			stopped := stubStop(t, h, nil)
+			halted := stubHalt(t, h)
+			asked := stubStopConfirm(t, h, true)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			h.stopState = func(*config.Config) hoststop.StopState {
+				h.stopSessions()
+				cancel()
+				return hoststop.StopState{Candidates: []hoststop.Candidate{
+					cand("ollama", "ollama/a:1", "a:1", 1),
+					cand("omlx", "omlx/c", "c", 1),
+				}}
+			}
+			var out, errOut bytes.Buffer
+			h.hostSet, h.hostCfg, h.hostLoadErr, h.hostCfgErr = true, modelCmdConfig(), nil, nil
+			cmd := stopCmd(h, servestate.Store{})
+			cmd.SilenceErrors = true // as the root does: main prints the one error line
+			cmd.SetArgs(args)
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			err := cmd.ExecuteContext(ctx)
+			if !errors.Is(err, hoststop.ErrStopCancelled) || exitcode.Of(err) != 1 {
+				t.Errorf("err = %v (exit %d), want the cancelled error, exit 1", err, exitcode.Of(err))
+			}
+			if err != nil && !strings.Contains(err.Error(), "nothing was stopped") {
+				t.Errorf("err = %q, want it to say nothing was stopped", err)
+			}
+			if len(*stopped) != 0 || len(*halted) != 0 || len(*asked) != 0 {
+				t.Errorf("stopped = %v, halted = %v, asked = %q; want none", *stopped, *halted, *asked)
+			}
+			if strings.Contains(out.String(), "Stopping") || errOut.Len() != 0 {
+				t.Errorf("stdout = %q, stderr = %q; want no stop begun and no note", out.String(), errOut.String())
+			}
+		})
+	}
+}

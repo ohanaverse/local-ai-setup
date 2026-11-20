@@ -88,6 +88,11 @@ type seams struct {
 	// id, read through serve's runtime record (nil: none known). The stop
 	// command sets it (hostSessionReader); the default knows none.
 	stopSessions func() map[string]int
+	// stopCtx is the stop command's own context (cmd.Context(), which main
+	// cancels on the first Ctrl+C): one cancelled by the time the sessions
+	// and the inventory are read, or the question is answered, ends the
+	// command with nothing stopped (stopCancelled). nil: never cancelled.
+	stopCtx context.Context
 	// stopEntries is the model-by-model stop loop (hoststop.StopEntries).
 	stopEntries func(io.Writer, *config.Config, []localmodels.Entry) error
 	// confirmStop asks before stopping a model client sessions use: the y/N

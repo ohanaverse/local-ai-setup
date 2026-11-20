@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -155,5 +156,19 @@ func TestHostSessionReaderNeverPrintsTheToken(t *testing.T) {
 		if strings.Contains(s, secret) {
 			t.Errorf("note %q carries %q", s, secret)
 		}
+	}
+}
+
+// TestHostSessionReaderIsSilentWhenCancelled proves a session read cut short
+// by Ctrl+C (the command's context cancelled) prints no note: the note says
+// models are stopped without asking, which a cancelled command never does.
+func TestHostSessionReaderIsSilentWhenCancelled(t *testing.T) {
+	srv, _ := fakeServer(t, "tok", modelapi.Row{ID: "ollama/a:1", Sessions: 2})
+	store := recordFor(t, srv, "tok")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var w bytes.Buffer
+	if got := hostSessionReader(ctx, &w, store)(); got != nil || w.Len() != 0 {
+		t.Errorf("sessions = %v, note = %q; want nil and no note", got, w.String())
 	}
 }

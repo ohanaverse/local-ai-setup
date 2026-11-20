@@ -330,6 +330,9 @@ nothing. The question for one provider reads
   line
   `wt-model: note: could not read client sessions from the model server (<why>) — models they use are stopped without asking`,
   and the stop goes on without asking.
+- Ctrl+C while the sessions or what is running are being read, or before
+  the question is answered, stops nothing: no note, the command ends with
+  `cancelled — nothing was stopped` and exit 1.
 
 A model-id stop (`wt stop <model>`) and the bare picker go to the
 model server, which asks before it stops a model other client sessions use:

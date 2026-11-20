@@ -17,7 +17,9 @@ import (
 // The returned func reads once and returns the same map on every call. No
 // record (no server running, or no config home) is nil and silent; a record
 // that cannot be read, or a server that cannot be asked, is nil plus one note
-// line on w, so the stop goes on without asking about any model.
+// line on w, so the stop goes on without asking about any model. A read cut
+// short by Ctrl+C (ctx cancelled) is nil and silent: the command then stops
+// nothing (host.stopCancelled).
 func hostSessionReader(ctx context.Context, w io.Writer, store servestate.Store) func() map[string]int {
 	var (
 		once sync.Once
@@ -34,6 +36,12 @@ func hostSessionReader(ctx context.Context, w io.Writer, store servestate.Store)
 			}
 			if err != nil {
 				got = nil
+				// Ctrl+C: the command ends with nothing stopped
+				// (stopCancelled), so "stopped without asking" would
+				// be untrue.
+				if ctx.Err() != nil {
+					return
+				}
 				fmt.Fprintf(w, "wt-model: note: could not read client sessions from the model server (%s) — models they use are stopped without asking\n", modelping.Clean(err.Error()))
 			}
 		})
