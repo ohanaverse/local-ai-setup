@@ -36,7 +36,7 @@ func asWTModel(t *testing.T) {
 func execLitellm(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	asWTModel(t)
-	cmd := rootCmd(fakeDeps)
+	cmd := rootCmd(fakeDeps, testRuntime(t))
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)

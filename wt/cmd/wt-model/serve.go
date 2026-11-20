@@ -4,11 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelserver"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
 	"github.com/spf13/cobra"
 )
 
@@ -58,8 +61,13 @@ func loadServeConfig() (*config.Config, *url.URL, string, error) {
 	return cfg, u, key, nil
 }
 
-// serveCmd is `wt-model serve`.
-func serveCmd(mk depsFactory) *cobra.Command {
+// recordNoteFormat is the one stderr note when the runtime record cannot be
+// written; serve goes on serving. %s is the write error.
+const recordNoteFormat = "wt-model: note: could not write the runtime record (%s) — host commands cannot see this server's client sessions\n"
+
+// serveCmd is `wt-model serve`. rt.Record is where it keeps its runtime
+// record while it runs.
+func serveCmd(mk depsFactory, rt runtime) *cobra.Command {
 	var listen, tokenFile string
 	idle := defaultIdleGrace
 	cmd := &cobra.Command{
@@ -78,6 +86,9 @@ Flags:
                       (default 10m0s, must be greater than zero)
 
 Once listening it prints one line on stderr naming the bound address.
+While it runs it keeps a runtime record, serve.json in the wt-model home
+(pid, address, token file path; never the token), and removes it when it
+stops cleanly.
 
 Exit codes:
   0  stopped cleanly on SIGINT or SIGTERM
@@ -117,7 +128,23 @@ Exit codes:
 			if err != nil {
 				return err
 			}
+			// The record names the token file by an absolute path, so a host
+			// command run from another directory finds it; never the token.
+			abs, aerr := filepath.Abs(tokenFile)
+			if aerr != nil {
+				abs = tokenFile
+			}
+			// Remove deletes the record only while it names this pid: one a
+			// later serve wrote over it stays.
+			defer func() { _ = rt.Record.Remove(os.Getpid()) }()
 			return srv.Serve(cmd.Context(), func(addr string) {
+				// The record lands before the announce line, so whoever saw
+				// the line can read the record.
+				if err := rt.Record.Write(servestate.Record{
+					PID: os.Getpid(), Listen: addr, TokenFile: abs, Started: time.Now().UTC(),
+				}); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), recordNoteFormat, err)
+				}
 				fmt.Fprint(cmd.ErrOrStderr(), announceLine(addr))
 			})
 		},
