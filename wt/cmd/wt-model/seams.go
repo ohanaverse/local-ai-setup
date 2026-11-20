@@ -4,10 +4,14 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/hoststop"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
@@ -70,6 +74,41 @@ type seams struct {
 	// it started in turn lives on holding the output pipes, and without this
 	// Run would wait for it to exit, however long that takes.
 	ollamaWaitDelay time.Duration
+
+	// The `wt-model stop <provider>|--all` seams (stop.go). testHost probes
+	// nothing, stops nothing and declines every question, so no test reaches
+	// a live server or stops a real model.
+
+	// stopState is one inventory round and one read of the live client
+	// sessions: the stop candidates, and per provider family what its probe
+	// said and how many client sessions use it
+	// (hoststop.ReadStopStateSessions over stopSessions).
+	stopState func(*config.Config) hoststop.StopState
+	// stopSessions is the running model server's client sessions per model
+	// id, read through serve's runtime record (nil: none known). The stop
+	// command sets it (hostSessionReader); the default knows none.
+	stopSessions func() map[string]int
+	// stopEntries is the model-by-model stop loop (hoststop.StopEntries).
+	stopEntries func(io.Writer, *config.Config, []localmodels.Entry) error
+	// confirmStop asks before stopping a model client sessions use: the y/N
+	// prompt on the controlling terminal that `wt-model model rm` asks with
+	// too (realConfirmRemove), so piped input can never authorise it.
+	confirmStop func(question string) (bool, error)
+	// stopProvider stops a provider's server as a whole (`wt-model stop
+	// omlx`; lifecycle.Stop).
+	stopProvider func(ctx context.Context, cfg *config.Config, providerID string) error
+	// stopLoading ends a provider's server that has not opened its port yet
+	// (an mtplx still reading its weights), by the pid the stop state
+	// verified (lifecycle.StopLoading).
+	stopLoading func(ctx context.Context, cfg *config.Config, providerID string, pid int) error
+	// waitPendingRoutes waits for the LiteLLM proxy restart a route write
+	// started (lifecycle.WaitPendingRoutes): `wt-model stop --all` waits on
+	// it between halts, so two restarts never run at once. Tests stub it to
+	// observe that ordering without a proxy.
+	waitPendingRoutes func()
+	// startSignalCtx is signal.NotifyContext over SIGINT and SIGTERM: a test
+	// needs a cancellable context without installing a real signal handler.
+	startSignalCtx func() (context.Context, context.CancelFunc)
 }
 
 // newHost is the host of a real run: every seam is the real function.
@@ -92,12 +131,25 @@ func newHost() *host {
 	h.confirmRemove = h.realConfirmRemove
 	h.confirmCloudSync = h.promptCloudSync
 	h.ollamaCLI = h.realOllamaCLI
+	h.stopSessions = func() map[string]int { return nil }
+	h.stopState = func(cfg *config.Config) hoststop.StopState {
+		return hoststop.ReadStopStateSessions(cfg, h.stopSessions())
+	}
+	h.stopEntries = hoststop.StopEntries
+	h.confirmStop = h.realConfirmRemove
+	h.stopProvider = lifecycle.Stop
+	h.stopLoading = lifecycle.StopLoading
+	h.waitPendingRoutes = lifecycle.WaitPendingRoutes
+	h.startSignalCtx = func() (context.Context, context.CancelFunc) {
+		return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	}
 	return h
 }
 
 // realConfirmRemove asks question on the terminal h.openTTY opens (read per
 // call, so a test that takes the terminal away reaches the real refusal):
-// cli.ErrNoTerminal when there is none.
+// cli.ErrNoTerminal when there is none. It is the one y/N prompt of
+// `wt-model model rm` and `wt-model stop` (confirmRemove, confirmStop).
 func (h *host) realConfirmRemove(question string) (bool, error) {
 	return cli.AskOnTTY(h.openTTY, question, cli.ErrNoTerminal)
 }
