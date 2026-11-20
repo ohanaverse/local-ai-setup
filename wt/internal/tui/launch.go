@@ -11,6 +11,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
@@ -317,3 +318,81 @@ type choiceItem struct {
 func (c choiceItem) FilterValue() string { return c.title }
 func (c choiceItem) Title() string       { return c.title }
 func (c choiceItem) Description() string { return c.desc }
+
+// commitAsk is the commit point of every launch: it asks the launch's
+// questions as popups inside the picker, then binds the run command. bind is
+// the site's old tail (commitLaunch of its run command), called with the
+// answered model; drop (optional) is what a decline must release beyond the
+// popup itself: the prep's client-session hold, a slot's holds.
+//
+// The popup path is a picker launch (no preset path) on a terminal whose
+// launch has warnings: the Target is read once, here, kept as m.gateTarget for
+// the released-phase gate to consume, and shown with the creation line and the
+// warnings. Every other commit binds straight away with the gate fields unset,
+// so the released-phase gate behaves exactly as before.
+//
+// committed is held while a popup is open and released for the bind (which
+// takes it again through commitLaunch); only a decline (or slotAbortMsg)
+// leaves it released.
+func (m model) commitAsk(mdl config.Model, bind func(model) (model, tea.Cmd), drop ...tea.Cmd) (model, tea.Cmd) {
+	if m.committed {
+		return m, nil
+	}
+	m.gateTarget, m.gateAnswer = nil, nil
+	back := m.phase
+	decline := func(mm model) (model, tea.Cmd) {
+		mm.committed = false
+		mm.ask = nil
+		mm.gateTarget, mm.gateAnswer = nil, nil
+		mm.phase = back
+		return mm, tea.Batch(drop...)
+	}
+	final := func(mm model) (model, tea.Cmd) {
+		mm.committed = false // commitLaunch takes the guard for the run
+		return bind(mm)
+	}
+	if m.prePath != "" || !stdinTTY() {
+		return final(m)
+	}
+	t, readErr := m.launchTarget()
+	warnings, info := launchwarn.Collect(t)
+	if t.Dir == "" {
+		info = ""
+	}
+	if len(warnings) == 0 {
+		return final(m)
+	}
+	if readErr != nil {
+		// stderr is not visible under the alt screen: the note reaches the
+		// person after the release, above the agent's output.
+		m.recordRouteNotes("wt: note: " + readErr.Error() + "\n")
+	}
+	var body []string
+	if t.Creation != nil {
+		body = append(body, launchwarn.CreationLine(t.Creation))
+	}
+	for _, w := range warnings {
+		body = append(body, w.Text)
+	}
+	m.committed = true
+	yes := func(mm model) (model, tea.Cmd) {
+		return mm.afterGate(final, mdl, &t, info)
+	}
+	return m.seedAsk(newAskStateFor(askGate, m.theme, m.width, m.height, "launch here?", body, back, yes, decline))
+}
+
+// afterGate continues a launch whose gate popup was answered yes: the gate is
+// pre-answered against the popup's own Target (set together, so the
+// released-phase gate consumes it and never reads again), the one factual line
+// the raw gate would have printed (the creation line, else "launching in …")
+// is queued for after the release, and the launch goes on to bind.
+func (m model) afterGate(bind func(model) (model, tea.Cmd), mdl config.Model, t *launchwarn.Target, info string) (model, tea.Cmd) {
+	yes := true
+	m.gateTarget, m.gateAnswer = t, &yes
+	if t.Creation != nil {
+		m.recordRouteNotes("wt: " + launchwarn.CreationLine(t.Creation) + "\n")
+	} else if info != "" {
+		m.recordRouteNotes("wt: " + info + "\n")
+	}
+	return bind(m)
+}

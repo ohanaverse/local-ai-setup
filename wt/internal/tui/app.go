@@ -705,7 +705,9 @@ func (m model) launchCommand(name string) (model, tea.Cmd) {
 		m.status = "launch failed: " + err.Error()
 		return m, nil
 	}
-	return m.commitLaunch(runAndWaitCmd(cmd, name, config.Model{}, m.gateFor()))
+	return m.commitAsk(config.Model{}, func(mm model) (model, tea.Cmd) {
+		return mm.commitLaunch(runAndWaitCmd(cmd, name, config.Model{}, mm.gateFor()))
+	})
 }
 
 // commitLaunch binds a run command to the launch in flight. The first caller
@@ -800,9 +802,11 @@ func (m model) launchNative() (model, tea.Cmd) {
 		return m, nil
 	}
 	queueLaunchNotes(m.agent, cmd, m.extraArgs)
-	gate := m.gateFor()
 	agent := m.agent
-	return m.commitLaunch(runAndWaitCmd(cmd, agent, mdl, sayAfterGate(gate, os.Stderr, agents.NativeNote(agent))))
+	return m.commitAsk(mdl, func(mm model) (model, tea.Cmd) {
+		// The gate is built at bind time: it reads the answer the popup left.
+		return mm.commitLaunch(runAndWaitCmd(cmd, agent, mdl, sayAfterGate(mm.gateFor(), os.Stderr, agents.NativeNote(agent))))
+	})
 }
 
 // sayAfterGate wraps a launch gate so line is written to w only once the gate

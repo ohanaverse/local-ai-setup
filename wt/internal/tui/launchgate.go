@@ -134,8 +134,9 @@ func (m model) gateFor() func() (bool, error) {
 
 // stdinTTY is the interactive-invocation probe cmd/wt-session's confirmLaunch uses:
 // stdin is a terminal. It is called at the ask, so a redirected stdin (a
-// script, a test) is honestly no terminal and can never be read.
-func stdinTTY() bool { return term.IsTerminal(os.Stdin.Fd()) }
+// script, a test) is honestly no terminal and can never be read. It is a
+// variable only so a test can force the popup path.
+var stdinTTY = func() bool { return term.IsTerminal(os.Stdin.Fd()) }
 
 // launchGate is the one question before a launch commits, asked at the
 // commit point with the terminal the user's again (the run commands call it
