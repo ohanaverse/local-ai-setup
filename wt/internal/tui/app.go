@@ -186,6 +186,12 @@ type model struct {
 	// cleared by a decline; the run command hands it to profileApplier.
 	profileCarry *profileCarry
 
+	// gateNotes are the route-note lines a gate popup's yes (and a read
+	// failure) owe the terminal after the release. They ride the model and
+	// reach pendingRouteNotes only when the launch binds, so a decline after
+	// them (the profile popup's "no") leaves nothing behind.
+	gateNotes string
+
 	// committed is the commit point's in-flight guard: the first selection
 	// that reaches a run command takes it (commitLaunch) and every further
 	// Enter is ignored while that launch runs. It releases on exactly one

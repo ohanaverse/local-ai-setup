@@ -362,17 +362,21 @@ func (m model) commitAsk(mdl config.Model, bind func(model) (model, tea.Cmd), dr
 	if m.committed {
 		return m, nil
 	}
-	m.gateTarget, m.gateAnswer, m.profileCarry = nil, nil, nil
+	m.gateTarget, m.gateAnswer, m.profileCarry, m.gateNotes = nil, nil, nil, ""
 	back := m.phase
 	decline := func(mm model) (model, tea.Cmd) {
 		mm.committed = false
 		mm.ask = nil
-		mm.gateTarget, mm.gateAnswer, mm.profileCarry = nil, nil, nil
+		mm.gateTarget, mm.gateAnswer, mm.profileCarry, mm.gateNotes = nil, nil, nil, ""
 		mm.phase = back
 		return mm, tea.Batch(drop...)
 	}
 	final := func(mm model) (model, tea.Cmd) {
 		mm.committed = false // commitLaunch takes the guard for the run
+		if mm.gateNotes != "" {
+			mm.recordRouteNotes(mm.gateNotes)
+			mm.gateNotes = ""
+		}
 		return bind(mm)
 	}
 	// The profile question comes after the gate's (a gate decline must not
@@ -394,7 +398,7 @@ func (m model) commitAsk(mdl config.Model, bind func(model) (model, tea.Cmd), dr
 	if readErr != nil {
 		// stderr is not visible under the alt screen: the note reaches the
 		// person after the release, above the agent's output.
-		m.recordRouteNotes("wt: note: " + readErr.Error() + "\n")
+		m.gateNotes += "wt: note: " + readErr.Error() + "\n"
 	}
 	var body []string
 	if t.Creation != nil {
@@ -420,9 +424,9 @@ func (m model) afterGate(next func(model) (model, tea.Cmd), t *launchwarn.Target
 	yes := true
 	m.gateTarget, m.gateAnswer = t, &yes
 	if t.Creation != nil {
-		m.recordRouteNotes("wt: " + launchwarn.CreationLine(t.Creation) + "\n")
+		m.gateNotes += "wt: " + launchwarn.CreationLine(t.Creation) + "\n"
 	} else if info != "" {
-		m.recordRouteNotes("wt: " + info + "\n")
+		m.gateNotes += "wt: " + info + "\n"
 	}
 	return next(m)
 }

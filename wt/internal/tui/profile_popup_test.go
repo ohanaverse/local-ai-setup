@@ -52,7 +52,7 @@ func TestCommitAskProfilePopupApply(t *testing.T) {
 	}
 }
 
-// TestCommitAskProfilePopupDecline: "don't apply" declines the launch like the
+// TestCommitAskProfilePopupDecline: "go back" declines the launch like the
 // gate's go-back: nothing is bound, the hold drop runs, the guard is released.
 func TestCommitAskProfilePopupDecline(t *testing.T) {
 	forceTTY(t)
@@ -163,5 +163,28 @@ func TestRunRecordAndWaitWithPassesTheCarry(t *testing.T) {
 	runRecordAndWaitWith(exec.Command("true"), "claude", config.Model{ID: "ollama/x"}, nil, nil, func() {}, nil)()
 	if gotRP != nil || gotApply {
 		t.Errorf("applier got (%v, %v) with no carry; want (nil, false)", gotRP, gotApply)
+	}
+}
+
+// TestDeclineAfterGateYesQueuesNoRouteNotes: a gate yes followed by a profile
+// "no" declines the whole launch, so the launching/creating line the gate
+// yes would have queued must never reach the terminal. It matters because a
+// declined launch populates nothing: a stale "creating branch …" line would
+// claim something that never happened and would print above the next launch.
+func TestDeclineAfterGateYesQueuesNoRouteNotes(t *testing.T) {
+	forceTTY(t)
+	stubRouteNotes(t)
+	t.Cleanup(releaseRootClaim)
+	stubProfileResolver(t, testProfile, true, nil)
+	root := rootRepo(t)
+	m := model{agent: "claude", selectedPath: root, launchModel: config.Model{ID: "ollama/x"}, phase: phaseModel}
+	next, _ := m.commitAsk(m.launchModel, func(mm model) (model, tea.Cmd) { return mm, nil })
+	next, _ = updateMsg(next, askKey("enter")) // gate yes -> profile popup
+	if next.ask == nil || next.ask.purpose != askProfile {
+		t.Fatalf("want the profile popup, got %+v", next.ask)
+	}
+	updateMsg(next, askKey("n")) // profile no -> decline
+	if pendingRouteNotes != "" {
+		t.Errorf("route notes after a decline = %q; want none", pendingRouteNotes)
 	}
 }

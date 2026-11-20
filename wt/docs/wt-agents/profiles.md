@@ -357,7 +357,7 @@ the same entry matches an `ollama`, `omlx`, or `mtplx` model.
 An interactive launch that resolves a non-empty profile asks before applying
 it — default **yes**. In the worktree/agent/model picker the question is a
 popup inside the picker ("apply local-model profile?", answered before the
-terminal is released; "don't apply" returns to the picker and launches
+terminal is released; "go back" returns to the picker and launches
 nothing); `wt -A <agent> -M <model>` and the other flag paths ask on
 `/dev/tty`, default yes on a bare Enter. A non-interactive launch (no
 controlling terminal: scripts, CI) applies automatically with no prompt.

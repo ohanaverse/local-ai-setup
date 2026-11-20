@@ -48,7 +48,7 @@ func newAskStateFor(purpose askPurpose, theme themes.Theme, width, height int, t
 	no := choiceItem{choice: askAnswer(false), title: "go back", desc: "Return to the picker; nothing is created or started"}
 	if purpose == askProfile {
 		yes = choiceItem{choice: askAnswer(true), title: "apply profile", desc: "Launch with the local-model profile"}
-		no = choiceItem{choice: askAnswer(false), title: "don't apply", desc: "Return to the picker; nothing is launched"}
+		no = choiceItem{choice: askAnswer(false), title: "go back", desc: "Return to the picker; nothing is launched"}
 	}
 	return &askState{
 		purpose: purpose, title: title, body: body, backPhase: backPhase,
