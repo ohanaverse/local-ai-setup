@@ -242,7 +242,7 @@ These act on the machine they run on, reading `registry.toml` (and
 init|add|edit|rm`, `wt-model model list` (the registry listing; `--json` is
 what modeltiers reads), `wt-model cloud-sync`, `wt-model litellm sync|list|providers|status|set|restart`
 (`wt litellm status|set` are its twins),
-`wt-model served`, `wt-model warm`, `wt stop <provider>` and `wt stop --all`, and `wt-model
+`wt-model served`, `wt-model warm`, `wt-model stop <provider>` and `wt-model stop --all`, and `wt-model
 model` (the Models tab). `wt worktrees` and `wt remove` read the registry too,
 for the model artifacts they must never delete; with no registry at the
 default path there is nothing to protect.
@@ -285,14 +285,12 @@ setup` do, on your confirmation.
 
 ## Interim limits
 
-- **Some host commands still run here.** The model registry commands moved to
-  `wt-model model …`, and `served`, `warm`, `cloud-sync` and `litellm
-  sync|list|providers|restart` to `wt-model` (under `wt` those only point
-  there); `wt litellm status|set` stay here as twins of `wt-model litellm
-  status|set`. Until `wt stop <provider>` and `wt stop --all` move to
-  `wt-model` (Phase 4), this binary still runs them,
-  reading and writing `registry.toml` and `config.yaml` on whatever machine
-  runs them, and the proxy url and key live in the `wt-model` config home of
+- **Two host twins still run here.** The model registry commands moved to
+  `wt-model model …`, and `served`, `warm`, `cloud-sync`, `litellm
+  sync|list|providers|restart` and the provider stops (`wt-model stop
+  <provider>|--all`) to `wt-model` (under `wt` those only point there);
+  `wt litellm status|set` stay here as twins of `wt-model litellm
+  status|set`, and the proxy url and key live in the `wt-model` config home of
   whichever machine runs them (above; the `[litellm]` table of `config.toml`
   is its read-only fallback). On a session-only machine
   they read that machine's files, not the server's.

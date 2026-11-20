@@ -1,4 +1,4 @@
-# `wt start` and `wt stop`
+# `wt start`, `wt stop` and `wt-model stop`
 
 Start or stop local models directly, without launching an agent.
 
@@ -10,10 +10,16 @@ wt start <model> --others=stop   # stop other providers' loaded models first, wi
 wt start <model> --others=keep   # keep them, without asking or warning
 wt stop                          # pick from running models (needs a TTY)
 wt stop ollama/qwen3.8:27b-mlx   # stop one model
-wt stop ollama                   # stop every running model of a provider
-wt stop omlx                     # halt the omlx service and every model in it
-wt stop <target> --yes           # skip the in-use confirmation
-wt stop --all                    # stop every running local model, then the omlx service (and an mtplx wt cannot read)
+wt stop <model> --yes            # skip the in-use confirmation
+```
+
+On the machine that runs the model server:
+
+```bash
+wt-model stop ollama             # stop every running model of a provider
+wt-model stop omlx               # halt the omlx service and every model in it
+wt-model stop <provider> --yes   # skip the in-use confirmation
+wt-model stop --all              # stop every running local model, then the omlx service (and an mtplx wt cannot read)
 ```
 
 ```bash
@@ -22,14 +28,14 @@ wt job <id>                      # show a model server job (a start or stop); --
 
 `wt start`, `wt stop <model>`, bare `wt stop` and `wt job` go through the
 model server (see "Start and stop on the model server" below; with none
-configured they refuse, exit 1). `wt stop <provider>` and `--all` act on
-this machine's registry; they read each model's client sessions from the
-model server's catalog (one read, when a `[model-server]` is configured) and
-ask before stopping a model a session uses, and with none configured there is
-nothing to ask. A configured server that cannot be read is a `wt: note:` and
-the stop goes on without asking. Where a section below describes the registry-side
-behavior of `wt start` or of a model-id stop, that is now what the model
-server's start and stop jobs do on its host.
+configured they refuse, exit 1). Provider and `--all` stops are
+`wt-model stop <provider>` and `wt-model stop --all`, run on the machine that
+runs the model server: they act on that machine's registry and read each
+model's client sessions from the running server through its runtime record
+(see [In-use confirmation](#in-use-confirmation)). `wt stop` given a provider
+name or `--all` prints a pointer to them and exits 1. Where a section below
+describes the registry-side behavior of `wt start` or of a model-id stop, that
+is now what the model server's start and stop jobs do on its host.
 
 ## `wt start [model]`
 
@@ -80,7 +86,7 @@ server's start and stop jobs do on its host.
   and selecting it waits the same way. `wt` without `-M` never picks a model
   that is still loading. `wt stop <id>` on it fails, saying
   `omlx is still loading <id> and will not unload it mid-load` and that
-  `wt stop omlx` stops the service and the load with it: omlx does not
+  `wt-model stop omlx` stops the service and the load with it: omlx does not
   unload a model in the middle of a load.
   wt sees a load only through omlx's status endpoint: on a server with an
   API key the registry does not name, a loading model reads as not running.
@@ -95,7 +101,7 @@ server's start and stop jobs do on its host.
 - rec: one instance serves the whole machine, on any port. A rec already
   serving the model at the registry's address is adopted (nothing is spawned);
   one serving another model or address is asked about before it is replaced
-  (`--replace` answers yes). `wt stop rec` runs `rec stop`, which reaches it
+  (`--replace` answers yes). `wt-model stop rec` runs `rec stop`, which reaches it
   wherever it listens.
 - Not on disk (a registry entry whose artifact is missing): not listed;
   `wt start <id>` exits 1 with `<id> is not on disk — pull or download it
@@ -124,22 +130,36 @@ server's start and stop jobs do on its host.
   next start, stop or `wt-model litellm sync`.
 - Cloud or unknown id: exits 1.
 
-## `wt stop [model|provider]`
+## `wt stop [model]`
 
 - `<provider>/<name>` stops one running model; not running or unknown is
   an error. A model of a provider whose probe gave no usable answer is
-  neither: wt says it cannot tell what is running there, as the bare
-  provider does, rather than that the model is not running. mtplx serves one
+  neither: wt says it cannot tell what is running there, as a
+  provider stop does, rather than that the model is not running. mtplx serves one
   process, so stopping it stops the whole
   provider. On omlx it unloads that one model and leaves the service and the
-  other loaded models up; use `wt stop omlx` to halt the service.
-- A bare provider (`ollama`, `omlx`, `omlx-6bit`, `mtplx`, `rec`, `sushi`: any provider
+  other loaded models up; use `wt-model stop omlx` to halt the service.
+- No argument: a numbered picker over the model server's running local
+  models (needs a TTY), each marked with the client sessions using it (see
+  "Start and stop on the model server" below). Type the numbers to stop,
+  separated by spaces (`1 3`), or `a` / `all` for every listed model, and
+  press Enter; Enter on an empty line stops nothing.
+
+## `wt-model stop <provider> | --all`
+
+Run on the machine that runs the model server; it reads that machine's
+registry. `wt stop` given a provider name or `--all` prints a pointer here and
+exits 1 (`stop ollama moved to wt-model — run 'wt-model stop ollama'; nothing was changed`).
+A mistake in the argument (a model id, an unknown provider, a provider
+together with `--all`) prints one error line naming the valid form and exits 1.
+
+- `<provider>` (`ollama`, `omlx`, `omlx-6bit`, `mtplx`, `rec`, `sushi`: any provider
   in the registry that wt can start and stop) stops all its
   running models; nothing running exits 0 with a note
-  (`wt: nothing running on <provider>`). For omlx it halts the
+  (`wt-model: nothing running on <provider>`). For omlx it halts the
   service itself. Other names are an
   error.
-  - `wt stop mtplx` stops mtplx unless its port refuses the connection, also
+  - `wt-model stop mtplx` stops mtplx unless its port refuses the connection, also
     when wt cannot tell what it has loaded: a server that answered with an
     error, or gave no answer within the probe's 2 seconds. It prints
     `Stopping mtplx... done`, or `failed` and exits 1 when the port is still
@@ -157,7 +177,7 @@ server's start and stop jobs do on its host.
     is still loading (next item). A provider row wt does not probe (no
     `location` and no local model) is "nothing running" as well.
   - **An mtplx that is still loading** has not opened its port — it reads
-    its weights first — so `mtplx stop` cannot reach it. `wt stop mtplx` and
+    its weights first — so `mtplx stop` cannot reach it. `wt-model stop mtplx` and
     `--all` stop it by the pid in the pidfile wt wrote when it started the
     server, and print `Stopping mtplx (still loading, pid N)... done`. wt
     never acts on the pid alone, since a pid can be reused. It signals the
@@ -179,34 +199,34 @@ server's start and stop jobs do on its host.
     Ctrl+C during the wait ends the command with `cancelled` and exit 1. The
     server already has the signal and normally exits a moment later, so the
     error says
-    `cancelled — mtplx (pid N) was sent SIGTERM and wt did not wait for it to exit; run "wt stop mtplx" again to confirm`.
-    wt did not see it go: the pidfile is left, and a second `wt stop mtplx`
+    `cancelled — mtplx (pid N) was sent SIGTERM and wt did not wait for it to exit; run "wt-model stop mtplx" again to confirm`.
+    wt did not see it go: the pidfile is left, and a second `wt-model stop mtplx`
     either finds nothing running or stops what is still there.
     When the pidfile names a live process that fails a check, wt signals
     nothing: it prints that nothing is running, then what it found
-    (`wt: the mtplx pidfile names pid N, which is not an mtplx server on port 8003 — left alone`),
+    (`wt-model: the mtplx pidfile names pid N, which is not an mtplx server on port 8003 — left alone`),
     and exits 0. When it cannot read the process table at all it exits 1
     with `cannot tell whether mtplx is still loading` — as the last line of
     `--all`, after everything else was stopped, ending
     `nothing was stopped there`. A pidfile that is
     missing, unreadable or names a dead pid is "nothing running"; wt does
     not delete it.
-    `wt stop <provider>/<name>` for an mtplx model during a load stops
+    `wt stop <model>` for an mtplx model during a load stops
     nothing — wt does not know which model the loading process holds — and
     fails with
-    `model "<id>" is not running — mtplx is still loading (pid N); "wt stop mtplx" stops it`
+    `model "<id>" is not running — mtplx is still loading (pid N); "wt-model stop mtplx" stops it`
     (or with `cannot tell whether mtplx is still loading` when wt could not
     read the process table, or with the `left alone` line when the pidfile
     names a live process that is not an mtplx server on the provider's port).
     Limits:
     - Only a server wt or llmbench started has a pidfile. An mtplx started by
-      hand is invisible while it loads: `wt stop mtplx` and `--all` print
+      hand is invisible while it loads: `wt-model stop mtplx` and `--all` print
       that nothing is running and exit 0. End that process by hand.
     - Starting mtplx again while one is still loading — a second `wt start`,
       `wt start --replace`, the picker — sees an empty port and starts a
       second server, whose pid replaces the first in the pidfile. wt then
       finds only the newer one, and the first has to be ended by hand. Run
-      `wt stop mtplx` before starting another.
+      `wt-model stop mtplx` before starting another.
     - The check and the signal are two steps. A pid that exits and is
       reused between them — a few microseconds — would get the signal. With
       the start time wt records, the process checked is known to be the one
@@ -215,7 +235,7 @@ server's start and stop jobs do on its host.
     - The command-line rule is the one mtplx 2.12.0 has. If a later mtplx
       renames its server module, wt prints the `left alone` note above and
       stops nothing: end the process by hand, and report it.
-  - **`wt stop sushi`** has no stop command of Sushi's to call (running the
+  - **`wt-model stop sushi`** has no stop command of Sushi's to call (running the
     `sushi` binary with no arguments is not a stop), so wt signals the
     process the pidfile `/tmp/local-ai-setup-sushi.pid` names, once it has
     checked that process: the current user owns it, its arguments are
@@ -230,7 +250,7 @@ server's start and stop jobs do on its host.
     - A Sushi started by hand has no pidfile. If it answers on the port, wt
       says `sushi at port 12345 was not started by wt; stop it yourself`
       and signals nothing (exit 1); if the port is closed, nothing is
-      running (`wt: nothing running on sushi`, exit 0).
+      running (`wt-model: nothing running on sushi`, exit 0).
     - A pidfile that llmbench wrote holds only the pid. It is accepted when
       the process passes the same user and arguments checks, but with no start
       time to compare and no process group to signal, so a pid reused by
@@ -240,7 +260,7 @@ server's start and stop jobs do on its host.
       mtplx above, which signals the same way.
   - ollama's models are stopped one by one and its daemon is left up, so
     when ollama's probe gives no usable answer (and its port does not
-    refuse) there is nothing wt can stop: `wt stop ollama` fails with
+    refuse) there is nothing wt can stop: `wt-model stop ollama` fails with
     `cannot tell what is running on ollama` and exits 1.
   - Stopping an ollama model is `ollama stop <name>` against the registry's
     ollama address, followed by a check that ollama no longer lists the
@@ -254,9 +274,9 @@ server's start and stop jobs do on its host.
   - A model ollama still lists after the 3 minutes is not a failed stop:
     ollama accepted it and unloads the model when its request ends. The line
     ends in `still finishing a request; ollama unloads it when that ends`,
-    the other stops go on, and that model alone does not make `wt stop`
+    the other stops go on, and that model alone does not make `wt-model stop`
     exit 1. `ollama ps` shows when it has unloaded.
-  - When several ollama models are stopped together (`wt stop ollama`,
+  - When several ollama models are stopped together (`wt-model stop ollama`,
     `--all`, the picker's `a`), wt sends every `ollama stop` first and then
     waits for all of them under one 3-minute bound, not 3 minutes each. The
     lines still come one model at a time, in order, and the omlx halt of
@@ -273,18 +293,17 @@ server's start and stop jobs do on its host.
     own exit, so the line can read `done` a moment before the model has
     left `ollama ps`.
 - `--all` stops every running local model wt can stop, on every provider,
-  and then halts the omlx service as `wt stop omlx` does — also when omlx has
+  and then halts the omlx service as `wt-model stop omlx` does — also when omlx has
   nothing loaded, since that is what frees its memory. omlx's models are not
-  unloaded one by one first. mtplx is stopped as `wt stop mtplx` stops it:
+  unloaded one by one first. mtplx is stopped as `wt-model stop mtplx` stops it:
   unless its port refuses the connection, also when wt cannot tell what it
   has loaded (then as `Stopping mtplx...`, before omlx), and while it is
-  still loading. It asks nothing: the host counts no client sessions (only
-  the model server knows them; see "In-use confirmation" below). Every stop
-  is attempted: if
+  still loading. It asks once about the models client sessions use (see
+  "In-use confirmation" below). Every stop is attempted: if
   one fails the others still run, and the exit code is 1. When ollama's probe
   gives no usable answer, nothing is stopped on ollama, the rest is still
   stopped, and the command exits 1 with
-  `cannot tell what is running on ollama`. `wt: no running local models` is
+  `cannot tell what is running on ollama`. `wt-model: no running local models` is
   printed only when every provider either answered with nothing running or
   refused the connection with no mtplx loading behind it. Ctrl+C is not a
   failure to step over: it cancels the stop in flight and ends the command
@@ -292,21 +311,27 @@ server's start and stop jobs do on its host.
   service up, and the error names it. It takes no argument. A running
   mlx_lm_server pairing is not stopped, because wt has no engine for one;
   `llmbench provider stop mlx_lm_server` stops it.
-- No argument: a numbered picker over the model server's running local
-  models (needs a TTY), each marked with the client sessions using it (see
-  "Start and stop on the model server" below). Type the numbers to stop,
-  separated by spaces (`1 3`), or `a` / `all` for every listed model, and
-  press Enter; Enter on an empty line stops nothing.
-
 ### In-use confirmation
 
-On this machine `wt stop <provider>` and `wt stop --all` ask nothing about
-sessions: since the local session store was removed (2026-11, with the move
-of every session to the model server), the host counts no sessions, and a
-client session's use of a model is the model server's to know. `--yes` is
-accepted there and changes nothing.
+`wt-model stop <provider>` and `wt-model stop --all` ask (default No) before
+stopping a model that client sessions of the running model server use. They
+find the server through `wt-model serve`'s runtime record (`serve.json` in the
+`~/.config/wt-model/` home; see `wt-model-server.md`, "Startup and shutdown")
+and ask it for its client sessions, once per command. `--yes` answers the
+question; with no terminal and no `--yes` the command exits 3 and stops
+nothing. The question for one provider reads
+`<what> in use by N live wt session(s) (<sessions>); stop anyway?` and for
+`--all`
+`running local models are in use by N live wt session(s) (<sessions>); stop them all?`.
 
-A model-id stop (`wt stop <provider>/<name>`) and the bare picker go to the
+- No record (no model server running on this machine): there is nothing to
+  ask, and the stop goes on.
+- A record it cannot read, or a server that does not answer or refuses: one
+  line
+  `wt-model: note: could not read client sessions from the model server (<why>) — models they use are stopped without asking`,
+  and the stop goes on without asking.
+
+A model-id stop (`wt stop <model>`) and the bare picker go to the
 model server, which asks before it stops a model other client sessions use:
 the question is asked on this terminal (`--yes` answers it; with no terminal
 and no `--yes` the command exits 3 and stops nothing). See "Start and stop on
@@ -491,7 +516,7 @@ recently used when a load does not fit.
   `wt 2>log` records each line once.
 - `wt stop <omlx model>` unloads that one model. The service and the other
   models stay up, even when it was the last one.
-- `wt stop omlx` (or `omlx-6bit`) halts the service and every model in it.
+- `wt-model stop omlx` (or `omlx-6bit`) halts the service and every model in it.
 - An omlx with an API key that allows unauthenticated inference serves
   keyless chat requests but refuses keyless status, load and unload requests.
   With no `auth.secret_ref` on the registry's omlx provider, `wt start` still
@@ -516,7 +541,7 @@ recently used when a load does not fit.
     times out, not at once.
 
   Two ways out: set `auth.secret_ref`, which gives the full pool behavior
-  above, or run `wt stop omlx` to stop the service and clear its routes.
+  above, or run `wt-model stop omlx` to stop the service and clear its routes.
 - A load wt does not perform is not covered: an agent that dials omlx
   directly and names a model that is not loaded makes omlx load it, and
   possibly evict another, with no prompt. The routes are corrected by
@@ -615,7 +640,9 @@ not read.
   A "no" exits 3 with `declined — nothing was started`.
 
 **`wt stop <model-id>`** stops one model through the server. A provider name and
-`--all` are not stopped through the server: they act on this machine as above.
+`--all` are not stopped through the server: they are `wt-model stop <provider>`
+and `wt-model stop --all` on the server's machine (above), and `wt stop` prints a
+pointer to them and exits 1.
 
 - Without an argument it opens a numbered picker over the server's running local
   models, marking each that client sessions use (`<id> (2 client session(s))`).
@@ -689,10 +716,11 @@ only wt resolves a `secret_ref`. To start a model yourself, use `wt start`.
 
 `0` on success, when there was nothing to start or stop (already running —
 `wt start` may still write that model's missing route — or nothing to stop
-on a provider) or a cancelled `wt stop` picker; `1` on any error, including a
+on a provider with `wt-model stop`) or a cancelled `wt stop` picker; `1` on any error, including a
 cancelled `wt start` picker (`model selection cancelled`), Ctrl+C during a start
-or stop, a provider wt stopped but that still answers, and a `wt stop` that
-could not tell what a provider is running and had no way to stop it regardless.
+or stop, a provider wt stopped but that still answers, a `wt-model stop` that
+could not tell what a provider is running and had no way to stop it regardless,
+and `wt stop` given a provider name or `--all` (a pointer to `wt-model stop`).
 
 `3` means approval missing, with nothing changed: a question that needed an
 answer got none (no terminal and no `--yes`, `--replace` or `--others=keep|stop`

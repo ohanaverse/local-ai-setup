@@ -230,7 +230,7 @@ the plist is installed, `launchctl unload` it by hand:
   `recursive-oss/rec` GitHub releases; `bin/update/rec` keeps it current).
   Not a LaunchAgent: `wt start rec/flint` runs `rec serve --port 11500` as a
   backgrounded process (pidfile `/tmp/local-ai-setup-rec.pid`, relocated by
-  `WT_REC_PIDFILE`; log `/tmp/local-ai-setup-rec.log`), and `wt stop rec`
+  `WT_REC_PIDFILE`; log `/tmp/local-ai-setup-rec.log`), and `wt-model stop rec`
   runs `rec stop`. One instance per machine, whichever port it is on.
 - Everything else rec owns lives under `~/.local/share/rec` (or
   `$XDG_DATA_HOME/rec`): `models/` (the downloaded weights, tens of GB),
@@ -272,7 +272,7 @@ the plist is installed, `launchctl unload` it by hand:
   and in `docs/contracts/process-providers.toml`; it names no model, the first
   request does) with pidfile `/tmp/local-ai-setup-sushi.pid` (relocated by
   `WT_SUSHI_PIDFILE`) and log `/tmp/local-ai-setup-sushi.log`.
-- Sushi has no stop command. `wt stop sushi` signals the process the pidfile
+- Sushi has no stop command. `wt-model stop sushi` signals the process the pidfile
   names after checking it (the user's own, `sushi serve … --port 12345`);
   it never runs the bare `sushi` binary. Stopping the process unloads the
   pack.

@@ -80,7 +80,8 @@ wt -W my-feature -A claude           # named worktree + launch (a new name is cr
 wt --cwd -A codex                    # current directory
 claude-wt --cwd                      # shim forwards to wt
 wt --init                            # seed agent instruction files
-wt start [<id>] / wt stop [<id>|<provider>|--all]   # local-model lifecycle (routes follow automatically)
+wt start [<id>] / wt stop [<id>]    # one local model through the model server (routes follow automatically)
+wt-model stop <provider>|--all      # host provider stop on the server's machine; asks about client sessions
 wt-model served <provider> [--json]  # ids an omlx/mtplx/mlx_lm_server/rec/sushi server is serving now
 wt-model warm omlx <model>           # load a model into a running omlx (keyed warmup; llmbench's omlx backend calls it)
 wt-model litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
