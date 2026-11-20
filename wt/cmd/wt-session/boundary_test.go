@@ -163,14 +163,8 @@ var boundaryBannedPkgs = map[string]bool{
 //     module's one config.Load a session file may name. protectedPaths
 //     (cleanup.go, R10) reaches the registry only through hostConfig, which
 //     the test checks separately.
-//   - main.go:main:lifecycle.WaitPendingRoutes — main is the process exit of
-//     every command, the host ones (`wt stop <provider>`, `--all`)
-//     included, and a host route write's proxy restart must finish before
-//     the process does. A session writes no route, so the wait
-//     returns at once for it.
 var boundaryAllowed = map[string]bool{
-	"app.go:loadHost:config.Load":              true,
-	"main.go:main:lifecycle.WaitPendingRoutes": true,
+	"app.go:loadHost:config.Load": true,
 }
 
 // TestSessionPathsNeverTouchTheRegistryOrLifecycle pins R3, R4 and R10 and the
