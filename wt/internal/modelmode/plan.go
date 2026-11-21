@@ -245,14 +245,22 @@ func planNative(st State, want Desired, h PlanHooks) (Plan, error) {
 
 // leavingLocal runs the caller's leaving-local hook or, without one, notes
 // the default: a session neither sets up nor removes wt-model's LaunchAgent.
+// The note is L1, keyed on the local check carried in st.LocalServer (state
+// built without one gets the short note): an answering local server is about
+// to be unused, and the next step that resolves it goes with it.
 func leavingLocal(p *Plan, st State, h PlanHooks) {
 	if h.LeavingLocal != nil {
 		h.LeavingLocal(p)
 		return
 	}
-	if st.Resolution.Mode == ModeLocal {
-		p.Notes = append(p.Notes, "wt-model's LaunchAgent is untouched; remove it with `wt-model setup`")
+	if st.Resolution.Mode != ModeLocal {
+		return
 	}
+	if l := st.LocalServer; l.Checked && l.OK {
+		p.Notes = append(p.Notes, "wt-model's LaunchAgent is untouched; the local server answers at "+l.URL+" and will be unused. next: stop it with x on `wt-model setup`, or apply native there to remove the LaunchAgent")
+		return
+	}
+	p.Notes = append(p.Notes, "wt-model's LaunchAgent is untouched; remove it with `wt-model setup`")
 }
 
 // planRemote writes a pasted token if any, then the table.
