@@ -62,11 +62,11 @@ func TestCheckTTYNoWarningsDoesNotPrompt(t *testing.T) {
 func TestCheckCreationOnlyDoesNotPrompt(t *testing.T) {
 	for _, tty := range []bool{true, false} {
 		var out bytes.Buffer
-		c := &Creation{Branch: "b", Tracks: "origin/b", NewBranch: true, Path: "/r/.worktrees/b"}
+		c := &Creation{Branch: "b", Tracks: "origin/b", Path: "/r/.worktrees/b"}
 		if !Check(failReader{t}, &out, tty, nil, "launching in /d", c) {
 			t.Fatal("want true")
 		}
-		if out.String() != "wt: creating branch b tracking origin/b and worktree /r/.worktrees/b\n" {
+		if out.String() != "wt: creating worktree /r/.worktrees/b for branch b tracking origin/b\n" {
 			t.Errorf("tty=%v out = %q", tty, out.String())
 		}
 	}
@@ -88,7 +88,7 @@ func TestCheckCreationThenWarningsPrompt(t *testing.T) {
 }
 
 func TestCheckLinesStartWithWtPrefix(t *testing.T) {
-	c := &Creation{Branch: "b", Tracks: "origin/b", NewBranch: true, Path: "/p"}
+	c := &Creation{Branch: "b", Tracks: "origin/b", Path: "/p"}
 	for _, tty := range []bool{true, false} {
 		var out bytes.Buffer
 		Check(strings.NewReader("\n"), &out, tty, twoWarnings, "launching in /d", c)
@@ -102,7 +102,6 @@ func TestCheckLinesStartWithWtPrefix(t *testing.T) {
 
 func TestCreationLineMatchesCheck(t *testing.T) {
 	for _, c := range []*Creation{
-		{Branch: "b", Tracks: "origin/b", NewBranch: true, Path: "/p"},
 		{Branch: "b", NewBranch: true, Path: "/p"},
 		{Branch: "b", Tracks: "origin/b", Path: "/p"},
 		{Branch: "b", Path: "/p"},

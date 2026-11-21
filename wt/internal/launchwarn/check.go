@@ -37,8 +37,6 @@ func Check(in io.Reader, out io.Writer, isTTY bool, w []Warning, info string, cr
 // prints it and the picker's launch popup shows it, so the wording lives here.
 func CreationLine(c *Creation) string {
 	switch {
-	case c.NewBranch && c.Tracks != "":
-		return fmt.Sprintf("creating branch %s tracking %s and worktree %s", c.Branch, c.Tracks, c.Path)
 	case c.NewBranch:
 		return fmt.Sprintf("creating branch %s and worktree %s", c.Branch, c.Path)
 	case c.Tracks != "":

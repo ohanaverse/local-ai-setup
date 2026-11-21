@@ -179,6 +179,28 @@ func refExactly(dir, ref string) (bool, error) {
 	return false, nil
 }
 
+// remoteHeadAlias resolves a <remote>/HEAD name — the remote's symbolic alias
+// for its default branch — to the <remote>/<branch> name classification
+// understands. ok is false when name is not that shape or the symref does
+// not resolve: like refExists, an unreadable ref is simply not an alias, and
+// classification answers for the typed name as before (#588).
+func remoteHeadAlias(dir, name string) (string, bool) {
+	remote, rest, ok := strings.Cut(name, "/")
+	if !ok || remote == "" || rest != "HEAD" {
+		return "", false
+	}
+	out, err := runGit(dir, "symbolic-ref", "refs/remotes/"+name)
+	if err != nil {
+		return "", false
+	}
+	const prefix = "refs/remotes/"
+	target := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(target, prefix) || len(target) == len(prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(target, prefix), true
+}
+
 // refNamespaceFree errors when git could not create refs/heads/<name> because
 // a local branch already sits on its path: a leaf branch above it (feature
 // blocks feature/x) or a branch nested under it (feature/x blocks feature).
@@ -251,6 +273,14 @@ type Plan struct {
 func Resolve(dir, name string) (*Plan, error) {
 	if name == "" {
 		return nil, fmt.Errorf("worktree name cannot be empty")
+	}
+	// <remote>/HEAD is the remote's symbolic alias for its default branch,
+	// not a branch name of its own: resolve it before classification so it
+	// answers like <remote>/<default> would (reusing a worktree on the
+	// default, or creating one tracking it) instead of falling to git's raw
+	// "not a valid branch name" (#588).
+	if resolved, ok := remoteHeadAlias(dir, name); ok {
+		name = resolved
 	}
 	entries, err := listWorktrees(dir, dir)
 	if err != nil {
@@ -499,11 +529,10 @@ type Created struct {
 }
 
 // EnsureForBranch creates (or reuses) a worktree for a picked branch and
-// reports what it made (Created). Handles local, remote-tracking, and new
-// branches. A branch whose derived path already holds it is reused as is
-// (idempotent); a branch checked out at a different path is left to git, whose
-// own "already used by worktree" error — surfaced verbatim — stays the message
-// the user sees.
+// reports what it made (Created). Handles local and new branches. A branch
+// whose derived path already holds it is reused as is (idempotent); a branch
+// checked out at a different path is left to git, whose own "already used by
+// worktree" error — surfaced verbatim — stays the message the user sees.
 func EnsureForBranch(dir, branch string) (string, Created, error) {
 	switch {
 	case refExists(dir, "refs/heads/"+branch):
@@ -520,11 +549,6 @@ func EnsureForBranch(dir, branch string) (string, Created, error) {
 			return "", Created{}, gitError("git worktree add", err)
 		}
 		return path, Created{Branch: branch}, nil
-
-	case refExists(dir, "refs/remotes/"+branch):
-		// Remote-tracking branch — create a local branch tracking it.
-		short := branch[strings.IndexByte(branch, '/')+1:]
-		return addTrackingWorktree(dir, branch, short)
 
 	default:
 		// Brand-new branch.
