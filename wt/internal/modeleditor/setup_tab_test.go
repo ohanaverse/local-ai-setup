@@ -1469,6 +1469,15 @@ func TestSetupTabStartGateOnlyForStartAndRestart(t *testing.T) {
 		if sm.controls != 0 || !strings.Contains(m.setup.status, "nothing was changed") {
 			t.Errorf("%s n: controls = %d status = %q", c.action, sm.controls, m.setup.status)
 		}
+		// esc cancels in the gate's own words too (G2N per action), never the
+		// apply wording "not applied".
+		sm = &setupMachine{states: []modelsetup.State{remoteState()}}
+		m = setupEditor(t, sm, 120, 50)
+		m = keys(t, m, append(c.keysIn, "esc")...)
+		want := "not " + controlWords[c.control][1] + "; nothing was changed"
+		if m.setup.phase != setupView || m.setup.status != want {
+			t.Errorf("%s esc: phase = %d status = %q, want %q", c.action, m.setup.phase, m.setup.status, want)
+		}
 		sm = &setupMachine{states: []modelsetup.State{remoteState()}}
 		m = setupEditor(t, sm, 120, 50)
 		m = keys(t, m, append(c.keysIn, "y")...)

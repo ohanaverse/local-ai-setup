@@ -1724,6 +1724,7 @@ func TestModeTabHidesALongOrSchemelessAtURLWhole(t *testing.T) {
 // (at plan time Server holds the entered remote url's ping, or nothing).
 func TestModeTabLeavingLocalWithAnAnsweringServerNamesIt(t *testing.T) {
 	st := fullState()
+	st.EnvOverride = "" // no env override: the session url pinged is the local server's
 	st.Server.OK = true
 	st.Server.Kind = modelmode.KindNone
 	st.Server.Message = ""

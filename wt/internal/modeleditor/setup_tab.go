@@ -892,6 +892,11 @@ func (m *model) updateSetupConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "esc":
 		st.phase, st.queue, st.plan, st.planText, st.planWant = setupView, nil, modelsetup.Plan{}, "", modelsetup.Desired{}
 		st.status = "not applied; nothing was changed"
+		if st.prompt == promptRunUnused {
+			// The unused-server gate starts nothing, so it cancels in its own
+			// words, exactly as its n does (G2N).
+			st.status = "not " + controlWords[st.control][1] + "; nothing was changed"
+		}
 		return m, nil
 	default:
 		return m, nil

@@ -303,7 +303,9 @@ func (m *model) observeModeCmd() tea.Cmd {
 	m.mode.asked, m.mode.busy = true, true
 	gen, observe, opts := m.mode.gen, m.opts.Mode.Observe, m.modeObserveOptions()
 	return func() tea.Msg {
-		return modeObservedMsg{gen: gen, st: observe(context.Background(), opts), noCheck: opts.CheckURL == ""}
+		// noCheck is what Observe judges a check by: a CheckURL that is blank
+		// after trimming asked for none, so the session url itself was pinged.
+		return modeObservedMsg{gen: gen, st: observe(context.Background(), opts), noCheck: strings.TrimSpace(opts.CheckURL) == ""}
 	}
 }
 
@@ -315,9 +317,12 @@ func (m *model) applyModeObserved(msg modeObservedMsg) tea.Cmd {
 		return nil // a later observation is on its way
 	}
 	st.state, st.loaded, st.busy = msg.st, true, false
-	if msg.noCheck && msg.st.Resolution.Mode == modelmode.ModeLocal {
+	if msg.noCheck && msg.st.EnvOverride == "" && msg.st.Resolution.Mode == modelmode.ModeLocal {
 		// The session url pinged was the local server's: remember that check
 		// for the plan, whose own read may ping an entered remote url instead.
+		// An env override makes no such promise — with WT_MODEL_MODE=local over
+		// a stored remote, or WT_MODEL_URL without a token, the read pings that
+		// url while still resolving local, and it is not the local server's.
 		st.localCheck = msg.st.Server
 	}
 	if st.pending {
