@@ -1,6 +1,9 @@
 # The tier rule as data. Read by modeltiers.contracts; validated on every run.
 # Floors and sentinels were set from the 2026-10-12 snapshots; the Fable 5.1 and
-# MiniMax-M3 sentinels were re-pinned 2026-10-21 (source re-scores, floors kept).
+# MiniMax-M3 sentinels were re-pinned 2026-10-21 (source re-scores, floors kept at that time).
+# 2026-11-21: the intelligence index's scale moved and its scored set shrank, so
+# its floors moved, three sentinels dropped that vote and claude-haiku-5-5 was added
+# as its standard pin.
 # Editing this file is the re-calibration: there is no flag that overrides a
 # sentinel.
 #
@@ -12,7 +15,7 @@
 # [sources.<source>] attribution = the line printed with that source's data
 # [[sentinels]]      canonical, tier (before the gates), votes = the pinned ones
 
-version = "2026-10-21"
+version = "2026-11-21"
 
 [tiers.quick]
 code = "Q"
@@ -33,7 +36,7 @@ context_min = 400000
 [signals.intelligence_index]
 source = "openrouter"
 max_vote = "deep"
-floors = { quick = 10.6, standard = 33.0, deep = 49.0 }
+floors = { quick = 4.1, standard = 22.0, deep = 39.8 }
 
 [signals.arena_agent]
 source = "arena"
@@ -71,7 +74,7 @@ votes = { intelligence_index = "deep", arena_agent = "deep", eci = "deep" }
 [[sentinels]]
 canonical = "anthropic/claude-fable-5"
 tier = "deep"
-votes = { intelligence_index = "deep", arena_agent = "deep", eci = "deep" }
+votes = { arena_agent = "deep", eci = "deep" }
 
 [[sentinels]]
 canonical = "anthropic/claude-opus-5"
@@ -81,12 +84,17 @@ votes = { intelligence_index = "deep", arena_agent = "deep", eci = "deep" }
 [[sentinels]]
 canonical = "anthropic/claude-sonnet-5"
 tier = "standard"
-votes = { intelligence_index = "standard", arena_agent = "standard", eci = "standard" }
+votes = { arena_agent = "standard", eci = "standard" }
 
 [[sentinels]]
 canonical = "zhipuai/glm-5.2"
 tier = "standard"
-votes = { intelligence_index = "standard", arena_agent = "standard", eci = "standard" }
+votes = { arena_agent = "standard", eci = "standard" }
+
+[[sentinels]]
+canonical = "anthropic/claude-haiku-5-5"
+tier = "standard"
+votes = { intelligence_index = "standard" }
 
 [[sentinels]]
 canonical = "minimax/MiniMax-M3"
