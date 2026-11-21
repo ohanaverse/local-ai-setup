@@ -113,11 +113,11 @@ func (c *Client) statusErr(r *response) error {
 	if r.Status == http.StatusUnauthorized {
 		return &UnauthorizedError{Addr: c.addr()}
 	}
-	var ae modelapi.APIError
-	if err := json.Unmarshal(r.Body, &ae); err != nil || ae.Error.Code == "" {
+	ae, ok := modelping.DecodeAPIError(r.Body)
+	if !ok {
 		return &modelapi.ResponseError{Message: "model server answered HTTP " + strconv.Itoa(r.Status)}
 	}
-	return &modelapi.ResponseError{Message: clean(ae.Error.Message), Code: clean(ae.Error.Code)}
+	return ae.Err()
 }
 
 // do is the one control-call helper: the request, the typed error mapping and

@@ -189,6 +189,11 @@ func GetJSON(ctx context.Context, ep Endpoint, path string, out any) error {
 	case r.Status >= 300 && r.Status < 400:
 		return &NotModelServerError{Addr: addr, Why: "it answered HTTP " + strconv.Itoa(r.Status) + ", a redirect, which wt does not follow"}
 	case r.Status < 200 || r.Status > 299:
+		// A wt-model's own error answer says what the server said (#649);
+		// a body that is not an APIError still classifies NotModelServerError.
+		if ae, ok := DecodeAPIError(r.Body); ok {
+			return ae.Err()
+		}
 		return &NotModelServerError{Addr: addr, Why: "GET " + path + " answered HTTP " + strconv.Itoa(r.Status)}
 	}
 	if out == nil {
