@@ -1,6 +1,6 @@
 # The tier rule as data. Read by modeltiers.contracts; validated on every run.
 # Floors and sentinels were set from the 2026-10-12 snapshots; the Fable 5.1 and
-# MiniMax-M3 sentinels were re-pinned 2026-10-21 (source re-scores, floors kept).
+# MiniMax-M3 sentinels were re-pinned 2026-10-21 (source re-scores, floors kept at that time).
 # 2026-11-21: the intelligence index's scale moved and its scored set shrank, so
 # its floors moved and three sentinels dropped that vote.
 # Editing this file is the re-calibration: there is no flag that overrides a
@@ -89,6 +89,11 @@ votes = { arena_agent = "standard", eci = "standard" }
 canonical = "zhipuai/glm-5.2"
 tier = "standard"
 votes = { arena_agent = "standard", eci = "standard" }
+
+[[sentinels]]
+canonical = "anthropic/claude-haiku-5-5"
+tier = "standard"
+votes = { intelligence_index = "standard" }
 
 [[sentinels]]
 canonical = "minimax/MiniMax-M3"
