@@ -1159,6 +1159,18 @@ func TestSetupTabSaysWhenStoredLocalCannotRunHere(t *testing.T) {
 	}
 }
 
+// TestSetupTabPointsAtWtConfigForRemote pins that the mode choice carries
+// the mirror of the Mode tab's local pointer note: remote is not one of the
+// modes set up here, so the note names where it is chosen.
+func TestSetupTabPointsAtWtConfigForRemote(t *testing.T) {
+	for _, st := range []modelsetup.State{fullState(), remoteState(), offMacState()} {
+		v := plain(setupEditor(t, &setupMachine{states: []modelsetup.State{st}}, 120, 50))
+		if !strings.Contains(v, remotePointerNote) {
+			t.Errorf("resolution %+v: the view does not name `wt config` for remote:\n%s", st.Resolution, v)
+		}
+	}
+}
+
 // TestSetupTabCallsApplyAndControlOnlyFromCommands pins carry-forward 8:
 // Update hands Plan, Apply and Control to commands that captured the deps
 // when they were made; nothing is called until the command runs, and a dep
@@ -1241,6 +1253,8 @@ func TestSetupTabNeverRendersAPieceOfAnAtURL(t *testing.T) {
 	m := setupEditor(t, sm, 120, 50)
 	screens := map[string]string{"view": plain(m)}
 	m = keys(t, m, "a")
+	screens["gate"] = plain(m) // G1 fires first here; its copy names no url
+	m = keys(t, m, "y")
 	screens["local plan"] = plain(m) + "\n" + m.setup.status
 	if m.setup.phase != setupConfirm || !strings.Contains(flat(plain(m)), "credentialsarenotkept") {
 		t.Errorf("phase %d status %q: the local plan over a url with credentials lacks the note:\n%s", m.setup.phase, m.setup.status, plain(m))
@@ -1332,5 +1346,204 @@ func TestSetupTabHoldsAQuitForAModelsWriteToo(t *testing.T) {
 	}
 	if _, cmd = m.Update(start()); !isQuit(cmd) {
 		t.Errorf("the start's result did not issue the held quit")
+	}
+}
+
+// TestSetupTabGateBeforeReplacingRemote pins G1: an apply that would replace
+// remote's stored url and token asks first (default No), names the snapshot's
+// mode and the next step; n aborts the whole flow with nothing planned, and y
+// continues into the plan and its confirm. The gate names the a snapshot's
+// mode, never a live choice.
+func TestSetupTabGateBeforeReplacingRemote(t *testing.T) {
+	sm := &setupMachine{states: []modelsetup.State{remoteState()}, plan: okPlan()}
+	m := setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "a")
+	if m.setup.phase != setupConfirm || m.setup.prompt != promptReplaceRemote {
+		t.Fatalf("after a: phase = %d prompt = %d, want the replace-remote gate", m.setup.phase, m.setup.prompt)
+	}
+	v := flat(plain(m))
+	for _, want := range []string{
+		flat("config.toml says remote: applying local replaces its url and token"),
+		flat("next: to use that server again, set remote on"),
+	} {
+		if !strings.Contains(v, want) {
+			t.Errorf("gate copy lacks %q:\n%s", want, plain(m))
+		}
+	}
+	m = keys(t, m, "y", "y") // gate, then Apply this plan?
+	if sm.applies != 1 {
+		t.Errorf("y then y: applies = %d, want 1", sm.applies)
+	}
+
+	// The gate names the snapshot's mode: native chosen before a.
+	sm = &setupMachine{states: []modelsetup.State{remoteState()}, plan: okPlan()}
+	m = setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "right", "a")
+	if v := flat(plain(m)); !strings.Contains(v, flat("applying native replaces its url and token")) {
+		t.Errorf("native snapshot:\n%s", plain(m))
+	}
+
+	sm = &setupMachine{states: []modelsetup.State{remoteState()}, plan: okPlan()}
+	m = setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "a", "n")
+	if m.setup.phase != setupView || m.setup.status != "not applied; nothing was changed" {
+		t.Errorf("n: phase = %d status = %q", m.setup.phase, m.setup.status)
+	}
+	if strings.Contains(strings.Join(sm.seq, ","), "plan") || sm.applies != 0 {
+		t.Errorf("n: dep calls = %v, want no plan and no apply", sm.seq)
+	}
+}
+
+// TestSetupTabGateOnlyForPlansThatReplaceRemote pins the non-goals: no gate
+// where the stored mode is not remote, and none for t (tighten), which writes
+// no config step.
+func TestSetupTabGateOnlyForPlansThatReplaceRemote(t *testing.T) {
+	sm := &setupMachine{states: []modelsetup.State{fullState()}, plan: okPlan()}
+	m := setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "a")
+	if m.setup.prompt != promptApply {
+		t.Errorf("stored local: prompt = %d, want the plan's confirm directly", m.setup.prompt)
+	}
+
+	tight := remoteState()
+	tight.LiteLLMPlist = modelsetup.LiteLLMPlistState{Present: true, Mode: 0o644}
+	sm = &setupMachine{states: []modelsetup.State{tight}, plan: okPlan()}
+	m = setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "t")
+	if m.setup.phase != setupConfirm || m.setup.prompt != promptApply {
+		t.Errorf("tighten: phase = %d prompt = %d, want the plan's confirm directly", m.setup.phase, m.setup.prompt)
+	}
+}
+
+// TestSetupTabNotesRemoteReplacement pins NA: while config.toml says remote,
+// the choice names what applying it replaces.
+func TestSetupTabNotesRemoteReplacement(t *testing.T) {
+	m := setupEditor(t, &setupMachine{states: []modelsetup.State{remoteState()}}, 120, 50)
+	if v := flat(plain(m)); !strings.Contains(v, flat("config.toml says remote: applying local replaces its url and token")) {
+		t.Errorf("local chosen:\n%s", plain(m))
+	}
+	m = keys(t, m, "right")
+	if v := flat(plain(m)); !strings.Contains(v, flat("applying native replaces its url and token")) {
+		t.Errorf("native chosen:\n%s", plain(m))
+	}
+	m = setupEditor(t, &setupMachine{states: []modelsetup.State{fullState()}}, 120, 50)
+	if v := flat(plain(m)); strings.Contains(v, flat("replaces its url and token")) {
+		t.Errorf("stored local must not note a replacement:\n%s", plain(m))
+	}
+}
+
+// TestSetupTabStartGateOnlyForStartAndRestart pins G2: s and R ask first
+// (default No) when the stored mode is not local, y runs the control and n
+// cancels in its own words; x is never gated, and a stored local mode is
+// never gated.
+func TestSetupTabStartGateOnlyForStartAndRestart(t *testing.T) {
+	for _, c := range []struct {
+		action  string
+		keysIn  []string
+		control modelsetup.ControlAction
+	}{
+		{"start", []string{"s"}, modelsetup.ControlStart},
+		{"restart", []string{"R"}, modelsetup.ControlRestart},
+	} {
+		sm := &setupMachine{states: []modelsetup.State{remoteState()}}
+		m := setupEditor(t, sm, 120, 50)
+		m = keys(t, m, c.keysIn...)
+		if m.setup.phase != setupConfirm || m.setup.prompt != promptRunUnused {
+			t.Fatalf("%s: phase = %d prompt = %d, want the unused-server gate", c.action, m.setup.phase, m.setup.prompt)
+		}
+		if m.setup.control != c.control {
+			t.Errorf("%s: control = %v, want the action the gate was asked for", c.action, m.setup.control)
+		}
+		v := flat(plain(m))
+		for _, want := range []string{
+			flat("the mode is remote: no session uses the local server"),
+			flat("next: stop it with x when done, or make the mode local on"),
+		} {
+			if !strings.Contains(v, want) {
+				t.Errorf("%s: gate copy lacks %q:\n%s", c.action, want, plain(m))
+			}
+		}
+		sm = &setupMachine{states: []modelsetup.State{remoteState()}}
+		m = setupEditor(t, sm, 120, 50)
+		m = keys(t, m, append(c.keysIn, "n")...)
+		if sm.controls != 0 || !strings.Contains(m.setup.status, "nothing was changed") {
+			t.Errorf("%s n: controls = %d status = %q", c.action, sm.controls, m.setup.status)
+		}
+		// esc cancels in the gate's own words too (G2N per action), never the
+		// apply wording "not applied".
+		sm = &setupMachine{states: []modelsetup.State{remoteState()}}
+		m = setupEditor(t, sm, 120, 50)
+		m = keys(t, m, append(c.keysIn, "esc")...)
+		want := "not " + controlWords[c.control][1] + "; nothing was changed"
+		if m.setup.phase != setupView || m.setup.status != want {
+			t.Errorf("%s esc: phase = %d status = %q, want %q", c.action, m.setup.phase, m.setup.status, want)
+		}
+		sm = &setupMachine{states: []modelsetup.State{remoteState()}}
+		m = setupEditor(t, sm, 120, 50)
+		m = keys(t, m, append(c.keysIn, "y")...)
+		if sm.controls != 1 {
+			t.Errorf("%s y: controls = %d, want 1", c.action, sm.controls)
+		}
+	}
+
+	sm := &setupMachine{states: []modelsetup.State{remoteState()}}
+	m := setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "x")
+	if sm.controls != 1 || m.setup.phase == setupConfirm {
+		t.Errorf("x: controls = %d phase = %d, want stop ungated", sm.controls, m.setup.phase)
+	}
+	sm = &setupMachine{states: []modelsetup.State{fullState()}}
+	m = setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "s")
+	if sm.controls != 1 || m.setup.phase == setupConfirm {
+		t.Errorf("stored local: s must not gate (controls = %d phase = %d)", sm.controls, m.setup.phase)
+	}
+}
+
+// TestSetupTabNotesUnusedServer pins NB: a running local server is named as
+// unused while the stored mode is remote or native, with its next step, and
+// not while the stored mode is local.
+func TestSetupTabNotesUnusedServer(t *testing.T) {
+	agent := modelsetup.AgentState{Present: true, Managed: true, Job: modelsetup.LaunchdJob{Loaded: true, Running: true, PID: 1066}}
+	st := remoteState()
+	st.Agent = agent
+	m := setupEditor(t, &setupMachine{states: []modelsetup.State{st}}, 120, 50)
+	v := flat(plain(m))
+	for _, want := range []string{
+		flat("the local server runs but remote is in effect: nothing uses it"),
+		flat("next: press x to stop it"),
+	} {
+		if !strings.Contains(v, want) {
+			t.Errorf("remote: view lacks %q:\n%s", want, plain(m))
+		}
+	}
+
+	st = fullState() // stored local: the server is in use
+	st.Agent = agent
+	m = setupEditor(t, &setupMachine{states: []modelsetup.State{st}}, 120, 50)
+	if v := flat(plain(m)); strings.Contains(v, flat("nothing uses it")) {
+		t.Errorf("stored local must not note an unused server:\n%s", plain(m))
+	}
+}
+
+// TestSetupTabKMenuActionsGateLikeA pins the Review Focus line: a k-menu
+// action that plans through the same read and queue as a asks G1 too when
+// the stored mode is remote — the gate lives in the shared path, not in a's
+// key.
+func TestSetupTabKMenuActionsGateLikeA(t *testing.T) {
+	st := remoteState()
+	st.LiteLLMPlist = modelsetup.LiteLLMPlistState{Present: true, HasMasterKey: true, Mode: 0o600}
+	sm := &setupMachine{states: []modelsetup.State{st}, plan: okPlan()}
+	m := setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "k", "enter") // menu: use the plist's key
+	if m.setup.phase != setupConfirm || m.setup.prompt != promptReplaceRemote {
+		t.Fatalf("k-menu action: phase = %d prompt = %d, want the replace-remote gate", m.setup.phase, m.setup.prompt)
+	}
+	if v := flat(plain(m)); !strings.Contains(v, flat("config.toml says remote: applying local replaces its url and token")) {
+		t.Errorf("gate copy missing on the k-menu path:\n%s", plain(m))
+	}
+	m = keys(t, m, "y", "y") // gate, then Apply this plan?
+	if sm.applies != 1 {
+		t.Errorf("y then y: applies = %d, want 1", sm.applies)
 	}
 }

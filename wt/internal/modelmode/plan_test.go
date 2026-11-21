@@ -683,3 +683,40 @@ func TestFormatIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// TestLeavingLocalNamesTheAnsweringServer pins the strengthened note L1 when
+// the local server answers (its check held in LocalServer: in the
+// local→remote flow Server is the ping of the entered remote url), and the
+// unchanged short note when it does not.
+func TestLeavingLocalNamesTheAnsweringServer(t *testing.T) {
+	st := localState()
+	// The flow: Server is the check of the entered remote url, LocalServer
+	// the local check carried in from before.
+	st.Server = ServerState{URL: "https://gpu.example:8787", Checked: true, OK: true}
+	st.LocalServer = ServerState{URL: "http://127.0.0.1:8787", Checked: true, OK: true}
+	p, err := BuildPlan(st, Desired{Mode: ModeRemote, URL: "https://gpu.example:8787", PastedToken: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(p.Notes, "\n")
+	for _, want := range []string{
+		"wt-model's LaunchAgent is untouched",
+		"the local server answers at http://127.0.0.1:8787 and will be unused",
+		"next: stop it with x on `wt-model setup`",
+		"apply native there to remove the LaunchAgent",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("answering server: notes %q lack %q", text, want)
+		}
+	}
+
+	st.LocalServer = ServerState{URL: "http://127.0.0.1:8787", Checked: true, OK: false}
+	p, err = BuildPlan(st, Desired{Mode: ModeRemote, URL: "https://gpu.example:8787", PastedToken: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = strings.Join(p.Notes, "\n")
+	if text != "wt-model's LaunchAgent is untouched; remove it with `wt-model setup`" {
+		t.Errorf("silent server: notes = %q, want the short note unchanged", text)
+	}
+}

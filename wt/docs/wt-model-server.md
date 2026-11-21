@@ -196,10 +196,20 @@ other tab (`tab` switches; a Models edit made there still gets its one route
 sync when the screen closes). It sets up and controls wt-model on this
 machine and offers two modes, `local` and `native`; `remote` is not offered
 here, since a session's remote server is set on the Mode tab of `wt config`.
+The choice says so under it, as the note "run `wt config` (Mode tab) to use a
+server elsewhere (remote)", the mirror of the Mode tab's local pointer note.
 
 - `local` plans the token file, wt-model's LiteLLM pair, the
   `local.wt-model.serve` LaunchAgent and the `[model-server]` table (see
   [Setting it up](#setting-it-up)). macOS only: elsewhere choose `native`.
+  While config.toml stores `remote`, the choice carries the note
+  "config.toml says remote: applying local replaces its url and token", and
+  applying asks first (default no):
+  ``config.toml says remote: applying local replaces its url and token.
+  next: to use that server again, set remote on `wt config`'s Mode tab.
+  Continue? [y/N]`` — the next step resolving the conflict goes with the
+  question. `t` and an apply that replaces nothing ask only the plan's own
+  confirm.
 - `native` leaves local: its plan asks, default no, whether to boot out and
   remove the LaunchAgent wt wrote.
 - The rows show the platform, the LaunchAgent, the LiteLLM pair, the listener
@@ -208,7 +218,14 @@ here, since a session's remote server is set on the Mode tab of `wt config`.
   fields, `a` plans and applies (press it from the mode row: `enter` moves
   into the listen field, where letters are typed as text and `esc` leaves
   it), `c` checks, `r` re-reads, `s` / `x` / `R` start, stop or restart the
-  local server, `tab` switches tabs and `q` quits. Two keys act on the
+  local server — while config.toml stores `remote` or `native`, `s` and `R`
+  ask first (default no):
+  ``the mode is remote: no session uses the local server. next: stop it with
+  x when done, or make the mode local on `wt config`'s Mode tab.
+  Start it anyway? [y/N]`` — `x` never asks, and while the local server runs
+  unused the choice carries the note "the local server runs but remote is in
+  effect: nothing uses it. next: press x to stop it (choose local first), or
+  apply native here to remove it". `tab` switches tabs and `q` quits. Two keys act on the
   LiteLLM LaunchAgent, each as a plan you
   confirm: `k` opens the master-key menu (use the key the plist already has,
   generate a new one, which rotates `LITELLM_MASTER_KEY` with a backup under

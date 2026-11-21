@@ -147,6 +147,12 @@ type modeTab struct {
 	inputs bool
 	field  int
 	edited bool
+	// localCheck is the check of the local server made by an observation
+	// that asked about no other url (the tab's first read while the stored
+	// mode is local): at plan time Server holds the entered remote url's
+	// ping, so the plan's state carries this one as State.LocalServer and a
+	// leaving-local note can name the server being left behind.
+	localCheck modelmode.ServerState
 	// planGen is the observation a leads to a plan from (0: none wanted);
 	// queue the questions still to ask before planning. planWant is the
 	// snapshot of the form a took: the questions' answers go into it and
@@ -173,10 +179,12 @@ type modeTab struct {
 	result *editorkit.ResultScreen
 }
 
-// modeObservedMsg carries one observation.
+// modeObservedMsg carries one observation, and whether it was made without
+// an entered url to check (noCheck: the session url itself was pinged).
 type modeObservedMsg struct {
-	gen int
-	st  modelmode.State
+	gen     int
+	st      modelmode.State
+	noCheck bool
 }
 
 // modePlannedMsg carries one plan, or why there is none.
@@ -295,7 +303,9 @@ func (m *model) observeModeCmd() tea.Cmd {
 	m.mode.asked, m.mode.busy = true, true
 	gen, observe, opts := m.mode.gen, m.opts.Mode.Observe, m.modeObserveOptions()
 	return func() tea.Msg {
-		return modeObservedMsg{gen: gen, st: observe(context.Background(), opts)}
+		// noCheck is what Observe judges a check by: a CheckURL that is blank
+		// after trimming asked for none, so the session url itself was pinged.
+		return modeObservedMsg{gen: gen, st: observe(context.Background(), opts), noCheck: strings.TrimSpace(opts.CheckURL) == ""}
 	}
 }
 
@@ -307,6 +317,14 @@ func (m *model) applyModeObserved(msg modeObservedMsg) tea.Cmd {
 		return nil // a later observation is on its way
 	}
 	st.state, st.loaded, st.busy = msg.st, true, false
+	if msg.noCheck && msg.st.EnvOverride == "" && msg.st.Resolution.Mode == modelmode.ModeLocal {
+		// The session url pinged was the local server's: remember that check
+		// for the plan, whose own read may ping an entered remote url instead.
+		// An env override makes no such promise — with WT_MODEL_MODE=local over
+		// a stored remote, or WT_MODEL_URL without a token, the read pings that
+		// url while still resolving local, and it is not the local server's.
+		st.localCheck = msg.st.Server
+	}
 	if st.pending {
 		st.status, st.pending = "", false
 	}
@@ -353,7 +371,9 @@ func (m *model) modePlanCmd() tea.Cmd {
 	st.phase, st.busy, st.status, st.pending = modeView, true, "planning…", true
 	want := st.planWant
 	st.planWant, st.planOut = modelmode.Desired{}, true
-	gen, plan, state := st.gen, m.opts.Mode.Plan, st.state
+	state := st.state
+	state.LocalServer = st.localCheck
+	gen, plan := st.gen, m.opts.Mode.Plan
 	return func() tea.Msg {
 		p, err := plan(state, want)
 		return modePlannedMsg{gen: gen, plan: p, err: err}

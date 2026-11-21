@@ -3,6 +3,8 @@ package modelmode
 import (
 	"strings"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // envOf reads a map as an environment lookup. It is copied from modelclient's
@@ -85,5 +87,27 @@ func TestParseModeTrimsAndFolds(t *testing.T) {
 	}
 	if _, ok := ParseMode("x"); ok {
 		t.Fatal("x must be invalid")
+	}
+}
+
+// TestConfigMode pins ConfigMode: config.toml's mode, with the resolution's
+// inference and no env — what either editor screen's apply would replace.
+func TestConfigMode(t *testing.T) {
+	cases := []struct {
+		name string
+		st   State
+		want Mode
+	}{
+		{"stored remote", State{Config: ConfigState{Table: config.ModelServerState{Mode: "remote", URL: "https://gpu.example:8787"}}}, ModeRemote},
+		{"stored local wins over a url", State{Config: ConfigState{Table: config.ModelServerState{Mode: "local", URL: "http://127.0.0.1:8787"}}}, ModeLocal},
+		{"stored native", State{Config: ConfigState{Table: config.ModelServerState{Mode: "native"}}}, ModeNative},
+		{"inferred remote from a url", State{Config: ConfigState{Table: config.ModelServerState{URL: "https://gpu.example:8787"}}}, ModeRemote},
+		{"inferred remote from a token file", State{Config: ConfigState{Table: config.ModelServerState{TokenFile: "/tmp/t"}}}, ModeRemote},
+		{"unset", State{}, ""},
+	}
+	for _, c := range cases {
+		if got := ConfigMode(c.st); got != c.want {
+			t.Errorf("%s: ConfigMode = %q, want %q", c.name, got, c.want)
+		}
 	}
 }

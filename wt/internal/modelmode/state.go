@@ -86,7 +86,14 @@ type State struct {
 	// ObserveOptions.TokenPaths, each once, in that order.
 	TokenFiles []TokenState
 	Server     ServerState
-	Host       HostState
+	// LocalServer is the check of the local server itself: in the
+	// local→remote flow Server holds the ping of the entered remote url
+	// (Observe pings CheckURL instead), so a leaving-local note reads the
+	// local check from here. A caller carries the local check it has into it
+	// before planning (the Mode tab does); left empty, the note says nothing
+	// of an answering server.
+	LocalServer ServerState
+	Host        HostState
 }
 
 // LocalFallback is a local-mode plan's inputs: the token file to use and the

@@ -72,6 +72,13 @@ func ResolveMode(storedMode, storedURL, storedTokenFile string, env func(string)
 	return Resolution{}
 }
 
+// ConfigMode is the mode config.toml holds, judged as ResolveMode judges the
+// stored half (a stored url or token file without a mode is remote) and with
+// no environment: it is the mode either editor screen's apply would replace.
+func ConfigMode(st State) Mode {
+	return ResolveMode(st.Config.Table.Mode, st.Config.Table.URL, st.Config.Table.TokenFile, func(string) string { return "" }).Mode
+}
+
 func quote(s string) string { return `"` + s + `"` }
 
 // ModeUnsetError says no mode is chosen anywhere.

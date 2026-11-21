@@ -62,8 +62,18 @@ answer `y` to `Apply this plan? [y/N]` (default no).
   runs `wt-model setup` once the editor has closed, on the same terminal.
 
 Leaving local (for native or remote) from this tab never touches wt-model's
-LaunchAgent: the plan notes ``wt-model's LaunchAgent is untouched; remove it
-with `wt-model setup` ``.
+LaunchAgent: the plan notes it untouched. When the last check said the local
+server answers, the note grows to name it and the step that resolves the
+conflict (an illustrative example; `http://127.0.0.1:8787` there is the
+answer's url):
+
+``wt-model's LaunchAgent is untouched; the local server answers at
+http://127.0.0.1:8787 and will be unused. next: stop it with x on
+`wt-model setup`, or apply native there to remove the LaunchAgent``
+
+Without an answering check, the short form
+``wt-model's LaunchAgent is untouched; remove it with `wt-model setup` ``
+stands.
 
 Keys (the footer names the ones that apply): `left`/`right`/`space` choose the
 mode, `down` and `enter` move through its fields, `a` plans and applies, `c`

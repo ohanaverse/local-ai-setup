@@ -1717,3 +1717,29 @@ func TestModeTabHidesALongOrSchemelessAtURLWhole(t *testing.T) {
 		}
 	}
 }
+
+// TestModeTabLeavingLocalWithAnAnsweringServerNamesIt pins that the plan's
+// note names the answering local server and the next step (L1): the Mode
+// tab carries the local check it made on its visit into the plan's state
+// (at plan time Server holds the entered remote url's ping, or nothing).
+func TestModeTabLeavingLocalWithAnAnsweringServerNamesIt(t *testing.T) {
+	st := fullState()
+	st.EnvOverride = "" // no env override: the session url pinged is the local server's
+	st.Server.OK = true
+	st.Server.Kind = modelmode.KindNone
+	st.Server.Message = ""
+	mm := &modeMachine{states: []modelmode.State{st}, build: true}
+	m := keys(t, modeEditor(t, mm, 120, 50), "left", "a")
+	if mm.plans != 1 || m.mode.phase != modeConfirm {
+		t.Fatalf("plans = %d phase = %d, want the native plan's confirm", mm.plans, m.mode.phase)
+	}
+	v := flat(plain(m))
+	for _, want := range []string{
+		"thelocalserveranswersathttp://127.0.0.1:8787andwillbeunused",
+		"next:stopitwithxon`wt-modelsetup`",
+	} {
+		if !strings.Contains(v, want) {
+			t.Errorf("plan view lacks %q:\n%s", want, plain(m))
+		}
+	}
+}
