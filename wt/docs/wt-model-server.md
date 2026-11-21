@@ -218,7 +218,14 @@ server elsewhere (remote)", the mirror of the Mode tab's local pointer note.
   fields, `a` plans and applies (press it from the mode row: `enter` moves
   into the listen field, where letters are typed as text and `esc` leaves
   it), `c` checks, `r` re-reads, `s` / `x` / `R` start, stop or restart the
-  local server, `tab` switches tabs and `q` quits. Two keys act on the
+  local server — while config.toml stores `remote` or `native`, `s` and `R`
+  ask first (default no):
+  ``the mode is remote: no session uses the local server. next: stop it with
+  x when done, or make the mode local on `wt config`'s Mode tab.
+  Start it anyway? [y/N]`` — `x` never asks, and while the local server runs
+  unused the choice carries the note "the local server runs but remote is in
+  effect: nothing uses it. next: press x to stop it (choose local first), or
+  apply native here to remove it". `tab` switches tabs and `q` quits. Two keys act on the
   LiteLLM LaunchAgent, each as a plan you
   confirm: `k` opens the master-key menu (use the key the plist already has,
   generate a new one, which rotates `LITELLM_MASTER_KEY` with a backup under

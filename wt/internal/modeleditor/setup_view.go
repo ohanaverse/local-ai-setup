@@ -32,6 +32,9 @@ func (m *model) setupHints() []string {
 	case setupMenu:
 		return m.setupMenuHints()
 	case setupConfirm:
+		if st.prompt == promptRunUnused {
+			return []string{"y run · n/esc cancel · ctrl+c quit", "y · n/esc · ctrl+c quit"}
+		}
 		if st.prompt == promptReplaceRemote {
 			return []string{"y continue · n/esc cancel · ctrl+c quit", "y · n/esc · ctrl+c quit"}
 		}
@@ -238,6 +241,11 @@ func (m *model) modeChoice() (radios []string, notes [][]string) {
 		// NA: applying either choice here replaces remote's stored url and token.
 		notes = append(notes, editorkit.RenderLine(editorkit.Line{Text: fmt.Sprintf("config.toml says remote: applying %s replaces its url and token", st.want.Mode)}, m.width))
 	}
+	if mode := modelmode.ConfigMode(st.state.State); (mode == modelmode.ModeRemote || mode == modelmode.ModeNative) &&
+		(st.state.Agent.Job.Running || st.state.Agent.Job.Loaded) {
+		// NB: the local server runs but no session uses it; x stops it.
+		notes = append(notes, editorkit.RenderLine(editorkit.Line{Text: fmt.Sprintf("the local server runs but %s is in effect: nothing uses it. next: press x to stop it (choose local first), or apply native here to remove it", mode)}, m.width))
+	}
 	if !st.state.Platform.OK {
 		why := "local needs launchd (macOS)"
 		if st.state.Platform.Reason != "" {
@@ -351,6 +359,13 @@ func (m *model) setupPromptView(bar string, dim lipgloss.Style) string {
 	st := &m.setup
 	var text, question string
 	switch st.prompt {
+	case promptRunUnused:
+		q := "Start it anyway? [y/N]"
+		if st.control == modelsetup.ControlRestart {
+			q = "Restart it anyway? [y/N]"
+		}
+		text = fmt.Sprintf("the mode is %s: no session uses the local server. next: stop it with x when done, or make the mode local on `wt config`'s Mode tab.", modelmode.ConfigMode(st.state.State))
+		return editorkit.PromptView(bar, text, q, m.setupHints(), m.width, m.height, dim)
 	case promptReplaceRemote:
 		text = fmt.Sprintf("config.toml says remote: applying %s replaces its url and token. next: to use that server again, set remote on `wt config`'s Mode tab.", st.planWant.Mode)
 		question = "Continue? [y/N]"

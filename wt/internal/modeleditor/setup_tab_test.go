@@ -1431,3 +1431,88 @@ func TestSetupTabNotesRemoteReplacement(t *testing.T) {
 		t.Errorf("stored local must not note a replacement:\n%s", plain(m))
 	}
 }
+
+// TestSetupTabStartGateOnlyForStartAndRestart pins G2: s and R ask first
+// (default No) when the stored mode is not local, y runs the control and n
+// cancels in its own words; x is never gated, and a stored local mode is
+// never gated.
+func TestSetupTabStartGateOnlyForStartAndRestart(t *testing.T) {
+	for _, c := range []struct {
+		action  string
+		keysIn  []string
+		control modelsetup.ControlAction
+	}{
+		{"start", []string{"s"}, modelsetup.ControlStart},
+		{"restart", []string{"R"}, modelsetup.ControlRestart},
+	} {
+		sm := &setupMachine{states: []modelsetup.State{remoteState()}}
+		m := setupEditor(t, sm, 120, 50)
+		m = keys(t, m, c.keysIn...)
+		if m.setup.phase != setupConfirm || m.setup.prompt != promptRunUnused {
+			t.Fatalf("%s: phase = %d prompt = %d, want the unused-server gate", c.action, m.setup.phase, m.setup.prompt)
+		}
+		if m.setup.control != c.control {
+			t.Errorf("%s: control = %v, want the action the gate was asked for", c.action, m.setup.control)
+		}
+		v := flat(plain(m))
+		for _, want := range []string{
+			flat("the mode is remote: no session uses the local server"),
+			flat("next: stop it with x when done, or make the mode local on"),
+		} {
+			if !strings.Contains(v, want) {
+				t.Errorf("%s: gate copy lacks %q:\n%s", c.action, want, plain(m))
+			}
+		}
+		sm = &setupMachine{states: []modelsetup.State{remoteState()}}
+		m = setupEditor(t, sm, 120, 50)
+		m = keys(t, m, append(c.keysIn, "n")...)
+		if sm.controls != 0 || !strings.Contains(m.setup.status, "nothing was changed") {
+			t.Errorf("%s n: controls = %d status = %q", c.action, sm.controls, m.setup.status)
+		}
+		sm = &setupMachine{states: []modelsetup.State{remoteState()}}
+		m = setupEditor(t, sm, 120, 50)
+		m = keys(t, m, append(c.keysIn, "y")...)
+		if sm.controls != 1 {
+			t.Errorf("%s y: controls = %d, want 1", c.action, sm.controls)
+		}
+	}
+
+	sm := &setupMachine{states: []modelsetup.State{remoteState()}}
+	m := setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "x")
+	if sm.controls != 1 || m.setup.phase == setupConfirm {
+		t.Errorf("x: controls = %d phase = %d, want stop ungated", sm.controls, m.setup.phase)
+	}
+	sm = &setupMachine{states: []modelsetup.State{fullState()}}
+	m = setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "s")
+	if sm.controls != 1 || m.setup.phase == setupConfirm {
+		t.Errorf("stored local: s must not gate (controls = %d phase = %d)", sm.controls, m.setup.phase)
+	}
+}
+
+// TestSetupTabNotesUnusedServer pins NB: a running local server is named as
+// unused while the stored mode is remote or native, with its next step, and
+// not while the stored mode is local.
+func TestSetupTabNotesUnusedServer(t *testing.T) {
+	agent := modelsetup.AgentState{Present: true, Managed: true, Job: modelsetup.LaunchdJob{Loaded: true, Running: true, PID: 1066}}
+	st := remoteState()
+	st.Agent = agent
+	m := setupEditor(t, &setupMachine{states: []modelsetup.State{st}}, 120, 50)
+	v := flat(plain(m))
+	for _, want := range []string{
+		flat("the local server runs but remote is in effect: nothing uses it"),
+		flat("next: press x to stop it"),
+	} {
+		if !strings.Contains(v, want) {
+			t.Errorf("remote: view lacks %q:\n%s", want, plain(m))
+		}
+	}
+
+	st = fullState() // stored local: the server is in use
+	st.Agent = agent
+	m = setupEditor(t, &setupMachine{states: []modelsetup.State{st}}, 120, 50)
+	if v := flat(plain(m)); strings.Contains(v, flat("nothing uses it")) {
+		t.Errorf("stored local must not note an unused server:\n%s", plain(m))
+	}
+}

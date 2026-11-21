@@ -50,6 +50,9 @@ const (
 	// promptReplaceRemote is asked before planning when the stored mode is
 	// remote: the plan replaces its url and token (G1); n plans nothing.
 	promptReplaceRemote
+	// promptRunUnused is asked before s or R when the stored mode is not
+	// local: no session would use the server started (G2); n starts nothing.
+	promptRunUnused
 )
 
 // The form's fields, shown for local only (visibleFields): the listen
@@ -131,6 +134,9 @@ type setupTab struct {
 	prompt   setupPrompt
 	plan     modelsetup.Plan
 	planText string
+	// control is the start or restart the unused-server gate (promptRunUnused)
+	// was asked for: y runs it, n does not.
+	control modelsetup.ControlAction
 	// result is the result screen after an apply that left notes or
 	// recovery commands to read; nil when none is showing.
 	result *editorkit.ResultScreen
@@ -509,6 +515,24 @@ var controlWords = map[modelsetup.ControlAction][2]string{
 	modelsetup.ControlRestart: {"restarting", "restarted"},
 }
 
+// startControl is s and R: gated (G2) when config.toml stores a mode other
+// than local, since no session would use the server started. x never gates,
+// and a blocked action still says why it is blocked (setupControlCmd runs
+// the same check again before acting).
+func (m *model) startControl(a modelsetup.ControlAction) tea.Cmd {
+	st := &m.setup
+	if why := m.setupControlBlocked(); why != "" {
+		st.status = why
+		return nil
+	}
+	switch modelmode.ConfigMode(st.state.State) {
+	case modelmode.ModeRemote, modelmode.ModeNative:
+		st.control, st.prompt, st.phase = a, promptRunUnused, setupConfirm
+		return nil
+	}
+	return m.setupControlCmd(a)
+}
+
 // setupControlCmd starts, stops or restarts the LaunchAgent in a command,
 // the dep taken here.
 func (m *model) setupControlCmd(a modelsetup.ControlAction) tea.Cmd {
@@ -725,11 +749,11 @@ func (m *model) updateSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.startSetupPlanWith(modelsetup.LiteLLMTighten)
 	case "s":
-		return m, m.setupControlCmd(modelsetup.ControlStart)
+		return m, m.startControl(modelsetup.ControlStart)
 	case "x":
 		return m, m.setupControlCmd(modelsetup.ControlStop)
 	case "R":
-		return m, m.setupControlCmd(modelsetup.ControlRestart)
+		return m, m.startControl(modelsetup.ControlRestart)
 	}
 	// ctrl+s, a save key elsewhere, does nothing here.
 	return m, nil
@@ -873,6 +897,13 @@ func (m *model) updateSetupConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch st.prompt {
+	case promptRunUnused:
+		if yes {
+			return m, m.setupControlCmd(st.control)
+		}
+		st.phase = setupView
+		st.status = "not " + controlWords[st.control][1] + "; nothing was changed"
+		return m, nil
 	case promptReplaceRemote:
 		if !yes {
 			st.phase, st.queue, st.planWant = setupView, nil, modelsetup.Desired{}
