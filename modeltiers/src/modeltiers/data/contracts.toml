@@ -2,7 +2,8 @@
 # Floors and sentinels were set from the 2026-10-12 snapshots; the Fable 5.1 and
 # MiniMax-M3 sentinels were re-pinned 2026-10-21 (source re-scores, floors kept at that time).
 # 2026-11-21: the intelligence index's scale moved and its scored set shrank, so
-# its floors moved and three sentinels dropped that vote.
+# its floors moved, three sentinels dropped that vote and claude-haiku-5-5 was added
+# as its standard pin.
 # Editing this file is the re-calibration: there is no flag that overrides a
 # sentinel.
 #
