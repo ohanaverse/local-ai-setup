@@ -1159,6 +1159,18 @@ func TestSetupTabSaysWhenStoredLocalCannotRunHere(t *testing.T) {
 	}
 }
 
+// TestSetupTabPointsAtWtConfigForRemote pins that the mode choice carries
+// the mirror of the Mode tab's local pointer note: remote is not one of the
+// modes set up here, so the note names where it is chosen.
+func TestSetupTabPointsAtWtConfigForRemote(t *testing.T) {
+	for _, st := range []modelsetup.State{fullState(), remoteState(), offMacState()} {
+		v := plain(setupEditor(t, &setupMachine{states: []modelsetup.State{st}}, 120, 50))
+		if !strings.Contains(v, remotePointerNote) {
+			t.Errorf("resolution %+v: the view does not name `wt config` for remote:\n%s", st.Resolution, v)
+		}
+	}
+}
+
 // TestSetupTabCallsApplyAndControlOnlyFromCommands pins carry-forward 8:
 // Update hands Plan, Apply and Control to commands that captured the deps
 // when they were made; nothing is called until the command runs, and a dep

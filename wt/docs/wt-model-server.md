@@ -196,6 +196,8 @@ other tab (`tab` switches; a Models edit made there still gets its one route
 sync when the screen closes). It sets up and controls wt-model on this
 machine and offers two modes, `local` and `native`; `remote` is not offered
 here, since a session's remote server is set on the Mode tab of `wt config`.
+The choice says so under it, as the note "run `wt config` (Mode tab) to use a
+server elsewhere (remote)", the mirror of the Mode tab's local pointer note.
 
 - `local` plans the token file, wt-model's LiteLLM pair, the
   `local.wt-model.serve` LaunchAgent and the `[model-server]` table (see

@@ -209,8 +209,13 @@ func setupStatusLines(st modelsetup.State, home string) []editorkit.Line {
 	return append(lines, modeview.ProblemLines(st.State)...)
 }
 
+// remotePointerNote is the mirror of the Mode tab's local pointer note
+// (sessioneditor.localPointerNote): remote is not one of the modes set up
+// here, so the choice names where it is chosen.
+const remotePointerNote = "run `wt config` (Mode tab) to use a server elsewhere (remote)"
+
 // modeChoice is the mode choice: (x) on the chosen one, (-) on local where
-// it cannot be set up.
+// it cannot be set up, and under it the note that remote is `wt config`'s.
 func (m *model) modeChoice() (radios []string, notes [][]string) {
 	st := &m.setup
 	var opts []string
@@ -225,6 +230,7 @@ func (m *model) modeChoice() (radios []string, notes [][]string) {
 		opts = append(opts, mark+" "+string(mode))
 	}
 	lines := editorkit.ChoiceLines("choose", opts, m.width)
+	notes = append(notes, editorkit.RenderLine(editorkit.Line{Text: remotePointerNote}, m.width))
 	if !st.state.Platform.OK {
 		why := "local needs launchd (macOS)"
 		if st.state.Platform.Reason != "" {
