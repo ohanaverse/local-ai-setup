@@ -1516,3 +1516,25 @@ func TestSetupTabNotesUnusedServer(t *testing.T) {
 		t.Errorf("stored local must not note an unused server:\n%s", plain(m))
 	}
 }
+
+// TestSetupTabKMenuActionsGateLikeA pins the Review Focus line: a k-menu
+// action that plans through the same read and queue as a asks G1 too when
+// the stored mode is remote — the gate lives in the shared path, not in a's
+// key.
+func TestSetupTabKMenuActionsGateLikeA(t *testing.T) {
+	st := remoteState()
+	st.LiteLLMPlist = modelsetup.LiteLLMPlistState{Present: true, HasMasterKey: true, Mode: 0o600}
+	sm := &setupMachine{states: []modelsetup.State{st}, plan: okPlan()}
+	m := setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "k", "enter") // menu: use the plist's key
+	if m.setup.phase != setupConfirm || m.setup.prompt != promptReplaceRemote {
+		t.Fatalf("k-menu action: phase = %d prompt = %d, want the replace-remote gate", m.setup.phase, m.setup.prompt)
+	}
+	if v := flat(plain(m)); !strings.Contains(v, flat("config.toml says remote: applying local replaces its url and token")) {
+		t.Errorf("gate copy missing on the k-menu path:\n%s", plain(m))
+	}
+	m = keys(t, m, "y", "y") // gate, then Apply this plan?
+	if sm.applies != 1 {
+		t.Errorf("y then y: applies = %d, want 1", sm.applies)
+	}
+}
