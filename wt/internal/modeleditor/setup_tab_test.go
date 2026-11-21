@@ -1253,6 +1253,8 @@ func TestSetupTabNeverRendersAPieceOfAnAtURL(t *testing.T) {
 	m := setupEditor(t, sm, 120, 50)
 	screens := map[string]string{"view": plain(m)}
 	m = keys(t, m, "a")
+	screens["gate"] = plain(m) // G1 fires first here; its copy names no url
+	m = keys(t, m, "y")
 	screens["local plan"] = plain(m) + "\n" + m.setup.status
 	if m.setup.phase != setupConfirm || !strings.Contains(flat(plain(m)), "credentialsarenotkept") {
 		t.Errorf("phase %d status %q: the local plan over a url with credentials lacks the note:\n%s", m.setup.phase, m.setup.status, plain(m))
@@ -1344,5 +1346,88 @@ func TestSetupTabHoldsAQuitForAModelsWriteToo(t *testing.T) {
 	}
 	if _, cmd = m.Update(start()); !isQuit(cmd) {
 		t.Errorf("the start's result did not issue the held quit")
+	}
+}
+
+// TestSetupTabGateBeforeReplacingRemote pins G1: an apply that would replace
+// remote's stored url and token asks first (default No), names the snapshot's
+// mode and the next step; n aborts the whole flow with nothing planned, and y
+// continues into the plan and its confirm. The gate names the a snapshot's
+// mode, never a live choice.
+func TestSetupTabGateBeforeReplacingRemote(t *testing.T) {
+	sm := &setupMachine{states: []modelsetup.State{remoteState()}, plan: okPlan()}
+	m := setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "a")
+	if m.setup.phase != setupConfirm || m.setup.prompt != promptReplaceRemote {
+		t.Fatalf("after a: phase = %d prompt = %d, want the replace-remote gate", m.setup.phase, m.setup.prompt)
+	}
+	v := flat(plain(m))
+	for _, want := range []string{
+		flat("config.toml says remote: applying local replaces its url and token"),
+		flat("next: to use that server again, set remote on"),
+	} {
+		if !strings.Contains(v, want) {
+			t.Errorf("gate copy lacks %q:\n%s", want, plain(m))
+		}
+	}
+	m = keys(t, m, "y", "y") // gate, then Apply this plan?
+	if sm.applies != 1 {
+		t.Errorf("y then y: applies = %d, want 1", sm.applies)
+	}
+
+	// The gate names the snapshot's mode: native chosen before a.
+	sm = &setupMachine{states: []modelsetup.State{remoteState()}, plan: okPlan()}
+	m = setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "right", "a")
+	if v := flat(plain(m)); !strings.Contains(v, flat("applying native replaces its url and token")) {
+		t.Errorf("native snapshot:\n%s", plain(m))
+	}
+
+	sm = &setupMachine{states: []modelsetup.State{remoteState()}, plan: okPlan()}
+	m = setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "a", "n")
+	if m.setup.phase != setupView || m.setup.status != "not applied; nothing was changed" {
+		t.Errorf("n: phase = %d status = %q", m.setup.phase, m.setup.status)
+	}
+	if strings.Contains(strings.Join(sm.seq, ","), "plan") || sm.applies != 0 {
+		t.Errorf("n: dep calls = %v, want no plan and no apply", sm.seq)
+	}
+}
+
+// TestSetupTabGateOnlyForPlansThatReplaceRemote pins the non-goals: no gate
+// where the stored mode is not remote, and none for t (tighten), which writes
+// no config step.
+func TestSetupTabGateOnlyForPlansThatReplaceRemote(t *testing.T) {
+	sm := &setupMachine{states: []modelsetup.State{fullState()}, plan: okPlan()}
+	m := setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "a")
+	if m.setup.prompt != promptApply {
+		t.Errorf("stored local: prompt = %d, want the plan's confirm directly", m.setup.prompt)
+	}
+
+	tight := remoteState()
+	tight.LiteLLMPlist = modelsetup.LiteLLMPlistState{Present: true, Mode: 0o644}
+	sm = &setupMachine{states: []modelsetup.State{tight}, plan: okPlan()}
+	m = setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "t")
+	if m.setup.phase != setupConfirm || m.setup.prompt != promptApply {
+		t.Errorf("tighten: phase = %d prompt = %d, want the plan's confirm directly", m.setup.phase, m.setup.prompt)
+	}
+}
+
+// TestSetupTabNotesRemoteReplacement pins NA: while config.toml says remote,
+// the choice names what applying it replaces.
+func TestSetupTabNotesRemoteReplacement(t *testing.T) {
+	m := setupEditor(t, &setupMachine{states: []modelsetup.State{remoteState()}}, 120, 50)
+	if v := flat(plain(m)); !strings.Contains(v, flat("config.toml says remote: applying local replaces its url and token")) {
+		t.Errorf("local chosen:\n%s", plain(m))
+	}
+	m = keys(t, m, "right")
+	if v := flat(plain(m)); !strings.Contains(v, flat("applying native replaces its url and token")) {
+		t.Errorf("native chosen:\n%s", plain(m))
+	}
+	m = setupEditor(t, &setupMachine{states: []modelsetup.State{fullState()}}, 120, 50)
+	if v := flat(plain(m)); strings.Contains(v, flat("replaces its url and token")) {
+		t.Errorf("stored local must not note a replacement:\n%s", plain(m))
 	}
 }

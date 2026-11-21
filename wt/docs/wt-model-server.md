@@ -202,6 +202,14 @@ server elsewhere (remote)", the mirror of the Mode tab's local pointer note.
 - `local` plans the token file, wt-model's LiteLLM pair, the
   `local.wt-model.serve` LaunchAgent and the `[model-server]` table (see
   [Setting it up](#setting-it-up)). macOS only: elsewhere choose `native`.
+  While config.toml stores `remote`, the choice carries the note
+  "config.toml says remote: applying local replaces its url and token", and
+  applying asks first (default no):
+  ``config.toml says remote: applying local replaces its url and token.
+  next: to use that server again, set remote on `wt config`'s Mode tab.
+  Continue? [y/N]`` — the next step resolving the conflict goes with the
+  question. `t` and an apply that replaces nothing ask only the plan's own
+  confirm.
 - `native` leaves local: its plan asks, default no, whether to boot out and
   remove the LaunchAgent wt wrote.
 - The rows show the platform, the LaunchAgent, the LiteLLM pair, the listener

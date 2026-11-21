@@ -47,6 +47,9 @@ const (
 	// promptRemoveAgent is asked before planning when the choice leaves
 	// local with wt's LaunchAgent installed; y sets Desired.RemoveAgent.
 	promptRemoveAgent
+	// promptReplaceRemote is asked before planning when the stored mode is
+	// remote: the plan replaces its url and token (G1); n plans nothing.
+	promptReplaceRemote
 )
 
 // The form's fields, shown for local only (visibleFields): the listen
@@ -340,6 +343,10 @@ func (m *model) applySetupObserved(msg setupObservedMsg) tea.Cmd {
 		return nil
 	}
 	s, want := st.state, st.planWant
+	if want.LiteLLM != modelsetup.LiteLLMTighten && modelmode.ConfigMode(s.State) == modelmode.ModeRemote {
+		// G1: this plan replaces remote's stored url and token.
+		st.queue = append(st.queue, promptReplaceRemote)
+	}
 	if want.Mode != modelmode.ModeLocal && s.Agent.Present && s.Agent.Managed {
 		st.queue = append(st.queue, promptRemoveAgent)
 	}
@@ -866,6 +873,14 @@ func (m *model) updateSetupConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch st.prompt {
+	case promptReplaceRemote:
+		if !yes {
+			st.phase, st.queue, st.planWant = setupView, nil, modelsetup.Desired{}
+			st.status = "not applied; nothing was changed"
+			return m, nil
+		}
+		// y: go on to the plan and its own confirm.
+		return m, m.nextSetupStep()
 	case promptRemoveAgent:
 		st.planWant.RemoveAgent = yes
 	default:
