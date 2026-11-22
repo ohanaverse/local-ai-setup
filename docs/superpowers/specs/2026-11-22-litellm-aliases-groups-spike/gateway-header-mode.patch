@@ -1,0 +1,33 @@
+diff --git a/wt/internal/modelgateway/gateway.go b/wt/internal/modelgateway/gateway.go
+index fc5b9f06..e8ae2ce6 100644
+--- a/wt/internal/modelgateway/gateway.go
++++ b/wt/internal/modelgateway/gateway.go
+@@ -51,6 +51,15 @@ func New(c Config) http.Handler {
+ 	proxy := &httputil.ReverseProxy{
+ 		Rewrite: func(pr *httputil.ProxyRequest) {
+ 			pr.SetURL(c.Upstream)
++			if pr.In.Header.Get(spikeHeader) != "" {
++				// SPIKE: the caller authenticated by the dedicated header, so its own
++				// Authorization (a subscription OAuth token) goes through untouched
++				// and LiteLLM is authenticated by x-litellm-api-key instead.
++				pr.Out.Header.Del(spikeHeader)
++				pr.Out.Header.Del("x-api-key")
++				pr.Out.Header.Set("x-litellm-api-key", c.UpstreamKey)
++				return
++			}
+ 			pr.Out.Header.Del("Authorization")
+ 			pr.Out.Header.Del("x-api-key")
+ 			pr.Out.Header.Set("Authorization", "Bearer "+c.UpstreamKey)
+@@ -129,7 +138,12 @@ func writeError(w http.ResponseWriter, status int, e modelapi.GatewayErrorObject
+ }
+ 
+ // validToken accepts the token as a bearer or as x-api-key, in constant time.
++const spikeHeader = "x-wt-model-token"
++
+ func validToken(r *http.Request, token string) bool {
++	if h := r.Header.Get(spikeHeader); h != "" {
++		return token != "" && subtle.ConstantTimeCompare([]byte(h), []byte(token)) == 1
++	}
+ 	got := r.Header.Get("x-api-key")
+ 	if rest, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+ 		got = rest
