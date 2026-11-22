@@ -1,12 +1,14 @@
 package lifecycle
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,5 +138,58 @@ func TestProxyRestartsRunOneAtATime(t *testing.T) {
 	WaitPendingRoutes()
 	if most.Load() != 1 {
 		t.Fatalf("at most %d restarts ran at once, want 1", most.Load())
+	}
+}
+
+// TestTryEnsureRouteUsesALiveContextForTheDatabase pins that the picker's
+// non-blocking route check gives its database half a live context of its
+// own: the already-cancelled context it uses to try the config.yaml lock
+// exactly once would fail every model API call, so with the proxy pair set
+// the check always fell back to config.yaml and restarted the proxy.
+func TestTryEnsureRouteUsesALiveContextForTheDatabase(t *testing.T) {
+	path, restarts, _ := realRoutes(t, storeOnYAML)
+	applyRoutes = applyChangeWithAdmin // realRoutes' cleanup restores the seam
+	var (
+		mu    sync.Mutex
+		rows  []map[string]any
+		posts atomic.Int32
+	)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/model/info":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": rows})
+		case "/model/new":
+			posts.Add(1)
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			info, _ := req["model_info"].(map[string]any)
+			info["db_model"] = true
+			rows = append(rows, req)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(proxy.Close)
+	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
+	cfg.SetLitellmForTest(config.LitellmState{URL: proxy.URL, APIKey: "sk-test-secret"})
+	i := config.IndexModelByID(cfg.Models, "ollama/a:1")
+
+	var out bytes.Buffer
+	changed, done := TryEnsureModelRouteTo(&out, cfg, cfg.Models[i])
+	WaitPendingRoutes()
+	if !done || changed {
+		t.Fatalf("changed=%v done=%v, want a finished check with no config.yaml change", changed, done)
+	}
+	if posts.Load() != 1 {
+		t.Fatalf("%d /model/new, want 1; output %q", posts.Load(), out.String())
+	}
+	if strings.Contains(out.String(), "database routes unavailable") {
+		t.Fatalf("output %q: the database half fell back", out.String())
+	}
+	if got := routedIDs(t, path); len(got) != 0 || restarts() != 0 {
+		t.Fatalf("routed %v restarts %d, want no file row and no restart", got, restarts())
 	}
 }

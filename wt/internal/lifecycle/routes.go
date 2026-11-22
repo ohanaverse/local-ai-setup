@@ -243,7 +243,7 @@ func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) bool {
 // keeps a model from being routed under one id by one caller and another id by
 // the next.
 func ensureChange(ctx context.Context, cfg *config.Config, ch litellm.Change) bool {
-	w, err := applyReported(ctx, cfg, ch, restartIfChanged, false)
+	w, err := applyReported(ctx, cfg, ch, restartIfChanged, false, nil)
 	if err != nil {
 		routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
 	}
@@ -392,6 +392,11 @@ func EnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) bool 
 // is final is litellm.ErrRegistryRedirected — no wait changes a refusal — so it
 // is reported at once and done is true. What it does print goes to out, on
 // EnsureModelRouteTo's terms.
+//
+// With the proxy pair set (#598) a taken lock is followed by the database
+// half, which runs on a live context of its own (litellm.Options.DBCtx) and
+// so can wait up to its 15 s deadline on a hung proxy; the cancelled context
+// would fail every model API call and fall back to config.yaml.
 func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (changed, done bool) {
 	ch, ok := modelRouteChange(cfg, m)
 	if !ok {
@@ -399,7 +404,10 @@ func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (c
 	}
 	ctx, cancel := context.WithCancel(withRouteOutput(context.Background(), out))
 	cancel()
-	w, err := applyReported(ctx, cfg, ch, restartIfChanged, true)
+	// The cancelled ctx only makes the lock attempt a single try; the
+	// database half (with the proxy pair set) gets a live context of its own,
+	// or every model API call would fail and fall back to config.yaml.
+	w, err := applyReported(ctx, cfg, ch, restartIfChanged, true, context.WithoutCancel(ctx))
 	if err != nil {
 		// A refused pairing is an answer, not a held lock: the retry would
 		// take the lock only to be refused again, behind a routing screen with
@@ -551,7 +559,7 @@ func bounceRoutes(ctx context.Context, cfg *config.Config) {
 // (see WaitPendingRoutes) because the agent they hand off to dials the model
 // through the proxy.
 func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) bool {
-	w, err := applyReported(ctx, cfg, ch, mode, false)
+	w, err := applyReported(ctx, cfg, ch, mode, false, nil)
 	if err != nil {
 		routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
 	}
@@ -574,7 +582,10 @@ func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, 
 // LiteLLM not set up), a restartForced mode settles the earlier deferred write
 // even when this one failed (or the proxy keeps serving the dead occupant's
 // route), and the restart itself runs asynchronously.
-func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode, deferMissing bool) (routeWrite, error) {
+//
+// dbCtx, when non-nil, is the database half's own context
+// (litellm.Options.DBCtx); nil means ctx.
+func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode, deferMissing bool, dbCtx context.Context) (routeWrite, error) {
 	res, err := applyRoutes(cfg, ch, litellm.Options{
 		// The restart is always deferred here: the caller decides whether to
 		// restart, and runs that restart asynchronously, below.
@@ -587,6 +598,7 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 		// Only the caller knows whether it can pay a row build here; nothing
 		// sets this but the launch-time check's non-blocking form.
 		DeferMissingAdd: deferMissing,
+		DBCtx:           dbCtx,
 	})
 	if err != nil {
 		// This write failed, but restartForced means an earlier deferred

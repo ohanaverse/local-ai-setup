@@ -83,7 +83,10 @@ func newDBRoutes(o Options) *dbRoutes {
 	if o.Admin == nil {
 		return nil
 	}
-	base := o.Ctx
+	base := o.DBCtx
+	if base == nil {
+		base = o.Ctx
+	}
 	if base == nil {
 		base = context.Background()
 	}
