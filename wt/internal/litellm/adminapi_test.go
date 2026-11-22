@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 const testMasterKey = "sk-test-master"
@@ -153,5 +154,44 @@ func TestErrorsNeverContainTheKey(t *testing.T) {
 		if err == nil || strings.Contains(err.Error(), testMasterKey) {
 			t.Errorf("error %v must exist and omit the key", err)
 		}
+	}
+}
+
+// TestDeleteNotFoundTextOnOtherStatusIsAnError checks that only 404 and the
+// verified 400 "not found in db" count as already deleted: a 401 or 500 whose
+// body merely says "not found" (a bad key, a gateway page) must surface.
+func TestDeleteNotFoundTextOnOtherStatusIsAnError(t *testing.T) {
+	for _, status := range []int{401, 403, 500} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			w.Write([]byte("route not found"))
+		}))
+		err := (&AdminClient{BaseURL: srv.URL, Key: testMasterKey}).Delete(context.Background(), "x")
+		srv.Close()
+		if err == nil {
+			t.Errorf("status %d with a not-found body must be an error", status)
+		}
+	}
+}
+
+// TestErrorBodyRedactsKeyBeforeTruncating checks that a key straddling the
+// 300-byte cut does not survive as a partial prefix, and that the cut never
+// splits a multi-byte rune.
+func TestErrorBodyRedactsKeyBeforeTruncating(t *testing.T) {
+	body := strings.Repeat("a", 295) + testMasterKey + strings.Repeat("é", 50)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	err := (&AdminClient{BaseURL: srv.URL, Key: testMasterKey}).Delete(context.Background(), "x")
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if strings.Contains(err.Error(), "sk-") || strings.Contains(err.Error(), "sk") && strings.Contains(err.Error(), "test-m") {
+		t.Errorf("key fragment leaked: %q", err.Error())
+	}
+	if !utf8.ValidString(err.Error()) {
+		t.Errorf("error is not valid UTF-8: %q", err.Error())
 	}
 }

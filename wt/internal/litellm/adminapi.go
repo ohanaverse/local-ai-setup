@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ErrDBModelsOff reports that the proxy refused a database write because
@@ -95,14 +96,14 @@ func (c *AdminClient) Add(ctx context.Context, m DBModel) error {
 
 // Delete removes one database row (POST /model/delete {"id": ...}). A row
 // that is already gone (LiteLLM answers HTTP 400 "not found in db"; a 404 is
-// accepted too) is nil.
+// accepted too) is nil; any other status is an error.
 func (c *AdminClient) Delete(ctx context.Context, id string) error {
 	status, body, err := c.do(ctx, http.MethodPost, "/model/delete", map[string]string{"id": id})
 	if err != nil {
 		return err
 	}
 	if status == http.StatusOK || status == http.StatusNotFound ||
-		strings.Contains(strings.ToLower(string(body)), "not found") {
+		(status == http.StatusBadRequest && strings.Contains(strings.ToLower(string(body)), "not found in db")) {
 		return nil
 	}
 	return c.statusError("delete model", status, body)
@@ -142,11 +143,15 @@ func (c *AdminClient) do(ctx context.Context, method, path string, payload any) 
 }
 
 func (c *AdminClient) statusError(what string, status int, body []byte) error {
-	msg := strings.TrimSpace(string(body))
+	msg := c.redactString(strings.TrimSpace(string(body)))
 	if len(msg) > 300 {
-		msg = msg[:300] + "..."
+		cut := 300
+		for cut > 0 && !utf8.RuneStart(msg[cut]) {
+			cut--
+		}
+		msg = msg[:cut] + "..."
 	}
-	return fmt.Errorf("litellm: %s: HTTP %d: %s", what, status, c.redactString(msg))
+	return fmt.Errorf("litellm: %s: HTTP %d: %s", what, status, msg)
 }
 
 func (c *AdminClient) redact(err error) error {
