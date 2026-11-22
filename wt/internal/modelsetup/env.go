@@ -78,6 +78,8 @@ type Net interface {
 	modelmode.Net
 	Get(ctx context.Context, url, bearer string) (status int, body []byte, err error)
 	ListenerPID(ctx context.Context, port int) (pid int, ok bool, err error)
+	// ParentPID is pid's parent process (0 when it has none).
+	ParentPID(ctx context.Context, pid int) (int, error)
 	ProcessStart(ctx context.Context, pid int) (time.Time, error)
 }
 
@@ -372,6 +374,25 @@ func (realNet) ListenerPID(ctx context.Context, port int) (int, bool, error) {
 		}
 	}
 	return 0, false, nil
+}
+
+func (realNet) ParentPID(ctx context.Context, pid int) (int, error) {
+	if testing.Testing() {
+		return 0, errUnderTest
+	}
+	ps, err := findTool("ps", "/bin")
+	if err != nil {
+		return 0, err
+	}
+	out, err := exec.CommandContext(ctx, ps, "-o", "ppid=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0, fmt.Errorf("ps: %w", err)
+	}
+	ppid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, fmt.Errorf("ps parent pid %q: %w", strings.TrimSpace(string(out)), err)
+	}
+	return ppid, nil
 }
 
 func (realNet) ProcessStart(ctx context.Context, pid int) (time.Time, error) {

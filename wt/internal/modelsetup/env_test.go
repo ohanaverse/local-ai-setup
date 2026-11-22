@@ -29,6 +29,8 @@ func TestDefaultEnvRefusesLaunchdAndListenerLookupsUnderTest(t *testing.T) {
 	checks["ListenerPID"] = err
 	_, err = env.Net.ProcessStart(ctx, 1)
 	checks["ProcessStart"] = err
+	_, err = env.Net.ParentPID(ctx, 1)
+	checks["ParentPID"] = err
 	for name, err := range checks {
 		if err == nil || !strings.Contains(err.Error(), "test binary") {
 			t.Errorf("%s: err = %v, want one mentioning \"test binary\"", name, err)

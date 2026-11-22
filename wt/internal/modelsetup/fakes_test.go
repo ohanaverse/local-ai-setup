@@ -51,7 +51,9 @@ type fakeEnv struct {
 	// label): a plan that unloads two jobs can then time out on one.
 	lingerLabel string
 	lingering   map[string]int
-	kickstartErr       map[string]error // by label
+	// parents is each pid's parent for the fake ParentPID (absent: none).
+	parents      map[int]int
+	kickstartErr map[string]error // by label
 	// litellmPID, when set, makes a Bootstrap of the LiteLLM plist load and
 	// run the local.litellm.proxy job with this pid.
 	litellmPID int
@@ -114,6 +116,7 @@ func newFakeEnv(t *testing.T) *fakeEnv {
 		modes:        map[string]os.FileMode{},
 		jobs:         map[string]LaunchdJob{},
 		lingering:    map[string]int{},
+		parents:      map[int]int{},
 		writeErr:     map[string]error{},
 		kickstartErr: map[string]error{},
 		env:          map[string]string{},
@@ -399,6 +402,11 @@ func (x fakeNet) ListenerPID(_ context.Context, port int) (int, bool, error) {
 		return 0, false, nil
 	}
 	return x.f.listenerPID, x.f.listenerOK, x.f.listenerErr
+}
+
+func (x fakeNet) ParentPID(_ context.Context, pid int) (int, error) {
+	x.f.rec("Net.ParentPID %d", pid)
+	return x.f.parents[pid], nil
 }
 
 func (x fakeNet) ProcessStart(_ context.Context, pid int) (time.Time, error) {

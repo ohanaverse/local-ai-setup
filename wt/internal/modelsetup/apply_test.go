@@ -864,6 +864,43 @@ func TestApplyCreateRefusesAnAnswerFromAnotherProcess(t *testing.T) {
 	}
 }
 
+// TestApplyCreateAcceptsAListenerDescendedFromTheJob pins #641's first item:
+// the job launchd supervises is not always the process that listens — a
+// litellm that is a shell wrapper forking Python without exec, or one with
+// several workers, listens from a descendant of the job's pid. Such an
+// answer is the new job's; a listener with no path to the job's pid is still
+// another process's, and the pair is not written.
+func TestApplyCreateAcceptsAListenerDescendedFromTheJob(t *testing.T) {
+	p := mustPlan(t, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
+
+	for name, parents := range map[string]map[int]int{
+		"child":      {88: 77},
+		"grandchild": {99: 88, 88: 77},
+	} {
+		f := apEnv(t)
+		liteLLMUp(f, 77)
+		f.listeners[4000] = 88
+		if name == "grandchild" {
+			f.listeners[4000] = 99
+		}
+		f.parents = parents
+		r, _ := apply(t, f, p)
+		if r.Failed != nil || r.Err != nil || !f.called("Config.SetPair") {
+			t.Errorf("%s: Failed = %+v, Err = %v; want the create to finish", name, r.Failed, r.Err)
+		}
+	}
+
+	// A listener whose ancestors never reach the job is another process's.
+	f := apEnv(t)
+	liteLLMUp(f, 77)
+	f.listeners[4000] = 99
+	f.parents = map[int]int{99: 55, 55: 1}
+	r, _ := apply(t, f, p)
+	if r.Failed == nil || r.Failed.Kind != StepWait || f.called("Config.SetPair") {
+		t.Errorf("unrelated listener: Failed = %+v, Err = %v; want a refusal with no pair written", r.Failed, r.Err)
+	}
+}
+
 // TestApplyRotateNeverWritesTheKeyAtALooseMode pins Important 1: the edited
 // plist is written in one step without group or other bits (0644 is written
 // 0600, never 0644 first), the backup (which holds the salt key and any

@@ -696,11 +696,42 @@ func ownListener(ctx context.Context, env Env, s Step) error {
 	if err != nil {
 		return fmt.Errorf("look for the listener on port %d: %w", port, err)
 	}
-	if !ok || !job.Running || job.PID == 0 || pid != job.PID {
+	if ok && job.Running && job.PID != 0 && !descendsFrom(ctx, env, pid, job.PID) {
+		ok = false
+	}
+	if !ok || !job.Running || job.PID == 0 {
 		return fmt.Errorf("LiteLLM answered on port %d, but the listener there (pid %d) is not the new %s job (pid %d): another process holds the port; the pair was not written",
 			port, pid, litellm.ProxyLabel, job.PID)
 	}
 	return nil
+}
+
+// listenerAncestors bounds the walk from a listener up to the job's pid: a
+// wrapper script, a worker pool and a spawn each add one level.
+const listenerAncestors = 4
+
+// descendsFrom reports whether pid is job or a descendant of it, found by
+// walking up at most listenerAncestors parents. The job launchd supervises is
+// not always the process that listens (a litellm that is a shell wrapper
+// forking Python without exec, or one with several workers): a process with
+// no path to the job's pid is another process's, which is the case the check
+// exists for. A parent that cannot be read ends the walk with "no" — the
+// check fails closed (#641).
+func descendsFrom(ctx context.Context, env Env, pid, job int) bool {
+	for i := 0; i <= listenerAncestors; i++ {
+		if pid == job {
+			return true
+		}
+		if pid <= 1 {
+			return false
+		}
+		parent, err := env.Net.ParentPID(ctx, pid)
+		if err != nil {
+			return false
+		}
+		pid = parent
+	}
+	return false
 }
 
 // keyAccepted makes one authenticated request (GET /v1/models, the key only
