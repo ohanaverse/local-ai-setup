@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -251,5 +252,33 @@ func TestOptOutLineOnlyOnSyncAndDryRun(t *testing.T) {
 	}
 	if fake.calls != 0 {
 		t.Fatalf("%d API calls with the opt-out, want 0", fake.calls)
+	}
+}
+
+// TestAddErrorRedactsTheRowsAPIKey checks that a LiteLLM 500 whose body
+// echoes the request (litellm_params included) does not carry a row's
+// resolved api_key (rec's key) into the error, which becomes a warning line
+// in a start job's log; the master key stays redacted as before.
+func TestAddErrorRedactsTheRowsAPIKey(t *testing.T) {
+	const secret = `rec-secret-<&>-"42"`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		w.WriteHeader(500)
+		fmt.Fprintf(w, `{"error":"bad request %s with key %s"}`, b, testMasterKey)
+	}))
+	t.Cleanup(srv.Close)
+	c := &AdminClient{BaseURL: srv.URL, Key: testMasterKey}
+	err := c.Add(t.Context(), managedRow("wt:rec/flint", "rec/flint", map[string]any{"model": "openai/flint", "api_key": secret}))
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	enc, _ := json.Marshal(secret)
+	for _, leak := range []string{secret, strings.Trim(string(enc), `"`), "rec-secret", testMasterKey} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("error %q carries %q", err, leak)
+		}
+	}
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("error %q, want the status", err)
 	}
 }

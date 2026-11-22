@@ -154,7 +154,29 @@ func (c *AdminClient) Add(ctx context.Context, m DBModel) error {
 	if strings.Contains(strings.ToLower(string(body)), "store_model_in_db") {
 		return ErrDBModelsOff
 	}
-	return c.statusError("add model", status, body)
+	return c.statusError("add model", status, body, rowSecrets(m)...)
+}
+
+// rowSecrets is the spellings of m's resolved api_key (one that is not an
+// os.environ/ reference, e.g. rec's key) an error body may echo: as sent,
+// and JSON-encoded with and without HTML escaping. nil when there is none.
+func rowSecrets(m DBModel) []string {
+	v, _ := m.Params["api_key"].(string)
+	if v == "" || strings.HasPrefix(v, "os.environ/") {
+		return nil
+	}
+	unquote := func(b []byte) string { return string(b[1 : len(b)-1]) } // a JSON string's quotes
+	out := []string{v}
+	if b, err := json.Marshal(v); err == nil {
+		out = append(out, unquote(b))
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(v) == nil {
+		out = append(out, unquote(bytes.TrimSpace(buf.Bytes())))
+	}
+	return out
 }
 
 // Delete removes one database row (POST /model/delete {"id": ...}). A row
@@ -217,8 +239,18 @@ func (c *AdminClient) do(ctx context.Context, method, path string, payload any, 
 	return resp.StatusCode, body, nil
 }
 
-func (c *AdminClient) statusError(what string, status int, body []byte) error {
-	msg := c.redactString(strings.TrimSpace(string(body)))
+// statusError quotes an error answer, shortened, with the master key and
+// each of secrets (a row's resolved api_key, rowSecrets) redacted first.
+func (c *AdminClient) statusError(what string, status int, body []byte, secrets ...string) error {
+	msg := strings.TrimSpace(string(body))
+	// Longest first, so a spelling that contains another is redacted whole.
+	slices.SortFunc(secrets, func(a, b string) int { return len(b) - len(a) })
+	for _, s := range secrets {
+		if s != "" {
+			msg = strings.ReplaceAll(msg, s, "[redacted]")
+		}
+	}
+	msg = c.redactString(msg)
 	if len(msg) > 300 {
 		cut := 300
 		for cut > 0 && !utf8.RuneStart(msg[cut]) {
