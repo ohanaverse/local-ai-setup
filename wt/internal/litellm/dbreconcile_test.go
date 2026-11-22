@@ -174,11 +174,15 @@ func TestRouteHashIgnoresNumberTypeAndKeyOrder(t *testing.T) {
 // /model/info it drops api_key from litellm_params and masks other
 // sensitive-looking values. addFailBody, when set, answers every /model/new
 // with that body as an HTTP 500 and stores nothing; calls counts requests.
+// swallowAdds answers /model/new with 200 and stores nothing (a database that
+// is off but says yes, Review Focus 5); log holds "METHOD /path" per request.
 type fakeDBServer struct {
 	mu          sync.Mutex
 	rows        map[string]map[string]any // id -> {"model_name", "litellm_params", "model_info"}
 	addFailBody string
+	swallowAdds bool
 	calls       int
+	log         []string
 }
 
 func maskedParams(p map[string]any) map[string]any {
@@ -205,6 +209,7 @@ func (f *fakeDBServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.log = append(f.log, r.Method+" "+r.URL.Path)
 	b, _ := io.ReadAll(r.Body)
 	switch r.URL.Path {
 	case "/model/info":
@@ -224,6 +229,10 @@ func (f *fakeDBServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		var req map[string]any
 		_ = json.Unmarshal(b, &req)
+		if f.swallowAdds {
+			w.Write([]byte(`{"model_id":"ignored"}`))
+			return
+		}
 		info, _ := req["model_info"].(map[string]any)
 		id, _ := info["id"].(string)
 		if _, dup := f.rows[id]; dup {
@@ -478,5 +487,21 @@ func TestApplyDBUpdateReportsMissingRouteWhenReAddFails(t *testing.T) {
 	}
 	if _, ok := f.rows["wt:u"]; ok {
 		t.Fatal("wt:u should be gone after the failed re-add")
+	}
+}
+
+// TestPlanDBSkipsManagedRowsWithoutTheWtPrefix checks that a row marked
+// wt_managed whose id does not start with "wt:" is neither deleted nor
+// updated: ApplyDB refuses such ids, so planning them would make every sync
+// fail on the same row (the route write reports it once as a warning).
+func TestPlanDBSkipsManagedRowsWithoutTheWtPrefix(t *testing.T) {
+	odd := stored(managedRow("ui-made", "ollama/a", map[string]any{"model": "ollama/a"}))
+	if p := PlanDB(nil, []DBModel{odd}); !p.Empty() {
+		t.Fatalf("plan %+v, want empty", p)
+	}
+	want := managedRow("wt:ollama/a", "ollama/a", map[string]any{"model": "ollama/a"})
+	p := PlanDB([]DBModel{want}, []DBModel{odd})
+	if got := planIDs(p.Add); !reflect.DeepEqual(got, []string{"wt:ollama/a"}) || len(p.Update)+len(p.Delete) != 0 {
+		t.Fatalf("plan %+v, want only the wt: add", p)
 	}
 }

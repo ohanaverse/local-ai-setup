@@ -106,6 +106,17 @@ type Options struct {
 	// work, and no other caller reports what it finds — a start, stop or launch
 	// is not the place to hear about a row it never named.
 	reportOllamaServe bool
+	// Admin, when set, sends local routes (rows whose RowFamily is a local
+	// family) through LiteLLM's model API as database rows (id wt:<id>,
+	// wt_managed) instead of config.yaml rows, so a start or stop costs no
+	// restart. Cloud rows, removals of rows still in config.yaml and every
+	// setting keep the locked file write and its restart. When the API is
+	// unusable (database models off, the proxy unreachable, an add that is not
+	// listed afterwards, any other API error) the whole local batch takes the
+	// file path and Result.Warnings says why. nil is the file path for every
+	// row, exactly as before #598. The API calls run under the config.yaml
+	// lock this write already holds (no lock of their own) and use Ctx.
+	Admin *AdminClient
 }
 
 // Outcome is one id's result. Action is "routed" or "unrouted" (ApplyChange)
@@ -145,6 +156,9 @@ type Result struct {
 	// in Outcomes. When it is not empty nothing was written: Outcomes is empty
 	// and Changed is false.
 	Missing []string
+	// Via is "db" when the local rows of this write went through the model
+	// API (Options.Admin set and usable), "file" otherwise.
+	Via string
 	// ollamaServe is File.ollamaServeWarnings for the document as written, and
 	// is filled only when Options.reportOllamaServe is set. Only Sync sets it,
 	// and only Sync publishes it, in Warnings: a start, stop or launch is not
@@ -313,12 +327,14 @@ type Change struct {
 // failures are reported in Outcomes and do not block the rest. A missing or
 // invalid config.yaml returns (Result{}, err) with nothing changed. The file
 // is written, and the proxy restarted, only when the document actually
-// changed.
+// changed. With Options.Admin set, the local rows go through the model API
+// instead (dbRoutes.route), costing no write and no restart.
 func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 	// Collected by the plan, under the lock, and published on the Result below.
 	// A caller that asked for the deferral is told what it owes a second
 	// attempt for; dropping an id here would lose the route.
 	var missing []string
+	db := newDBRoutes(o)
 	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove, bool) {
 		adding := map[string]bool{}
 		var add []plannedAdd
@@ -375,13 +391,38 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 			}
 		}
 		// A deferred row holds the whole write: see Options.DeferMissingAdd.
-		return add, rm, len(missing) > 0
+		if hold := len(missing) > 0; hold || db == nil || !touchesLocal(cfg, ch, add, rm) {
+			return add, rm, hold
+		}
+		if !db.list() {
+			return add, rm, false
+		}
+		names := make([]string, 0, len(rm))
+		for _, r := range rm {
+			names = append(names, r.id)
+		}
+		for _, fam := range ch.RemoveFamilies {
+			if fam != "" {
+				names = append(names, db.familyRoutes(cfg, fam, adding)...)
+			}
+		}
+		return db.route(cfg, f, add, names), rm, false
 	}, o, OllamaAPIBase(cfg), cfg.LitellmBaseURL())
 	if err != nil {
 		return Result{}, err
 	}
+	db.finish(&res, false)
 	res.Missing = missing
 	return res, nil
+}
+
+// touchesLocal reports whether a change names a local route — an add or a
+// removal whose RowFamily is a local family, or a family clear — and so owes
+// the database a look. A change of cloud rows alone never calls the API.
+func touchesLocal(cfg *config.Config, ch Change, add []plannedAdd, rm []plannedRemove) bool {
+	return slices.ContainsFunc(ch.RemoveFamilies, func(f string) bool { return f != "" }) ||
+		slices.ContainsFunc(add, func(a plannedAdd) bool { return RowFamily(cfg, a.id) != "" }) ||
+		slices.ContainsFunc(rm, func(r plannedRemove) bool { return RowFamily(cfg, r.id) != "" })
 }
 
 // applyPlanned is the one locked read-modify-write every route change goes
@@ -602,6 +643,17 @@ type SyncPlan struct {
 // that family's row, so it stays while the family is untrusted and goes on
 // the next sync whose probe is healthy.
 func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (SyncPlan, map[string]*yaml.Node) {
+	return planSyncWithDB(cfg, f, localIn, o, nil)
+}
+
+// planSyncWithDB is planSync that also weighs the database's wt rows. dbRows
+// are those rows, one per route name (nil without Options.Admin): they count
+// as marked rows for ownership, freezing, Recheck and removal exactly like
+// config.yaml's, but not for the value comparison
+// with the file's row (rowsPerID, f.row), so a desired route that lives only
+// in the database is always in plan.Add — the database side compares it by
+// hash (PlanDB) and writes it only when it differs.
+func planSyncWithDB(cfg *config.Config, f *File, localIn []config.Model, o Options, dbRows []RowInfo) (SyncPlan, map[string]*yaml.Node) {
 	localModels := LocalModels(cfg)
 	untouchedFam := map[string]bool{}
 	for _, fam := range o.UntouchedFamilies {
@@ -721,7 +773,7 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 		}
 		desired = append(desired, m)
 	}
-	for _, r := range f.Rows() {
+	for _, r := range append(f.Rows(), dbRows...) {
 		if RowFamily(cfg, r.ID) != "" {
 			local[r.ID] = true
 		}
@@ -791,7 +843,7 @@ func planSync(cfg *config.Config, f *File, localIn []config.Model, o Options) (S
 	// this loop by name and keeps its route, where moving that assignment below
 	// the error branch would let one transient build failure delete a live route.
 	seen := map[string]bool{}
-	for _, r := range rows {
+	for _, r := range append(slices.Clone(rows), dbRows...) {
 		if want[r.ID] || gap[r.ID] || frozen(r.ID) || ambiguous[r.ID] || seen[r.ID] {
 			continue
 		}
@@ -953,19 +1005,32 @@ func ModelFor(cfg *config.Config, providerID, modelName string) (config.Model, b
 // same shape, so a dry run and a real sync always agree. Outcome actions:
 // "routed", "adopted", "rewritten", "unrouted", and ActionAPIBaseSet for an
 // ollama row whose empty api_base the write filled; per-id build failures are
-// reported with Err.
+// reported with Err. With Options.Admin set, the database's wt rows are part
+// of the plan and the local rows are written there (dbRoutes.route); a
+// marked database row under a foreign id is named in one warning line.
 func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	var plan SyncPlan
 	// The one caller that reports the rows LiteLLM starts its own `ollama serve`
 	// for, so the one caller that pays for the scan (Options.reportOllamaServe).
 	o.reportOllamaServe = true
+	db := newDBRoutes(o)
 	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove, bool) {
-		p, built := planSync(cfg, f, local, o)
+		// The database is listed before planning (a sync always looks: a stale
+		// database route can outlive every local model), so its rows take part
+		// in ownership, freezing and removal like config.yaml's.
+		var dbRows []RowInfo
+		if db != nil && db.list() {
+			dbRows = db.routeRows()
+		}
+		p, built := planSyncWithDB(cfg, f, local, o, dbRows)
 		plan = p
 		// The plan already built every changed row while comparing it with the
 		// row on disk; hand the rows through so the write path does not
 		// prepare each one a second time.
 		add, remove := plan.planned(built)
+		if db != nil && db.ok {
+			add = db.route(cfg, f, add, plan.Remove)
+		}
 		return add, remove, false
 	}, o, OllamaAPIBase(cfg), cfg.LitellmBaseURL())
 	if err != nil {
@@ -980,6 +1045,12 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 			res.Outcomes[i].Action = "adopted"
 		case slices.Contains(plan.Rewrite, id):
 			res.Outcomes[i].Action = "rewritten"
+		}
+	}
+	db.finish(&res, true)
+	if db != nil && db.ok {
+		if w := db.foreignWarning(); w != "" {
+			res.Warnings = append(res.Warnings, w)
 		}
 	}
 	res.Outcomes = append(res.Outcomes, plan.Errors...)

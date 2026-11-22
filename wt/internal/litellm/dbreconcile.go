@@ -29,14 +29,15 @@ func (p DBPlan) Empty() bool { return len(p.Add)+len(p.Update)+len(p.Delete) == 
 
 // PlanDB compares the desired rows with the database's, matching by
 // DBModel.ID. Only current rows whose model_info carries wt_managed: true
-// are wt's: any other row (the LiteLLM UI's, another owner's) is never
-// updated or deleted. A managed row is equal to the desired one when its
+// and whose id starts with DBIDPrefix are wt's: any other row (the LiteLLM
+// UI's, another owner's, a marked row under a foreign id that ApplyDB would
+// refuse to touch) is never updated or deleted. A managed row is equal to the desired one when its
 // model_info.wt_params_sha equals routeHash(desired); a managed row with no
 // hash is treated as changed. Every list is sorted by id. Pure.
 func PlanDB(desired, current []DBModel) DBPlan {
 	managed := make(map[string]DBModel, len(current))
 	for _, m := range current {
-		if isManagedDB(m) {
+		if isManagedDB(m) && strings.HasPrefix(m.ID, DBIDPrefix) {
 			managed[m.ID] = m
 		}
 	}
