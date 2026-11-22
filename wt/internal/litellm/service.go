@@ -125,6 +125,11 @@ type Options struct {
 	// one write shares (the package constant of the same name). Unexported:
 	// tests shorten it per call.
 	dbTimeout time.Duration
+	// beforeSave, when set, runs under the config.yaml lock right before the
+	// file is saved; an error aborts the write there (nothing saved, nothing
+	// restarted) and is returned. Unexported: tests simulate a process killed
+	// between the database writes and the file save.
+	beforeSave func() error
 }
 
 // Outcome is one id's result. Action is "routed" or "unrouted" (ApplyChange)
@@ -400,7 +405,7 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 			}
 		}
 		// A deferred row holds the whole write: see Options.DeferMissingAdd.
-		if hold := len(missing) > 0; hold || db == nil || !touchesLocal(cfg, ch, add, rm) {
+		if hold := len(missing) > 0; hold || db == nil || !db.gate(f) || !touchesLocal(cfg, ch, add, rm) {
 			return add, rm, hold
 		}
 		names := make([]string, 0, len(rm))
@@ -423,7 +428,7 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 				names = append(names, db.familyRoutes(cfg, fam, adding)...)
 			}
 		}
-		return db.route(cfg, f, add, names), rm, false
+		return db.route(cfg, f, add, names, nil, false), rm, false
 	}, o, OllamaAPIBase(cfg), cfg.LitellmBaseURL())
 	if err != nil {
 		return Result{}, err
@@ -505,6 +510,11 @@ func applyPlanned(plan func(*File) (add []plannedAdd, remove []plannedRemove, ho
 		}
 		if !f.Changed() {
 			return nil
+		}
+		if o.beforeSave != nil {
+			if err := o.beforeSave(); err != nil {
+				return err
+			}
 		}
 		if err := f.Save(); err != nil {
 			return err
@@ -638,6 +648,12 @@ type SyncPlan struct {
 	// markedOnly holds the Remove ids owned by marker alone (not named like a
 	// managed registry id): Sync drops only their marked rows.
 	markedOnly map[string]bool
+	// fresh holds, for every desired id that already has a config.yaml row,
+	// the row as wt builds it before the file row's own params are carried
+	// into it (carryUserParams): what a later sync will desire for the id
+	// once it lives in the database, so the migration (dbRoutes.route) moves
+	// exactly that row and the next sync finds its hash unchanged.
+	fresh map[string]*yaml.Node
 }
 
 // planSync decides a sync against f. Desired = every CloudModels id plus
@@ -825,6 +841,10 @@ func planSyncWithDB(cfg *config.Config, f *File, localIn []config.Model, o Optio
 		}
 		old := f.row(id)
 		if old != nil {
+			if plan.fresh == nil {
+				plan.fresh = map[string]*yaml.Node{}
+			}
+			plan.fresh[id] = cloneNode(row)
 			carryUserParams(old, row)
 			// Compare by value, not bytes: a row read back from disk keeps
 			// quoting styles ('ollama/gemma:9b') a freshly built one lacks,
@@ -978,6 +998,11 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 	}
 	plan.Warnings = append(plan.Warnings, f.ollamaServeWarnings(loadProxyEnv())...)
 	plan.Warnings = append(plan.Warnings, f.settingsWarnings()...)
+	if o.Admin != nil {
+		if w := f.dbRoutesOffWarning(); w != "" {
+			plan.Warnings = append(plan.Warnings, w)
+		}
+	}
 	return plan, nil
 }
 
@@ -1037,7 +1062,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		// database route can outlive every local model), so its rows take part
 		// in ownership, freezing and removal like config.yaml's.
 		var dbRows []RowInfo
-		if db != nil && db.list() {
+		if db != nil && db.gate(f) && db.list() {
 			dbRows = db.routeRows()
 		}
 		p, built := planSyncWithDB(cfg, f, local, o, dbRows)
@@ -1047,9 +1072,15 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		// prepare each one a second time.
 		add, remove := plan.planned(built)
 		switch {
-		case db == nil:
+		case db == nil || db.gated:
 		case db.listed:
-			add = db.route(cfg, f, add, plan.Remove)
+			// The one-time move of wt's local config.yaml rows (the migration):
+			// route adds them to the database, confirms them, and only then
+			// names them here for removal from the file, in this same write.
+			add = db.route(cfg, f, add, plan.Remove, plan.fresh, true)
+			for _, id := range db.migrated {
+				remove = append(remove, plannedRemove{id: id, markedOnly: true})
+			}
 		default:
 			db.unlisted(cfg, add, plan.Remove)
 		}

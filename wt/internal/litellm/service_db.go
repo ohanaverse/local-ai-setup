@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 // dbTimeout bounds the whole database half of one route write (the listing,
@@ -57,6 +58,16 @@ type dbRoutes struct {
 	warnings []string
 	// delWarnings are about deletes and hold whatever the adds did.
 	delWarnings []string
+	// gated is set when this write skipped the database half because
+	// config.yaml does not turn database models on (gate). enabling says this
+	// write adds store_model_in_db itself; off is the warning when it will not.
+	gated    bool
+	enabling bool
+	off      string
+	// migrated holds the local ids whose config.yaml rows this sync moved to
+	// the database: added (or found) there and confirmed, so the caller
+	// removes them from the file in the same write.
+	migrated []string
 }
 
 type dbRouted struct {
@@ -94,6 +105,23 @@ func (d *dbRoutes) close() {
 	if d != nil && d.cancel != nil {
 		d.cancel()
 	}
+}
+
+// gate reports whether this write may use the database at all: only when
+// config.yaml's general_settings.store_model_in_db is true. Otherwise the
+// running proxy refuses /model/new, so the write takes the file path without
+// calling the API — the path Options.Admin nil takes — and finish says why:
+// either this very write adds the setting (enabling; the restart it costs
+// loads it, and the next sync moves the local rows), or the setting is off
+// by hand or cannot be written (off).
+func (d *dbRoutes) gate(f *File) bool {
+	if storeModelInDB(f.root()) == storeOn {
+		return true
+	}
+	d.gated = true
+	d.off = f.dbRoutesOffWarning()
+	d.enabling = d.off == ""
+	return false
 }
 
 // list reads the database; a failure gives up the database path (the caller
@@ -208,10 +236,16 @@ func (d *dbRoutes) familyRoutes(cfg *config.Config, fam string, adding map[strin
 // (from the deletes too), an add LiteLLM accepted but does not list (Review
 // Focus 5), any other error — hands the whole add batch back to config.yaml
 // (add is returned unchanged) and d.reason says why.
-func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNames []string) []plannedAdd {
+func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNames []string, fresh map[string]*yaml.Node, migrate bool) []plannedAdd {
 	var fileAdd []plannedAdd
 	var desired []DBModel
 	var warnings []string
+	// migrating holds the ids whose wt rows leave config.yaml in this write
+	// (migrate: Sync only). For them the database copy wins: a twin already
+	// there (an interrupted migration) is kept when its hash matches, replaced
+	// when it does not, and never deleted as a twin.
+	migrating := map[string]bool{}
+	pending := map[string]plannedAdd{} // adds whose id has a wt row in config.yaml
 	for _, a := range add {
 		if a.err != nil || a.row == nil || RowFamily(cfg, a.id) == "" {
 			fileAdd = append(fileAdd, a)
@@ -222,15 +256,68 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 			continue
 		}
 		if f.row(a.id) != nil {
-			fileAdd = append(fileAdd, a)
+			if !migrate {
+				fileAdd = append(fileAdd, a)
+				continue
+			}
+			pending[a.id] = a // decided below, with the unchanged rows
 			continue
 		}
+		ensureRowParams(a.row)
 		m, err := DBModelFromRow(a.row)
 		if err != nil {
 			fileAdd = append(fileAdd, a)
 			continue
 		}
 		desired = append(desired, m)
+	}
+	if migrate {
+		ids := make([]string, 0, len(fresh))
+		for id := range fresh {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		stay := func(id string) {
+			if a, ok := pending[id]; ok {
+				fileAdd = append(fileAdd, a)
+			}
+		}
+		var orphans []string
+		for id := range pending {
+			if fresh[id] == nil {
+				orphans = append(orphans, id)
+			}
+		}
+		slices.Sort(orphans)
+		for _, id := range orphans {
+			stay(id) // no fresh row to move: the planner owes one, keep the file path
+		}
+		for _, id := range ids {
+			// Only a local id whose config.yaml rows are all wt's moves: a
+			// hand-written row keeps the id in the file (warned above for an
+			// add; an unchanged hand-written row is left as it is).
+			if RowFamily(cfg, id) == "" || f.row(id) == nil || f.hasUnmarkedRow(id) {
+				stay(id)
+				continue
+			}
+			row := cloneNode(fresh[id])
+			ensureRowParams(row)
+			// A param the user added to the file row has no place in the
+			// database row (a later sync rebuilds it from the registry), so
+			// such a row stays in config.yaml rather than lose it.
+			if extra := userParams(f.row(id), row); len(extra) > 0 {
+				warnings = append(warnings, fmt.Sprintf("%s: its config.yaml row has params wt does not set (%s), so it stays there; remove them to move the route to the database", id, strings.Join(extra, ", ")))
+				stay(id)
+				continue
+			}
+			m, err := DBModelFromRow(row)
+			if err != nil {
+				stay(id)
+				continue
+			}
+			migrating[id] = true
+			desired = append(desired, m)
+		}
 	}
 	byName := map[string][]string{}
 	var names []string
@@ -258,7 +345,9 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 	}
 	served := map[string]bool{}
 	for _, r := range f.Rows() {
-		served[r.ID] = true
+		if !migrating[r.ID] {
+			served[r.ID] = true
+		}
 	}
 	for _, a := range fileAdd {
 		if a.err == nil && a.row != nil {
@@ -277,14 +366,29 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 	p := PlanDB(desired, d.current)
 	p.Delete = nil
 	if len(p.Add)+len(p.Update) > 0 {
-		if transport != nil {
-			return d.fallBack(transport, add)
+		failed := transport
+		if failed == nil {
+			if _, _, _, err := d.admin.ApplyDB(d.context(), p); err != nil {
+				failed = err
+				if stopApply(d.context(), err) {
+					transport = err
+				}
+			}
 		}
-		if _, _, _, err := d.admin.ApplyDB(d.context(), p); err != nil {
-			return d.fallBack(err, add)
+		if failed == nil {
+			failed = d.confirm(append(slices.Clone(p.Add), p.Update...))
 		}
-		if err := d.confirm(append(slices.Clone(p.Add), p.Update...)); err != nil {
-			return d.fallBack(err, add)
+		if failed != nil {
+			d.dropMigratingTwins(migrating, byName, p, &transport)
+			return d.fallBack(failed, add)
+		}
+	}
+	// Every row being moved is now in the database, confirmed: written ones by
+	// the listing confirm just made, unchanged ones by the listing this write
+	// planned against (PlanDB found them managed, with the current hash).
+	for _, m := range desired {
+		if migrating[m.ModelName] {
+			d.migrated = append(d.migrated, m.ModelName)
 		}
 	}
 	added, updated := map[string]bool{}, map[string]bool{}
@@ -295,6 +399,9 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 		updated[m.ModelName] = true
 	}
 	for _, m := range desired {
+		if migrating[m.ModelName] {
+			continue // reported by finish as moved
+		}
 		d.routed = append(d.routed, dbRouted{id: m.ModelName, written: added[m.ModelName] || updated[m.ModelName], updated: updated[m.ModelName]})
 	}
 	d.warnings = warnings
@@ -317,6 +424,39 @@ func (d *dbRoutes) deleteAll(ids []string, transport *error) error {
 		}
 	}
 	return nil
+}
+
+// dropMigratingTwins runs when a migration's database half failed: the rows
+// being moved stay in config.yaml, which then wins again, so any database row
+// of theirs — one an interrupted migration left, or one this write added or
+// replaced before the failure — is deleted, lest LiteLLM load-balance it with
+// the file's row. Best effort: a delete that fails is one warning per id, and
+// after a transport error none is attempted (deleteAll reports it per id).
+// The next sync migrates again.
+func (d *dbRoutes) dropMigratingTwins(migrating map[string]bool, byName map[string][]string, p DBPlan, transport *error) {
+	if len(migrating) == 0 {
+		return
+	}
+	touched := map[string]bool{}
+	for _, m := range append(slices.Clone(p.Add), p.Update...) {
+		touched[m.ModelName] = true
+	}
+	names := make([]string, 0, len(migrating))
+	for n := range migrating {
+		if touched[n] || len(byName[n]) > 0 {
+			names = append(names, n)
+		}
+	}
+	slices.Sort(names)
+	for _, n := range names {
+		ids := slices.Clone(byName[n])
+		if !slices.Contains(ids, DBID(n)) {
+			ids = append(ids, DBID(n))
+		}
+		if err := d.deleteAll(ids, transport); err != nil {
+			d.delWarnings = append(d.delWarnings, fmt.Sprintf("%s: config.yaml routes it, but its database route could not be removed (%s); both may be live", n, oneLine(err)))
+		}
+	}
 }
 
 // fallBack hands the whole add batch back to config.yaml.
@@ -355,6 +495,24 @@ func (d *dbRoutes) finish(res *Result, sync bool) {
 	if d == nil {
 		return
 	}
+	if d.gated {
+		// The database half was not tried. A write that saved the setting has
+		// enabled it (its restart loads it); the rows move on the next sync.
+		if d.enabling && res.Changed {
+			res.Warnings = append(res.Warnings, "database routes enabled; local routes move to the database on the next sync")
+		}
+		if d.off != "" {
+			res.Warnings = append(res.Warnings, d.off)
+		}
+		return
+	}
+	if len(d.migrated) > 0 {
+		// A moved route is not unrouted: its file row went because the
+		// database now serves it. Report it once, as a rewritten route.
+		res.Outcomes = slices.DeleteFunc(res.Outcomes, func(o Outcome) bool {
+			return o.Action == "unrouted" && slices.Contains(d.migrated, o.ID)
+		})
+	}
 	if d.reason != "" {
 		if d.addsToFile {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("database routes unavailable (%s); used config.yaml", d.reason))
@@ -380,6 +538,9 @@ func (d *dbRoutes) finish(res *Result, sync bool) {
 	}
 	res.Via = "db"
 	res.Warnings = append(res.Warnings, d.warnings...)
+	for _, id := range d.migrated {
+		res.Outcomes = append(res.Outcomes, Outcome{ID: id, Action: "rewritten", Written: true})
+	}
 	for _, r := range d.routed {
 		switch {
 		case !sync:

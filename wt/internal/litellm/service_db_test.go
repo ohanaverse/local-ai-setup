@@ -14,7 +14,7 @@ import (
 
 // settledSettings is the settings block EnsureSettings leaves alone, so a
 // write that changes no row leaves config.yaml byte-identical.
-const settledSettings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n"
+const settledSettings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n"
 
 // dbOpts is opts with Options.Admin pointed at a fresh fake LiteLLM model API.
 func dbOpts(t *testing.T, body string) (Options, *int, string, *fakeDBServer) {
@@ -368,12 +368,13 @@ func TestNilAdminCallsNoAPI(t *testing.T) {
 	}
 }
 
-// TestFallbackThenHealthySyncLeavesNoTwin checks that config.yaml wins over a
-// stale database row: a route started in the database, then written to
-// config.yaml by a sync that could not list the database, must not stay in
-// both places once the database answers again — LiteLLM would load-balance
-// the file's current row with the database's stale one, and later changes
-// would reach only the file.
+// TestFallbackThenHealthySyncLeavesNoTwin checks that a route started in the
+// database, then written to config.yaml by a sync that could not list the
+// database, does not stay in both places once the database answers again —
+// LiteLLM would load-balance the two rows, and later changes would reach only
+// one. Since the migration (Task 5) the healthy sync settles it on the
+// database side: the file row is moved (its database copy kept, no delete,
+// no re-add) and exactly one route remains, the current one.
 func TestFallbackThenHealthySyncLeavesNoTwin(t *testing.T) {
 	o, _, p, fake := dbOpts(t, "model_list: []\n"+settledSettings)
 	cfg := testConfig()
@@ -389,12 +390,23 @@ func TestFallbackThenHealthySyncLeavesNoTwin(t *testing.T) {
 	if _, err := Sync(cfg, localFor(cfg, "ollama/gemma:9b"), o); err != nil {
 		t.Fatal(err)
 	}
-	if got := fake.ids(); len(got) != 0 {
-		t.Fatalf("database rows %v, want the twin removed", got)
+	if got := fake.ids(); !slices.Equal(got, []string{"wt:ollama/gemma:9b"}) || fake.requests("POST /model/delete") != 0 {
+		t.Fatalf("database rows %v deletes %d, want the one route kept", got, fake.requests("POST /model/delete"))
 	}
 	f, _ := Open(p)
-	if r := f.row("ollama/gemma:9b"); r == nil || !IsManaged(r) {
-		t.Fatal("config.yaml lost the route")
+	if r := f.row("ollama/gemma:9b"); r != nil {
+		t.Fatal("config.yaml still routes it: a twin is left")
+	}
+	m, err := DBModelFromRow(mustRow(t, cfg, "ollama/gemma:9b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur, err := o.Admin.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := PlanDB([]DBModel{m}, cur); !p.Empty() {
+		t.Fatalf("the database route is not the current one: %+v", p)
 	}
 }
 

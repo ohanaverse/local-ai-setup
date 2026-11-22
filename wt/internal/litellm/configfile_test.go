@@ -253,7 +253,7 @@ func TestEnsureSettingsWritesCancelOnDisconnect(t *testing.T) {
 // TestEnsureSettingsKeepsAnExplicitCancelOnDisconnect pins the one opt-out:
 // a hand-written value (false) survives, like the other presence-based keys.
 func TestEnsureSettingsKeepsAnExplicitCancelOnDisconnect(t *testing.T) {
-	f, err := Open(writeConfig(t, "model_list: []\ngeneral_settings:\n  cancel_on_disconnect: false\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"))
+	f, err := Open(writeConfig(t, "model_list: []\ngeneral_settings:\n  cancel_on_disconnect: false\n  store_model_in_db: true\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,8 +309,8 @@ func TestEnsureSettingsKeepsTheAnchorOnAnEmptyBlock(t *testing.T) {
 func TestEnsureSettingsHonorsMergedGeneralSettings(t *testing.T) {
 	const settled = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
 	for name, body := range map[string]string{
-		"inherited false": "base: &b {cancel_on_disconnect: false}\ngeneral_settings:\n  <<: *b\n  database_url: postgresql://u@localhost/db\n" + settled,
-		"inherited true":  "base: &b {cancel_on_disconnect: true}\ngeneral_settings:\n  <<: *b\n  database_url: postgresql://u@localhost/db\n" + settled,
+		"inherited false": "base: &b {cancel_on_disconnect: false}\ngeneral_settings:\n  <<: *b\n  database_url: postgresql://u@localhost/db\n  store_model_in_db: true\n" + settled,
+		"inherited true":  "base: &b {cancel_on_disconnect: true}\ngeneral_settings:\n  <<: *b\n  database_url: postgresql://u@localhost/db\n  store_model_in_db: true\n" + settled,
 		"root merge":      "base: &b\n  general_settings:\n    database_url: postgresql://u@localhost/db\n<<: *b\n" + settled,
 	} {
 		t.Run(name, func(t *testing.T) {

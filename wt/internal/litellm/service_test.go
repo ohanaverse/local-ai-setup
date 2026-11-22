@@ -939,7 +939,7 @@ func TestPlanSyncRejectsNonSequenceModelList(t *testing.T) {
 func TestPlanSyncAcceptsAbsentModelListWithoutTouchingIt(t *testing.T) {
 	// litellm_settings and general_settings are seeded so EnsureSettings
 	// cannot add them and be the thing that changes the file.
-	const settings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n"
+	const settings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n"
 	empty := &config.Config{}
 	for _, body := range []string{settings, "model_list:\n" + settings} {
 		o, restarts, p := opts(t, body)
@@ -1394,6 +1394,7 @@ litellm_settings:
   use_chat_completions_url_for_anthropic_messages: true
 general_settings:
   cancel_on_disconnect: true
+  store_model_in_db: true
 `
 	o, restarts, p := opts(t, body)
 	cfg := testConfig()
