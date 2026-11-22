@@ -35,7 +35,7 @@ func TestSyncAndWarnPrintsTheSyncLinesThenEveryWarning(t *testing.T) {
 func TestSyncAfterWriteSkipsAMachineWithoutLiteLLM(t *testing.T) {
 	t.Setenv("WT_LITELLM_CONFIG", filepath.Join(t.TempDir(), "absent.yaml"))
 	probed := false
-	got := SyncAfterWrite(io.Discard, io.Discard, func(*config.Config) localmodels.Snapshot { probed = true; return localmodels.Snapshot{} })
+	got := SyncAfterWrite(io.Discard, io.Discard, func(*config.Config) localmodels.Snapshot { probed = true; return localmodels.Snapshot{} }, nil)
 	if got != "" || probed {
 		t.Fatalf("got %q, probed %v; want \"\" and no probe", got, probed)
 	}

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"syscall"
@@ -722,9 +723,78 @@ func (f *File) settingsWarnings() []string {
 	return []string{"general_settings " + why + ", so wt did not write cancel_on_disconnect: true; set it there by hand or the proxy keeps generating for abandoned non-streamed requests (#399)"}
 }
 
+// storeState is what general_settings.store_model_in_db says, read the way
+// LiteLLM's YAML loader sees it (merge keys followed, a whole-value alias
+// resolved).
+type storeState int
+
+const (
+	storeAbsent storeState = iota // absent or null: EnsureSettings writes true
+	storeOn                       // true
+	storeOff                      // any other value written by hand: the opt-out
+)
+
+func storeModelInDB(root *yaml.Node) storeState {
+	gs := aliasValue(mergedGet(root, "general_settings"))
+	if gs == nil || gs.Kind != yaml.MappingNode {
+		return storeAbsent
+	}
+	v := aliasValue(mergedGet(gs, "store_model_in_db"))
+	switch {
+	case v == nil || isNull(v):
+		return storeAbsent
+	case isTrue(v):
+		return storeOn
+	}
+	return storeOff
+}
+
+// ensureStoreModelInDB sets general_settings.store_model_in_db: true when the
+// key is absent or an empty null, exactly as ensureCancelOnDisconnect does
+// (same merge-key and shared-block rules, same skip). Without it LiteLLM
+// refuses /model/new, so every local route stays in config.yaml and each
+// start and stop costs a proxy restart (#598). A hand-written value, false
+// included, is the opt-out.
+func ensureStoreModelInDB(root *yaml.Node) {
+	if cancelOnDisconnectSkipped(root) != "" {
+		return
+	}
+	gs := ensureMapping(root, "general_settings")
+	if gs.Kind != yaml.MappingNode {
+		return
+	}
+	if v := aliasValue(mergedGet(gs, "store_model_in_db")); v == nil || isNull(v) {
+		mapSet(gs, "store_model_in_db", boolNode(true))
+	}
+}
+
+// dbRoutesOffWarning says why database routes are off for a config.yaml
+// whose store_model_in_db is not on and that EnsureSettings will not turn on
+// (a hand-written opt-out, or a shared general_settings it cannot write), or
+// "" when they are on or this write enables them. Reported only when the
+// caller would use them (Options.Admin set).
+func (f *File) dbRoutesOffWarning() string {
+	const off = "database routes are off and local routes stay in config.yaml with a restart per change"
+	root := f.root()
+	switch storeModelInDB(root) {
+	case storeOn:
+		return ""
+	case storeOff:
+		return "general_settings.store_model_in_db is not true; " + off
+	}
+	if why := cancelOnDisconnectSkipped(root); why != "" {
+		return "general_settings " + why + ", so wt did not write store_model_in_db: true; " + off
+	}
+	if gs := mapGet(root, "general_settings"); gs != nil && !isNull(gs) && gs.Kind != yaml.MappingNode {
+		return "general_settings is not a mapping, so wt did not write store_model_in_db: true; " + off
+	}
+	return ""
+}
+
 // EnsureSettings applies the launcher-required LiteLLM settings: two
 // value-enforced litellm_settings keys, presence-based
-// general_settings.cancel_on_disconnect, and presence-based per-row params
+// general_settings.cancel_on_disconnect and store_model_in_db, and
+// presence-based per-row params
 // (additional_drop_params on ollama_chat/ rows, use_chat_completions_api on
 // loopback openai/ rows). Tolerates hand-edited degenerate shapes.
 func (f *File) EnsureSettings() {
@@ -738,26 +808,83 @@ func (f *File) EnsureSettings() {
 		}
 	}
 	ensureCancelOnDisconnect(root)
+	ensureStoreModelInDB(root)
 	ml := f.modelListSeq()
 	if ml == nil {
 		return
 	}
 	for _, row := range ml.Content {
-		params := mapGet(row, "litellm_params")
-		if params == nil || params.Kind != yaml.MappingNode {
+		ensureRowParams(row)
+	}
+}
+
+// ensureRowParams applies EnsureSettings' presence-based per-row params to
+// one row: additional_drop_params on an ollama_chat/ row, and
+// use_chat_completions_api on a loopback openai/ row. The database half
+// applies it to every row it writes, so a database route carries the same
+// launcher-required params as a config.yaml one, and a row moved from the
+// file hashes the same as the one a later sync builds.
+func ensureRowParams(row *yaml.Node) {
+	params := mapGet(row, "litellm_params")
+	if params == nil || params.Kind != yaml.MappingNode {
+		return
+	}
+	model := mapGet(params, "model")
+	if model == nil || model.Kind != yaml.ScalarNode {
+		return
+	}
+	switch {
+	case strings.HasPrefix(model.Value, "ollama_chat/") && mapGet(params, "additional_drop_params") == nil:
+		mapSet(params, "additional_drop_params", stringSeq(droppedOllamaChatParams))
+	case strings.HasPrefix(model.Value, "openai/") && mapGet(params, "use_chat_completions_api") == nil && isLoopback(mapGet(params, "api_base")):
+		mapSet(params, "use_chat_completions_api", boolNode(true))
+	}
+}
+
+// cloneNode deep-copies n (aliases keep pointing at the original anchors).
+func cloneNode(n *yaml.Node) *yaml.Node {
+	if n == nil {
+		return nil
+	}
+	c := *n
+	c.Content = make([]*yaml.Node, len(n.Content))
+	for i, k := range n.Content {
+		c.Content[i] = cloneNode(k)
+	}
+	return &c
+}
+
+// userParams names the litellm_params keys of the config.yaml row old that
+// the row wt would write (built) does not carry with the same value, wt's own
+// keys (wtParamKeys) aside: params a user added or changed by hand. A key
+// that is not a plain scalar (a merge key, a complex key) counts too, by its
+// text, so a row wt cannot read fully is never assumed to have none.
+func userParams(old, built *yaml.Node) []string {
+	op, bp := mapGet(old, "litellm_params"), mapGet(built, "litellm_params")
+	if op == nil || op.Kind != yaml.MappingNode {
+		return nil
+	}
+	var out []string
+	for i := 0; i+1 < len(op.Content); i += 2 {
+		k := op.Content[i]
+		name := k.Value
+		if k.Kind != yaml.ScalarNode || k.Tag == "!!merge" {
+			if name == "" {
+				name = "(complex key)"
+			}
+			out = append(out, name)
 			continue
 		}
-		model := mapGet(params, "model")
-		if model == nil || model.Kind != yaml.ScalarNode {
+		if wtParamKeys[name] {
 			continue
 		}
-		switch {
-		case strings.HasPrefix(model.Value, "ollama_chat/") && mapGet(params, "additional_drop_params") == nil:
-			mapSet(params, "additional_drop_params", stringSeq(droppedOllamaChatParams))
-		case strings.HasPrefix(model.Value, "openai/") && mapGet(params, "use_chat_completions_api") == nil && isLoopback(mapGet(params, "api_base")):
-			mapSet(params, "use_chat_completions_api", boolNode(true))
+		var ov, bv any
+		b := mapGet(bp, name)
+		if b == nil || op.Content[i+1].Decode(&ov) != nil || b.Decode(&bv) != nil || !reflect.DeepEqual(ov, bv) {
+			out = append(out, name)
 		}
 	}
+	return out
 }
 
 // Save writes the document atomically (temp file + rename) keeping the

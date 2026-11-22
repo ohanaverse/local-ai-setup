@@ -96,7 +96,7 @@ ollama/qwen3.8:27b-mlx
 openrouter/qwen/qwen3.8-flash
 ```
 
-Local-model routes (`omlx/*`, `mtplx/*`, …) appear only while that model runs — `wt start` writes the route, `wt stop` removes it. ollama is the exception: a pulled ollama model stays routed after a stop. `wt-model litellm list` prints the same set from `config.yaml` without needing the master key.
+Local-model routes (`omlx/*`, `mtplx/*`, …) appear only while that model runs — `wt start` writes the route, `wt stop` removes it. ollama is the exception: a pulled ollama model stays routed after a stop. `wt-model litellm list` prints the same set (the `config.yaml` rows and, when `wt-model` has the proxy pair, wt's database rows) without needing the master key.
 
 ## Steps
 
@@ -441,7 +441,7 @@ ollama/qwen3.8:27b-mlx
 openrouter/qwen/qwen3.8-flash
 ```
 
-Local-model routes (`omlx/*`, `mtplx/*`, …) appear only while that model runs — `wt start` writes the route, `wt stop` removes it. ollama is the exception: a pulled ollama model stays routed after a stop. `wt-model litellm list` prints the same set from `config.yaml` without needing the master key.
+Local-model routes (`omlx/*`, `mtplx/*`, …) appear only while that model runs — `wt start` writes the route, `wt stop` removes it. ollama is the exception: a pulled ollama model stays routed after a stop. `wt-model litellm list` prints the same set (the `config.yaml` rows and, when `wt-model` has the proxy pair, wt's database rows) without needing the master key.
 
 A model must appear in this list **and** in `~/.config/litellm/config.yaml` `model_list` to be routable. Real generation through the proxy — set `MODEL` to one id from the listing above (a local model must be running; a cloud/OpenRouter id always works if its key is set):
 

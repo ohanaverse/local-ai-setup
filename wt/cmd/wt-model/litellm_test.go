@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -333,10 +334,10 @@ func TestLitellmSetRefusesAnAtURL(t *testing.T) {
 func TestLitellmListAndProviders(t *testing.T) {
 	litellmEnv(t, "model_list:\n  - model_name: a/b\n    litellm_params: {model: x}\n")
 	var out bytes.Buffer
-	if err := runLitellmList(&out, true); err != nil {
+	if err := runLitellmList(t.Context(), &out, io.Discard, true, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(out.String()) != `{"routed":["a/b"],"rows":[{"id":"a/b","managed":false}]}` {
+	if strings.TrimSpace(out.String()) != `{"routed":["a/b"],"rows":[{"id":"a/b","managed":false,"store":"file"}]}` {
 		t.Fatalf("list = %s", out.String())
 	}
 	out.Reset()
@@ -351,12 +352,12 @@ func TestLitellmListAndProviders(t *testing.T) {
 	}
 }
 
-// TestLitellmListTextOutput pins list's human-readable output: one line per
-// row, a wt row as its bare id (so `wt-model litellm list | grep -x <id>` and the
-// guides' "list of routed ids" still hold) and a hand-written row as
-// "id<TAB>(hand-written)". A user reads the marker to tell which rows are
+// TestLitellmListTextOutput pins list's human-readable output: a plain table,
+// one line per row, with where the route lives (STORE) and who owns it
+// (OWNER: wt or hand-written). A user reads OWNER to tell which rows are
 // their own; a missing one misleads them about which rows wt may rewrite or
-// remove.
+// remove. (Before #598 a wt row printed as its bare id; database routes made
+// a second column necessary.)
 func TestLitellmListTextOutput(t *testing.T) {
 	litellmEnv(t, `model_list:
   - model_name: ollama/gemma:9b
@@ -366,17 +367,18 @@ func TestLitellmListTextOutput(t *testing.T) {
     litellm_params: {model: openrouter/x}
 `)
 	var out bytes.Buffer
-	if err := runLitellmList(&out, false); err != nil {
+	if err := runLitellmList(t.Context(), &out, io.Discard, false, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	const want = "ollama/gemma:9b\nhand/alias\t(hand-written)\n"
+	const want = "ID               STORE  OWNER\nollama/gemma:9b  file   wt\nhand/alias       file   hand-written\n"
 	if got := out.String(); got != want {
 		t.Fatalf("list = %q, want %q", got, want)
 	}
 }
 
-// TestLitellmListJSONRows pins list's ownership rows next to the older
-// "routed" id list, which stays for scripts that already read it.
+// TestLitellmListJSONRows pins list's ownership rows (with their store, #598)
+// next to the older "routed" id list, which stays for scripts that already
+// read it.
 func TestLitellmListJSONRows(t *testing.T) {
 	litellmEnv(t, `model_list:
   - model_name: ollama/gemma:9b
@@ -386,10 +388,10 @@ func TestLitellmListJSONRows(t *testing.T) {
     litellm_params: {model: openrouter/x}
 `)
 	var out bytes.Buffer
-	if err := runLitellmList(&out, true); err != nil {
+	if err := runLitellmList(t.Context(), &out, io.Discard, true, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	const want = `{"routed":["ollama/gemma:9b","hand/alias"],"rows":[{"id":"ollama/gemma:9b","managed":true},{"id":"hand/alias","managed":false}]}`
+	const want = `{"routed":["ollama/gemma:9b","hand/alias"],"rows":[{"id":"ollama/gemma:9b","managed":true,"store":"file"},{"id":"hand/alias","managed":false,"store":"file"}]}`
 	if got := strings.TrimSpace(out.String()); got != want {
 		t.Fatalf("list = %s\nwant   %s", got, want)
 	}
@@ -410,7 +412,7 @@ func TestLitellmListReadsNoRegistry(t *testing.T) {
 	}
 	litellmEnv(t, "model_list:\n  - model_name: a/b\n    litellm_params: {model: x}\n")
 	stdout, stderr, err := execLitellm(t, "list")
-	if err != nil || stdout != "a/b\t(hand-written)\n" || stderr != "" {
+	if err != nil || stdout != "ID   STORE  OWNER\na/b  file   hand-written\n" || stderr != "" {
 		t.Fatalf("list: err %v stdout %q stderr %q", err, stdout, stderr)
 	}
 	stdout, _, err = execLitellm(t, "providers", "--json")

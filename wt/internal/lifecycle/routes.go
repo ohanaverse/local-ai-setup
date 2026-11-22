@@ -18,7 +18,7 @@ import (
 
 // Seams: production talks to the real config.yaml, proxy and stderr.
 var (
-	applyRoutes            = litellm.ApplyChange
+	applyRoutes            = applyChangeWithAdmin
 	restartProxy           = litellm.RestartContext
 	waitProxy              = litellm.WaitReady
 	probeProxy             = litellm.Listening
@@ -110,9 +110,15 @@ func WaitPendingRoutes() {
 // without this a slot-profile launch whose restart command failed would go
 // on: the old proxy is still up, answers the liveness probe, and knows none
 // of the routes written since.
+//
+// run lets one proxy restart run at a time in this process (#598): the
+// asynchronous bounces (bounceProxyAsync, BounceProxyTo) and RestartProxyTo
+// each hold it for their restart and readiness wait, so a model server's
+// start-up route sync and a route job never restart the proxy at once.
 var lastRestart struct {
 	sync.Mutex
 	err error
+	run sync.Mutex
 }
 
 // setLastRestartErr records the outcome of a restart attempt (nil: it worked).
@@ -237,7 +243,7 @@ func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) bool {
 // keeps a model from being routed under one id by one caller and another id by
 // the next.
 func ensureChange(ctx context.Context, cfg *config.Config, ch litellm.Change) bool {
-	w, err := applyReported(ctx, cfg, ch, restartIfChanged, false)
+	w, err := applyReported(ctx, cfg, ch, restartIfChanged, false, nil)
 	if err != nil {
 		routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
 	}
@@ -386,6 +392,11 @@ func EnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) bool 
 // is final is litellm.ErrRegistryRedirected — no wait changes a refusal — so it
 // is reported at once and done is true. What it does print goes to out, on
 // EnsureModelRouteTo's terms.
+//
+// With the proxy pair set (#598) a taken lock is followed by the database
+// half, which runs on a live context of its own (litellm.Options.DBCtx) and
+// so can wait up to its 15 s deadline on a hung proxy; the cancelled context
+// would fail every model API call and fall back to config.yaml.
 func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (changed, done bool) {
 	ch, ok := modelRouteChange(cfg, m)
 	if !ok {
@@ -393,7 +404,10 @@ func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (c
 	}
 	ctx, cancel := context.WithCancel(withRouteOutput(context.Background(), out))
 	cancel()
-	w, err := applyReported(ctx, cfg, ch, restartIfChanged, true)
+	// The cancelled ctx only makes the lock attempt a single try; the
+	// database half (with the proxy pair set) gets a live context of its own,
+	// or every model API call would fail and fall back to config.yaml.
+	w, err := applyReported(ctx, cfg, ch, restartIfChanged, true, context.WithoutCancel(ctx))
 	if err != nil {
 		// A refused pairing is an answer, not a held lock: the retry would
 		// take the lock only to be refused again, behind a routing screen with
@@ -545,7 +559,7 @@ func bounceRoutes(ctx context.Context, cfg *config.Config) {
 // (see WaitPendingRoutes) because the agent they hand off to dials the model
 // through the proxy.
 func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) bool {
-	w, err := applyReported(ctx, cfg, ch, mode, false)
+	w, err := applyReported(ctx, cfg, ch, mode, false, nil)
 	if err != nil {
 		routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
 	}
@@ -568,7 +582,10 @@ func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, 
 // LiteLLM not set up), a restartForced mode settles the earlier deferred write
 // even when this one failed (or the proxy keeps serving the dead occupant's
 // route), and the restart itself runs asynchronously.
-func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode, deferMissing bool) (routeWrite, error) {
+//
+// dbCtx, when non-nil, is the database half's own context
+// (litellm.Options.DBCtx); nil means ctx.
+func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode, deferMissing bool, dbCtx context.Context) (routeWrite, error) {
 	res, err := applyRoutes(cfg, ch, litellm.Options{
 		// The restart is always deferred here: the caller decides whether to
 		// restart, and runs that restart asynchronously, below.
@@ -581,6 +598,7 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 		// Only the caller knows whether it can pay a row build here; nothing
 		// sets this but the launch-time check's non-blocking form.
 		DeferMissingAdd: deferMissing,
+		DBCtx:           dbCtx,
 	})
 	if err != nil {
 		// This write failed, but restartForced means an earlier deferred
@@ -613,13 +631,26 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 			routePrintf(ctx, "wt: LiteLLM route for %s: api_base set\n", o.ID)
 		}
 	}
-	// res.Warnings is only ever populated by ApplyChange's restart hook, which
-	// NoRestart disables; the restart's own warnings are reported below.
+	// The write's restart is deferred (NoRestart), so its warnings are the
+	// database half's (#598): printed here, through the writer the restart's
+	// own warnings use (bounceProxyAsync).
+	printRouteWarnings(ctx, res.Warnings)
 	restart := (res.Changed && mode != restartDeferred) || mode == restartForced
 	if restart {
 		bounceProxyAsync(ctx, cfg)
 	}
 	return w, nil
+}
+
+// BounceProxyTo is the asynchronous, tracked proxy restart a route write
+// makes (bounceProxyAsync), for a caller outside this package that wrote
+// config.yaml with litellm.Options.NoRestart and owes the restart: the model
+// server's start-up route sync (#598). It returns at once; the restart runs
+// one at a time with every other restart of this process (lastRestart.run),
+// and WaitPendingRoutes waits for it. What it prints goes to out (nil:
+// stderr).
+func BounceProxyTo(ctx context.Context, out io.Writer, cfg *config.Config) {
+	bounceProxyAsync(withRouteOutput(ctx, out), cfg)
 }
 
 // bounceProxyAsync restarts the LiteLLM proxy — and, when one was listening,
@@ -679,7 +710,9 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 			return warnings
 		}
 		b := litellm.Bounce{Restart: restartPrinting, Listening: probeProxy, WaitReady: waitProxy}
+		lastRestart.run.Lock()
 		warnings, waitErr := b.Run(bgCtx, url)
+		lastRestart.run.Unlock()
 		// Warnings are always surfaced: bgCtx cannot be cancelled by the
 		// caller, so there is no longer a "the user pressed Ctrl+C, a failed
 		// restart is expected" case to stay quiet about — suppressing them on
@@ -699,4 +732,29 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		}
 		setLastRestartErr(failed)
 	}()
+}
+
+// applyChangeWithAdmin is the production applyRoutes: litellm.ApplyChange with
+// Options.Admin set from the proxy pair cfg's load resolved (litellm.AdminFor:
+// the url and key `wt-model litellm set` stores, which the gateway forwards
+// with), so a local route goes through LiteLLM's model API and a start or
+// stop costs no restart (#598). With no pair (either half empty) Admin is nil
+// and every route stays in config.yaml, as before. Tests that drive the real
+// write set applyRoutes to litellm.ApplyChange (realRoutes), which never
+// reaches a proxy, or to this with a fake proxy's pair.
+func applyChangeWithAdmin(cfg *config.Config, ch litellm.Change, o litellm.Options) (litellm.Result, error) {
+	o.Admin = litellm.AdminFor(cfg)
+	return litellm.ApplyChange(cfg, ch, o)
+}
+
+// printRouteWarnings prints what a route write warns about through the
+// writer the restart warnings use (routePrintf): the database half's lines
+// (#598: a fallback to config.yaml, a database route NOT removed, routes not
+// checked, a twin that could not be deleted, database routes being enabled).
+// The write's own restart is always deferred here (NoRestart), so none of
+// these is a restart warning.
+func printRouteWarnings(ctx context.Context, warnings []string) {
+	for _, w := range warnings {
+		routePrintf(ctx, "wt: %s\n", w)
+	}
 }

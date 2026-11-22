@@ -27,6 +27,11 @@ type seams struct {
 	// probeInventory is one inventory round of the local providers
 	// (localmodels.Inventory).
 	probeInventory func(*config.Config) localmodels.Snapshot
+	// adminFor is the LiteLLM model-API client a route write sends local
+	// routes through (litellm.Options.Admin, #598): adminFromPair over the
+	// proxy pair cfg's load resolved, nil when either half is empty. testHost
+	// makes it nil, so no test reaches a proxy unless it hands in a fake.
+	adminFor func(*config.Config) *litellm.AdminClient
 	// seedEnv describes the machine a registry write seeds provider rows
 	// for: the configured agents, the providers they list, and what is on
 	// PATH.
@@ -132,6 +137,9 @@ func newHost() *host {
 			return modeleditor.Run(theme, cfg, cfgErr, o)
 		},
 	}}
+	h.adminFor = func(cfg *config.Config) *litellm.AdminClient {
+		return adminFromPair(cfg.LitellmBaseURL(), cfg.LitellmAPIKey())
+	}
 	h.syncRoutesAfterWrite = h.realSyncRoutesAfterWrite
 	h.confirmRemove = h.realConfirmRemove
 	h.confirmCloudSync = h.promptCloudSync
@@ -161,7 +169,8 @@ func (h *host) realConfirmRemove(question string) (bool, error) {
 
 // realSyncRoutesAfterWrite reloads the config (the registry just changed) and
 // reconciles the routes exactly as `wt-model litellm sync` does
-// (litellm.SyncAfterWrite, with the host's probeInventory seam).
+// (litellm.SyncAfterWrite, with the host's probeInventory and adminFor
+// seams).
 func (h *host) realSyncRoutesAfterWrite(out, errOut io.Writer) string {
-	return litellm.SyncAfterWrite(out, errOut, h.probeInventory)
+	return litellm.SyncAfterWrite(out, errOut, h.probeInventory, func(c *config.Config) *litellm.AdminClient { return h.adminFor(c) })
 }

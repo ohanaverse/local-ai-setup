@@ -230,8 +230,10 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:4000/health/liveliness
 curl -s http://localhost:4000/health/readiness                                        # no key; shows "db":"connected"
 curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer <master key>" http://localhost:4000/v1/models
 wt litellm status        # proxy url, whether wt's key is set (never printed)
-wt-model litellm list    # the model ids currently routed (live state: run it, do not copy it)
+wt-model litellm list    # the model ids currently routed, with STORE file|db (live state: run it, do not copy it)
 ```
+
+To check that local routes use LiteLLM's database (no restart per start or stop), confirm `general_settings.store_model_in_db: true` in `config.yaml` (wt adds it on the first sync when the key is absent; an explicit `false` opts out), then run `wt-model litellm sync --dry-run` (its plan names `enable_db` and `move` when there is something to do) and `wt-model litellm sync`. After `wt start <local model>`, that model's row shows STORE `db` and the proxy is not restarted. Details and the fallback line (`database routes unavailable (<reason>); used config.yaml`): [04-litellm-config](04-litellm-config.md) §2 *Database routes*.
 
 - Liveliness only proves the process is up, not that your key is right.
 - Readiness reports the database; if `db` is not connected, check `DATABASE_URL`, Postgres and `~/.litellm.err.log`.

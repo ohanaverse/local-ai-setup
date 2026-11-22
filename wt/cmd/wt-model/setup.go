@@ -32,11 +32,12 @@ func setupCmd(h *host) *cobra.Command {
 
 // setupEnv is the Setup tab's machine: modelsetup's real one, with the
 // routes check asking what a sync would write now through the host's
-// probeInventory seam (read at call time, so a test's stub is the one used).
+// probeInventory seam (read at call time, so a test's stub is the one used),
+// the database's routes included through the adminFor seam.
 func (h *host) setupEnv() modelsetup.Env {
 	env := modelsetup.DefaultEnv()
 	env.DesiredRoutes = litellm.DesiredRouteIDsFor(func(c *config.Config) localmodels.Snapshot {
 		return h.probeInventory(c)
-	})
+	}, func(c *config.Config) *litellm.AdminClient { return h.adminFor(c) })
 	return env
 }
