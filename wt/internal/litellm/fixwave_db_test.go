@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -208,5 +209,47 @@ func TestCancelledSyncWritesNothing(t *testing.T) {
 	}
 	if !hasWarning(res, "sync cancelled; config.yaml was not written") || hasWarning(res, "used config.yaml") {
 		t.Fatalf("warnings %q, want the cancel line and no fallback line", res.Warnings)
+	}
+}
+
+// TestOptOutLineOnlyOnSyncAndDryRun checks that with store_model_in_db: false
+// written by hand (the opt-out) the "database routes are off" line is said by
+// the sync and the dry run, where the user reviews routes, and never by a
+// start or stop: a model server would otherwise log it on every job, cloud
+// changes included.
+func TestOptOutLineOnlyOnSyncAndDryRun(t *testing.T) {
+	const off = "database routes are off"
+	body := "model_list: []\n" + strings.Replace(settledSettings, "store_model_in_db: true", "store_model_in_db: false", 1)
+	o, _, _, fake := dbOpts(t, body)
+	cfg := testConfig()
+	for name, ch := range map[string]Change{
+		"local start": {Add: localFor(cfg, "ollama/gemma:9b")},
+		"cloud start": {Add: localFor(cfg, "openrouter/x/y")},
+		"stop":        {Remove: []string{"ollama/gemma:9b"}},
+	} {
+		res, err := ApplyChange(cfg, ch, o)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if hasWarning(res, off) {
+			t.Fatalf("%s: warnings %q, want no opt-out line", name, res.Warnings)
+		}
+	}
+	res, err := Sync(cfg, localFor(cfg, "ollama/gemma:9b"), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasWarning(res, off) {
+		t.Fatalf("sync warnings %q, want the opt-out line", res.Warnings)
+	}
+	plan, err := PlanSync(cfg, localFor(cfg, "ollama/gemma:9b"), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(plan.Warnings, func(w string) bool { return strings.Contains(w, off) }) {
+		t.Fatalf("dry-run warnings %q, want the opt-out line", plan.Warnings)
+	}
+	if fake.calls != 0 {
+		t.Fatalf("%d API calls with the opt-out, want 0", fake.calls)
 	}
 }

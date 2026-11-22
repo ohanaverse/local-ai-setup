@@ -623,7 +623,9 @@ func (d *dbRoutes) finish(res *Result, sync bool) {
 		if d.enabling && res.Changed {
 			res.Warnings = append(res.Warnings, "database routes enabled; local routes move to the database on the next sync")
 		}
-		if d.off != "" {
+		// The opt-out is said where routes are reviewed (Sync here, PlanSync
+		// itself), never on a start or stop job: it would repeat on every one.
+		if d.off != "" && sync {
 			res.Warnings = append(res.Warnings, d.off)
 		}
 		return
