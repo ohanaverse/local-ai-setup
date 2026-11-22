@@ -121,6 +121,49 @@ func TestExecuteCarriesEachKindOfWork(t *testing.T) {
 	}
 }
 
+// TestExecuteLeavesTheSourceIndexByteIdentical pins #570: the carry's
+// diff-shaped reads run against a scratch copy of the source's index, so the
+// real index is byte-identical before and after a rescue — even over an
+// inode-replaced (cp-over) entry, where `git diff`'s stat refresh rewrites
+// stamp bytes under GIT_OPTIONAL_LOCKS=0 and every content comparison is
+// blind to it. The source is only read; that must include its index.
+func TestExecuteLeavesTheSourceIndexByteIdentical(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	// cp-over: the same content under a new inode, so the entry's cached
+	// stat is stale — exactly the entry a diff-shaped read re-stamps.
+	src := filepath.Join(p, "work.txt")
+	b, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src+".cpover", b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(src+".cpover", src); err != nil {
+		t.Fatal(err)
+	}
+	idx := filepath.Join(gitIn(t, p, "rev-parse", "--path-format=absolute", "--git-dir"), "index")
+	before, err := os.ReadFile(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, out := rescueOnce(t, f, p)
+	if out.Status != StatusMoved {
+		t.Fatalf("status %s (%s): %s", out.Status, out.Code, out.Reason)
+	}
+
+	after, err := os.ReadFile(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("the source's index was rewritten: a diff-shaped read re-stamped it (the cp-over entry's stat refresh), which a rescue of a source must never do (#570)")
+	}
+}
+
 // TestExecuteCarriesADetachedWorktreesCommits checks a detached HEAD with two
 // commits the base lacks lands on a new branch at that HEAD. Why: a detached
 // worktree has no branch, so these commits survive only if a ref names them;

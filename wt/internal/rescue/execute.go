@@ -155,7 +155,7 @@ func (e Engine) executeInto(r *runState) Outcome {
 	dg := sgit{dir: dest}
 
 	// Staged changes: HEAD to index, applied to dest's index and files.
-	staged, err := sg.out(nil, append(patchArgs, "--cached")...)
+	staged, err := sg.patchOut(append(patchArgs, "--cached")...)
 	if err != nil {
 		return keep(CodeCarryFailed, "reading the staged changes: %v", err)
 	}
@@ -166,7 +166,7 @@ func (e Engine) executeInto(r *runState) Outcome {
 		done("carried staged changes")
 	}
 	// Unstaged changes: index to files, applied to dest's files only.
-	unstaged, err := sg.out(nil, patchArgs...)
+	unstaged, err := sg.patchOut(patchArgs...)
 	if err != nil {
 		return keep(CodeCarryFailed, "reading the unstaged changes: %v", err)
 	}

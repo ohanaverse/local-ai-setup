@@ -53,7 +53,7 @@ type worktreeDiff struct {
 // index (indexCopy). With --numstat and a patch format together git writes
 // the numstat block, one blank line, then the patch.
 func readWorktreeDiff(wg Git) worktreeDiff {
-	dg, release, ok := indexCopy(wg)
+	dg, release, ok := IndexCopy(wg)
 	if !ok {
 		return worktreeDiff{}
 	}
