@@ -1,0 +1,24 @@
+model_list:
+  # static slot aliases, each backed by one mock backend (OpenAI-compatible route)
+  - model_name: slot-sonnet
+    litellm_params: { model: openai/mimo, api_base: "http://127.0.0.1:9100/b/cloud/v1", api_key: none }
+  - model_name: slot-haiku
+    litellm_params: { model: openai/qwen, api_base: "http://127.0.0.1:9100/b/local/v1", api_key: none }
+  # a subscription stand-in: anthropic/ route, NO api_key (OAuth passthrough path), pointed at a mock
+  - model_name: slot-opus
+    litellm_params: { model: anthropic/claude-opus-5-5, api_base: "http://127.0.0.1:9100/b/sub" }
+  # a group whose first member is the subscription stand-in, falling back to another provider
+  - model_name: grp-main
+    litellm_params: { model: anthropic/claude-opus-5-5, api_base: "http://127.0.0.1:9100/b/sub" }
+  - model_name: grp-backup
+    litellm_params: { model: openai/backup, api_base: "http://127.0.0.1:9100/b/backup/v1", api_key: none }
+router_settings:
+  fallbacks: [{"grp-main": ["grp-backup"]}]
+  num_retries: 0
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+general_settings:
+  master_key: sk-spike-master
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: true
