@@ -30,7 +30,7 @@ func runPickerLaunch(t *testing.T, tuiErr error) (string, error) {
 	// Two models on the model server and no -M: the picker decides.
 	pickerServer(t)
 	old := tuiRun
-	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileLayer, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
+	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileLayer, tui.SlotProfiles, tui.RemoveFuncsBuilder, []string) error {
 		return tuiErr
 	}
 	t.Cleanup(func() { tuiRun = old })

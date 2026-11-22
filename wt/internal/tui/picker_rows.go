@@ -50,21 +50,22 @@ type rowPRsLoadedMsg struct {
 // Fetched reads "not run": the picker fetches nothing on its own, and the
 // header and the origin rows must say so rather than name a --no-fetch flag
 // there is none of (a `F` refresh overwrites it with the fetch's result).
-// Registered model artifacts are not read here
-// (that needs the registry, which cmd/wt-session owns), so no row carries a
-// protected_artifact blocker in the picker; removal re-checks in the engine.
+// Registered model artifacts arrive as protectedPaths, handed in by
+// cmd (which owns the registry): a row holding one carries its
+// protected_artifact tag from the load (#578), and removal still re-checks
+// in the engine.
 // OriginRows is set because the picker shows and acts on origin rows (its
 // `o`, exactly GatherInputs.OriginRows's contract): the PR fill then makes
 // the per-branch `gh pr list --base` query, so a listed origin row reads
 // proven wherever `wt cleanup`'s list would — the engine removes a remote
 // row only when what was listed said proven.
-func pickerInputs(cwd string) cleanup.GatherInputs {
+func pickerInputs(cwd string, protectedPaths []string) cleanup.GatherInputs {
 	claim, err := sessionclaim.Self(cwd, "", "wt")
 	if err != nil {
 		claim = sessionclaim.Claim{PID: os.Getpid(), Agent: "wt"}
 	}
 	return cleanup.GatherInputs{CWD: cwd, Claim: claim, Parallel: 4, AllRemotes: true, OriginRows: true,
-		Fetched: cleanup.FetchResult{NotAttempted: true}}
+		ProtectedPaths: protectedPaths, Fetched: cleanup.FetchResult{NotAttempted: true}}
 }
 
 // loadRowsCmd gathers root's rows for the picker — the cheap first stage:

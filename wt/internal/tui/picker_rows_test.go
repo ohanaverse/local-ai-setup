@@ -93,7 +93,7 @@ func pickerLoad(t *testing.T, dir string, prList func(dir, branch string) ([]byt
 	t.Helper()
 	// The production inputs, with the PR hooks and own repository a test
 	// needs (a local-path origin names no GitHub repository).
-	in := pickerInputs(dir)
+	in := pickerInputs(dir, nil)
 	in.OwnRepo, in.PRList = "o/r", prList
 	in.PRBaseList = func(string, string) ([]byte, error) { return []byte("[]"), nil }
 	msg := loadRowsCmd(dir, nil, in, false)()
@@ -366,7 +366,7 @@ func TestPickerOpenResolvesTheRepoRootOnce(t *testing.T) {
 	calls := 0
 	findRepoRoot = func() (string, error) { calls++; return "", errMock("not a git repo") }
 	t.Cleanup(func() { findRepoRoot = old })
-	msg, ok := loadPickerCmd()().(rowsLoadedMsg)
+	msg, ok := loadPickerCmd(nil)().(rowsLoadedMsg)
 	if !ok || msg.err == nil {
 		t.Fatalf("load = %+v, want the lookup's error", msg)
 	}

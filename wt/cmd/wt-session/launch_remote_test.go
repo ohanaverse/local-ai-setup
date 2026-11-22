@@ -512,7 +512,7 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 	var gotModels tui.ModelClient
 	var gotCfg *config.Config
 	var called bool
-	tuiRun = func(_, _ bool, _ string, _, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, cfg *config.Config, _ tui.ProfileLayer, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
+	tuiRun = func(_, _ bool, _ string, _, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, cfg *config.Config, _ tui.ProfileLayer, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder, _ []string) error {
 		called, gotModels, gotCfg = true, models, cfg
 		return nil
 	}
@@ -589,7 +589,7 @@ func TestSeveralMatchesOpenThePickerOnTheServer(t *testing.T) {
 	var gotModels tui.ModelClient
 	var gotAgent string
 	called := false
-	tuiRun = func(_, _ bool, _ string, agent, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, _ *config.Config, _ tui.ProfileLayer, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
+	tuiRun = func(_, _ bool, _ string, agent, _, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, _ *config.Config, _ tui.ProfileLayer, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder, _ []string) error {
 		called, gotModels, gotAgent = true, models, agent
 		return nil
 	}

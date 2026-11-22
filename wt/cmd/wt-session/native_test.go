@@ -73,7 +73,7 @@ func newNativeRig(t *testing.T) *nativeRig {
 		r.builds = append(r.builds, nativeBuild{agent: agent, model: m, gw: gw, yolo: yolo, dir: dir, args: extra})
 		return cmd, info, err
 	}
-	tuiRun = func(_, _ bool, _ string, agent, pinned, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, _ *config.Config, _ tui.ProfileLayer, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder) error {
+	tuiRun = func(_, _ bool, _ string, agent, pinned, _, _ string, _ []string, _ themes.Theme, _ string, models tui.ModelClient, _ *config.Config, _ tui.ProfileLayer, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder, _ []string) error {
 		r.tui = append(r.tui, nativeTUICall{agent: agent, pinned: pinned, models: models})
 		return nil
 	}

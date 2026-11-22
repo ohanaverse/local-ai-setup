@@ -812,7 +812,7 @@ func TestReloadErrorVisibleAboveList(t *testing.T) {
 // model with the hook's counter.
 func pickerOpenOn(t *testing.T, r *rmRepo, fetchErr error) (model, func() int) {
 	t.Helper()
-	in := pickerInputs(r.dir)
+	in := pickerInputs(r.dir, nil)
 	in.OwnRepo = "o/r"
 	in.PRList = func(string, string) ([]byte, error) { return []byte("[]"), nil }
 	in.PRBaseList = func(string, string) ([]byte, error) { return []byte("[]"), nil }
@@ -852,7 +852,7 @@ func TestPickerOpenDoesNotFetch(t *testing.T) {
 	old := findRepoRoot
 	findRepoRoot = func() (string, error) { return r.dir, nil }
 	t.Cleanup(func() { findRepoRoot = old })
-	if _, ok := loadPickerCmd()().(rowsLoadedMsg); !ok {
+	if _, ok := loadPickerCmd(nil)().(rowsLoadedMsg); !ok {
 		t.Fatal("the open load did not answer rowsLoadedMsg")
 	}
 	if _, ok := worktree.LastFetched(r.dir); ok {

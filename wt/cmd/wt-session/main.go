@@ -166,8 +166,9 @@ func runLaunchPath(
 	// which is this package's, so it is handed in as a closure like
 	// profileLayer), from that load's own snapshot and inputs in `wt
 	// cleanup`'s shape: the registry's protected paths (R10: read through
-	// hostConfig, best-effort; the picker's gather reads no registry, so the
-	// engine's re-check is what refuses a row holding an artifact) and PR
+	// hostConfig, best-effort; handed into the picker's loads and the engine
+	// both, so a row holding an artifact shows its tag from the load and
+	// removal still re-checks, #578) and PR
 	// facts re-read by every re-check and refresh (the load's SkipPRs belongs
 	// to its PR fill, not the engine). The command's default settings
 	// otherwise (no --min-age on this path); a registry that did not load
@@ -197,7 +198,7 @@ func runLaunchPath(
 	// for as long as a picker is up, so a launch that went through the TUI
 	// says it again once the TUI has returned and the terminal is the
 	// user's.
-	err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, models, scfg, profileLayer, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
+	err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, models, scfg, profileLayer, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs, protPaths)
 	printSlotNotes()
 	// tui.Run returns the agent's run error after its post-exit flow; a
 	// non-zero exit becomes wt's own status, as on the non-TUI path, and
