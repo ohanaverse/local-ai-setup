@@ -83,24 +83,6 @@ func TestEnsureForBranchNewBranch(t *testing.T) {
 	}
 }
 
-// EnsureForBranch must create a local branch tracking a remote-tracking
-// branch, using the short name as the worktree directory. This is the
-// origin/feature path in the picker.
-func TestEnsureForBranchRemote(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	setupRemote(t, dir, "temp", "feature")
-
-	path, _, err := EnsureForBranch(dir, "origin/feature")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(dir, ".worktrees", "feature")
-	if path != want {
-		t.Fatalf("path = %q, want %q", path, want)
-	}
-}
-
 // setupRemote creates a bare remote at dir/remote.git, adds it as "origin",
 // and pushes a local branch to it as <remoteBranch>. The local branch is then
 // deleted so only the remote-tracking ref remains. Returns the remote dir.
@@ -296,24 +278,6 @@ func TestEnsureForBranchLocalWithSlash(t *testing.T) {
 	}
 }
 
-// EnsureForBranch must create a local branch tracking a remote-tracking
-// branch whose name contains slashes in a directory derived from the full
-// LOCAL name (origin/feature/x → local branch feature/x → .worktrees/feature-x).
-func TestEnsureForBranchRemoteWithSlash(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	setupRemote(t, dir, "temp", "feature/x")
-
-	path, _, err := EnsureForBranch(dir, "origin/feature/x")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(dir, ".worktrees", "feature-x")
-	if path != want {
-		t.Fatalf("path = %q, want %q", path, want)
-	}
-}
-
 // refExists must report true for an existing local branch and false for a
 // missing one. This drives the local-vs-new decision in EnsureForName and
 // EnsureForBranch.
@@ -336,7 +300,8 @@ func TestBranchExists(t *testing.T) {
 }
 
 // refExists must report true for an existing remote-tracking branch and
-// false for a missing one. This drives the remote case in EnsureForBranch.
+// false for a missing one: the same ref-resolution rule answers for any ref
+// spelling, not only the refs/heads/* its production callers read.
 func TestRemoteExists(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -350,7 +315,7 @@ func TestRemoteExists(t *testing.T) {
 	}
 }
 
-// EnsureForBranch must return an error when a remote-tracking branch's short
+// EnsureForName must return an error when a remote-tracking branch's short
 // name already exists as a local branch. Creating a worktree would otherwise
 // conflict with the existing local branch.
 func TestRemoteConflictsWithLocal(t *testing.T) {
@@ -391,7 +356,7 @@ func TestRemoteConflictsWithLocal(t *testing.T) {
 		t.Fatalf("git fetch: %v\n%s", err, out)
 	}
 
-	_, _, err := EnsureForBranch(dir, "origin/foo")
+	_, err := EnsureForName(dir, "origin/foo")
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("want already-exists error, got %v", err)
 	}
@@ -449,12 +414,12 @@ func TestEnsureForNameBasenameCoexist(t *testing.T) {
 	}
 }
 
-// The picker paths (EnsureForBranch local and new-branch cases, and the
-// remote-tracking case) must give the same "already in use by branch" error as
-// -W when the derived path belongs to another branch. Flattening makes the
-// collision easy to hit (feature/x vs feature-x), and git's own "already
-// exists" never names the branch holding the path.
-func TestEnsureForBranchCollisionErrors(t *testing.T) {
+// Every pick kind through EnsureForName (new and existing local branches,
+// and the remote-tracking case) must give the same "already in use by branch"
+// error as -W when the derived path belongs to another branch. Flattening
+// makes the collision easy to hit (feature/x vs feature-x), and git's own
+// "already exists" never names the branch holding the path.
+func TestEnsureForNameCollisionEveryKind(t *testing.T) {
 	cases := map[string]func(t *testing.T, dir string) string{
 		"new branch": func(t *testing.T, dir string) string { return "feature-x" },
 		"local branch": func(t *testing.T, dir string) string {
@@ -477,9 +442,9 @@ func TestEnsureForBranchCollisionErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 			pick := setup(t, dir)
-			_, _, err := EnsureForBranch(dir, pick)
+			_, err := EnsureForName(dir, pick)
 			if err == nil || !strings.Contains(err.Error(), "already in use by branch \"feature/x\"") {
-				t.Fatalf("EnsureForBranch(%q) error = %v, want 'already in use by branch \"feature/x\"'", pick, err)
+				t.Fatalf("EnsureForName(%q) error = %v, want 'already in use by branch \"feature/x\"'", pick, err)
 			}
 		})
 	}
@@ -807,15 +772,21 @@ func TestEnsureForNameDefaultBranchForms(t *testing.T) {
 		createsAt(t, dir, "upstream/"+db, db)
 	})
 
-	t.Run("origin HEAD alias names no branch", func(t *testing.T) {
-		dir, _, _ := newRepo(t)
-		// origin/HEAD is a symbolic alias, not a branch of its own: the local
-		// branch it would create is literally called "HEAD", and git refuses
-		// that name with its own message. The default-branch refusal is gone;
-		// resolving the alias to <remote>/<default> is not this change's job.
+	t.Run("origin HEAD alias answers like the remote default", func(t *testing.T) {
+		dir, db, _ := newRepo(t)
+		// origin/HEAD is the remote's symbolic alias for its default branch:
+		// it resolves to <remote>/<default> before classification (#588), so
+		// its answer is that name's answer — here the local default exists
+		// with no worktree on it, so the tracking creation is refused with
+		// the same words as the spelled-out name, never git's raw "not a
+		// valid branch name".
 		_, err := EnsureForName(dir, "origin/HEAD")
-		if err == nil || !strings.Contains(err.Error(), "not a valid branch name") {
-			t.Fatalf("EnsureForName(origin/HEAD) error = %v, want git's 'not a valid branch name'", err)
+		if err == nil {
+			t.Fatal("EnsureForName(origin/HEAD) = nil error, want the spelled-out name's refusal")
+		}
+		_, spelled := EnsureForName(dir, "origin/"+db)
+		if spelled == nil || err.Error() != spelled.Error() {
+			t.Fatalf("EnsureForName(origin/HEAD) error = %v, want exactly the origin/%s answer (%v)", err, db, spelled)
 		}
 		if strings.Contains(err.Error(), "default branch") {
 			t.Fatalf("error = %q, want no default-branch refusal", err)
@@ -915,13 +886,13 @@ func TestEnsureForBranchCreatesDefaultBranchWorktree(t *testing.T) {
 	}
 }
 
-// EnsureForBranch must materialize the default branch from a remote form of
+// EnsureForName must materialize the default branch from a remote form of
 // ANY remote — the fork-workflow shape where it is reachable only as
 // upstream/<default> — landing at .worktrees/<default> like any
 // remote-tracking name (the old any-remote refusal is gone), and it must stay
 // precise: a local branch whose name ends in "/<default>" (feature/main) is a
 // feature branch, never the default.
-func TestEnsureForBranchDefaultBranchAnyRemoteForm(t *testing.T) {
+func TestEnsureForNameDefaultBranchAnyRemoteForm(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 	db := setupDefaultRemote(t, dir)
@@ -950,16 +921,16 @@ func TestEnsureForBranchDefaultBranchAnyRemoteForm(t *testing.T) {
 	run("checkout", "-b", "topic")
 	run("branch", "-D", db)
 
-	path, _, err := EnsureForBranch(dir, "upstream/"+db)
+	path, err := EnsureForName(dir, "upstream/"+db)
 	if err != nil {
-		t.Fatalf("EnsureForBranch(upstream/%s) = %v, want the default branch's worktree", db, err)
+		t.Fatalf("EnsureForName(upstream/%s) = %v, want the default branch's worktree", db, err)
 	}
 	if want := filepath.Join(dir, ".worktrees", db); path != want {
 		t.Fatalf("path = %q, want %q", path, want)
 	}
-	second, _, err := EnsureForBranch(dir, "upstream/"+db)
+	second, err := EnsureForName(dir, "upstream/"+db)
 	if err != nil {
-		t.Fatalf("second EnsureForBranch(upstream/%s) = %v, want a reuse", db, err)
+		t.Fatalf("second EnsureForName(upstream/%s) = %v, want a reuse", db, err)
 	}
 	resolvedFirst, _ := filepath.EvalSymlinks(path)
 	resolvedSecond, _ := filepath.EvalSymlinks(second)
@@ -969,8 +940,8 @@ func TestEnsureForBranchDefaultBranchAnyRemoteForm(t *testing.T) {
 
 	// A local branch ending in "/<db>" is a feature branch, not the default.
 	run("branch", "feature/"+db)
-	if _, _, err := EnsureForBranch(dir, "feature/"+db); err != nil {
-		t.Errorf("EnsureForBranch(feature/%s) = %v, want nil (feature branch, not the default)", db, err)
+	if _, err := EnsureForName(dir, "feature/"+db); err != nil {
+		t.Errorf("EnsureForName(feature/%s) = %v, want nil (feature branch, not the default)", db, err)
 	}
 }
 
@@ -1002,10 +973,11 @@ func TestEnsureForBranchAlreadyCheckedOutKeepsGitsError(t *testing.T) {
 
 // EnsureForBranch must report exactly what it made (Created) in each of its
 // cases — a brand-new branch (NewBranch), an existing local branch (checked
-// out as is) and a remote-tracking branch (NewBranch plus Tracks) — and a
-// reused worktree must report no creation at all. The picker's launch line
-// states "creates branch/worktree" from this and must never claim a creation
-// that did not happen.
+// out as is) — and a reused worktree must report no creation at all. The
+// picker's launch line states "creates branch/worktree" from this and must
+// never claim a creation that did not happen. (Its remote-tracking case is
+// gone with the unreachable remote path, #588; the live tracking creations
+// go through Plan.Ensure, not this one-shot helper.)
 func TestEnsureForBranchDetail(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1020,8 +992,6 @@ func TestEnsureForBranchDetail(t *testing.T) {
 					t.Fatalf("git branch: %v\n%s", err, out)
 				}
 			}},
-		{name: "remote-tracking branch", arg: "origin/feat", want: Created{Branch: "feat", Tracks: "origin/feat", NewBranch: true},
-			prep: func(t *testing.T, dir string) { setupRemote(t, dir, "seed", "feat") }},
 		{name: "reused worktree", arg: "feat", want: Created{Branch: "feat"},
 			prep: func(t *testing.T, dir string) {
 				if _, _, err := EnsureForBranch(dir, "feat"); err != nil {
@@ -1412,5 +1382,86 @@ func TestPlanEnsureDoesNotReuseABranchMadeMeanwhile(t *testing.T) {
 	gitRun(t, dir, "branch", "brand-new")
 	if _, err := p.Ensure(); err == nil {
 		t.Fatal("Ensure succeeded over a branch created after the plan")
+	}
+}
+
+// TestResolveRemoteHeadNamesTheRemoteDefault pins -W <remote>/HEAD: the
+// remote's symbolic alias for its default branch resolves to
+// <remote>/<default> before classification, so it answers exactly like the
+// spelled-out name would in both shapes — the root reuse of a fresh clone,
+// and the tracking creation when the local default is gone — instead of
+// falling to git's raw "not a valid branch name" (#588).
+func TestResolveRemoteHeadNamesTheRemoteDefault(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	db := setupDefaultRemote(t, dir)
+
+	sameShape := func(alias, spelled *Plan, where string) {
+		t.Helper()
+		if alias.Branch() != spelled.Branch() || alias.Tracks() != spelled.Tracks() ||
+			alias.Creates() != spelled.Creates() || alias.Path() != spelled.Path() {
+			t.Errorf("%s: origin/HEAD resolved to {branch %q, tracks %q, creates %v}, want the origin/%s shape {branch %q, tracks %q, creates %v}",
+				where, alias.Branch(), alias.Tracks(), alias.Creates(), db, spelled.Branch(), spelled.Tracks(), spelled.Creates())
+		}
+	}
+
+	// Root on the default (the fresh-clone shape): both names reuse the root.
+	alias, err := Resolve(dir, "origin/HEAD")
+	if err != nil {
+		t.Fatalf("root on default: Resolve(origin/HEAD): %v", err)
+	}
+	spelled, err := Resolve(dir, "origin/"+db)
+	if err != nil {
+		t.Fatalf("root on default: Resolve(origin/%s): %v", db, err)
+	}
+	sameShape(alias, spelled, "root on default")
+	if alias.Creates() {
+		t.Errorf("root on default: Creates() = true, want the root reuse")
+	}
+
+	// Off the default with the local default branch deleted: both names plan
+	// the same tracking creation, the shape the creation line announces.
+	if out, err := runGitCmd(dir, "checkout", "-b", "other"); err != nil {
+		t.Fatalf("git checkout -b other: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "branch", "-D", db); err != nil {
+		t.Fatalf("git branch -D %s: %v\n%s", db, err, out)
+	}
+	alias, err = Resolve(dir, "origin/HEAD")
+	if err != nil {
+		t.Fatalf("default deleted: Resolve(origin/HEAD): %v", err)
+	}
+	spelled, err = Resolve(dir, "origin/"+db)
+	if err != nil {
+		t.Fatalf("default deleted: Resolve(origin/%s): %v", db, err)
+	}
+	sameShape(alias, spelled, "default deleted")
+	if alias.Creates() || alias.Branch() != db || alias.Tracks() != "origin/"+db {
+		t.Errorf("default deleted: Branch() = %q, Tracks() = %q, Creates() = %v; want branch %q tracking origin/%s, not a creation",
+			alias.Branch(), alias.Tracks(), alias.Creates(), db, db)
+	}
+}
+
+// TestRemoteHeadAliasOnlyResolvesSymrefs pins the alias rule's boundaries:
+// only <remote>/HEAD with a resolving symref is an alias; every other name —
+// a plain branch, a <remote>/<branch> name, a <remote>/HEAD with no symref —
+// is not, and keeps classification's own answer (#588).
+func TestRemoteHeadAliasOnlyResolvesSymrefs(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	db := setupDefaultRemote(t, dir)
+
+	if _, ok := remoteHeadAlias(dir, "feature"); ok {
+		t.Error("plain branch name: ok = true, want false")
+	}
+	if _, ok := remoteHeadAlias(dir, "origin/"+db); ok {
+		t.Error("origin/<branch>: ok = true, want false")
+	}
+	if _, ok := remoteHeadAlias(dir, "upstream/HEAD"); ok {
+		t.Error("no such symref: ok = true, want false")
+	}
+	got, ok := remoteHeadAlias(dir, "origin/HEAD")
+	if !ok || got != "origin/"+db {
+		t.Errorf("origin/HEAD = %q, %v; want origin/%s, true", got, ok, db)
 	}
 }

@@ -251,7 +251,10 @@ func TestPingAgainstAServer(t *testing.T) {
 
 // TestGetJSONPingsFirstThenDecodes pins GetJSON's order and its failure
 // words: the handshake first (its error as is), then the GET, with 401, a
-// non-2xx and an undecodable body each mapped to its typed error.
+// non-2xx and an undecodable body each mapped to its typed error — and a
+// non-2xx carrying the server's own APIError body reporting that error
+// (its code and message) instead of "is not a wt-model server", which hid
+// the server's answer (#649).
 func TestGetJSONPingsFirstThenDecodes(t *testing.T) {
 	t.Run("ping first then decode", func(t *testing.T) {
 		var paths []string
@@ -288,6 +291,11 @@ func TestGetJSONPingsFirstThenDecodes(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 		case "/y":
 			w.WriteHeader(http.StatusInternalServerError)
+		case "/api500":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"the disk is full","code":"disk_full"}}`))
+		case "/e404":
+			http.Error(w, "no such endpoint", http.StatusNotFound)
 		case "/z":
 			_, _ = w.Write([]byte("{"))
 		default:
@@ -302,6 +310,18 @@ func TestGetJSONPingsFirstThenDecodes(t *testing.T) {
 	}
 	if err := GetJSON(context.Background(), ep, "/y", nil); !whyIs(err, "GET /y answered HTTP 500") {
 		t.Errorf("500: err = %v", err)
+	}
+	// A 4xx/5xx whose body is the server's own APIError reports that error,
+	// cleaned, so a wt-model's refusal says what the server said.
+	err := GetJSON(context.Background(), ep, "/api500", nil)
+	var re *modelapi.ResponseError
+	if !errors.As(err, &re) || re.Code != "disk_full" || re.Message != "the disk is full" {
+		t.Errorf("500 with an APIError body: err = %v, want *modelapi.ResponseError{code disk_full, message the disk is full}", err)
+	}
+	// A 4xx whose body is not an APIError still classifies NotModelServerError:
+	// the decode must not weaken "is not a wt-model server".
+	if err := GetJSON(context.Background(), ep, "/e404", nil); !whyIs(err, "GET /e404 answered HTTP 404") {
+		t.Errorf("404 with a non-APIError body: err = %v, want *NotModelServerError", err)
 	}
 	var out map[string]any
 	if err := GetJSON(context.Background(), ep, "/z", &out); !whyIs(err, "its answer to GET /z is not the expected JSON") {
