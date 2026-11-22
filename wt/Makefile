@@ -86,7 +86,7 @@ go-format-check:        # Fail if any Go file is not gofmt-clean
 # without it wt-ci's single-p job replays the multi-P run from cache and
 # guards nothing.
 single-p:               # Run the goroutine-sensitive packages on one P
-	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 ./cmd/wt-session ./internal/tui ./internal/lifecycle ./internal/sessioneditor ./internal/modeleditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./internal/modelsetup ./internal/modelmode ./cmd/wt-model
+	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 ./cmd/wt-session ./internal/tui ./internal/removal ./internal/lifecycle ./internal/sessioneditor ./internal/modeleditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./internal/modelsetup ./internal/modelmode ./cmd/wt-model
 
 test-agents:            # Run live agent smoke tests (gateway mode)
 	@command -v wt >/dev/null 2>&1 || { echo "wt not on PATH; ensure ~/.local/bin is in PATH or run: make install"; exit 1; }

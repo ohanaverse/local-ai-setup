@@ -254,7 +254,13 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	failWrite := func(stage string, err error) (ReleaseResult, error) {
 		return res, &ReleaseFailed{Stage: stage, Result: res, Uncertain: true, Err: err}
 	}
-	if err := gitWrite(rg, slices.Concat(cleanup.WriteConfig(), []string{"reset", "--hard", "HEAD"})...); err != nil {
+	// The reset and the switch run in their own process group: a terminal
+	// Ctrl-C reaches the whole foreground group, and a half-done reset
+	// leaves the root partly released (#558). The reads between them stay
+	// in wt's group; the timeout kill still targets the pid.
+	wg := rg
+	wg.NewProcessGroup = true
+	if err := gitWrite(wg, slices.Concat(cleanup.WriteConfig(), []string{"reset", "--hard", "HEAD"})...); err != nil {
 		return failWrite(StageReset, err)
 	}
 	res.Reset = true
@@ -271,7 +277,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 		return fail(StageVerifyClean, fmt.Errorf("the root still has changes after the reset: %s", statusPaths(st)))
 	}
 
-	if err := gitWrite(rg, slices.Concat(cleanup.WriteConfig(), []string{"switch", "--no-overwrite-ignore", r.Default})...); err != nil {
+	if err := gitWrite(wg, slices.Concat(cleanup.WriteConfig(), []string{"switch", "--no-overwrite-ignore", r.Default})...); err != nil {
 		return failWrite(StageSwitch, err)
 	}
 	if ref, err := gitText(rg, "symbolic-ref", "-q", "HEAD"); err != nil {
@@ -870,6 +876,9 @@ func gitWrite(rg cleanup.Git, args ...string) error {
 		return fmt.Errorf("git did not finish or could not run: %w", err)
 	}
 	if o.Code != 0 {
+		if o.Signal != "" {
+			return fmt.Errorf("git was killed by %s: %s", o.Signal, cleanup.OneLine(o.Stderr))
+		}
 		return fmt.Errorf("git exit %d: %s", o.Code, cleanup.OneLine(o.Stderr))
 	}
 	return nil
