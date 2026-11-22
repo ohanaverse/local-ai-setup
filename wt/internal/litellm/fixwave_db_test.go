@@ -4,6 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -131,5 +134,52 @@ func TestRouteHashKeysAResolvedAPIKey(t *testing.T) {
 	}
 	if p := PlanDB([]DBModel{secret}, got, "sk-other-master"); len(p.Update) != 1 {
 		t.Fatalf("plan %+v, want one Update after a master-key rotation", p)
+	}
+}
+
+// bigListing serves /model/info with n rows, each carrying a cost-map-sized
+// model_info (pad bytes), the first one a database row; size is the body length.
+func bigListing(t *testing.T, n, pad int) (*AdminClient, int) {
+	t.Helper()
+	filler := strings.Repeat("x", pad)
+	var data []map[string]any
+	for i := range n {
+		data = append(data, map[string]any{
+			"model_name":     fmt.Sprintf("openrouter/m%d", i),
+			"litellm_params": map[string]any{"model": fmt.Sprintf("openrouter/m%d", i)},
+			"model_info":     map[string]any{"id": fmt.Sprintf("cloud-%d", i), "db_model": i == 0, "notes": filler},
+		})
+	}
+	body, err := json.Marshal(map[string]any{"data": data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(body) }))
+	t.Cleanup(srv.Close)
+	return &AdminClient{BaseURL: srv.URL, Key: testMasterKey}, len(body)
+}
+
+// TestListReadsALargeListingAndNamesAnOversizedOne checks that /model/info,
+// which returns every deployment (each cloud row from config.yaml with
+// LiteLLM's full cost-map model_info), is read whole past 1 MiB — a few
+// hundred cloud models must not turn every route write into a fallback
+// with a JSON decode error — and that a listing past the 32 MiB cap is
+// refused with an error saying so, not a misleading decode error.
+func TestListReadsALargeListingAndNamesAnOversizedOne(t *testing.T) {
+	c, size := bigListing(t, 600, 3000)
+	if size <= 1<<20 {
+		t.Fatalf("listing is %d bytes, want over 1 MiB", size)
+	}
+	rows, err := c.List(t.Context())
+	if err != nil || len(rows) != 1 || rows[0].ID != "cloud-0" {
+		t.Fatalf("rows %d err %v, want the one database row", len(rows), err)
+	}
+	c, size = bigListing(t, 3, 11<<20)
+	if size <= 32<<20 {
+		t.Fatalf("listing is %d bytes, want over 32 MiB", size)
+	}
+	_, err = c.List(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "larger than") || strings.Contains(err.Error(), "JSON") {
+		t.Fatalf("err %v, want an explicit 'larger than' error", err)
 	}
 }

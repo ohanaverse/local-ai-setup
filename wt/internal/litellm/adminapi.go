@@ -57,13 +57,32 @@ func AdminFor(cfg *config.Config) *AdminClient {
 	return AdminFromPair(cfg.LitellmBaseURL(), cfg.LitellmAPIKey())
 }
 
-const adminBodyLimit = 1 << 20
+// adminBodyLimit caps the body of an Add or Delete answer and of any error
+// answer; listBodyLimit caps a successful /model/info, which lists every
+// deployment (each config.yaml cloud row with LiteLLM's full cost-map
+// model_info, a few KB a row), so a large registry passes 1 MiB easily.
+const (
+	adminBodyLimit = 1 << 20
+	listBodyLimit  = 32 << 20
+)
+
+// errBodyTooLarge is a successful answer whose body passed the limit: an
+// explicit error, never a truncated body that fails to decode.
+type errBodyTooLarge struct{ limit int64 }
+
+func (e errBodyTooLarge) Error() string {
+	return fmt.Sprintf("response larger than %d bytes", e.limit)
+}
 
 // List returns the deployments stored in the database (GET /model/info rows
 // whose model_info.db_model is true).
 func (c *AdminClient) List(ctx context.Context) ([]DBModel, error) {
-	status, body, err := c.do(ctx, http.MethodGet, "/model/info", nil)
+	status, body, err := c.do(ctx, http.MethodGet, "/model/info", nil, listBodyLimit)
 	if err != nil {
+		var big errBodyTooLarge
+		if errors.As(err, &big) {
+			return nil, fmt.Errorf("litellm: list models: %w", err)
+		}
 		return nil, err
 	}
 	if status != http.StatusOK {
@@ -125,7 +144,7 @@ func (c *AdminClient) Add(ctx context.Context, m DBModel) error {
 	info["id"] = m.ID
 	status, body, err := c.do(ctx, http.MethodPost, "/model/new", map[string]any{
 		"model_name": m.ModelName, "litellm_params": m.Params, "model_info": info,
-	})
+	}, adminBodyLimit)
 	if err != nil {
 		return err
 	}
@@ -142,7 +161,7 @@ func (c *AdminClient) Add(ctx context.Context, m DBModel) error {
 // that is already gone (LiteLLM answers HTTP 400 "not found in db"; a 404 is
 // accepted too) is nil; any other status is an error.
 func (c *AdminClient) Delete(ctx context.Context, id string) error {
-	status, body, err := c.do(ctx, http.MethodPost, "/model/delete", map[string]string{"id": id})
+	status, body, err := c.do(ctx, http.MethodPost, "/model/delete", map[string]string{"id": id}, adminBodyLimit)
 	if err != nil {
 		return err
 	}
@@ -153,7 +172,10 @@ func (c *AdminClient) Delete(ctx context.Context, id string) error {
 	return c.statusError("delete model", status, body)
 }
 
-func (c *AdminClient) do(ctx context.Context, method, path string, payload any) (int, []byte, error) {
+// do sends one request and reads at most limit bytes of a 2xx answer (more
+// is errBodyTooLarge) and at most adminBodyLimit of any other answer (cut
+// there: an error body is only ever quoted, shortened).
+func (c *AdminClient) do(ctx context.Context, method, path string, payload any, limit int64) (int, []byte, error) {
 	var rd io.Reader
 	if payload != nil {
 		b, err := json.Marshal(payload)
@@ -179,9 +201,18 @@ func (c *AdminClient) do(ctx context.Context, method, path string, payload any) 
 		return 0, nil, c.redact(ctx, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, adminBodyLimit))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		limit = adminBodyLimit
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return 0, nil, c.redact(ctx, err)
+	}
+	if int64(len(body)) > limit {
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			return resp.StatusCode, body[:limit], nil
+		}
+		return resp.StatusCode, nil, errBodyTooLarge{limit: limit}
 	}
 	return resp.StatusCode, body, nil
 }
