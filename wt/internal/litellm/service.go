@@ -121,8 +121,9 @@ type Options struct {
 	// (config.yaml cannot remove a database row); a database row whose route
 	// config.yaml serves after the write is deleted (the file wins).
 	Admin *AdminClient
-	// dbTimeout replaces dbTimeout, the one deadline of a write's API calls
-	// (0 = dbTimeout). Unexported: tests shorten it per call.
+	// dbTimeout, when positive, overrides the 15 s deadline every API call of
+	// one write shares (the package constant of the same name). Unexported:
+	// tests shorten it per call.
 	dbTimeout time.Duration
 }
 

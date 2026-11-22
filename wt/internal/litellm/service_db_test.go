@@ -493,3 +493,54 @@ func TestHungProxyFallsBackWithinTheBound(t *testing.T) {
 		t.Fatalf("rows %v, want both local routes in config.yaml", f.RoutedIDs())
 	}
 }
+
+// TestSyncWarnsWhenTheDatabaseCannotBeListed checks that a sync — the command
+// that must always look — says so when it could not read the database, even
+// with no local change pending: stale wt rows there would otherwise stay live
+// with nothing printed. One line, no file write, no restart.
+func TestSyncWarnsWhenTheDatabaseCannotBeListed(t *testing.T) {
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(hung.Close)
+	gone := httptest.NewServer(nil)
+	gone.Close()
+	for _, tc := range []struct {
+		name  string
+		setup func(*fakeDBServer, *Options)
+	}{
+		{"503", func(f *fakeDBServer, _ *Options) { f.failList = true }},
+		{"unreachable", func(_ *fakeDBServer, o *Options) { o.Admin = &AdminClient{BaseURL: gone.URL, Key: testMasterKey} }},
+		{"hung", func(_ *fakeDBServer, o *Options) {
+			o.Admin = &AdminClient{BaseURL: hung.URL, Key: testMasterKey}
+			o.dbTimeout = 200 * time.Millisecond
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "model_list: []\n" + settledSettings
+			o, restarts, p, fake := dbOpts(t, body)
+			tc.setup(fake, &o)
+			cfg := testConfig()
+			cfg.Models = slices.DeleteFunc(cfg.Models, func(m config.Model) bool { return m.Location == config.LocationCloud })
+			res, err := Sync(cfg, nil, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var lines []string
+			for _, w := range res.Warnings {
+				if strings.HasPrefix(w, "database routes unavailable (") {
+					lines = append(lines, w)
+				}
+			}
+			if len(lines) != 1 || !strings.HasSuffix(lines[0], "); database routes not checked") {
+				t.Fatalf("warnings %q, want one 'database routes not checked' line", res.Warnings)
+			}
+			if strings.Contains(lines[0], testMasterKey) {
+				t.Fatal("the warning carries the master key")
+			}
+			if *restarts != 0 || res.Changed || readFile(t, p) != body {
+				t.Fatalf("restarts=%d changed=%v or config.yaml changed", *restarts, res.Changed)
+			}
+		})
+	}
+}

@@ -344,7 +344,8 @@ func (d *dbRoutes) confirm(written []DBModel) error {
 }
 
 // finish folds the database half into res after the file write: Via, the
-// warnings, and the outcomes. sync selects Sync's reporting: only rows
+// warnings, and the outcomes. sync selects Sync's reporting: a failed
+// listing is always one warning line; only rows
 // actually written are outcomes, a replaced one is "rewritten"; ApplyChange
 // reports every add as "routed" with Written saying whether it changed. A
 // database removal whose id the file removal already reported is not
@@ -360,6 +361,11 @@ func (d *dbRoutes) finish(res *Result, sync bool) {
 		}
 		if len(d.unchecked) > 0 {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("database routes unavailable (%s); not checked for %s, whose database route may still be live", d.reason, strings.Join(d.unchecked, ", ")))
+		}
+		// Sync always looks, so a listing it could not make is said even when
+		// nothing local was pending — once, and only when no line above says it.
+		if sync && !d.listed && !d.addsToFile && len(d.unchecked) == 0 {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("database routes unavailable (%s); database routes not checked", d.reason))
 		}
 	}
 	res.Warnings = append(res.Warnings, d.delWarnings...)
