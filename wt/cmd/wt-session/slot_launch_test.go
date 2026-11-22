@@ -548,7 +548,7 @@ func TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI(t *testing.T) {
 				t.Error("the launch went past the picker")
 				return nil, agents.LaunchInfo{}, errors.New("no launch")
 			}
-			tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileLayer, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
+			tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileLayer, tui.SlotProfiles, tui.RemoveFuncsBuilder, []string) error {
 				fmt.Fprintln(os.Stderr, "<the TUI ran>")
 				return errors.New("the TUI's own error")
 			}
