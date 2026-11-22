@@ -52,7 +52,10 @@ type fakeEnv struct {
 	lingerLabel string
 	lingering   map[string]int
 	// parents is each pid's parent for the fake ParentPID (absent: none).
-	parents      map[int]int
+	parents map[int]int
+	// onCall, when set, sees every recorded call as it is made: a test
+	// plants a file or changes a state at one exact point of an apply.
+	onCall       func(call string)
 	kickstartErr map[string]error // by label
 	// litellmPID, when set, makes a Bootstrap of the LiteLLM plist load and
 	// run the local.litellm.proxy job with this pid.
@@ -145,7 +148,11 @@ func (f *fakeEnv) Env() Env {
 }
 
 func (f *fakeEnv) rec(format string, args ...any) {
-	f.calls = append(f.calls, fmt.Sprintf(format, args...))
+	call := fmt.Sprintf(format, args...)
+	f.calls = append(f.calls, call)
+	if f.onCall != nil {
+		f.onCall(call)
+	}
 }
 
 // called reports whether any recorded call starts with prefix.
@@ -218,6 +225,26 @@ func (x fakeFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
 	}
 	x.f.files[p], x.f.modes[p] = append([]byte(nil), d...), m
 	return nil
+}
+
+// WriteNew refuses a path that exists, like the real link-based write.
+func (x fakeFS) WriteNew(p string, d []byte, m os.FileMode) error {
+	x.f.rec("FS.WriteNew %s %04o", p, m)
+	if err := x.f.writeErr[p]; err != nil {
+		return err
+	}
+	if _, ok := x.f.files[p]; ok {
+		return &fs.PathError{Op: "link", Path: p, Err: fs.ErrExist}
+	}
+	x.f.files[p], x.f.modes[p] = append([]byte(nil), d...), m
+	return nil
+}
+
+// WithLock records the lock's begin and end around fn.
+func (x fakeFS) WithLock(p string, fn func() error) error {
+	x.f.rec("FS.Lock begin %s", p)
+	defer x.f.rec("FS.Lock end %s", p)
+	return fn()
 }
 
 func (x fakeFS) Chmod(p string, m os.FileMode) error {

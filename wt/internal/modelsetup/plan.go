@@ -143,6 +143,18 @@ type Plan struct {
 	Admin   AdminWant
 	Agent   *AgentSpec
 	LiteLLM *LiteLLMSpec
+	// LockPath is the cross-process lock Apply holds for the whole run
+	// (<config home>/wt-model/setup.lock), so two sessions' applies never
+	// interleave (#642). Empty when the config home is unknown.
+	LockPath string
+}
+
+// SetupLockPath is where an Apply's lock lives for a config home.
+func SetupLockPath(configHome string) string {
+	if configHome == "" {
+		return ""
+	}
+	return filepath.Join(configHome, "wt-model", "setup.lock")
 }
 
 // RefusalError is a plan that cannot be made. Each reason says what is still
@@ -163,6 +175,15 @@ const DefaultLiteLLMPort = 4000
 // BuildPlan decides the steps that take the machine from st to want. It is
 // pure: everything it needs is in st, and it reads no clock and no file.
 func BuildPlan(st State, want Desired) (Plan, error) {
+	p, err := buildPlan(st, want)
+	if err != nil {
+		return Plan{}, err
+	}
+	p.LockPath = SetupLockPath(st.Host.ConfigHome)
+	return p, nil
+}
+
+func buildPlan(st State, want Desired) (Plan, error) {
 	d, err := modelmode.Preflight(st.State, want.Desired)
 	if err != nil {
 		return Plan{}, err

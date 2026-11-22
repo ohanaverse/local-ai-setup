@@ -41,6 +41,14 @@ const (
 type FS interface {
 	modelmode.FS
 	Remove(path string) error
+	// WriteNew writes path with perm like WriteAtomic, but fails with
+	// fs.ErrExist when path exists (a dangling symlink included): the data
+	// goes to a temp file beside it and is hard-linked into place, so a file
+	// created between a caller's look and this write is never replaced.
+	WriteNew(path string, data []byte, perm os.FileMode) error
+	// WithLock runs fn holding an exclusive cross-process lock on path (the
+	// file is created when missing and never removed).
+	WithLock(path string, fn func() error) error
 	// Backup copies path to a dated file in dir (created 0700 when absent,
 	// tightened to 0700 when looser: tightened says so), at path's mode
 	// without group or other bits, and returns the copy's path. It never
@@ -160,6 +168,46 @@ func (x realFS) Remove(p string) error {
 		return err
 	}
 	return os.Remove(p)
+}
+
+// WriteNew is the FS seam's no-replace write (#642): the temp file sits in
+// path's directory (a hard link needs one file system) under a dot name that
+// launchd never loads, and goes away once the link holds the content. Guarded
+// like WriteAtomic in a test binary.
+func (x realFS) WriteNew(p string, d []byte, m os.FileMode) error {
+	if err := modelmode.GuardUnderTest(p); err != nil {
+		return err
+	}
+	if err := x.GuardAncestorUnderTest(p); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(p), "."+filepath.Base(p)+".new-")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() { _ = x.Remove(name) }()
+	if _, err := tmp.Write(d); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(m); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Link(name, p)
+}
+
+// WithLock holds config.WithFileLock's exclusive flock on p for fn. A test
+// binary may lock only a path under the temp directory.
+func (x realFS) WithLock(p string, fn func() error) error {
+	if err := modelmode.GuardUnderTest(p); err != nil {
+		return err
+	}
+	return config.WithFileLock(p, fn)
 }
 
 // maxBackupTries bounds the -N suffixes Backup tries within one second.

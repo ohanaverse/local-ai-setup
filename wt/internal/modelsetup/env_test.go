@@ -3,6 +3,7 @@ package modelsetup
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -229,5 +230,90 @@ func TestEnvModeIsTheNarrowView(t *testing.T) {
 	m := e.Mode()
 	if m.FS != e.FS || m.Config != e.Config || m.Net != e.Net || m.Host != e.Host {
 		t.Errorf("Mode() = %+v, want the same four seam values as Env", m)
+	}
+}
+
+// TestRealWriteNewNeverReplacesAFile pins #642 on the real file system: the
+// write creates a missing file at the given mode with its content, leaves no
+// temp file behind, and refuses an existing file — a dangling symlink
+// included — with fs.ErrExist, content untouched.
+func TestRealWriteNewNeverReplacesAFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "local.litellm.proxy.plist")
+	fsys := realFS{}
+
+	if err := fsys.WriteNew(p, []byte("first"), 0o600); err != nil {
+		t.Fatalf("a missing file: %v", err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "first" {
+		t.Errorf("content = %q", got)
+	}
+	if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, err %v; want 0600", fi.Mode(), err)
+	}
+
+	err := fsys.WriteNew(p, []byte("second"), 0o600)
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("an existing file: err = %v, want fs.ErrExist", err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "first" {
+		t.Errorf("the existing file was replaced: %q", got)
+	}
+
+	link := filepath.Join(dir, "dangling.plist")
+	if err := os.Symlink(filepath.Join(dir, "nowhere"), link); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.WriteNew(link, []byte("x"), 0o600); !errors.Is(err, fs.ErrExist) {
+		t.Errorf("a dangling symlink: err = %v, want fs.ErrExist", err)
+	}
+
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if strings.Contains(e.Name(), ".new-") {
+			t.Errorf("temp file %q was left behind", e.Name())
+		}
+	}
+}
+
+// TestRealWithLockExcludes pins #642's lock on the real file system: while
+// one holder is inside, a second caller waits and runs only after the first
+// returns, and the lock file stays.
+func TestRealWithLockExcludes(t *testing.T) {
+	lock := filepath.Join(t.TempDir(), "wt-model", "setup.lock")
+	fsys := realFS{}
+
+	inside := make(chan struct{})
+	release := make(chan struct{})
+	first := make(chan error, 1)
+	go func() {
+		first <- fsys.WithLock(lock, func() error { close(inside); <-release; return nil })
+	}()
+	<-inside
+
+	entered := make(chan struct{})
+	second := make(chan error, 1)
+	go func() {
+		second <- fsys.WithLock(lock, func() error { close(entered); return nil })
+	}()
+	select {
+	case <-entered:
+		t.Fatal("a second holder ran while the first held the lock")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second holder never ran after the first returned")
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lock); err != nil {
+		t.Errorf("the lock file is gone: %v", err)
 	}
 }

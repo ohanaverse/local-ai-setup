@@ -89,6 +89,23 @@ func (e *WaitError) Error() string {
 // revealed only inside the step that writes them and never appear in
 // progress, the Result or an error.
 func Apply(ctx context.Context, env Env, p Plan, progress func(string)) Result {
+	if p.LockPath == "" {
+		return applySteps(ctx, env, p, progress)
+	}
+	// One apply at a time across sessions (#642): two creates could both
+	// write the plist, a rotate could race a create. The lock is held for
+	// every step and released on any outcome.
+	var r Result
+	if err := env.FS.WithLock(p.LockPath, func() error {
+		r = applySteps(ctx, env, p, progress)
+		return nil
+	}); err != nil {
+		return Result{Err: fmt.Errorf("take the setup lock %s: %w", p.LockPath, err), Recovery: "nothing was changed: no step ran"}
+	}
+	return r
+}
+
+func applySteps(ctx context.Context, env Env, p Plan, progress func(string)) Result {
 	if progress == nil {
 		progress = func(string) {}
 	}
@@ -489,7 +506,12 @@ func applyLiteLLMPlist(ctx context.Context, env Env, p Plan, s Step, run *applyR
 		return err
 	}
 	spec.MasterKey, spec.SaltKey = master, salt
-	if err := env.FS.WriteAtomic(s.Path, RenderLiteLLMPlist(spec), 0o600); err != nil {
+	// WriteNew, not WriteAtomic: a plist created since the look above (a
+	// second session, the user) is refused, never replaced (#642).
+	if err := env.FS.WriteNew(s.Path, RenderLiteLLMPlist(spec), 0o600); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("%s exists now, and wt never replaces a LiteLLM plist; nothing was written: check again", s.Path)
+		}
 		return fmt.Errorf("write %s: %w", s.Path, err)
 	}
 	run.plist, run.created = s.Path, true

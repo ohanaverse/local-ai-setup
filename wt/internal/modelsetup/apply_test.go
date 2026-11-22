@@ -48,7 +48,7 @@ func apEnv(t *testing.T) *fakeEnv {
 func (f *fakeEnv) mutations() []string {
 	var out []string
 	for _, c := range f.calls {
-		for _, p := range []string{"FS.WriteAtomic", "FS.Chmod", "FS.Remove", "Launchd.", "Config.Update", "Config.SetPair", "LiteLLM.PlistVar", "Host.RandRead", "Net.Ping", "Net.Get http://localhost:4000"} {
+		for _, p := range []string{"FS.WriteAtomic", "FS.WriteNew", "FS.Chmod", "FS.Remove", "Launchd.", "Config.Update", "Config.SetPair", "LiteLLM.PlistVar", "Host.RandRead", "Net.Ping", "Net.Get http://localhost:4000"} {
 			if strings.HasPrefix(c, p) {
 				out = append(out, c)
 				break
@@ -772,7 +772,7 @@ func TestApplyCreateWritesThePlistLoadsItAndPairsTheSameKey(t *testing.T) {
 		"FS.WriteAtomic " + plLocalTok + " 0600",
 		"Launchd.Print local.litellm.proxy",
 		"Host.RandRead 32", "Host.RandRead 32",
-		"FS.WriteAtomic " + plLiteLLM + " 0600",
+		"FS.WriteNew " + plLiteLLM + " 0600",
 		"Launchd.Bootstrap " + plLiteLLM,
 		"Net.Get http://localhost:4000/health/liveliness bearer=false",
 		"Launchd.Print local.litellm.proxy",
@@ -898,6 +898,79 @@ func TestApplyCreateAcceptsAListenerDescendedFromTheJob(t *testing.T) {
 	r, _ := apply(t, f, p)
 	if r.Failed == nil || r.Failed.Kind != StepWait || f.called("Config.SetPair") {
 		t.Errorf("unrelated listener: Failed = %+v, Err = %v; want a refusal with no pair written", r.Failed, r.Err)
+	}
+}
+
+// TestApplyHoldsTheSetupLockForTheWholeApply pins #642's first item: two wt
+// sessions applying at once could interleave their steps (two creates
+// writing one plist, a rotate racing a create). Apply holds one cross-process
+// lock, <config home>/wt-model/setup.lock, from before its first step to
+// after its last — a failed run releases it too.
+func TestApplyHoldsTheSetupLockForTheWholeApply(t *testing.T) {
+	lock := plHome + "/.config/wt-model/setup.lock"
+	for name, setup := range map[string]func(*fakeEnv){
+		"success": func(*fakeEnv) {},
+		"failure": func(f *fakeEnv) { f.backupErr = errors.New("disk full") },
+	} {
+		f := rotEnv(t)
+		setup(f)
+		r, _ := apply(t, f, mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}))
+		if name == "success" && (r.Failed != nil || r.Err != nil) {
+			t.Fatalf("%s: Failed = %+v, Err = %v", name, r.Failed, r.Err)
+		}
+		begin, end := -1, -1
+		for i, c := range f.calls {
+			switch c {
+			case "FS.Lock begin " + lock:
+				begin = i
+			case "FS.Lock end " + lock:
+				end = i
+			}
+		}
+		if begin < 0 || end < begin {
+			t.Fatalf("%s: no lock held around the apply (begin %d, end %d); calls: %v", name, begin, end, f.calls)
+		}
+		for i, c := range f.calls {
+			if i >= begin && i <= end {
+				continue
+			}
+			for _, m := range f.mutations() {
+				if m == c {
+					t.Errorf("%s: %q ran outside the lock", name, c)
+				}
+			}
+		}
+	}
+}
+
+// TestApplyCreateNeverReplacesAPlistThatAppearsMeanwhile pins #642's second
+// item: Create looked for "no plist", then wrote one, and a plist created in
+// between would be replaced. The write now fails if the target exists, so a
+// plist that appears after the look is refused and left exactly as it is.
+func TestApplyCreateNeverReplacesAPlistThatAppearsMeanwhile(t *testing.T) {
+	p := mustPlan(t, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
+	f := apEnv(t)
+	liteLLMUp(f, 77)
+	planted := []byte("a plist somebody wrote while the apply ran")
+	f.onCall = func(call string) {
+		// After the apply's look at the label, before its write.
+		if call == "Launchd.Print "+litellm.ProxyLabel {
+			f.files[plLiteLLM], f.modes[plLiteLLM] = planted, 0o600
+			f.onCall = nil
+		}
+	}
+	r, _ := apply(t, f, p)
+	if r.Failed == nil || r.Failed.Kind != StepLiteLLMPlist {
+		t.Fatalf("Failed = %+v, Err = %v; want the plist step refused", r.Failed, r.Err)
+	}
+	if string(f.files[plLiteLLM]) != string(planted) {
+		t.Errorf("the plist that appeared meanwhile was replaced")
+	}
+	if f.called("Config.SetPair") {
+		t.Errorf("the pair was written after the refused plist")
+	}
+	if !strings.Contains(r.Err.Error(), "exists") {
+		t.Errorf("Err %q does not say the plist exists", r.Err)
 	}
 }
 
