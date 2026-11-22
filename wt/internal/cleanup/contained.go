@@ -209,7 +209,7 @@ func (d worktreeDiff) containedInBase(wg Git, baseTip string) Tri {
 // of context (the anchoring read of containedWithContext), taken against a
 // throwaway copy of the index like readWorktreeDiff.
 func readContextPatch(wg Git) (string, bool) {
-	dg, release, ok := indexCopy(wg)
+	dg, release, ok := IndexCopy(wg)
 	if !ok {
 		return "", false
 	}

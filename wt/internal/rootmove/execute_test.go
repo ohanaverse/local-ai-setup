@@ -57,7 +57,7 @@ func (f *fixture) rootCheckout() string {
 	}
 	parts := []string{
 		headRef(f.Dir), rev(f.Dir, "HEAD"), statusOf(f.Dir), raw,
-		soft(f.Dir, "diff", "--binary", "HEAD"),
+		diffOf(f.Dir),
 	}
 	for _, u := range strings.Split(soft(f.Dir, "ls-files", "-z", "--others", "--exclude-standard"), "\x00") {
 		if u == "" {
@@ -74,6 +74,44 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// TestRootCheckoutSeesAGenuineIndexWrite proves the raw column is armed
+// (#570): a genuine index write between two reads shows in the column. The
+// helper's own diff read used to re-stamp the very index the column
+// watches, making "equal before and after" self-consistent while writes
+// happened; with the diff reading an index copy (diffOf), only a genuine
+// write moves the column.
+func TestRootCheckoutSeesAGenuineIndexWrite(t *testing.T) {
+	f, _, _ := dirtyPlan(t)
+
+	before := f.rootCheckout()
+	// A genuine, minimal index write: --assume-unchanged flips the entry's
+	// flag bit.
+	soft(f.Dir, "update-index", "--assume-unchanged", "README")
+	after := f.rootCheckout()
+
+	if after == before {
+		t.Fatal("the raw column is muted: a genuine index write did not show in rootCheckout")
+	}
+}
+
+// diffOf is the root's tracked changes, read against a scratch index copy
+// (#570): `git diff` refreshes the index's stat cache even under
+// GIT_OPTIONAL_LOCKS=0, so a direct read would make the raw column above
+// self-consistently green while refreshes write the index it watches. With
+// no readable index the read falls back to the real one (nothing stale to
+// refresh there).
+func diffOf(dir string) string {
+	if ig, release, ok := cleanup.IndexCopy(cleanup.Git{Dir: dir}); ok {
+		defer release()
+		o, err := ig.Run("diff", "--binary", "HEAD")
+		if err != nil {
+			return ""
+		}
+		return o.Stdout
+	}
+	return soft(dir, "diff", "--binary", "HEAD")
 }
 
 // traced is one git process a test started: its argv and the worktree it

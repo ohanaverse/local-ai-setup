@@ -128,19 +128,24 @@ func WithoutFSMonitor(g Git) Git {
 	return g
 }
 
-// indexCopy returns wg with GIT_INDEX_FILE pointing at a throwaway copy of
+// IndexCopy returns wg with GIT_INDEX_FILE pointing at a throwaway copy of
 // the checkout's real index, plus a release func that removes the copy (call
 // it on every path). ok is false when the real index is missing or the copy
 // cannot be made. Any diff-shaped read runs against the copy: `git diff`
-// rewrites the index's stat cache even under GIT_OPTIONAL_LOCKS=0, and this
-// package must leave the real index byte-identical.
-func indexCopy(wg Git) (Git, func(), bool) {
+// rewrites the index's stat cache even under GIT_OPTIONAL_LOCKS=0, and the
+// real index must stay byte-identical — this package's own diff reads and
+// rescue's carry reads go through it (#570).
+func IndexCopy(wg Git) (Git, func(), bool) {
 	noop := func() {}
 	o, err := wg.Run("rev-parse", "--path-format=absolute", "--git-dir")
 	if err != nil || o.Code != 0 {
 		return wg, noop, false
 	}
 	real, err := os.ReadFile(filepath.Join(strings.TrimSpace(o.Stdout), "index"))
+	if err != nil {
+		return wg, noop, false
+	}
+	realStat, err := os.Stat(filepath.Join(strings.TrimSpace(o.Stdout), "index"))
 	if err != nil {
 		return wg, noop, false
 	}
@@ -153,8 +158,24 @@ func indexCopy(wg Git) (Git, func(), bool) {
 		release()
 		return wg, noop, false
 	}
+	// The copy must be indistinguishable from the real index, byte for byte
+	// AND by its own file mtime: git's stat trust has whole-second
+	// granularity, so a same-second edit of a same-size file is invisible to
+	// it, and only the racily-clean marker — cached mtime >= the index
+	// file's own mtime — forces the re-hash that sees the change. A plain
+	// copy carries a later file mtime, which de-racifies the entry and
+	// silently drops the modification from the diff; a zeroed mtime turns
+	// the racy check off. Preserving the real index's mtime keeps the
+	// marker, so the copy reads exactly as the real index would. Optional
+	// locks stay on for the read: the refresh git then wants to write lands
+	// on the copy — the only index it can reach — never the real one
+	// (#570).
+	if err := os.Chtimes(idx, realStat.ModTime(), realStat.ModTime()); err != nil {
+		release()
+		return wg, noop, false
+	}
 	cg := wg
-	cg.Env = append(slices.Clone(wg.Env), "GIT_INDEX_FILE="+idx)
+	cg.Env = append(slices.Clone(wg.Env), "GIT_INDEX_FILE="+idx, "GIT_OPTIONAL_LOCKS=1")
 	return cg, release, true
 }
 
@@ -208,8 +229,10 @@ func (g Git) RunInput(input string, args ...string) (Out, error) {
 		full = append(full, "-c", c)
 	}
 	cmd := exec.CommandContext(ctx, "git", append(full, args...)...)
-	// This package is read-only: GIT_OPTIONAL_LOCKS=0 stops `git status` and
-	// `git diff` from rewriting the index's stat cache as a side effect.
+	// This package is read-only: GIT_OPTIONAL_LOCKS=0 stops `git status`
+	// from rewriting the index's stat cache as a side effect. It does NOT
+	// stop `git diff`'s, which is why every diff-shaped read here runs
+	// against a scratch index copy (IndexCopy).
 	cmd.Env = append(append(os.Environ(), "GIT_OPTIONAL_LOCKS=0"), g.Env...)
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
