@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/scratchdir"
@@ -36,6 +37,12 @@ type Git struct {
 	// Env is appended to the process environment (last entry wins). Use
 	// NonInteractive(dir) for any call that may reach a remote.
 	Env []string
+	// NewProcessGroup puts the child in its own process group
+	// (SysProcAttr.Setpgid), out of the terminal's foreground group: a
+	// Ctrl-C reaches the whole foreground group, and a write that must not
+	// die mid-flight (ReleaseRoot's reset and switch, #558) runs here.
+	// Unset for every ordinary call.
+	NewProcessGroup bool
 }
 
 // NonInteractive is the environment of a git call in dir that must never
@@ -203,11 +210,13 @@ func UnsafeRel(p string) string {
 	return ""
 }
 
-// Out is a finished git process: its output and exit code.
+// Out is a finished git process: its output and exit code. Signal names the
+// signal that killed it, "" for an ordinary exit.
 type Out struct {
 	Stdout string
 	Stderr string
 	Code   int
+	Signal string
 }
 
 // Run runs `git -C g.Dir args...`. A non-zero exit is an answer, not an
@@ -229,6 +238,11 @@ func (g Git) RunInput(input string, args ...string) (Out, error) {
 		full = append(full, "-c", c)
 	}
 	cmd := exec.CommandContext(ctx, "git", append(full, args...)...)
+	if g.NewProcessGroup {
+		// A write that must not die mid-flight sits outside the terminal's
+		// foreground group (#558); the timeout kill still targets the pid.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
 	// This package is read-only: GIT_OPTIONAL_LOCKS=0 stops `git status`
 	// from rewriting the index's stat cache as a side effect. It does NOT
 	// stop `git diff`'s, which is why every diff-shaped read here runs
@@ -252,6 +266,9 @@ func (g Git) RunInput(input string, args ...string) (Out, error) {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			out.Code = ee.ExitCode()
+			if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+				out.Signal = ws.Signal().String()
+			}
 			return out, nil
 		}
 		return out, err
