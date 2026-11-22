@@ -1,12 +1,12 @@
 # LiteLLM aliases, groups and a Claude subscription behind wt-model
 
-Status: findings and options for review, 2026-11-22. Refs #596, #597, #598, #618, #626. Nothing in `wt/` is changed by this document; the spike harness is in `2026-11-22-litellm-aliases-groups-spike/`.
+Status: decisions taken 2026-11-22 (see Decisions); phase 1 is next. Refs #596, #597, #598, #618, #626. Nothing in `wt/` is changed by this document; the spike harness is in `2026-11-22-litellm-aliases-groups-spike/`.
 
 ## Intent
 
 Let a Claude Code session use a mix like: `fable` and `opus` on a Claude subscription, `sonnet` on a cloud open-weight model, `haiku` on a local MLX model, with the model behind each slot changeable without restarting the agent, and with a slot able to fall back to another provider. Claude, pi and Codex are the agents in scope.
 
-Goals: say what LiteLLM can do (verified, not assumed); say what wt-model must add; keep wt-model's rule that a session never holds the host's LiteLLM credentials. Non-goals: a design for non-Claude agents using a subscription (not allowed by Anthropic's terms and not wanted), remote-mode subscription use (see Constraints), changes to any agent's own code.
+Goals: say what LiteLLM can do (verified, not assumed); say what wt-model must add; keep wt-model's rule that a session never holds the host's LiteLLM credentials. Non-goals: a design for non-Claude agents using a subscription (not allowed by Anthropic's terms and not wanted), changes to any agent's own code.
 
 ## Answers
 
@@ -44,7 +44,7 @@ Scratch LiteLLM 1.109.1 (the version the live proxy runs) on port 4099 with a sc
 
 ## Constraints and risks
 
-1. **Policy.** Anthropic's gateway page (fetched 2026-11-22) says a saved claude.ai login stays the active credential behind `ANTHROPIC_BASE_URL`, and that gateways passing this traffic on "must forward `Authorization` and the OAuth capability in `anthropic-beta`". It also says it "doesn't support routing Claude Code to non-Claude models through any gateway": unsupported, not prohibited. The legal page forbids third parties from routing requests "through Free, Pro, Max, or Ultra plan credentials on behalf of their users" and from collecting, storing or intermediating Claude.ai credentials; it does not address a person's own gateway. So subscription passthrough must stay a single user's own login on their own machine: **loopback only, never in remote mode, token never stored or logged by wt**. Enforcement is Anthropic's to apply "without prior notice".
+1. **Policy.** Anthropic's gateway page (fetched 2026-11-22) says a saved claude.ai login stays the active credential behind `ANTHROPIC_BASE_URL`, and that gateways passing this traffic on "must forward `Authorization` and the OAuth capability in `anthropic-beta`". It also says it "doesn't support routing Claude Code to non-Claude models through any gateway": unsupported, not prohibited. The legal page forbids third parties from routing requests "through Free, Pro, Max, or Ultra plan credentials on behalf of their users" and from collecting, storing or intermediating Claude.ai credentials; it does not address a person's own gateway. So subscription passthrough must stay one person's own login routed through their own gateway: **the token is never stored or logged by wt-model or LiteLLM** (phase 3 checks LiteLLM's spend logs and its own log for it), and the host operator turns the mode on deliberately. Remote use is allowed (decision 2) with the guards under Design. Enforcement is Anthropic's to apply "without prior notice".
 2. **Not verified against the real service.** No request reached Anthropic. That LiteLLM's forwarded token is accepted by the real API is Anthropic's documented flow, not something this spike observed. One tiny real call would settle it; it uses the subscription, so it is an opt-in step (see Open decisions).
 3. **Context window.** Claude Code reads the slot variables once, and wt sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from the model's window at launch. An alias re-pointed to a smaller-window model keeps the old figure. Per the research note (not verified here), unrecognized ids also get a 200K default. A group or alias should advertise the smallest window among its targets, or wt should refuse a re-point that shrinks it.
 4. **Cross-provider fidelity.** The note reports prompt-cache loss and thinking-signature 400s when the backend changes under a running conversation. The mocks cannot produce signed thinking blocks, so this is untested; Claude Code's own recovery (drop old thinking blocks, retry) is documented but not exercised.
@@ -80,7 +80,7 @@ One target is an alias, several are a priority group (equal `order` load-balance
 
 **Subscription models.** A `claude-subscription` provider in the registry whose models are the subscription's real ids (`claude-fable-5-2`, `claude-opus-5-5`, ...), routed as `anthropic/<id>` rows with no `api_key`. They are offered only to the claude agent, only when a login is present, and marked in the catalog; pi and Codex never see them (without OAuth those rows answer 401, and a group containing one falls back, as verified).
 
-**Gateway.** An opt-in header mode, on only while the gateway listens on loopback: when `x-wt-model-token` is present it is the only credential checked, the header is removed, the client's own `Authorization` and `anthropic-beta` are forwarded, and LiteLLM is authenticated with `x-litellm-api-key`. Without the header, behavior is unchanged. A wt-model started on a non-loopback address refuses to enable it. `wt/docs/wt-model-server.md`, the wire fixture and the style guide move with it.
+**Gateway.** An opt-in header mode, off by default and turned on by the host operator: when `x-wt-model-token` is present it is the only credential checked, the header is removed, the client's own `Authorization` and `anthropic-beta` are forwarded, and LiteLLM is authenticated with `x-litellm-api-key`. Without the header, behavior is unchanged. It works for local and remote sessions (decision 2). Guards proposed for remote use, which are my additions and easy to change: the host setting must be explicit; the gateway refuses the mode from a non-loopback peer over plain http, because the subscription token would cross the network in the clear (https, or a tunnel that arrives from loopback, is accepted); and the docs state that it is for the owner's own login, since a shared host would be intermediating other people's credentials, which Anthropic's terms forbid and wt cannot detect. `wt/docs/wt-model-server.md`, the wire fixture and the style guide move with it.
 
 **Claude launch.** For a subscription profile wt does not set `ANTHROPIC_AUTH_TOKEN`; it sets `ANTHROPIC_CUSTOM_HEADERS` (process environment only, nothing written to a file) and refuses to launch if `claude auth status` shows no login. Slot variables stay as today, now pointing at alias or subscription ids; `CLAUDE_CODE_MAX_CONTEXT_TOKENS` takes the smallest window among the targets.
 
@@ -111,10 +111,14 @@ Launching with this profile starts claude without `ANTHROPIC_AUTH_TOKEN`. Switch
 - The wildcard row `anthropic/*` from the research note; explicit rows were used here.
 - Anything in the research note not repeated above.
 
-## Open decisions
+## Decisions (2026-11-22)
 
-1. Approach A in the phases above, starting with phase 1, or a different cut?
-2. Subscription passthrough: wanted at all, given the policy position above? If yes, loopback-only as proposed?
-3. The header name for the gateway mode (`x-wt-model-token` was used for the spike; `x-litellm-api-key` is LiteLLM's own convention but names the wrong credential).
-4. Alias id prefix (`alias/` here) versus reusing real Claude ids for the Claude slots only (recommended: real ids for subscription models, `alias/` for everything else).
-5. Whether to spend one real subscription request to verify end to end before phase 3.
+1. **Approach A, in the four phases, starting with phase 1 (#598).** Taken.
+2. **Subscription passthrough for local and remote sessions.** Taken. The guards above for remote use are proposed, not yet agreed.
+3. **Header name `x-wt-model-token`.** Taken.
+4. **Alias ids start as `alias/<name>`, real Claude ids for subscription models.** Taken. An id can be renamed later, at a cost: it is the LiteLLM `model_name` and the registry key, so a rename is create-new, repoint the slot profiles that name it, delete-old, and any session launched with the old id still sends it (the slot variables are read once). `wt-model alias rename` should update slot profiles and keep the old id as a redirect to the new one until no client session uses it (the server knows its client sessions).
+5. **One real subscription request to verify end to end.** Authorized; result below.
+
+## Real subscription check
+
+(filled in by the verification run)
