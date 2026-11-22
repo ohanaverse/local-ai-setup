@@ -37,7 +37,7 @@ Bare `wt-model` prints its help and exits 0.
 | `wt-model model` | Bare: the Models tab (a TUI) over this host's `registry.toml` | [below](#wt-model-model), [wt-model.md](wt-model.md) |
 | `wt-model model init\|list\|add\|edit\|rm` | The registry commands, no terminal needed | [wt-model.md](wt-model.md) |
 | `wt-model cloud-sync` | Refresh OpenRouter prices and mirror the ollama cloud catalog | [wt-cloud-sync.md](wt-cloud-sync.md) |
-| `wt-model litellm sync\|list\|providers\|status\|set\|restart` | The LiteLLM routes in `config.yaml`, the proxy pair, the proxy restart | [wt-agents/README.md](wt-agents/README.md#litellm-routes-are-wt-owned), [Proxy url and key](#proxy-url-and-key) |
+| `wt-model litellm sync\|list\|providers\|status\|set\|restart` | The LiteLLM routes (cloud routes in `config.yaml`, local routes in LiteLLM's database when the pair is set), the proxy pair, the proxy restart | [wt-agents/README.md](wt-agents/README.md#litellm-routes-are-wt-owned), [Proxy url and key](#proxy-url-and-key) |
 | `wt-model served <provider>` | The model ids a local provider's server is serving now | [wt-start-stop.md](wt-start-stop.md#wt-model-served-provider) |
 | `wt-model warm <provider> <model>` | Load a model into a running omlx server with one short request | [wt-start-stop.md](wt-start-stop.md#wt-model-warm-provider-model) |
 | `wt-model stop <provider>\|--all` | Stop every running model of a provider, or every local model, asking first about a model client sessions use | [wt-start-stop.md](wt-start-stop.md) |
@@ -171,6 +171,28 @@ reader resolves it — the key is never printed, only masked.
   ```
 - The pair is read once, at startup: a running server keeps the pair it
   started with; restart it after `wt-model litellm set`.
+- The same pair is the master key wt's route writes use for LiteLLM's model
+  API (#598): with both halves set, a local model's route is a row in
+  LiteLLM's database (`/model/new`, id `wt:<model-id>`, `wt_managed`), so a
+  start or stop costs no proxy restart; with either half empty every route
+  stays in `config.yaml`, as before. This covers the model server's start and
+  stop jobs, `wt-model litellm sync` (and its `--dry-run`, which only lists
+  the database), the sync after a registry write and `wt-model stop`. The key
+  is sent only as the `Authorization` header and never printed.
+- `wt-model litellm list` shows where each route lives, in its `STORE`
+  column: `file` for a `config.yaml` row, `db` for a wt route in the
+  database (`--json`: a `"store"` field per row,
+  [`litellm-cli.sample.json`](../../docs/contracts/litellm-cli.sample.json)).
+  The `OWNER` column says `wt` or `hand-written`. When the database cannot be
+  listed (the proxy is down, say), one `wt-model: warning: database routes
+  not listed (…)` line on stderr says so and the `config.yaml` rows are still
+  printed. Illustrative:
+
+  ```text
+  ID                           STORE  OWNER
+  openrouter/qwen/qwen3.8-27b  file   wt
+  ollama/gemma4:9b             db     wt
+  ```
 - A home `config.toml` with no `[litellm]` table falls back to the legacy
   `[litellm]` table of wt's `~/.config/agent-wt/config.toml` — read-only,
   nothing writes it again. A `wt-model` run that resolves the pair there
@@ -430,6 +452,17 @@ prints the real port:
 ```text
 wt-model: listening on <addr> (gateway /v1, control /control/v1)
 ```
+
+Right after that line it reconciles the LiteLLM routes once, as
+`wt-model litellm sync` does, through the same pair (local routes in
+LiteLLM's database): a proxy that restarted or lost its database gets its
+routes back without waiting for the next start or stop. It runs beside the
+serving, so sessions can reach the server meanwhile. Each change it makes is a
+`wt-model: start route sync: <id>: <action>` line on stderr and each warning a
+`wt-model: warning: start route sync: …` line; a sync that cannot run at all
+is one `wt-model: warning: LiteLLM routes not synced at start: …` line. None
+of them stops the server, and no `config.yaml` at all (LiteLLM not set up on
+this host) is silent. A stop waits for this sync to finish before it exits.
 
 It prints nothing on stdout and nothing when it stops. On SIGINT or SIGTERM it
 shuts down in order: the auto-stop loop, the HTTP server (up to 10 seconds
