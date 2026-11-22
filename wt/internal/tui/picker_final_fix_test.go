@@ -58,25 +58,25 @@ func TestPickerCtrlCFollowsTheRowList(t *testing.T) {
 }
 
 // TestRunningFooterIsTruthfulInThePicker pins the progress screen's last
-// line: the manage list forwards signals, so its wording stays; the picker's
-// Bubble Tea program owns them, so there the screen promises keys and ctrl+c
-// only.
+// line: both programs forward their signals to the list (Ruling T), so
+// both wordings promise that keys, ctrl+c and signals wait (#577 — the
+// picker used to promise keys and ctrl+c only, because Bubble Tea's own
+// handler owned the signals there and one ended wt mid-run).
 func TestRunningFooterIsTruthfulInThePicker(t *testing.T) {
-	const manage = "removing, please wait: keys, ctrl+c and signals wait until the run ends"
-	const launch = "removing, please wait: keys and ctrl+c wait until the run ends"
+	const wait = "removing, please wait: keys, ctrl+c and signals wait until the run ends"
 	run := func(m cleanupListModel) cleanupListModel {
 		m.phase, m.run = cleanupPhaseRunning, &cleanupRun{}
 		return m
 	}
 	ml := run(newSizedCleanupList(t, cleanupFixture(), 120, 40))
-	if v := ml.View(); !strings.Contains(v, manage) {
+	if v := ml.View(); !strings.Contains(v, wait) {
 		t.Errorf("manage footer changed:\n%s", v)
 	}
 	rep := pickerActionsFixture()
 	pl := run(newRowList(rep, rowListOpts{Mode: modeLaunch, Theme: themes.Default, Now: time.Now()}))
 	pl.width, pl.height = 120, 40
 	v := pl.View()
-	if !strings.Contains(v, launch) || strings.Contains(v, "signals wait") {
+	if !strings.Contains(v, wait) {
 		t.Errorf("launch footer wrong:\n%s", v)
 	}
 }

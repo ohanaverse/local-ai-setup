@@ -364,6 +364,16 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.rowsRefreshing, m.reloadGen = true, m.rowsGen
 		m.rows.fetching = true
 		return m, loadRowsCmd(m.repoRoot, nil, m.rowsIn, true)
+	case cleanupSignalMsg:
+		// An OS signal is the row list's own while it shows: Ruling T — a
+		// removal run in flight is never abandoned; the list remembers the
+		// signal and quits once the run ends, after its outcomes print
+		// (#577). Everywhere else in the picker it quits now, exactly what
+		// Bubble Tea's own handler did.
+		if m.ready && m.phase == phaseList {
+			return m.updateRows(msg)
+		}
+		return m, tea.Quit
 	case cleanupPreviewMsg, cleanupProgressMsg, cleanupRunDoneMsg, cleanupRefreshMsg, cleanupRefetchMsg:
 		// The row list runs its own flows inside itself: the `x` removal
 		// run (preview, progress, done, the post-run refresh) and, in
@@ -930,7 +940,10 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // cmd/wt-session exits with the agent's status (#412).
 func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, profileLayer ProfileLayer, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
 	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, models, cfg, removeFuncs), slots)
-	p := tea.NewProgram(initial, tea.WithAltScreen())
+	// Bubble Tea's own signal handler quits on the first signal in any
+	// phase — mid-removal too, losing the run's outcomes; the model handles
+	// them instead (Ruling T, the cleanup list's rule, #577).
+	p := tea.NewProgram(initial, tea.WithAltScreen(), tea.WithoutSignalHandler())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.
 	// from a test invocation sharing the process).
@@ -939,7 +952,12 @@ func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, ex
 	clientNotes = &startOutput{what: "client session"}
 	pendingSurveyState = pendingSurvey{}
 	profileApplier, profileResolver = profileLayer.Apply, profileLayer.Resolve
-	finalModel, err := p.Run()
+	finalModel, stop, err := guardedRun(forwardSignals(p.Send), p.Run)
+	// The forwarding stops with the program: everything after this runs
+	// outside Bubble Tea (the remote start settle, the route notes, the row
+	// session's hand-offs and their prompts) and needs Go's default signal
+	// handling back — runRescue's rule.
+	stop()
 	// A start or a catalog fetch the user quit out of on the API path stops
 	// waiting first (the job keeps running on the server), so its goroutine
 	// is over before anything prints.

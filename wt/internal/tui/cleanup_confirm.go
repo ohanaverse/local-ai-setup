@@ -1501,13 +1501,11 @@ func (m *cleanupListModel) runningView() string {
 	if w := len(r.items) - r.got - 1; w > 0 {
 		body = append(body, fmt.Sprintf("%d waiting", w))
 	}
-	// Ruling T: nothing interrupts a run, and the screen says so.
-	// The manage program forwards signals to its list; the launch picker's
-	// Bubble Tea program owns them, so a signal there still ends wt.
+	// Ruling T: nothing interrupts a run, and the screen says so. Both
+	// programs forward their signals to the list (#577 — the launch
+	// picker's program opts out of Bubble Tea's own handler, as the manage
+	// program always has), so one wording covers them.
 	wait := "removing, please wait: keys, ctrl+c and signals wait until the run ends"
-	if m.launch() {
-		wait = "removing, please wait: keys and ctrl+c wait until the run ends"
-	}
 	foot := wrapIndented(wait, "", m.width)
 	if m.quitAfterRun {
 		foot = append(foot, wrapIndented("a quit was asked: wt quits when this run ends", "", m.width)...)
