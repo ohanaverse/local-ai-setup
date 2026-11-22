@@ -225,3 +225,56 @@ func must(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 }
+
+// TestWithFileLockSharedLetsReadersRunTogether pins #628: two shared
+// readers hold the lock at once while an exclusive writer waits — the
+// proxy-pair reads stop queueing behind one another.
+func TestWithFileLockSharedLetsReadersRunTogether(t *testing.T) {
+	lock := filepath.Join(t.TempDir(), "pair.lock")
+
+	release := make(chan struct{})
+	first := make(chan error, 1)
+	go func() { first <- WithFileLockShared(lock, func() error { <-release; return nil }) }()
+	// Give the first reader time to take the lock.
+	time.Sleep(100 * time.Millisecond)
+	second := make(chan error, 1)
+	go func() { second <- WithFileLockShared(lock, func() error { return nil }) }()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a shared reader queued behind another shared reader")
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+
+	// The writer excludes: while a shared lock is held, the exclusive one waits.
+	held := make(chan struct{})
+	release2 := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- WithFileLockShared(lock, func() error { close(held); <-release2; return nil }) }()
+	<-held
+	writerDone := make(chan error, 1)
+	go func() { writerDone <- WithFileLock(lock, func() error { return nil }) }()
+	select {
+	case err := <-writerDone:
+		t.Fatalf("the writer ran while a shared lock was held: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release2)
+	select {
+	case err := <-writerDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the writer never ran after the shared lock was released")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

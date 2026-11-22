@@ -1272,3 +1272,37 @@ func TestLoadFixHintNeverSendsAHomeFailureToWtConfig(t *testing.T) {
 		t.Errorf("LoadFixHint(unparseable home) = %q, want the wt-model home named and not `wt config`", hint)
 	}
 }
+
+// TestPairReadInAnUnwritableHomeSucceeds pins #628: the proxy-pair read
+// takes a shared lock and tolerates a home the process cannot write — a
+// lock file that cannot be created must not fail the read (the O_CREATE's
+// EACCES used to reach the resolve's error), and none is created.
+func TestPairReadInAnUnwritableHomeSucceeds(t *testing.T) {
+	_, cleanup := IsolateConfigHomeForTest()
+	defer cleanup()
+	if err := SetProxy(ptr("http://localhost:4099"), ptr("sk-x")); err != nil {
+		t.Fatal(err)
+	}
+	home := ProxyHomePath()
+	// The pair write leaves its lock file behind (lock files are never
+	// removed); the failing shape is a home whose lock file does not exist
+	// and cannot be created — the O_CREATE's EACCES.
+	if err := os.Remove(home + ".lock"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Dir(home), 0o500); err != nil {
+		t.Skipf("cannot make the config home unwritable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(home), 0o755) })
+
+	pair, found, err := resolveProxyHome(home)
+	if err != nil {
+		t.Fatalf("the pair read failed in an unwritable home: %v", err)
+	}
+	if !found || pair.URL != "http://localhost:4099" {
+		t.Fatalf("pair = %+v, found %v", pair, found)
+	}
+	if _, err := os.Stat(home + ".lock"); !os.IsNotExist(err) {
+		t.Errorf("the read created a lock file in the unwritable home: %v", err)
+	}
+}
