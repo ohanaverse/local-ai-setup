@@ -112,11 +112,18 @@ type Options struct {
 	// restart. Cloud rows, removals of rows still in config.yaml and every
 	// setting keep the locked file write and its restart. When the API is
 	// unusable (database models off, the proxy unreachable, an add that is not
-	// listed afterwards, any other API error) the whole local batch takes the
-	// file path and Result.Warnings says why. nil is the file path for every
+	// listed afterwards, any other API error) the local adds take the file
+	// path and Result.Warnings says why. nil is the file path for every
 	// row, exactly as before #598. The API calls run under the config.yaml
-	// lock this write already holds (no lock of their own) and use Ctx.
+	// lock this write already holds (no lock of their own) and share one
+	// deadline (15 s from Ctx, or from now when Ctx is nil). A database delete
+	// that fails is an "unrouted" Outcome with Err, never a file fallback
+	// (config.yaml cannot remove a database row); a database row whose route
+	// config.yaml serves after the write is deleted (the file wins).
 	Admin *AdminClient
+	// dbTimeout replaces dbTimeout, the one deadline of a write's API calls
+	// (0 = dbTimeout). Unexported: tests shorten it per call.
+	dbTimeout time.Duration
 }
 
 // Outcome is one id's result. Action is "routed" or "unrouted" (ApplyChange)
@@ -335,6 +342,7 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 	// attempt for; dropping an id here would lose the route.
 	var missing []string
 	db := newDBRoutes(o)
+	defer db.close()
 	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove, bool) {
 		adding := map[string]bool{}
 		var add []plannedAdd
@@ -394,12 +402,20 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 		if hold := len(missing) > 0; hold || db == nil || !touchesLocal(cfg, ch, add, rm) {
 			return add, rm, hold
 		}
-		if !db.list() {
-			return add, rm, false
-		}
 		names := make([]string, 0, len(rm))
 		for _, r := range rm {
 			names = append(names, r.id)
+		}
+		if !db.list() {
+			// The family's database rows are unknown: name the family itself
+			// ("<family>/*", which RowFamily reads as that family).
+			for _, fam := range ch.RemoveFamilies {
+				if fam != "" {
+					names = append(names, fam+"/*")
+				}
+			}
+			db.unlisted(cfg, add, names)
+			return add, rm, false
 		}
 		for _, fam := range ch.RemoveFamilies {
 			if fam != "" {
@@ -1014,6 +1030,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	// for, so the one caller that pays for the scan (Options.reportOllamaServe).
 	o.reportOllamaServe = true
 	db := newDBRoutes(o)
+	defer db.close()
 	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove, bool) {
 		// The database is listed before planning (a sync always looks: a stale
 		// database route can outlive every local model), so its rows take part
@@ -1028,8 +1045,12 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		// row on disk; hand the rows through so the write path does not
 		// prepare each one a second time.
 		add, remove := plan.planned(built)
-		if db != nil && db.ok {
+		switch {
+		case db == nil:
+		case db.listed:
 			add = db.route(cfg, f, add, plan.Remove)
+		default:
+			db.unlisted(cfg, add, plan.Remove)
 		}
 		return add, remove, false
 	}, o, OllamaAPIBase(cfg), cfg.LitellmBaseURL())
@@ -1048,7 +1069,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		}
 	}
 	db.finish(&res, true)
-	if db != nil && db.ok {
+	if db != nil && db.listed {
 		if w := db.foreignWarning(); w != "" {
 			res.Warnings = append(res.Warnings, w)
 		}

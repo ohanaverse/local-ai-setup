@@ -5,9 +5,15 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
+
+// dbTimeout bounds the whole database half of one route write (the listing,
+// the writes and the confirming listing together): it runs under the
+// config.yaml lock, which lifecycle writers wait for only briefly.
+const dbTimeout = 15 * time.Second
 
 // dbRoutes is the database half of one route write (Options.Admin set). The
 // plan callback lists the database before planning, hands the local rows of
@@ -16,25 +22,41 @@ import (
 //
 // Every call runs inside applyPlanned's config.yaml lock: the plan is decided
 // against the document as read there, and a fallback must join that same
-// write (one save, one restart). The API calls take no lock of their own.
+// write (one save, one restart). The API calls take no lock of their own and
+// share one deadline (dbTimeout, from Options.Ctx when set), so a hung proxy
+// costs the lock holder that long at most and then falls back to the file.
 type dbRoutes struct {
-	admin *AdminClient
-	ctx   context.Context
-	// current is the database as listed before planning; valid only when ok.
+	admin   *AdminClient
+	base    context.Context
+	timeout time.Duration
+	ctx     context.Context // set by the first call; bounded by timeout
+	cancel  context.CancelFunc
+	// current is the database as listed before planning; valid only when
+	// listed.
 	current []DBModel
-	// ok is true once the listing succeeded and stays true unless the local
-	// batch fell back to config.yaml.
-	ok bool
-	// reason says why the database path was given up ("" when it was never
-	// tried, e.g. a change with no local row).
+	listed  bool
+	// fellBack is set when the local adds were handed back to config.yaml.
+	fellBack bool
+	// reason says why the database path was given up ("" when it held or was
+	// never tried, e.g. a change with no local row).
 	reason string
+	// addsToFile / unchecked say what a lost database path cost: local adds
+	// written to config.yaml instead, and route names whose database rows
+	// could not be looked at (a failed listing).
+	addsToFile bool
+	unchecked  []string
 	// routed holds the local adds the API carried, in plan order.
 	routed []dbRouted
 	// unrouted holds the route names whose database rows were deleted.
 	unrouted []string
-	// warnings are kept only when the API path held (a fallback writes the
-	// skipped rows the file way, so they owe no warning).
+	// failed holds the removals whose database delete failed: the route may
+	// still be live (reported as an Outcome with Err and a warning).
+	failed []Outcome
+	// warnings hold for the adds only while the API path held (a fallback
+	// writes skipped rows the file way, so they owe no warning).
 	warnings []string
+	// delWarnings are about deletes and hold whatever the adds did.
+	delWarnings []string
 }
 
 type dbRouted struct {
@@ -47,29 +69,59 @@ func newDBRoutes(o Options) *dbRoutes {
 	if o.Admin == nil {
 		return nil
 	}
-	ctx := o.Ctx
-	if ctx == nil {
-		ctx = context.Background()
+	base := o.Ctx
+	if base == nil {
+		base = context.Background()
 	}
-	return &dbRoutes{admin: o.Admin, ctx: ctx}
+	t := o.dbTimeout
+	if t <= 0 {
+		t = dbTimeout
+	}
+	return &dbRoutes{admin: o.Admin, base: base, timeout: t}
 }
 
-// list reads the database; a failure gives up the database path.
+// context is the one deadline every API call of this write shares, started
+// by the first call (inside the lock, so the lock wait does not spend it).
+func (d *dbRoutes) context() context.Context {
+	if d.ctx == nil {
+		d.ctx, d.cancel = context.WithTimeout(d.base, d.timeout)
+	}
+	return d.ctx
+}
+
+// close releases the deadline; nil-safe.
+func (d *dbRoutes) close() {
+	if d != nil && d.cancel != nil {
+		d.cancel()
+	}
+}
+
+// list reads the database; a failure gives up the database path (the caller
+// then reports what it cost through unlisted).
 func (d *dbRoutes) list() bool {
-	cur, err := d.admin.List(d.ctx)
+	cur, err := d.admin.List(d.context())
 	if err != nil {
-		d.fail(err)
+		d.reason = oneLine(err)
 		return false
 	}
-	d.current, d.ok = cur, true
+	d.current, d.listed = cur, true
 	return true
 }
 
-func (d *dbRoutes) fail(err error) {
-	d.ok = false
-	// One line: errors.Join (ApplyDB) separates its parts with newlines.
-	d.reason = strings.Join(strings.Fields(err.Error()), " ")
-	d.routed, d.unrouted, d.warnings = nil, nil, nil
+// unlisted records what a failed listing cost this write: whether local adds
+// go to config.yaml, and which local removals' database rows went unchecked.
+func (d *dbRoutes) unlisted(cfg *config.Config, add []plannedAdd, removeNames []string) {
+	d.addsToFile = slices.ContainsFunc(add, func(a plannedAdd) bool { return a.err == nil && RowFamily(cfg, a.id) != "" })
+	for _, n := range removeNames {
+		if RowFamily(cfg, n) != "" && !slices.Contains(d.unchecked, n) {
+			d.unchecked = append(d.unchecked, n)
+		}
+	}
+}
+
+func oneLine(err error) string {
+	// errors.Join (ApplyDB) separates its parts with newlines.
+	return strings.Join(strings.Fields(err.Error()), " ")
 }
 
 // owned is the database rows wt may plan against: marked and under a wt: id.
@@ -128,11 +180,10 @@ func (d *dbRoutes) familyRoutes(cfg *config.Config, fam string, adding map[strin
 	return out
 }
 
-// route carries the local adds of a plan out through the API and deletes the
-// database rows of removeNames, and returns the adds config.yaml must still
-// make. Removals always stay with config.yaml as well (a route still in the
-// file goes from there; one that is not costs nothing), so only the adds are
-// split.
+// route carries the local half of a plan out through the API and returns the
+// adds config.yaml must still make. Removals always stay with config.yaml as
+// well (a route still in the file goes from there; one that is not costs
+// nothing), so only the adds are split.
 //
 // An add stays with config.yaml when its row is not local (RowFamily ""), was
 // not built, or replaces a wt row config.yaml still holds (the move of such
@@ -140,10 +191,23 @@ func (d *dbRoutes) familyRoutes(cfg *config.Config, fam string, adding map[strin
 // config.yaml row is skipped with a warning: a database row beside it would
 // make LiteLLM load-balance the two (Review Focus 2).
 //
-// Any API failure — database models off, a connection error, an add LiteLLM
-// accepted but does not list afterwards (Review Focus 5), any other error —
-// gives up the database path for the whole batch: add is returned unchanged
-// for config.yaml and d.reason says why.
+// config.yaml wins over the database: an owned database row whose route name
+// config.yaml serves after this write (a row already in the file, or an add
+// the file makes) is deleted, so a fallback or a pre-migration row never
+// leaves a stale twin LiteLLM would load-balance with the current row.
+//
+// Deletes run first, one id at a time through ApplyDB's guarded path, so each
+// failure is pinned to its route: a removal whose delete failed is an
+// "unrouted" Outcome with Err and a warning that the route may still be live
+// (config.yaml cannot remove a database row, so it is never "used
+// config.yaml"). A transport error stops the deletes; the rest are reported
+// failed with it.
+//
+// The adds and replacements then go in one ApplyDB call and are confirmed by
+// a fresh listing. Any failure there — database models off, a transport error
+// (from the deletes too), an add LiteLLM accepted but does not list (Review
+// Focus 5), any other error — hands the whole add batch back to config.yaml
+// (add is returned unchanged) and d.reason says why.
 func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNames []string) []plannedAdd {
 	var fileAdd []plannedAdd
 	var desired []DBModel
@@ -169,29 +233,58 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 		desired = append(desired, m)
 	}
 	byName := map[string][]string{}
+	var names []string
 	for _, m := range d.owned() {
+		if byName[m.ModelName] == nil {
+			names = append(names, m.ModelName)
+		}
 		byName[m.ModelName] = append(byName[m.ModelName], m.ID)
 	}
-	var del, unrouted []string
-	gone := map[string]bool{}
+
+	// Removals, then twins of what config.yaml serves.
+	removing := map[string]bool{}
+	var transport error
 	for _, n := range removeNames {
-		if ids := byName[n]; len(ids) > 0 && !gone[n] {
-			gone[n] = true
-			del = append(del, ids...)
-			unrouted = append(unrouted, n)
+		if len(byName[n]) == 0 || removing[n] {
+			continue
+		}
+		removing[n] = true
+		if err := d.deleteAll(byName[n], &transport); err != nil {
+			d.failed = append(d.failed, Outcome{ID: n, Action: "unrouted", Err: err})
+			d.delWarnings = append(d.delWarnings, fmt.Sprintf("%s: its database route was NOT removed and may still be live (%s)", n, oneLine(err)))
+			continue
+		}
+		d.unrouted = append(d.unrouted, n)
+	}
+	served := map[string]bool{}
+	for _, r := range f.Rows() {
+		served[r.ID] = true
+	}
+	for _, a := range fileAdd {
+		if a.err == nil && a.row != nil {
+			served[a.id] = true
 		}
 	}
+	for _, n := range names {
+		if !served[n] || removing[n] {
+			continue
+		}
+		if err := d.deleteAll(byName[n], &transport); err != nil {
+			d.delWarnings = append(d.delWarnings, fmt.Sprintf("%s: config.yaml routes it, but its database route could not be removed (%s); both may be live", n, oneLine(err)))
+		}
+	}
+
 	p := PlanDB(desired, d.current)
-	slices.Sort(del)
-	p.Delete = del
-	if !p.Empty() {
-		if _, _, _, err := d.admin.ApplyDB(d.ctx, p); err != nil {
-			d.fail(err)
-			return add
+	p.Delete = nil
+	if len(p.Add)+len(p.Update) > 0 {
+		if transport != nil {
+			return d.fallBack(transport, add)
+		}
+		if _, _, _, err := d.admin.ApplyDB(d.context(), p); err != nil {
+			return d.fallBack(err, add)
 		}
 		if err := d.confirm(append(slices.Clone(p.Add), p.Update...)); err != nil {
-			d.fail(err)
-			return add
+			return d.fallBack(err, add)
 		}
 	}
 	added, updated := map[string]bool{}, map[string]bool{}
@@ -204,19 +297,41 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 	for _, m := range desired {
 		d.routed = append(d.routed, dbRouted{id: m.ModelName, written: added[m.ModelName] || updated[m.ModelName], updated: updated[m.ModelName]})
 	}
-	d.unrouted = unrouted
 	d.warnings = warnings
 	return fileAdd
+}
+
+// deleteAll deletes ids through ApplyDB's guarded path, one call per id. Once
+// a transport error has been seen (*transport), nothing more is attempted and
+// that error is returned for every later id.
+func (d *dbRoutes) deleteAll(ids []string, transport *error) error {
+	for _, id := range ids {
+		if *transport != nil {
+			return *transport
+		}
+		if _, _, _, err := d.admin.ApplyDB(d.context(), DBPlan{Delete: []string{id}}); err != nil {
+			if stopApply(d.context(), err) {
+				*transport = err
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// fallBack hands the whole add batch back to config.yaml.
+func (d *dbRoutes) fallBack(err error, add []plannedAdd) []plannedAdd {
+	d.fellBack = true
+	d.reason = oneLine(err)
+	d.addsToFile = true
+	return add
 }
 
 // confirm re-lists the database and requires every row just written to be
 // there, wt-managed and carrying its hash: a 200 from /model/new is not proof
 // the row was stored.
 func (d *dbRoutes) confirm(written []DBModel) error {
-	if len(written) == 0 {
-		return nil
-	}
-	rows, err := d.admin.List(d.ctx)
+	rows, err := d.admin.List(d.context())
 	if err != nil {
 		return fmt.Errorf("re-list after the write: %w", err)
 	}
@@ -229,29 +344,36 @@ func (d *dbRoutes) confirm(written []DBModel) error {
 }
 
 // finish folds the database half into res after the file write: Via, the
-// fallback warning, the other warnings, and the outcomes. sync selects Sync's
-// reporting: only rows actually written are outcomes, a replaced one is
-// "rewritten"; ApplyChange reports every add as "routed" with Written saying
-// whether it changed. A database removal whose id the file removal already
-// reported is not reported twice.
+// warnings, and the outcomes. sync selects Sync's reporting: only rows
+// actually written are outcomes, a replaced one is "rewritten"; ApplyChange
+// reports every add as "routed" with Written saying whether it changed. A
+// database removal whose id the file removal already reported is not
+// reported twice; a failed one is an "unrouted" Outcome with Err.
 func (d *dbRoutes) finish(res *Result, sync bool) {
 	res.Via = "file"
 	if d == nil {
 		return
 	}
-	if !d.ok {
-		if d.reason != "" {
+	if d.reason != "" {
+		if d.addsToFile {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("database routes unavailable (%s); used config.yaml", d.reason))
 		}
-		return
+		if len(d.unchecked) > 0 {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("database routes unavailable (%s); not checked for %s, whose database route may still be live", d.reason, strings.Join(d.unchecked, ", ")))
+		}
 	}
-	res.Via = "db"
-	res.Warnings = append(res.Warnings, d.warnings...)
+	res.Warnings = append(res.Warnings, d.delWarnings...)
 	for _, id := range d.unrouted {
 		if !slices.ContainsFunc(res.Outcomes, func(o Outcome) bool { return o.ID == id && o.Action == "unrouted" }) {
 			res.Outcomes = append(res.Outcomes, Outcome{ID: id, Action: "unrouted"})
 		}
 	}
+	res.Outcomes = append(res.Outcomes, d.failed...)
+	if !d.listed || d.fellBack {
+		return
+	}
+	res.Via = "db"
+	res.Warnings = append(res.Warnings, d.warnings...)
 	for _, r := range d.routed {
 		switch {
 		case !sync:

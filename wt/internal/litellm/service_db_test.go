@@ -1,11 +1,13 @@
 package litellm
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
@@ -363,5 +365,131 @@ func TestNilAdminCallsNoAPI(t *testing.T) {
 	f, _ := Open(p)
 	if ids := f.RoutedIDs(); !slices.Equal(ids, []string{"ollama/gemma:9b"}) {
 		t.Fatalf("rows %v", ids)
+	}
+}
+
+// TestFallbackThenHealthySyncLeavesNoTwin checks that config.yaml wins over a
+// stale database row: a route started in the database, then written to
+// config.yaml by a sync that could not list the database, must not stay in
+// both places once the database answers again — LiteLLM would load-balance
+// the file's current row with the database's stale one, and later changes
+// would reach only the file.
+func TestFallbackThenHealthySyncLeavesNoTwin(t *testing.T) {
+	o, _, p, fake := dbOpts(t, "model_list: []\n"+settledSettings)
+	cfg := testConfig()
+	if _, err := ApplyChange(cfg, Change{Add: localFor(cfg, "ollama/gemma:9b")}, o); err != nil {
+		t.Fatal(err)
+	}
+	fake.failList = true
+	res, err := Sync(cfg, localFor(cfg, "ollama/gemma:9b"), o)
+	if err != nil || !hasWarning(res, "database routes unavailable (") {
+		t.Fatalf("fallback sync: err=%v warnings=%v", err, res.Warnings)
+	}
+	fake.failList = false
+	if _, err := Sync(cfg, localFor(cfg, "ollama/gemma:9b"), o); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.ids(); len(got) != 0 {
+		t.Fatalf("database rows %v, want the twin removed", got)
+	}
+	f, _ := Open(p)
+	if r := f.row("ollama/gemma:9b"); r == nil || !IsManaged(r) {
+		t.Fatal("config.yaml lost the route")
+	}
+}
+
+// TestStartBesideMarkedFileRowRemovesTheDatabaseTwin checks the same rule on
+// a start: a local id whose wt row is still in config.yaml (not migrated yet)
+// stays there, and a database row of the same name is deleted.
+func TestStartBesideMarkedFileRowRemovesTheDatabaseTwin(t *testing.T) {
+	o, _, p, fake := dbOpts(t, "model_list: []\n"+settledSettings)
+	cfg := testConfig()
+	if _, err := ApplyChange(cfg, Change{Add: localFor(cfg, "ollama/gemma:9b")}, Options{Path: p, Restart: o.Restart}); err != nil {
+		t.Fatal(err)
+	}
+	fake.seed(stored(managedRow("wt:ollama/gemma:9b", "ollama/gemma:9b", map[string]any{"model": "ollama_chat/gemma:9b", "api_base": "http://stale"})))
+	if _, err := ApplyChange(cfg, Change{Add: localFor(cfg, "ollama/gemma:9b")}, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.ids(); len(got) != 0 || fake.requests("POST /model/new") != 0 {
+		t.Fatalf("database rows %v adds %d, want the twin deleted and nothing added", got, fake.requests("POST /model/new"))
+	}
+	f, _ := Open(p)
+	if r := f.row("ollama/gemma:9b"); r == nil || !IsManaged(r) {
+		t.Fatal("config.yaml lost the route")
+	}
+}
+
+// TestFailedDatabaseDeleteIsReported checks that a stop whose database delete
+// fails says so truthfully: an "unrouted" Outcome carrying the error and a
+// warning that the route may still be live — never "used config.yaml",
+// since the file cannot remove a database row — while a delete that worked
+// before it in the same change is reported as a normal "unrouted".
+func TestFailedDatabaseDeleteIsReported(t *testing.T) {
+	body := "model_list: []\n" + settledSettings
+	o, restarts, p, fake := dbOpts(t, body)
+	cfg := testConfig()
+	if _, err := ApplyChange(cfg, Change{Add: localFor(cfg, "ollama/gemma:9b", "mtplx/Youssofal--Q")}, o); err != nil {
+		t.Fatal(err)
+	}
+	fake.failDeleteID = "wt:ollama/gemma:9b"
+	res, err := ApplyChange(cfg, Change{Remove: []string{"mtplx/Youssofal--Q", "ollama/gemma:9b"}}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt, ok := outcomeFor(res, "mtplx/Youssofal--Q")
+	if !ok || mt.Action != "unrouted" || mt.Err != nil {
+		t.Fatalf("outcomes %+v, want mtplx unrouted", res.Outcomes)
+	}
+	g, ok := outcomeFor(res, "ollama/gemma:9b")
+	if !ok || g.Action != "unrouted" || g.Err == nil {
+		t.Fatalf("outcomes %+v, want gemma unrouted with Err", res.Outcomes)
+	}
+	if !hasWarning(res, "ollama/gemma:9b: its database route was NOT removed and may still be live") || hasWarning(res, "used config.yaml") {
+		t.Fatalf("warnings %q", res.Warnings)
+	}
+	if strings.Contains(strings.Join(res.Warnings, " "), testMasterKey) {
+		t.Fatal("a warning carries the master key")
+	}
+	if got := fake.ids(); !slices.Equal(got, []string{"wt:ollama/gemma:9b"}) {
+		t.Fatalf("database rows %v, want gemma still there", got)
+	}
+	if *restarts != 0 || readFile(t, p) != body {
+		t.Fatalf("restarts=%d or config.yaml changed", *restarts)
+	}
+}
+
+// TestHungProxyFallsBackWithinTheBound checks that a proxy that accepts the
+// connection and never answers cannot hold the config.yaml lock past the
+// write's one database deadline: the start and the sync fall back to the
+// file promptly, with the warning.
+func TestHungProxyFallsBackWithinTheBound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	o, _, p := opts(t, "model_list: []\n"+settledSettings)
+	o.Admin = &AdminClient{BaseURL: srv.URL, Key: testMasterKey}
+	o.dbTimeout = 200 * time.Millisecond
+	cfg := testConfig()
+	for name, run := range map[string]func() (Result, error){
+		"start": func() (Result, error) { return ApplyChange(cfg, Change{Add: localFor(cfg, "ollama/gemma:9b")}, o) },
+		"sync":  func() (Result, error) { return Sync(cfg, localFor(cfg, "ollama/gemma:9b", "mtplx/Youssofal--Q"), o) },
+	} {
+		start := time.Now()
+		res, err := run()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if el := time.Since(start); el > 3*time.Second {
+			t.Fatalf("%s took %v, want about the 200ms deadline", name, el)
+		}
+		if res.Via != "file" || !hasWarning(res, "database routes unavailable (") {
+			t.Fatalf("%s: via=%q warnings=%v", name, res.Via, res.Warnings)
+		}
+	}
+	f, _ := Open(p)
+	if f.row("ollama/gemma:9b") == nil || f.row("mtplx/Youssofal--Q") == nil {
+		t.Fatalf("rows %v, want both local routes in config.yaml", f.RoutedIDs())
 	}
 }

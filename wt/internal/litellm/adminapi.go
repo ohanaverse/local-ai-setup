@@ -120,7 +120,7 @@ func (c *AdminClient) do(ctx context.Context, method, path string, payload any) 
 	}
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.BaseURL, "/")+path, rd)
 	if err != nil {
-		return 0, nil, c.redact(err)
+		return 0, nil, c.redact(ctx, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Key)
 	if payload != nil {
@@ -132,12 +132,12 @@ func (c *AdminClient) do(ctx context.Context, method, path string, payload any) 
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return 0, nil, c.redact(err)
+		return 0, nil, c.redact(ctx, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, adminBodyLimit))
 	if err != nil {
-		return 0, nil, c.redact(err)
+		return 0, nil, c.redact(ctx, err)
 	}
 	return resp.StatusCode, body, nil
 }
@@ -154,8 +154,28 @@ func (c *AdminClient) statusError(what string, status int, body []byte) error {
 	return fmt.Errorf("litellm: %s: HTTP %d: %s", what, status, msg)
 }
 
-func (c *AdminClient) redact(err error) error {
-	return errors.New(c.redactString("litellm: " + err.Error()))
+// redact turns a request that got no HTTP answer into a *TransportError
+// whose text carries no key.
+func (c *AdminClient) redact(ctx context.Context, err error) error {
+	return &TransportError{msg: c.redactString("litellm: " + err.Error()), ctxErr: ctx.Err()}
+}
+
+// TransportError is an admin request that got no HTTP answer (connection
+// refused or reset, a timeout, a cancelled context). Its text is redacted;
+// it unwraps to the context's error when the context had ended, so
+// errors.Is(err, context.DeadlineExceeded) still works.
+type TransportError struct {
+	msg    string
+	ctxErr error
+}
+
+func (e *TransportError) Error() string { return e.msg }
+func (e *TransportError) Unwrap() error { return e.ctxErr }
+
+// isTransport reports whether err (or a part of it) is a *TransportError.
+func isTransport(err error) bool {
+	var t *TransportError
+	return errors.As(err, &t)
 }
 
 func (c *AdminClient) redactString(s string) string {

@@ -114,6 +114,11 @@ func routeHash(m DBModel) string {
 // the Add fails, the route is missing until the next sync, and the error
 // says so.
 //
+// A transport error (no HTTP answer: the proxy is down or the context ended)
+// stops the run at once: the error is returned with the counts of what was
+// done and no later item is attempted, so a dead proxy costs one timeout,
+// not one per item.
+//
 // LiteLLM answers an Add of an id already present with a generic HTTP 500
 // (not an "already exists" message), so a failed Add re-lists the database:
 // the id counts as converged (another sync got there first) only when the
@@ -129,6 +134,9 @@ func (c *AdminClient) ApplyDB(ctx context.Context, p DBPlan) (added, updated, de
 		}
 		if e := c.Delete(ctx, id); e != nil {
 			errs = append(errs, fmt.Errorf("litellm: delete database model %s: %w", id, e))
+			if stopApply(ctx, e) {
+				return added, updated, deleted, errors.Join(errs...)
+			}
 			continue
 		}
 		deleted++
@@ -140,10 +148,16 @@ func (c *AdminClient) ApplyDB(ctx context.Context, p DBPlan) (added, updated, de
 		}
 		if e := c.Delete(ctx, m.ID); e != nil {
 			errs = append(errs, fmt.Errorf("litellm: update database model %s: delete: %w", m.ID, e))
+			if stopApply(ctx, e) {
+				return added, updated, deleted, errors.Join(errs...)
+			}
 			continue
 		}
 		if e := c.addConverged(ctx, m); e != nil {
 			errs = append(errs, fmt.Errorf("litellm: update database model %s: deleted but not re-added, its route is missing until the next sync: %w", m.ID, e))
+			if stopApply(ctx, e) {
+				return added, updated, deleted, errors.Join(errs...)
+			}
 			continue
 		}
 		updated++
@@ -151,11 +165,20 @@ func (c *AdminClient) ApplyDB(ctx context.Context, p DBPlan) (added, updated, de
 	for _, m := range p.Add {
 		if e := c.addConverged(ctx, m); e != nil {
 			errs = append(errs, fmt.Errorf("litellm: add database model %s: %w", m.ID, e))
+			if stopApply(ctx, e) {
+				return added, updated, deleted, errors.Join(errs...)
+			}
 			continue
 		}
 		added++
 	}
 	return added, updated, deleted, errors.Join(errs...)
+}
+
+// stopApply reports whether ApplyDB must give up after err: the proxy gave
+// no answer, or the context has ended.
+func stopApply(ctx context.Context, err error) bool {
+	return isTransport(err) || ctx.Err() != nil
 }
 
 // addConverged adds m with its hash stamped; when the Add fails it re-lists
@@ -171,6 +194,10 @@ func (c *AdminClient) addConverged(ctx context.Context, m DBModel) error {
 	addErr := c.Add(ctx, stamped)
 	if addErr == nil {
 		return nil
+	}
+	// No answer at all: a re-list would only wait for the same dead proxy.
+	if stopApply(ctx, addErr) {
+		return addErr
 	}
 	rows, listErr := c.List(ctx)
 	if listErr != nil {

@@ -176,13 +176,17 @@ func TestRouteHashIgnoresNumberTypeAndKeyOrder(t *testing.T) {
 // with that body as an HTTP 500 and stores nothing; calls counts requests.
 // swallowAdds answers /model/new with 200 and stores nothing (a database that
 // is off but says yes, Review Focus 5); log holds "METHOD /path" per request.
+// failList answers /model/info with 503; failDeleteID answers a delete of
+// that id with 503 and keeps the row.
 type fakeDBServer struct {
-	mu          sync.Mutex
-	rows        map[string]map[string]any // id -> {"model_name", "litellm_params", "model_info"}
-	addFailBody string
-	swallowAdds bool
-	calls       int
-	log         []string
+	mu           sync.Mutex
+	rows         map[string]map[string]any // id -> {"model_name", "litellm_params", "model_info"}
+	addFailBody  string
+	swallowAdds  bool
+	failList     bool
+	failDeleteID string
+	calls        int
+	log          []string
 }
 
 func maskedParams(p map[string]any) map[string]any {
@@ -213,6 +217,11 @@ func (f *fakeDBServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b, _ := io.ReadAll(r.Body)
 	switch r.URL.Path {
 	case "/model/info":
+		if f.failList {
+			w.WriteHeader(503)
+			w.Write([]byte(`{"error":"service unavailable"}`))
+			return
+		}
 		var data []map[string]any
 		for _, row := range f.rows {
 			p, _ := row["litellm_params"].(map[string]any)
@@ -246,6 +255,11 @@ func (f *fakeDBServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/model/delete":
 		var req map[string]string
 		_ = json.Unmarshal(b, &req)
+		if req["id"] == f.failDeleteID {
+			w.WriteHeader(503)
+			w.Write([]byte(`{"error":"service unavailable"}`))
+			return
+		}
 		if _, ok := f.rows[req["id"]]; !ok {
 			w.WriteHeader(400)
 			w.Write([]byte(strings.Replace(realMissingBody, "wt:ollama/x", req["id"], 1)))
@@ -503,5 +517,39 @@ func TestPlanDBSkipsManagedRowsWithoutTheWtPrefix(t *testing.T) {
 	p := PlanDB([]DBModel{want}, []DBModel{odd})
 	if got := planIDs(p.Add); !reflect.DeepEqual(got, []string{"wt:ollama/a"}) || len(p.Update)+len(p.Delete) != 0 {
 		t.Fatalf("plan %+v, want only the wt: add", p)
+	}
+}
+
+// TestApplyDBStopsAfterTransportError checks that a proxy that drops the
+// connection costs one request, not one per item: ApplyDB runs under the
+// config.yaml lock, and trying every remaining item against a dead proxy
+// would hold it for one timeout each.
+func TestApplyDBStopsAfterTransportError(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(srv.Close)
+	c := &AdminClient{BaseURL: srv.URL, Key: testMasterKey}
+	p := DBPlan{
+		Delete: []string{"wt:a", "wt:b"},
+		Update: []DBModel{managedRow("wt:u", "u", map[string]any{"model": "ollama/u"})},
+		Add:    []DBModel{managedRow("wt:n", "n", map[string]any{"model": "ollama/n"})},
+	}
+	_, _, _, err := c.ApplyDB(context.Background(), p)
+	if err == nil || !isTransport(err) {
+		t.Fatalf("err %v, want a transport error", err)
+	}
+	if strings.Contains(err.Error(), testMasterKey) {
+		t.Fatal("the error carries the master key")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("%d requests, want 1", calls)
 	}
 }
