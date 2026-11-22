@@ -364,7 +364,7 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 		}
 	}
 
-	p := PlanDB(desired, d.current)
+	p := PlanDB(desired, d.current, d.admin.Key)
 	p.Delete = nil
 	if len(p.Add)+len(p.Update) > 0 {
 		failed := transport
@@ -497,7 +497,7 @@ func (d *dbRoutes) confirm(written []DBModel) error {
 		return fmt.Errorf("re-list after the write: %w", err)
 	}
 	for _, w := range written {
-		if !slices.ContainsFunc(rows, func(r DBModel) bool { return r.ID == w.ID && isManagedDB(r) && hashMatches(r, w) }) {
+		if !slices.ContainsFunc(rows, func(r DBModel) bool { return r.ID == w.ID && isManagedDB(r) && hashMatches(r, w, d.admin.Key) }) {
 			return fmt.Errorf("database model %s was accepted but is not listed", w.ID)
 		}
 	}
@@ -563,7 +563,7 @@ func (d *dbRoutes) preview(cfg *config.Config, f *File, plan *SyncPlan, built ma
 			continue
 		}
 		viaDB[id] = true
-		p := PlanDB([]DBModel{m}, d.current)
+		p := PlanDB([]DBModel{m}, d.current, d.admin.Key)
 		switch {
 		case len(p.Add) > 0:
 		case len(p.Update) > 0:

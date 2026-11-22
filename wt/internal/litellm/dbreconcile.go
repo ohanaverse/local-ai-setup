@@ -2,6 +2,7 @@ package litellm
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,7 +13,8 @@ import (
 )
 
 // ParamsHashKey is the model_info key ApplyDB stamps on every row it adds:
-// routeHash of the row as wt sent it. LiteLLM's /model/info strips api_key
+// routeHash of the row as wt sent it (a resolved api_key enters it only as
+// an HMAC under the master key). LiteLLM's /model/info strips api_key
 // (and masks other sensitive-looking values) from litellm_params, so the
 // params it returns cannot be compared with the desired ones; the hash can.
 const ParamsHashKey = "wt_params_sha"
@@ -32,9 +34,12 @@ func (p DBPlan) Empty() bool { return len(p.Add)+len(p.Update)+len(p.Delete) == 
 // and whose id starts with DBIDPrefix are wt's: any other row (the LiteLLM
 // UI's, another owner's, a marked row under a foreign id that ApplyDB would
 // refuse to touch) is never updated or deleted. A managed row is equal to the desired one when its
-// model_info.wt_params_sha equals routeHash(desired); a managed row with no
-// hash is treated as changed. Every list is sorted by id. Pure.
-func PlanDB(desired, current []DBModel) DBPlan {
+// model_info.wt_params_sha equals routeHash(desired, hashKey); a managed row with no
+// hash is treated as changed. hashKey is the proxy master key the hash keys
+// a resolved api_key with (routeHash; the AdminClient's Key), so a plan and
+// the ApplyDB that stamps its rows must use the same one. Every list is
+// sorted by id. Pure.
+func PlanDB(desired, current []DBModel, hashKey string) DBPlan {
 	managed := make(map[string]DBModel, len(current))
 	for _, m := range current {
 		if isManagedDB(m) && strings.HasPrefix(m.ID, DBIDPrefix) {
@@ -49,7 +54,7 @@ func PlanDB(desired, current []DBModel) DBPlan {
 		switch {
 		case !ok:
 			p.Add = append(p.Add, d)
-		case !hashMatches(cur, d):
+		case !hashMatches(cur, d, hashKey):
 			p.Update = append(p.Update, d)
 		}
 	}
@@ -70,9 +75,10 @@ func isManagedDB(m DBModel) bool {
 	return v
 }
 
-// hashMatches reports whether stored carries the hash of want's route.
-func hashMatches(stored, want DBModel) bool {
-	h := routeHash(want)
+// hashMatches reports whether stored carries the hash of want's route
+// (routeHash under hashKey).
+func hashMatches(stored, want DBModel, hashKey string) bool {
+	h := routeHash(want, hashKey)
 	got, _ := stored.Info[ParamsHashKey].(string)
 	return h != "" && got == h
 }
@@ -82,10 +88,22 @@ func hashMatches(stored, want DBModel) bool {
 // 4096 and the API's float64 4096 hash the same) and map keys sorted (Go's
 // encoder sorts them). It is "" when the params cannot be encoded, which
 // never matches a stored hash.
-func routeHash(m DBModel) string {
-	params := m.Params
-	if params == nil {
-		params = map[string]any{}
+//
+// The hash is stored unmasked in model_info, so it must never cover a
+// resolved secret: an api_key that is not an os.environ/ reference (rec's
+// key, read from `rec auth token`) is replaced, before hashing, by its
+// HMAC-SHA256 under hashKey (the proxy master key), hex. A master-key
+// rotation therefore changes the hash of keyed rows: the next sync replaces
+// them once. An os.environ/ reference is hashed as written.
+func routeHash(m DBModel, hashKey string) string {
+	params := make(map[string]any, len(m.Params))
+	for k, v := range m.Params {
+		params[k] = v
+	}
+	if v, ok := params["api_key"].(string); ok && !strings.HasPrefix(v, "os.environ/") {
+		mac := hmac.New(sha256.New, []byte(hashKey))
+		mac.Write([]byte(v))
+		params["api_key"] = "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
 	}
 	b, err := json.Marshal(params)
 	if err != nil {
@@ -188,7 +206,7 @@ func (c *AdminClient) addConverged(ctx context.Context, m DBModel) error {
 	for k, v := range m.Info {
 		info[k] = v
 	}
-	info[ParamsHashKey] = routeHash(m)
+	info[ParamsHashKey] = routeHash(m, c.Key)
 	stamped := m
 	stamped.Info = info
 	addErr := c.Add(ctx, stamped)
@@ -204,7 +222,7 @@ func (c *AdminClient) addConverged(ctx context.Context, m DBModel) error {
 		return errors.Join(addErr, fmt.Errorf("re-list after the failed add: %w", listErr))
 	}
 	for _, r := range rows {
-		if r.ID == m.ID && isManagedDB(r) && hashMatches(r, m) {
+		if r.ID == m.ID && isManagedDB(r) && hashMatches(r, m, c.Key) {
 			return nil
 		}
 	}

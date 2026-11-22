@@ -453,7 +453,7 @@ func TestMigrationReplacesAStaleTwin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := PlanDB([]DBModel{m}, cur); len(p.Add)+len(p.Update) != 0 {
+	if p := PlanDB([]DBModel{m}, cur, testMasterKey); len(p.Add)+len(p.Update) != 0 {
 		t.Fatalf("database row is not the current one: %+v", p)
 	}
 }

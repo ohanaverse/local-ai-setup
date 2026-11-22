@@ -1,6 +1,9 @@
 package litellm
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -60,5 +63,73 @@ func TestFailedAddFallsBackOnlyForRowsNotCurrent(t *testing.T) {
 				t.Fatalf("restarts=%d, want 1", *restarts)
 			}
 		})
+	}
+}
+
+// plainRouteHash is the unkeyed hash routeHash used before the fix wave: the
+// sha256 of the canonical JSON of model_name and the raw params.
+func plainRouteHash(t *testing.T, m DBModel) string {
+	t.Helper()
+	b, err := json.Marshal(m.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var norm any
+	if err := json.Unmarshal(b, &norm); err != nil {
+		t.Fatal(err)
+	}
+	b, err = json.Marshal(map[string]any{"model_name": m.ModelName, "litellm_params": norm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// TestRouteHashKeysAResolvedAPIKey checks that a row carrying a resolved
+// secret as its api_key (rec's key, built from `rec auth token`) is not
+// stamped with an unsalted sha256 over that secret: the hash is stored
+// unmasked in model_info, so it would allow an offline dictionary check of
+// the key. The value is HMAC'd with the proxy master key instead — stable
+// across calls, different under another master key — while an
+// os.environ/ reference hashes by the reference, as before.
+func TestRouteHashKeysAResolvedAPIKey(t *testing.T) {
+	secret := managedRow("wt:rec/flint", "rec/flint", map[string]any{"model": "openai/flint", "api_key": "resolved-secret-123"})
+	h := routeHash(secret, testMasterKey)
+	if h == "" || h == plainRouteHash(t, secret) {
+		t.Fatalf("hash %q is the plain sha256 over the resolved key", h)
+	}
+	if h != routeHash(secret, testMasterKey) {
+		t.Fatal("the keyed hash is not stable")
+	}
+	if h == routeHash(secret, "sk-other-master") {
+		t.Fatal("the hash does not depend on the master key")
+	}
+	if secret.Params["api_key"] != "resolved-secret-123" {
+		t.Fatal("routeHash changed the caller's params")
+	}
+	env := managedRow("wt:rec/flint", "rec/flint", map[string]any{"model": "openai/flint", "api_key": "os.environ/REC_KEY"})
+	if he := routeHash(env, testMasterKey); he != plainRouteHash(t, env) || he != routeHash(env, "sk-other-master") {
+		t.Fatalf("an os.environ/ reference must hash by the reference: %q", he)
+	}
+
+	// Stamped by ApplyDB, planned by PlanDB: the same keyed hash on both sides.
+	f, c := newFakeDB(t)
+	if _, _, _, err := c.ApplyDB(t.Context(), DBPlan{Add: []DBModel{secret}}); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := f.rows["wt:rec/flint"]["model_info"].(map[string]any)
+	if info[ParamsHashKey] != h {
+		t.Fatalf("stamped %v, want the keyed hash", info[ParamsHashKey])
+	}
+	got, err := c.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := PlanDB([]DBModel{secret}, got, testMasterKey); !p.Empty() {
+		t.Fatalf("plan %+v, want empty under the same master key", p)
+	}
+	if p := PlanDB([]DBModel{secret}, got, "sk-other-master"); len(p.Update) != 1 {
+		t.Fatalf("plan %+v, want one Update after a master-key rotation", p)
 	}
 }

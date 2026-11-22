@@ -405,7 +405,7 @@ func TestFallbackThenHealthySyncLeavesNoTwin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := PlanDB([]DBModel{m}, cur); !p.Empty() {
+	if p := PlanDB([]DBModel{m}, cur, testMasterKey); !p.Empty() {
 		t.Fatalf("the database route is not the current one: %+v", p)
 	}
 }

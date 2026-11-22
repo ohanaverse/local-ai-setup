@@ -20,7 +20,7 @@ func managedRow(id, name string, params map[string]any) DBModel {
 // stored returns m as wt's Add leaves it in the database: Info carries the
 // route hash.
 func stored(m DBModel) DBModel {
-	info := map[string]any{ParamsHashKey: routeHash(m)}
+	info := map[string]any{ParamsHashKey: routeHash(m, testMasterKey)}
 	for k, v := range m.Info {
 		info[k] = v
 	}
@@ -44,7 +44,7 @@ func TestPlanDBAddsMissing(t *testing.T) {
 		managedRow("wt:b", "b", map[string]any{"model": "ollama/b"}),
 		managedRow("wt:a", "a", map[string]any{"model": "ollama/a"}),
 	}
-	p := PlanDB(desired, nil)
+	p := PlanDB(desired, nil, testMasterKey)
 	if got := planIDs(p.Add); !reflect.DeepEqual(got, []string{"wt:a", "wt:b"}) {
 		t.Fatalf("Add %v", got)
 	}
@@ -61,7 +61,7 @@ func TestPlanDBDeletesManagedStrays(t *testing.T) {
 		managedRow("wt:z", "z", map[string]any{"model": "ollama/z"}),
 		managedRow("wt:y", "y", map[string]any{"model": "ollama/y"}),
 	}
-	p := PlanDB(nil, current)
+	p := PlanDB(nil, current, testMasterKey)
 	if !reflect.DeepEqual(p.Delete, []string{"wt:y", "wt:z"}) {
 		t.Fatalf("Delete %v", p.Delete)
 	}
@@ -80,7 +80,7 @@ func TestPlanDBIgnoresUnmanagedDatabaseRows(t *testing.T) {
 		{ID: "wt:fake", ModelName: "y", Params: map[string]any{"model": "openai/y"}, Info: map[string]any{ManagedKey: "true"}},
 		{ID: "nil-info", ModelName: "z", Params: map[string]any{"model": "openai/z"}},
 	}
-	p := PlanDB(nil, current)
+	p := PlanDB(nil, current, testMasterKey)
 	if !p.Empty() {
 		t.Fatalf("plan %+v, want empty", p)
 	}
@@ -98,7 +98,7 @@ func TestPlanDBUpdatesChangedParams(t *testing.T) {
 		stored(managedRow("wt:b", "b", map[string]any{"model": "ollama/b"})),
 		stored(managedRow("wt:a", "a", map[string]any{"model": "ollama/a", "api_base": "http://old"})),
 	}
-	p := PlanDB(desired, current)
+	p := PlanDB(desired, current, testMasterKey)
 	if got := planIDs(p.Update); !reflect.DeepEqual(got, []string{"wt:a", "wt:b"}) {
 		t.Fatalf("Update %v", got)
 	}
@@ -115,7 +115,7 @@ func TestPlanDBUpdatesChangedParams(t *testing.T) {
 // its stored params cannot be trusted to match.
 func TestPlanDBUpdatesManagedRowWithoutHash(t *testing.T) {
 	row := managedRow("wt:a", "a", map[string]any{"model": "ollama/a"})
-	p := PlanDB([]DBModel{row}, []DBModel{row})
+	p := PlanDB([]DBModel{row}, []DBModel{row}, testMasterKey)
 	if got := planIDs(p.Update); !reflect.DeepEqual(got, []string{"wt:a"}) {
 		t.Fatalf("plan %+v, want one Update", p)
 	}
@@ -128,7 +128,7 @@ func TestPlanDBIsEmptyWhenEqual(t *testing.T) {
 	want := managedRow("wt:a", "a", map[string]any{"model": "ollama/a", "api_key": "os.environ/K"})
 	got := stored(want)
 	got.Params = map[string]any{"model": "ollama/a"} // api_key stripped by /model/info
-	if p := PlanDB([]DBModel{want}, []DBModel{got}); !p.Empty() {
+	if p := PlanDB([]DBModel{want}, []DBModel{got}, testMasterKey); !p.Empty() {
 		t.Fatalf("plan %+v, want empty", p)
 	}
 }
@@ -150,20 +150,20 @@ func TestRouteHashIgnoresNumberTypeAndKeyOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	fromJSON := managedRow("wt:a", "a", params)
-	h := routeHash(fromYAML)
-	if h == "" || h != routeHash(fromJSON) {
-		t.Fatalf("hash %q vs %q", h, routeHash(fromJSON))
+	h := routeHash(fromYAML, testMasterKey)
+	if h == "" || h != routeHash(fromJSON, testMasterKey) {
+		t.Fatalf("hash %q vs %q", h, routeHash(fromJSON, testMasterKey))
 	}
 	renamed := fromJSON
 	renamed.ModelName = "b"
-	if routeHash(renamed) == h {
+	if routeHash(renamed, testMasterKey) == h {
 		t.Fatal("model_name is not part of the hash")
 	}
 	if routeHash(managedRow("wt:a", "a", map[string]any{"model": "ollama/a", "max_tokens": 4097,
-		"additional_drop_params": []any{"temperature", "top_p"}, "extra": map[string]any{"n": 2, "b": true}})) == h {
+		"additional_drop_params": []any{"temperature", "top_p"}, "extra": map[string]any{"n": 2, "b": true}}), testMasterKey) == h {
 		t.Fatal("a changed param kept the hash")
 	}
-	if p := PlanDB([]DBModel{fromYAML}, []DBModel{stored(fromJSON)}); !p.Empty() {
+	if p := PlanDB([]DBModel{fromYAML}, []DBModel{stored(fromJSON)}, testMasterKey); !p.Empty() {
 		t.Fatalf("plan %+v, want empty", p)
 	}
 }
@@ -339,7 +339,7 @@ func TestApplyDBTwoClientsConverge(t *testing.T) {
 		if len(got) != 2 {
 			t.Fatalf("rows %+v, want 2", got)
 		}
-		if again := PlanDB(append(p.Add, p.Update...), got); !again.Empty() {
+		if again := PlanDB(append(p.Add, p.Update...), got, testMasterKey); !again.Empty() {
 			t.Fatalf("not converged: %+v", again)
 		}
 	}
@@ -354,7 +354,7 @@ func TestApplyDBKeyedRowRoundTrip(t *testing.T) {
 	_, c := newFakeDB(t)
 	ctx := context.Background()
 	want := managedRow("wt:k", "k", map[string]any{"model": "openai/k", "api_key": "os.environ/K1"})
-	if _, _, _, err := c.ApplyDB(ctx, PlanDB([]DBModel{want}, nil)); err != nil {
+	if _, _, _, err := c.ApplyDB(ctx, PlanDB([]DBModel{want}, nil, testMasterKey)); err != nil {
 		t.Fatal(err)
 	}
 	got, err := c.List(ctx)
@@ -364,11 +364,11 @@ func TestApplyDBKeyedRowRoundTrip(t *testing.T) {
 	if len(got) != 1 || got[0].Params["api_key"] != nil {
 		t.Fatalf("fake should strip api_key: %+v", got)
 	}
-	if p := PlanDB([]DBModel{want}, got); !p.Empty() {
+	if p := PlanDB([]DBModel{want}, got, testMasterKey); !p.Empty() {
 		t.Fatalf("plan %+v, want empty", p)
 	}
 	changed := managedRow("wt:k", "k", map[string]any{"model": "openai/k", "api_key": "os.environ/K2"})
-	if p := PlanDB([]DBModel{changed}, got); !reflect.DeepEqual(planIDs(p.Update), []string{"wt:k"}) {
+	if p := PlanDB([]DBModel{changed}, got, testMasterKey); !reflect.DeepEqual(planIDs(p.Update), []string{"wt:k"}) {
 		t.Fatalf("plan %+v, want Update of wt:k", p)
 	}
 }
@@ -430,7 +430,7 @@ func TestApplyDBCountsEachKind(t *testing.T) {
 	if p, _ := f.rows["wt:u"]["litellm_params"].(map[string]any); p["model"] != "ollama/new" {
 		t.Fatalf("wt:u params %v", f.rows["wt:u"]["litellm_params"])
 	}
-	if info, _ := f.rows["wt:a"]["model_info"].(map[string]any); info[ParamsHashKey] != routeHash(add) || info[ManagedKey] != true {
+	if info, _ := f.rows["wt:a"]["model_info"].(map[string]any); info[ParamsHashKey] != routeHash(add, testMasterKey) || info[ManagedKey] != true {
 		t.Fatalf("wt:a model_info %v", info)
 	}
 	if add.Info[ParamsHashKey] != nil {
@@ -477,7 +477,7 @@ func TestApplyDBStoreOffSurvivesTheJoin(t *testing.T) {
 func TestApplyDBAddOfDifferentExistingRowIsError(t *testing.T) {
 	want := managedRow("wt:a", "a", map[string]any{"model": "ollama/a"})
 	unmarked := stored(want)
-	unmarked.Info = map[string]any{ParamsHashKey: routeHash(want)}
+	unmarked.Info = map[string]any{ParamsHashKey: routeHash(want, testMasterKey)}
 	for _, tc := range []struct {
 		name string
 		row  DBModel
@@ -522,11 +522,11 @@ func TestApplyDBUpdateReportsMissingRouteWhenReAddFails(t *testing.T) {
 // fail on the same row (the route write reports it once as a warning).
 func TestPlanDBSkipsManagedRowsWithoutTheWtPrefix(t *testing.T) {
 	odd := stored(managedRow("ui-made", "ollama/a", map[string]any{"model": "ollama/a"}))
-	if p := PlanDB(nil, []DBModel{odd}); !p.Empty() {
+	if p := PlanDB(nil, []DBModel{odd}, testMasterKey); !p.Empty() {
 		t.Fatalf("plan %+v, want empty", p)
 	}
 	want := managedRow("wt:ollama/a", "ollama/a", map[string]any{"model": "ollama/a"})
-	p := PlanDB([]DBModel{want}, []DBModel{odd})
+	p := PlanDB([]DBModel{want}, []DBModel{odd}, testMasterKey)
 	if got := planIDs(p.Add); !reflect.DeepEqual(got, []string{"wt:ollama/a"}) || len(p.Update)+len(p.Delete) != 0 {
 		t.Fatalf("plan %+v, want only the wt: add", p)
 	}
