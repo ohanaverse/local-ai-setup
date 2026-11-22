@@ -50,9 +50,23 @@ func Heading(s Status) string {
 func Groups(r Report) []Group {
 	var out []Group
 	rows := r.AllRows()
+	// The base's own remote is the prefix of Base.Ref; a fallback base (Ref
+	// is the local default) has none, so no remote row matches.
+	baseRemote := ""
+	if r.Base.Ref != r.Base.Default {
+		if rem, _, ok := strings.Cut(r.Base.Ref, "/"); ok {
+			baseRemote = rem
+		}
+	}
 	isDefault := func(row Row) bool {
-		return row.Name == r.Base.Default ||
-			(r.Base.Ref != r.Base.Default && row.Name == r.Base.Ref)
+		if row.Kind == KindRemote {
+			// Remote rows carry the short name and their remote (the
+			// classifier's shape): only the base's own default-named ref
+			// is the default branch's row — another remote's branch with
+			// the default's name is not it.
+			return row.Name == r.Base.Default && row.Remote == baseRemote
+		}
+		return row.Name == r.Base.Default
 	}
 	var dflt []Row
 	for _, row := range rows {

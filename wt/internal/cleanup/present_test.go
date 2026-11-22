@@ -95,11 +95,15 @@ func TestGroupsOrderAndRowOrder(t *testing.T) {
 // LESS SURE", where a row nobody deletes reads as an invitation. A report
 // with no default keeps the verdict groups as they were.
 func TestGroupsSetsTheDefaultBranchApart(t *testing.T) {
+	// Remote rows carry the short name and their remote (the classifier's
+	// shape): origin's main is the base's own remote ref, upstream's is
+	// another remote's branch and stays in its verdict group.
 	r := Report{
 		Base: Base{Default: "main", Ref: "origin/main"},
 		Rows: []Row{
 			{Name: "main", Status: StatusLessSure},
-			{Name: "origin/main", Kind: KindRemote, Status: StatusLessSure},
+			{Name: "main", Kind: KindRemote, Remote: "origin", Status: StatusLessSure},
+			{Name: "main", Kind: KindRemote, Remote: "upstream", Status: StatusLessSure},
 			{Name: "spike", Status: StatusLessSure},
 		},
 	}
@@ -107,11 +111,11 @@ func TestGroupsSetsTheDefaultBranchApart(t *testing.T) {
 	if len(gs) != 2 || gs[0].Heading != "THE DEFAULT BRANCH" {
 		t.Fatalf("groups = %+v; want THE DEFAULT BRANCH first, then the verdicts", gs)
 	}
-	if len(gs[0].Rows) != 2 || gs[0].Rows[0].Name != "main" || gs[0].Rows[1].Name != "origin/main" {
-		t.Errorf("default group rows = %+v; want main then origin/main", gs[0].Rows)
+	if len(gs[0].Rows) != 2 || gs[0].Rows[0].Remote != "" || gs[0].Rows[1].Remote != "origin" {
+		t.Errorf("default group rows = %+v; want the local main and origin's main only", gs[0].Rows)
 	}
-	if len(gs[1].Rows) != 1 || gs[1].Rows[0].Name != "spike" {
-		t.Errorf("LESS SURE rows = %+v; want only spike", gs[1].Rows)
+	if len(gs[1].Rows) != 2 {
+		t.Errorf("LESS SURE rows = %+v; want upstream's main and spike", gs[1].Rows)
 	}
 
 	// The fallback base (no origin: Ref is the local default) does not
