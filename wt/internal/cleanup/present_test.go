@@ -89,6 +89,52 @@ func TestGroupsOrderAndRowOrder(t *testing.T) {
 	}
 }
 
+// TestGroupsSetsTheDefaultBranchApart pins #587: the default branch's rows —
+// its local row and the base's remote ref — sit in their own group with no
+// verdict, ahead of the removal verdicts, instead of under "LOOKS MERGED,
+// LESS SURE", where a row nobody deletes reads as an invitation. A report
+// with no default keeps the verdict groups as they were.
+func TestGroupsSetsTheDefaultBranchApart(t *testing.T) {
+	// Remote rows carry the short name and their remote (the classifier's
+	// shape): origin's main is the base's own remote ref, upstream's is
+	// another remote's branch and stays in its verdict group.
+	r := Report{
+		Base: Base{Default: "main", Ref: "origin/main"},
+		Rows: []Row{
+			{Name: "main", Status: StatusLessSure},
+			{Name: "main", Kind: KindRemote, Remote: "origin", Status: StatusLessSure},
+			{Name: "main", Kind: KindRemote, Remote: "upstream", Status: StatusLessSure},
+			{Name: "spike", Status: StatusLessSure},
+		},
+	}
+	gs := Groups(r)
+	if len(gs) != 2 || gs[0].Heading != "THE DEFAULT BRANCH" {
+		t.Fatalf("groups = %+v; want THE DEFAULT BRANCH first, then the verdicts", gs)
+	}
+	if len(gs[0].Rows) != 2 || gs[0].Rows[0].Remote != "" || gs[0].Rows[1].Remote != "origin" {
+		t.Errorf("default group rows = %+v; want the local main and origin's main only", gs[0].Rows)
+	}
+	if len(gs[1].Rows) != 2 {
+		t.Errorf("LESS SURE rows = %+v; want upstream's main and spike", gs[1].Rows)
+	}
+
+	// The fallback base (no origin: Ref is the local default) does not
+	// duplicate the local row.
+	fb := Report{
+		Base: Base{Default: "main", Ref: "main", Fallback: true},
+		Rows: []Row{{Name: "main", Status: StatusLessSure}},
+	}
+	if gs := Groups(fb); len(gs) != 1 || gs[0].Heading != "THE DEFAULT BRANCH" || len(gs[0].Rows) != 1 {
+		t.Errorf("fallback base groups = %+v; want one default group holding main once", gs)
+	}
+
+	// A report with no default at all keeps only the verdict groups.
+	none := Report{Rows: []Row{{Name: "x", Status: StatusLessSure}}}
+	if gs := Groups(none); len(gs) != 1 || gs[0].Heading != "LOOKS MERGED, LESS SURE" {
+		t.Errorf("no-default report = %+v; want only the verdict groups", gs)
+	}
+}
+
 // TestTickableIsProvenOnly pins that only a proven row without blockers can
 // be ticked: a less-sure, unique or in-use row never, a remote row included.
 func TestTickableIsProvenOnly(t *testing.T) {

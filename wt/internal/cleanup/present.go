@@ -39,16 +39,48 @@ func Heading(s Status) string {
 	return strings.ToUpper(string(s))
 }
 
-// Groups splits r into its groups in GroupOrder, each keeping the row order
-// of r. A group with no rows is left out. A remote ref folded into a local
-// row is still listed as its own row (AllRows).
+// Groups splits r into its groups: the default branch (its local row and the
+// base's remote ref) first, apart from the removal verdicts — a row nobody
+// deletes must not read as an invitation under "LOOKS MERGED" (#587) — then
+// the verdict groups in GroupOrder, each keeping the row order of r. A group
+// with no rows is left out. A remote ref folded into a local row is still
+// listed as its own row (AllRows). The TUI list shows no headings
+// (ListOrder) and the --json rows carry no grouping, so this shape reaches
+// only the plain text.
 func Groups(r Report) []Group {
 	var out []Group
 	rows := r.AllRows()
+	// The base's own remote is the prefix of Base.Ref; a fallback base (Ref
+	// is the local default) has none, so no remote row matches.
+	baseRemote := ""
+	if r.Base.Ref != r.Base.Default {
+		if rem, _, ok := strings.Cut(r.Base.Ref, "/"); ok {
+			baseRemote = rem
+		}
+	}
+	isDefault := func(row Row) bool {
+		if row.Kind == KindRemote {
+			// Remote rows carry the short name and their remote (the
+			// classifier's shape): only the base's own default-named ref
+			// is the default branch's row — another remote's branch with
+			// the default's name is not it.
+			return row.Name == r.Base.Default && row.Remote == baseRemote
+		}
+		return row.Name == r.Base.Default
+	}
+	var dflt []Row
+	for _, row := range rows {
+		if isDefault(row) {
+			dflt = append(dflt, row)
+		}
+	}
+	if len(dflt) > 0 {
+		out = append(out, Group{Heading: "THE DEFAULT BRANCH", Rows: dflt})
+	}
 	for _, st := range GroupOrder {
 		g := Group{Status: st, Heading: Heading(st)}
 		for _, row := range rows {
-			if row.Status == st {
+			if row.Status == st && !isDefault(row) {
 				g.Rows = append(g.Rows, row)
 			}
 		}

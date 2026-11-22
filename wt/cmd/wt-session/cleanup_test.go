@@ -159,10 +159,13 @@ func TestCleanupCmdJSONIncludesRootDefaultAndHeldRows(t *testing.T) {
 	}
 }
 
-// TestCleanupCmdPlainGroupsInOrder verifies the plain output prints the four
-// group headings in the order proven, less sure, unique work, in use, and
-// puts each row under its own heading. The order is the contract with the
-// list: the user reads top-down from safest to blocked.
+// TestCleanupCmdPlainGroupsInOrder verifies the plain output prints the
+// group headings in the order default branch, proven, less sure, unique
+// work, in use, and puts each row under its own heading. The default's rows
+// (the root here and origin/main) are the default group (#587), so this
+// fixture's in-use group is empty and its heading legitimately absent. The
+// order is the contract with the list: the user reads top-down from safest
+// to blocked.
 func TestCleanupCmdPlainGroupsInOrder(t *testing.T) {
 	a, _ := newTestApp(t)
 	stubCleanupGH(t)
@@ -198,7 +201,7 @@ func TestCleanupCmdPlainGroupsInOrder(t *testing.T) {
 		t.Errorf("stderr = %q", stderr)
 	}
 	last := -1
-	for _, h := range []string{"PROVEN MERGED", "LOOKS MERGED, LESS SURE", "HAS WORK THAT EXISTS NOWHERE ELSE", "IN USE / LOCKED (cannot remove)"} {
+	for _, h := range []string{"THE DEFAULT BRANCH", "PROVEN MERGED", "LOOKS MERGED, LESS SURE", "HAS WORK THAT EXISTS NOWHERE ELSE"} {
 		i := strings.Index(stdout, h)
 		if i < 0 || i < last {
 			t.Fatalf("heading %q missing or out of order (at %d, previous at %d):\n%s", h, i, last, stdout)
@@ -216,7 +219,7 @@ func TestCleanupCmdPlainGroupsInOrder(t *testing.T) {
 	for _, c := range []struct{ from, to, name string }{
 		{"PROVEN MERGED", "LOOKS MERGED", "merged"},
 		{"LOOKS MERGED", "HAS WORK", "spike"},
-		{"HAS WORK", "IN USE", "rescue"},
+		{"HAS WORK", "", "rescue"},
 	} {
 		if !strings.Contains(section(c.from, c.to), c.name) {
 			t.Errorf("row %q is not under %q:\n%s", c.name, c.from, stdout)
@@ -365,7 +368,7 @@ func TestCleanupCmdGhFailureKeepsRowsOneLine(t *testing.T) {
 	if !strings.Contains(plain, "gh:    unavailable") || !strings.Contains(plain, "PR lookup failed") {
 		t.Fatalf("plain output lacks the gh header or the short row detail:\n%s", plain)
 	}
-	headings := []string{"PROVEN MERGED", "LOOKS MERGED, LESS SURE", "HAS WORK THAT EXISTS NOWHERE ELSE", "IN USE / LOCKED (cannot remove)"}
+	headings := []string{"THE DEFAULT BRANCH", "PROVEN MERGED", "LOOKS MERGED, LESS SURE", "HAS WORK THAT EXISTS NOWHERE ELSE", "IN USE / LOCKED (cannot remove)"}
 	for _, line := range strings.Split(strings.TrimRight(plain, "\n"), "\n") {
 		switch {
 		case line == "", strings.HasPrefix(line, "  "), slices.Contains(headings, line):
