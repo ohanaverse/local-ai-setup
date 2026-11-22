@@ -47,14 +47,16 @@ func SyncInputs(cfg *config.Config, probe Probe) ([]config.Model, Options, []str
 // DesiredRouteIDsFor returns the function that lists the model_names a sync
 // would leave in config.yaml now (DesiredIDs), for the Setup tab's
 // route check, probing with probe. It probes the providers, so it is slow;
-// the tab calls it from its observation.
-func DesiredRouteIDsFor(probe Probe) func(context.Context) ([]string, error) {
+// the tab calls it from its observation. admin builds Options.Admin from the
+// loaded config, so the database's routes count (nil: config.yaml alone).
+func DesiredRouteIDsFor(probe Probe, admin func(*config.Config) *AdminClient) func(context.Context) ([]string, error) {
 	return func(_ context.Context) ([]string, error) {
 		cfg, err := config.Load()
 		if err != nil {
 			return nil, err
 		}
 		desired, o, _ := SyncInputs(cfg, probe)
+		o.Admin = adminOf(admin, cfg)
 		return DesiredIDs(cfg, desired, o)
 	}
 }

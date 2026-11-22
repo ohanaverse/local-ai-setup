@@ -483,6 +483,104 @@ func (d *dbRoutes) confirm(written []DBModel) error {
 	return nil
 }
 
+// readOnlyDB lists the database for a plan that writes nothing (PlanSync,
+// DesiredIDs): nil and no rows without Options.Admin; no API call at all
+// when config.yaml does not turn database models on (gate). The caller
+// closes it (nil-safe). A failed listing leaves no rows and d.reason set.
+func readOnlyDB(o Options, f *File) (*dbRoutes, []RowInfo) {
+	d := newDBRoutes(o)
+	if d == nil || !d.gate(f) || !d.list() {
+		return d, nil
+	}
+	return d, d.routeRows()
+}
+
+// preview turns a plan made with the database's rows (planSyncWithDB) into
+// what the real Sync would do with them, writing nothing: route's decisions
+// replayed without its API calls. It returns the ids of the adds the
+// database would carry (they never reach config.yaml), and on the plan:
+//   - a local add the database already holds, current, leaves Add (the real
+//     sync writes nothing for it); one whose stored hash differs is a
+//     Rewrite;
+//   - a local add with a hand-written config.yaml row leaves Add with
+//     route's warning (no database route is added beside it);
+//   - the migration: each local id whose config.yaml rows are all wt's and
+//     carry no param wt does not set goes to Move (and leaves Add); one
+//     with such params gets route's warning and stays;
+//   - EnableDB when this sync would write store_model_in_db itself (gate),
+//     or one warning when the listing failed.
+//
+// nil-safe: without Options.Admin it changes nothing.
+func (d *dbRoutes) preview(cfg *config.Config, f *File, plan *SyncPlan, built map[string]*yaml.Node) map[string]bool {
+	if d == nil {
+		return nil
+	}
+	if d.gated {
+		plan.EnableDB = d.enabling
+		return nil
+	}
+	if !d.listed {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("database routes unavailable (%s); this plan covers config.yaml only", d.reason))
+		return nil
+	}
+	viaDB := map[string]bool{}
+	drop := map[string]bool{}
+	for _, id := range plan.Add {
+		row := built[id]
+		if row == nil || RowFamily(cfg, id) == "" || f.row(id) != nil && !f.hasUnmarkedRow(id) {
+			continue // the file's: a cloud row, or a wt row the migration decides
+		}
+		if f.hasUnmarkedRow(id) {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s: config.yaml has a hand-written row for this id; no database route was added beside it", id))
+			drop[id] = true
+			continue
+		}
+		r := cloneNode(row)
+		ensureRowParams(r)
+		m, err := DBModelFromRow(r)
+		if err != nil {
+			continue
+		}
+		viaDB[id] = true
+		p := PlanDB([]DBModel{m}, d.current)
+		switch {
+		case len(p.Add) > 0:
+		case len(p.Update) > 0:
+			if !slices.Contains(plan.Rewrite, id) {
+				plan.Rewrite = append(plan.Rewrite, id)
+			}
+		default:
+			drop[id] = true
+		}
+	}
+	ids := make([]string, 0, len(plan.fresh))
+	for id := range plan.fresh {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		if RowFamily(cfg, id) == "" || f.row(id) == nil || f.hasUnmarkedRow(id) {
+			continue
+		}
+		row := cloneNode(plan.fresh[id])
+		ensureRowParams(row)
+		if extra := userParams(f.row(id), row); len(extra) > 0 {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s: its config.yaml row has params wt does not set (%s), so it stays there; remove them to move the route to the database", id, strings.Join(extra, ", ")))
+			continue
+		}
+		if _, err := DBModelFromRow(row); err != nil {
+			continue
+		}
+		plan.Move = append(plan.Move, id)
+		drop[id] = true
+	}
+	gone := func(id string) bool { return drop[id] }
+	plan.Add = slices.DeleteFunc(plan.Add, gone)
+	plan.Adopt = slices.DeleteFunc(plan.Adopt, gone)
+	plan.Rewrite = slices.DeleteFunc(plan.Rewrite, gone)
+	return viaDB
+}
+
 // finish folds the database half into res after the file write: Via, the
 // warnings, and the outcomes. sync selects Sync's reporting: a failed
 // listing is always one warning line; only rows

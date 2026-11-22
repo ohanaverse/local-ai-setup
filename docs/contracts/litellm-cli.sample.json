@@ -1,10 +1,11 @@
 {
-  "_comment": "Fixture for the shapes `wt-model litellm ... --json` (and its `wt litellm status --json` twin) prints. Read by wt/cmd/wt-model/litellm_test.go, wt/cmd/wt-model/litellm_sync_test.go and wt/cmd/wt-session/litellm_proxy_test.go.",
+  "_comment": "Fixture for the shapes `wt-model litellm ... --json` (and its `wt litellm status --json` twin) prints. Read by wt/cmd/wt-model/litellm_test.go, wt/cmd/wt-model/litellm_sync_test.go, wt/cmd/wt-model/litellm_db_test.go and wt/cmd/wt-session/litellm_proxy_test.go. list rows carry store (file: a config.yaml row; db: a wt-managed row in LiteLLM's database, #598), and routed names both; sync_dry_run's plan carries move (routes the sync would move from config.yaml to the database), enable_db (it would write general_settings.store_model_in_db first) and restart (config.yaml would change, so the proxy would restart once). All three were added beside the older keys, whose meaning did not change.",
   "list": {
-    "routed": ["ollama/gemma:9b", "openrouter/x/y"],
+    "routed": ["ollama/gemma:9b", "openrouter/x/y", "omlx/qwen"],
     "rows": [
-      {"id": "ollama/gemma:9b", "managed": true},
-      {"id": "openrouter/x/y", "managed": false}
+      {"id": "ollama/gemma:9b", "managed": true, "store": "file"},
+      {"id": "openrouter/x/y", "managed": false, "store": "file"},
+      {"id": "omlx/qwen", "managed": true, "store": "db"}
     ]
   },
   "sync": {
@@ -28,7 +29,10 @@
       "rewrite": [],
       "remove": ["openrouter/old"],
       "repair": ["ollama/mine"],
-      "errors": [{"id": "ghost/m", "error": "unknown provider \"ghost\""}]
+      "errors": [{"id": "ghost/m", "error": "unknown provider \"ghost\""}],
+      "move": [],
+      "enable_db": false,
+      "restart": false
     },
     "warnings": []
   },

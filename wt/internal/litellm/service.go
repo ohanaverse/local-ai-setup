@@ -645,6 +645,18 @@ type SyncPlan struct {
 	// wrote).
 	Warnings []string
 	Errors   []Outcome
+	// The rest is filled by PlanSync alone, and only Move and EnableDB need
+	// Options.Admin (#598).
+	//
+	// Move names the local routes whose wt rows the sync would move from
+	// config.yaml to the database (the one-time migration); they are not in
+	// Add. EnableDB says the sync would write general_settings.
+	// store_model_in_db: true itself, first (its restart loads it; the rows
+	// move on the sync after). Restart says config.yaml would change, so the
+	// real sync would restart the proxy once.
+	Move     []string
+	EnableDB bool
+	Restart  bool
 	// markedOnly holds the Remove ids owned by marker alone (not named like a
 	// managed registry id): Sync drops only their marked rows.
 	markedOnly map[string]bool
@@ -979,14 +991,24 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 	if err := f.checkModelList(); err != nil {
 		return SyncPlan{}, err
 	}
-	plan, built := planSync(cfg, f, local, o)
+	// With Options.Admin the database's wt rows join the plan exactly as Sync
+	// lists them (List only: a dry run writes nothing anywhere).
+	db, dbRows := readOnlyDB(o, f)
+	defer db.close()
+	plan, built := planSyncWithDB(cfg, f, local, o, dbRows)
+	viaDB := db.preview(cfg, f, &plan, built)
 	// The write also fills an empty api_base on ollama rows, and those can be
 	// rows the user wrote by hand, so a dry run says which. They are found by
 	// carrying the plan out on f, which is never saved: a row the plan adopts,
 	// rewrites or removes is gone or rebuilt by the time the repair looks, and
 	// listing it would promise an "api_base set" line the real sync never
-	// prints.
+	// prints. A route the database would carry never reaches the file, and a
+	// moved one leaves it.
 	add, rm := plan.planned(built)
+	add = slices.DeleteFunc(add, func(a plannedAdd) bool { return viaDB[a.id] })
+	for _, id := range plan.Move {
+		rm = append(rm, plannedRemove{id: id, markedOnly: true})
+	}
 	done, err := applyTo(f, add, rm, OllamaAPIBase(cfg))
 	if err != nil {
 		return SyncPlan{}, err
@@ -1003,6 +1025,11 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 			plan.Warnings = append(plan.Warnings, w)
 		}
 	}
+	// The real sync saves, and restarts the proxy, exactly when the document
+	// it carried the plan out on (settings included) differs from the one it
+	// read: the same test, on the discarded copy.
+	f.EnsureSettings()
+	plan.Restart = f.Changed()
 	return plan, nil
 }
 

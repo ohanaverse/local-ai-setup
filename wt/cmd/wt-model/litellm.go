@@ -13,6 +13,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/spf13/cobra"
@@ -41,12 +43,16 @@ func litellmCmd(h *host) *cobra.Command {
 model, plus every running local model (an ollama model while it is pulled).
 It reads registry.toml (a load error refuses, exit 1, nothing written; a
 registry that only fails validation is still synced) and restarts the proxy
-only when config.yaml changed.
+only when config.yaml changed. With the proxy pair set ('wt-model litellm
+set'), local routes live in LiteLLM's database, written through its model
+API with no restart; config.yaml keeps the cloud routes.
 
 Flags:
   --json      print one JSON document (docs/contracts/litellm-cli.sample.json)
   --dry-run   print the route plan and the probe warnings the real sync would
-              report; change nothing (does not report litellm_settings fixes)
+              report; change nothing (does not report litellm_settings fixes).
+              With the proxy pair set it lists LiteLLM's database too (no
+              write) and previews the move of wt's local routes there
 
 Exit codes:
   0  done
@@ -131,10 +137,15 @@ Exit codes:
 	var listJSON bool
 	listC := &cobra.Command{
 		Use:   "list",
-		Short: "List routed model ids from config.yaml",
-		Long: `Read LiteLLM's config.yaml (WT_LITELLM_CONFIG, default
-~/.config/litellm/config.yaml) and print one routed model id per line; a row
-wt did not write is printed as ` + "`<id><TAB>(hand-written)`" + `. Reads no registry.
+		Short: "List routed model ids from config.yaml and LiteLLM's database",
+		Long: `Print every route the LiteLLM proxy has, one row per route: the routes in
+config.yaml (WT_LITELLM_CONFIG, default ~/.config/litellm/config.yaml) and,
+when the proxy pair is set ('wt-model litellm set'), the wt-managed routes
+in LiteLLM's database, read through its model API. Columns: ID, STORE (file
+for config.yaml, db for the database) and OWNER (wt, or hand-written for a
+config.yaml row wt did not write). When the database cannot be listed, one
+warning line on stderr says so and the config.yaml rows are still printed.
+Reads no registry.
 
 Flags:
   --json   print one JSON document (docs/contracts/litellm-cli.sample.json)
@@ -145,7 +156,10 @@ Exit codes:
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runLitellmList(cmd.OutOrStdout(), listJSON)
+			// The pair is read as restart reads it (home first, the legacy
+			// [litellm] table its read-only fallback); no registry.
+			pair, perr := config.ResolveProxy()
+			return runLitellmList(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), listJSON, adminFromPair(pair.URL, pair.APIKey), perr)
 		},
 	}
 	listC.Flags().BoolVar(&listJSON, "json", false, "print one JSON document (docs/contracts/litellm-cli.sample.json)")
@@ -224,9 +238,19 @@ func runLitellmRestart(out io.Writer, pair config.ProxyPair, pairErr error) erro
 }
 
 // runLitellmSync is `wt-model litellm sync`: the one route sync
-// (litellm.RunSync) over cfg, with the host's inventory probe.
+// (litellm.RunSync) over cfg, with the host's inventory probe and the model
+// API client of the proxy pair (adminFor; nil leaves every route in
+// config.yaml).
 func (h *host) runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
-	return litellm.RunSync(out, errOut, cfg, h.probeInventory, asJSON, dryRun)
+	return litellm.RunSync(out, errOut, cfg, h.probeInventory, h.adminFor(cfg), asJSON, dryRun)
+}
+
+// adminFromPair is the LiteLLM model-API client for the proxy pair (url and
+// master key, as `wt-model litellm set` stores them), or nil when either is
+// empty: then every route stays in config.yaml, as before #598. The key is
+// only ever sent as the Authorization header; nothing prints it.
+func adminFromPair(url, key string) *litellm.AdminClient {
+	return litellm.AdminFromPair(url, key)
 }
 
 // runLitellmStatus is `wt-model litellm status`: the shared status body
@@ -248,36 +272,61 @@ func runLitellmSet(out io.Writer, url, key *string) error {
 	return nil
 }
 
-// runLitellmList is `wt-model litellm list`: the routed ids of config.yaml,
-// a hand-written row marked. It reads no registry.
-func runLitellmList(out io.Writer, asJSON bool) error {
+// runLitellmList is `wt-model litellm list`: every route the proxy has, from
+// config.yaml and (#598) the wt-managed rows of LiteLLM's database, with where
+// each lives (STORE: file or db) and who owns it. It reads no registry. admin
+// is the proxy pair's model-API client (nil: no pair, so only config.yaml is
+// read, as before #598); adminErr is why the pair could not be read. A
+// database that cannot be listed costs one warning line on errOut and the
+// list goes on from the file.
+func runLitellmList(ctx context.Context, out, errOut io.Writer, asJSON bool, admin *litellm.AdminClient, adminErr error) error {
 	f, err := litellm.Open(litellm.DefaultPath())
 	if err != nil {
 		return err
 	}
-	rows := f.Rows()
-	ids := make([]string, 0, len(rows))
 	type rowJSON struct {
 		ID      string `json:"id"`
 		Managed bool   `json:"managed"`
+		Store   string `json:"store"`
 	}
-	jrows := make([]rowJSON, 0, len(rows))
-	for _, r := range rows {
-		ids = append(ids, r.ID)
-		jrows = append(jrows, rowJSON{r.ID, r.Managed})
+	var rows []rowJSON
+	for _, r := range f.Rows() {
+		rows = append(rows, rowJSON{r.ID, r.Managed, "file"})
 	}
-	if asJSON {
-		return json.NewEncoder(out).Encode(map[string]any{"routed": ids, "rows": jrows})
-	}
-	// A wt row prints as its bare id, as list always has, so `grep -x <id>`
-	// keeps working; only a hand-written row carries a marker.
-	for _, r := range rows {
-		if r.Managed {
-			fmt.Fprintln(out, r.ID)
-		} else {
-			fmt.Fprintf(out, "%s\t(hand-written)\n", r.ID)
+	switch {
+	case adminErr != nil:
+		fmt.Fprintf(errOut, "wt-model: warning: database routes not listed (the LiteLLM proxy pair could not be read: %v); showing config.yaml only\n", adminErr)
+	case admin != nil:
+		names, lerr := admin.Routes(ctx)
+		if lerr != nil {
+			fmt.Fprintf(errOut, "wt-model: warning: database routes not listed (%s); showing config.yaml only\n", strings.Join(strings.Fields(lerr.Error()), " "))
+		}
+		for _, n := range names {
+			rows = append(rows, rowJSON{n, true, "db"})
 		}
 	}
+	if asJSON {
+		ids := make([]string, 0, len(rows))
+		for _, r := range rows {
+			ids = append(ids, r.ID)
+		}
+		if rows == nil {
+			rows = []rowJSON{}
+		}
+		return json.NewEncoder(out).Encode(map[string]any{"routed": ids, "rows": rows})
+	}
+	cells := make([][]string, 0, len(rows))
+	for _, r := range rows {
+		owner := "wt"
+		if !r.Managed {
+			owner = "hand-written"
+		}
+		cells = append(cells, []string{r.ID, r.Store, owner})
+	}
+	// The id column is never cut (cli.RenderPlainTable), so a reader can copy
+	// it into another command; width 0: no terminal limit, one row per line.
+	cols := []cli.PlainColumn{{Head: "ID"}, {Head: "STORE"}, {Head: "OWNER"}}
+	fmt.Fprintln(out, cli.RenderPlainTable(cols, cells, 0))
 	return nil
 }
 

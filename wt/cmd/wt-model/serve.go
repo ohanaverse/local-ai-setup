@@ -1,15 +1,19 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelserver"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
 	"github.com/spf13/cobra"
@@ -85,7 +89,12 @@ Flags:
   --idle-grace DUR    how long an unused model survives before auto-stop
                       (default 10m0s, must be greater than zero)
 
-Once listening it prints one line on stderr naming the bound address.
+Once listening it prints one line on stderr naming the bound address, then
+reconciles the LiteLLM routes once, as 'wt-model litellm sync' does
+(local routes through the proxy's model API when the pair is set): a proxy
+that restarted or lost its database gets its routes back. What that sync
+changes or warns about is printed on stderr; a failure there is a warning
+and serving goes on.
 While it runs it keeps a runtime record, serve.json in the wt-model home
 (pid, address, token file path; never the token), and removes it when it
 stops cleanly.
@@ -137,6 +146,14 @@ Exit codes:
 			// Remove deletes the record only while it names this pid: one a
 			// later serve wrote over it stays.
 			defer func() { _ = rt.Record.Remove(os.Getpid()) }()
+			// The start reconcile (rt.StartSync) runs once the server is
+			// listening, off the serving path: it can wait on the proxy (its
+			// database calls, a restart when config.yaml changed), and a
+			// session must be able to reach the server meanwhile. serve waits
+			// for it before returning, so a stop never cuts a config.yaml write
+			// short.
+			var startSync sync.WaitGroup
+			defer startSync.Wait()
 			return srv.Serve(cmd.Context(), func(addr string) {
 				// The record lands before the announce line, so whoever saw
 				// the line can read the record.
@@ -146,6 +163,15 @@ Exit codes:
 					fmt.Fprintf(cmd.ErrOrStderr(), recordNoteFormat, err)
 				}
 				fmt.Fprint(cmd.ErrOrStderr(), announceLine(addr))
+				// After the announce line, so it stays the first line a
+				// script reads (S1).
+				if rt.StartSync != nil {
+					startSync.Add(1)
+					go func() {
+						defer startSync.Done()
+						rt.StartSync(cmd.Context(), cfg, cmd.ErrOrStderr())
+					}()
+				}
 			})
 		},
 	}
@@ -153,4 +179,37 @@ Exit codes:
 	cmd.Flags().StringVar(&tokenFile, "token-file", "", "file holding the shared bearer token (mode 0600); required on every address")
 	cmd.Flags().DurationVar(&idle, "idle-grace", defaultIdleGrace, "how long an unused model survives before auto-stop (must be > 0)")
 	return cmd
+}
+
+// serveStartSync is the route sync `wt-model serve` runs once as it starts
+// (#598): a proxy restarted, or one whose database was wiped, has lost every
+// database route, and nothing else would put them back until the next start
+// or stop. It is `wt-model litellm sync` (litellm.SyncInputs over probe, then
+// litellm.Sync with the proxy pair's model API, the same Options), reporting
+// on errOut. A failure is one warning line and never stops serving; no
+// config.yaml at all (LiteLLM not set up here) is silent.
+func serveStartSync(probe litellm.Probe) func(ctx context.Context, cfg *config.Config, errOut io.Writer) {
+	return func(ctx context.Context, cfg *config.Config, errOut io.Writer) {
+		desired, o, probeWarns := litellm.SyncInputs(cfg, probe)
+		o.Admin = adminFromPair(cfg.LitellmBaseURL(), cfg.LitellmAPIKey())
+		o.Ctx = ctx
+		res, err := litellm.Sync(cfg, desired, o)
+		if errors.Is(err, litellm.ErrMissing) {
+			return
+		}
+		if err != nil {
+			fmt.Fprintf(errOut, "wt-model: warning: LiteLLM routes not synced at start: %v\n", err)
+			return
+		}
+		for _, oc := range res.Outcomes {
+			if oc.Err != nil {
+				fmt.Fprintf(errOut, "wt-model: warning: start route sync: %s: %v\n", oc.ID, oc.Err)
+				continue
+			}
+			fmt.Fprintf(errOut, "wt-model: start route sync: %s: %s\n", oc.ID, oc.Action)
+		}
+		for _, w := range append(res.Warnings, probeWarns...) {
+			fmt.Fprintf(errOut, "wt-model: warning: start route sync: %s\n", w)
+		}
+	}
 }

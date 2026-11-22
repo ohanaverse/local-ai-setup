@@ -18,7 +18,7 @@ import (
 
 // Seams: production talks to the real config.yaml, proxy and stderr.
 var (
-	applyRoutes            = litellm.ApplyChange
+	applyRoutes            = applyChangeWithAdmin
 	restartProxy           = litellm.RestartContext
 	waitProxy              = litellm.WaitReady
 	probeProxy             = litellm.Listening
@@ -613,8 +613,10 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 			routePrintf(ctx, "wt: LiteLLM route for %s: api_base set\n", o.ID)
 		}
 	}
-	// res.Warnings is only ever populated by ApplyChange's restart hook, which
-	// NoRestart disables; the restart's own warnings are reported below.
+	// The write's restart is deferred (NoRestart), so its warnings are the
+	// database half's (#598): printed here, through the writer the restart's
+	// own warnings use (bounceProxyAsync).
+	printRouteWarnings(ctx, res.Warnings)
 	restart := (res.Changed && mode != restartDeferred) || mode == restartForced
 	if restart {
 		bounceProxyAsync(ctx, cfg)
@@ -699,4 +701,29 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		}
 		setLastRestartErr(failed)
 	}()
+}
+
+// applyChangeWithAdmin is the production applyRoutes: litellm.ApplyChange with
+// Options.Admin set from the proxy pair cfg's load resolved (litellm.AdminFor:
+// the url and key `wt-model litellm set` stores, which the gateway forwards
+// with), so a local route goes through LiteLLM's model API and a start or
+// stop costs no restart (#598). With no pair (either half empty) Admin is nil
+// and every route stays in config.yaml, as before. Tests that drive the real
+// write set applyRoutes to litellm.ApplyChange (realRoutes), which never
+// reaches a proxy, or to this with a fake proxy's pair.
+func applyChangeWithAdmin(cfg *config.Config, ch litellm.Change, o litellm.Options) (litellm.Result, error) {
+	o.Admin = litellm.AdminFor(cfg)
+	return litellm.ApplyChange(cfg, ch, o)
+}
+
+// printRouteWarnings prints what a route write warns about through the
+// writer the restart warnings use (routePrintf): the database half's lines
+// (#598: a fallback to config.yaml, a database route NOT removed, routes not
+// checked, a twin that could not be deleted, database routes being enabled).
+// The write's own restart is always deferred here (NoRestart), so none of
+// these is a restart warning.
+func printRouteWarnings(ctx context.Context, warnings []string) {
+	for _, w := range warnings {
+		routePrintf(ctx, "wt: %s\n", w)
+	}
 }

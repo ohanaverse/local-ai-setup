@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelserver"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
 	"github.com/spf13/cobra"
@@ -24,7 +26,13 @@ var version = "0.1.0"
 
 // serveRuntime holds the per-call seams of the commands: tests pass a scratch
 // store. Record is where serve keeps its runtime record (serve.json).
-type serveRuntime struct{ Record servestate.Store }
+// StartSync is the one route sync serve runs once it is listening
+// (serveStartSync; #598): nil runs none, which is what every test runtime
+// gets unless it hands one in.
+type serveRuntime struct {
+	Record    servestate.Store
+	StartSync func(ctx context.Context, cfg *config.Config, errOut io.Writer)
+}
 
 // rootCmd builds the wt-model command tree; mk supplies the server's
 // dependencies and rt where serve keeps its runtime record.
@@ -78,7 +86,7 @@ func main() {
 	// SIGINT and SIGTERM end the serve context, which shuts the server down.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	root := rootCmd(modelserver.DefaultDeps, serveRuntime{Record: servestate.Default()})
+	root := rootCmd(modelserver.DefaultDeps, serveRuntime{Record: servestate.Default(), StartSync: serveStartSync(localmodels.Inventory)})
 	// After the first signal cancels ctx, stop() restores the default signal
 	// behavior, so a second SIGINT/SIGTERM kills the process even when the
 	// graceful shutdown hangs.

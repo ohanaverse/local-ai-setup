@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
@@ -89,9 +90,14 @@ func serverProcesses() map[string]pidProcess {
 // points every process family's pidfile (its spec's PidfileEnv) at a
 // directory that does not exist. A test that reaches the production stop path
 // without stubbing it then reads no real pidfile and signals no real process.
+// It also drops the route hook's LiteLLM model API (#598): route writes made
+// through this package go to the config.yaml the test names and never to the
+// proxy pair's model API, so a test config whose pair names the developer's
+// proxy cannot add or delete a route in its database.
 // Production code never calls it — like config.IsolateConfigHomeForTest, it
 // exists so cross-package tests share one definition.
 func IsolateProcessesForTest() {
+	applyRoutes = litellm.ApplyChange
 	describeProc = func(pid int) (procInfo, bool, error) {
 		return procInfo{}, false, fmt.Errorf("describeProc not stubbed in this test (pid %d)", pid)
 	}

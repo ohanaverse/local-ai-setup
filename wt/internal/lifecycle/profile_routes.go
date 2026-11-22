@@ -95,6 +95,8 @@ func EnsureModelRoutes(ctx context.Context, out io.Writer, cfg *config.Config, m
 		if res.Changed {
 			owed = true
 		}
+		// The database half's warnings (#598), as applyReported prints them.
+		printRouteWarnings(ctx, res.Warnings)
 		w := routeWrite{changed: res.Changed}
 		var rowErr error
 		for _, o := range res.Outcomes {

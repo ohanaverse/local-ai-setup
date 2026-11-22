@@ -14,6 +14,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/hoststop"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeleditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -40,6 +41,9 @@ func testHost() *host {
 		return nil, errors.New("ollamaCaps not stubbed in this test")
 	}
 	h.seedEnv = func() config.SeedEnv { return config.SeedEnv{} }
+	// No route write reaches a LiteLLM model API unless the test hands in a
+	// fake (#598).
+	h.adminFor = func(*config.Config) *litellm.AdminClient { return nil }
 	h.syncRoutesAfterWrite = func(io.Writer, io.Writer) string {
 		return "syncRoutesAfterWrite not stubbed in this test"
 	}

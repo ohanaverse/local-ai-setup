@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // ErrDBModelsOff reports that the proxy refused a database write because
@@ -29,6 +32,27 @@ type DBModel struct {
 type AdminClient struct {
 	BaseURL, Key string
 	HTTP         *http.Client // nil: a client with a 10 s timeout
+}
+
+// AdminFromPair is the admin client for the proxy pair (the url and master
+// key `wt-model litellm set` stores, which the model server's gateway
+// forwards with), or nil when either half is empty: Options.Admin nil is the
+// config.yaml path for every row, as before #598.
+func AdminFromPair(url, key string) *AdminClient {
+	url = strings.TrimRight(url, "/")
+	if url == "" || key == "" {
+		return nil
+	}
+	return &AdminClient{BaseURL: url, Key: key}
+}
+
+// AdminFor is AdminFromPair over the pair cfg's load resolved
+// (config.Config.LitellmBaseURL and LitellmAPIKey).
+func AdminFor(cfg *config.Config) *AdminClient {
+	if cfg == nil {
+		return nil
+	}
+	return AdminFromPair(cfg.LitellmBaseURL(), cfg.LitellmAPIKey())
 }
 
 const adminBodyLimit = 1 << 20
@@ -68,6 +92,24 @@ func (c *AdminClient) List(ctx context.Context) ([]DBModel, error) {
 		out = append(out, DBModel{ID: id, ModelName: r.ModelName, Params: r.Params, Info: info})
 	}
 	return out, nil
+}
+
+// Routes lists the route names (model_name) of the database rows wt owns:
+// marked wt_managed and under a DBIDPrefix id, the rows a sync plans with.
+// Sorted, each name once. Rows of any other owner are left out.
+func (c *AdminClient) Routes(ctx context.Context) ([]string, error) {
+	rows, err := c.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, m := range rows {
+		if isManagedDB(m) && strings.HasPrefix(m.ID, DBIDPrefix) && !slices.Contains(names, m.ModelName) {
+			names = append(names, m.ModelName)
+		}
+	}
+	slices.Sort(names)
+	return names, nil
 }
 
 // Add creates one database row (POST /model/new). LiteLLM honors the given
