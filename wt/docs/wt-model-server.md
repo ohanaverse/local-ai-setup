@@ -457,17 +457,35 @@ Right after that line it reconciles the LiteLLM routes once, as
 `wt-model litellm sync` does, through the same pair (local routes in
 LiteLLM's database): a proxy that restarted or lost its database gets its
 routes back without waiting for the next start or stop. It runs beside the
-serving, so sessions can reach the server meanwhile. Each change it makes is a
-`wt-model: start route sync: <id>: <action>` line on stderr and each warning a
-`wt-model: warning: start route sync: …` line; a sync that cannot run at all
-is one `wt-model: warning: LiteLLM routes not synced at start: …` line. None
-of them stops the server, and no `config.yaml` at all (LiteLLM not set up on
-this host) is silent. A stop waits for this sync to finish before it exits.
+serving, so sessions can reach the server meanwhile, and only when it can see
+the database: it first waits up to 90 seconds for the proxy to answer (at
+login the proxy and its database start after the server listens) and then
+lists the database. A proxy that does not answer, or a listing that fails,
+skips the whole sync with one line and changes nothing:
+
+```text
+wt-model: warning: LiteLLM routes not synced at start: <why>; nothing was changed (run 'wt-model litellm sync' once the proxy answers)
+```
+
+Otherwise each change is a `wt-model: start route sync: <id>: <action>` line
+on stderr and each warning a `wt-model: warning: start route sync: …` line; a
+sync that fails is one `wt-model: warning: LiteLLM routes not synced at
+start: …` line. None of them stops the server, and no `config.yaml` at all
+(LiteLLM not set up on this host) is silent. The sync never restarts the proxy
+itself: when it changed `config.yaml` (the first `store_model_in_db`, the
+move of local rows to the database, a cloud route) it hands the one restart it
+owes to the same queue the start and stop jobs' restarts use, so two restarts
+never run at once.
 
 It prints nothing on stdout and nothing when it stops. On SIGINT or SIGTERM it
 shuts down in order: the auto-stop loop, the HTTP server (up to 10 seconds
-for open requests), the running job (up to 30 seconds), then any LiteLLM
-restart a route write started. It exits 0. A second signal during a hung
+for open requests), the running job (up to 30 seconds), then every LiteLLM
+restart a route write or the start-up sync handed off (each runs to its end,
+one at a time; a restart can wait up to 3 minutes for a request in flight),
+then the start-up sync if it is still running (its waits for the proxy end
+with the signal, and it restarts nothing itself, so this costs at most the
+config.yaml write in progress), and last any restart that sync handed off
+meanwhile. It exits 0. A second signal during a hung
 shutdown kills it.
 
 While it runs the server keeps a runtime record, `~/.config/wt-model/serve.json`

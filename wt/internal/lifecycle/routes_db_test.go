@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
@@ -33,13 +35,13 @@ general_settings:
 func TestStartPrintsTheDatabaseFallbackLine(t *testing.T) {
 	path, restarts, warn := realRoutes(t, storeOnYAML)
 	applyRoutes = applyChangeWithAdmin // realRoutes' cleanup restores the seam
-	var posts int
+	var posts atomic.Int32
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/model/info":
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}})
 		case "/model/new":
-			posts++
+			posts.Add(1)
 			w.WriteHeader(http.StatusServiceUnavailable)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -55,7 +57,7 @@ func TestStartPrintsTheDatabaseFallbackLine(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	WaitPendingRoutes()
-	if posts == 0 {
+	if posts.Load() == 0 {
 		t.Fatal("no /model/new: the route hook did not pass the model API client")
 	}
 	if got := routedIDs(t, path); !slices.Equal(got, []string{"ollama/a:1"}) {
@@ -92,5 +94,47 @@ func TestApplyChangeWithAdminWithoutAPairIsTheFilePath(t *testing.T) {
 	}
 	if res.Via != "file" || !slices.Equal(routedIDs(t, path), []string{"ollama/a:1"}) {
 		t.Fatalf("via %q routed %v, want the file path", res.Via, routedIDs(t, path))
+	}
+}
+
+// TestProxyRestartsRunOneAtATime pins that this process never restarts the
+// proxy twice at once (#598 review): the model server's start-up route sync
+// hands its restart to BounceProxyTo while a route job may be restarting
+// (bounceProxyAsync) or a slot-profile launch running RestartProxyTo. Two
+// overlapping restarts kill each other's drain and leave the proxy's state
+// to whichever launchctl call ran last.
+func TestProxyRestartsRunOneAtATime(t *testing.T) {
+	var running, most atomic.Int32
+	oldRestart, oldProbe, oldWait := restartProxy, probeProxy, waitProxy
+	restartProxy = func(context.Context) []string {
+		n := running.Add(1)
+		for {
+			m := most.Load()
+			if n <= m || most.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+		running.Add(-1)
+		return nil
+	}
+	probeProxy = func(context.Context, string, time.Duration) bool { return false }
+	waitProxy = func(context.Context, string, time.Duration) error { return nil }
+	t.Cleanup(func() {
+		WaitPendingRoutes()
+		restartProxy, probeProxy, waitProxy = oldRestart, oldProbe, oldWait
+		setLastRestartErr(nil)
+	})
+	cfg := profileCfg()
+	var out strings.Builder
+	BounceProxyTo(context.Background(), &out, cfg)
+	bounceProxyAsync(context.Background(), cfg)
+	BounceProxyTo(context.Background(), &out, cfg)
+	if err := RestartProxyTo(context.Background(), &out, cfg); err != nil {
+		t.Fatal(err)
+	}
+	WaitPendingRoutes()
+	if most.Load() != 1 {
+		t.Fatalf("at most %d restarts ran at once, want 1", most.Load())
 	}
 }

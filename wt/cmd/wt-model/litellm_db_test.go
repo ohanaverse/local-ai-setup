@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,32 +12,46 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // fakeModelAPI is a LiteLLM model API in memory: /model/info lists the rows
 // it holds (db_model true), /model/new stores one, /model/delete drops one.
-// down makes every request fail with 503.
+// /health/liveliness answers 200. down makes every request fail with 503,
+// failList only the listing, and hangList holds the listing until the
+// request ends.
 type fakeModelAPI struct {
-	mu   sync.Mutex
-	rows map[string]map[string]any // id -> {"model_name", "litellm_params", "model_info"}
-	down bool
+	mu       sync.Mutex
+	rows     map[string]map[string]any // id -> {"model_name", "litellm_params", "model_info"}
+	down     bool
+	failList bool
+	hangList bool
 }
 
 func (f *fakeModelAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
+	hang := f.hangList && r.URL.Path == "/model/info"
+	f.mu.Unlock()
+	if hang {
+		<-r.Context().Done()
+		return
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.down {
+	if f.down || f.failList && r.URL.Path == "/model/info" {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
 	body, _ := io.ReadAll(r.Body)
 	switch r.URL.Path {
+	case "/health/liveliness":
 	case "/model/info":
 		data := []map[string]any{}
 		for id, row := range f.rows {
@@ -281,4 +296,139 @@ func TestSyncDryRunReadsTheDatabaseAndWritesNothing(t *testing.T) {
 	if err != nil || strings.Contains(out, "ollama/gemma4:9b") {
 		t.Fatalf("second dry run: err %v stdout %q, want nothing for the database route", err, out)
 	}
+}
+
+// preStoreYAML is a config.yaml as a pre-#598 wt left it: a start sync that
+// ran would add store_model_in_db to it (and owe a restart).
+const preStoreYAML = "model_list: []\n" +
+	"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n" +
+	"general_settings:\n  cancel_on_disconnect: true\n"
+
+// TestServeStartSyncSkipsWhenItCannotSeeTheDatabase pins the start sync's
+// gate (#598 review): at login serve listens before the proxy and its
+// database answer, and a sync that cannot see the database would put every
+// local route back in config.yaml and restart a proxy still starting. So a
+// proxy that never answers, a database listing that fails and one that hangs
+// each skip the sync with one warning: config.yaml byte for byte, no
+// restart, and serve goes on serving.
+func TestServeStartSyncSkipsWhenItCannotSeeTheDatabase(t *testing.T) {
+	for name, set := range map[string]func(*fakeModelAPI){
+		"proxy down": func(f *fakeModelAPI) { f.down = true },
+		"list fails": func(f *fakeModelAPI) { f.failList = true },
+		"list hangs": func(f *fakeModelAPI) { f.hangList = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake, srv := newFakeModelAPI(t)
+			set(fake)
+			seedProxyHome(t, srv.URL, "sk-test", 0o600)
+			p := litellmEnv(t, preStoreYAML)
+			var bounces atomic.Int32
+			done := make(chan struct{})
+			rt := testRuntime(t)
+			rt.StartSync = func(ctx context.Context, cfg *config.Config, errOut io.Writer) {
+				defer close(done)
+				startSync{
+					probe:        func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} },
+					waitReady:    litellm.WaitReady,
+					bounce:       func(context.Context, io.Writer, *config.Config) { bounces.Add(1) },
+					readyTimeout: 500 * time.Millisecond,
+					listTimeout:  500 * time.Millisecond,
+				}.run(ctx, cfg, errOut)
+			}
+			readErr, _, stop := serveUntilListeningWith(t, rt, writeToken(t, 0o600))
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				_ = stop()
+				t.Fatalf("start sync did not finish; stderr %q", readErr())
+			}
+			if n := strings.Count(readErr(), "wt-model: warning: LiteLLM routes not synced at start: "); n != 1 {
+				t.Errorf("stderr %q, want one skip warning", readErr())
+			}
+			if strings.Contains(readErr(), "start route sync") {
+				t.Errorf("stderr %q: the sync ran", readErr())
+			}
+			if b, _ := os.ReadFile(p); string(b) != preStoreYAML || bounces.Load() != 0 {
+				t.Errorf("config.yaml %q bounces %d, want untouched and no restart", b, bounces.Load())
+			}
+			if err := stop(); err != nil {
+				t.Fatalf("serve: %v", err)
+			}
+		})
+	}
+}
+
+// TestStartSyncHandsItsRestartToTheTrackedBounce pins that the start sync
+// never restarts the proxy itself (#598 review): its write is NoRestart, and
+// a config.yaml it changed (here the first-time store_model_in_db) owes one
+// restart, handed to lifecycle's tracked, one-at-a-time bounce. So the sync
+// returns while that restart still runs (serve's stop does not wait on it
+// through the start sync; it waits like for any route job's restart, through
+// WaitPendingRoutes), and the restart cannot overlap a route job's.
+func TestStartSyncHandsItsRestartToTheTrackedBounce(t *testing.T) {
+	_, srv := newFakeModelAPI(t)
+	seedProxyHome(t, srv.URL, "sk-test", 0o600)
+	p := litellmEnv(t, preStoreYAML)
+	t.Setenv("WT_LITELLM_RESTART_CMD", "sleep 2")
+	t.Cleanup(lifecycle.WaitPendingRoutes)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errOut lockedWriter
+	began := time.Now()
+	serveStartSync(func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} })(t.Context(), cfg, &errOut)
+	if took := time.Since(began); took > time.Second || !lifecycle.RoutesPending() {
+		t.Fatalf("start sync took %s, restart pending %v: want it returned with the restart still running", took, lifecycle.RoutesPending())
+	}
+	if b, _ := os.ReadFile(p); !strings.Contains(string(b), "store_model_in_db: true") {
+		t.Fatalf("config.yaml %q, want the setting written", b)
+	}
+	lifecycle.WaitPendingRoutes()
+	if strings.Contains(errOut.String(), "sk-test") {
+		t.Fatalf("stderr shows the key: %q", errOut.String())
+	}
+}
+
+// TestStartSyncHonorsCancel pins that a serve stopped while the start sync
+// is still waiting for the proxy (up to 90 s at login) is not held up by it:
+// the wait ends with the serve's context, and nothing is written.
+func TestStartSyncHonorsCancel(t *testing.T) {
+	fake, srv := newFakeModelAPI(t)
+	fake.down = true
+	seedProxyHome(t, srv.URL, "sk-test", 0o600)
+	p := litellmEnv(t, preStoreYAML)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	var errOut lockedWriter
+	began := time.Now()
+	serveStartSync(func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} })(ctx, cfg, &errOut)
+	if took := time.Since(began); took > 2*time.Second {
+		t.Fatalf("start sync took %s after the cancel, want it to end with the context", took)
+	}
+	if b, _ := os.ReadFile(p); string(b) != preStoreYAML || !strings.Contains(errOut.String(), "not synced at start") {
+		t.Fatalf("config.yaml %q stderr %q, want untouched and the skip warning", b, errOut.String())
+	}
+}
+
+// lockedWriter is a strings.Builder safe for the restart's goroutine.
+type lockedWriter struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+func (w *lockedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.String()
 }

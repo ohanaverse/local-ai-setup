@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 const testMasterKey = "sk-test-master"
@@ -193,5 +195,23 @@ func TestErrorBodyRedactsKeyBeforeTruncating(t *testing.T) {
 	}
 	if !utf8.ValidString(err.Error()) {
 		t.Errorf("error is not valid UTF-8: %q", err.Error())
+	}
+}
+
+// TestAdminErrorsNeverQuoteURLUserinfo pins that an admin request's error
+// never prints a piece of a url holding an '@' (#640's rule, #598 review):
+// Go's transport and parse errors quote the request url whole, password
+// included. Both a url that parses and fails to connect and one that does not
+// parse are checked; the error names urlrule.Hidden instead.
+func TestAdminErrorsNeverQuoteURLUserinfo(t *testing.T) {
+	for _, base := range []string{"http://usr:s3cretpw@127.0.0.1:1", "http://usr:s3cretpw@bad host"} {
+		c := &AdminClient{BaseURL: base, Key: "sk-key"}
+		_, err := c.List(context.Background())
+		if err == nil {
+			t.Fatalf("%s: List succeeded", base)
+		}
+		if msg := err.Error(); strings.Contains(msg, "s3cretpw") || strings.Contains(msg, "usr") || !strings.Contains(msg, urlrule.Hidden) {
+			t.Fatalf("%s: error %q quotes the url or lacks the placeholder", base, msg)
+		}
 	}
 }

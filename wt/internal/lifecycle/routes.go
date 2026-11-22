@@ -110,9 +110,15 @@ func WaitPendingRoutes() {
 // without this a slot-profile launch whose restart command failed would go
 // on: the old proxy is still up, answers the liveness probe, and knows none
 // of the routes written since.
+//
+// run lets one proxy restart run at a time in this process (#598): the
+// asynchronous bounces (bounceProxyAsync, BounceProxyTo) and RestartProxyTo
+// each hold it for their restart and readiness wait, so a model server's
+// start-up route sync and a route job never restart the proxy at once.
 var lastRestart struct {
 	sync.Mutex
 	err error
+	run sync.Mutex
 }
 
 // setLastRestartErr records the outcome of a restart attempt (nil: it worked).
@@ -624,6 +630,17 @@ func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, m
 	return w, nil
 }
 
+// BounceProxyTo is the asynchronous, tracked proxy restart a route write
+// makes (bounceProxyAsync), for a caller outside this package that wrote
+// config.yaml with litellm.Options.NoRestart and owes the restart: the model
+// server's start-up route sync (#598). It returns at once; the restart runs
+// one at a time with every other restart of this process (lastRestart.run),
+// and WaitPendingRoutes waits for it. What it prints goes to out (nil:
+// stderr).
+func BounceProxyTo(ctx context.Context, out io.Writer, cfg *config.Config) {
+	bounceProxyAsync(withRouteOutput(ctx, out), cfg)
+}
+
 // bounceProxyAsync restarts the LiteLLM proxy — and, when one was listening,
 // waits for it to come back — asynchronously, on a goroutine tracked by routeWG
 // / WaitPendingRoutes. It is the restart half shared by every path that decides
@@ -681,7 +698,9 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 			return warnings
 		}
 		b := litellm.Bounce{Restart: restartPrinting, Listening: probeProxy, WaitReady: waitProxy}
+		lastRestart.run.Lock()
 		warnings, waitErr := b.Run(bgCtx, url)
+		lastRestart.run.Unlock()
 		// Warnings are always surfaced: bgCtx cannot be cancelled by the
 		// caller, so there is no longer a "the user pressed Ctrl+C, a failed
 		// restart is expected" case to stay quiet about — suppressing them on

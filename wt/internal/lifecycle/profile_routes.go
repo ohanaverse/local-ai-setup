@@ -166,6 +166,9 @@ func RestartProxyTo(ctx context.Context, out io.Writer, cfg *config.Config) (err
 	defer routesInFlight.Add(-1)
 	defer func() { setLastRestartErr(err) }()
 	bg := withRestartNotice(context.WithoutCancel(withRouteOutput(ctx, out)))
+	// One restart at a time with the asynchronous bounces (lastRestart.run).
+	lastRestart.run.Lock()
+	defer lastRestart.run.Unlock()
 	if err := restartFailure(restartProxy(bg)); err != nil {
 		return err
 	}

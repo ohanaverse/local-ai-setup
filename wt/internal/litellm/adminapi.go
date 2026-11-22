@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
 )
 
 // ErrDBModelsOff reports that the proxy refused a database write because
@@ -198,8 +200,27 @@ func (c *AdminClient) statusError(what string, status int, body []byte) error {
 
 // redact turns a request that got no HTTP answer into a *TransportError
 // whose text carries no key.
+//
+// A url holding an '@' (urlrule: read as carrying a user:password) is never
+// quoted, in whole or in part: net/url's and the transport's errors quote the
+// request url (*url.Error), so its url is replaced by urlrule.Hidden and only
+// the cause is kept; an error that quotes it some other way is dropped for a
+// fixed text.
 func (c *AdminClient) redact(ctx context.Context, err error) error {
-	return &TransportError{msg: c.redactString("litellm: " + err.Error()), ctxErr: ctx.Err()}
+	msg := "litellm: " + err.Error()
+	if urlrule.HasUserinfo(c.BaseURL) {
+		var ue *neturl.Error
+		switch {
+		case errors.As(err, &ue):
+			msg = "litellm: " + ue.Op + " " + urlrule.Hidden + ": " + ue.Err.Error()
+		default:
+			msg = "litellm: request to " + urlrule.Hidden + " failed"
+		}
+		if urlrule.HasUserinfo(strings.ReplaceAll(msg, urlrule.Hidden, "")) {
+			msg = "litellm: request to " + urlrule.Hidden + " failed"
+		}
+	}
+	return &TransportError{msg: c.redactString(msg), ctxErr: ctx.Err()}
 }
 
 // TransportError is an admin request that got no HTTP answer (connection
