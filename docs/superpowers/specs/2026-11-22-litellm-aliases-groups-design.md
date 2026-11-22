@@ -45,7 +45,7 @@ Scratch LiteLLM 1.109.1 (the version the live proxy runs) on port 4099 with a sc
 ## Constraints and risks
 
 1. **Policy.** Anthropic's gateway page (fetched 2026-11-22) says a saved claude.ai login stays the active credential behind `ANTHROPIC_BASE_URL`, and that gateways passing this traffic on "must forward `Authorization` and the OAuth capability in `anthropic-beta`". It also says it "doesn't support routing Claude Code to non-Claude models through any gateway": unsupported, not prohibited. The legal page forbids third parties from routing requests "through Free, Pro, Max, or Ultra plan credentials on behalf of their users" and from collecting, storing or intermediating Claude.ai credentials; it does not address a person's own gateway. So subscription passthrough must stay one person's own login routed through their own gateway: **the token is never stored or logged by wt-model or LiteLLM** (phase 3 checks LiteLLM's spend logs and its own log for it), and the host operator turns the mode on deliberately. Remote use is allowed (decision 2) with the guards under Design. Enforcement is Anthropic's to apply "without prior notice".
-2. **Not verified against the real service.** No request reached Anthropic. That LiteLLM's forwarded token is accepted by the real API is Anthropic's documented flow, not something this spike observed. One tiny real call would settle it; it uses the subscription, so it is an opt-in step (see Open decisions).
+2. **Checked against the real service.** See Real subscription check: one Haiku request through the whole chain succeeded and the token was not stored. Enforcement remains Anthropic's to apply.
 3. **Context window.** Claude Code reads the slot variables once, and wt sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from the model's window at launch. An alias re-pointed to a smaller-window model keeps the old figure. Per the research note (not verified here), unrecognized ids also get a 200K default. A group or alias should advertise the smallest window among its targets, or wt should refuse a re-point that shrinks it.
 4. **Cross-provider fidelity.** The note reports prompt-cache loss and thinking-signature 400s when the backend changes under a running conversation. The mocks cannot produce signed thinking blocks, so this is untested; Claude Code's own recovery (drop old thinking blocks, retry) is documented but not exercised.
 5. **Fallback cost.** While the subscription is limited every request tries it first. LiteLLM's `allowed_fails` and `cooldown_time` can shorten that; the right values need a real limit event.
@@ -105,7 +105,7 @@ Launching with this profile starts claude without `ANTHROPIC_AUTH_TOKEN`. Switch
 
 ## Not verified
 
-- A real request to Anthropic through LiteLLM with the subscription token (Anthropic's documented flow; opt-in).
+- A real provider switch inside one conversation (signed thinking blocks, prompt cache): needs a few real requests.
 - Thinking-signature and cache behavior across a real provider switch.
 - Behavior with LiteLLM's Redis coordination on and under a second worker (the live proxy is one process; the scratch proxy had no Redis).
 - The wildcard row `anthropic/*` from the research note; explicit rows were used here.
@@ -121,4 +121,8 @@ Launching with this profile starts claude without `ANTHROPIC_AUTH_TOKEN`. Switch
 
 ## Real subscription check
 
-(filled in by the verification run)
+Run on 2026-11-22 with LiteLLM 1.109.1, no mocks: a scratch proxy whose only model row was `anthropic/claude-haiku-5-5` with no `api_key` and no `api_base`, no `ANTHROPIC_API_KEY` in its environment, behind the gateway patch from the spike harness, with the real Claude Code login (`claude.ai`, `firstParty`) pointed at the gateway and all four slots pinned to that one Haiku row.
+
+- **It worked end to end.** `claude -p --model haiku` returned `ok` from `claude-haiku-5-5`, one turn, no error. LiteLLM served two `/v1/messages` requests (the main turn and Claude Code's background Haiku call), both to `anthropic/claude-haiku-5-5`. The only credential that could have reached Anthropic was the forwarded login token, so the mode of the spike (header in, `Authorization` forwarded, `x-litellm-api-key` to LiteLLM) is accepted by the real service. The cost Claude Code printed (about $0.006) is the API list price; the usage counted against the subscription.
+- **The token was not stored.** The `sk-ant-oat` prefix appears in neither LiteLLM's log nor the gateway's log, in no row of `LiteLLM_SpendLogs` (two rows, call type `anthropic_messages`, metadata keys are status, user agent, usage, router metadata and the like), and in no table of the database. That is with LiteLLM's defaults; phase 3 pins it with a test and must re-check if `store_prompts_in_spend_logs` or header forwarding is ever turned on.
+- **Still unverified:** a real provider switch inside one conversation (signed thinking blocks, prompt cache). It needs a few more real requests, so it is a separate opt-in.
