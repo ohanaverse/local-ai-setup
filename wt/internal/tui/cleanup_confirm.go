@@ -854,6 +854,14 @@ func (m cleanupListModel) gotRefresh(msg cleanupRefreshMsg) (tea.Model, tea.Cmd)
 	// The post-run refresh rebuilds from its own full report: any fill
 	// dispatched before it is stale now.
 	m.fillGen++
+	if m.launch() {
+		// The launch picker's post-run rows come from the same builder as
+		// its loads: the reused-branch tag rule the loads apply
+		// (dropStalePRTags) runs on the rebuild's report too, so the rows
+		// do not shift after a removal (#578). The manage list's loads
+		// never dropped the tag; its rebuild does not either.
+		dropStalePRTags(cleanup.Git{Dir: msg.report.Repo}, msg.report.Rows)
+	}
 	o := m.opts
 	o.Theme, o.Now = m.theme, m.clock()
 	n := newRowList(msg.report, o)

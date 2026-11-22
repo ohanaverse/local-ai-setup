@@ -36,7 +36,7 @@ import (
 func expectDirectLaunch(t *testing.T) {
 	t.Helper()
 	oldTUI, oldGuard := tuiRun, maybeInstallGuard
-	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileLayer, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
+	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, tui.ModelClient, *config.Config, tui.ProfileLayer, tui.SlotProfiles, tui.RemoveFuncsBuilder, []string) error {
 		t.Error("tuiRun was called: the command went to the TUI instead of the launch this test stubs")
 		return errors.New("tuiRun reached in a test that expects a direct launch")
 	}

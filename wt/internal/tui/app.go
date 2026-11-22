@@ -63,6 +63,10 @@ type model struct {
 	// closure over cleanupRemoveFuncs); nil makes every row action say it is
 	// unavailable.
 	removeFuncs RemoveFuncsBuilder
+	// protectedPaths are the registry's model-artifact paths, handed in by
+	// cmd (which owns the registry) so a picker load can show a row's
+	// protected_artifact tag; removal still re-checks in the engine (#578).
+	protectedPaths []string
 
 	phase phase
 	agent string         // current agent name
@@ -237,7 +241,7 @@ func (m model) Init() tea.Cmd {
 			return selectedEntryMsg{entry: worktree.Entry{Path: m.prePath}}
 		}
 	}
-	return loadPickerCmd()
+	return loadPickerCmd(m.protectedPaths)
 }
 
 // loadPickerCmd loads the worktree picker: it resolves the repository root
@@ -245,11 +249,11 @@ func (m model) Init() tea.Cmd {
 // the list's one fetch is the user's `F`, refreshRowsChosenMsg). The PR
 // lookups follow once the rows are on screen (gotRows, loadRowPRsCmd).
 // Outside a repository the load reports the lookup's error.
-func loadPickerCmd() tea.Cmd {
+func loadPickerCmd(protectedPaths []string) tea.Cmd {
 	return func() tea.Msg {
 		root, err := findRepoRoot()
 		cwd, _ := os.Getwd()
-		return loadRowsCmd(root, err, pickerInputs(cwd), false)()
+		return loadRowsCmd(root, err, pickerInputs(cwd, protectedPaths), false)()
 	}
 }
 
@@ -938,8 +942,10 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // When the launched agent's run failed, Run returns that error (an
 // *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
 // cmd/wt-session exits with the agent's status (#412).
-func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, profileLayer ProfileLayer, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
-	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, models, cfg, removeFuncs), slots)
+func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, profileLayer ProfileLayer, slots SlotProfiles, removeFuncs RemoveFuncsBuilder, protectedPaths []string) error {
+	m := newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, models, cfg, removeFuncs)
+	m.protectedPaths = protectedPaths
+	initial := withSlotProfiles(m, slots)
 	// Bubble Tea's own signal handler quits on the first signal in any
 	// phase — mid-removal too, losing the run's outcomes; the model handles
 	// them instead (Ruling T, the cleanup list's rule, #577).
