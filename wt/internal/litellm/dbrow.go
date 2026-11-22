@@ -8,7 +8,11 @@ import (
 )
 
 // DBID is the model_info.id wt gives the database row of a registry model.
-func DBID(registryID string) string { return "wt:" + registryID }
+func DBID(registryID string) string { return DBIDPrefix + registryID }
+
+// DBIDPrefix starts every database row id wt writes; ApplyDB never deletes
+// or replaces a row whose id lacks it.
+const DBIDPrefix = "wt:"
 
 // DBModelFromRow converts a model_list row (as BuildEntry builds it) into a
 // database payload: litellm_params are copied whole (os.environ/X references

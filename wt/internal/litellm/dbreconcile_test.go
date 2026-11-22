@@ -3,6 +3,7 @@ package litellm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,17 @@ import (
 
 func managedRow(id, name string, params map[string]any) DBModel {
 	return DBModel{ID: id, ModelName: name, Params: params, Info: map[string]any{ManagedKey: true}}
+}
+
+// stored returns m as wt's Add leaves it in the database: Info carries the
+// route hash.
+func stored(m DBModel) DBModel {
+	info := map[string]any{ParamsHashKey: routeHash(m)}
+	for k, v := range m.Info {
+		info[k] = v
+	}
+	m.Info = info
+	return m
 }
 
 func planIDs(ms []DBModel) []string {
@@ -69,22 +81,22 @@ func TestPlanDBIgnoresUnmanagedDatabaseRows(t *testing.T) {
 		{ID: "nil-info", ModelName: "z", Params: map[string]any{"model": "openai/z"}},
 	}
 	p := PlanDB(nil, current)
-	if len(p.Add) != 0 || len(p.Update) != 0 || len(p.Delete) != 0 {
+	if !p.Empty() {
 		t.Fatalf("plan %+v, want empty", p)
 	}
 }
 
-// TestPlanDBUpdatesChangedParams checks that a managed row whose params or
-// model_name differ from the desired one is planned as an Update carrying the
-// desired row, so a changed registry entry reaches the database.
+// TestPlanDBUpdatesChangedParams checks that a managed row stored with the
+// hash of other params or another model_name is planned as an Update carrying
+// the desired row, so a changed registry entry reaches the database.
 func TestPlanDBUpdatesChangedParams(t *testing.T) {
 	desired := []DBModel{
 		managedRow("wt:a", "a", map[string]any{"model": "ollama/a", "api_base": "http://new"}),
 		managedRow("wt:b", "b2", map[string]any{"model": "ollama/b"}),
 	}
 	current := []DBModel{
-		managedRow("wt:b", "b", map[string]any{"model": "ollama/b"}),
-		managedRow("wt:a", "a", map[string]any{"model": "ollama/a", "api_base": "http://old"}),
+		stored(managedRow("wt:b", "b", map[string]any{"model": "ollama/b"})),
+		stored(managedRow("wt:a", "a", map[string]any{"model": "ollama/a", "api_base": "http://old"})),
 	}
 	p := PlanDB(desired, current)
 	if got := planIDs(p.Update); !reflect.DeepEqual(got, []string{"wt:a", "wt:b"}) {
@@ -98,63 +110,116 @@ func TestPlanDBUpdatesChangedParams(t *testing.T) {
 	}
 }
 
-// TestPlanDBIsEmptyWhenEqual checks that identical rows plan nothing, so a
+// TestPlanDBUpdatesManagedRowWithoutHash checks that a managed row carrying
+// no wt_params_sha (written before the hash existed, or by hand) is replaced:
+// its stored params cannot be trusted to match.
+func TestPlanDBUpdatesManagedRowWithoutHash(t *testing.T) {
+	row := managedRow("wt:a", "a", map[string]any{"model": "ollama/a"})
+	p := PlanDB([]DBModel{row}, []DBModel{row})
+	if got := planIDs(p.Update); !reflect.DeepEqual(got, []string{"wt:a"}) {
+		t.Fatalf("plan %+v, want one Update", p)
+	}
+}
+
+// TestPlanDBIsEmptyWhenEqual checks that a stored row carrying the desired
+// row's hash plans nothing, even when its params read back differently, so a
 // repeated sync makes no database writes.
 func TestPlanDBIsEmptyWhenEqual(t *testing.T) {
-	rows := []DBModel{managedRow("wt:a", "a", map[string]any{"model": "ollama/a"})}
-	p := PlanDB(rows, rows)
-	if len(p.Add) != 0 || len(p.Update) != 0 || len(p.Delete) != 0 {
+	want := managedRow("wt:a", "a", map[string]any{"model": "ollama/a", "api_key": "os.environ/K"})
+	got := stored(want)
+	got.Params = map[string]any{"model": "ollama/a"} // api_key stripped by /model/info
+	if p := PlanDB([]DBModel{want}, []DBModel{got}); !p.Empty() {
 		t.Fatalf("plan %+v, want empty", p)
 	}
 }
 
-// TestPlanDBIsEmptyWhenEqualAfterJSONRoundTrip checks that a desired row
-// decoded from YAML (int 4096, []any, nested maps) equals the same row as
-// List returns it from JSON (float64 4096, different key order). Without
-// normalizing, every sync would delete and re-add every row.
-func TestPlanDBIsEmptyWhenEqualAfterJSONRoundTrip(t *testing.T) {
-	desired := []DBModel{managedRow("wt:a", "a", map[string]any{
+// TestRouteHashIgnoresNumberTypeAndKeyOrder checks that a row decoded from
+// YAML (int 4096, []any, nested maps) hashes the same as the same row decoded
+// from JSON (float64 4096, other key order), and that model_name and every
+// param are part of the hash. Without that, every sync would replace every
+// row, or miss a change.
+func TestRouteHashIgnoresNumberTypeAndKeyOrder(t *testing.T) {
+	fromYAML := managedRow("wt:a", "a", map[string]any{
 		"model":                  "ollama/a",
 		"max_tokens":             4096,
 		"additional_drop_params": []any{"temperature", "top_p"},
 		"extra":                  map[string]any{"n": 2, "b": true},
-	})}
+	})
 	var params map[string]any
 	if err := json.Unmarshal([]byte(`{"extra":{"b":true,"n":2.0},"additional_drop_params":["temperature","top_p"],"max_tokens":4096.0,"model":"ollama/a"}`), &params); err != nil {
 		t.Fatal(err)
 	}
-	current := []DBModel{managedRow("wt:a", "a", params)}
-	p := PlanDB(desired, current)
-	if len(p.Add) != 0 || len(p.Update) != 0 || len(p.Delete) != 0 {
+	fromJSON := managedRow("wt:a", "a", params)
+	h := routeHash(fromYAML)
+	if h == "" || h != routeHash(fromJSON) {
+		t.Fatalf("hash %q vs %q", h, routeHash(fromJSON))
+	}
+	renamed := fromJSON
+	renamed.ModelName = "b"
+	if routeHash(renamed) == h {
+		t.Fatal("model_name is not part of the hash")
+	}
+	if routeHash(managedRow("wt:a", "a", map[string]any{"model": "ollama/a", "max_tokens": 4097,
+		"additional_drop_params": []any{"temperature", "top_p"}, "extra": map[string]any{"n": 2, "b": true}})) == h {
+		t.Fatal("a changed param kept the hash")
+	}
+	if p := PlanDB([]DBModel{fromYAML}, []DBModel{stored(fromJSON)}); !p.Empty() {
 		t.Fatalf("plan %+v, want empty", p)
 	}
 }
 
 // fakeDBServer is a LiteLLM model API holding rows in memory, answering a
 // duplicate id and a missing id with the real 1.109.1 shapes (HTTP 500
-// "Failed to add model to db", HTTP 400 "not found in db"). failAdd, when
-// set, answers every /model/new with an unrelated 500 and stores nothing.
+// "Failed to add model to db", HTTP 400 "not found in db"). Like the real
+// /model/info it drops api_key from litellm_params and masks other
+// sensitive-looking values. addFailBody, when set, answers every /model/new
+// with that body as an HTTP 500 and stores nothing; calls counts requests.
 type fakeDBServer struct {
-	mu      sync.Mutex
-	rows    map[string]map[string]any // id -> {"model_name", "litellm_params", "model_info"}
-	failAdd bool
+	mu          sync.Mutex
+	rows        map[string]map[string]any // id -> {"model_name", "litellm_params", "model_info"}
+	addFailBody string
+	calls       int
+}
+
+func maskedParams(p map[string]any) map[string]any {
+	out := make(map[string]any, len(p))
+	for k, v := range p {
+		lk := strings.ToLower(k)
+		switch {
+		case lk == "api_key":
+			continue
+		case strings.Contains(lk, "secret") || strings.Contains(lk, "token") || strings.Contains(lk, "key"):
+			s, _ := v.(string)
+			if len(s) > 2 {
+				s = s[:2]
+			}
+			out[k] = s + "****"
+		default:
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func (f *fakeDBServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls++
 	b, _ := io.ReadAll(r.Body)
 	switch r.URL.Path {
 	case "/model/info":
 		var data []map[string]any
 		for _, row := range f.rows {
-			data = append(data, row)
+			p, _ := row["litellm_params"].(map[string]any)
+			data = append(data, map[string]any{
+				"model_name": row["model_name"], "litellm_params": maskedParams(p), "model_info": row["model_info"],
+			})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 	case "/model/new":
-		if f.failAdd {
+		if f.addFailBody != "" {
 			w.WriteHeader(500)
-			w.Write([]byte(`{"error":{"message":"database unavailable"}}`))
+			w.Write([]byte(f.addFailBody))
 			return
 		}
 		var req map[string]any
@@ -192,6 +257,7 @@ func newFakeDB(t *testing.T) (*fakeDBServer, *AdminClient) {
 	return f, &AdminClient{BaseURL: srv.URL, Key: testMasterKey}
 }
 
+// seed stores m as given (Info verbatim plus id and db_model).
 func (f *fakeDBServer) seed(m DBModel) {
 	info := map[string]any{"id": m.ID, "db_model": true}
 	for k, v := range m.Info {
@@ -203,16 +269,18 @@ func (f *fakeDBServer) seed(m DBModel) {
 // TestApplyDBTwoClientsConverge checks that two clients applying the same
 // plan at once (two syncs racing) both succeed and leave exactly one row per
 // id: the loser's Add meets LiteLLM's real duplicate answer (HTTP 500, not an
-// "already exists" message), re-lists, finds the equal row and counts it as
-// converged instead of failing the sync.
+// "already exists" message), re-lists, finds the row by its hash (the listed
+// params have api_key stripped) and counts it as converged instead of
+// failing the sync.
 func TestApplyDBTwoClientsConverge(t *testing.T) {
 	for range 20 {
 		f, c := newFakeDB(t)
-		old := managedRow("wt:u", "u", map[string]any{"model": "ollama/u", "api_base": "http://old"})
-		f.seed(old)
+		f.seed(stored(managedRow("wt:u", "u", map[string]any{"model": "ollama/u", "api_base": "http://old"})))
 		p := DBPlan{
-			Add:    []DBModel{managedRow("wt:a", "a", map[string]any{"model": "ollama/a", "max_tokens": 4096})},
-			Update: []DBModel{managedRow("wt:u", "u", map[string]any{"model": "ollama/u", "api_base": "http://new"})},
+			Add: []DBModel{managedRow("wt:a", "a", map[string]any{
+				"model": "openai/a", "max_tokens": 4096, "api_key": "os.environ/A_KEY"})},
+			Update: []DBModel{managedRow("wt:u", "u", map[string]any{
+				"model": "ollama/u", "api_base": "http://new", "api_key": "os.environ/U_KEY"})},
 		}
 		var wg sync.WaitGroup
 		errs := make([]error, 2)
@@ -242,6 +310,34 @@ func TestApplyDBTwoClientsConverge(t *testing.T) {
 	}
 }
 
+// TestApplyDBKeyedRowRoundTrip checks a row with an api_key reference against
+// a server that strips api_key from /model/info, as LiteLLM 1.109.1 does: the
+// applied row plans nothing on the next sync, and a changed api_key reference
+// plans an Update. Comparing params would replace every keyed row on every
+// sync.
+func TestApplyDBKeyedRowRoundTrip(t *testing.T) {
+	_, c := newFakeDB(t)
+	ctx := context.Background()
+	want := managedRow("wt:k", "k", map[string]any{"model": "openai/k", "api_key": "os.environ/K1"})
+	if _, _, _, err := c.ApplyDB(ctx, PlanDB([]DBModel{want}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Params["api_key"] != nil {
+		t.Fatalf("fake should strip api_key: %+v", got)
+	}
+	if p := PlanDB([]DBModel{want}, got); !p.Empty() {
+		t.Fatalf("plan %+v, want empty", p)
+	}
+	changed := managedRow("wt:k", "k", map[string]any{"model": "openai/k", "api_key": "os.environ/K2"})
+	if p := PlanDB([]DBModel{changed}, got); !reflect.DeepEqual(planIDs(p.Update), []string{"wt:k"}) {
+		t.Fatalf("plan %+v, want Update of wt:k", p)
+	}
+}
+
 // TestApplyDBDeleteOfAbsentRowIsNoop checks that deleting a row another sync
 // already removed (LiteLLM's real HTTP 400 "not found in db") is not an
 // error, so a second sync racing the first does not fail.
@@ -256,14 +352,37 @@ func TestApplyDBDeleteOfAbsentRowIsNoop(t *testing.T) {
 	}
 }
 
+// TestApplyDBRefusesIDsWithoutPrefix checks that a Delete or Update of an id
+// not starting with "wt:" is refused without any HTTP call: wt touches no row
+// it did not name, whatever plan it is handed.
+func TestApplyDBRefusesIDsWithoutPrefix(t *testing.T) {
+	f, c := newFakeDB(t)
+	f.seed(managedRow("ui-row", "x", map[string]any{"model": "openai/x"}))
+	_, updated, deleted, err := c.ApplyDB(context.Background(), DBPlan{
+		Delete: []string{"ui-row"},
+		Update: []DBModel{managedRow("other", "x", map[string]any{"model": "openai/y"})},
+	})
+	if err == nil || updated != 0 || deleted != 0 {
+		t.Fatalf("updated %d deleted %d err %v", updated, deleted, err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "ui-row") || !strings.Contains(msg, "other") {
+		t.Fatalf("error %q should name both ids", msg)
+	}
+	if f.calls != 0 {
+		t.Fatalf("%d HTTP calls, want 0", f.calls)
+	}
+}
+
 // TestApplyDBCountsEachKind checks the returned counts and the effect on the
-// server for one plan with an Add, an Update and a Delete.
+// server for one plan with an Add, an Update and a Delete, and that every
+// added row carries its route hash.
 func TestApplyDBCountsEachKind(t *testing.T) {
 	f, c := newFakeDB(t)
-	f.seed(managedRow("wt:u", "u", map[string]any{"model": "ollama/old"}))
-	f.seed(managedRow("wt:d", "d", map[string]any{"model": "ollama/d"}))
+	f.seed(stored(managedRow("wt:u", "u", map[string]any{"model": "ollama/old"})))
+	f.seed(stored(managedRow("wt:d", "d", map[string]any{"model": "ollama/d"})))
+	add := managedRow("wt:a", "a", map[string]any{"model": "ollama/a"})
 	added, updated, deleted, err := c.ApplyDB(context.Background(), DBPlan{
-		Add:    []DBModel{managedRow("wt:a", "a", map[string]any{"model": "ollama/a"})},
+		Add:    []DBModel{add},
 		Update: []DBModel{managedRow("wt:u", "u", map[string]any{"model": "ollama/new"})},
 		Delete: []string{"wt:d"},
 	})
@@ -276,6 +395,12 @@ func TestApplyDBCountsEachKind(t *testing.T) {
 	if p, _ := f.rows["wt:u"]["litellm_params"].(map[string]any); p["model"] != "ollama/new" {
 		t.Fatalf("wt:u params %v", f.rows["wt:u"]["litellm_params"])
 	}
+	if info, _ := f.rows["wt:a"]["model_info"].(map[string]any); info[ParamsHashKey] != routeHash(add) || info[ManagedKey] != true {
+		t.Fatalf("wt:a model_info %v", info)
+	}
+	if add.Info[ParamsHashKey] != nil {
+		t.Fatal("ApplyDB stamped the caller's Info map")
+	}
 }
 
 // TestApplyDBAddFailureNotInListIsError checks that an Add whose failure is
@@ -283,7 +408,7 @@ func TestApplyDBCountsEachKind(t *testing.T) {
 // rather than counted as converged.
 func TestApplyDBAddFailureNotInListIsError(t *testing.T) {
 	f, c := newFakeDB(t)
-	f.failAdd = true
+	f.addFailBody = `{"error":{"message":"database unavailable"}}`
 	added, _, _, err := c.ApplyDB(context.Background(), DBPlan{
 		Add: []DBModel{managedRow("wt:a", "a", map[string]any{"model": "ollama/a"})},
 	})
@@ -292,17 +417,45 @@ func TestApplyDBAddFailureNotInListIsError(t *testing.T) {
 	}
 }
 
-// TestApplyDBAddOfDifferentExistingRowIsError checks that a duplicate-id
-// answer counts as converged only when the stored row equals the wanted one:
-// a different row under the same id is an error.
-func TestApplyDBAddOfDifferentExistingRowIsError(t *testing.T) {
+// TestApplyDBStoreOffSurvivesTheJoin checks that LiteLLM's real answer with
+// store_model_in_db off (HTTP 500 naming STORE_MODEL_IN_DB) still satisfies
+// errors.Is(err, ErrDBModelsOff) through ApplyDB's joined error: the caller
+// turns it into the "database routes are off" message.
+func TestApplyDBStoreOffSurvivesTheJoin(t *testing.T) {
 	f, c := newFakeDB(t)
-	f.seed(managedRow("wt:a", "a", map[string]any{"model": "ollama/other"}))
-	added, _, _, err := c.ApplyDB(context.Background(), DBPlan{
-		Add: []DBModel{managedRow("wt:a", "a", map[string]any{"model": "ollama/a"})},
+	f.addFailBody = realStoreOffBody
+	_, _, _, err := c.ApplyDB(context.Background(), DBPlan{
+		Add: []DBModel{
+			managedRow("wt:a", "a", map[string]any{"model": "ollama/a"}),
+			managedRow("wt:b", "b", map[string]any{"model": "ollama/b"}),
+		},
 	})
-	if err == nil || added != 0 || !strings.Contains(err.Error(), "wt:a") {
-		t.Fatalf("added %d err %v", added, err)
+	if !errors.Is(err, ErrDBModelsOff) {
+		t.Fatalf("err %v, want ErrDBModelsOff", err)
+	}
+}
+
+// TestApplyDBAddOfDifferentExistingRowIsError checks that a duplicate-id
+// answer counts as converged only when the stored row is wt-managed and
+// carries the wanted hash: a different row, or an unmarked one with the same
+// hash, under the same id is an error.
+func TestApplyDBAddOfDifferentExistingRowIsError(t *testing.T) {
+	want := managedRow("wt:a", "a", map[string]any{"model": "ollama/a"})
+	unmarked := stored(want)
+	unmarked.Info = map[string]any{ParamsHashKey: routeHash(want)}
+	for _, tc := range []struct {
+		name string
+		row  DBModel
+	}{
+		{"other params", stored(managedRow("wt:a", "a", map[string]any{"model": "ollama/other"}))},
+		{"same hash, no marker", unmarked},
+	} {
+		f, c := newFakeDB(t)
+		f.seed(tc.row)
+		added, _, _, err := c.ApplyDB(context.Background(), DBPlan{Add: []DBModel{want}})
+		if err == nil || added != 0 || !strings.Contains(err.Error(), "wt:a") {
+			t.Errorf("%s: added %d err %v", tc.name, added, err)
+		}
 	}
 }
 
@@ -312,8 +465,8 @@ func TestApplyDBAddOfDifferentExistingRowIsError(t *testing.T) {
 // no route until the next sync.
 func TestApplyDBUpdateReportsMissingRouteWhenReAddFails(t *testing.T) {
 	f, c := newFakeDB(t)
-	f.seed(managedRow("wt:u", "u", map[string]any{"model": "ollama/old"}))
-	f.failAdd = true
+	f.seed(stored(managedRow("wt:u", "u", map[string]any{"model": "ollama/old"})))
+	f.addFailBody = `{"error":{"message":"database unavailable"}}`
 	_, updated, _, err := c.ApplyDB(context.Background(), DBPlan{
 		Update: []DBModel{managedRow("wt:u", "u", map[string]any{"model": "ollama/new"})},
 	})
