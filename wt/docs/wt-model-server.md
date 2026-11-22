@@ -455,8 +455,9 @@ wt-model: listening on <addr> (gateway /v1, control /control/v1)
 
 Right after that line it reconciles the LiteLLM routes once, as
 `wt-model litellm sync` does, through the same pair (local routes in
-LiteLLM's database): a proxy that restarted or lost its database gets its
-routes back without waiting for the next start or stop. It runs beside the
+LiteLLM's database): a database that was wiped is repopulated the next
+time `wt-model serve` starts, without waiting for the next start or stop (a
+proxy restart keeps its database rows and runs no sync). It runs beside the
 serving, so sessions can reach the server meanwhile, and only when it can see
 the database: it first waits up to 90 seconds for the proxy to answer (at
 login the proxy and its database start after the server listens) and then

@@ -93,8 +93,9 @@ Flags:
 
 Once listening it prints one line on stderr naming the bound address, then
 reconciles the LiteLLM routes once, as 'wt-model litellm sync' does
-(local routes through the proxy's model API when the pair is set): a proxy
-that restarted or lost its database gets its routes back. What that sync
+(local routes through the proxy's model API when the pair is set): a
+database that was wiped is repopulated the next time wt-model serve starts
+(a proxy restart keeps its database rows and runs no sync). What that sync
 changes or warns about is printed on stderr; a failure there is a warning
 and serving goes on.
 While it runs it keeps a runtime record, serve.json in the wt-model home
