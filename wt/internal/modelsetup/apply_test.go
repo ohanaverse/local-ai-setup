@@ -595,7 +595,9 @@ func TestApplyRotateKeepsTheBackupAndTightensTheMode(t *testing.T) {
 		"Host.RandRead 32",
 		"FS.WriteAtomic " + plLiteLLM + " 0600",
 		"Config.SetPair url=true key=true",
-		"Launchd.Kickstart local.litellm.proxy kill=true",
+		"Launchd.Bootout local.litellm.proxy",
+		"Launchd.Print local.litellm.proxy",
+		"Launchd.Bootstrap " + plLiteLLM,
 		"Net.Get http://localhost:4000/health/liveliness bearer=false",
 		"Net.Get http://localhost:4000/v1/models bearer=true",
 		"Launchd.Kickstart " + AgentLabel + " kill=true",
@@ -674,10 +676,12 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 		noSecrets(t, f, lines, r, apOldMaster, apOldSalt)
 	}
 
-	// A failed LiteLLM restart: plist and pair agree, and the Result says
-	// exactly what to run.
+	// A failed LiteLLM reload after the job was unloaded: plist and pair
+	// agree, and the Result says exactly what to run — a bootstrap, with no
+	// bootout (it is gone) and no kickstart (#681: a kickstart restarts the
+	// old loaded definition, which holds the old key).
 	f := rotEnv(t)
-	f.kickstartErr["local.litellm.proxy"] = errors.New("Could not find service")
+	f.bootstrapErr = errors.New("Bootstrap failed: 5: Input/output error")
 	r, lines := apply(t, f, plan())
 	if r.Failed == nil || r.Failed.Kind != StepKickstartLiteLLM {
 		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
@@ -686,15 +690,33 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 	if newKey == apOldMaster || f.pair.APIKey != newKey {
 		t.Errorf("plist and pair disagree after a failed restart")
 	}
-	for _, w := range []string{"launchctl kickstart -k gui/501/local.litellm.proxy", "launchctl kickstart -k gui/501/" + AgentLabel, "launchctl bootstrap gui/501 " + plLiteLLM} {
+	for _, w := range []string{"LiteLLM was unloaded", "launchctl bootstrap gui/501 " + plLiteLLM, "launchctl kickstart -k gui/501/" + AgentLabel} {
 		if !strings.Contains(r.Recovery, w) {
 			t.Errorf("Recovery %q does not say %q", r.Recovery, w)
 		}
+	}
+	if strings.Contains(r.Recovery, "launchctl bootout") || strings.Contains(r.Recovery, "kickstart -k gui/501/local.litellm.proxy") {
+		t.Errorf("Recovery %q names a bootout of the gone job or a LiteLLM kickstart", r.Recovery)
 	}
 	if f.called("Launchd.Kickstart " + AgentLabel) {
 		t.Errorf("wt-model restarted after LiteLLM failed")
 	}
 	noSecrets(t, f, lines, r, newKey, apOldMaster, apOldSalt)
+
+	// A bootout launchd refuses while the job is loaded: LiteLLM still runs
+	// with the old key, and the Result names the whole reload.
+	f = rotEnv(t)
+	f.jobs[litellm.ProxyLabel] = LaunchdJob{Loaded: true, Running: true, PID: 5}
+	f.bootoutErr = errors.New("Boot-out failed: 5: Input/output error")
+	r, _ = apply(t, f, plan())
+	if r.Failed == nil || r.Failed.Kind != StepKickstartLiteLLM {
+		t.Fatalf("bootout refused: Failed = %+v, Err = %v", r.Failed, r.Err)
+	}
+	for _, w := range []string{"LiteLLM still runs with the old one", "launchctl bootout gui/501/" + litellm.ProxyLabel, "launchctl bootstrap gui/501 " + plLiteLLM} {
+		if !strings.Contains(r.Recovery, w) {
+			t.Errorf("bootout refused: Recovery %q does not say %q", r.Recovery, w)
+		}
+	}
 
 	// A step failing after the edit and before the pair: the plist holds the
 	// new key, the pair the old one, and the Result says how to restore the
@@ -902,6 +924,34 @@ func TestApplyRotateWaitsForLiteLLMWithTheNewKey(t *testing.T) {
 	}
 }
 
+// TestApplyRotateReloadsLiteLLMFromTheEditedPlist pins #681: a rotation
+// restarts LiteLLM by unloading the job and bootstrapping the EDITED plist.
+// kickstart -k restarts the definition launchd loaded at bootstrap time, so
+// it never reads the new key: the plist and the pair held the new key while
+// the running LiteLLM kept the old one and rejected it (found live, #643).
+func TestApplyRotateReloadsLiteLLMFromTheEditedPlist(t *testing.T) {
+	f := rotEnv(t)
+	r, _ := apply(t, f, mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}))
+	if r.Failed != nil || r.Err != nil {
+		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
+	}
+	if f.called("Launchd.Kickstart " + litellm.ProxyLabel) {
+		t.Errorf("LiteLLM was kickstarted: that restarts the old loaded definition, never the edited plist's new key")
+	}
+	at := func(prefix string) int {
+		for i, c := range f.calls {
+			if strings.HasPrefix(c, prefix) {
+				return i
+			}
+		}
+		return -1
+	}
+	out, in := at("Launchd.Bootout "+litellm.ProxyLabel), at("Launchd.Bootstrap "+plLiteLLM)
+	if out < 0 || in < 0 || out > in {
+		t.Errorf("want a bootout of %s, then a bootstrap of %s; calls: %v", litellm.ProxyLabel, plLiteLLM, f.calls)
+	}
+}
+
 // TestApplyBootoutWaitsUntilTheLabelIsGone pins carry-forward 2: after a
 // bootout launchd can still list the label for a moment, and a bootstrap then
 // fails with an I/O error. The bootout step polls Print (on the fake clock)
@@ -980,6 +1030,7 @@ func TestApplyRecoveryAfterABootoutTimeoutBootstrapsTheNewAgent(t *testing.T) {
 	}
 	f := rotEnv(t)
 	f.loadedAfterBootout = 1 << 20
+	f.lingerLabel = AgentLabel // LiteLLM's own bootout, earlier in the plan, completes
 	r, _ := apply(t, f, plan())
 	if r.Failed == nil || r.Failed.Kind != StepBootout || !f.called("Config.SetPair") {
 		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
@@ -1021,7 +1072,7 @@ func TestNoPlanOrResultTextContainsAKey(t *testing.T) {
 		c2 := apEnv(t)
 		c2.getStatus = 500
 		r2 := rotEnv(t)
-		r2.kickstartErr["local.litellm.proxy"] = errors.New("boom")
+		r2.bootstrapErr = errors.New("boom")
 		return []run{
 			{"create", c, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}}, nil},
 			{"create down", c2, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}}, nil},

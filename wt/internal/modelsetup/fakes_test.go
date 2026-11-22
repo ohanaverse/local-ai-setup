@@ -47,7 +47,10 @@ type fakeEnv struct {
 	// loadedAfterBootout makes Print report the label still loaded for this
 	// many calls after a successful Bootout (launchd's lag on a real machine).
 	loadedAfterBootout int
-	lingering          map[string]int
+	// lingerLabel limits loadedAfterBootout to one label ("" means every
+	// label): a plan that unloads two jobs can then time out on one.
+	lingerLabel string
+	lingering   map[string]int
 	kickstartErr       map[string]error // by label
 	// litellmPID, when set, makes a Bootstrap of the LiteLLM plist load and
 	// run the local.litellm.proxy job with this pid.
@@ -295,7 +298,9 @@ func (x fakeLaunchd) Bootout(_ context.Context, label string) error {
 		// A bootout launchd accepted unloads the job (after the lag
 		// loadedAfterBootout models).
 		delete(x.f.jobs, label)
-		x.f.lingering[label] = x.f.loadedAfterBootout
+		if x.f.lingerLabel == "" || x.f.lingerLabel == label {
+			x.f.lingering[label] = x.f.loadedAfterBootout
+		}
 	}
 	return x.f.launchdErr
 }

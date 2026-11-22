@@ -255,12 +255,12 @@ The Setup tab of `wt-model setup` (design: [the model-server configuration spec]
 1. check the plist as it is now (the key edit is tried without writing, and the `DATABASE_URL`-without-salt rule is checked again), then back it up to `~/.config/wt-model/backups/local.litellm.proxy.plist.bak-<date>-<time>` (a second backup in the same second gets `-2`, `-3`, ...; an earlier backup is never replaced), at the plist's mode without group or other bits; the backup holds the old key. The directory is created 0700 (a looser one is set to 0700, and the result says so); it is outside `~/Library/LaunchAgents` on purpose, since a copy there carries the same label and launchd could load it;
 2. replace `LITELLM_MASTER_KEY` in the plist with a new generated key, keeping every other byte, written without group or other bits (a plist that is a symlink is written where it points, and stays a link);
 3. update wt-model's pair to the same key;
-4. restart LiteLLM (`launchctl kickstart -k`) and wait until it answers and accepts the new key;
+4. reload LiteLLM: unload the job (`launchctl bootout`, waiting until launchd stops listing it) and bootstrap the edited plist, then wait until it answers and accepts the new key (a `kickstart -k` would restart the definition launchd already holds, which has the old key; startup takes about 15 seconds);
 5. restart wt-model so it reads the new pair.
 
-The plan refuses first when the LiteLLM job is not loaded (`kickstart` cannot start one); it names the `launchctl bootstrap` command to load it.
+The plan refuses first when the LiteLLM job is not loaded (there is no running LiteLLM to move to the new key); it names the `launchctl bootstrap` command to load it.
 
-Both restarts are `kickstart -k`: a request in flight through LiteLLM or wt-model is cut at once (unlike `wt-model litellm restart`, which lets it finish), and the plan says so. Rotate when no agent is mid-request. To restore the old plist by hand: `cp -p <backup> ~/Library/LaunchAgents/local.litellm.proxy.plist && chmod 600 ~/Library/LaunchAgents/local.litellm.proxy.plist` (the result names the backup).
+LiteLLM's reload (a bootout) and wt-model's restart (`kickstart -k`) cut a request in flight at once (unlike `wt-model litellm restart`, which lets it finish), and the plan says so. Rotate when no agent is mid-request: LiteLLM is down for the reload, and a session riding the gateway retries until it is back. If the result says LiteLLM was unloaded and not loaded again, run the `launchctl bootstrap` command it names, then restart wt-model. To restore the old plist by hand: `cp -p <backup> ~/Library/LaunchAgents/local.litellm.proxy.plist && chmod 600 ~/Library/LaunchAgents/local.litellm.proxy.plist` (the result names the backup).
 
 Anything else that holds the old master key stops working once LiteLLM restarts: other clients and scripts that send it, a `[litellm]` `api_key` in `~/.config/agent-wt/config.toml` if one is set there, and copies of the plist (the backup keeps the old key; remove it once the new key works). Rotation never touches the salt key, `DATABASE_URL`, provider keys or the UI login.
 

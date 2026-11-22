@@ -60,7 +60,8 @@ type applyRun struct {
 	edited           bool   // a rotate step wrote the plist (verified or not)
 	pairURL          string
 	pairSet          bool // the pair holds newKey
-	litellmRestarted bool // a rotation's LiteLLM restart was accepted
+	litellmRestarted bool // a rotation's LiteLLM reload (bootout, then bootstrap) was accepted
+	litellmUnloaded  bool // a rotation's bootout of the LiteLLM job was accepted
 	litellmReady     bool // LiteLLM answered (and accepted the new key)
 	wtRestarted      bool // wt-model was restarted or loaded after the pair
 }
@@ -239,7 +240,20 @@ func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result, run *app
 	case StepChmod:
 		return env.FS.Chmod(s.Path, 0o600)
 	case StepKickstartLiteLLM:
-		if err := env.Launchd.Kickstart(ctx, litellm.ProxyLabel, true); err != nil {
+		// A reload, not a kickstart (#681): kickstart -k restarts the
+		// definition launchd loaded at bootstrap time and never reads the
+		// edited plist, so LiteLLM would keep the old master key. Unload the
+		// job (waiting until launchd stops listing it), then bootstrap the
+		// edited plist.
+		w, err := bootout(ctx, env, litellm.ProxyLabel)
+		if w != "" {
+			r.Warnings = append(r.Warnings, w)
+		}
+		if err != nil {
+			return err
+		}
+		run.litellmUnloaded = true
+		if err := env.Launchd.Bootstrap(ctx, s.Path); err != nil {
 			return err
 		}
 		run.litellmRestarted = true
@@ -741,9 +755,16 @@ func (run *applyRun) recovery(env Env, p Plan, failed *Step) string {
 		return "the plist " + run.plist + " and wt-model's pair both hold the new master key and LiteLLM was restarted, but it did not answer with the new key (see " +
 			filepath.Join(home, ".litellm.err.log") + "): once it does, run " + restartWt
 	case run.pairSet && !run.litellmReady:
-		return "the plist " + run.plist + " and wt-model's pair both hold the new master key, but LiteLLM still runs with the old one: run " +
-			"`launchctl kickstart -k " + domain + "/" + litellm.ProxyLabel + "` (or `launchctl bootstrap " + domain + " " + run.plist +
-			"` if it is not loaded), then " + restartWt
+		// A kickstart would restart the OLD loaded definition, which holds the
+		// old key: the edited plist has to be bootstrapped (#681).
+		state := "LiteLLM still runs with the old one"
+		unload := "`launchctl bootout " + domain + "/" + litellm.ProxyLabel + "` (skip it if the job is already gone), then "
+		if run.litellmUnloaded {
+			state = "LiteLLM was unloaded and not loaded again"
+			unload = ""
+		}
+		return "the plist " + run.plist + " and wt-model's pair both hold the new master key, but " + state + ": run " + unload +
+			"`launchctl bootstrap " + domain + " " + run.plist + "`, then " + restartWt
 	case run.pairSet && !run.wtRestarted && failed != nil && (failed.Kind == StepBootout || failed.Kind == StepBootstrap):
 		// A kickstart would restart the OLD definition (or nothing is loaded):
 		// the new agent plist has to be bootstrapped.
