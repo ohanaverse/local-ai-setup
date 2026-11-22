@@ -177,7 +177,9 @@ func TestRouteHashIgnoresNumberTypeAndKeyOrder(t *testing.T) {
 // swallowAdds answers /model/new with 200 and stores nothing (a database that
 // is off but says yes, Review Focus 5); log holds "METHOD /path" per request.
 // failList answers /model/info with 503; failDeleteID answers a delete of
-// that id with 503 and keeps the row.
+// that id with 503 and keeps the row. failAddID answers an add of that id
+// with HTTP 500 and abortAddID drops the connection on it (a transport
+// error); either stores nothing.
 type fakeDBServer struct {
 	mu           sync.Mutex
 	rows         map[string]map[string]any // id -> {"model_name", "litellm_params", "model_info"}
@@ -185,6 +187,8 @@ type fakeDBServer struct {
 	swallowAdds  bool
 	failList     bool
 	failDeleteID string
+	failAddID    string
+	abortAddID   string
 	calls        int
 	log          []string
 }
@@ -244,6 +248,14 @@ func (f *fakeDBServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		info, _ := req["model_info"].(map[string]any)
 		id, _ := info["id"].(string)
+		if id != "" && id == f.abortAddID {
+			panic(http.ErrAbortHandler)
+		}
+		if id != "" && id == f.failAddID {
+			w.WriteHeader(500)
+			w.Write([]byte(`{"error":{"message":"database unavailable"}}`))
+			return
+		}
 		if _, dup := f.rows[id]; dup {
 			w.WriteHeader(500)
 			w.Write([]byte(realDuplicateBody))

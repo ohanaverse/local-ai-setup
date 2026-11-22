@@ -234,8 +234,9 @@ func (d *dbRoutes) familyRoutes(cfg *config.Config, fam string, adding map[strin
 // The adds and replacements then go in one ApplyDB call and are confirmed by
 // a fresh listing. Any failure there — database models off, a transport error
 // (from the deletes too), an add LiteLLM accepted but does not list (Review
-// Focus 5), any other error — hands the whole add batch back to config.yaml
-// (add is returned unchanged) and d.reason says why.
+// Focus 5), any other error — hands the add batch back to config.yaml, except
+// the routes the database already serves, current (fallBack), and d.reason
+// says why.
 func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNames []string, fresh map[string]*yaml.Node, migrate bool) []plannedAdd {
 	var fileAdd []plannedAdd
 	var desired []DBModel
@@ -380,7 +381,7 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 		}
 		if failed != nil {
 			d.dropMigratingTwins(migrating, byName, p, &transport)
-			return d.fallBack(failed, add)
+			return d.fallBack(failed, add, currentIDs(desired, migrating, p))
 		}
 	}
 	// Every row being moved is now in the database, confirmed: written ones by
@@ -459,12 +460,32 @@ func (d *dbRoutes) dropMigratingTwins(migrating map[string]bool, byName map[stri
 	}
 }
 
-// fallBack hands the whole add batch back to config.yaml.
-func (d *dbRoutes) fallBack(err error, add []plannedAdd) []plannedAdd {
+// fallBack hands the add batch back to config.yaml, minus the routes the
+// database already serves, current (current): PlanDB wrote nothing for them,
+// so they are not part of what failed, and a file row beside one would make
+// LiteLLM load-balance the two (and cost a restart on every such sync).
+func (d *dbRoutes) fallBack(err error, add []plannedAdd, current map[string]bool) []plannedAdd {
 	d.fellBack = true
 	d.reason = oneLine(err)
 	d.addsToFile = true
-	return add
+	return slices.DeleteFunc(slices.Clone(add), func(a plannedAdd) bool { return current[a.id] })
+}
+
+// currentIDs is the route names of the desired database rows PlanDB left
+// alone (neither added nor replaced) that are not being moved from
+// config.yaml: the database holds each, wt-managed and with its hash.
+func currentIDs(desired []DBModel, migrating map[string]bool, p DBPlan) map[string]bool {
+	written := map[string]bool{}
+	for _, m := range append(slices.Clone(p.Add), p.Update...) {
+		written[m.ModelName] = true
+	}
+	out := map[string]bool{}
+	for _, m := range desired {
+		if !migrating[m.ModelName] && !written[m.ModelName] {
+			out[m.ModelName] = true
+		}
+	}
+	return out
 }
 
 // confirm re-lists the database and requires every row just written to be
