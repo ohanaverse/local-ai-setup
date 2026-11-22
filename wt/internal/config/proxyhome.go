@@ -171,12 +171,13 @@ func resolveProxy(legacy func() (*LitellmState, error)) (ProxyPair, error) {
 	return ProxyPair{Source: ProxySourceNone}, nil
 }
 
-// resolveProxyHome resolves the home's pair under the writer's flock (see
+// resolveProxyHome resolves the home's pair under a shared flock — readers
+// run beside one another; SetProxy's write keeps the exclusive one (see
 // ResolveProxy). found is false when the home's config.toml holds no
 // [litellm] table — the file without the table is the legacy fallback's case,
 // not an empty pair.
 func resolveProxyHome(home string) (pair ProxyPair, found bool, err error) {
-	err = WithFileLock(home+".lock", func() error {
+	err = WithFileLockShared(home+".lock", func() error {
 		lit, present, rerr := readProxyHome(home)
 		if rerr != nil {
 			return rerr
