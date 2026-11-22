@@ -23,7 +23,7 @@ are added and removed automatically by
 wt-model litellm set --url URL --api-key KEY   # the proxy pair the gateway forwards with (the ~/.config/wt-model/ home)
 wt litellm status                              # url + api_key_set
 wt-model litellm sync [--dry-run]              # route every registry cloud model + every running (or pulled ollama) local model
-wt-model litellm list                          # routed ids in config.yaml (hand-written rows marked)
+wt-model litellm list                          # routed ids: STORE file|db, OWNER wt|hand-written
 ```
 
 Native models (`claude/native`, `copilot/native`) are always shown and do not
