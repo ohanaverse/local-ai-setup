@@ -1111,6 +1111,13 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		default:
 			db.unlisted(cfg, add, plan.Remove)
 		}
+		// A cancelled context (wt-model serve shutting down) is why the
+		// database half failed, if it did: no fallback, no file write, no
+		// restart on the way out. The next sync picks up where this one left.
+		if db != nil && !db.gated && o.Ctx != nil && o.Ctx.Err() != nil {
+			db.cancelled = true
+			return nil, nil, true
+		}
 		return add, remove, false
 	}, o, OllamaAPIBase(cfg), cfg.LitellmBaseURL())
 	if err != nil {

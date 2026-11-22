@@ -1,6 +1,7 @@
 package litellm
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -181,5 +182,31 @@ func TestListReadsALargeListingAndNamesAnOversizedOne(t *testing.T) {
 	_, err = c.List(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "larger than") || strings.Contains(err.Error(), "JSON") {
 		t.Fatalf("err %v, want an explicit 'larger than' error", err)
+	}
+}
+
+// TestCancelledSyncWritesNothing checks that a sync whose context is
+// cancelled (wt-model serve shutting down mid start-up sync) does not take
+// the fallback: the database listing fails only because of the cancel, and
+// falling back would write config.yaml and bounce the proxy on the way out.
+func TestCancelledSyncWritesNothing(t *testing.T) {
+	body := "model_list: []\n" + settledSettings
+	o, restarts, p, fake := dbOpts(t, body)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	o.Ctx = ctx
+	cfg := testConfig()
+	res, err := Sync(cfg, localFor(cfg, "ollama/gemma:9b"), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *restarts != 0 || res.Changed || readFile(t, p) != body {
+		t.Fatalf("restarts=%d changed=%v or config.yaml changed:\n%s", *restarts, res.Changed, readFile(t, p))
+	}
+	if fake.requests("POST /model/new") != 0 {
+		t.Fatal("a database add was made")
+	}
+	if !hasWarning(res, "sync cancelled; config.yaml was not written") || hasWarning(res, "used config.yaml") {
+		t.Fatalf("warnings %q, want the cancel line and no fallback line", res.Warnings)
 	}
 }

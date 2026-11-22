@@ -64,6 +64,9 @@ type dbRoutes struct {
 	gated    bool
 	enabling bool
 	off      string
+	// cancelled is set when Sync held its config.yaml write because its
+	// context was cancelled (finish says so instead of the fallback line).
+	cancelled bool
 	// migrated holds the local ids whose config.yaml rows this sync moved to
 	// the database: added (or found) there and confirmed, so the caller
 	// removes them from the file in the same write.
@@ -632,7 +635,10 @@ func (d *dbRoutes) finish(res *Result, sync bool) {
 			return o.Action == "unrouted" && slices.Contains(d.migrated, o.ID)
 		})
 	}
-	if d.reason != "" {
+	switch {
+	case d.cancelled:
+		res.Warnings = append(res.Warnings, "sync cancelled; config.yaml was not written")
+	case d.reason != "":
 		if d.addsToFile {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("database routes unavailable (%s); used config.yaml", d.reason))
 		}
