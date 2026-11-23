@@ -199,6 +199,12 @@ func subscriptionHazards(ctx context.Context, f *File, env ProxyEnv, info ModelI
 		if env.IsSet("LITELLM_CONFIG_BUCKET_NAME") {
 			hazards = append(hazards, fmt.Sprintf("LITELLM_CONFIG_BUCKET_NAME is set in the proxy's environment (%s): the proxy loads its config from a bucket, not the config.yaml wt checks", env.Source))
 		}
+		// The proxy loads this file instead of its --config one
+		// (proxy_server.py startup). WORKER_CONFIG is not checked: the
+		// proxy CLI always overwrites it before the server reads it.
+		if env.IsSet("CONFIG_FILE_PATH") {
+			hazards = append(hazards, fmt.Sprintf("CONFIG_FILE_PATH is set in the proxy's environment (%s): the proxy loads that file, not the config.yaml wt checks", env.Source))
+		}
 	}
 	if f != nil {
 		for _, section := range []string{"general_settings", "litellm_settings"} {
@@ -244,16 +250,19 @@ func subscriptionHazards(ctx context.Context, f *File, env ProxyEnv, info ModelI
 //     general_settings.use_google_kms, the deprecated switches that install
 //     a secret manager the same way;
 //   - a duplicated mapping key anywhere (wt reads the first copy, LiteLLM's
-//     PyYAML the last, so a duplicate could hide any other check);
-//   - a non-empty top-level include: LiteLLM merges the included files over
-//     this one, and wt does not follow them.
+//     PyYAML the last, so a duplicate could hide any other check), named with
+//     its line;
+//   - any YAML construct wt does not evaluate the way LiteLLM's PyYAML does
+//     (yamlConstructs: anchors, aliases, merge keys, include at any depth,
+//     explicit tags). Rather than emulate PyYAML's merges and YAML 1.1
+//     rules, the check refuses them: wt's own writer emits none.
 func configCredentialHazards(root *yaml.Node) []string {
 	var hazards []string
 	for _, k := range duplicateKeys(root) {
-		hazards = append(hazards, fmt.Sprintf("config.yaml has a duplicate key %s: the proxy reads the last copy, which wt does not check", oneLineString(k)))
+		hazards = append(hazards, fmt.Sprintf("config.yaml has a duplicate key %s (line %d): the proxy reads the last copy, which wt does not check", oneLineString(k.Value), k.Line))
 	}
-	if inc := aliasValue(mapGet(root, "include")); inc != nil && !isNull(inc) && !emptyNode(inc) {
-		hazards = append(hazards, "config.yaml uses include (not followed): the included files can carry any setting")
+	if c := yamlConstructs(root); len(c) > 0 {
+		hazards = append(hazards, fmt.Sprintf("config.yaml uses %s, which wt does not evaluate the way LiteLLM does", strings.Join(c, ", ")))
 	}
 	if ev := aliasValue(mergedGet(root, "environment_variables")); ev != nil && ev.Kind == yaml.MappingNode {
 		for _, name := range append(subscriptionCredentialVars(), subscriptionAddressVars()...) {
@@ -272,21 +281,21 @@ func configCredentialHazards(root *yaml.Node) []string {
 	if v := aliasValue(mergedGet(gs, "key_management_system")); v != nil && !isNull(v) {
 		hazards = append(hazards, "config.yaml sets general_settings.key_management_system: the proxy asks that secret manager for Anthropic credentials before its environment, so a keyless anthropic/ row could take one")
 	}
-	if v := aliasValue(mergedGet(gs, "use_azure_key_vault")); v != nil && !isFalse(v) {
+	if v := aliasValue(mergedGet(gs, "use_azure_key_vault")); v != nil && !plainFalse(v) {
 		hazards = append(hazards, "config.yaml sets general_settings.use_azure_key_vault: the proxy asks Azure Key Vault for Anthropic credentials before its environment, so a keyless anthropic/ row could take one")
 	}
-	if v := aliasValue(mergedGet(gs, "use_google_kms")); v != nil && pyTruthy(v) {
+	if v := aliasValue(mergedGet(gs, "use_google_kms")); v != nil && !plainOff(v) {
 		hazards = append(hazards, "config.yaml sets general_settings.use_google_kms: the proxy asks Google KMS for Anthropic credentials before its environment, so a keyless anthropic/ row could take one")
 	}
 	return hazards
 }
 
 // duplicateKeys walks every mapping of the document under root and returns
-// each key that one mapping holds more than once (merge keys, "<<", are
-// legal repeated and never counted), in the order found. Alias nodes are not
+// the second copy of each key that one mapping holds more than once (merge
+// keys are left to yamlConstructs), in the order found. Alias nodes are not
 // followed: the anchor they point at is walked where it is defined.
-func duplicateKeys(root *yaml.Node) []string {
-	var out []string
+func duplicateKeys(root *yaml.Node) []*yaml.Node {
+	var out []*yaml.Node
 	var walk func(n *yaml.Node, depth int)
 	walk = func(n *yaml.Node, depth int) {
 		if n == nil || n.Kind == yaml.AliasNode || depth > 64 {
@@ -296,9 +305,9 @@ func duplicateKeys(root *yaml.Node) []string {
 			seen := map[string]bool{}
 			for i := 0; i+1 < len(n.Content); i += 2 {
 				k := n.Content[i]
-				if k.Kind == yaml.ScalarNode && k.Tag != "!!merge" && k.Value != "<<" {
-					if seen[k.Value] && !slices.Contains(out, k.Value) {
-						out = append(out, k.Value)
+				if k.Kind == yaml.ScalarNode && !isMergeKey(k) {
+					if seen[k.Value] && !slices.ContainsFunc(out, func(o *yaml.Node) bool { return o.Value == k.Value }) {
+						out = append(out, k)
 					}
 					seen[k.Value] = true
 				}
@@ -312,31 +321,86 @@ func duplicateKeys(root *yaml.Node) []string {
 	return out
 }
 
-// emptyNode reports whether n is an empty string, sequence or mapping.
-func emptyNode(n *yaml.Node) bool {
-	switch n.Kind {
-	case yaml.ScalarNode:
-		return n.Tag == "!!str" && n.Value == ""
-	case yaml.SequenceNode, yaml.MappingNode:
-		return len(n.Content) == 0
+// isMergeKey reports whether k is a YAML merge key (<<).
+func isMergeKey(k *yaml.Node) bool {
+	return k.Kind == yaml.ScalarNode && (k.Tag == "!!merge" || k.Value == "<<" && k.Style == 0)
+}
+
+// yamlConstructs names, in a fixed order, the YAML constructs under root
+// whose meaning wt does not evaluate the way LiteLLM's PyYAML does: anchors,
+// aliases, merge keys, an include key at any depth (LiteLLM merges included
+// files; wt does not follow them) and explicit tags (! or !!). Each one is a
+// subscription hazard: wt's own config.yaml writer emits none of them.
+func yamlConstructs(root *yaml.Node) []string {
+	found := map[string]bool{}
+	var walk func(n *yaml.Node, depth int)
+	walk = func(n *yaml.Node, depth int) {
+		if n == nil || depth > 64 {
+			return
+		}
+		if n.Anchor != "" {
+			found["anchors"] = true
+		}
+		if n.Kind == yaml.AliasNode {
+			found["aliases"] = true
+			return
+		}
+		if n.Style&yaml.TaggedStyle != 0 {
+			found["tags"] = true
+		}
+		if n.Kind == yaml.MappingNode {
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				k := n.Content[i]
+				if isMergeKey(k) {
+					found["merge keys"] = true
+				}
+				if k.Kind == yaml.ScalarNode && k.Value == "include" {
+					found["include"] = true
+				}
+			}
+		}
+		for _, c := range n.Content {
+			walk(c, depth+1)
+		}
+	}
+	walk(root, 0)
+	var out []string
+	for _, name := range []string{"anchors", "aliases", "merge keys", "include", "tags"} {
+		if found[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// plainFalse reports whether n is a plain (unquoted, untagged) scalar that
+// both yaml.v3 and LiteLLM's PyYAML read as the boolean false: false, False
+// or FALSE.
+func plainFalse(n *yaml.Node) bool {
+	return plainScalar(n) && (n.Value == "false" || n.Value == "False" || n.Value == "FALSE")
+}
+
+// plainOff reports whether n is off for a setting LiteLLM reads by Python
+// truthiness: a plain scalar spelled false, False, FALSE, 0, null, ~ or
+// empty. Every other spelling is on (fail closed): YAML 1.1 (PyYAML) and
+// 1.2 (yaml.v3) disagree on others, such as 0o0 and 0e0 (zero to yaml.v3,
+// truthy strings to PyYAML).
+func plainOff(n *yaml.Node) bool {
+	if !plainScalar(n) {
+		return false
+	}
+	switch n.Value {
+	case "false", "False", "FALSE", "0", "null", "~", "":
+		return true
 	}
 	return false
 }
 
-// pyTruthy is Python's truth value of the YAML value n as PyYAML loads it:
-// null, false, a zero number, an empty string and an empty sequence or
-// mapping are false; anything else is true.
-func pyTruthy(n *yaml.Node) bool {
-	if n == nil || isNull(n) || isFalse(n) || emptyNode(n) {
-		return false
-	}
-	if n.Kind == yaml.ScalarNode && (n.Tag == "!!int" || n.Tag == "!!float") {
-		var f float64
-		if err := n.Decode(&f); err == nil && f == 0 {
-			return false
-		}
-	}
-	return true
+// plainScalar reports whether n is a scalar written without quotes, block
+// style or an explicit tag.
+func plainScalar(n *yaml.Node) bool {
+	return n != nil && n.Kind == yaml.ScalarNode &&
+		n.Style&(yaml.TaggedStyle|yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle|yaml.LiteralStyle|yaml.FoldedStyle) == 0
 }
 
 // oneLineString folds s onto one line (whitespace runs, newlines included,
