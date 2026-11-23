@@ -1,6 +1,7 @@
 package litellm
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -673,5 +674,39 @@ func TestScratchRegistrySyncDeletesNoAliasRow(t *testing.T) {
 	}
 	if n := countWarnings(res, "no alias row was deleted"); n != 1 {
 		t.Errorf("warnings %v, want one saying no alias row was deleted", res.Warnings)
+	}
+}
+
+// TestStopWithStrayRowsAndDeadDatabaseNamesOneUnavailableLine checks decision
+// 4 on a stop that has both halves of alias work: the route pass adds a
+// missing row of another alias, the deadline expires on that add (one
+// "alias routes unavailable" line), and a stray alias row of the stopped
+// target is waiting in the database. The stray pass must not try again and
+// say the same thing a second time: one such line per write, and the stray
+// row is left for the next full sync.
+func TestStopWithStrayRowsAndDeadDatabaseNamesOneUnavailableLine(t *testing.T) {
+	reg := groupCfg()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	o, _, _, fake := aliasDBOpts(t, "model_list: []\n"+settledSettings, &reg)
+	o.DBCtx = ctx
+	if _, err := Sync(reg, localFor(reg, "ollama/gemma:9b"), o); err != nil {
+		t.Fatal(err)
+	}
+	// The registry now drops alias/x (its gemma row is a stray) and adds
+	// alias/y, whose openrouter row the stop's route pass must add.
+	next := testConfig()
+	next.Aliases = []config.Alias{{ID: "alias/y", Targets: []config.AliasTarget{
+		{Model: "openrouter/x/y", Order: 1}, {Model: "ollama/gemma:9b", Order: 2},
+	}}}
+	reg = next
+	fake.onAdd = cancel
+	fake.addFailBody = `{"error":{"message":"database unavailable"}}`
+	res, err := ApplyChange(reg, Change{Remove: []string{"ollama/gemma:9b"}}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countWarnings(res, "alias routes unavailable ("); n != 1 {
+		t.Fatalf("warnings %q, want exactly one alias routes unavailable line", res.Warnings)
 	}
 }

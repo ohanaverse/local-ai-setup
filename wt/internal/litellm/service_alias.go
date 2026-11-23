@@ -50,11 +50,14 @@ const (
 	AliasActionSkip    = "skip"    // frozen whole: malformed, a fault, a twin
 )
 
+// aliasUnavailablePrefix starts every aliasUnavailable line.
+const aliasUnavailablePrefix = "alias routes unavailable ("
+
 // aliasUnavailable is decision 4's one line for a write whose alias half
 // could not run: the registry write stands, nothing went to config.yaml, and
 // any full sync repairs it.
 func aliasUnavailable(reason string) string {
-	return fmt.Sprintf("alias routes unavailable (%s); registry written, LiteLLM not updated; run 'wt-model litellm sync' when the proxy answers", reason)
+	return fmt.Sprintf(aliasUnavailablePrefix+"%s); registry written, LiteLLM not updated; run 'wt-model litellm sync' when the proxy answers", reason)
 }
 
 // Reasons aliasUnavailable names when the database half was never tried.
@@ -459,13 +462,17 @@ func (d *dbRoutes) aliasHalf(o Options, f *File, fileAdd []plannedAdd, rm []plan
 	if scope != nil {
 		only = scope(reg)
 	}
+	unavailable := false
 	if scope == nil || len(only) > 0 {
 		all := d.leftAfter(f, fileAdd, rm)
 		w, oc := d.routeAliases(reg, only, func(id string) bool { return all[id] }, aliasFrozen(o, reg), deleteOrphans)
 		d.aliasWarnings = append(d.aliasWarnings, w...)
 		d.aliasOutcomes = append(d.aliasOutcomes, oc...)
+		// Decision 4 is one line per write: when the route pass already said
+		// the database half is unavailable, the stray pass stays quiet.
+		unavailable = slices.ContainsFunc(w, func(l string) bool { return strings.HasPrefix(l, aliasUnavailablePrefix) })
 	}
-	if changed != nil {
+	if changed != nil && !unavailable {
 		d.aliasWarnings = append(d.aliasWarnings, d.deleteStrays(only, changed(reg), aliasFrozen(o, reg))...)
 	}
 }
