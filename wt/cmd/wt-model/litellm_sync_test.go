@@ -266,6 +266,10 @@ func TestLitellmSyncWorksOnValidationOnlyError(t *testing.T) {
 		t.Fatal(err)
 	}
 	modelHome(t, string(sample)+"\n[[models]]\nid = \"ghost/m\"\nprovider_id = \"ghost\"\nmodel_name = \"m\"\n")
+	// The sample has a claude-subscription model, so the sync asks the
+	// proxy's environment about ANTHROPIC_API_KEY: a scratch plist keeps a
+	// plain `go test` off the real LaunchAgent.
+	t.Setenv("WT_LITELLM_PLIST", filepath.Join(t.TempDir(), "proxy.plist"))
 	p := litellmEnv(t, "model_list: []\n")
 	if cfg, err := config.Load(); err != nil || cfg.Validate() == nil {
 		t.Fatalf("fixture: loadErr=%v, want a registry that loads and fails validation", err)

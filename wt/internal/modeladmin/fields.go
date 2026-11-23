@@ -221,8 +221,13 @@ func checkSubscription(hasPrice bool, period string) error {
 // spelled "--", kept so ids and existing history keep matching. That
 // includes a native provider's model (auth.type "native": an agent's own
 // provider row, such as claude): wt writes "--" there too, so that every
-// derived cloud id has one "/"; --id gives any other spelling.
+// derived cloud id has one "/"; --id gives any other spelling. The one id
+// with no "/" is a claude-subscription model's (decision 5, #597): the bare
+// real Claude id, which is its model name.
 func DeriveID(providerID, modelName string) string {
+	if config.IsSubscriptionProvider(providerID) {
+		return modelName
+	}
 	if localmodels.Family(providerID) != "" {
 		return config.DiscoveredModelID(providerID, modelName)
 	}

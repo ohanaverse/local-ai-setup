@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -948,4 +949,22 @@ func TestAHeldQuitAfterAFormSaveIsAnOrdinaryQuit(t *testing.T) {
 			t.Error("the next ctrl+c should quit")
 		}
 	})
+}
+
+// TestModelsFormOmitsSubscriptionProvider pins that the add form never offers
+// claude-subscription, neither as a seedable provider nor as a registry row:
+// a subscription model needs a context window and the form has no field for
+// one, so only `wt-model model add ... --context-window N` adds it.
+func TestModelsFormOmitsSubscriptionProvider(t *testing.T) {
+	cfg := &config.Config{Providers: []config.Provider{
+		{ID: "ollama", Location: config.LocationLocal},
+		{ID: "claude-subscription", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "client-login"}},
+	}}
+	got := formProviders(cfg)
+	if slices.Contains(got, "claude-subscription") {
+		t.Errorf("formProviders = %v, want no claude-subscription", got)
+	}
+	if !slices.Contains(got, "openrouter") || !slices.Contains(got, "ollama") {
+		t.Errorf("formProviders = %v, want the other providers kept", got)
+	}
 }

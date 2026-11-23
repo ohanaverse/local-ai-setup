@@ -109,7 +109,7 @@ func TestServeThatCannotListenLeavesTheRecordAlone(t *testing.T) {
 	if err := rt.Record.Write(servestate.Record{PID: os.Getpid() + 1, Listen: "127.0.0.1:1", TokenFile: tok}); err != nil {
 		t.Fatal(err)
 	}
-	cmd := rootCmd(fakeDeps, rt)
+	cmd := rootCmdOver(fakeDeps, testHost(), rt)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)

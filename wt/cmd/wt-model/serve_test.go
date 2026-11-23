@@ -113,7 +113,15 @@ func serveUntilListening(t *testing.T) (readStderr, readStdout func() string, st
 // run first, so no later line can interleave.
 func serveUntilListeningWith(t *testing.T, rt serveRuntime, tokenPath string) (readStderr, readStdout func() string, stop func() error) {
 	t.Helper()
-	cmd := rootCmd(fakeDeps, rt)
+	return serveUntilListeningOn(t, testHost(), rt, tokenPath)
+}
+
+// serveUntilListeningOn is serveUntilListeningWith over the host h, whose
+// ProxyEnv and ModelInfo seams the subscription hazard check reads (testHost's
+// see a clean proxy, so no serve test reads the real plist or dials a proxy).
+func serveUntilListeningOn(t *testing.T, h *host, rt serveRuntime, tokenPath string) (readStderr, readStdout func() string, stop func() error) {
+	t.Helper()
+	cmd := rootCmdOver(fakeDeps, h, rt)
 	readErr, pwErr := newLockedBuffer()
 	readOut, pwOut := newLockedBuffer()
 	cmd.SetOut(pwOut)
@@ -167,7 +175,7 @@ func fakeDeps(cfg *config.Config, _ func() (*config.Config, error), _ *url.URL, 
 
 func run(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	cmd := rootCmd(fakeDeps, testRuntime(t))
+	cmd := rootCmdOver(fakeDeps, testHost(), testRuntime(t))
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
@@ -298,7 +306,7 @@ func TestServeNotesTheLegacyFallback(t *testing.T) {
 func TestServeAnswersPingOnEphemeralPort(t *testing.T) {
 	seedConfig(t, true)
 	tokenPath := writeToken(t, 0o600)
-	cmd := rootCmd(fakeDeps, testRuntime(t))
+	cmd := rootCmdOver(fakeDeps, testHost(), testRuntime(t))
 	pr, pw := newLockedBuffer()
 	cmd.SetOut(pw)
 	cmd.SetErr(pw)

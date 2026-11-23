@@ -102,7 +102,7 @@ func TestServeRefusesABadTLSConfig(t *testing.T) {
 			seedProxyHome(t, "http://127.0.0.1:4000", "sk-test", 0o600)
 			appendHome(t, c.gateway)
 			rt := testRuntime(t)
-			cmd := rootCmd(fakeDeps, rt)
+			cmd := rootCmdOver(fakeDeps, testHost(), rt)
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			cmd.SetErr(&out)

@@ -883,6 +883,20 @@ func finalizeCfg(cfg *Config, providers []Provider, models []Model, aliases []Al
 // LiteLLM, as Sushi serves only openai-chat) and pi (direct).
 var SushiAgents = []string{"claude", "pi"}
 
+// SubscriptionProvider is the provider id of models served on the owner's
+// own Claude subscription (#597; provider.IDClaudeSubscription): keyless
+// anthropic/<id> LiteLLM rows that forward the client's claude.ai login.
+// Session libraries identify a subscription row by this id alone.
+const SubscriptionProvider = provider.IDClaudeSubscription
+
+// SubscriptionAgents are the agents a subscription model is offered to: only
+// claude, the one agent that holds a claude.ai login to forward.
+var SubscriptionAgents = []string{"claude"}
+
+// IsSubscriptionProvider reports whether id is the Claude subscription
+// provider.
+func IsSubscriptionProvider(id string) bool { return id == SubscriptionProvider }
+
 // deriveSushiAgents lists the sushi provider in SushiAgents' in-memory
 // supported_providers when the registry holds a sushi model and the agent
 // does not name it. A stock config.toml has no sushi entry, and without one

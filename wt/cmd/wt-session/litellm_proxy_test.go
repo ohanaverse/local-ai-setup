@@ -361,6 +361,10 @@ func validationOnlyHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	modelHome(t, string(sample)+"\n[[models]]\nid = \"ghost/m\"\nprovider_id = \"ghost\"\nmodel_name = \"m\"\n")
+	// The sample has a claude-subscription model, whose route check asks the
+	// proxy's environment: a scratch plist keeps a plain `go test` off the
+	// real LaunchAgent.
+	t.Setenv("WT_LITELLM_PLIST", filepath.Join(t.TempDir(), "proxy.plist"))
 }
 
 // TestLitellmRoutingCommandsWorkOnValidationOnlyError pins that status/set

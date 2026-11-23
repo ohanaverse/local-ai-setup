@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/signal"
@@ -142,6 +143,18 @@ type seams struct {
 	// startSignalCtx is signal.NotifyContext over SIGINT and SIGTERM: a test
 	// needs a cancellable context without installing a real signal handler.
 	startSignalCtx func() (context.Context, context.CancelFunc)
+
+	// The seams of serve's subscription hazard check (decision 5 of the
+	// phase 3 plan), run at start when [gateway] subscription_passthrough is
+	// on. testHost answers with a clean proxy, so no serve test reads the
+	// real LaunchAgent plist or dials a proxy.
+
+	// ProxyEnv is the LiteLLM proxy's environment (litellm.LoadProxyEnv: the
+	// LaunchAgent plist's EnvironmentVariables), asked only through IsSet.
+	ProxyEnv func() litellm.ProxyEnv
+	// ModelInfo lists the proxy's deployments (/model/info through the proxy
+	// pair the host config resolves).
+	ModelInfo litellm.ModelInfoFunc
 }
 
 // newHost is the host of a real run: every seam is the real function.
@@ -165,6 +178,8 @@ func newHost() *host {
 	h.adminFor = func(cfg *config.Config) *litellm.AdminClient {
 		return adminFromPair(cfg.LitellmBaseURL(), cfg.LitellmAPIKey())
 	}
+	h.ProxyEnv = litellm.LoadProxyEnv
+	h.ModelInfo = h.realModelInfo
 	h.syncRoutesAfterWrite = h.realSyncRoutesAfterWrite
 	h.syncRoutesAfterAliasRemoval = h.realSyncRoutesAfterAliasRemoval
 	h.confirmRemove = h.realConfirmRemove
@@ -205,4 +220,15 @@ func (h *host) realSyncRoutesAfterWrite(out, errOut io.Writer) string {
 // that removed aliases (litellm.SyncAfterAliasRemoval).
 func (h *host) realSyncRoutesAfterAliasRemoval(out, errOut io.Writer) string {
 	return litellm.SyncAfterAliasRemoval(out, errOut, h.probeInventory, func(c *config.Config) *litellm.AdminClient { return h.adminFor(c) })
+}
+
+// realModelInfo lists the proxy's deployments through the proxy pair the host
+// config resolves (h.adminFor); with no pair it cannot look, an error.
+func (h *host) realModelInfo(ctx context.Context) ([]litellm.DeploymentInfo, error) {
+	cfg, _ := h.hostConfig()
+	admin := h.adminFor(cfg)
+	if admin == nil {
+		return nil, errors.New("no LiteLLM proxy pair is set")
+	}
+	return admin.ModelInfo(ctx)
 }

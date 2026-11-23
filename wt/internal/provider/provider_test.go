@@ -163,6 +163,9 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 		"sushi":         {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"llamacpp":      {Prefix: "openai/local-model", FixedModel: true, APIKey: "dummy-key"},
 		"openrouter":    {Prefix: "openrouter/", SecretRef: true, Cloud: true},
+		// claude-subscription: keyless anthropic/ rows (no api_key, no
+		// api_base), so the client's own login is what LiteLLM forwards.
+		"claude-subscription": {Prefix: "anthropic/", Cloud: true},
 	}
 	if got := Policies(); !reflect.DeepEqual(got, wantPolicies) {
 		t.Errorf("Policies() = %+v, want %+v", got, wantPolicies)
@@ -180,7 +183,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 	if got, want := SeedableLocalIDs(), []string{"ollama", "omlx", "mlx_lm_server", "mtplx", "rec", "sushi"}; !slices.Equal(got, want) {
 		t.Errorf("SeedableLocalIDs() = %v, want %v", got, want)
 	}
-	if got, want := SeedableCloudIDs(), []string{"openrouter"}; !slices.Equal(got, want) {
+	if got, want := SeedableCloudIDs(), []string{"claude-subscription", "openrouter"}; !slices.Equal(got, want) {
 		t.Errorf("SeedableCloudIDs() = %v, want %v", got, want)
 	}
 	if got, want := InstalledCommands(), map[string]string{"ollama": "ollama", "omlx": "omlx", "mtplx": "mtplx", "sushi": "sushi"}; !reflect.DeepEqual(got, want) {
@@ -262,6 +265,11 @@ func TestSeedRowsMatchLegacyLiterals(t *testing.T) {
 		"openrouter": {
 			"id": "openrouter", "name": "OpenRouter", "location": "cloud",
 			"auth": map[string]any{"type": "api_key", "secret_ref": "OPENROUTER_API_KEY", "base_url": "https://openrouter.ai/api/v1"},
+		},
+		"claude-subscription": {
+			"id": "claude-subscription", "name": "Claude subscription", "location": "cloud",
+			"protocols": []string{"anthropic"},
+			"auth":      map[string]any{"type": "client-login"},
 		},
 	}
 	for id, w := range want {
@@ -430,7 +438,7 @@ func TestRecRows(t *testing.T) {
 	for _, s := range All() {
 		order = append(order, s.ID)
 	}
-	if w := []string{"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx", "rec", "sushi", "llamacpp", "openrouter"}; !slices.Equal(order, w) {
+	if w := []string{"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx", "rec", "sushi", "llamacpp", "claude-subscription", "openrouter"}; !slices.Equal(order, w) {
 		t.Errorf("provider order = %v, want %v", order, w)
 	}
 }
@@ -613,5 +621,54 @@ func TestProcessSpecProblems(t *testing.T) {
 		if got := processSpecProblems(c.p); len(got) != c.want {
 			t.Errorf("%s: problems = %v, want %d", c.name, got, c.want)
 		}
+	}
+}
+
+// TestOnlySubscriptionProviderBuildsAnthropicRows pins that claude-subscription
+// is the one provider in the table whose LiteLLM rows are anthropic/ rows, and
+// that its policy carries no key and no base: LiteLLM forwards a client's
+// OAuth token to every anthropic/ deployment whatever its api_base, so a
+// second provider with that prefix (or a key or base on this one) could send
+// a login to a foreign host or serve a paid key to any holder of the wt token.
+func TestOnlySubscriptionProviderBuildsAnthropicRows(t *testing.T) {
+	var anthropic []string
+	for _, s := range All() {
+		if s.Policy != nil && strings.HasPrefix(strings.ToLower(s.Policy.Prefix), "anthropic") {
+			anthropic = append(anthropic, s.ID)
+		}
+	}
+	if !slices.Equal(anthropic, []string{IDClaudeSubscription}) {
+		t.Fatalf("providers with an anthropic prefix = %v, want only %q", anthropic, IDClaudeSubscription)
+	}
+	spec, ok := Lookup(IDClaudeSubscription)
+	if !ok || spec.Policy == nil {
+		t.Fatalf("Lookup(%q) = %+v, %v", IDClaudeSubscription, spec, ok)
+	}
+	if p := *spec.Policy; p.SecretRef || p.APIKey != "" || p.V1Base || p.FixedModel || !p.Cloud {
+		t.Errorf("claude-subscription policy = %+v, want keyless, baseless, cloud", p)
+	}
+	if spec.Family != "" {
+		t.Errorf("claude-subscription family = %q, want none", spec.Family)
+	}
+	if sd := spec.Seed; sd == nil || sd.BaseURL != "" || sd.SecretRef != "" || sd.Command != "" || sd.AuthType != "client-login" {
+		t.Errorf("claude-subscription seed = %+v, want client-login with no base_url, secret_ref or command", sd)
+	}
+}
+
+// TestSeedRowOmitsEmptyBaseURL pins that a seed with no BaseURL writes no
+// auth.base_url key at all: an empty base_url in the registry would read as
+// "set" to a reader, and the subscription provider's row must have none
+// (prepareModel refuses one), while every other seed keeps its own.
+func TestSeedRowOmitsEmptyBaseURL(t *testing.T) {
+	row := SeedRow(IDClaudeSubscription)
+	auth, _ := row["auth"].(map[string]any)
+	if auth == nil {
+		t.Fatalf("SeedRow(%q) has no auth table: %#v", IDClaudeSubscription, row)
+	}
+	if _, ok := auth["base_url"]; ok {
+		t.Errorf("SeedRow(%q).auth has a base_url key: %#v", IDClaudeSubscription, auth)
+	}
+	if auth := SeedRow(IDOpenRouter)["auth"].(map[string]any); auth["base_url"] != "https://openrouter.ai/api/v1" {
+		t.Errorf("openrouter base_url = %v, want its own", auth["base_url"])
 	}
 }

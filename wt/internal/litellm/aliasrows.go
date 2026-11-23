@@ -101,6 +101,14 @@ func DBModelsFromAlias(cfg *config.Config, a config.Alias, live func(id string) 
 			frozen(t, "%s", oneLine(err))
 			continue
 		}
+		// A Claude subscription target is live only while its own row is
+		// routed: its alias row is a keyless anthropic/ row too, so the
+		// hazards that leave the model unrouted (SubscriptionHazards) take
+		// the alias row with it (not frozen: an old row goes).
+		if config.IsSubscriptionProvider(m.ProviderID) && (live == nil || !live(m.ID)) {
+			skips = append(skips, AliasSkip{Target: t.Model, Reason: "not routed"})
+			continue
+		}
 		ensureRowParams(row)
 		dm, err := DBModelFromRow(row)
 		if err != nil {

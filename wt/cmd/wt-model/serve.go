@@ -78,8 +78,9 @@ func loadServeConfig() (*config.Config, *url.URL, string, error) {
 const recordNoteFormat = "wt-model: note: could not write the runtime record (%s) — host commands cannot see this server's client sessions\n"
 
 // serveCmd is `wt-model serve`. rt.Record is where it keeps its runtime
-// record while it runs.
-func serveCmd(mk depsFactory, rt serveRuntime) *cobra.Command {
+// record while it runs; h's ProxyEnv and ModelInfo are what its subscription
+// hazard check reads.
+func serveCmd(mk depsFactory, rt serveRuntime, h *host) *cobra.Command {
 	var listen, tokenFile string
 	idle := defaultIdleGrace
 	cmd := &cobra.Command{
@@ -116,7 +117,13 @@ change). When on, a line after the listening line says so, and a warning
 follows when the address is not loopback and TLS is off, since header-mode
 requests from other machines over plain http are refused. A value that is
 not a boolean is off with one warning; a config.toml that does not parse
-refuses the start.
+refuses the start. Before listening with the mode on, serve checks the LiteLLM
+proxy (up to 5 s): an ANTHROPIC_API_KEY, ANTHROPIC_API_BASE or
+ANTHROPIC_BASE_URL in its environment, client-header forwarding in
+config.yaml, or an anthropic deployment on another host or a wildcard keeps
+the mode off with one warning naming it; a proxy that does not answer is one
+warning and the mode stays on (the route sync keeps Claude subscription
+models unrouted until it can check).
 TLS is off (plain http) unless the same table names a PEM certificate and
 its key, both hand-edited, both or neither:
 
@@ -186,6 +193,15 @@ Exit codes:
 				}
 				return config.ConfigError(&config.ProxyHomeError{Err: err})
 			}
+			// With the mode on, the proxy is checked for what would make a
+			// keyless anthropic/ row unsafe (decision 5), synchronously and
+			// bounded: a hazard keeps the mode off (the ping says so), a
+			// proxy that cannot be read keeps it on (the sync gates the
+			// routes). Its one warning line follows the announce line.
+			gateLine := ""
+			if gw.SubscriptionPassthrough {
+				gw.SubscriptionPassthrough, gateLine = subscriptionGate(cmd.Context(), litellm.PairedConfigPath(), h.ProxyEnv(), h.ModelInfo, subscriptionGateBound)
+			}
 			// TLS is loaded here, before listening and before serve.json:
 			// a configuration error refuses the start; an expired or
 			// not-yet-valid certificate serves plain http with one
@@ -244,6 +260,9 @@ Exit codes:
 				}
 				for _, w := range gwWarns {
 					fmt.Fprintln(cmd.ErrOrStderr(), "wt-model: warning: "+w)
+				}
+				if gateLine != "" {
+					fmt.Fprintln(cmd.ErrOrStderr(), gateLine)
 				}
 				for _, l := range subscriptionLines(addr, gw.SubscriptionPassthrough, st.Config != nil, st.Off) {
 					fmt.Fprintln(cmd.ErrOrStderr(), l)
@@ -549,4 +568,29 @@ func loopbackListen(addr string) bool {
 	}
 	ip, err := netip.ParseAddr(host)
 	return err == nil && ip.Unmap().IsLoopback()
+}
+
+// subscriptionGateBound bounds serve's start-time hazard check: at login the
+// proxy may still be starting, and serve must not wait on it to listen.
+const subscriptionGateBound = 5 * time.Second
+
+// subscriptionGate is serve's start-time check of the proxy while the header
+// mode is switched on (decision 5): litellm.SubscriptionHazards over the
+// config.yaml at cfgPath ("" reads none), the proxy's environment and its
+// deployments, bounded by bound. A hazard keeps the mode off, with one warning
+// naming it (never a value); a proxy that cannot be read within the bound
+// keeps the mode on with one warning, because the route sync leaves every
+// subscription row unrouted until it can check. on reports the mode serve
+// runs with; line is the one warning, "" when there is none.
+func subscriptionGate(ctx context.Context, cfgPath string, env litellm.ProxyEnv, info litellm.ModelInfoFunc, bound time.Duration) (on bool, line string) {
+	ctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+	hazards, _, err := litellm.SubscriptionHazards(ctx, cfgPath, env, info)
+	switch {
+	case len(hazards) > 0:
+		return false, "wt-model: warning: subscription passthrough is kept off: " + strings.Join(hazards, "; ") + " (fix it, then restart wt-model serve)"
+	case err != nil:
+		return true, "wt-model: warning: subscription passthrough is on, but the proxy could not be checked for hazards (" + oneLineText(err.Error()) + "); Claude subscription models stay unrouted until 'wt-model litellm sync' can check"
+	}
+	return true, ""
 }

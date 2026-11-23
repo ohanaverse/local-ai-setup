@@ -127,7 +127,9 @@ func (f *modelForm) editable(field int) bool {
 // and the ones wt can seed a row for when a model names them (openrouter
 // among them), without mlx_lm_server — its model is a target+draft pairing,
 // which takes two artifacts: `wt-model model add mlx_lm_server <target> --draft
-// <draft>` adds one, and the form has no field for a draft.
+// <draft>` adds one, and the form has no field for a draft — and without
+// claude-subscription: its model needs a context window and the form has no
+// field for one, so `wt-model model add ... --context-window N` adds it.
 func formProviders(cfg *config.Config) []string {
 	ids := []string{}
 	for _, p := range cfg.Providers {
@@ -138,7 +140,9 @@ func formProviders(cfg *config.Config) []string {
 			ids = append(ids, id)
 		}
 	}
-	ids = slices.DeleteFunc(ids, localmodels.RunningOnly)
+	ids = slices.DeleteFunc(ids, func(id string) bool {
+		return localmodels.RunningOnly(id) || config.IsSubscriptionProvider(id)
+	})
 	sort.Strings(ids)
 	return ids
 }

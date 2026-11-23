@@ -25,9 +25,10 @@ func TestDiscoveredModelIDPinned(t *testing.T) {
 }
 
 // TestSeedableProviderIDsPinned pins which providers `wt-model model init` can seed,
-// and their order (local first, then cloud).
+// and their order (local first, then cloud). claude-subscription is seedable
+// (a model or an agent naming it seeds its row), never from PATH.
 func TestSeedableProviderIDsPinned(t *testing.T) {
-	want := []string{"ollama", "omlx", "mlx_lm_server", "mtplx", "rec", "sushi", "openrouter"}
+	want := []string{"ollama", "omlx", "mlx_lm_server", "mtplx", "rec", "sushi", "claude-subscription", "openrouter"}
 	if got := SeedableProviderIDs(); !slices.Equal(got, want) {
 		t.Errorf("SeedableProviderIDs() = %v, want %v", got, want)
 	}

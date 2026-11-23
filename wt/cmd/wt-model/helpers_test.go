@@ -95,6 +95,10 @@ func testHost() *host {
 		return fmt.Errorf("stopLoading not stubbed in this test (%s, pid %d)", id, pid)
 	}
 	h.confirmStop = func(string) (bool, error) { return false, nil }
+	// serve's subscription hazard check: a clean proxy, so no test reads the
+	// real plist or dials a proxy (tests that want a hazard set their own).
+	h.ProxyEnv = func() litellm.ProxyEnv { return litellm.ProxyEnvOf("testHost", nil) }
+	h.ModelInfo = func(context.Context) ([]litellm.DeploymentInfo, error) { return nil, nil }
 	return h
 }
 

@@ -151,6 +151,18 @@ type Options struct {
 	// set` may have re-pointed an alias (Review Focus 2). nil is config.Load.
 	// A failure skips the alias half with one warning.
 	LoadRegistry func() (*config.Config, error)
+	// ProxyEnv is the proxy's environment as a subscription check reads it
+	// (SubscriptionHazards); nil is LoadProxyEnv. Read only when the
+	// registry has a claude-subscription model.
+	ProxyEnv func() ProxyEnv
+	// ModelInfo lists the proxy's deployments for the same check; nil is
+	// Admin's AdminClient.ModelInfo, and with no Admin either the check
+	// cannot look, so every subscription row stays unrouted (fail closed).
+	ModelInfo ModelInfoFunc
+	// subscription is the check's answer for this write, set by Sync,
+	// PlanSync and DesiredIDs before they plan (gateSubscription); planSync
+	// reads it. nil with a subscription model in the registry routes none.
+	subscription *subscriptionGate
 }
 
 // Outcome is one id's result. Action is "routed" or "unrouted" (ApplyChange)
@@ -222,6 +234,14 @@ func prepareModel(cfg *config.Config, m config.Model) (*yaml.Node, error) {
 	p := cfg.ProviderByID(m.ProviderID)
 	if p == nil {
 		return nil, fmt.Errorf("model %q references unknown provider %q", m.ID, m.ProviderID)
+	}
+	// A Claude subscription row is keyless anthropic/<id> and must stay so
+	// (decision 5): a base_url, a secret_ref or a native provider row is
+	// refused before anything else is judged.
+	if config.IsSubscriptionProvider(p.ID) {
+		if err := subscriptionProviderFault(*p); err != nil {
+			return nil, fmt.Errorf("model %q: %w", m.ID, err)
+		}
 	}
 	if m.Native || p.Auth.Type == "native" {
 		return nil, fmt.Errorf("provider %q is native and is not routed through LiteLLM", m.ProviderID)
@@ -776,9 +796,19 @@ func planSyncWithDB(cfg *config.Config, f *File, localIn []config.Model, o Optio
 	}
 	managed := map[string]bool{}
 	var desired []config.Model
+	// A subscription model the proxy cannot carry safely (a hazard, a check
+	// that could not look, a provider row with a base_url or secret_ref) is
+	// managed but not desired: no row is added and wt's old row goes.
+	subOff, subWarnings := subscriptionUnrouted(cfg, o.subscription)
 	for _, m := range CloudModels(cfg) {
 		managed[m.ID] = true
+		if subOff[m.ID] {
+			continue
+		}
 		desired = append(desired, m)
+	}
+	for id := range subOff {
+		managed[id] = true
 	}
 	// local is every id Recheck may prune: registry local ids, the desired
 	// local ids (discovered ones included) and every row of a local family.
@@ -842,6 +872,7 @@ func planSyncWithDB(cfg *config.Config, f *File, localIn []config.Model, o Optio
 	// registry a frozen local id has no other row, so this decides nothing
 	// there.
 	var plan SyncPlan
+	plan.Warnings = append(plan.Warnings, subWarnings...)
 	ambiguous := map[string]bool{}
 	perID := map[string]int{}
 	for _, m := range desired {
@@ -1058,6 +1089,7 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 	// lists them (List only: a dry run writes nothing anywhere).
 	db, dbRows := readOnlyDB(o, f)
 	defer db.close()
+	o.subscription = gateSubscription(cfg, f, o)
 	plan, built := planSyncWithDB(cfg, f, local, o, dbRows)
 	viaDB := db.preview(cfg, f, &plan, built)
 	// The write also fills an empty api_base on ollama rows, and those can be
@@ -1195,6 +1227,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		if db != nil && db.gate(f) && db.list() {
 			dbRows = db.routeRows()
 		}
+		o.subscription = gateSubscription(cfg, f, o)
 		p, built := planSyncWithDB(cfg, f, local, o, dbRows)
 		plan = p
 		// The plan already built every changed row while comparing it with the
