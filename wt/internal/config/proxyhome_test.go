@@ -88,6 +88,14 @@ func TestProxyHomeFixtureMatchesTheTypes(t *testing.T) {
 	if doc.Litellm.URL != "http://localhost:4000" || doc.Litellm.KeyFile != "litellm.key" {
 		t.Errorf("[litellm] = %+v, want url http://localhost:4000 and key_file litellm.key", doc.Litellm)
 	}
+	// The hand-edited [gateway] table is part of the document, and the
+	// fixture's switch is off: a sample never shows passthrough on.
+	if v, ok := doc.Gateway["subscription_passthrough"]; !ok || v != false {
+		t.Errorf("[gateway] subscription_passthrough = %#v (present %t), want false", v, ok)
+	}
+	if gc, warns := gatewayFromDoc(doc); gc.SubscriptionPassthrough || len(warns) != 0 {
+		t.Errorf("fixture [gateway] reads as %+v, %q; want off with no warning", gc, warns)
+	}
 	if !bytes.HasPrefix(raw, []byte(proxyHomeHeader)) {
 		t.Errorf("fixture does not open with the header SetProxy writes:\n%s", proxyHomeHeader)
 	}
@@ -1304,5 +1312,117 @@ func TestPairReadInAnUnwritableHomeSucceeds(t *testing.T) {
 	}
 	if _, err := os.Stat(home + ".lock"); !os.IsNotExist(err) {
 		t.Errorf("the read created a lock file in the unwritable home: %v", err)
+	}
+}
+
+// TestGatewayTableRoundTripsThroughSetProxy pins decision 1's round trip: the
+// hand-edited [gateway] table survives this binary's SetProxy re-encode, both
+// an on switch and a wrong-typed value kept as written (GatewaySettings, not
+// the writer, interprets it). A writer that dropped the table would turn the
+// host switch off behind the operator's back on every `litellm set`.
+func TestGatewayTableRoundTripsThroughSetProxy(t *testing.T) {
+	for _, tc := range []struct {
+		name, line string
+		want       any
+	}{
+		{"on", "subscription_passthrough = true", true},
+		{"wrong type kept", `subscription_passthrough = "true"`, "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := proxyEnv(t, "")
+			writeProxyHome(t, home, "[litellm]\nurl = \"http://localhost:4000\"\nkey_file = \"litellm.key\"\n\n[gateway]\n"+tc.line+"\n")
+			writeProxyKey(t, home, "sk-old", 0o600)
+			if err := SetProxy(ptr("http://localhost:4002"), ptr("sk-new")); err != nil {
+				t.Fatal(err)
+			}
+			body, err := os.ReadFile(ProxyHomePath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]map[string]any
+			if _, err := toml.Decode(string(body), &got); err != nil {
+				t.Fatalf("written home does not parse: %v\n%s", err, body)
+			}
+			if v, ok := got["gateway"]["subscription_passthrough"]; !ok || v != tc.want {
+				t.Errorf("[gateway] subscription_passthrough = %#v (present %t), want %#v kept as written:\n%s", v, ok, tc.want, body)
+			}
+			if got["litellm"]["url"] != "http://localhost:4002" {
+				t.Errorf("[litellm] url = %v, want the new url", got["litellm"]["url"])
+			}
+		})
+	}
+}
+
+// TestGatewaySettingsAbsentIsOff pins the default: no home config.toml, a
+// home without [gateway], an empty [gateway] and an explicit false are all
+// off with no warning and no error, because passthrough is opt-in.
+func TestGatewaySettingsAbsentIsOff(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"no file", ""},
+		{"no table", "[litellm]\nurl = \"http://localhost:4000\"\n"},
+		{"empty table", "[gateway]\n"},
+		{"false", "[gateway]\nsubscription_passthrough = false\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := proxyEnv(t, "")
+			if tc.body != "" {
+				writeProxyHome(t, home, tc.body)
+			}
+			gc, warns, err := GatewaySettings()
+			if err != nil || len(warns) != 0 || gc.SubscriptionPassthrough {
+				t.Errorf("GatewaySettings = %+v, %q, %v; want off, no warning, no error", gc, warns, err)
+			}
+		})
+	}
+	t.Run("on", func(t *testing.T) {
+		home := proxyEnv(t, "")
+		writeProxyHome(t, home, "[gateway]\nsubscription_passthrough = true\n")
+		gc, warns, err := GatewaySettings()
+		if err != nil || len(warns) != 0 || !gc.SubscriptionPassthrough {
+			t.Errorf("GatewaySettings = %+v, %q, %v; want on", gc, warns, err)
+		}
+	})
+}
+
+// TestGatewaySettingsWrongTypeIsOffWithWarning pins decision 1's safe
+// direction: a value that is not a boolean ("true", 1) is off with exactly
+// one warning naming the key and the type it must be, and it never breaks
+// the [litellm] pair the same file holds.
+func TestGatewaySettingsWrongTypeIsOffWithWarning(t *testing.T) {
+	for _, val := range []string{`"true"`, "1"} {
+		t.Run(val, func(t *testing.T) {
+			home := proxyEnv(t, "")
+			writeProxyHome(t, home, "[litellm]\nurl = \"http://localhost:4000\"\nkey_file = \"litellm.key\"\n\n[gateway]\nsubscription_passthrough = "+val+"\n")
+			writeProxyKey(t, home, "sk-k", 0o600)
+			gc, warns, err := GatewaySettings()
+			if err != nil {
+				t.Fatalf("GatewaySettings err = %v, want a warning only", err)
+			}
+			if gc.SubscriptionPassthrough {
+				t.Error("a wrong-typed value turned the mode on")
+			}
+			if len(warns) != 1 || !strings.Contains(warns[0], "subscription_passthrough") || !strings.Contains(warns[0], "boolean") {
+				t.Errorf("warnings = %q, want one naming subscription_passthrough and boolean", warns)
+			}
+			pair, err := ResolveProxy()
+			if err != nil || pair.URL != "http://localhost:4000" || pair.APIKey != "sk-k" {
+				t.Errorf("ResolveProxy = %+v, %v; want the [litellm] pair intact", pair, err)
+			}
+		})
+	}
+}
+
+// TestGatewaySettingsSyntaxErrorIsAnError pins that a home config.toml that
+// does not parse is an error (serve refuses to start), never "off", and the
+// error does not quote a value from the file.
+func TestGatewaySettingsSyntaxErrorIsAnError(t *testing.T) {
+	home := proxyEnv(t, "")
+	writeProxyHome(t, home, "[litellm]\nurl = \"http://SECRETHOST:4000\n[gateway]\nsubscription_passthrough = true\n")
+	_, _, err := GatewaySettings()
+	if err == nil {
+		t.Fatal("GatewaySettings on a syntax error = nil, want an error")
+	}
+	if strings.Contains(err.Error(), "SECRETHOST") {
+		t.Errorf("error quotes a value: %v", err)
 	}
 }

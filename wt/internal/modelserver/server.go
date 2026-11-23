@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -43,6 +44,12 @@ type Options struct {
 	IdleGrace   time.Duration // how long an unused model survives before auto-stop
 	Upstream    *url.URL      // the LiteLLM proxy the gateway forwards to
 	UpstreamKey string        // the gateway's upstream credential
+	// SubscriptionPassthrough turns on the gateway's header mode and is
+	// advertised by the ping; serve sets it from the home's [gateway] table.
+	SubscriptionPassthrough bool
+	// ErrorLog receives the gateway proxy's transport errors; nil is the
+	// standard logger.
+	ErrorLog *log.Logger
 }
 
 // Server is the wt-model control API and gateway.
@@ -115,7 +122,9 @@ func (s *Server) routes() http.Handler {
 	// The gateway authenticates itself; it is not wrapped again.
 	root.Handle("/v1/", modelgateway.New(modelgateway.Config{
 		Upstream: s.o.Upstream, UpstreamKey: s.o.UpstreamKey, Token: s.o.Token,
-		AllowPaths: modelgateway.InferencePaths,
+		AllowPaths:              modelgateway.InferencePaths,
+		SubscriptionPassthrough: s.o.SubscriptionPassthrough,
+		ErrorLog:                s.o.ErrorLog,
 	}))
 	return root
 }
@@ -147,7 +156,10 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 func (s *Server) ping(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, modelapi.Ping{APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion, Server: "wt-model"})
+	writeJSON(w, http.StatusOK, modelapi.Ping{
+		APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion, Server: "wt-model",
+		SubscriptionPassthrough: s.o.SubscriptionPassthrough,
+	})
 }
 
 // routed is the set of ids the gateway lists, or nil when LiteLLM cannot be

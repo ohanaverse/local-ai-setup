@@ -345,7 +345,8 @@ func TestFixtureRowsAgreeWithServerRules(t *testing.T) {
 			t.Errorf("the fixture has no row in state %q", s)
 		}
 	}
-	srv, err := NewServer(Options{Listen: "127.0.0.1:0", Token: "t", IdleGrace: time.Minute}, (&fakeLife{}).deps(serverCfg()))
+	// The fixture's ping shows the mode on (the field is omitted when off).
+	srv, err := NewServer(Options{Listen: "127.0.0.1:0", Token: "t", IdleGrace: time.Minute, SubscriptionPassthrough: true}, (&fakeLife{}).deps(serverCfg()))
 	if err != nil {
 		t.Fatal(err)
 	}

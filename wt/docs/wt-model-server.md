@@ -159,6 +159,12 @@ reader resolves it — the key is never printed, only masked.
   Only what uses the pair refuses on it: `wt-model serve` at startup,
   `litellm status|set`, and `wt-model litellm restart` and the slot-profile proxy
   checks. Every other command, and every session, runs as usual.
+- The same `config.toml` may hold a hand-edited `[gateway]` table, which
+  `serve` reads once at start: `subscription_passthrough = true` turns on the
+  gateway's header mode (off when absent or `false`; any other type is off
+  with one `wt-model: warning:` line). No command writes it, and `litellm set`
+  keeps it as written; an older `wt-model litellm set` drops the table, which
+  turns the mode off at the next `serve` restart (the safe direction).
 - The key is the file's content with surrounding whitespace trimmed. A
   missing or empty key file is no key at all, and `--api-key ""` clears the
   value without deleting the file. wt never deletes the file.
@@ -295,7 +301,7 @@ All control paths are under `/control/v1/` and answer JSON.
 
 | Method and path | Meaning |
 |---|---|
-| `GET /control/v1/ping` | Liveness and version: `api_major`, `schema`, `server`. A client refuses a server whose `api_major` or `schema` differs from its own: a newer `schema` needs a newer wt, an older one is a `wt-model` still running from before wt was updated (`bin/update-tools` does not restart it), and the error says `restart wt-model`. |
+| `GET /control/v1/ping` | Liveness and version: `api_major`, `schema`, `server`, and `subscription_passthrough: true` when the server accepts the gateway's header mode (`x-wt-model-token` beside the client's own claude.ai login; `[gateway] subscription_passthrough = true` in the wt-model home's `config.toml`, read once at `serve` start). The key is omitted when the mode is off, so an off server and an older one answer alike. A client refuses a server whose `api_major` or `schema` differs from its own: a newer `schema` needs a newer wt, an older one is a `wt-model` still running from before wt was updated (`bin/update-tools` does not restart it), and the error says `restart wt-model`. |
 | `GET /control/v1/catalog` | Every model and every registry alias: state, action, tier, price, protocols, and how many live client sessions use it. Slot-profile rows are not included. |
 | `GET /control/v1/resolve?model=ID` | One catalog row, or a 404 `unknown_model` naming why. |
 | `GET /control/v1/candidates` | The registry's models ranked for a slot, as `wt profile slots candidates --json` ranks them. Query: `open_only=BOOL`, `provider=a,b`, `near=ID`, `per_provider=N` (needs `near`, else 400 `bad_request`). Answers `{"tiers_generated", "stale_sources", "candidates"}`: `tiers_generated` is the RFC 3339 time of the tiers file and is absent when there is none; `stale_sources` and `candidates` are always present. A candidate carries `id`, `provider`, `location`, `flags` (always a list) and, where they apply, `tier`, `confidence`, `score` (absent when unscored), `rated`, `open_weights`, `context`, `output_per_million`, `subscription`, `subscription_period`. |

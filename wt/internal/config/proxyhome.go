@@ -53,18 +53,23 @@ type ProxyPair struct {
 // test pins both together.
 const proxyHomeHeader = "# wt-model's configuration. [litellm] is written only by `wt-model litellm set`\n" +
 	"# and `wt litellm set`; the api key is never here — it lives in the 0600 file\n" +
-	"# that key_file names.\n"
+	"# that key_file names. [gateway] is hand-edited (no command writes it) and\n" +
+	"# wt-model serve reads it once, at start.\n"
 
 // defaultProxyKeyFile is the key file's name when key_file is absent.
 const defaultProxyKeyFile = "litellm.key"
 
-// proxyHomeDoc is the whole document of the home's config.toml: nothing but
-// the [litellm] table, which SetProxy re-encodes in full (a real write drops
-// comments and any key outside this type). The pointer distinguishes a
-// present-but-empty [litellm] table — authoritative, an empty pair — from
-// absence, which falls back to the legacy table.
+// proxyHomeDoc is the whole document of the home's config.toml: the
+// [litellm] table and the hand-edited [gateway] table, which SetProxy
+// re-encodes in full (a real write drops comments and any key outside this
+// type). The pointer distinguishes a present-but-empty [litellm] table —
+// authoritative, an empty pair — from absence, which falls back to the
+// legacy table. Gateway is a plain map so SetProxy round-trips whatever the
+// operator wrote, and a wrong-typed value there never breaks the [litellm]
+// decode: GatewaySettings interprets it (decision 1 of the phase 3 plan).
 type proxyHomeDoc struct {
 	Litellm *proxyHomeLitellm `toml:"litellm"`
+	Gateway map[string]any    `toml:"gateway,omitempty"`
 }
 
 // proxyHomeLitellm is the home's [litellm] table: the proxy base URL and the
@@ -214,7 +219,9 @@ func readProxyHome(path string) (lit proxyHomeLitellm, present bool, err error) 
 // decodeProxyHome reads and decodes the whole home document at path. exists
 // is false when the file is not there (a fresh home). A file that exists but
 // does not parse is an error, loud: never merge onto a document wt cannot
-// read. The error never quotes a url or key value (secretSafe, #640).
+// read. The error quotes no value from the file at all (valueFreeParseError,
+// secretSafe's rule over every key: #640, and the [gateway] table serve
+// refuses to start on).
 func decodeProxyHome(path string) (doc proxyHomeDoc, exists bool, err error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -224,7 +231,7 @@ func decodeProxyHome(path string) (doc proxyHomeDoc, exists bool, err error) {
 		return doc, false, err
 	}
 	if _, err := toml.Decode(string(data), &doc); err != nil {
-		return doc, false, fmt.Errorf("parse %s: %w", path, secretSafe(err, data))
+		return doc, false, fmt.Errorf("parse %s: %w", path, valueFreeParseError(err, data))
 	}
 	return doc, true, nil
 }
@@ -554,4 +561,74 @@ func ShowProxyStatus(out, errOut io.Writer, asJSON bool) error {
 		fmt.Fprintln(errOut, ProxyFallbackNote())
 	}
 	return nil
+}
+
+// GatewayConf is the home's [gateway] table as serve reads it at start.
+type GatewayConf struct {
+	// SubscriptionPassthrough turns on the gateway's header mode
+	// (x-wt-model-token beside the client's own claude.ai login). Off unless
+	// the table says subscription_passthrough = true.
+	SubscriptionPassthrough bool
+}
+
+// gatewayPassthroughKey is the host switch's key under [gateway].
+const gatewayPassthroughKey = "subscription_passthrough"
+
+// GatewaySettings reads the wt-model home's [gateway] table (ProxyHomePath,
+// through decodeProxyHome, under the same shared lock as the pair). No file,
+// no table or an absent key is the zero value. A key holding the wrong type
+// ("true", 1) is off plus one warning naming the key and the type it needs:
+// off is the safe direction. A file that does not parse is an error, worded
+// without any value from it. No code writes this table.
+func GatewaySettings() (GatewayConf, []string, error) {
+	home := ProxyHomePath()
+	if home == "" {
+		return GatewayConf{}, nil, nil
+	}
+	var doc proxyHomeDoc
+	err := WithFileLockShared(home+".lock", func() error {
+		var derr error
+		doc, _, derr = decodeProxyHome(home)
+		return derr
+	})
+	if err != nil {
+		return GatewayConf{}, nil, err
+	}
+	gc, warns := gatewayFromDoc(doc)
+	return gc, warns, nil
+}
+
+// gatewayFromDoc interprets a decoded home document's [gateway] table.
+func gatewayFromDoc(doc proxyHomeDoc) (GatewayConf, []string) {
+	var gc GatewayConf
+	var warns []string
+	if v, ok := doc.Gateway[gatewayPassthroughKey]; ok {
+		switch b, isBool := v.(bool); {
+		case isBool:
+			gc.SubscriptionPassthrough = b
+		default:
+			warns = append(warns, fmt.Sprintf("[gateway] %s in %s must be a boolean (true or false), not %s; subscription passthrough is off",
+				gatewayPassthroughKey, ProxyHomePath(), tomlTypeName(v)))
+		}
+	}
+	return gc, warns
+}
+
+// tomlTypeName names a decoded TOML value's type for a message, never the
+// value itself.
+func tomlTypeName(v any) string {
+	switch v.(type) {
+	case string:
+		return "a string"
+	case int64:
+		return "an integer"
+	case float64:
+		return "a float"
+	case []any, []map[string]any:
+		return "an array"
+	case map[string]any:
+		return "a table"
+	default:
+		return "a date or time"
+	}
 }

@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -98,6 +101,18 @@ database that was wiped is repopulated the next time wt-model serve starts
 (a proxy restart keeps its database rows and runs no sync). What that sync
 changes or warns about is printed on stderr; a failure there is a warning
 and serving goes on.
+The subscription passthrough (the gateway's header mode: a request carrying
+x-wt-model-token forwards the client's own claude.ai login, the owner's own
+login only) is off unless the wt-model home's config.toml says
+
+  [gateway]
+  subscription_passthrough = true
+
+a hand edit no command writes, read once at start (restart serve after a
+change). When on, a line after the listening line says so, and a warning
+follows when the address is not loopback, since header-mode requests from
+other machines over plain http are refused. A value that is not a boolean is
+off with one warning; a config.toml that does not parse refuses the start.
 While it runs it keeps a runtime record, serve.json in the wt-model home
 (pid, address, token file path; never the token), and removes it when it
 stops cleanly.
@@ -105,7 +120,8 @@ stops cleanly.
 Exit codes:
   0  stopped cleanly on SIGINT or SIGTERM
   1  any failure (a bad flag, an unreadable token file, an unconfigured
-     LiteLLM proxy, an address that cannot be bound)`,
+     LiteLLM proxy, a wt-model config.toml that does not parse, an address
+     that cannot be bound)`,
 		Example: `  wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/wt-model/server.token`,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -133,9 +149,21 @@ Exit codes:
 			if cfg.ProxySource() == config.ProxySourceLegacy {
 				fmt.Fprintln(cmd.ErrOrStderr(), config.ProxyFallbackNote())
 			}
+			// The host switch is read once, here, before listening: a home
+			// that does not parse refuses the start (worded without values),
+			// a wrong-typed key is off with a warning printed after the
+			// announce line. A change needs a serve restart.
+			gw, gwWarns, err := config.GatewaySettings()
+			if err != nil {
+				return config.ConfigError(&config.ProxyHomeError{Err: err})
+			}
 			srv, err := modelserver.NewServer(modelserver.Options{
 				Listen: listen, Token: token, IdleGrace: idle,
 				Upstream: upstream, UpstreamKey: key,
+				SubscriptionPassthrough: gw.SubscriptionPassthrough,
+				// The proxy's transport errors go to serve's stderr; it
+				// logs no header or body (the gateway's rule).
+				ErrorLog: log.New(cmd.ErrOrStderr(), "wt-model: ", 0),
 			}, mk(cfg, config.Load, upstream, key))
 			if err != nil {
 				return err
@@ -168,6 +196,14 @@ Exit codes:
 					fmt.Fprintf(cmd.ErrOrStderr(), recordNoteFormat, err)
 				}
 				fmt.Fprint(cmd.ErrOrStderr(), announceLine(addr))
+				// The mode's report follows the announce line, which stays
+				// first and unchanged (S1); TLS arrives in a later task.
+				for _, w := range gwWarns {
+					fmt.Fprintln(cmd.ErrOrStderr(), "wt-model: warning: "+w)
+				}
+				for _, l := range subscriptionLines(addr, gw.SubscriptionPassthrough, false, "") {
+					fmt.Fprintln(cmd.ErrOrStderr(), l)
+				}
 				// After the announce line, so it stays the first line a
 				// script reads (S1).
 				if rt.StartSync != nil {
@@ -285,4 +321,49 @@ func (s startSync) run(ctx context.Context, cfg *config.Config, errOut io.Writer
 	if res.Changed {
 		s.bounce(ctx, errOut, cfg)
 	}
+}
+
+// subscriptionInfo is the bare informational line (style guide M4) serve
+// prints after the announce line while the header mode is on; %s is the
+// optional tail (the TLS-off reason) before the closing parenthesis.
+const subscriptionInfo = "wt-model: subscription passthrough is on (x-wt-model-token; refused from non-loopback peers over plain http; owner's own login only%s)"
+
+// subscriptionWarn is the one warning when the mode is on, the listen
+// address is not loopback and TLS is off: remote header-mode requests are
+// refused, so the operator learns how to make them work.
+const subscriptionWarn = "wt-model: warning: remote subscription requests need TLS (set tls_cert and tls_key under [gateway] in ~/.config/wt-model/config.toml) or a tunnel arriving from loopback; other remote traffic is unaffected"
+
+// subscriptionLines is serve's whole report of the header mode, the lines
+// printed after the announce line (decision 2 of the phase 3 plan): nothing
+// when off; else the info line, plus subscriptionWarn when listenAddr is not
+// loopback and TLS is off. tlsOff, when set, is the fixed reason TLS is off
+// although configured (the certificate's dates): the info line then ends
+// with it and no second warning is printed (the TLS report has its own).
+func subscriptionLines(listenAddr string, on, tlsOn bool, tlsOff string) []string {
+	if !on {
+		return nil
+	}
+	if tlsOff != "" {
+		return []string{fmt.Sprintf(subscriptionInfo, "; TLS is off: the "+tlsOff+", so header mode is refused from every non-loopback peer")}
+	}
+	lines := []string{fmt.Sprintf(subscriptionInfo, "")}
+	if !tlsOn && !loopbackListen(listenAddr) {
+		lines = append(lines, subscriptionWarn)
+	}
+	return lines
+}
+
+// loopbackListen reports whether a listen address binds loopback only:
+// localhost or a loopback IP. An unspecified host (0.0.0.0, ::, empty) and
+// any other address are reachable from other machines.
+func loopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.Unmap().IsLoopback()
 }

@@ -384,20 +384,36 @@ func migrateAgentRefs(cfg *Config) bool {
 // Gateway field no longer exists on Config, so decoding config.toml
 // simply ignores an unknown [gateway] table (toml decoders skip unknown
 // keys by default) — this fixup only needs to detect it well enough to
-// tell the user where their settings moved.
+// tell the user where their settings moved (legacyGatewayNotice).
 func dropLegacyGateway(path string) (changed bool) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
-	var probe struct {
-		Gateway *struct{} `toml:"gateway"`
-	}
-	if err := toml.Unmarshal(raw, &probe); err != nil || probe.Gateway == nil {
+	msg, ok := legacyGatewayNotice(raw)
+	if !ok {
 		return false
 	}
-	fmt.Fprintln(os.Stderr, BinaryName+": found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by wt (see 'wt litellm status'); this block will be dropped on next save")
+	fmt.Fprintln(os.Stderr, msg)
 	return true
+}
+
+// legacyGatewayNotice is dropLegacyGateway's decision on config.toml's bytes:
+// the one notice line and whether there is a [gateway] table at all.
+// A table holding subscription_passthrough is the host switch written in the
+// wrong file (serve never reads agent-wt's config.toml): the notice then
+// names the wt-model home's config.toml instead of the legacy wording.
+func legacyGatewayNotice(raw []byte) (string, bool) {
+	var probe struct {
+		Gateway map[string]any `toml:"gateway"`
+	}
+	if err := toml.Unmarshal(raw, &probe); err != nil || probe.Gateway == nil {
+		return "", false
+	}
+	if _, ok := probe.Gateway[gatewayPassthroughKey]; ok {
+		return BinaryName + ": config.toml: [gateway] " + gatewayPassthroughKey + " is not read here — it belongs under [gateway] in ~/.config/wt-model/config.toml, which wt-model serve reads; this block will be dropped on next save", true
+	}
+	return BinaryName + ": found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by wt (see 'wt litellm status'); this block will be dropped on next save", true
 }
 
 // upsertAgent finds the agent named name in cfg.Agents (via AgentByName) and

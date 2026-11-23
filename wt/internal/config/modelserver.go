@@ -144,6 +144,32 @@ func ReadModelServerFile() ModelServerFile {
 // value, say a base64 token typed without quotes) is replaced by the line
 // number and the key name. Any other error is returned as it is.
 func secretSafe(err error, data []byte) error {
+	return withheldParseError(err, data, secretKeyName)
+}
+
+// valueFreeParseError is secretSafe for a file whose every value is withheld
+// (the wt-model home's config.toml: a url, and the hand-edited [gateway]
+// table serve reads at start): any TOML parse error is reported by its line
+// and key name only, never the parser's message, which can quote a value.
+func valueFreeParseError(err error, data []byte) error {
+	var pe toml.ParseError
+	if !errors.As(err, &pe) {
+		return err
+	}
+	if out := withheldParseError(err, data, func(string) bool { return true }); out != err {
+		return out
+	}
+	line := pe.Position.Line
+	if line == 0 {
+		line = pe.Line
+	}
+	return fmt.Errorf("toml: line %d does not parse (the text is not shown)", line)
+}
+
+// withheldParseError replaces a TOML parse error by its line and key name
+// when withhold names that key (the line's own key or the last key parsed);
+// any other error is returned as it is.
+func withheldParseError(err error, data []byte, withhold func(string) bool) error {
 	var pe toml.ParseError
 	if !errors.As(err, &pe) {
 		return err
@@ -161,7 +187,7 @@ func secretSafe(err error, data []byte) error {
 	for _, k := range []string{key, pe.LastKey} {
 		parts := strings.Split(k, ".")
 		name := strings.Trim(strings.TrimSpace(parts[len(parts)-1]), `"'`)
-		if secretKeyName(name) {
+		if name != "" && withhold(name) {
 			return fmt.Errorf("toml: line %d: the value of %s does not parse (not shown: it may hold a secret)", line, name)
 		}
 	}

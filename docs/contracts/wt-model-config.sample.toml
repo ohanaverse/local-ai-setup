@@ -1,6 +1,10 @@
 # wt-model's configuration. [litellm] is written only by `wt-model litellm set`
 # and `wt litellm set`; the api key is never here — it lives in the 0600 file
-# that key_file names.
+# that key_file names. [gateway] is hand-edited (no command writes it) and
+# wt-model serve reads it once, at start.
 [litellm]
 url = "http://localhost:4000"
 key_file = "litellm.key"
+
+[gateway]
+subscription_passthrough = false

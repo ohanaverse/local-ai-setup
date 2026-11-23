@@ -24,6 +24,10 @@ type Ping struct {
 	APIMajor int    `json:"api_major"`
 	Schema   int    `json:"schema"`
 	Server   string `json:"server"`
+	// SubscriptionPassthrough is true when the server accepts the header
+	// mode (x-wt-model-token beside the client's own claude.ai login). It is
+	// omitted when off, so an off server and an older one look the same.
+	SubscriptionPassthrough bool `json:"subscription_passthrough,omitempty"`
 }
 
 // Price is a model's per-token price, in the unit config.PriceInForce uses.
