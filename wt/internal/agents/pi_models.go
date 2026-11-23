@@ -18,9 +18,9 @@ type piModelsFile struct {
 }
 
 // piProvider is one provider block in pi's models.json. Only these fields are
-// relevant to wt; unknown siblings pi supports round-trip through the generic
-// JSON decode only if they are absent — extra fields inside a provider block
-// are dropped, so wt never writes provider blocks it does not own.
+// relevant to wt; fields it has no place for are dropped when a block is
+// re-encoded from this struct. Only the block wt owns (`litellm`) is encoded
+// from it: syncGateway writes every other block back as the raw JSON it read.
 //
 // WTOwned marks a block wt itself created: the direct-route sync before the
 // model server set it on the non-ollama provider blocks it wrote (never on
@@ -150,6 +150,8 @@ func isLaunchable(providerID, id, path string) bool {
 // gatewayID.
 func syncGateway(gw Gateway, path string, models []config.Model, target config.Model) error {
 	var f piModelsFile
+	var rawTop map[string]json.RawMessage
+	rawProviders := map[string]json.RawMessage{}
 	data, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
@@ -158,6 +160,16 @@ func syncGateway(gw Gateway, path string, models []config.Model, target config.M
 	default:
 		if err := json.Unmarshal(data, &f); err != nil {
 			return err
+		}
+		// The typed decode above drops fields wt has no struct for. Keep the raw
+		// text of everything wt does not own so the write below can put it back.
+		if err := json.Unmarshal(data, &rawTop); err != nil {
+			return err
+		}
+		if raw, ok := rawTop["providers"]; ok {
+			if err := json.Unmarshal(raw, &rawProviders); err != nil {
+				return err
+			}
 		}
 	}
 	if f.Providers == nil {
@@ -184,7 +196,30 @@ func syncGateway(gw Gateway, path string, models []config.Model, target config.M
 		}
 		return nil
 	}
-	out, err := json.MarshalIndent(&f, "", "  ")
+	providers := make(map[string]json.RawMessage, len(f.Providers))
+	for id, p := range f.Providers {
+		raw, kept := rawProviders[id]
+		if id == piLitellmProviderID || !kept {
+			b, err := json.Marshal(p)
+			if err != nil {
+				return err
+			}
+			raw = b
+		}
+		// A block wt does not own (a user's external-gateway provider with a
+		// `!command` apiKey, #618) goes back exactly as read, with the fields
+		// piProvider has no place for.
+		providers[id] = raw
+	}
+	if rawTop == nil {
+		rawTop = make(map[string]json.RawMessage, 1)
+	}
+	b, err := json.Marshal(providers)
+	if err != nil {
+		return err
+	}
+	rawTop["providers"] = b
+	out, err := json.MarshalIndent(rawTop, "", "  ")
 	if err != nil {
 		return err
 	}

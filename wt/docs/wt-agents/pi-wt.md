@@ -78,6 +78,30 @@ Concrete observations from this machine:
 
 wt does not auto-detect `~/.pi/agent/activate-litellm.sh`; the sibling spec [`2026-06-01-pi-wt-litellm-wrapper-design.md`](../superpowers/specs/2026-06-01-pi-wt-litellm-wrapper-design.md) proposes that and is not implemented. To launch pi through a wrapper, declare it as a `wrapper` profile for pi in `profiles.toml` (see [profiles.md](profiles.md)). A profile applies only when `profiles.toml` has `enabled` on and the launched model is a non-native model the profile matches. A `pi/native` launch never gets a profile: it always runs the `pi` found on PATH.
 
+### Reaching an external LiteLLM gateway (pi's own credential command)
+
+For a LiteLLM gateway that is not the `wt-model` server (for instance an enterprise one with a rotating credential), write the provider in `~/.pi/agent/models.json` yourself and let pi run the credential command. wt has no part in it: launch with `wt -A pi` and the `pi/native` entry (no `--model`), or run `pi --model <provider>/<id>` directly.
+
+```json
+{
+  "providers": {
+    "my-gateway": {
+      "api": "openai-completions",
+      "baseUrl": "https://<gateway>/v1",
+      "apiKey": "!/path/to/credential-command",
+      "compat": { "supportsStore": false },
+      "models": [ { "id": "<model id>", "contextWindow": 200000, "input": ["text"], "reasoning": true } ]
+    }
+  }
+}
+```
+
+- `apiKey` starting with `!` is a shell command whose stdout is the key. Checked with pi 1.6.0 (2026-11-23): pi runs it on each model request, not once per process, so a rotated credential is picked up mid-session; `pi --list-models` does not run it. Older pi docs describe per-process caching, so re-check after a pi upgrade.
+- `compat.supportsStore = false` is for gateway models whose backend (Bedrock) rejects the OpenAI `store` parameter. wt no longer writes it; it is yours to set.
+- Leave out `_wtOwned`. A block carrying that marker is a leftover of the old direct-route sync, and the next non-native launch deletes it. A block without it is never touched: wt writes it back exactly as it read it, including `headers`, extra `compat` keys and per-model fields it has no struct for (`TestPiGatewayKeepsAnExternalGatewayBlockByteForByte`).
+- This route has no wt picker and no `-M`: wt only knows the models in the `wt-model` catalog. Pick the model inside pi.
+- Do not put a literal credential in the file; the command is what keeps it current.
+
 ### Background context (provider system)
 
 pi's provider system is provider-agnostic: any provider declared in `models.json` (or via an extension that overrides selection) can serve models, as long as its API surface matches one of pi's supported types (`openai-completions`, `anthropic`, etc.). The env-var substitution syntax (`$NAME` in any string field) is resolved at launch. The credential-refresh-on-launch pattern — fetch a fresh key in a wrapper, then `exec pi` — keeps short-lived enterprise credentials working without persisting them to disk.
