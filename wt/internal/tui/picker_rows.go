@@ -57,7 +57,7 @@ type rowPRsLoadedMsg struct {
 // OriginRows is set because the picker shows and acts on origin rows (its
 // `o`, exactly GatherInputs.OriginRows's contract): the PR fill then makes
 // the per-branch `gh pr list --base` query, so a listed origin row reads
-// proven wherever `wt cleanup`'s list would — the engine removes a remote
+// proven wherever `wt worktrees`'s list would — the engine removes a remote
 // row only when what was listed said proven.
 func pickerInputs(cwd string, protectedPaths []string) cleanup.GatherInputs {
 	claim, err := sessionclaim.Self(cwd, "", "wt")
@@ -357,7 +357,7 @@ func (m model) updateRows(msg tea.Msg) (model, tea.Cmd) {
 }
 
 // removeFuncsFor is the row actions' RemoveFuncs for one load's snapshot and
-// inputs — the picker's instance of the removal engine, `wt cleanup`'s
+// inputs — the picker's instance of the removal engine, `wt worktrees`'s
 // cleanupRemoveFuncs through cmd/wt-session's builder — or the zero funcs, whose
 // actions all say they are unavailable, for a session started without one.
 // Every load builds its own instance, because the engine's re-check stands

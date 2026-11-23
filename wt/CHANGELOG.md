@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- `wt worktree` is now an alias of `wt worktrees` (the singular used to fall through to the launch picker, which has no tick boxes). `wt cleanup`, the old alias, is removed and refused with a pointer to `wt worktrees`.
+
 ### Added
 
 - `wt-model` holds the host-admin commands (phase 4 stage 2): `wt-model setup` (the Setup tab: this machine's LaunchAgent, token file and LiteLLM key; local and native), `wt-model model` (the Models tab TUI), `wt-model model init|list|add|edit|rm`, `wt-model served`, `wt-model warm`, `wt-model stop <provider>|--all`, `wt-model cloud-sync` and `wt-model litellm sync|list|providers|restart`.

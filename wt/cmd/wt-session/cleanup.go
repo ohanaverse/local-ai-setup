@@ -46,9 +46,9 @@ func worktreesCmd(a *app) *cobra.Command {
 	var minAge time.Duration
 	c := &cobra.Command{
 		Use:     "worktrees",
-		Aliases: []string{"cleanup"},
-		Short:   "List worktrees and branches, and which are safe to remove, with the proof (alias: cleanup)",
-		Long: "`wt cleanup` is an alias of this command.\n\n" +
+		Aliases: []string{"worktree"},
+		Short:   "List worktrees and branches, and which are safe to remove, with the proof (alias: worktree)",
+		Long: "`wt worktree` is an alias of this command.\n\n" +
 			"List the repository's worktrees, local branches and remote branches (a terminal list shows every remote's), by how\n" +
 			"sure wt is that each can go (on a terminal grouped by kind; --plain groups by\n" +
 			"verdict): PROVEN MERGED, LOOKS MERGED (LESS\n" +
@@ -105,7 +105,7 @@ func worktreesCmd(a *app) *cobra.Command {
 	return c
 }
 
-// checkMinAge is the --min-age usage check `wt cleanup` and `wt remove`
+// checkMinAge is the --min-age usage check `wt worktrees` and `wt remove`
 // share: a value given must be at least cleanup.MinAgeFloor.
 func checkMinAge(cmd *cobra.Command, minAge time.Duration) error {
 	if !cmd.Flags().Changed("min-age") {
@@ -120,7 +120,7 @@ func checkMinAge(cmd *cobra.Command, minAge time.Duration) error {
 	return nil
 }
 
-// cleanupInputs are the GatherInputs `wt cleanup` and `wt remove` gather
+// cleanupInputs are the GatherInputs `wt worktrees` and `wt remove` gather
 // with from cwd: this process's session claim (so its own root launch does
 // not look like another's), the registered artifacts and four gh calls at a
 // time. label names the command in the claim ("wt-cleanup", "wt-remove").
@@ -431,7 +431,7 @@ func failWithEnvelope(out io.Writer, asJSON bool, code int, err error, encode fu
 // load: the artifacts it names are unknown, so none can be protected.
 var errRegistryUnavailable = errors.New("the registry failed to load")
 
-// cleanupRegistryNote is the header line `wt cleanup` adds when protectedPaths
+// cleanupRegistryNote is the header line `wt worktrees` adds when protectedPaths
 // failed: the list still shows, but nothing is marked protected_artifact and
 // a removal must refuse. The cause is the load error itself, without
 // errRegistryUnavailable's own words in front of it.

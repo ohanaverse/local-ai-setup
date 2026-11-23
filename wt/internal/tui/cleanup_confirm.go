@@ -20,7 +20,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
-// The `wt cleanup` list's removal: enter on the ticked rows opens a confirm
+// The `wt worktrees` list's removal: enter on the ticked rows opens a confirm
 // screen, then a progress screen while the engine works, then the results.
 // Nothing here removes anything or builds a removal.Item: the engine
 // previews the ticked rows (RemoveFuncs.Preview), the confirm screen turns

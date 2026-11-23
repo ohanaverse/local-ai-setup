@@ -31,7 +31,7 @@ import (
 // section lines.
 //
 // One component, two modes (rowListOpts.Mode):
-//   - manage (`wt cleanup`): a checkbox column; space ticks, `a` ticks every
+//   - manage (`wt worktrees`): a checkbox column; space ticks, `a` ticks every
 //     proven row, enter removes the ticked rows.
 //   - launch (the picker): a first item "+ New worktree…" (enter or `n`
 //     emits newWorktreeChosenMsg), enter on any row emits rowChosenMsg —
@@ -47,7 +47,7 @@ import (
 // phrase, the engine's remote-only item). `r` hands the highlighted row to
 // rescue and `R` hands off `wt restore-root` for the root; both quit the
 // program and the hand-off runs on the real terminal once the screen is gone
-// — RunCleanupList then re-enters `wt cleanup`'s list with a fresh report,
+// — RunCleanupList then re-enters `wt worktrees`'s list with a fresh report,
 // while the picker (finishRowSession) ends its session there and wt exits.
 //
 // A row's text is never cut: when it does not fit beside the name it wraps
@@ -63,7 +63,7 @@ import (
 type listMode int
 
 const (
-	modeManage listMode = iota // `wt cleanup`: tick and remove
+	modeManage listMode = iota // `wt worktrees`: tick and remove
 	modeLaunch                 // the picker: choose a row to launch in
 )
 
@@ -337,7 +337,7 @@ type cleanupListModel struct {
 	filtering bool
 }
 
-// newCleanupList builds the manage-mode list `wt cleanup` shows, standing on
+// newCleanupList builds the manage-mode list `wt worktrees` shows, standing on
 // rm. rm goes into the opts as well as the model's own field:
 // opts.RemoveFuncs is what every rebuild (withReport, gotRefresh) seeds `rm`
 // from, so seeding only one of the two leaves them divergent for the rest of

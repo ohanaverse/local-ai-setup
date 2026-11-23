@@ -287,7 +287,7 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 > **The default branch is an ordinary worktree name.** `EnsureForName`/`EnsureForBranch` create `.worktrees/<default>` like any branch (no `refuseDefaultBranch` guard remains; launch risk messaging is `internal/launchwarn`'s), and a second Ensure for the same name reuses the worktree at the derived path (`EnsureForBranch` reports what it made as `Created`). Git alone refuses a second worktree on a branch already checked out elsewhere, and its own error stays the user-visible message: surfaced verbatim from the captured stderr ("… is already used by worktree at …"), never wrapped away or replaced (`gitError`). `-W main` with the root on `main` still resolves to the root first (the reuse loop matches the root's entry) and launches there, with the root warning. `-W origin/feature` resolves like the picker (a local `feature` tracking it); `-W <remote>/HEAD` resolves the symref to `<remote>/<default>` before classification and answers like the spelled-out name (#588).
 
-## Cleanup classifier and removal (`wt worktrees` alias `wt cleanup`, `wt remove`, `wt rescue`, `wt restore-root`)
+## Cleanup classifier and removal (`wt worktrees`, alias `wt worktree`; `wt remove`, `wt rescue`, `wt restore-root`)
 
 `internal/cleanup` classifies every worktree, local branch and `origin` branch into proven / less_sure / unique_work / in_use from one snapshot and is **read-only**; `cmd/wt-session/cleanup.go` prints it (`--json`, `--plain`) or shows the tick list (`internal/tui/cleanup_list.go`, with a row detail screen in `detail.go`). `wt remove` and the list go through one engine, `internal/removal`, **the only deletion code in wt**; `wt rescue` (`internal/rescue`) and `wt restore-root` (`internal/rootmove`) copy and verify, they never delete. Command reference: [docs/wt-cleanup.md](docs/wt-cleanup.md); design: [../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md](../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md).
 
@@ -338,7 +338,7 @@ wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]
 make test-agents                     # live agent × model matrix, gateway mode only (needs WT_MODEL_URL and WT_MODEL_TOKEN_FILE)
 ```
 
-The full command list (`wt-model served`, `wt-model warm`, `wt cleanup`, `wt remove`, `wt-model model add|edit|rm|init`, `wt profile list`, `wt stats`, `wt profile list|show`, `wt start|stop`, `wt-model litellm`, `wt litellm status|set`, …): [docs/internals/testing.md](docs/internals/testing.md#verification-commands).
+The full command list (`wt-model served`, `wt-model warm`, `wt worktrees`, `wt remove`, `wt-model model add|edit|rm|init`, `wt profile list`, `wt stats`, `wt profile list|show`, `wt start|stop`, `wt-model litellm`, `wt litellm status|set`, …): [docs/internals/testing.md](docs/internals/testing.md#verification-commands).
 
 > Verifying a branch's behavior requires building it first (`D=$(mktemp -d)`, then `go build -o "$D/wt" ./cmd/wt-session` and `go build -o "$D/wt-model" ./cmd/wt-model`) — `~/.local/bin/wt` is whatever was last `make install`ed and may predate the branch.
 

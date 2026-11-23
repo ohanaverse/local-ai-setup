@@ -112,7 +112,7 @@ func IsHardStop(code string, k Kind) bool {
 // minute ago looks merged.
 const DefaultMinAge = 10 * time.Minute
 
-// MinAgeFloor is the smallest MinAge `wt cleanup --min-age` accepts. Any
+// MinAgeFloor is the smallest MinAge `wt worktrees --min-age` accepts. Any
 // positive value used to be taken, and 1ns turns the fresh-branch rule off:
 // a branch made a second ago reads as proven merged. Classify itself does not
 // enforce it (a test may pass any Options); the command refuses a lower value.

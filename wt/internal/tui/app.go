@@ -941,7 +941,7 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // names this agent, and a profile launch applies slots.Apply in place of
 // profileLayer.
 // removeFuncs builds the row actions of each picker load (the removal
-// engine's window, `wt cleanup`'s cleanupRemoveFuncs in cmd/wt-session's closure):
+// engine's window, `wt worktrees`'s cleanupRemoveFuncs in cmd/wt-session's closure):
 // nil leaves every row action saying it is unavailable.
 // When the launched agent's run failed, Run returns that error (an
 // *exec.ExitError for a non-zero exit) after the post-exit flow has run, and

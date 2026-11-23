@@ -74,7 +74,7 @@ type GatherInputs struct {
 	SkipPRs bool
 	// AllRemotes keeps every remote's branches in Remotes. Without it only
 	// origin's and those of remotes a local head's upstream names are kept
-	// (what `wt cleanup --json` and --plain list). The interactive lists set
+	// (what `wt worktrees --json` and --plain list). The interactive lists set
 	// it, so a branch of a remote nothing tracks is still shown.
 	AllRemotes bool
 }

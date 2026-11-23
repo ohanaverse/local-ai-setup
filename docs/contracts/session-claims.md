@@ -1,6 +1,6 @@
 # Session claims
 
-A claim records that a `wt` session runs in a checkout of a repository — the root or a linked worktree, the worktree that launch's agent runs in. `wt` (Go, `wt/internal/sessionclaim`) writes and removes claims; `wt cleanup` (which marks a row held, and reports `claims_unavailable` when the claims cannot be read) only reads them; the retired repo-cleanup bash script did too. The reader needs none of `wt`'s code, so this file format is the whole contract.
+A claim records that a `wt` session runs in a checkout of a repository — the root or a linked worktree, the worktree that launch's agent runs in. `wt` (Go, `wt/internal/sessionclaim`) writes and removes claims; `wt worktrees` (which marks a row held, and reports `claims_unavailable` when the claims cannot be read) only reads them; the retired repo-cleanup bash script did too. The reader needs none of `wt`'s code, so this file format is the whole contract.
 
 A claim is one file per live `wt` process, in the repository's common git directory:
 

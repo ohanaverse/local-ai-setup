@@ -9,7 +9,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
-// This file is the words of `wt cleanup`: the group order and headings, the
+// This file is the words of `wt worktrees`: the group order and headings, the
 // one-line evidence for a row and the header lines. The plain output and the
 // list (a later task) both read it, so it carries no terminal styling and
 // does no I/O. It only reads a Report.

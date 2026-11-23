@@ -168,7 +168,7 @@ func runLaunchPath(
 	}
 
 	// removeFuncs gives every picker load's row actions the same removal
-	// engine `wt cleanup`'s list takes (cleanupRemoveFuncs, tui's
+	// engine `wt worktrees`'s list takes (cleanupRemoveFuncs, tui's
 	// RemoveFuncsBuilder — internal/tui cannot build it without the registry,
 	// which is this package's, so it is handed in as a closure like
 	// profileLayer), from that load's own snapshot and inputs in `wt
@@ -179,7 +179,7 @@ func runLaunchPath(
 	// facts re-read by every re-check and refresh (the load's SkipPRs belongs
 	// to its PR fill, not the engine). The command's default settings
 	// otherwise (no --min-age on this path); a registry that did not load
-	// turns removal off exactly as `wt cleanup`'s list is turned off.
+	// turns removal off exactly as `wt worktrees`'s list is turned off.
 	protPaths, protErr := protectedPaths(a)
 	removeFuncs := func(snap cleanup.Snapshot, in cleanup.GatherInputs) tui.RemoveFuncs {
 		in.ProtectedPaths = protPaths
@@ -320,6 +320,8 @@ func rootCmdWith(h hooks) *cobra.Command {
 					return fmt.Errorf("wt models is removed; use `wt config` to view models")
 				case "agents":
 					return fmt.Errorf("wt agents is removed; use `wt config` to view agents")
+				case "cleanup":
+					return fmt.Errorf("wt cleanup is removed; use `wt worktrees` (alias `wt worktree`)")
 				}
 			}
 

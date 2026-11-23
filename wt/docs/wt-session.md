@@ -384,7 +384,7 @@ These run with no model server configured:
   it included;
 - a model-driven agent's launch that asks for no model, in native mode (above);
 - `wt --init`, `--check-guard`, `--no-guard`, `--version`;
-- `wt worktrees` (`wt cleanup`), `wt remove`, `wt rescue`, `wt restore-root`;
+- `wt worktrees` (alias `wt worktree`), `wt remove`, `wt rescue`, `wt restore-root`;
 - `wt config` (and `wt config theme|path`);
 - `wt profile list|status|on|off`, `wt profile slots rm|usage`;
 - `wt stats`: the survey table and the launch counts print, the spend cells

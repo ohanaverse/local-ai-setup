@@ -1,6 +1,6 @@
 # worktrunk vs wt — worktree & branch feature comparison
 
-> **Status note (2026-11-07).** This is a research snapshot of 2026-11-04. wt has since gained `wt cleanup`, `wt remove` (including `--remote` for origin branches) and `wt rescue`, with JSON contracts and a removal engine that checks dirty state, merge proof and age (see [wt/docs/wt-cleanup.md](../../wt/docs/wt-cleanup.md)). Where the text below says wt has no removal or cleanup, that gap is closed; the comparison of what each tool does is otherwise as of 2026-11-04.
+> **Status note (2026-11-07).** This is a research snapshot of 2026-11-04. wt has since gained `wt worktrees`, `wt remove` (including `--remote` for origin branches) and `wt rescue`, with JSON contracts and a removal engine that checks dirty state, merge proof and age (see [wt/docs/wt-cleanup.md](../../wt/docs/wt-cleanup.md)). Where the text below says wt has no removal or cleanup, that gap is closed; the comparison of what each tool does is otherwise as of 2026-11-04.
 
 > **Status note (2026-11-11).** One more wt change after the snapshot: the launch-warnings flow replaced the shared-root `c`/`w`/`q` menu on the plain-terminal launch paths with named warnings and one default-yes `continue?` question (the picker's shared-root screen is gone too: one launch gate at the commit point), and replaced the create-this-branch question with a creation line announced before the creation. `cmd/wt-session/sharedroot.go` and `cmd/wt-session/rootgate.go` have become `cmd/wt-session/launchwarn.go`. The Multi-session coordination row and the Sources file list below keep their 2026-11-04 wording (the earlier flow, wt as read at `9b702c0f`); this note is the update.
 
@@ -26,7 +26,7 @@
 
 **worktrunk** (Rust, MIT OR Apache-2.0, https://worktrunk.dev) — "a CLI for Git worktree management, designed for parallel AI agent workflows." Philosophy: *"worktrees as easy as branches"* — worktrees are addressed by branch name and their paths are **computed** from a configurable minijinja template (default `{{ repo_path }}/../{{ repo }}.{{ branch | sanitize }}`, i.e. a sibling dir like `~/code/myproject.feature-auth`), never stored. Four core commands (`switch`, `list`, `merge`, `remove`) plus building blocks (`wt step …`), a ten-type hook system, aliases, and `wt-<name>` custom subcommands. Repo created 2025-10-17; 140 releases as of the research date.
 
-**wt** ([wt/](../../wt/CLAUDE.md), Go) — a worktree **agent launcher**: choose *where* (`-W <name>`, `--cwd`, or the worktree picker), *what* (an agent CLI — claude, codex, copilot, pi, agy, opencode — or `shell`), and *which model* (the rotating picker over the local model stack), then launch. Its worktree surface is **create, reuse, and enumerate** only. There is deliberately no removal, no prune, no merge/rebase/push, no stacking, no dirty detection (see [Deliberately absent](#deliberately-absent-in-wt)). At the snapshot, cleanup lived outside wt (plain git and the `repo-cleanup` skill); `wt cleanup`/`wt remove` now cover it. Its reason to exist — the model registry, LiteLLM routing, slot profiles, smoke testing, shared-root session claims — has no worktrunk equivalent.
+**wt** ([wt/](../../wt/CLAUDE.md), Go) — a worktree **agent launcher**: choose *where* (`-W <name>`, `--cwd`, or the worktree picker), *what* (an agent CLI — claude, codex, copilot, pi, agy, opencode — or `shell`), and *which model* (the rotating picker over the local model stack), then launch. Its worktree surface is **create, reuse, and enumerate** only. There is deliberately no removal, no prune, no merge/rebase/push, no stacking, no dirty detection (see [Deliberately absent](#deliberately-absent-in-wt)). At the snapshot, cleanup lived outside wt (plain git and the `repo-cleanup` skill); `wt worktrees`/`wt remove` now cover it. Its reason to exist — the model registry, LiteLLM routing, slot profiles, smoke testing, shared-root session claims — has no worktrunk equivalent.
 
 ---
 
@@ -73,7 +73,7 @@
 |---|---|---|
 | Remove | `wt remove`: dirty gate (`git status --porcelain` incl. untracked; **gitignored files exempt**), `git worktree lock` immune even with `--force`, two force scopes (`--force` = dirty worktree, `-D` = unmerged branch), background by default | **none** at the snapshot (now `wt remove`, see the status note) |
 | Branch deletion safety | only when integrated, via 6 checks (same commit, ancestor, empty 3-dot diff, trees match, simulated merge adds nothing, **patch-id match** — squash-aware; walk capped at 500 commits) | `repo-cleanup` classification (STALE / OK TO DELETE / MERGED / DIRTY / ACTIVE), `git branch -d` discipline |
-| Bulk cleanup | `wt step prune`: integrated worktrees+branches + stale registrations; `--min-age` 1d guard; skips locked/dirty/main; concurrent | `wt cleanup` + `wt remove` (shipped after this snapshot, see the status note) |
+| Bulk cleanup | `wt step prune`: integrated worktrees+branches + stale registrations; `--min-age` 1d guard; skips locked/dirty/main; concurrent | `wt worktrees` + `wt remove` (shipped after this snapshot, see the status note) |
 | Merge | `wt merge`: commit → squash (swept changes backed up to `refs/wt-backup/<branch>` with a printed recovery command) → rebase → pre-merge hooks → fast-forward → pre-remove → cleanup | none (agents own their git workflow) |
 | Local integrate/push | `wt step push` (fast-forward the target ref **locally only** — "no commits leave the repository"), `step rebase`, `step squash`, `step diff` (net diff since merge-base) | none |
 | Undo/recovery | `refs/wt-backup/<branch>` survives even a remove | none |
@@ -87,7 +87,7 @@
 | Commit guard | none (local CI via `[[pre-merge]]` hooks) | `block-main-commit` pre-commit hook in `<git-common-dir>/hooks/` (covers all worktrees; preserves the user's hook; auto-installed) |
 | Dirty detection | remove/prune only | **none anywhere** |
 | Self-concurrency | trash-drain lock (one deleter per repo), CAS branch deletion (`git update-ref -d` expected-tip → `retained_raced`), TOCTOU revalidation after hooks, semaphore (32 git commands), atomic no-overwrite renames; **concurrent hooks documented as racy** | n/a (few mutating operations) |
-| Multi-session coordination | none (agents isolated in separate worktrees by design) | session claims (`<git-common-dir>/wt-sessions/<pid>`, pid + start-time liveness, flock on scan+write, ancestor rule, fail-open notes, `--allow-shared-root`, shared-root menu `c`/`w`/`q`); contract read by `wt cleanup` ([session-claims.md](../contracts/session-claims.md)) |
+| Multi-session coordination | none (agents isolated in separate worktrees by design) | session claims (`<git-common-dir>/wt-sessions/<pid>`, pid + start-time liveness, flock on scan+write, ancestor rule, fail-open notes, `--allow-shared-root`, shared-root menu `c`/`w`/`q`); contract read by `wt worktrees` ([session-claims.md](../contracts/session-claims.md)) |
 
 ### Automation & extension
 
@@ -184,7 +184,7 @@ not-ported list live in the series design,
 | PR | Port | Status at this decision |
 |---|---|---|
 | 1 | full-branch-name worktree paths | [PR #517](https://github.com/ohanaverse/local-ai-setup/pull/517), in review |
-| 2 | `wt remove` + JSON contract | built (`wt remove`, `wt cleanup`, `wt rescue`; see status note) |
+| 2 | `wt remove` + JSON contract | built (`wt remove`, `wt worktrees`, `wt rescue`; see status note) |
 | 3 | integrated-only branch deletion + `wt prune` | spec'd, not built |
 | 4 | copy-ignored (reflink) seeding | spec'd, not built |
 | 5 | tether / process teardown (standalone PR) | spec'd, not built |
