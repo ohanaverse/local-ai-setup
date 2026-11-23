@@ -297,8 +297,13 @@ inherited one, so your own bypass list stays under both; two that differ
 keep their own values; an IPv6 literal is listed as both `::1` and `[::1]`. An inherited
 `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` would otherwise route the
 plain-HTTP request, with your login and the wt token, through that proxy.
-Whether Claude Code already skips a proxy for loopback is unverified until
-the phase 3 live check (#597). Token mode, `https://` gateways, native
+A live check (#597, 2026-11-23) ran a header-mode smoke with `HTTP_PROXY`,
+`HTTPS_PROXY` and `ALL_PROXY` pointing at a counting listener: the gateway
+request reached the model server, not the proxy, so the gateway leg bypassed
+it. Claude Code's other traffic (telemetry, update and auth checks to
+Anthropic's hosts) still went through the proxy, as it does in any Claude
+Code run with those variables set; the check could not tell wt's `NO_PROXY`
+addition from Claude Code's own loopback handling. Token mode, `https://` gateways, native
 launches and other agents are left as they are.
 
 ## Exit codes
