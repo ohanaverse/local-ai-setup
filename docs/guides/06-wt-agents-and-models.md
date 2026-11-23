@@ -320,6 +320,19 @@ Slot profiles are reached from the picker and the pin only. Rotation, `wt start`
 
 Full reference — every field, every blocked reason, what Claude Code is given: [wt/docs/wt-agents/slot-profiles.md](../../wt/docs/wt-agents/slot-profiles.md).
 
+### 11. Claude subscription models (claude only)
+
+A model on the `claude-subscription` provider runs Claude Code on your own Claude subscription through the model server's gateway (#597), so one session can mix it with other models (subscription `fable` and `opus` slots beside alias `sonnet` and `haiku`, say). It is off by default on both sides:
+
+- the host sets `[gateway] subscription_passthrough = true` in `~/.config/wt-model/config.toml` and restarts serve, and adds the models with `wt-model model add claude-subscription <claude id> --family <family> --context-window <tokens>` ([02-providers-and-models](02-providers-and-models.md) Step 2);
+- each session machine that may send its login sets `[model-server] subscription = true` in `~/.config/agent-wt/config.toml`.
+
+See what is offered with `wt model list --server` (the rows show the `claude-subscription` provider and only claude can launch them). wt never picks or rotates onto one by itself: pin it with `-M`, pick it in the picker, or name it in a slot profile. Every such launch first checks the opt-in, an `https://` or loopback url, the server's mode, the launch profile, Claude Code's version and a claude.ai login, and refuses before anything starts when one fails ([wt-session.md](../../wt/docs/wt-session.md#claude-subscription-header-mode)). `wt smoke` runs one only with `wt smoke <id> --subscription`.
+
+- **Your own login only.** Never share or pool a subscription through a model server.
+- **Usage credits.** Depending on your plan and seat tier, a Fable row and other large models may need usage credits or count against the plan's limits (Claude Code's `/model` can show "Requires usage credits"). Check your plan before pointing a slot at one.
+- A header-mode session's shell carries the wt token (in `ANTHROPIC_CUSTOM_HEADERS`), as a token-mode session's carries it in `ANTHROPIC_AUTH_TOKEN`.
+
 ## Verification
 
 Live-ran (2026-08-29, all read-only):

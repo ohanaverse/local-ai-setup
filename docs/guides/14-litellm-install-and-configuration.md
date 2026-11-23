@@ -155,6 +155,10 @@ Every `<key>` is followed by a value element of its own: `StandardErrorPath` tak
 
 wt reads only the **string** values of `EnvironmentVariables` (to check that an `os.environ/NAME` reference is set, and `DATABASE_URL`). With `WT_LITELLM_RESTART_CMD` set, or an unreadable/binary plist, wt falls back to its own environment instead. `WT_LITELLM_PLIST` points wt at a plist elsewhere.
 
+**For a Claude subscription model (#597), keep `ANTHROPIC_*` credentials out of this dict.** Such a model is a **keyless** `anthropic/<id>` row: the client's own claude.ai login, forwarded by wt-model's gateway, is its credential. If the proxy had `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`, a workload-identity variable, `ANTHROPIC_API_BASE`, `ANTHROPIC_BASE_URL`, `CONFIG_FILE_PATH` or `LITELLM_CONFIG_BUCKET_NAME`) in its environment, any holder of the wt token could spend that key, or the login would go elsewhere, so `wt-model litellm sync` leaves every subscription model unrouted and `wt-model serve` keeps its subscription passthrough off, each with one warning naming the variable (never its value). Header forwarding in `config.yaml` and a foreign `anthropic/` deployment have the same effect. This check never falls back to wt's own environment: with `WT_LITELLM_RESTART_CMD` set or a plist wt cannot read, it fails closed and there is no override. The check sees only this plist's dict: variables from `launchctl setenv`, a `.env` file the proxy loads from its working directory, a shell wrapper in `ProgramArguments`, and settings stored in LiteLLM's database are not seen, so keep them free of Anthropic credentials yourself. The full list: [wt-model-server.md](../../wt/docs/wt-model-server.md#what-keeps-it-off).
+
+With `general_settings.store_prompts_in_spend_logs` on, the proxy stores every prompt, subscription requests included, in its spend log: never paste a token or key into a prompt.
+
 ### 6. Generate the keys; file mode
 
 ```bash
@@ -345,6 +349,7 @@ This plist carries no "managed by wt" marker, so wt's local-mode setup treats it
 | `wt` warns an `os.environ/NAME` is unset | `NAME` is missing from the plist's `EnvironmentVariables` (your shell does not count). Add it, then reload the job (row below). |
 | Edits to the plist have no effect | `launchd` reads it at load: `bootout`, then `bootstrap` again; a restart alone does not re-read it. |
 | `~/.litellm.err.log` shows `Prisma Client Exception connect(): 'Prisma' object has no attribute '_Prisma__engine'` at startup | A warning from LiteLLM's first connect attempt, seen on healthy installs (observed 2026-11-20 with the readiness `db` field `connected` and spend rows still written). Judge the database by the readiness `db` field and `wt-model setup`'s `database` check, not by this line; it is a fault only when those fail too. |
+| `wt-model litellm sync` warns `Claude subscription models (…) are not routed: …` | The proxy could bill or redirect a keyless `anthropic/` row: an `ANTHROPIC_*` credential in the plist, header forwarding, a foreign anthropic deployment, a `config.yaml` construct wt does not evaluate, or a proxy environment wt cannot read (section 5). Fix what the warning names and sync again. |
 | Plist is world-readable | `chmod 600`; it holds the master key, salt key and provider keys. |
 
 ## Going deeper
