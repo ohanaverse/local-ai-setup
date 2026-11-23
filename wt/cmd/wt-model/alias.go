@@ -132,7 +132,7 @@ func (h *host) runAliasList(ctx context.Context, out, errOut io.Writer, rec serv
 			warnings = append(warnings, oneLineText(err.Error())+"; its routes are left as they are")
 		}
 	}
-	sessions := h.clientSessions(ctx, errOut, rec)()
+	sessions := h.clientSessions(ctx, errOut, rec, nil)()
 	routed, routeWarn := h.routedAliases(ctx, cfg)
 	if routeWarn != "" {
 		warnings = append(warnings, routeWarn)
@@ -345,7 +345,7 @@ func (h *host) runAliasSet(ctx context.Context, out, errOut io.Writer, rec serve
 	}
 	if shrinks && !acceptSmaller {
 		sentence := fmt.Sprintf("%s's context window would go from %s to %s tokens", req.ID, windowText(oldW), windowText(newW))
-		if sessions := h.clientSessions(ctx, errOut, rec)(); sessions != nil {
+		if sessions := h.clientSessions(ctx, errOut, rec, nil)(); sessions != nil {
 			sentence += fmt.Sprintf("; %d client session(s) use it and keep the window they launched with", sessions[req.ID])
 		}
 		ok, err := h.confirmRemove(sentence + ". Set it anyway?")
@@ -466,7 +466,14 @@ func (h *host) runAliasRm(ctx context.Context, out, errOut io.Writer, rec serves
 		}
 	}
 	if !forceInUse {
-		sessions := h.clientSessions(ctx, errOut, rec)()
+		var unread error
+		sessions := h.clientSessions(ctx, errOut, rec, &unread)()
+		if unread != nil {
+			// A running server whose sessions are unknown: any alias may
+			// be in use, so the in-use approval is needed.
+			return exitcode.New(cli.ExitApprovalMissing,
+				errors.New("approval missing: pass --force-in-use (the running model server's client sessions could not be read, so an alias may be in use); nothing was removed"), false)
+		}
 		for _, id := range ids {
 			if n := sessions[id]; n > 0 {
 				return exitcode.New(cli.ExitApprovalMissing,

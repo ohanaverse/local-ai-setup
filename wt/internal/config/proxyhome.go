@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 
@@ -53,18 +54,23 @@ type ProxyPair struct {
 // test pins both together.
 const proxyHomeHeader = "# wt-model's configuration. [litellm] is written only by `wt-model litellm set`\n" +
 	"# and `wt litellm set`; the api key is never here — it lives in the 0600 file\n" +
-	"# that key_file names.\n"
+	"# that key_file names. [gateway] is hand-edited (no command writes it) and\n" +
+	"# wt-model serve reads it once, at start.\n"
 
 // defaultProxyKeyFile is the key file's name when key_file is absent.
 const defaultProxyKeyFile = "litellm.key"
 
-// proxyHomeDoc is the whole document of the home's config.toml: nothing but
-// the [litellm] table, which SetProxy re-encodes in full (a real write drops
-// comments and any key outside this type). The pointer distinguishes a
-// present-but-empty [litellm] table — authoritative, an empty pair — from
-// absence, which falls back to the legacy table.
+// proxyHomeDoc is the whole document of the home's config.toml: the
+// [litellm] table and the hand-edited [gateway] table, which SetProxy
+// re-encodes in full (a real write drops comments and any key outside this
+// type). The pointer distinguishes a present-but-empty [litellm] table —
+// authoritative, an empty pair — from absence, which falls back to the
+// legacy table. Gateway is a plain map so SetProxy round-trips whatever the
+// operator wrote, and a wrong-typed value there never breaks the [litellm]
+// decode: GatewaySettings interprets it (decision 1 of the phase 3 plan).
 type proxyHomeDoc struct {
 	Litellm *proxyHomeLitellm `toml:"litellm"`
+	Gateway map[string]any    `toml:"gateway,omitempty"`
 }
 
 // proxyHomeLitellm is the home's [litellm] table: the proxy base URL and the
@@ -214,7 +220,9 @@ func readProxyHome(path string) (lit proxyHomeLitellm, present bool, err error) 
 // decodeProxyHome reads and decodes the whole home document at path. exists
 // is false when the file is not there (a fresh home). A file that exists but
 // does not parse is an error, loud: never merge onto a document wt cannot
-// read. The error never quotes a url or key value (secretSafe, #640).
+// read. The error quotes no value from the file at all (valueFreeParseError,
+// secretSafe's rule over every key: #640, and the [gateway] table serve
+// refuses to start on).
 func decodeProxyHome(path string) (doc proxyHomeDoc, exists bool, err error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -224,7 +232,7 @@ func decodeProxyHome(path string) (doc proxyHomeDoc, exists bool, err error) {
 		return doc, false, err
 	}
 	if _, err := toml.Decode(string(data), &doc); err != nil {
-		return doc, false, fmt.Errorf("parse %s: %w", path, secretSafe(err, data))
+		return doc, false, fmt.Errorf("parse %s: %w", path, valueFreeParseError(err, data))
 	}
 	return doc, true, nil
 }
@@ -554,4 +562,166 @@ func ShowProxyStatus(out, errOut io.Writer, asJSON bool) error {
 		fmt.Fprintln(errOut, ProxyFallbackNote())
 	}
 	return nil
+}
+
+// GatewayConf is the home's [gateway] table as serve reads it at start.
+type GatewayConf struct {
+	// SubscriptionPassthrough turns on the gateway's header mode
+	// (x-wt-model-token beside the client's own claude.ai login). Off unless
+	// the table says subscription_passthrough = true.
+	SubscriptionPassthrough bool
+	// TLSCert and TLSKey are the PEM files serve speaks TLS with (a leading
+	// ~ expanded); both empty is plain http. GatewaySettings sets both or
+	// neither: one without the other, a value that is not a string or an
+	// empty string is an error (decision 13: fail closed, never a silent
+	// plain http).
+	TLSCert, TLSKey string
+}
+
+// The [gateway] keys: the host switch and the TLS pair.
+const (
+	gatewayPassthroughKey = "subscription_passthrough"
+	gatewayTLSCertKey     = "tls_cert"
+	gatewayTLSKeyKey      = "tls_key"
+)
+
+// proxyHomeKeys is every key the home's config.toml knows, the one list a
+// value-free parse error may name (valueFreeParseError): [litellm]'s url and
+// key_file and [gateway]'s keys. A key added to either table goes here.
+var proxyHomeKeys = []string{"url", "key_file", gatewayPassthroughKey, gatewayTLSCertKey, gatewayTLSKeyKey}
+
+// GatewayKeyError is a [gateway] key serve cannot start with: a TLS key that
+// is not a string, empty, or set without the other. Msg names the key and
+// never its value; serve prints it as its one refusal line.
+type GatewayKeyError struct{ Msg string }
+
+func (e *GatewayKeyError) Error() string { return e.Msg }
+
+// GatewaySettings reads the wt-model home's [gateway] table (ProxyHomePath,
+// through decodeProxyHome, under the same shared lock as the pair). No file,
+// no table or an absent key is the zero value. A key holding the wrong type
+// ("true", 1) is off plus one warning naming the key and the type it needs:
+// off is the safe direction. tls_cert and tls_key fail closed instead: one
+// without the other, a wrong type or an empty value is a *GatewayKeyError.
+// A file that does not parse is an error, worded without any value from it.
+// No code writes this table.
+func GatewaySettings() (GatewayConf, []string, error) {
+	home := ProxyHomePath()
+	if home == "" {
+		return GatewayConf{}, nil, nil
+	}
+	// No config.toml: nothing to read, and nothing is created (no home
+	// directory, no lock file), as resolveProxy does; every session-only
+	// machine reads this through the Mode tab.
+	if _, serr := os.Stat(home); os.IsNotExist(serr) {
+		if _, lerr := os.Lstat(home); os.IsNotExist(lerr) {
+			return GatewayConf{}, nil, nil
+		}
+	}
+	var doc proxyHomeDoc
+	err := WithFileLockShared(home+".lock", func() error {
+		var derr error
+		doc, _, derr = decodeProxyHome(home)
+		return derr
+	})
+	if err != nil {
+		return GatewayConf{}, nil, err
+	}
+	gc, warns := gatewayFromDoc(doc)
+	cert, key, err := gatewayTLSFromDoc(doc)
+	if err != nil {
+		return GatewayConf{}, nil, err
+	}
+	gc.TLSCert, gc.TLSKey = cert, key
+	return gc, warns, nil
+}
+
+// looksLikePEMContents reports whether a tls_cert/tls_key value is file
+// content rather than a path: any control character (a newline, a carriage
+// return, a NUL, a tab), a PEM armor line or a "PRIVATE KEY" label.
+func looksLikePEMContents(v string) bool {
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return strings.Contains(v, "-----BEGIN") || strings.Contains(v, "PRIVATE KEY")
+}
+
+// gatewayTLSFromDoc reads [gateway] tls_cert and tls_key: both strings,
+// both non-empty, both or neither, a leading ~ expanded, absolute. Anything else is a
+// *GatewayKeyError naming the key, never the value (fail closed: TLS asked
+// for and not usable refuses the start rather than serving plain http).
+func gatewayTLSFromDoc(doc proxyHomeDoc) (cert, key string, err error) {
+	vals := map[string]string{}
+	for _, k := range []string{gatewayTLSCertKey, gatewayTLSKeyKey} {
+		v, ok := doc.Gateway[k]
+		if !ok {
+			continue
+		}
+		s, isString := v.(string)
+		if !isString {
+			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " must be a string"}
+		}
+		if strings.TrimSpace(s) == "" {
+			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " is empty: name the PEM file, or remove both tls_cert and tls_key for plain http"}
+		}
+		// The PEM text pasted in place of a path must never reach a
+		// message as "the path" (the refusal lands in the LaunchAgent's
+		// log): refused here, before any use, naming only the key.
+		if looksLikePEMContents(s) {
+			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " must be a path to a PEM file, not its contents"}
+		}
+		p, xerr := ExpandHome(s)
+		if xerr != nil {
+			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " starts with ~ and the home directory is not known"}
+		}
+		// A relative path would resolve against serve's working
+		// directory, which under launchd is / : the start would fail and
+		// KeepAlive would restart it in a loop. Refused here, naming the
+		// key, never the value (as [model-server] ca_file is).
+		if !filepath.IsAbs(p) {
+			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " is a relative path: write it as an absolute path or ~/..."}
+		}
+		vals[k] = p
+	}
+	if len(vals) == 1 {
+		return "", "", &GatewayKeyError{Msg: "[gateway] tls_cert and tls_key must be set together"}
+	}
+	return vals[gatewayTLSCertKey], vals[gatewayTLSKeyKey], nil
+}
+
+// gatewayFromDoc interprets a decoded home document's [gateway] table.
+func gatewayFromDoc(doc proxyHomeDoc) (GatewayConf, []string) {
+	var gc GatewayConf
+	var warns []string
+	if v, ok := doc.Gateway[gatewayPassthroughKey]; ok {
+		switch b, isBool := v.(bool); {
+		case isBool:
+			gc.SubscriptionPassthrough = b
+		default:
+			warns = append(warns, fmt.Sprintf("[gateway] %s in %s must be a boolean (true or false), not %s; subscription passthrough is off",
+				gatewayPassthroughKey, ProxyHomePath(), tomlTypeName(v)))
+		}
+	}
+	return gc, warns
+}
+
+// tomlTypeName names a decoded TOML value's type for a message, never the
+// value itself.
+func tomlTypeName(v any) string {
+	switch v.(type) {
+	case string:
+		return "a string"
+	case int64:
+		return "an integer"
+	case float64:
+		return "a float"
+	case []any, []map[string]any:
+		return "an array"
+	case map[string]any:
+		return "a table"
+	default:
+		return "a date or time"
+	}
 }

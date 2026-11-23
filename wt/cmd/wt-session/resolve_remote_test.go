@@ -205,3 +205,63 @@ func TestResolveModelRemoteNoPinNeverPicksAnAlias(t *testing.T) {
 		t.Errorf("-M alias/x: row=%q err=%v, want the alias", row.ID, err)
 	}
 }
+
+// subWire is a claude-subscription wire row with the given action.
+func subWire(id, action string, n int) modelapi.Row {
+	r := wireRow(id, action, n)
+	r.ProviderID, r.Family = config.SubscriptionProvider, "claude"
+	return r
+}
+
+// TestResolveModelRemoteNoPinNeverPicksASubscriptionRow pins that subscription
+// rows are pin-only (#597): with the host's passthrough on, a subscription row
+// (or an alias over one) is neither the one launchable row nor a rotation
+// entry, so a launch with no -M never spends the owner's subscription unasked.
+// When subscription rows were the only launchable ones the error says a Claude
+// subscription model must be named with -M, not that nothing is running; with
+// another launchable row beside it, that row is launched directly.
+func TestResolveModelRemoteNoPinNeverPicksASubscriptionRow(t *testing.T) {
+	sub := subWire("claude-haiku-5-5", modelapi.ActionLaunch, 0)
+	group := aliasWire("alias/haiku", 2, modelapi.AliasTarget{ID: "claude-haiku-5-5", ProviderID: config.SubscriptionProvider, Location: "cloud", Order: 1})
+	f := newFakeModelServer(t, sub, group)
+	ms := openFake(t, f)
+	ctx := context.Background()
+	row, list, err := resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
+	if err == nil || row.ID != "" || len(list) != 0 {
+		t.Fatalf("only a subscription row: row=%q list=%d err=%v, want an error and no launch", row.ID, len(list), err)
+	}
+	if !strings.Contains(err.Error(), "-M") || !strings.Contains(err.Error(), "Claude subscription") || strings.Contains(err.Error(), "no cloud or running local model") {
+		t.Errorf("only a subscription row: err = %q, want it to say a Claude subscription model is named with -M", err)
+	}
+	f.Rows = []modelapi.Row{sub, group, wireRow("openrouter/a", modelapi.ActionLaunch, 1)}
+	row, list, err = resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
+	if err != nil || row.ID != "openrouter/a" || len(list) != 1 || list[0].ID != "openrouter/a" {
+		t.Errorf("mixed: row=%q list=%v err=%v, want openrouter/a launched directly", row.ID, list, err)
+	}
+	row, _, err = resolveModelRemote(ctx, ms, remoteAgent(), "", "", "claude-haiku-5-5")
+	if err != nil || row.ID != "claude-haiku-5-5" {
+		t.Errorf("-M claude-haiku-5-5: row=%q err=%v, want the subscription row", row.ID, err)
+	}
+}
+
+// TestResolveModelRemotePinIneligibleBeforeBlock pins the CLI pin order the
+// TUI already has: eligibility is judged before the block reason, so
+// `wt -A pi -M claude-haiku-5-5` with the host's passthrough off says pi
+// cannot use the model, instead of telling the user to turn on a host key that
+// would not help pi.
+func TestResolveModelRemotePinIneligibleBeforeBlock(t *testing.T) {
+	sub := subWire("claude-haiku-5-5", modelapi.ActionBlock, 0)
+	sub.State, sub.BlockReason = modelapi.StateBlocked, "subscription passthrough is off on the model server ([gateway] subscription_passthrough in ~/.config/wt-model/config.toml)"
+	f := newFakeModelServer(t, sub)
+	ms := openFake(t, f)
+	pi := config.Agent{Name: "pi", AllProviders: true}
+	_, _, err := resolveModelRemote(context.Background(), ms, pi, "", "", "claude-haiku-5-5")
+	if err == nil || !strings.Contains(err.Error(), "not in the eligible list for agent \"pi\"") {
+		t.Errorf("pi pin of a blocked subscription row: err = %v, want the not-eligible error", err)
+	}
+	// claude is eligible, so it gets the block reason naming the key.
+	_, _, err = resolveModelRemote(context.Background(), ms, remoteAgent(), "", "", "claude-haiku-5-5")
+	if err == nil || !strings.Contains(err.Error(), "[gateway] subscription_passthrough") {
+		t.Errorf("claude pin of a blocked subscription row: err = %v, want the block reason", err)
+	}
+}

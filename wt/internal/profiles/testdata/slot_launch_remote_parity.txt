@@ -11,12 +11,20 @@
 #   omlx/unknown                local, running, routing unknown (R7)
 #   omlx/unrouted               local, running, known not to be routed
 #   omlx/idle                   local, stopped, start
+#   claude-haiku-5-5            cloud, launch, on the Claude subscription
+#                               (provider claude-subscription, #597)
+#
+# Both serve it with the subscription passthrough on, the session opted in
+# and a claude.ai login, so the pre-launch guard lets the launch through.
 #
 # Fields:
 #   scenario  a name for the subtest
 #   slots     slot=model pairs (the default slot is sonnet)
 #   calls     the normalized calls, in order, from the launch's first call
-#             to the agent's build: catalog (one read), register=<ids> (the
+#             to the agent's build: catalog (one read), guard (the
+#             pre-launch guard reached a subscription row: its login check
+#             in cmd/wt-session, the ProfileLayer.Guard call in internal/tui;
+#             it must come before the register), register=<ids> (the
 #             client session's register with every distinct slot model, in
 #             FilledOrder), start=<id> (the start job), build (the agent's
 #             command against the gateway). A ping, a job poll, a heartbeat
@@ -41,3 +49,7 @@ calls: catalog register=openrouter/a,omlx/unrouted start=omlx/unrouted build
 scenario: local stopped
 slots: sonnet=openrouter/a haiku=omlx/idle
 calls: catalog register=openrouter/a,omlx/idle start=omlx/idle build
+
+scenario: subscription slot
+slots: sonnet=openrouter/a haiku=claude-haiku-5-5
+calls: catalog guard register=openrouter/a,claude-haiku-5-5 build

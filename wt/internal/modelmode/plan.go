@@ -354,21 +354,33 @@ func planRemote(st State, want Desired, h PlanHooks) (Plan, error) {
 // are ignored and overwritten, not refused. The entered url and token file
 // are never used: the pointer describes this machine.
 func planLocalPointer(st State, want Desired) (Plan, error) {
+	if r := LocalTLSRefusal(st); r != "" {
+		return Plan{}, &RefusalError{Reasons: []string{r}}
+	}
 	t := st.Config.Table
 	m, ok := ParseMode(t.Mode)
 	storedLocal := ok && m == ModeLocal
 	want.URL, want.TokenFile = "", ""
 	needDefaultToken := false
+	tlsOn := st.LocalTLS.On
+	schemeSwapped := false
 	if storedLocal {
 		if urlrule.HasUserinfo(t.URL) {
 			// Alone: this url would be kept, and config.toml is not a secret
 			// file (Observe stores urlrule.Hidden whole).
 			return Plan{}, &RefusalError{Reasons: []string{CredentialsReason("the stored url")}}
 		}
-		if t.URL != "" {
+		switch swapped, ok := SwapLoopbackScheme(t.URL, tlsOn); {
+		case t.URL == "":
+			want.URL = LocalURL(DefaultListen, tlsOn)
+		case ok:
+			// A loopback url of the other scheme is setup's, whatever its
+			// port: only the scheme follows serve's TLS.
+			want.URL = swapped
+			schemeSwapped = true
+		default:
+			// A non-loopback or hand-written url is kept as written.
 			want.URL = t.URL
-		} else {
-			want.URL = "http://" + DefaultListen
 		}
 		if t.TokenFile != "" {
 			want.TokenFile = ExpandIn(t.TokenFile, st.Host.Home)
@@ -376,7 +388,7 @@ func planLocalPointer(st State, want Desired) (Plan, error) {
 			needDefaultToken = true
 		}
 	} else {
-		want.URL = "http://" + DefaultListen
+		want.URL = LocalURL(DefaultListen, tlsOn)
 		needDefaultToken = true
 	}
 	if needDefaultToken {
@@ -390,6 +402,16 @@ func planLocalPointer(st State, want Desired) (Plan, error) {
 	p := Plan{Want: want}
 	p.AddConfigStep(st) // an unchanged table gives its existing "keep [model-server] …" note
 	p.Notes = append(p.Notes, "run `wt-model setup` to set up wt-model on this machine")
+	if schemeSwapped {
+		// A session cannot restart serve; serve reads [gateway] only at
+		// start, so until it is restarted it may speak the old scheme.
+		speaks := "plain http"
+		if tlsOn {
+			speaks = "TLS"
+		}
+		p.Notes = append(p.Notes, "wt-model serve reads its TLS settings only at start: restart it on the host so it speaks "+speaks+" (`wt-model setup` does it)")
+	}
+	p.AddLocalTLSNotes(st)
 	p.AddEnvNote(st)
 	return p, nil
 }

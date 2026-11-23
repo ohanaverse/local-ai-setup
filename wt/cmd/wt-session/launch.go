@@ -124,7 +124,7 @@ func selfHealAgentConfigContentTarget(agent, worktreePath string) {
 // without even loading profiles.toml. pp, when non-nil, is newApp()'s
 // already-loaded profiles.toml state (see precomputedProfiles) — reused
 // instead of loading and validating the file again.
-func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles) (cleanup func() error, err error) {
+func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, headerMode bool) (cleanup func() error, err error) {
 	noop := func() error { return nil }
 	// Self-heal runs before the early-return guards below: it repairs PAST
 	// session state (an orphaned config_content backup left by a prior
@@ -155,7 +155,7 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 	if !apply {
 		return noop, nil
 	}
-	return applyResolvedProfile(cmd, agent, rp, nil)
+	return applyResolvedProfile(cmd, agent, rp, nil, headerMode)
 }
 
 // resolveLaunchProfile is the pure match half of applyProfileForLaunch: does a
@@ -200,15 +200,15 @@ func resolveLaunchProfile(agent string, m config.Model, cfg *config.Config, pp *
 // nothing (false) and never reaches confirmProfile; with no carried answer it
 // is applyProfileForLaunch (resolve, warn, confirm on /dev/tty or default to
 // yes with no terminal).
-func applyProfileForLaunchCarried(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, rp *profiles.ResolvedProfile, apply bool) (func() error, error) {
+func applyProfileForLaunchCarried(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, rp *profiles.ResolvedProfile, apply, headerMode bool) (func() error, error) {
 	if rp == nil {
-		return applyProfileForLaunch(cmd, agent, m, cfg, pp)
+		return applyProfileForLaunch(cmd, agent, m, cfg, pp, headerMode)
 	}
 	selfHealAgentConfigContentTarget(agent, cmd.Dir)
 	if m.ID == "" || m.Native || cfg == nil || !apply {
 		return func() error { return nil }, nil
 	}
-	return applyResolvedProfile(cmd, agent, *rp, nil)
+	return applyResolvedProfile(cmd, agent, *rp, nil, headerMode)
 }
 
 // applyResolvedProfile applies an already-confirmed ResolvedProfile to
@@ -250,8 +250,22 @@ func applyProfileForLaunchCarried(cmd *exec.Cmd, agent string, m config.Model, c
 // is a clean, complete undo — but oneShotArgs must still be appended onto
 // that reverted snapshot, or the degraded-unprofiled command would be
 // missing its one-shot subcommand/prompt entirely.
-func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfile, oneShotArgs []string) (cleanup func() error, err error) {
+//
+// headerMode is what the build reported (agents.LaunchInfo.HeaderMode): the
+// command runs in claude's header mode (#597). Then a profile whose env,
+// config_content env or top-level config_content would replace the merged
+// ANTHROPIC_CUSTOM_HEADERS or displace the checked login (a token, a key,
+// the base url, a CLAUDE_CODE_USE_* switch, apiKeyHelper) is refused before
+// anything is applied: a backstop for a path where the profile resolves after
+// the pre-launch guard. It is an error, not a degrade: an unprofiled launch
+// would not be what the user configured either.
+func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfile, oneShotArgs []string, headerMode bool) (cleanup func() error, err error) {
 	noop := func() error { return nil }
+	if headerMode {
+		if herr := headerModeProfileErr(rp); herr != nil {
+			return noop, herr
+		}
+	}
 	origEnv := slices.Clone(cmd.Env)
 	origArgs := slices.Clone(cmd.Args)
 	profiles.ApplyEnvAndArgs(cmd, rp)
@@ -307,6 +321,9 @@ func applyResolvedProfile(cmd *exec.Cmd, agent string, rp profiles.ResolvedProfi
 type runTail struct {
 	End       func()
 	PriceNote func()
+	// HeaderMode is the build's agents.LaunchInfo.HeaderMode: the applier
+	// refuses a launch profile that would undo it (applyResolvedProfile).
+	HeaderMode bool
 }
 
 // release is the tail's first step: the client session's End.
@@ -353,7 +370,7 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	}
 	defer claimRelease() // every exit path below releases; safe twice
 
-	profileCleanup, perr := applyProfileForLaunch(cmd, agent, m, cfg, pp)
+	profileCleanup, perr := applyProfileForLaunch(cmd, agent, m, cfg, pp, tail.HeaderMode)
 	if perr != nil {
 		// A pre-launch config error must still end the client session
 		// registered before runAgentCmd was called, and print the summary

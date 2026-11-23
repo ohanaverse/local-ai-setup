@@ -20,6 +20,8 @@ Copilot CLI reads its primary state from `~/.copilot/` (per upstream Copilot CLI
 
 Native auth: `gh auth login` plus a Copilot subscription. Provider override: set `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, and `COPILOT_PROVIDER_WIRE_API` to point Copilot at a non-GitHub endpoint (Ollama, OpenAI-compatible proxies). See the [Ollama integration docs](https://docs.ollama.com/integrations/copilot-cli) for the canonical example.
 
+**A model server over `https://` with a private certificate.** wt sets no certificate variable for copilot: it must trust the gateway's certificate through the system trust store (on macOS, the login keychain), or through its own setting for extra roots, which is unverified until the phase 3 live check (#597) records it. wt's own control calls trust `ca_file` ([wt-session.md](../wt-session.md#tls)); the agent does not read it.
+
 ## Model selection
 
 Copilot picks a model from `--model <name>` or via the `COPILOT_MODEL` environment variable. `copilot-wt` does not pass `--model` directly; it handles two cases:

@@ -3,9 +3,15 @@
 package modelclient
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tlsfile"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tokenfile"
 )
 
@@ -72,7 +78,17 @@ func sessionTokenError(err error, fromEnv bool) error {
 // on is refused with *CredentialsInURLError when it holds an '@' (HasUserinfo),
 // whichever source it came from, before a token file is read or any request
 // is built.
-func ResolveEndpoint(url, tokenFile string, env func(string) string) (Endpoint, error) {
+//
+// caFile is [model-server] ca_file (decision 14); WT_MODEL_CA_FILE wins over
+// it. For an https url its leading ~ is expanded, it is made absolute (the
+// agent runs in the worktree and must read the same file) and checked before
+// any request: a relative path from config.toml (modelping.RelativeConfigCAFile), a
+// file that is not regular, over 1 MiB, unreadable, holding no PEM
+// certificate or holding a private key is a *modelping.CAFileError naming
+// the path, never its bytes; a CA
+// certificate without name constraints resolves with one note. For any other
+// url it is neither read nor used, with one note.
+func ResolveEndpoint(url, tokenFile, caFile string, env func(string) string) (Endpoint, error) {
 	if v := env("WT_MODEL_URL"); v != "" {
 		url = v
 	}
@@ -98,7 +114,81 @@ func ResolveEndpoint(url, tokenFile string, env func(string) string) (Endpoint, 
 	if url == "" || tok == "" {
 		return Endpoint{}, &NotConfiguredError{MissingURL: url == "", MissingToken: tok == ""}
 	}
-	return Endpoint{URL: url, Token: tok}, nil
+	ep := Endpoint{URL: url, Token: tok}
+	caFromEnv := false
+	if v := env("WT_MODEL_CA_FILE"); v != "" {
+		caFile, caFromEnv = v, true
+	}
+	if caFile == "" {
+		return ep, nil
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(url)), "https://") {
+		ep.Notes = append(ep.Notes, "ca_file is ignored for an http url")
+		return ep, nil
+	}
+	if !caFromEnv && modelping.RelativeConfigCAFile(caFile) {
+		return Endpoint{}, &modelping.CAFileError{Path: caFile, Reason: modelping.RelativeCAReason}
+	}
+	path, notes, err := checkCAFile(caFile)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	ep.CAFile, ep.Notes = path, append(ep.Notes, notes...)
+	return ep, nil
+}
+
+// checkCAFile expands a leading ~ in p, makes it absolute and checks the
+// file: it must be readable, hold at least one PEM certificate and no
+// private-key block. notes holds one line when a certificate in it is a CA
+// without name constraints (it can vouch for any host).
+func checkCAFile(p string) (string, []string, error) {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return "", nil, &modelping.CAFileError{Path: p, Reason: "cannot be read: no home directory to expand ~ against"}
+		}
+		p = filepath.Join(home, strings.TrimPrefix(p[1:], "/"))
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", nil, &modelping.CAFileError{Path: p, Reason: "cannot be read: " + err.Error()}
+	}
+	data, err := modelping.ReadCAFile(abs)
+	if err != nil {
+		return "", nil, err
+	}
+	if tlsfile.HasPrivateKey(data) {
+		return "", nil, &modelping.CAFileError{Path: abs, Reason: modelping.CAKeyReason}
+	}
+	var certs []*x509.Certificate
+	for rest := data; ; {
+		var b *pem.Block
+		b, rest = pem.Decode(rest)
+		if b == nil {
+			break
+		}
+		if b.Type != "CERTIFICATE" {
+			continue
+		}
+		if c, err := x509.ParseCertificate(b.Bytes); err == nil {
+			certs = append(certs, c)
+		}
+	}
+	if len(certs) == 0 {
+		return "", nil, &modelping.CAFileError{Path: abs, Reason: "holds no PEM certificate"}
+	}
+	for _, c := range certs {
+		if c.IsCA && !nameConstrained(c) {
+			return abs, []string{"ca_file " + abs + " holds a CA certificate without name constraints: it can vouch for any host, Anthropic's included"}, nil
+		}
+	}
+	return abs, nil, nil
+}
+
+// nameConstrained reports whether c carries any name constraint.
+func nameConstrained(c *x509.Certificate) bool {
+	return len(c.PermittedDNSDomains)+len(c.ExcludedDNSDomains)+len(c.PermittedIPRanges)+len(c.ExcludedIPRanges)+
+		len(c.PermittedEmailAddresses)+len(c.ExcludedEmailAddresses)+len(c.PermittedURIDomains)+len(c.ExcludedURIDomains) > 0
 }
 
 // NoServerConfigured reports whether err says no model server is configured at

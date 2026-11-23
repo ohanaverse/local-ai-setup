@@ -94,6 +94,14 @@ type State struct {
 	// of an answering server.
 	LocalServer ServerState
 	Host        HostState
+	// LocalTLS is this machine's wt-model home TLS settings (ConfigStore's
+	// LocalTLS): a local url is https:// only while it says On.
+	LocalTLS LocalTLS
+	// CAFile is the CA file this session trusts for an https model server:
+	// WT_MODEL_CA_FILE, else [model-server] ca_file (~ expanded, made
+	// absolute); a local plan with TLS on and no CA file notes the line to
+	// add, and a ping of a configured or entered url trusts it.
+	CAFile string
 }
 
 // LocalFallback is a local-mode plan's inputs: the token file to use and the

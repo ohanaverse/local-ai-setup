@@ -1,6 +1,7 @@
 # Shared fixture for cross-language contract tests. Exercises every schema
-# variant wt writes and reads: all three provider auth types
-# (none, api_key, native), full per-token + subscription pricing, model_info,
+# variant wt writes and reads: all four provider auth types
+# (none, api_key, native, client-login), full per-token + subscription
+# pricing, model_info,
 # a per-model location override, a free model, and [[aliases]] (one alias,
 # one group of a cloud and a local target). Since #179 Phase B it also
 # pins local overlay matching: a local registry entry is an overlay matched to
@@ -88,6 +89,18 @@ location = "local"
 [providers.auth]
 type = "none"
 base_url = "http://localhost:8003/v1"
+
+# claude-subscription (#597): the owner's own Claude login, forwarded by
+# LiteLLM to api.anthropic.com through keyless anthropic/<id> rows. Mirrors the
+# default row wt seeds (internal/provider/table.go): auth.type "client-login"
+# and no base_url key at all (a base_url or secret_ref refuses the route).
+[[providers]]
+id = "claude-subscription"
+name = "Claude subscription"
+location = "cloud"
+protocols = ["anthropic"]
+[providers.auth]
+type = "client-login"
 
 [[families]]
 name = "contract-fixture"
@@ -182,6 +195,18 @@ id = "ollama/contract-fixture:absent"
 family = "contract-fixture"
 provider_id = "ollama"
 model_name = "contract-fixture:absent"
+tags = ["code"]
+
+# A subscription model (#597): the registry id is the bare real Claude id,
+# equal to model_name (no provider prefix, no "--"), and it carries the
+# context window Claude Code is told (required for this provider). Its
+# location is the provider's (cloud).
+[[models]]
+id = "claude-haiku-5-5"
+family = "claude"
+provider_id = "claude-subscription"
+model_name = "claude-haiku-5-5"
+context_window = 1000000
 tags = ["code"]
 
 # [[aliases]] (#596): a gateway id that names one model (an alias) or several

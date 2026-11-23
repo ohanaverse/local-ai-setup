@@ -104,7 +104,7 @@ func TestApplySlotProfileAppliesArgsAndWrapper(t *testing.T) {
 	cmd := exec.Command("true", "--model", "opus")
 	cmd.Dir = worktree
 
-	cleanup, err := applySlotProfile(cmd, "claude", row)
+	cleanup, err := applySlotProfile(cmd, "claude", row, false)
 	if err != nil {
 		t.Fatalf("applySlotProfile() error = %v", err)
 	}
@@ -138,7 +138,7 @@ func TestApplySlotProfileFailsClosed(t *testing.T) {
 	cmd := exec.Command("true")
 	cmd.Dir = worktree
 
-	cleanup, err := applySlotProfile(cmd, "claude", slotRow(check))
+	cleanup, err := applySlotProfile(cmd, "claude", slotRow(check), false)
 	if err == nil || !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("err = %v, want the wrapper-not-installed error", err)
 	}
@@ -146,7 +146,7 @@ func TestApplySlotProfileFailsClosed(t *testing.T) {
 		t.Error("cleanup must not be nil, even on an error")
 	}
 
-	if _, err := applySlotProfile(exec.Command("true"), "claude", catalog.Row{Model: config.Model{ID: "openrouter/a"}}); err == nil {
+	if _, err := applySlotProfile(exec.Command("true"), "claude", catalog.Row{Model: config.Model{ID: "openrouter/a"}}, false); err == nil {
 		t.Error("a model row was accepted: the applier must refuse a row that is not a slot profile")
 	}
 }
@@ -175,7 +175,7 @@ func TestApplySlotProfileSelfHealsALeftoverSettingsFile(t *testing.T) {
 
 	var err error
 	stderr := captureFile(t, &os.Stderr, func() {
-		_, err = applySlotProfile(cmd, "claude", row)
+		_, err = applySlotProfile(cmd, "claude", row, false)
 	})
 	if err != nil {
 		t.Fatalf("applySlotProfile() error = %v", err)
@@ -214,7 +214,7 @@ func TestSlotProfileWritesNoSettingsFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildSlotLaunchCmdGateway() error = %v", err)
 	}
-	cleanup, err := applySlotProfile(cmd, "claude", row)
+	cleanup, err := applySlotProfile(cmd, "claude", row, false)
 	if err != nil {
 		t.Fatalf("applySlotProfile() error = %v", err)
 	}
@@ -391,11 +391,11 @@ func TestSlotLaunchWritesClaim(t *testing.T) {
 	r, _ := slotRig(t, map[string]string{"sonnet": "openrouter/a"})
 	root := sharedRootRepo(t)
 	claimCopy := filepath.Join(t.TempDir(), "claim")
-	r.a.hooks.buildSlotGateway = func(_ profiles.SlotLaunch, wt string, _ bool, _ agents.Gateway, _ []string) (*exec.Cmd, error) {
+	r.a.hooks.buildSlotGateway = func(_ profiles.SlotLaunch, wt string, _ bool, _ agents.Gateway, _ []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		cmd := exec.Command("/bin/sh", "-c",
 			"d=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && cp \"$d/wt-sessions/"+strconv.Itoa(os.Getpid())+"\" '"+claimCopy+"' 2>/dev/null\nexit 0")
 		cmd.Dir = wt
-		return cmd, nil
+		return cmd, agents.LaunchInfo{}, nil
 	}
 
 	var err error

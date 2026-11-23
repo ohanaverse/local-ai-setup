@@ -30,6 +30,13 @@ Claude Code reads from `~/.claude/`. Briefly:
 
 Claude Code uses OAuth, with state stored in `~/.claude.json`. The internals of that file are observable but should be treated as opaque — the supported way to (re-)authenticate is `claude /login`, not editing `~/.claude.json` by hand. There is no environment-variable credential pattern equivalent to pi's `$ANTHROPIC_API_KEY`-via-wrapper setup; `claude-wt` does not need a credential wrapper.
 
+Through the model server, a launch runs in one of two modes:
+
+- **Token mode** (every gateway model except a Claude subscription one): Claude Code authenticates to the gateway with the wt token as `ANTHROPIC_AUTH_TOKEN`, and the gateway swaps it for the LiteLLM key. Your claude.ai login is not used.
+- **Header mode** (a `claude-subscription` model, or an alias or slot that uses one): Claude Code keeps its own claude.ai login as its credential, and wt adds the wt token as an `x-wt-model-token` line of `ANTHROPIC_CUSTOM_HEADERS`. The gateway forwards the login to Anthropic. See [Claude subscription models](#claude-subscription-models-header-mode).
+
+**A model server over `https://` with a private certificate.** When the gateway's url is `https://` and `ca_file` (or `WT_MODEL_CA_FILE`) is set ([wt-session.md](../wt-session.md#tls)), wt sets `NODE_EXTRA_CA_CERTS` to that file (and `WT_NODE_EXTRA_CA_CERTS`, a marker naming the same path) so Claude Code trusts the same certificate. When your environment already names another file there, wt leaves it (Node reads one file): in token mode with one `wt: note:`, and in header mode it refuses (`NODE_EXTRA_CA_CERTS names <path>, which does not hold the ca_file certificate: unset it or add the certificate to it`) unless that file holds the `ca_file` certificates. A launch that does not reach an `https://` gateway (a native launch, an `http://` gateway) removes a value wt set, recognized by the marker, so a nested `wt -M claude/opus` does not keep trusting the gateway's certificate on its way to Anthropic; a value of your own (no marker) is left alone. `NODE_TLS_REJECT_UNAUTHORIZED=0` (or `false`) turns Node's certificate check off: header mode refuses it, and token mode over an `https://` gateway prints one `wt: note:`.
+
 ## Model selection
 
 Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` handles two cases:
@@ -41,7 +48,7 @@ Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude
 
 ### Through the model server's gateway
 
-Every non-native model goes through the model server's gateway (`wt-model serve`; see [wt-session.md](../wt-session.md)); there are no direct routes, and wt never points Claude Code at a provider or at LiteLLM itself. The launcher sets:
+Every non-native model goes through the model server's gateway (`wt-model serve`; see [wt-session.md](../wt-session.md)); there are no direct routes, and wt never points Claude Code at a provider or at LiteLLM itself. In token mode (every gateway model except a Claude subscription one) the launcher sets:
 
 ```bash
 ANTHROPIC_AUTH_TOKEN="<gateway token>"
@@ -50,6 +57,25 @@ ANTHROPIC_BASE_URL="<gateway origin>"  # no /v1; a trailing slash is normalized
 ```
 
 The `--model` value is the model's gateway id — its full registry id (e.g. `ollama/qwen3.8:27b-mlx`) unless the server names another — never the bare provider-specific name. The token is the model server's client token, which the gateway swaps for the LiteLLM key; no provider key and no `[litellm]` key reaches Claude Code. Native models (`claude/native`, `claude/opus`, etc.) continue to use the native subscription and never see the gateway or its token.
+
+### Claude subscription models (header mode)
+
+A `claude-subscription` model (for example `claude-opus-5-5`, an illustrative id; the host adds them with `wt-model model add claude-subscription …`, [wt-model.md](../wt-model.md#claude-subscription-models)) runs on your own Claude subscription through the gateway. It is offered only to claude, and wt never chooses or rotates onto one by itself (pin it with `-M`, pick it in the picker or name it in a slot profile); every launch first runs the pre-launch checks of [wt-session.md](../wt-session.md#claude-subscription-header-mode): this machine's opt-in, a safe endpoint, the server's mode, the launch profile, Claude Code 2.1.227 or newer, and a claude.ai login. The subscription is your own login only: never share or pool it through a model server.
+
+Header mode sets:
+
+```bash
+ANTHROPIC_BASE_URL="<gateway origin>"
+ANTHROPIC_API_KEY=""                     # empty: Claude Code keeps its login
+ANTHROPIC_CUSTOM_HEADERS="<your inherited lines>\nx-wt-model-token: <gateway token>"
+```
+
+and clears `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, the `*_FILE_DESCRIPTOR` credential variables and every `CLAUDE_CODE_USE_*`. An inherited `x-wt-model-token` or `authorization` line is dropped from the merged header. The token is in the process environment only (never argv, `--settings` or a file), so the session's shell, its tool subprocesses and its hooks carry it. Every other launch strips an inherited `x-wt-model-token` line.
+
+- **Your own `~/.claude/settings.json`.** Its `env` block outranks the process environment. One that sets `ANTHROPIC_CUSTOM_HEADERS` replaces wt's header, and the gateway answers 401; one that sets `ANTHROPIC_AUTH_TOKEN` replaces the login, and the gateway answers 401 (when it is the wt token) or 403 `subscription_no_login`. wt does not read that file: remove the key there.
+- **Cost.** A subscription row has no price, so LiteLLM books $0 for it, while Claude Code shows list price for the session. Neither is what your plan charges.
+- **Usage credits.** Depending on your plan and seat tier, a Fable row (`claude-fable-5-2`), and other large models, may need usage credits or count against your plan's limits; Claude Code's `/model` picker can show "Requires usage credits" for it. Check your plan before pointing a slot at one.
+- **Context window.** Every subscription model carries a registry `context_window` (`wt-model model add` refuses one without it; 1000000 for the current Claude ids). For an id it recognizes, Claude Code applies `CLAUDE_CODE_MAX_CONTEXT_TOKENS` only together with `DISABLE_COMPACT`, which wt never sets, so a subscription slot keeps Claude Code's own window even in a slot profile whose declared window is smaller (that value still governs the alias and local slots). Whether the claude.ai path serves the same 1M window as the API is not yet verified. If a gateway enforces less, set `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in the profile's `env`.
 
 ### Model slots on a single-model launch
 
@@ -157,6 +183,8 @@ wt then passes `--model <default slot>` (`--model opusplan` for an [opusplan](sl
 holding `ANTHROPIC_DEFAULT_<SLOT>_MODEL` for every slot. It writes no
 settings file. The file format, the picker row and every failure are in
 [slot-profiles.md](slot-profiles.md).
+
+A slot may name a Claude subscription model (fable and opus on the subscription, sonnet and haiku on aliases or local models, for instance): the whole session then runs in header mode ([Claude subscription models](#claude-subscription-models-header-mode)), and the profile's `env` and `config_content` may not set the header mode's keys ([slot-profiles.md](slot-profiles.md#claude-subscription-slots)).
 
 A dated observation (2026-10-14, #393) concerns a launch that gives
 Claude Code a local mtplx model through the LiteLLM proxy, slot profile or

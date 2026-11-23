@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,6 +23,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelserver"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tlsfile"
 	"github.com/spf13/cobra"
 )
 
@@ -72,8 +78,9 @@ func loadServeConfig() (*config.Config, *url.URL, string, error) {
 const recordNoteFormat = "wt-model: note: could not write the runtime record (%s) — host commands cannot see this server's client sessions\n"
 
 // serveCmd is `wt-model serve`. rt.Record is where it keeps its runtime
-// record while it runs.
-func serveCmd(mk depsFactory, rt serveRuntime) *cobra.Command {
+// record while it runs; h's ProxyEnv and ModelInfo are what its subscription
+// hazard check reads.
+func serveCmd(mk depsFactory, rt serveRuntime, h *host) *cobra.Command {
 	var listen, tokenFile string
 	idle := defaultIdleGrace
 	cmd := &cobra.Command{
@@ -98,6 +105,45 @@ database that was wiped is repopulated the next time wt-model serve starts
 (a proxy restart keeps its database rows and runs no sync). What that sync
 changes or warns about is printed on stderr; a failure there is a warning
 and serving goes on.
+The subscription passthrough (the gateway's header mode: a request carrying
+x-wt-model-token forwards the client's own claude.ai login, the owner's own
+login only) is off unless the wt-model home's config.toml says
+
+  [gateway]
+  subscription_passthrough = true
+
+a hand edit no command writes, read once at start (restart serve after a
+change). When on, a line after the listening line says so, and a warning
+follows when the address is not loopback and TLS is off, since header-mode
+requests from other machines over plain http are refused. A value that is
+not a boolean is off with one warning; a config.toml that does not parse
+refuses the start. Before listening with the mode on, serve checks the LiteLLM
+proxy (up to 5 s): an environment it cannot read (wt's own never stands
+in), an ANTHROPIC_* credential or address variable in it (ANTHROPIC_API_KEY,
+ANTHROPIC_AUTH_TOKEN, the workload-identity ones, ANTHROPIC_API_BASE,
+ANTHROPIC_BASE_URL), client-header forwarding in config.yaml, a config.yaml it
+cannot read, a wildcard routed to anthropic, or an anthropic deployment that
+names a litellm credential or whose api_base or base_url is not exactly
+https://api.anthropic.com keeps the mode off with one warning naming it; a
+proxy that does not answer is one warning and the mode stays on (the route
+sync keeps the Claude subscription routes that exist and adds none until it
+can check).
+TLS is off (plain http) unless the same table names a PEM certificate and
+its key, both hand-edited, both or neither:
+
+  [gateway]
+  tls_cert = "~/.config/wt-model/tls/server.crt"
+  tls_key  = "~/.config/wt-model/tls/server.key"
+
+The key file must be mode 0600 or stricter, the certificate file must hold
+no private key, and the two must be different files that match. Serve then
+speaks TLS 1.2+ (HTTP/2 on), prints "TLS is on" after the listening line
+(plus a warning when the certificate expires within 14 days or names
+neither 127.0.0.1 nor localhost) and records the certificate's path in
+serve.json. A certificate that is expired or not yet valid is not a refusal:
+serve starts on plain http with one warning naming the date, the ping says
+tls_off, remote https clients fail and the header mode is refused from
+non-loopback peers until both files are replaced and serve restarted.
 While it runs it keeps a runtime record, serve.json in the wt-model home
 (pid, address, token file path; never the token), and removes it when it
 stops cleanly.
@@ -105,7 +151,10 @@ stops cleanly.
 Exit codes:
   0  stopped cleanly on SIGINT or SIGTERM
   1  any failure (a bad flag, an unreadable token file, an unconfigured
-     LiteLLM proxy, an address that cannot be bound)`,
+     LiteLLM proxy, a wt-model config.toml that does not parse, a
+     tls_cert/tls_key that is half set, not a string, missing, unreadable,
+     a loose key, a key in the certificate file, one file named twice or a
+     pair that does not match or parse, an address that cannot be bound)`,
 		Example: `  wt-model serve --listen 127.0.0.1:8787 --token-file ~/.config/wt-model/server.token`,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -133,12 +182,51 @@ Exit codes:
 			if cfg.ProxySource() == config.ProxySourceLegacy {
 				fmt.Fprintln(cmd.ErrOrStderr(), config.ProxyFallbackNote())
 			}
-			srv, err := modelserver.NewServer(modelserver.Options{
-				Listen: listen, Token: token, IdleGrace: idle,
-				Upstream: upstream, UpstreamKey: key,
-			}, mk(cfg, config.Load, upstream, key))
+			// The host switch is read once, here, before listening: a home
+			// that does not parse refuses the start (worded without values),
+			// a wrong-typed key is off with a warning printed after the
+			// announce line. A change needs a serve restart.
+			gw, gwWarns, err := config.GatewaySettings()
+			if err != nil {
+				// A TLS key serve cannot use is its own one line
+				// (decision 13: fail closed); anything else is the
+				// home that does not parse.
+				var ke *config.GatewayKeyError
+				if errors.As(err, &ke) {
+					return ke
+				}
+				return config.ConfigError(&config.ProxyHomeError{Err: err})
+			}
+			// With the mode on, the proxy is checked for what would make a
+			// keyless anthropic/ row unsafe (decision 5), synchronously and
+			// bounded: a hazard keeps the mode off (the ping says so), a
+			// proxy that cannot be read keeps it on (the sync gates the
+			// routes). Its one warning line follows the announce line.
+			gateLine := ""
+			if gw.SubscriptionPassthrough {
+				gw.SubscriptionPassthrough, gateLine = subscriptionGate(cmd.Context(), litellm.PairedConfigPath(), h.ProxyEnv(), h.ModelInfo, subscriptionGateBound)
+			}
+			// TLS is loaded here, before listening and before serve.json:
+			// a configuration error refuses the start; an expired or
+			// not-yet-valid certificate serves plain http with one
+			// warning after the announce line.
+			now := time.Now()
+			st, err := loadServeTLS(gw, now)
 			if err != nil {
 				return err
+			}
+			// The proxy's transport errors (and, with TLS, the handshake
+			// errors) go to serve's stderr; it logs no header or body
+			// (the gateway's rule).
+			errLog := log.New(cmd.ErrOrStderr(), "wt-model: ", 0)
+			srv, err := modelserver.NewServer(serverOptions(listen, token, idle, upstream, key, gw, st, errLog),
+				mk(cfg, config.Load, upstream, key))
+			if err != nil {
+				return err
+			}
+			recordCert := ""
+			if st.Config != nil {
+				recordCert = st.Cert
 			}
 			// The record names the token file by an absolute path, so a host
 			// command run from another directory finds it; never the token.
@@ -164,10 +252,25 @@ Exit codes:
 				// the line can read the record.
 				if err := rt.Record.Write(servestate.Record{
 					PID: os.Getpid(), Listen: addr, TokenFile: abs, Started: time.Now().UTC(),
+					TLSCert: recordCert,
 				}); err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), recordNoteFormat, err)
 				}
 				fmt.Fprint(cmd.ErrOrStderr(), announceLine(addr))
+				// The TLS state and the mode follow the announce line,
+				// which stays first and unchanged (S1).
+				for _, l := range tlsLines(st.Cert, st.Leaf, now) {
+					fmt.Fprintln(cmd.ErrOrStderr(), l)
+				}
+				for _, w := range gwWarns {
+					fmt.Fprintln(cmd.ErrOrStderr(), "wt-model: warning: "+w)
+				}
+				if gateLine != "" {
+					fmt.Fprintln(cmd.ErrOrStderr(), gateLine)
+				}
+				for _, l := range subscriptionLines(addr, gw.SubscriptionPassthrough, st.Config != nil, st.Off) {
+					fmt.Fprintln(cmd.ErrOrStderr(), l)
+				}
 				// After the announce line, so it stays the first line a
 				// script reads (S1).
 				if rt.StartSync != nil {
@@ -285,4 +388,214 @@ func (s startSync) run(ctx context.Context, cfg *config.Config, errOut io.Writer
 	if res.Changed {
 		s.bounce(ctx, errOut, cfg)
 	}
+}
+
+// serveTLS is what serve does with [gateway] tls_cert/tls_key.
+type serveTLS struct {
+	// Config is the TLS config serve speaks; nil is plain http.
+	Config *tls.Config
+	// Leaf is the certificate's leaf, set whenever one was loaded (also
+	// when its dates turned TLS off), for tlsLines.
+	Leaf *x509.Certificate
+	// Cert is tls_cert's absolute path ("" when TLS is not configured).
+	Cert string
+	// Off is the date reason TLS is off although configured (the ping's
+	// tls_off); empty otherwise.
+	Off string
+}
+
+// tlsRefusalPrefix leads every refusal of a TLS pair serve cannot use: one
+// line, wt-model: [gateway] tls_cert/tls_key: <fixed reason> (<path>).
+const tlsRefusalPrefix = "[gateway] tls_cert/tls_key: "
+
+// loadServeTLS loads the pair gw names at now (decision 13). No pair is
+// plain http. A configuration error (a missing or unreadable file, a loose
+// key, a non-regular file, a key in the certificate file, one file named
+// twice, a mismatched or unparseable pair) is the one refusal line; an
+// expired or not-yet-valid certificate (tlsfile checks the dates last, so
+// every configuration check passed) is plain http with Off set and the leaf
+// kept for the warning. No message holds key or certificate bytes.
+func loadServeTLS(gw config.GatewayConf, now time.Time) (serveTLS, error) {
+	if gw.TLSCert == "" {
+		return serveTLS{}, nil
+	}
+	cert := gw.TLSCert
+	if a, err := filepath.Abs(cert); err == nil {
+		cert = a
+	}
+	pair, leaf, err := tlsfile.Load(gw.TLSCert, gw.TLSKey, now)
+	if err != nil {
+		var te *tlsfile.Error
+		if errors.As(err, &te) && te.ClockOnly() {
+			return serveTLS{Leaf: leaf, Cert: cert, Off: te.DateReason()}, nil
+		}
+		return serveTLS{}, errors.New(tlsRefusalPrefix + err.Error())
+	}
+	return serveTLS{Config: tlsfile.Config(pair), Leaf: leaf, Cert: cert}, nil
+}
+
+// serverOptions is the modelserver.Options serve runs with: the flags, the
+// proxy pair, the home's [gateway] switch and the TLS state.
+func serverOptions(listen, token string, idle time.Duration, upstream *url.URL, key string, gw config.GatewayConf, st serveTLS, errLog *log.Logger) modelserver.Options {
+	return modelserver.Options{
+		Listen: listen, Token: token, IdleGrace: idle,
+		Upstream: upstream, UpstreamKey: key,
+		SubscriptionPassthrough: gw.SubscriptionPassthrough,
+		ErrorLog:                errLog,
+		TLS:                     st.Config,
+		TLSOff:                  st.Off,
+	}
+}
+
+// The TLS report's lines (decision 13): the bare info line while TLS is on,
+// the two warnings that may follow it, and the one warning when the
+// certificate's dates turned TLS off.
+const (
+	tlsOnFormat         = "wt-model: TLS is on (tls_cert %s, TLS 1.2+; clients that do not trust it need ca_file or a CA the system trusts)"
+	tlsExpiringFormat   = "wt-model: warning: the certificate %s expires on %s (%s): renew it (replace both files, then restart serve)"
+	tlsNoLoopbackFormat = "wt-model: warning: the certificate %s names neither 127.0.0.1 nor localhost; local sessions dial loopback and will refuse it"
+	tlsOffFormat        = "wt-model: warning: TLS is off: the certificate %s %s; serving plain http. Remote https clients fail and the subscription header mode is refused from non-loopback peers until it is renewed and serve restarted"
+)
+
+// tlsExpiringWithin is how close to its end a certificate earns the
+// expiring-soon warning.
+const tlsExpiringWithin = 14 * 24 * time.Hour
+
+// tlsLines is serve's whole TLS report, the lines printed after the announce
+// line: nothing without a certificate; for an expired or not-yet-valid one
+// only the plain-http warning; else the TLS-on line, then a warning when it
+// expires within 14 days, then one when it names neither 127.0.0.1 nor
+// localhost (local sessions dial loopback).
+func tlsLines(certPath string, leaf *x509.Certificate, now time.Time) []string {
+	if certPath == "" || leaf == nil {
+		return nil
+	}
+	day := func(t time.Time) string { return t.UTC().Format("2006-01-02") }
+	switch {
+	case now.Before(leaf.NotBefore):
+		return []string{fmt.Sprintf(tlsOffFormat, certPath, "is not valid until "+day(leaf.NotBefore))}
+	case now.After(leaf.NotAfter):
+		return []string{fmt.Sprintf(tlsOffFormat, certPath, "expired on "+day(leaf.NotAfter))}
+	}
+	lines := []string{fmt.Sprintf(tlsOnFormat, certPath)}
+	if left := leaf.NotAfter.Sub(now); left <= tlsExpiringWithin {
+		lines = append(lines, fmt.Sprintf(tlsExpiringFormat, certPath, day(leaf.NotAfter), daysLeft(left)))
+	}
+	if !namesLoopback(leaf) {
+		lines = append(lines, fmt.Sprintf(tlsNoLoopbackFormat, certPath))
+	}
+	return lines
+}
+
+// daysLeft words the time a certificate has left, in whole days.
+func daysLeft(d time.Duration) string {
+	switch n := int(d / (24 * time.Hour)); n {
+	case 0:
+		return "within a day"
+	case 1:
+		return "in 1 day"
+	default:
+		return fmt.Sprintf("in %d days", n)
+	}
+}
+
+// namesLoopback reports whether the certificate names 127.0.0.1 or
+// localhost, the names a local session dials.
+func namesLoopback(leaf *x509.Certificate) bool {
+	for _, ip := range leaf.IPAddresses {
+		if ip.Equal(net.IPv4(127, 0, 0, 1)) {
+			return true
+		}
+	}
+	for _, d := range leaf.DNSNames {
+		if strings.EqualFold(d, "localhost") {
+			return true
+		}
+	}
+	return false
+}
+
+// subscriptionInfo is the bare informational line (style guide M4) serve
+// prints after the announce line while the header mode is on; %s is the
+// optional tail (the TLS-off reason) before the closing parenthesis.
+const subscriptionInfo = "wt-model: subscription passthrough is on (x-wt-model-token; refused from non-loopback peers over plain http; owner's own login only%s)"
+
+// subscriptionWarn is the one warning when the mode is on, the listen
+// address is not loopback and TLS is off: remote header-mode requests are
+// refused, so the operator learns how to make them work.
+const subscriptionWarn = "wt-model: warning: remote subscription requests need TLS (set tls_cert and tls_key under [gateway] in ~/.config/wt-model/config.toml) or a tunnel arriving from loopback; other remote traffic is unaffected"
+
+// subscriptionLines is serve's whole report of the header mode, the lines
+// printed after the announce line (decision 2 of the phase 3 plan): nothing
+// when off; else the info line, plus subscriptionWarn when listenAddr is not
+// loopback and TLS is off. tlsOff, when set, is the fixed reason TLS is off
+// although configured (the certificate's dates): the info line then ends
+// with it and no second warning is printed (the TLS report has its own).
+func subscriptionLines(listenAddr string, on, tlsOn bool, tlsOff string) []string {
+	if !on {
+		return nil
+	}
+	if tlsOff != "" {
+		return []string{fmt.Sprintf(subscriptionInfo, "; TLS is off: "+tlsOffPhrase(tlsOff)+", so header mode is refused from every non-loopback peer")}
+	}
+	lines := []string{fmt.Sprintf(subscriptionInfo, "")}
+	if !tlsOn && !loopbackListen(listenAddr) {
+		lines = append(lines, subscriptionWarn)
+	}
+	return lines
+}
+
+// tlsOffPhrase words tlsfile's date reason for the info line (decision 2):
+// "certificate expired <date>" reads "the certificate expired on <date>",
+// "certificate not valid until <date>" reads "the certificate is not valid
+// until <date>"; any other reason is prefixed with "the ".
+func tlsOffPhrase(reason string) string {
+	if d, ok := strings.CutPrefix(reason, "certificate expired "); ok {
+		return "the certificate expired on " + d
+	}
+	if d, ok := strings.CutPrefix(reason, "certificate not valid until "); ok {
+		return "the certificate is not valid until " + d
+	}
+	return "the " + reason
+}
+
+// loopbackListen reports whether a listen address binds loopback only:
+// localhost or a loopback IP. An unspecified host (0.0.0.0, ::, empty) and
+// any other address are reachable from other machines.
+func loopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.Unmap().IsLoopback()
+}
+
+// subscriptionGateBound bounds serve's start-time hazard check: at login the
+// proxy may still be starting, and serve must not wait on it to listen.
+const subscriptionGateBound = 5 * time.Second
+
+// subscriptionGate is serve's start-time check of the proxy while the header
+// mode is switched on (decision 5): litellm.SubscriptionHazards over the
+// config.yaml at cfgPath (an empty path is the "config.yaml not identified"
+// hazard: the mode stays off), the proxy's environment and its
+// deployments, bounded by bound. A hazard keeps the mode off, with one warning
+// naming it (never a value); a proxy that cannot be read within the bound
+// keeps the mode on with one warning, because the route sync leaves every
+// subscription row unrouted until it can check. on reports the mode serve
+// runs with; line is the one warning, "" when there is none.
+func subscriptionGate(ctx context.Context, cfgPath string, env litellm.ProxyEnv, info litellm.ModelInfoFunc, bound time.Duration) (on bool, line string) {
+	ctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+	hazards, _, err := litellm.SubscriptionHazards(ctx, cfgPath, env, info)
+	switch {
+	case len(hazards) > 0:
+		return false, "wt-model: warning: subscription passthrough is kept off: " + strings.Join(hazards, "; ") + " (fix it, then restart wt-model serve)"
+	case err != nil:
+		return true, "wt-model: warning: subscription passthrough is on, but the proxy could not be checked for hazards (" + oneLineText(err.Error()) + "); the route sync keeps the Claude subscription routes that exist and adds none until it can check"
+	}
+	return true, ""
 }

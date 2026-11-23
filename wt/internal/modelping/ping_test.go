@@ -333,3 +333,17 @@ func TestGetJSONPingsFirstThenDecodes(t *testing.T) {
 		t.Errorf("nil out: err = %v, want nil", err)
 	}
 }
+
+// TestOldClientDecodesNewPing pins that the additive ping field breaks no
+// client: CheckPing, as every wt so far runs it, accepts a body carrying
+// subscription_passthrough and reports the field.
+func TestOldClientDecodesNewPing(t *testing.T) {
+	body := []byte(fmt.Sprintf(`{"api_major":%d,"schema":%d,"server":%q,"subscription_passthrough":true}`, modelapi.APIMajor, modelapi.SchemaVersion, ServerName))
+	p, err := CheckPing("h:1", &Response{Status: http.StatusOK, Body: body})
+	if err != nil {
+		t.Fatalf("CheckPing on the new body: %v", err)
+	}
+	if !p.SubscriptionPassthrough || p.Server != ServerName {
+		t.Errorf("ping = %+v, want the field decoded", p)
+	}
+}

@@ -25,6 +25,17 @@ type ModelServerState struct {
 	// existing stricter mode. A value here is also reported as a problem so
 	// the user moves it into a 0600 token_file.
 	Token string `toml:"token,omitempty"`
+	// Subscription is this machine's opt-in to sending its own Claude login
+	// to the model server (#597, decision 12): a launch whose model uses the
+	// Claude subscription is refused without it. It is hand-edited only: no
+	// production code path writes true (the Mode tab and wt-model setup
+	// round-trip it untouched).
+	Subscription bool `toml:"subscription,omitempty"`
+	// CAFile is a PEM file of extra trusted roots for an https model server
+	// (#597, decision 14); WT_MODEL_CA_FILE wins over it. Hand-edited only:
+	// no production code path writes it (the Mode tab and wt-model setup
+	// round-trip it untouched).
+	CAFile string `toml:"ca_file,omitempty"`
 }
 
 // ModelServer returns the [model-server] table, zero when it is absent.
@@ -148,24 +159,67 @@ func secretSafe(err error, data []byte) error {
 	if !errors.As(err, &pe) {
 		return err
 	}
-	line := pe.Position.Line
-	if line == 0 {
-		line = pe.Line
+	line := parseErrorLine(pe)
+	for _, name := range parseErrorKeys(pe, data) {
+		if secretKeyName(name) {
+			return fmt.Errorf("toml: line %d: the value of %s does not parse (not shown: it may hold a secret)", line, name)
+		}
 	}
+	return err
+}
+
+// valueFreeParseError is the wt-model home's parse-error wording: the
+// parser's message (which can quote a value) is never shown. A key is named
+// only when it is one of the home's known keys (proxyHomeKeys): the text left
+// of an '=' on the failing line may be a pasted token, never a key (#640).
+// The suffix says "may hold a secret" only for a key secretSafe would call
+// secret; any other failure is the line number alone.
+func valueFreeParseError(err error, data []byte) error {
+	var pe toml.ParseError
+	if !errors.As(err, &pe) {
+		return err
+	}
+	line := parseErrorLine(pe)
+	for _, name := range parseErrorKeys(pe, data) {
+		if !slices.Contains(proxyHomeKeys, name) {
+			continue
+		}
+		suffix := "(not shown)"
+		if secretKeyName(name) {
+			suffix = "(not shown: it may hold a secret)"
+		}
+		return fmt.Errorf("toml: line %d: the value of %s does not parse %s", line, name, suffix)
+	}
+	return fmt.Errorf("toml: line %d does not parse (the text is not shown)", line)
+}
+
+// parseErrorLine is a TOML parse error's line number.
+func parseErrorLine(pe toml.ParseError) int {
+	if pe.Position.Line != 0 {
+		return pe.Position.Line
+	}
+	return pe.Line
+}
+
+// parseErrorKeys is the candidate key names of a parse error, in order: the
+// text left of the first '=' on the failing line (which may not be a key at
+// all), then the last segment of the last key parsed.
+func parseErrorKeys(pe toml.ParseError, data []byte) []string {
+	line := parseErrorLine(pe)
 	key := ""
 	if lines := strings.Split(string(data), "\n"); line >= 1 && line <= len(lines) {
 		if k, _, ok := strings.Cut(lines[line-1], "="); ok {
 			key = strings.Trim(strings.TrimSpace(k), `"'`)
 		}
 	}
+	var out []string
 	for _, k := range []string{key, pe.LastKey} {
 		parts := strings.Split(k, ".")
-		name := strings.Trim(strings.TrimSpace(parts[len(parts)-1]), `"'`)
-		if secretKeyName(name) {
-			return fmt.Errorf("toml: line %d: the value of %s does not parse (not shown: it may hold a secret)", line, name)
+		if name := strings.Trim(strings.TrimSpace(parts[len(parts)-1]), `"'`); name != "" {
+			out = append(out, name)
 		}
 	}
-	return err
+	return out
 }
 
 // secretKeyName reports whether a config key's value is, or may hold, a

@@ -79,8 +79,40 @@ same way and differ only in `--listen` and in what is allowed to reach it:
   workstation. Listen on the workstation's LAN address.
 - **The same machine.** Listen on `127.0.0.1`. The token is still required.
 
-The server speaks plain HTTP and has no TLS. Keep it on a network you trust,
-or reach it through a tunnel.
+By default the server speaks plain HTTP. It can speak TLS itself
+([Native TLS](#native-tls)); without it, keep it on a network you trust, or
+reach it through a tunnel. Either way the shared token is the only
+authenticator: anyone who holds it can use the server, and the gateway's
+header mode (a client's own claude.ai login forwarded) is accepted only from
+a loopback peer or over a real TLS connection to `wt-model` itself, never
+from another machine over plain HTTP. With TLS on a LAN, any holder of the
+token can send header-mode requests from anywhere, forwarding whatever login
+it carries; the owner-only rule is not something wt can enforce.
+
+Header mode from another machine therefore needs native TLS
+([Native TLS](#native-tls)) or a tunnel. A deployment that puts a TLS
+terminator in front of `wt-model` instead is judged by how the request
+reaches `wt-model`:
+
+- **A terminator on the same host** (`ssh -L`, `tailscale serve`, Caddy or
+  cloudflared on the server machine) reaches `wt-model` from `127.0.0.1`, so
+  header mode passes (derived from the peer rule, not yet verified until the
+  phase 3 live check, #597).
+- **A terminator on another host that re-encrypts** to `wt-model`'s own TLS
+  port arrives over TLS, so it passes (derived, unverified until the same
+  live check).
+- **A terminator on another host that forwards plain HTTP** is a non-loopback
+  peer without TLS, so header mode is refused (`subscription_insecure`).
+
+Forwarding headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `X-Real-IP`,
+`Forwarded`) are never read to allow a request, only to refuse one. Any
+proto value that is not `https` refuses, on loopback and over TLS alike.
+From a loopback peer, a client address that is not loopback refuses unless
+a proto indicator is present and every one says `https`. A same-host
+plain-HTTP forwarder that adds none of these headers (socat, a Docker or
+OrbStack `-p` port, Caddy or nginx without TLS and without forwarding
+headers) makes a LAN client look like a loopback peer. wt cannot detect it:
+whoever runs such a forwarder vouches for its encryption.
 
 ## Flags
 
@@ -97,7 +129,7 @@ or reach it through a tunnel.
 | Code | Meaning |
 |---|---|
 | 0 | stopped cleanly on SIGINT or SIGTERM |
-| 1 | any failure (a bad flag, an unreadable token file, an unconfigured LiteLLM proxy, an address that cannot be bound) |
+| 1 | any failure (a bad flag, an unreadable token file, an unconfigured LiteLLM proxy, a `config.toml` in the wt-model home that does not parse, a `[gateway]` TLS pair serve cannot use ([Native TLS](#native-tls)), an address that cannot be bound) |
 
 A failure prints one line on stderr, `wt-model: <message>`, with the way out
 last, for example `wt-model: token file PATH is accessible by group or other
@@ -159,6 +191,16 @@ reader resolves it — the key is never printed, only masked.
   Only what uses the pair refuses on it: `wt-model serve` at startup,
   `litellm status|set`, and `wt-model litellm restart` and the slot-profile proxy
   checks. Every other command, and every session, runs as usual.
+- The same `config.toml` may hold a hand-edited `[gateway]` table, which
+  `serve` reads once at start: `subscription_passthrough = true` turns on the
+  gateway's header mode (off when absent or `false`; any other type is off
+  with one `wt-model: warning:` line), and `tls_cert`/`tls_key` turn on
+  [Native TLS](#native-tls). No command writes it, and `litellm set` keeps it
+  as written; an older `wt-model litellm set` or `wt litellm set` drops the
+  table, which turns the
+  mode off at the next `serve` restart (the safe direction) and brings serve
+  back on plain HTTP (sessions configured with `https://` then fail at the
+  handshake, never in clear).
 - The key is the file's content with surrounding whitespace trimmed. A
   missing or empty key file is no key at all, and `--api-key ""` clears the
   value without deleting the file. wt never deletes the file.
@@ -210,6 +252,393 @@ reader resolves it — the key is never printed, only masked.
 Both commands answer `0` done and `1` any failure. A set that wrote the pair
 prints `litellm: updated`; a set with no flag is refused with `nothing to
 set: pass --url and/or --api-key`.
+
+## Native TLS
+
+`wt-model serve` speaks TLS itself when the wt-model home's `config.toml`
+(`~/.config/wt-model/config.toml`) names a PEM certificate and its key under
+the same hand-edited `[gateway]` table, read once at start (there is no
+`serve` flag: `wt-model setup` re-renders the LaunchAgent's arguments, so the
+table survives a re-render). Absent means plain HTTP, exactly as before.
+
+```toml
+[gateway]
+tls_cert = "~/.config/wt-model/tls/server.crt"
+tls_key  = "~/.config/wt-model/tls/server.key"
+```
+
+- **Both or neither, strings only, absolute.** A leading `~` is expanded.
+  One key without the other, a value that is not a string, an empty value or
+  a relative path refuses the start, never a silent fall back to plain HTTP:
+  `wt-model: [gateway] tls_cert and tls_key must be set together`,
+  `wt-model: [gateway] tls_cert must be a string`,
+  `wt-model: [gateway] tls_key is a relative path: write it as an absolute path or ~/...`
+  (a relative path would resolve against serve's working directory, `/`
+  under launchd). The same keys in agent-wt's
+  `config.toml` are never read; a notice there names the wt-model home.
+- **A value must be a path, never the file's contents.** A value holding a
+  control character (a pasted PEM spans lines), a `-----BEGIN` armor line or
+  `PRIVATE KEY` refuses with `wt-model: [gateway] tls_key must be a path to a
+  PEM file, not its contents` (or `tls_cert`), naming the key and nothing of
+  the value. A path that could not be printed safely (a control character,
+  or longer than 200 bytes) is shown as `<unprintable path>` or
+  `<path too long>`.
+- **The key file is 0600 or stricter** (the token file's rule): a group or
+  other bit refuses with
+  `wt-model: [gateway] tls_cert/tls_key: TLS key PATH is accessible by group or other (mode 0644); run chmod 600 PATH`.
+- **Everything else that makes the pair unusable refuses the start** with one
+  line, `wt-model: [gateway] tls_cert/tls_key: <reason> (<path>)`, exit 1
+  (every refusal of the pair's files shares that prefix, and the loose
+  key's reason ends with its chmod hint instead of `(<path>)`; a refusal of
+  one key's value, in the bullets above, starts `wt-model: [gateway] <key> …`
+  instead),
+  before listening and before `serve.json` is written: a missing or
+  unreadable file, a directory, a certificate file that holds a private key
+  (it would be recorded and copied as "the certificate"), `tls_cert` and
+  `tls_key` naming one file, a file that is not a PEM certificate or key that
+  parses, or a key that does not match the certificate. The reason is fixed
+  per failure; no message ever holds certificate or key bytes.
+- **An expired or not-yet-valid certificate is not a refusal** (a LaunchAgent
+  that kept refusing would restart in a loop and take every local session
+  down). The dates are checked last, so every other check passed. Serve
+  starts on plain HTTP, exactly as if no certificate were configured, prints
+  one warning after the listening line and records no `tls_cert` in
+  `serve.json`:
+
+  ```text
+  wt-model: warning: TLS is off: the certificate <path> expired on <date>; serving plain http. Remote https clients fail and the subscription header mode is refused from non-loopback peers until it is renewed and serve restarted
+  ```
+
+  The ping says so (`tls_off`). Consequences until both files are replaced
+  and serve restarted: every `https://` client (a local session whose url
+  setup wrote as `https://` included) gets a connection error, the header
+  mode is refused from every non-loopback peer, and ordinary token-swap
+  sessions on `http://` keep working. A certificate that expires while serve
+  runs keeps serving TLS until the next restart.
+- **Protocol.** TLS 1.2 is the floor; for TLS 1.2 serve offers only the six
+  ECDHE AES-GCM and ChaCha20-Poly1305 suites. HTTP/2 stays on, and streaming
+  (server-sent events) is flushed per event over it as over HTTP/1.1. With
+  TLS the server closes idle keep-alive connections after 120 seconds and
+  writes TLS handshake errors (the client's address only) to its stderr;
+  there is still no read or write timeout.
+- **Report.** After the listening line (unchanged, still the bare address)
+  serve prints `wt-model: TLS is on (tls_cert <path>, TLS 1.2+; clients that do
+  not trust it need ca_file or a CA the system trusts)`, then a warning when
+  the certificate expires within 14 days and one when it names neither
+  `127.0.0.1` nor `localhost` (local sessions dial loopback).
+- **Host commands.** `serve.json` records the certificate's absolute path as
+  `tls_cert` while TLS is on (never the key's), so `wt-model stop` and
+  `wt-model alias` reach the server over `https://`, trusting exactly that
+  file, verified at the record's start time (serve validated it then and
+  serves it until restarted, so one that expired since still works). When
+  the server named by the record is running but its client sessions cannot
+  be read, the count is unknown, never "none": `wt-model stop` asks before
+  stopping anything (`--yes` answers; no terminal: exit 3) and
+  `wt-model alias rm` needs `--force-in-use`. A record whose server is not
+  running is one note and the command goes on, as before.
+- **Setup and the Mode tab.** While TLS is on (`tls_cert` set and the
+  certificate within its dates), `wt-model setup`'s local plan and the Mode
+  tab's local plan write `https://` on the loopback listen address
+  (`127.0.0.1` for an unspecified host), and setup's readiness wait trusts
+  `tls_cert` directly. Neither writes any TLS key or `ca_file`: when the
+  session trusts no CA file, the plan carries one note naming the line to add,
+  `ca_file = "<tls_cert path>"` under `[model-server]` in
+  `~/.config/agent-wt/config.toml`. With an expired certificate the plans
+  write `http://`, the url serve will speak, and note the date and the
+  renewal. TLS settings that cannot be read refuse a local plan. Serve reads
+  `[gateway]` only at start, so when setup's local plan changes the url's
+  scheme (or the running serve's record says it speaks the other one) and
+  the LaunchAgent is loaded, the plan reloads it (bootout, then bootstrap)
+  and waits on the new url. The Mode tab swaps only the scheme of a stored
+  loopback url (`127.0.0.1`, `::1`, `localhost`, any port; a non-loopback or
+  hand-written url is kept) and, since a session cannot restart serve, notes
+  that it must be restarted on the host (`wt-model setup` does it).
+- **Rotation and renewal.** Replace both files and reload the LaunchAgent
+  ([Renewal and rotation](#renewal-and-rotation)). There is no hot reload,
+  and a restart cuts the streams in flight.
+
+### Making a certificate
+
+wt has no certificate generator. A file a session machine trusts as its
+`ca_file` can vouch for any name it is allowed to sign, `api.anthropic.com`
+included, in every process that trusts it (Claude Code and pi get it as
+`NODE_EXTRA_CA_CERTS`). So the recipe below makes a certificate that is
+**not a CA**: a self-signed leaf that can vouch only for itself.
+
+The lead form names the host's LAN IP address, the address remote sessions
+use, plus `127.0.0.1` for local sessions. Replace `192.0.2.7` with the
+host's LAN address:
+
+```bash
+mkdir -p ~/.config/wt-model/tls && cd ~/.config/wt-model/tls
+umask 077
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 825 \
+  -subj '/CN=wt-model' \
+  -addext 'basicConstraints=critical,CA:FALSE' \
+  -addext 'subjectAltName=IP:192.0.2.7,IP:127.0.0.1' \
+  -keyout server.key -out server.crt
+chmod 644 server.crt
+chmod 600 server.key
+```
+
+- The `subjectAltName` is required: clients check the name against it, never
+  against the CN. An IP address needs an `IP:` entry.
+- Keep the key and the certificate in two files, never one combined PEM:
+  serve refuses a certificate file that holds a key, and the certificate is
+  the file you copy to session machines.
+- If the `openssl` on the `PATH` (macOS ships LibreSSL) rejects `-addext`,
+  use Homebrew's: `$(brew --prefix openssl)/bin/openssl`.
+- Point `[gateway]` at the two files and restart serve. On the host, a local
+  session trusts the certificate with `ca_file` set to the `tls_cert` path
+  under `[model-server]` in `~/.config/agent-wt/config.toml`;
+  `wt-model setup` prints that line when it is missing. On a session
+  machine, copy `server.crt` (only the certificate) and name the copy as
+  `ca_file` ([wt-session.md](wt-session.md#configuration-model-server)).
+
+Alternatives:
+
+- **A DNS or tailnet name.** Add `DNS:HOST` to the `subjectAltName`
+  (`subjectAltName=DNS:HOST,IP:127.0.0.1`) and use `https://HOST:PORT` as
+  the session's url. For a tailnet name, `tailscale cert` gives a publicly
+  trusted certificate, so session machines need no `ca_file`. Such a
+  certificate does not name `127.0.0.1`: serve warns at start, and a local
+  session must then use the url with that name (a hand edit of `url`),
+  since setup's local url is `https://127.0.0.1:PORT`.
+- **A name-constrained CA** instead of a self-signed leaf: a CA certificate
+  with a critical `nameConstraints` extension that permits only the names in
+  the leaf's `subjectAltName`, which then signs the leaf. Session machines
+  trust the CA certificate as `ca_file`. A CA without name constraints gets
+  one `wt: note:` line from every session that trusts it.
+- **mkcert.** It works, but its `rootCA.pem` (the clients' `ca_file`) is an
+  unconstrained CA that trusts every name: whoever holds its
+  `rootCA-key.pem` can impersonate any site, Anthropic's included, to every
+  agent on the session machine. Prefer the recipe above.
+
+Whether Go and Node both accept a self-signed, non-CA leaf trusted directly
+is to be confirmed by the phase 3 live check (#597).
+
+### Renewal and rotation
+
+1. Make new files with the same recipe (a new `-days`), and put them where
+   `tls_cert` and `tls_key` point (replace both).
+2. Restart the serve LaunchAgent:
+
+   ```bash
+   launchctl bootout gui/$(id -u)/local.wt-model.serve
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.wt-model.serve.plist
+   ```
+
+   Run it from a terminal that does not depend on the gateway (not from an
+   agent session that reaches its model through this server: the bootout
+   ends that session's requests). Do not use `launchctl kickstart -k` for
+   it: that restarts the job launchd already holds, while bootout then
+   bootstrap loads it afresh.
+3. A session machine that copied the old self-signed certificate as its
+   `ca_file` needs the new one copied too.
+
+Serve warns at start when the certificate expires within 14 days. A
+certificate that expires while serve runs keeps serving TLS until the next
+restart. At a start with an expired (or not yet valid) certificate, serve
+still starts, prints one warning line, and serves plain HTTP exactly as with
+no certificate; the ping says `tls_off`. Until the certificate is renewed
+and serve restarted:
+
+- header mode is refused for every non-loopback peer;
+- token-swap sessions on `http://` are unaffected;
+- every `https://` client fails with a connection or certificate error,
+  including local sessions set up for TLS.
+
+A missing or unreadable file, a loose key, or a mismatched or unparseable
+pair still refuses to start (configuration errors, not dates).
+
+## Subscription passthrough
+
+The gateway's **header mode** lets a Claude Code session use the user's own
+Claude subscription through the same gateway as every other model (#597).
+A request that carries `x-wt-model-token: TOKEN` is authenticated by that
+header. Its `Authorization` (the client's own claude.ai login,
+`Bearer sk-ant-oat…`) is forwarded to LiteLLM, which forwards it to the
+keyless `anthropic/` rows of the `claude-subscription` provider
+([wt-model.md](wt-model.md#claude-subscription-models)). A request without
+the header is the token swap, exactly as before.
+
+**The owner's own login only.** The subscription is for the person whose
+claude.ai login it is. Do not share it or pool it: a host that served other
+people's logins would be intermediating their credentials, which Anthropic's
+terms forbid. wt cannot tell whose login a request carries (the one shared
+token is the only authenticator), so this rule is yours to keep.
+
+### Turning it on
+
+The mode is off by default on both sides, and no command turns it on.
+
+1. Upgrade first. Run `make install` on every machine with a `wt-model` that
+   can sync routes, and restart its serve, before the first subscription
+   model is added. An older `wt-model` serve or sync does not know the
+   provider: it drops the model's `config.yaml` row and restarts the proxy,
+   and the next new sync adds the row back with another restart. Upgrade
+   every session machine too: an older `wt` offers subscription rows to every
+   agent and launches claude in token mode, which the keyless row answers
+   with a 401.
+2. On the host, in `~/.config/wt-model/config.toml`:
+
+   ```toml
+   [gateway]
+   subscription_passthrough = true
+   ```
+
+   Absent or `false` is off. Any other type (`"true"`, `1`) is off, with one
+   `wt-model: warning:` line naming the key and the expected type. Serve
+   reads the table once, at start: restart serve after a change
+   ([Renewal and rotation](#renewal-and-rotation) has the two `launchctl`
+   lines). The same key in `~/.config/agent-wt/config.toml` is never read;
+   a notice there names the wt-model home.
+3. Add the subscription models with `wt-model model add claude-subscription …`
+   ([wt-model.md](wt-model.md#claude-subscription-models)).
+4. On each session machine that may send its login, opt in with
+   `[model-server] subscription = true` in `~/.config/agent-wt/config.toml`
+   ([wt-session.md](wt-session.md#claude-subscription-header-mode)).
+
+An older `wt-model litellm set` or `wt litellm set` re-encodes the home
+`config.toml` and drops `[gateway]`. The mode is then off at the next serve restart (the safe
+direction), and `tls_cert`/`tls_key` go with it, so serve comes back on
+plain HTTP.
+
+### What serve prints
+
+After the listening line (and the TLS lines), with the mode on:
+
+```text
+wt-model: subscription passthrough is on (x-wt-model-token; refused from non-loopback peers over plain http; owner's own login only)
+```
+
+When the listen address is not loopback and TLS is off, one warning
+follows:
+
+```text
+wt-model: warning: remote subscription requests need TLS (set tls_cert and tls_key under [gateway] in ~/.config/wt-model/config.toml) or a tunnel arriving from loopback; other remote traffic is unaffected
+```
+
+When TLS is configured but off on its dates, the info line ends instead
+`…; TLS is off: the certificate expired on <date>, so header mode is
+refused from every non-loopback peer)`. The ping carries the mode as
+`subscription_passthrough: true` ([Endpoints](#endpoints)).
+
+### Where it is accepted
+
+The check order and the answers are in [Errors](#errors) (the gateway
+table). In short:
+
+1. The header must be one value equal to the token, else 401.
+2. The mode must be on, else 403 `subscription_off`.
+3. The peer must be loopback or a TLS connection to `wt-model` itself, and
+   no forwarding header may refuse ([Where it runs](#where-it-runs)), else
+   403 `subscription_insecure`.
+4. `Authorization` must not be the wt token (401) and, when present, must be
+   one `Bearer sk-ant-oat…` value, else 403 `subscription_no_login`.
+
+Upstream, the request loses `x-wt-model-token` and `x-api-key`, keeps the
+login and the `anthropic-*` headers as sent, and gets `x-litellm-api-key`
+set to the host's LiteLLM key. `wt-model` never logs a request, a header
+or a body.
+
+### What keeps it off
+
+The keyless `anthropic/` rows would serve any holder of the shared token if
+the proxy had a credential of its own, and LiteLLM forwards a client's
+OAuth login to every `anthropic/` deployment it has. So serve checks the
+proxy before listening (up to 5 s), and every route sync checks it before it
+routes a subscription model. The check fails closed: a hazard keeps the mode
+off in serve, with one warning naming it (never a value):
+
+```text
+wt-model: warning: subscription passthrough is kept off: <hazard> (fix it, then restart wt-model serve)
+```
+
+and a sync leaves every subscription model unrouted (wt's rows removed, none
+added), with its own warning, which names the models rather than the mode:
+
+```text
+Claude subscription models (<id>, …) are not routed: <hazard>
+```
+
+Serve checks only at start. After changing the proxy's environment,
+`config.yaml` or its deployments (in the LiteLLM UI or its database), restart
+`wt-model serve`: a later sync that finds a hazard unroutes wt's rows but
+does not turn the mode off.
+
+The hazards:
+
+- **`config.yaml` not identified.** With the registry redirected and
+  `WT_LITELLM_CONFIG` unset, wt does not know which `config.yaml` the proxy
+  runs on, so serve keeps the mode off with the hazard
+  `config.yaml not identified (set WT_LITELLM_CONFIG when the registry is redirected)`,
+  and the subscription rows stay unrouted.
+- **The proxy's environment cannot be read.** wt reads it from the default
+  LiteLLM LaunchAgent plist and never stands in its own environment. A host
+  that runs LiteLLM any other way (`WT_LITELLM_RESTART_CMD` set: brew
+  services, a container, another plist; or a plist that is missing,
+  unreadable or binary) always fails closed, and there is no override.
+- **A credential or address variable in the proxy's environment:**
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, the workload-identity variables
+  (`ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_FEDERATION_WORKSPACE_ID`,
+  `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID`,
+  `ANTHROPIC_IDENTITY_TOKEN`, `ANTHROPIC_IDENTITY_TOKEN_FILE`,
+  `ANTHROPIC_IDENTITY_SOURCE`), `ANTHROPIC_API_BASE`, `ANTHROPIC_BASE_URL`;
+  and `CONFIG_FILE_PATH` or `LITELLM_CONFIG_BUCKET_NAME`, which make the
+  proxy load another config than the `config.yaml` wt checks.
+- **In `config.yaml`:** client-header forwarding
+  (`forward_client_headers_to_llm_api`) under `general_settings` or
+  `litellm_settings`; one of the variables above named under
+  `environment_variables`; `litellm_settings.api_base`, `api_key` or
+  `anthropic_key`; a secret manager (`general_settings.key_management_system`,
+  `use_azure_key_vault` unless a plain `false`, a `use_google_kms` that is
+  not plainly off); and a file wt cannot read. wt reads `config.yaml`
+  strictly: anchors, aliases, merge keys (`<<`), a root `include`, explicit
+  tags, a duplicate key and nesting deeper than 64 levels are each a hazard,
+  because wt does not evaluate them the way LiteLLM does.
+- **In the proxy's deployments** (`/model/info`, wt's rows and hand-written
+  ones alike): a wildcard routed to anthropic (or to no provider); an
+  anthropic deployment whose `api_base` or `base_url` is not exactly
+  `https://api.anthropic.com`, that names a `litellm_credential_name`, or
+  that has an `anthropic_*` key in its `litellm_params`. A deployment with no
+  provider whose model starts with `claude` counts as anthropic.
+
+A proxy that does not answer within the bound is one warning and the mode
+stays on; the sync then keeps the subscription routes that exist and adds
+none until it can check. `general_settings.store_prompts_in_spend_logs` on
+is one warning, not a hazard: the proxy then keeps the prompts of
+subscription requests in its spend log, so never paste a token into a
+prompt. LiteLLM books $0 for a subscription row (it has no price), while
+Claude Code shows list price.
+
+**What the check cannot see** (known gaps; check them yourself before turning
+the mode on):
+
+- settings stored in LiteLLM's **database**: `environment_variables` and
+  `general_settings` rows (the UI or `/config/update` writes them, and the
+  proxy copies the variables into its environment), and the forwarding
+  settings the UI can store there;
+- secret managers driven by database-stored config (HashiCorp Vault,
+  CyberArk);
+- `litellm_settings.headers`;
+- environment sources a plist does not show: a `.env` file the proxy loads
+  from its working directory in development mode, `launchctl setenv`, and a
+  plist whose program is a shell wrapper that sources a file;
+- per-deployment keys other than the `anthropic_` ones;
+- that the proxy really runs the `config.yaml` wt checks: a missing
+  `config.yaml` reads as no hazard, and `WORKER_CONFIG` is safe only while
+  the proxy starts through the `litellm` CLI (which overwrites it).
+
+### The session side
+
+A claude launch that uses a subscription model sends the wt token only as
+the value of one environment entry,
+`ANTHROPIC_CUSTOM_HEADERS=…x-wt-model-token: TOKEN…`: never in argv, the
+`--settings` JSON or a file, and masked in `wt profile show`. Claude Code's
+tool subprocesses and hooks inherit that environment, so a header-mode
+session's shell carries the token. The session-side checks, the opt-in and
+the refusals are on [wt-session.md](wt-session.md#claude-subscription-header-mode).
 
 ## `wt-model setup`
 
@@ -295,7 +724,7 @@ All control paths are under `/control/v1/` and answer JSON.
 
 | Method and path | Meaning |
 |---|---|
-| `GET /control/v1/ping` | Liveness and version: `api_major`, `schema`, `server`. A client refuses a server whose `api_major` or `schema` differs from its own: a newer `schema` needs a newer wt, an older one is a `wt-model` still running from before wt was updated (`bin/update-tools` does not restart it), and the error says `restart wt-model`. |
+| `GET /control/v1/ping` | Liveness and version: `api_major`, `schema`, `server`, and `subscription_passthrough: true` when the server accepts the gateway's header mode (`x-wt-model-token` beside the client's own claude.ai login; `[gateway] subscription_passthrough = true` in the wt-model home's `config.toml`, read once at `serve` start). The key is omitted when the mode is off, so an off server and an older one answer alike. `tls_off` is set only when TLS was configured and serve fell back to plain HTTP on the certificate's dates ([Native TLS](#native-tls)), holding the fixed reason (`certificate expired 2026-11-01`, `certificate not valid until <date>`): a date, never certificate bytes; it is omitted otherwise. A client refuses a server whose `api_major` or `schema` differs from its own: a newer `schema` needs a newer wt, an older one is a `wt-model` still running from before wt was updated (`bin/update-tools` does not restart it), and the error says `restart wt-model`. |
 | `GET /control/v1/catalog` | Every model and every registry alias: state, action, tier, price, protocols, and how many live client sessions use it. Slot-profile rows are not included. |
 | `GET /control/v1/resolve?model=ID` | One catalog row, or a 404 `unknown_model` naming why. |
 | `GET /control/v1/candidates` | The registry's models ranked for a slot, as `wt profile slots candidates --json` ranks them. Query: `open_only=BOOL`, `provider=a,b`, `near=ID`, `per_provider=N` (needs `near`, else 400 `bad_request`). Answers `{"tiers_generated", "stale_sources", "candidates"}`: `tiers_generated` is the RFC 3339 time of the tiers file and is absent when there is none; `stale_sources` and `candidates` are always present. A candidate carries `id`, `provider`, `location`, `flags` (always a list) and, where they apply, `tier`, `confidence`, `score` (absent when unscored), `rated`, `open_weights`, `context`, `output_per_million`, `subscription`, `subscription_period`. |
@@ -427,12 +856,25 @@ constant `modelapi.StepStillFinishing`); it is not an error.
 
 **Gateway.** An error the gateway itself writes is OpenAI-style, because
 agents parse it: `{"error": {"message": "...", "type": "...", "code":
-"..."}}`. There are three: 401 `unauthorized` (type `authentication_error`,
-the same message as the control API), 404 `not_found` (type
-`invalid_request_error`, message `path is not served by the gateway`) for a
-path the gateway does not serve, and 503 `proxy_unavailable` (type
-`api_error`, message `model proxy is restarting`, with `Retry-After: 5`) when
-LiteLLM cannot be reached. Whatever LiteLLM answers passes through untouched.
+"..."}}`. Whatever LiteLLM answers passes through untouched. The three 403s
+answer only a request that carries the `x-wt-model-token` header (the header
+mode, which forwards the client's own claude.ai login; a request without the
+header is served by the token swap exactly as before). Each message is fixed
+text and never carries a header value.
+
+| Status | Code | Type | Message | When |
+|---|---|---|---|---|
+| 401 | `unauthorized` | `authentication_error` | `missing or wrong bearer token` (the control API's wording) | The token is missing or wrong. In the header mode: the header is not exactly one value equal to the token (an empty or second value included, even beside a valid `Authorization: Bearer TOKEN`), or `Authorization` holds the token itself |
+| 403 | `subscription_off` | `permission_error` | `subscription passthrough is off on this model server` | The header is valid but the host has not turned the mode on (off by default); a wrong header is the 401, so the mode is not disclosed |
+| 403 | `subscription_insecure` | `permission_error` | `a Claude login is accepted only from a loopback peer or over TLS` | The peer is neither loopback (`127.0.0.0/8`, `::1`, `::ffff:127.x`) nor a TLS connection to wt-model itself, or a forwarding header refuses: any `X-Forwarded-Proto` value or `Forwarded` `proto=` element that is not `https`, or, from a loopback peer, any `X-Forwarded-For`, `X-Real-IP` or `Forwarded` `for=` element naming a non-loopback client while no proto indicator says `https`. Forwarding headers are only ever read to refuse |
+| 403 | `subscription_no_login` | `permission_error` | `the Authorization header is not a Claude login (Bearer sk-ant-oat...)` | In the header mode, `Authorization` is present and is not one `Bearer sk-ant-oat…` value (an API key, any other string, two values). An absent `Authorization` is forwarded absent |
+| 404 | `not_found` | `invalid_request_error` | `path is not served by the gateway` | A path the gateway does not serve (checked after the token, both modes) |
+| 503 | `proxy_unavailable` | `api_error` | `model proxy is restarting` | LiteLLM cannot be reached; with `Retry-After: 5` |
+
+In the header mode the upstream request loses `x-wt-model-token` and
+`x-api-key`, keeps the client's `Authorization` (the login) and
+`anthropic-beta` as sent, and gets `x-litellm-api-key` set to the host's
+LiteLLM key (a client's own value is replaced).
 
 ## Jobs and client sessions
 
@@ -509,6 +951,10 @@ prints the real port:
 wt-model: listening on <addr> (gateway /v1, control /control/v1)
 ```
 
+With TLS the line is the same (the address, no scheme). The TLS state
+([Native TLS](#native-tls)) and the header mode are reported on their own
+lines after it, TLS first.
+
 Right after that line it reconciles the LiteLLM routes once, as
 `wt-model litellm sync` does, through the same pair (local routes in
 LiteLLM's database): a database that was wiped is repopulated the next
@@ -557,6 +1003,15 @@ time; never the token itself or any key:
 {"version": 1, "pid": 4242, "listen": "127.0.0.1:8787", "token_file": "/Users/user_name/.config/wt-model/server.token", "started": "2026-11-19T10:00:00Z"}
 ```
 
+| Key | Meaning |
+|---|---|
+| `version` | the record format, `1` |
+| `pid` | the serving process |
+| `listen` | the bound address the listening line printed |
+| `token_file` | the token file's absolute path (never the token) |
+| `started` | the start time, UTC |
+| `tls_cert` | only while serve speaks TLS: the certificate's absolute path (never the key's). A host command then dials `https://`, trusting exactly this file. Absent for plain HTTP, the expired-certificate fallback included. Additive: the version stays `1` |
+
 The file is mode 0600 (the home is made 0700 only when serve has to create it;
 an existing home keeps its mode) and is written (atomically) before the
 listening line, so whoever saw that line can read it. A record that cannot be
@@ -569,8 +1024,10 @@ that cannot bind its address neither writes nor removes it. A killed server
 leaves its record behind. `wt-model stop <provider>|--all` reads the record to
 ask the live server for its client sessions; a record whose pid is no longer
 running is stale and is not asked (another process may hold the port now).
-A stale record, or a server that cannot be asked, is one note on stderr and
-the stop goes on without asking about any model:
+A stale record (or one that cannot be read) is one note on stderr and the
+stop goes on without asking about any model; a server that is running but
+cannot be asked makes the stop ask before stopping anything
+([wt-start-stop.md](wt-start-stop.md#in-use-confirmation)):
 
 ```text
 wt-model: note: could not read client sessions from the model server (the model server (pid 4242) is not running: stale record) — models they use are stopped without asking
@@ -583,6 +1040,36 @@ No record at all (no server running) is silent: there is nothing to ask.
 - **The gateway cannot scope agent traffic per client.** One shared token
   opens every inference path and every model LiteLLM routes. The gateway does
   not tell clients apart or limit which models a client may call.
+- **TLS encrypts the hop; it does not identify the client.** The shared
+  token is still the only authenticator: with TLS on a LAN, any holder of it
+  can send header-mode requests, forwarding whatever login they carry.
+- **A same-host plain-HTTP forwarder is undetectable** when it adds no
+  forwarding header ([Where it runs](#where-it-runs)): a LAN client behind it
+  looks like a loopback peer.
+- **An older `wt-model litellm set` or `wt litellm set` drops `[gateway]`**, and with it TLS and
+  the subscription passthrough, at the next serve restart.
+- **A session still on `http://` after TLS is turned on has already sent its
+  token in clear** by the time it shows the "the model server speaks https"
+  hint (Go writes the whole request before the server's 400): rotate the
+  token on the host ([The token file](#the-token-file)).
+- **An expired certificate turns TLS off at the next serve start** rather
+  than stopping serve, so remote `https://` sessions and remote header mode
+  stop working until the certificate is renewed and serve restarted
+  ([Renewal and rotation](#renewal-and-rotation)).
+- **A header-mode claude over an `http://` gateway gets the gateway's host
+  added to `NO_PROXY` and `no_proxy`** (appended to an inherited value,
+  never replacing it; when only one spelling is inherited, the other
+  spelling starts from the inherited one; an IPv6 literal in both forms,
+  `::1` and `[::1]`), so
+  an inherited `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` does not carry the
+  login and the wt token in clear through a proxy. Whether Claude Code
+  would skip a proxy for loopback by itself is unverified until the phase 3
+  live check (#597).
+- **Setup checks only the certificate's dates.** A loose key or a key that
+  does not match the certificate shows up only as serve refusing to start
+  (the line is in the LaunchAgent's log).
+- **`--location local` is accepted for a `claude-subscription` model** by
+  `wt-model model add|edit`, but such a row never works.
 - **The client uses no environment proxy.** The control and gateway calls ignore `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so the bearer token and the prompts go straight to the `[model-server]` url and never to a third party. A session machine that can reach the server only through a proxy cannot use it.
 - Config is read per request, job and scan, so `wt-model model …` and `wt-model cloud-sync`
   edits show without a restart.

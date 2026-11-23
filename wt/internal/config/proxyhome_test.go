@@ -88,6 +88,14 @@ func TestProxyHomeFixtureMatchesTheTypes(t *testing.T) {
 	if doc.Litellm.URL != "http://localhost:4000" || doc.Litellm.KeyFile != "litellm.key" {
 		t.Errorf("[litellm] = %+v, want url http://localhost:4000 and key_file litellm.key", doc.Litellm)
 	}
+	// The hand-edited [gateway] table is part of the document, and the
+	// fixture's switch is off: a sample never shows passthrough on.
+	if v, ok := doc.Gateway["subscription_passthrough"]; !ok || v != false {
+		t.Errorf("[gateway] subscription_passthrough = %#v (present %t), want false", v, ok)
+	}
+	if gc, warns := gatewayFromDoc(doc); gc.SubscriptionPassthrough || len(warns) != 0 {
+		t.Errorf("fixture [gateway] reads as %+v, %q; want off with no warning", gc, warns)
+	}
 	if !bytes.HasPrefix(raw, []byte(proxyHomeHeader)) {
 		t.Errorf("fixture does not open with the header SetProxy writes:\n%s", proxyHomeHeader)
 	}
@@ -1304,5 +1312,285 @@ func TestPairReadInAnUnwritableHomeSucceeds(t *testing.T) {
 	}
 	if _, err := os.Stat(home + ".lock"); !os.IsNotExist(err) {
 		t.Errorf("the read created a lock file in the unwritable home: %v", err)
+	}
+}
+
+// TestGatewayTableRoundTripsThroughSetProxy pins decision 1's round trip: the
+// hand-edited [gateway] table survives this binary's SetProxy re-encode, both
+// an on switch and a wrong-typed value kept as written (GatewaySettings, not
+// the writer, interprets it). A writer that dropped the table would turn the
+// host switch off behind the operator's back on every `litellm set`.
+func TestGatewayTableRoundTripsThroughSetProxy(t *testing.T) {
+	for _, tc := range []struct {
+		name, line string
+		want       any
+	}{
+		{"on", "subscription_passthrough = true", true},
+		{"wrong type kept", `subscription_passthrough = "true"`, "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := proxyEnv(t, "")
+			writeProxyHome(t, home, "[litellm]\nurl = \"http://localhost:4000\"\nkey_file = \"litellm.key\"\n\n[gateway]\n"+tc.line+"\n")
+			writeProxyKey(t, home, "sk-old", 0o600)
+			if err := SetProxy(ptr("http://localhost:4002"), ptr("sk-new")); err != nil {
+				t.Fatal(err)
+			}
+			body, err := os.ReadFile(ProxyHomePath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]map[string]any
+			if _, err := toml.Decode(string(body), &got); err != nil {
+				t.Fatalf("written home does not parse: %v\n%s", err, body)
+			}
+			if v, ok := got["gateway"]["subscription_passthrough"]; !ok || v != tc.want {
+				t.Errorf("[gateway] subscription_passthrough = %#v (present %t), want %#v kept as written:\n%s", v, ok, tc.want, body)
+			}
+			if got["litellm"]["url"] != "http://localhost:4002" {
+				t.Errorf("[litellm] url = %v, want the new url", got["litellm"]["url"])
+			}
+		})
+	}
+}
+
+// TestGatewaySettingsAbsentIsOff pins the default: no home config.toml, a
+// home without [gateway], an empty [gateway] and an explicit false are all
+// off with no warning and no error, because passthrough is opt-in.
+func TestGatewaySettingsAbsentIsOff(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"no file", ""},
+		{"no table", "[litellm]\nurl = \"http://localhost:4000\"\n"},
+		{"empty table", "[gateway]\n"},
+		{"false", "[gateway]\nsubscription_passthrough = false\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := proxyEnv(t, "")
+			if tc.body != "" {
+				writeProxyHome(t, home, tc.body)
+			}
+			gc, warns, err := GatewaySettings()
+			if err != nil || len(warns) != 0 || gc.SubscriptionPassthrough {
+				t.Errorf("GatewaySettings = %+v, %q, %v; want off, no warning, no error", gc, warns, err)
+			}
+		})
+	}
+	t.Run("on", func(t *testing.T) {
+		home := proxyEnv(t, "")
+		writeProxyHome(t, home, "[gateway]\nsubscription_passthrough = true\n")
+		gc, warns, err := GatewaySettings()
+		if err != nil || len(warns) != 0 || !gc.SubscriptionPassthrough {
+			t.Errorf("GatewaySettings = %+v, %q, %v; want on", gc, warns, err)
+		}
+	})
+}
+
+// TestGatewaySettingsWrongTypeIsOffWithWarning pins decision 1's safe
+// direction: a value that is not a boolean ("true", 1) is off with exactly
+// one warning naming the key and the type it must be, and it never breaks
+// the [litellm] pair the same file holds.
+func TestGatewaySettingsWrongTypeIsOffWithWarning(t *testing.T) {
+	for _, val := range []string{`"true"`, "1"} {
+		t.Run(val, func(t *testing.T) {
+			home := proxyEnv(t, "")
+			writeProxyHome(t, home, "[litellm]\nurl = \"http://localhost:4000\"\nkey_file = \"litellm.key\"\n\n[gateway]\nsubscription_passthrough = "+val+"\n")
+			writeProxyKey(t, home, "sk-k", 0o600)
+			gc, warns, err := GatewaySettings()
+			if err != nil {
+				t.Fatalf("GatewaySettings err = %v, want a warning only", err)
+			}
+			if gc.SubscriptionPassthrough {
+				t.Error("a wrong-typed value turned the mode on")
+			}
+			if len(warns) != 1 || !strings.Contains(warns[0], "subscription_passthrough") || !strings.Contains(warns[0], "boolean") {
+				t.Errorf("warnings = %q, want one naming subscription_passthrough and boolean", warns)
+			}
+			pair, err := ResolveProxy()
+			if err != nil || pair.URL != "http://localhost:4000" || pair.APIKey != "sk-k" {
+				t.Errorf("ResolveProxy = %+v, %v; want the [litellm] pair intact", pair, err)
+			}
+		})
+	}
+}
+
+// TestGatewaySettingsSyntaxErrorIsAnError pins that a home config.toml that
+// does not parse is an error (serve refuses to start), never "off", and the
+// error does not quote a value from the file.
+func TestGatewaySettingsSyntaxErrorIsAnError(t *testing.T) {
+	home := proxyEnv(t, "")
+	writeProxyHome(t, home, "[litellm]\nurl = \"http://SECRETHOST:4000\n[gateway]\nsubscription_passthrough = true\n")
+	_, _, err := GatewaySettings()
+	if err == nil {
+		t.Fatal("GatewaySettings on a syntax error = nil, want an error")
+	}
+	if strings.Contains(err.Error(), "SECRETHOST") {
+		t.Errorf("error quotes a value: %v", err)
+	}
+}
+
+// TestHomeParseErrorsNameOnlyKnownKeys pins #640 for the wt-model home's
+// value-free parse errors: the text left of an '=' on a bad line is printed
+// only when it is one of the home's known keys, so a token pasted on its own
+// line (a bare `X==`, or a line inside a multi-line url array) never reaches
+// serve's refusal, `litellm set` or `litellm status`. A known key still names
+// itself and the line, with the neutral suffix unless secretSafe's rule
+// calls the key secret.
+func TestHomeParseErrorsNameOnlyKnownKeys(t *testing.T) {
+	sentinels := []string{"sk-ant-oat01-wtSENTINEL", "wt-SENTINEL-tok", "abc123"}
+	for _, body := range []string{
+		"[litellm]\nurl = \"http://x\"\nsk-ant-oat01-wtSENTINEL==\n",
+		"[gateway]\nwt-SENTINEL-tok=\n",
+		"[litellm]\nurl = \"http://x\"\nabc123==\n",
+		"[litellm]\nurl = [\n  \"http://x\",\n  sk-ant-oat01-wtSENTINEL=x\n]\n",
+		"[litellm]\nurl = [\n  \"http://x\",\n  wt-SENTINEL-tok=x\n]\n",
+		"[gateway]\nsubscription_passthrough = [\n  abc123==\n]\n",
+	} {
+		home := proxyEnv(t, "")
+		writeProxyHome(t, home, body)
+		for name, f := range map[string]func() error{
+			"ResolveProxy":    func() error { _, err := ResolveProxy(); return err },
+			"GatewaySettings": func() error { _, _, err := GatewaySettings(); return err },
+		} {
+			err := f()
+			if err == nil {
+				t.Fatalf("%s on %q = nil, want a parse error", name, body)
+			}
+			for _, s := range sentinels {
+				if strings.Contains(err.Error(), s) {
+					t.Errorf("%s on %q: the error quotes %q: %v", name, body, s, err)
+				}
+			}
+		}
+	}
+
+	home := proxyEnv(t, "")
+	writeProxyHome(t, home, "[gateway]\nsubscription_passthrough = 1x\n")
+	_, _, err := GatewaySettings()
+	if err == nil || !strings.Contains(err.Error(), "line 2") || !strings.Contains(err.Error(), "subscription_passthrough") {
+		t.Fatalf("known key: err = %v, want the line and the key named", err)
+	}
+	if strings.Contains(err.Error(), "1x") || strings.Contains(err.Error(), "may hold a secret") {
+		t.Errorf("known key: err = %v, want no value and the neutral suffix", err)
+	}
+}
+
+// TestGatewaySettingsTLSKeys pins decision 13's fail-closed reading of
+// [gateway] tls_cert/tls_key: both set is TLS (a leading ~ expanded), absent
+// is plain http, and one key alone, a wrong type or an empty value is an
+// error naming the key and no value (never a silent fall back to plain http,
+// never the text written). The error is a *GatewayKeyError, so serve can
+// print it as its one line.
+func TestGatewaySettingsTLSKeys(t *testing.T) {
+	t.Run("both", func(t *testing.T) {
+		home := proxyEnv(t, "")
+		writeProxyHome(t, home, "[gateway]\ntls_cert = \"~/tls/server.crt\"\ntls_key = \"/etc/wt/server.key\"\n")
+		gc, warns, err := GatewaySettings()
+		if err != nil || len(warns) != 0 {
+			t.Fatalf("GatewaySettings = %+v, %q, %v", gc, warns, err)
+		}
+		if gc.TLSCert != filepath.Join(home, "tls", "server.crt") || gc.TLSKey != "/etc/wt/server.key" {
+			t.Errorf("TLSCert %q TLSKey %q, want ~ expanded against %s", gc.TLSCert, gc.TLSKey, home)
+		}
+	})
+	t.Run("absent", func(t *testing.T) {
+		home := proxyEnv(t, "")
+		writeProxyHome(t, home, "[gateway]\nsubscription_passthrough = true\n")
+		gc, _, err := GatewaySettings()
+		if err != nil || gc.TLSCert != "" || gc.TLSKey != "" {
+			t.Errorf("GatewaySettings = %+v, %v; want plain http", gc, err)
+		}
+	})
+	for _, tc := range []struct{ name, body, wantMsg string }{
+		{"cert alone", "tls_cert = \"/x/SECRETPATH.crt\"\n", "[gateway] tls_cert and tls_key must be set together"},
+		{"key alone", "tls_key = \"/x/SECRETPATH.key\"\n", "[gateway] tls_cert and tls_key must be set together"},
+		{"cert wrong type", "tls_cert = 1234567\ntls_key = \"/x/k\"\n", "[gateway] tls_cert must be a string"},
+		{"key wrong type", "tls_cert = \"/x/c\"\ntls_key = [\"SECRETPATH\"]\n", "[gateway] tls_key must be a string"},
+		{"empty cert", "tls_cert = \"\"\ntls_key = \"/x/k\"\n", "[gateway] tls_cert"},
+		{"relative cert", "tls_cert = \"SECRETPATH/server.crt\"\ntls_key = \"/x/k\"\n", "[gateway] tls_cert is a relative path: write it as an absolute path or ~/..."},
+		{"relative key", "tls_cert = \"/x/c\"\ntls_key = \"./SECRETPATH.key\"\n", "[gateway] tls_key is a relative path: write it as an absolute path or ~/..."},
+		{"tilde-user key", "tls_cert = \"/x/c\"\ntls_key = \"~SECRETPATH/k\"\n", "[gateway] tls_key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := proxyEnv(t, "")
+			writeProxyHome(t, home, "[gateway]\n"+tc.body)
+			gc, _, err := GatewaySettings()
+			if err == nil {
+				t.Fatalf("GatewaySettings = %+v, nil; want an error", gc)
+			}
+			var ke *GatewayKeyError
+			if !errors.As(err, &ke) {
+				t.Errorf("err = %T, want *GatewayKeyError", err)
+			}
+			if !strings.HasPrefix(err.Error(), tc.wantMsg) {
+				t.Errorf("err = %q, want it to start %q", err, tc.wantMsg)
+			}
+			if strings.Contains(err.Error(), "SECRETPATH") || strings.Contains(err.Error(), "1234567") {
+				t.Errorf("err quotes a value: %q", err)
+			}
+			if gc.TLSCert != "" || gc.TLSKey != "" {
+				t.Errorf("a refused table still set TLS: %+v", gc)
+			}
+		})
+	}
+}
+
+// pastedPEM is PEM-looking text a user might paste as tls_cert or tls_key
+// instead of a path; its body lines must never reach a message.
+const pastedPEM = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgSENTINELbody1\nQ0FGSUxFU0VOVElORUxib2R5MlNFTlRJTkVMYm9keTNTRU5USU5FTGJvZHk0\n-----END PRIVATE KEY-----\n"
+
+// TestGatewaySettingsRefusesPEMContents pins the fail-closed reading of a
+// tls_cert or tls_key whose value is the PEM text itself (pasted instead of
+// a path): any control character, a "-----BEGIN" armor line or "PRIVATE
+// KEY" refuses with a fixed *GatewayKeyError naming only the key, so no
+// part of the value can reach serve's refusal line (stderr, the LaunchAgent
+// log).
+func TestGatewaySettingsRefusesPEMContents(t *testing.T) {
+	values := map[string]string{
+		"pasted PEM":     `"""` + "\n" + pastedPEM + `"""`,
+		"one-line armor": `"-----BEGIN CERTIFICATE-----MIIBSENTINELbody"`,
+		"private key":    `"MIIBSENTINELbody PRIVATE KEY"`,
+		"newline":        `"/tmp/a\nSENTINELbody"`,
+		"carriage":       `"/tmp/a\rSENTINELbody"`,
+		"nul":            `"/tmp/a\u0000SENTINELbody"`,
+		"tab":            `"/tmp/a\tSENTINELbody"`,
+	}
+	for _, k := range []string{"tls_cert", "tls_key"} {
+		for name, v := range values {
+			t.Run(k+" "+name, func(t *testing.T) {
+				home := proxyEnv(t, "")
+				other := "tls_key"
+				if k == "tls_key" {
+					other = "tls_cert"
+				}
+				writeProxyHome(t, home, "[gateway]\n"+other+" = \"/x/ok.pem\"\n"+k+" = "+v+"\n")
+				_, _, err := GatewaySettings()
+				var ke *GatewayKeyError
+				if !errors.As(err, &ke) {
+					t.Fatalf("err = %v, want *GatewayKeyError", err)
+				}
+				if want := "[gateway] " + k + " must be a path to a PEM file, not its contents"; err.Error() != want {
+					t.Errorf("err = %q, want %q", err, want)
+				}
+				for _, frag := range []string{"SENTINEL", "MIG", "BEGIN", "body"} {
+					if strings.Contains(err.Error(), frag) {
+						t.Errorf("err %q holds %q from the value", err, frag)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestGatewaySettingsWithoutAHomeCreatesNothing pins that reading [gateway]
+// on a machine with no wt-model home config.toml (every session-only
+// machine, read by the Mode tab) creates neither the home directory nor its
+// lock file.
+func TestGatewaySettingsWithoutAHomeCreatesNothing(t *testing.T) {
+	home := proxyEnv(t, "")
+	gc, warns, err := GatewaySettings()
+	if err != nil || len(warns) != 0 || gc != (GatewayConf{}) {
+		t.Fatalf("GatewaySettings = %+v, %q, %v; want the zero value", gc, warns, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "wt-model")); !os.IsNotExist(err) {
+		t.Errorf("the wt-model home exists after a read (%v)", err)
 	}
 }

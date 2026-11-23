@@ -119,6 +119,8 @@ wt smoke <model-id> --only claude --tools --hops 3
 
 `--tools` checks a real tool call and result round trip; `--hops N` (1-10) chains N dependent reads. Report PASS or FAIL per slot, with the failing row's detail. A failing model is the user's call: offer a swap (step 3) and do not change anything on your own.
 
+Never smoke a Claude subscription model (provider `claude-subscription`, or an alias with such a target) without asking first: it spends the user's own plan, and a fable row may need usage credits. `wt smoke` runs one only when named with `--subscription` (`wt smoke <id> --subscription --only claude`), after its pre-launch checks; a plain smoke walk reports such rows as SKIP.
+
 A local model is started by smoke on the model server, and smoke asks nothing when it ends: it ends its client session, and the server stops the model after its idle grace unless another client session uses it. So after smoking a local model, tell the user it stays loaded until then and offer `wt stop <model-id>` to unload it now. Unload each local model before smoking the next one, so a memory failure belongs to the model under test.
 
 ## Slot guidance
@@ -132,6 +134,7 @@ A local model is started by smoke on the model server, and smoke asks nothing wh
   - point `REMEMBER_MODEL` at a cloud model.
   A profile may name only one distinct local model. For an mtplx model on a slot that gets Claude Code's full prompt, see "A local slot model and memory" in `wt/docs/wt-agents/slot-profiles.md`.
 - **`opusplan` needs both `opus` and `sonnet` filled.**
+- **Claude subscription models as `fable`/`opus` targets.** When the host has `claude-subscription` models (they show in `wt model list --server` with that provider, claude only), the user may put them on `fable` and `opus` and keep `sonnet` and `haiku` on aliases or other models; the whole session then runs in header mode on the user's own claude.ai login (`wt/docs/wt-agents/slot-profiles.md`, "Claude subscription slots"). Say before the user picks one: it is the user's own login only (never shared), it needs this machine's `[model-server] subscription = true` opt-in and a claude.ai login, and a fable row (and other large models) may need usage credits or count against the plan's limits depending on plan and seat tier (Claude Code's `/model` can show "Requires usage credits"). Tier scores do not price it: never compare its cost with a per-token price.
 
 ## Rules
 

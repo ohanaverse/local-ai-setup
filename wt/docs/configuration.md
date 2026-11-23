@@ -117,7 +117,7 @@ agent-toolkit deploy home --dry-run    # Preview changes
 
 ### Model server setting
 
-`[model-server]` in `~/.config/agent-wt/config.toml` (`mode`, `url`, `token_file`) names the model server a session uses. It is written by the Mode tab of `wt config` (native, remote, or local as a pointer with the default url and token file) or by `wt-model setup` (which sets up a local server on this machine), each as a plan you confirm, and stays hand-editable. The `wt config` Agents tab's save keeps it as it is. See [wt-session.md](wt-session.md) and [wt-config.md](wt-config.md).
+`[model-server]` in `~/.config/agent-wt/config.toml` (`mode`, `url`, `token_file`) names the model server a session uses. Two more keys are hand-edited only (the Mode tab keeps them and never sets them): `ca_file`, a certificate file to trust for an `https://` server, and `subscription = true`, this machine's opt-in to sending its own claude.ai login for a Claude subscription model ([wt-session.md](wt-session.md#claude-subscription-header-mode)). It is written by the Mode tab of `wt config` (native, remote, or local as a pointer with the default url and token file) or by `wt-model setup` (which sets up a local server on this machine), each as a plan you confirm, and stays hand-editable. The `wt config` Agents tab's save keeps it as it is. See [wt-session.md](wt-session.md) and [wt-config.md](wt-config.md).
 
 ### Exit prompt setting
 

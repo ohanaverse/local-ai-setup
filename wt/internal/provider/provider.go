@@ -61,9 +61,9 @@ type Seed struct {
 	Name      string
 	Location  string   // "local" or "cloud"
 	Protocols []string // omitted from the row when empty
-	AuthType  string   // auth.type: "none" or "api_key"
+	AuthType  string   // auth.type: "none", "api_key" or "client-login"
 	SecretRef string   // auth.secret_ref, omitted when empty
-	BaseURL   string   // auth.base_url as the registry stores it (with /v1 where the provider has it)
+	BaseURL   string   // auth.base_url as the registry stores it (with /v1 where the provider has it), omitted when empty
 	ModelDir  string   // omitted from the row when empty
 	// Command is the binary whose presence on PATH makes wt seed the row;
 	// empty means only a model reference or an agent listing seeds it.
@@ -377,7 +377,13 @@ func SeedRow(id string) map[string]any {
 			continue
 		}
 		sd := s.Seed
-		auth := map[string]any{"type": sd.AuthType, "base_url": sd.BaseURL}
+		auth := map[string]any{"type": sd.AuthType}
+		// An empty base_url is no key at all: a reader takes a present key
+		// as an address (claude-subscription has none, and a row with one is
+		// refused a route).
+		if sd.BaseURL != "" {
+			auth["base_url"] = sd.BaseURL
+		}
 		if sd.SecretRef != "" {
 			auth["secret_ref"] = sd.SecretRef
 		}

@@ -286,6 +286,11 @@ func planLocal(st State, want Desired) (Plan, error) {
 			"stop that process or choose another port"))
 	}
 
+	// TLS settings that cannot be read refuse (never a silent http://).
+	if r := modelmode.LocalTLSRefusal(st.State); r != "" {
+		reasons = append(reasons, r)
+	}
+
 	// The plist path must be wt's or free.
 	if st.Agent.Present && !st.Agent.Managed {
 		reasons = append(reasons, reason(st.Agent.PlistPath+" exists and is not marked \"managed by wt\", so wt will not overwrite it",
@@ -384,7 +389,8 @@ func planLocal(st State, want Desired) (Plan, error) {
 
 	want.Listen = listen
 	want.TokenFile = tokPath
-	want.URL = "http://" + listen
+	// https:// only while serve will speak TLS (decision 13).
+	want.URL = modelmode.LocalURL(listen, st.LocalTLS.On)
 	spec := AgentSpec{Binary: st.Tools.Binary, Listen: listen, TokenFile: tokPath, Path: st.Tools.Path, Home: st.Host.Home}
 	p := Plan{Plan: modelmode.Plan{Want: want.Desired}, Admin: want.AdminWant, Agent: &spec, LiteLLM: lspec}
 	pairChanged := false
@@ -429,9 +435,14 @@ func planLocal(st State, want Desired) (Plan, error) {
 
 	domain := "gui/" + strconv.Itoa(st.Tools.UID)
 	loaded := st.Agent.Job.Loaded
+	// serve reads [gateway] only at start: when the url written changes
+	// scheme from the stored local one, or the running serve (its record,
+	// when it names the running agent's pid) speaks the other scheme, a
+	// loaded agent is reloaded so the url and the server converge.
+	schemeChanged := schemeChanges(st, want.URL)
 	started := false
 	switch {
-	case plistChanged && loaded:
+	case (plistChanged || schemeChanged) && loaded:
 		p.Steps = append(p.Steps,
 			Step{Kind: StepBootout, Path: st.Agent.PlistPath, Detail: "unload the running LaunchAgent: launchctl bootout " + domain + "/" + AgentLabel},
 			Step{Kind: StepBootstrap, Path: st.Agent.PlistPath, Detail: "load the LaunchAgent: launchctl bootstrap " + domain + " " + st.Agent.PlistPath})
@@ -453,10 +464,31 @@ func planLocal(st State, want Desired) (Plan, error) {
 	if started {
 		p.Steps = append(p.Steps, Step{Kind: StepWait, Value: want.URL, Detail: "wait for wt-model to answer at " + want.URL})
 	}
+	if schemeChanged && loaded && !plistChanged {
+		p.Notes = append(p.Notes, "wt-model serve reads its TLS settings only at start, so it is reloaded to speak the url's scheme")
+	}
 	p.AddConfigStep(st.State)
 	p.Notes = append(p.Notes, lnotes...)
+	p.AddLocalTLSNotes(st.State)
 	p.AddEnvNote(st.State)
 	return p, nil
+}
+
+// schemeChanges reports whether a local plan writing url changes the scheme
+// a session uses or serve speaks: the stored local url's scheme differs from
+// url's, or the running serve's record (only when it names the running
+// agent's pid, never a stale one) says it speaks the other scheme.
+func schemeChanges(st State, url string) bool {
+	https := strings.HasPrefix(url, "https://")
+	t := st.Config.Table
+	if m, ok := modelmode.ParseMode(t.Mode); ok && m == modelmode.ModeLocal && t.URL != "" &&
+		strings.HasPrefix(t.URL, "https://") != https {
+		return true
+	}
+	if s := st.Serve; s.Seen && st.Agent.Job.Running && s.PID == st.Agent.Job.PID && s.TLS != https {
+		return true
+	}
+	return false
 }
 
 // leaveAgent handles a wt LaunchAgent when leaving local: removal when asked

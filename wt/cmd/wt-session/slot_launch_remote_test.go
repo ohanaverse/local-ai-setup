@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/claudelogin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
@@ -51,15 +52,15 @@ func slotRigRows(t *testing.T, rows []modelapi.Row, slots map[string]string) (*r
 	store := profiles.SlotStore{Profiles: []profiles.SlotProfile{{Name: "mix", Agent: "claude", Default: "sonnet", Slots: slots}}}
 	r.a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
 	built := &[]*exec.Cmd{}
-	r.a.hooks.buildSlotGateway = func(sl profiles.SlotLaunch, wt string, yolo bool, gw agents.Gateway, extra []string) (*exec.Cmd, error) {
+	r.a.hooks.buildSlotGateway = func(sl profiles.SlotLaunch, wt string, yolo bool, gw agents.Gateway, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		r.f.mu.Lock()
 		r.f.Reqs = append(r.f.Reqs, "BUILD")
 		r.f.mu.Unlock()
-		cmd, err := agents.BuildSlotLaunchCmdGateway(sl, wt, yolo, gw, extra)
+		cmd, info, err := agents.BuildSlotLaunchCmdGatewayInfo(sl, wt, yolo, gw, extra)
 		if cmd != nil {
 			*built = append(*built, cmd)
 		}
-		return cmd, err
+		return cmd, info, err
 	}
 	return r, built
 }
@@ -76,6 +77,8 @@ func slotCalls(f *fakeModelServer) []string {
 		switch {
 		case r == "BUILD":
 			out = append(out, "build")
+		case r == "GUARD":
+			out = append(out, "guard")
 		case strings.HasPrefix(r, "GET /control/v1/catalog"):
 			out = append(out, "catalog")
 		case r == "POST /control/v1/sessions":
@@ -316,6 +319,24 @@ func TestSlotLaunchRemoteRegisterFailureIsANoteAndLaunches(t *testing.T) {
 	}
 }
 
+// subscriptionReady makes r's launch of a subscription model pass the
+// pre-launch guard: the fake's ping has the passthrough on, the session
+// config opts in, and the login check is a stub (a claude.ai login),
+// recorded as "GUARD" in the fake's request log.
+func subscriptionReady(t *testing.T, r *remoteRig) {
+	t.Helper()
+	r.f.Passthrough = true
+	hooks, checks := r.a.hooks, r.a.slotChecks
+	r.a = pointAtFake(t, r.f, "subscription = true\n")
+	r.a.hooks, r.a.slotChecks = hooks, checks
+	r.a.hooks.claudeLogin = func(context.Context) (claudelogin.Status, error) {
+		r.f.mu.Lock()
+		r.f.Reqs = append(r.f.Reqs, "GUARD")
+		r.f.mu.Unlock()
+		return goodLogin(), nil
+	}
+}
+
 // TestSlotFlowParity runs every scenario of the shared table
 // (internal/profiles/testdata/slot_launch_remote_parity.txt) through the
 // -M profile/<name> pin on the model server (launchSlotProfileRemote) and
@@ -323,11 +344,13 @@ func TestSlotLaunchRemoteRegisterFailureIsANoteAndLaunches(t *testing.T) {
 // TestSlotFlowParity (internal/tui) runs the same table through Enter on a
 // profile row, so the two client paths are held to one list: a register moved
 // after the start, a second catalog read or a start of a routed model on one
-// path would otherwise pass that path's own test.
+// path would otherwise pass that path's own test. The subscription scenario
+// holds the pre-launch guard before openClientSession's register (#597).
 func TestSlotFlowParity(t *testing.T) {
 	for _, sc := range readRemoteSlotParity(t) {
 		t.Run(sc.name, func(t *testing.T) {
-			r, _ := slotRig(t, sc.slots)
+			r, _ := slotRigRows(t, append(slotWireRows(), subRow("claude-haiku-5-5")), sc.slots)
+			subscriptionReady(t, r)
 			if err := r.launch(t, context.Background(), "profile/mix", "", false); err != nil {
 				t.Fatalf("launch: %v", err)
 			}

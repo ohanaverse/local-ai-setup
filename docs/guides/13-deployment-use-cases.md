@@ -100,9 +100,34 @@ token_file = "~/.config/agent-wt/remote-model-server.token"
 
 Several session machines (and several `wt` runs on each) can use one server at once; each run registers its own client session, and the server stops a local model no client session uses after its idle grace.
 
+**Over native TLS.** To encrypt the hop, or to use a Claude subscription model from the session machine, give the server a certificate for its LAN IP address ([the recipe](../../wt/docs/wt-model-server.md#making-a-certificate)), name it under `[gateway]` on the model machine, restart serve, and point the session at `https://`:
+
+```toml
+# ~/.config/wt-model/config.toml (on the model machine; hand-edited)
+[gateway]
+tls_cert = "~/.config/wt-model/tls/server.crt"
+tls_key  = "~/.config/wt-model/tls/server.key"
+```
+
+```toml
+# ~/.config/agent-wt/config.toml (on the session machine)
+[model-server]
+mode = "remote"
+url = "https://<lan-address>:8787"
+token_file = "~/.config/agent-wt/remote-model-server.token"
+ca_file = "~/.config/agent-wt/model-server.crt"   # a copy of the server's certificate (never its key)
+```
+
+A tunnel that arrives on the model machine's loopback works too. With `ssh -L` (run on the session machine) the session's url is `http://127.0.0.1:<local port>`; `tailscale serve` runs on the model machine and serves the tailnet name, so the session's url is `https://<tailnet-name>` (the machine's tailnet DNS name). Whether the subscription header mode passes through either is derived from the peer rule and unverified until the phase 3 live check (#597).
+
+**A Claude subscription model from the session machine** (#597) needs that encrypted path: a remote server over plain `http://` is refused before the login is sent. The host turns the mode on (`[gateway] subscription_passthrough = true`, then restart serve) and the session machine opts in (`[model-server] subscription = true`); [wt-model-server.md](../../wt/docs/wt-model-server.md#subscription-passthrough) and [wt-session.md](../../wt/docs/wt-session.md#claude-subscription-header-mode) have the steps and the checks.
+
+- **Your own login only.** The subscription is the user's own claude.ai login. Do not share it or pool it: a model server used by other people with their logins would be intermediating their credentials, which Anthropic's terms forbid, and wt cannot tell whose login a request carries.
+- **Usage credits.** Depending on the plan and seat tier, a Fable row and other large models may need usage credits or count against the plan's limits (Claude Code's `/model` can show "Requires usage credits"). Check the plan before pointing a slot at one.
+
 ### 5. The documented v1 limits
 
-- **No TLS.** Plain HTTP. Keep it on a network you trust, or reach the server through a tunnel. Binding to a non-loopback address is your explicit act.
+- **Plain HTTP by default; TLS is opt-in.** The server speaks TLS itself when `[gateway] tls_cert` and `tls_key` (hand-edited, in `~/.config/wt-model/config.toml`) name a certificate and its key; a session machine trusts a private certificate with `ca_file` under `[model-server]` (or `WT_MODEL_CA_FILE`). Remote sessions use native TLS (a certificate for the host's LAN IP) or a tunnel; without either keep the server on a network you trust. Binding to a non-loopback address is your explicit act. Making the certificate and renewing it: [Making a certificate](../../wt/docs/wt-model-server.md#making-a-certificate), [Renewal and rotation](../../wt/docs/wt-model-server.md#renewal-and-rotation). An expired certificate does not stop the server: at its next start it serves plain HTTP with one warning, `https://` sessions fail and remote subscription requests are refused until the certificate is renewed and serve restarted. TLS encrypts the hop; it does not identify the client.
 - **No token scopes.** One shared token, one trust level: anyone holding it can read the catalog, load and stop local models, spend on routed cloud models and register client sessions. It grants no admin capability (the registry, prices and cloud-sync stay on the host's CLI), but it is not a gateway-only credential.
 - **The agent holds the token, so it can call the control API too.** The token travels to each session machine and into the launched agent's environment (it authenticates to the gateway); nothing stops that holder from calling `/control/v1/`. The token is the whole boundary — keep the file 0600 and rotate it when a machine that held it goes away.
 

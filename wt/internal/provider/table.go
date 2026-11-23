@@ -20,6 +20,16 @@ const (
 	IDOpenRouter = "openrouter"
 )
 
+// IDClaudeSubscription is the provider whose models are served on the
+// owner's own Claude subscription (#597): the client's claude.ai login is
+// forwarded by LiteLLM to api.anthropic.com through keyless anthropic/<id>
+// rows. It is the only provider whose LiteLLM rows are anthropic/ rows
+// (TestOnlySubscriptionProviderBuildsAnthropicRows): LiteLLM forwards a
+// client's OAuth token to every anthropic/ deployment whatever its api_base,
+// so a second one, or a key or base on this one, could send a login to a
+// foreign host or serve a paid key to any holder of the shared wt token.
+const IDClaudeSubscription = "claude-subscription"
+
 // Default origins and model directories: each is named once and read by both a
 // family's facts and its provider's seed row, so the two cannot drift.
 const (
@@ -105,6 +115,18 @@ var providers = []Spec{
 		},
 	},
 	{ID: "llamacpp", Policy: &Policy{Prefix: "openai/local-model", FixedModel: true, APIKey: "dummy-key"}},
+	// claude-subscription: family-less and cloud. Its policy has no key, no
+	// base and no V1Base, so BuildEntry writes `model: anthropic/<id>` and
+	// nothing else; its seed has no base_url (SeedRow writes no key) and no
+	// command (only a model reference or an agent listing seeds it).
+	{
+		ID:     IDClaudeSubscription,
+		Policy: &Policy{Prefix: "anthropic/", Cloud: true},
+		Seed: &Seed{
+			Name: "Claude subscription", Location: "cloud", Protocols: []string{"anthropic"},
+			AuthType: "client-login",
+		},
+	},
 	{
 		ID:     IDOpenRouter,
 		Policy: &Policy{Prefix: "openrouter/", SecretRef: true, Cloud: true},

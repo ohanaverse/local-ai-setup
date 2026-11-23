@@ -71,8 +71,13 @@ func planAdd(req AddRequest) (addPlan, error) {
 	case !pairing && req.Draft != "":
 		return addPlan{}, fieldErr(FieldDraft, "--draft is for an mlx_lm_server pairing; a model of provider %s has no draft", req.ProviderID)
 	}
-	if err := checkID(req.ID); err != nil {
+	if err := checkID(req.ProviderID, req.ModelName, req.ID); err != nil {
 		return addPlan{}, err
+	}
+	if config.IsSubscriptionProvider(req.ProviderID) {
+		if err := checkSubscriptionAdd(req); err != nil {
+			return addPlan{}, err
+		}
 	}
 	set, _, err := req.Fields.patch()
 	if err != nil {
@@ -95,7 +100,7 @@ func planAdd(req AddRequest) (addPlan, error) {
 		// comes from the last segment of what the user typed, which may be a
 		// directory with a space in it, or nothing at all ("/").
 		if derived := DeriveID(req.ProviderID, req.ModelName); req.ID == "" &&
-			(lastSegment(target) == "" || lastSegment(draft) == "" || checkID(derived) != nil) {
+			(lastSegment(target) == "" || lastSegment(draft) == "" || checkID(req.ProviderID, req.ModelName, derived) != nil) {
 			return addPlan{}, fieldErr(FieldName, "the target and draft do not make a usable id (%q): pass --id mlx_lm_server/<name>", derived)
 		}
 	}
@@ -136,15 +141,45 @@ func planAdd(req AddRequest) (addPlan, error) {
 // side of the first "/", and no space or control character anywhere. The
 // rest of wt takes that shape for granted — `wt stop <arg>` reads an argument
 // with no "/" as a provider, and an id with a space cannot be passed to -M
-// unquoted. "" (derive the id) is fine.
-func checkID(id string) error {
+// unquoted. "" (derive the id) is fine. The one exception is a
+// claude-subscription model (decision 5, #597): its id is the bare real
+// Claude id, equal to its model name (the id Claude Code, the gateway and
+// LiteLLM's anthropic/<id> row all name), so a given id must be exactly that.
+func checkID(providerID, modelName, id string) error {
 	if id == "" {
 		return nil
 	}
-	provider, name, ok := strings.Cut(id, "/")
 	bad := strings.ContainsFunc(id, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+	if config.IsSubscriptionProvider(providerID) {
+		if bad || id != modelName {
+			return fieldErr(FieldID, "a %s model's id is its bare model name (%q), got %q", providerID, modelName, id)
+		}
+		return nil
+	}
+	provider, name, ok := strings.Cut(id, "/")
 	if !ok || provider == "" || name == "" || bad {
 		return fieldErr(FieldID, "an id is <provider>/<name> with no spaces, got %q", id)
+	}
+	return nil
+}
+
+// subscriptionWindowRefusal is the one refusal of a subscription model added
+// without a context window (decision 5).
+const subscriptionWindowRefusal = "a claude-subscription model needs --context-window (Claude Code's window for it)"
+
+// checkSubscriptionAdd refuses a claude-subscription model whose name is not
+// a bare Claude id (a "/" would make its row anthropic/<prefix>/<name>; a
+// space, a control character or a "[" suffix such as "[1m]" is no API id) or
+// that has no context window: without one, claudeWindow withdraws the window
+// declaration of every profile the model is in.
+func checkSubscriptionAdd(req AddRequest) error {
+	if strings.ContainsFunc(req.ModelName, func(r rune) bool {
+		return r == '/' || r == '[' || r == ']' || unicode.IsSpace(r) || unicode.IsControl(r)
+	}) {
+		return fieldErr(FieldName, "a %s model name is a bare Claude id such as claude-haiku-5-5, got %q", req.ProviderID, req.ModelName)
+	}
+	if req.Fields.ContextWindow == nil || *req.Fields.ContextWindow <= 0 {
+		return fieldErr(FieldContextWindow, subscriptionWindowRefusal)
 	}
 	return nil
 }
@@ -402,6 +437,12 @@ func Edit(id string, f Fields) (changed bool, err error) {
 			return err
 		}
 		providerID = tableString(m, "provider_id")
+		// A subscription model keeps its window (decision 5): clearing it
+		// would withdraw the window declaration of every profile it is in,
+		// the add's refusal.
+		if config.IsSubscriptionProvider(providerID) && slices.Contains(unset, "context_window") {
+			return fieldErr(FieldContextWindow, subscriptionWindowRefusal)
+		}
 		if args, ok := set["serve_args"].([]string); ok {
 			if err := checkServeArgs(providerID, args); err != nil {
 				return err

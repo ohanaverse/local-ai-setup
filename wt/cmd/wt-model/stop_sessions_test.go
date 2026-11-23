@@ -71,7 +71,7 @@ func TestHostSessionReaderCountsFromTheCatalog(t *testing.T) {
 		modelapi.Row{ID: "omlx/busy", Sessions: 2}, modelapi.Row{ID: "omlx/idle", Sessions: 0})
 	store := recordFor(t, srv, "tok")
 	var w bytes.Buffer
-	read := hostSessionReader(t.Context(), &w, store)
+	read := hostSessionReader(t.Context(), &w, store, nil)
 	got := read()
 	if len(got) != 1 || got["omlx/busy"] != 2 {
 		t.Fatalf("sessions = %v, want map[omlx/busy:2]", got)
@@ -95,7 +95,7 @@ func TestHostSessionReaderIsSilentWithNoRecord(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var w bytes.Buffer
-			if got := hostSessionReader(t.Context(), &w, store)(); got != nil || w.Len() != 0 {
+			if got := hostSessionReader(t.Context(), &w, store, nil)(); got != nil || w.Len() != 0 {
 				t.Errorf("sessions = %v, note = %q; want nil and no note", got, w.String())
 			}
 		})
@@ -103,18 +103,33 @@ func TestHostSessionReaderIsSilentWithNoRecord(t *testing.T) {
 }
 
 // TestHostSessionReaderNotesAnUnreachableServer proves a record naming a
-// server that no longer answers is one note line, and no sessions.
+// server that no longer answers is one note line, and no sessions. While the
+// record's pid is alive the note says the server is running and wt asks
+// (review finding I2: an unknown count is not "no session"), and the unread
+// error is set; a record whose pid is gone keeps today's note.
 func TestHostSessionReaderNotesAnUnreachableServer(t *testing.T) {
 	srv, _ := fakeServer(t, "tok")
 	store := recordFor(t, srv, "tok")
 	srv.Close()
 	var w bytes.Buffer
-	if got := hostSessionReader(t.Context(), &w, store)(); got != nil {
+	var unread error
+	if got := hostSessionReader(t.Context(), &w, store, &unread)(); got != nil {
 		t.Errorf("sessions = %v, want nil", got)
 	}
 	s := w.String()
-	if !strings.HasPrefix(s, noteHead) || !strings.HasSuffix(s, noteTail) || strings.Count(s, "\n") != 1 {
-		t.Errorf("note = %q, want one line %q...%q", s, noteHead, noteTail)
+	if !strings.HasPrefix(s, noteHead) || strings.HasSuffix(s, noteTail) || !strings.Contains(s, "is running") || strings.Count(s, "\n") != 1 || unread == nil {
+		t.Errorf("live record: note = %q, unread %v; want one line saying the server is running, and unread set", s, unread)
+	}
+	r, _, _ := store.Read()
+	r.PID = deadPID
+	if err := store.Write(r); err != nil {
+		t.Fatal(err)
+	}
+	w.Reset()
+	unread = nil
+	_ = hostSessionReader(t.Context(), &w, store, &unread)()
+	if s := w.String(); !strings.HasPrefix(s, noteHead) || !strings.HasSuffix(s, noteTail) || strings.Count(s, "\n") != 1 || unread != nil {
+		t.Errorf("stale record: note = %q, unread %v; want today's %q...%q", s, unread, noteHead, noteTail)
 	}
 }
 
@@ -126,7 +141,7 @@ func TestHostSessionReaderNotesAnUnreadableRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	var w bytes.Buffer
-	if got := hostSessionReader(t.Context(), &w, store)(); got != nil {
+	if got := hostSessionReader(t.Context(), &w, store, nil)(); got != nil {
 		t.Errorf("sessions = %v, want nil", got)
 	}
 	s := w.String()
@@ -145,7 +160,7 @@ func TestHostSessionReaderNeverPrintsTheToken(t *testing.T) {
 	srv, _ := fakeServer(t, "right-token")
 	store := recordFor(t, srv, "tok-secret-xyz")
 	var w bytes.Buffer
-	if got := hostSessionReader(t.Context(), &w, store)(); got != nil {
+	if got := hostSessionReader(t.Context(), &w, store, nil)(); got != nil {
 		t.Errorf("sessions = %v, want nil", got)
 	}
 	s := w.String()
@@ -168,7 +183,7 @@ func TestHostSessionReaderIsSilentWhenCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	var w bytes.Buffer
-	if got := hostSessionReader(ctx, &w, store)(); got != nil || w.Len() != 0 {
+	if got := hostSessionReader(ctx, &w, store, nil)(); got != nil || w.Len() != 0 {
 		t.Errorf("sessions = %v, note = %q; want nil and no note", got, w.String())
 	}
 }
@@ -183,7 +198,7 @@ func TestAliasCommandsSessionNoteFitsTheirContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	var w bytes.Buffer
-	if got := newHost().clientSessions(t.Context(), &w, store)(); got != nil {
+	if got := newHost().clientSessions(t.Context(), &w, store, nil)(); got != nil {
 		t.Errorf("sessions = %v, want nil", got)
 	}
 	s := w.String()

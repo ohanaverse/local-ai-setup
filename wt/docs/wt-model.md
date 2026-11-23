@@ -209,6 +209,50 @@ added without them and a warning says so. wt looks nothing up for any other
 provider, a Sushi pack included: a `model_info` table (such as
 `supports_function_calling`) is written by hand in `registry.toml`.
 
+### Claude subscription models
+
+The `claude-subscription` provider serves Claude models on the user's own
+Claude subscription, through the gateway's header mode (#597;
+[wt-model-server.md](wt-model-server.md#subscription-passthrough) has the
+host switch, the hazards and the install order). Add one with
+`wt-model model add`:
+
+```bash
+wt-model model add claude-subscription claude-haiku-5-5 --family claude --context-window 1000000
+```
+
+- **The id is the bare Claude id**, equal to the Anthropic API id
+  (`claude-haiku-5-5`): no provider prefix, no date suffix, no `[1m]`. Only
+  this provider takes a slash-less id; a name with `/`, `[`, `]`, a space or
+  a control character is refused.
+- **`--context-window` is required** for this provider (refused otherwise:
+  `a claude-subscription model needs --context-window (Claude Code's window
+  for it)`), and `wt-model model edit` refuses to clear it. 1000000 is the
+  window of each of the current ids `claude-fable-5-2`, `claude-opus-5-5`,
+  `claude-sonnet-5-5` and `claude-haiku-5-5`.
+- **`--family` is required as for any model.** Anthropic publishes no
+  family for these ids; `claude` is only this page's choice, and any family
+  of your own works.
+- The provider row (`Claude subscription`, `auth.type = "client-login"`, no
+  `base_url`, no key) is added in the same write. It is left out of the
+  Models tab's form, which has no context-window field.
+- No price and no `source` key are written, and `wt-model cloud-sync` never
+  touches the provider. LiteLLM books $0 for such a row, while Claude Code
+  shows list price.
+- The route is a keyless `anthropic/<id>` row in `config.yaml` (a cloud
+  row, so adding or removing one restarts the proxy), routed only while the
+  proxy shows none of the hazards the host checks. An alias over one is a
+  database row, like any alias.
+- The rows are offered only to `claude`, and an alias with a subscription
+  target is claude-only. The subscription is the user's own login only.
+- **Usage credits.** Depending on the plan and seat tier, a Fable row (and
+  other large models) may need usage credits or count against the plan's
+  limits; Claude Code's `/model` picker can show "Requires usage credits".
+  Check the plan before pointing a slot at one.
+
+See what is registered with `wt-model model list` on the host, or
+`wt model list --server` from a session.
+
 ### An mlx_lm_server pairing
 
 An mlx_lm_server model is a target and a draft served together by
@@ -385,10 +429,13 @@ wt-model alias rm <alias/name>... [--yes] [--force-in-use]
 `list` needs neither a model server nor the proxy: ALIAS, TARGETS
 (`order:model`), CONTEXT (the smallest window over all targets, `-` when any
 is unknown), SESSIONS (client sessions of the running model server; `-` when
-no server record answers; a record that cannot be read, or a server that
-does not answer, is one note, `wt-model: note: could not read client sessions
+no server record answers; a record that cannot be read, or one whose server
+is not running, is one note, `wt-model: note: could not read client sessions
 from the model server (<why>) — no alias is counted as in use`, and the
-command goes on with no counts, so `rm` then needs no `--force-in-use`) and ROUTED (`yes`, `no`, or `?` when the proxy
+command goes on with no counts, so `rm` then needs no `--force-in-use`; a
+server that is running but cannot be asked is one note ending `it is running
+(pid N), so an alias is not removed without --force-in-use`, and `rm` then
+needs `--force-in-use`, exit 3 without it) and ROUTED (`yes`, `no`, or `?` when the proxy
 pair is not set or the database cannot be read). `--json` prints one
 document, [alias-list.sample.json](../../docs/contracts/alias-list.sample.json),
 with `null` for an unknown `context`, `sessions` or `routed`. An alias the

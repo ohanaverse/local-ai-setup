@@ -64,7 +64,7 @@ func (a clientAdapter) NewSession(models []string, o modelclient.SessionOptions)
 }
 
 func (a clientAdapter) Gateway() agents.Gateway {
-	return agents.Gateway{Origin: a.ep.Origin(), Token: a.ep.Token}
+	return agents.Gateway{Origin: a.ep.Origin(), Token: a.ep.Token, CAFile: a.ep.CAFile}
 }
 
 // catalogLoadedMsg is a finished fetch: the table already built (the

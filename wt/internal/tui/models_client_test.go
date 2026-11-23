@@ -650,3 +650,14 @@ func TestRemoteTailPrintsThePriceNoticeFromTheLoadedCatalog(t *testing.T) {
 		t.Errorf("a command agent printed %q", out)
 	}
 }
+
+// TestModelClientGatewayCarriesCAFile proves the TUI's gateway keeps the
+// session's ca_file: every TUI launch builds its agent from it, and a
+// dropped CAFile would leave claude and pi without NODE_EXTRA_CA_CERTS.
+func TestModelClientGatewayCarriesCAFile(t *testing.T) {
+	ep := modelclient.Endpoint{URL: "https://192.0.2.7:8787/", Token: "wt-SENTINEL-tok", CAFile: "/etc/wt/server.crt"}
+	gw := NewModelClient(modelclient.New(ep), ep).Gateway()
+	if gw.CAFile != "/etc/wt/server.crt" || gw.Origin != "https://192.0.2.7:8787" || gw.Token != "wt-SENTINEL-tok" {
+		t.Errorf("Gateway() = %+v", gw)
+	}
+}

@@ -18,6 +18,8 @@ func TestPoliciesPinned(t *testing.T) {
 		"sushi":         {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"llamacpp":      {Prefix: "openai/local-model", FixedModel: true, APIKey: "dummy-key"},
 		"openrouter":    {Prefix: "openrouter/", SecretRef: true, Cloud: true},
+		// Keyless and baseless: the client's own login is what LiteLLM forwards.
+		"claude-subscription": {Prefix: "anthropic/", Cloud: true},
 	}
 	for id, w := range want {
 		got, ok := PolicyFor(id)
@@ -38,6 +40,7 @@ func TestProvidersPinned(t *testing.T) {
 	want := map[string]bool{
 		"ollama": false, "omlx": false, "omlx-6bit": false, "mlx_lm_server": false,
 		"mtplx": false, "rec": false, "sushi": false, "llamacpp": false, "openrouter": true,
+		"claude-subscription": true,
 	}
 	got := Providers()
 	if len(got) != len(want) {

@@ -142,7 +142,9 @@ allows `env` and `config_content`. `args` and `wrapper` are rejected for it.
 in `env` or in `config_content.env`. For Claude: `ANTHROPIC_BASE_URL`,
 `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, and
 `ANTHROPIC_DEFAULT_<SLOT>_MODEL` and `ANTHROPIC_DEFAULT_<SLOT>_MODEL_NAME`
-for each of the four slots.
+for each of the four slots. (`ANTHROPIC_AUTH_TOKEN` is the token mode's
+credential; in header mode wt clears it, and the profile still may not set
+it.)
 
 **At most one local model.** A profile may mix cloud and local models and
 models of different providers. It may name one distinct local model, which
@@ -361,13 +363,19 @@ replace the slot mapping. Everything else after `--` is passed on unchanged.
 
 ## What Claude Code is given
 
-Process environment:
+Process environment, in token mode (no slot uses a Claude subscription
+model):
 
 | Variable | Value |
 |---|---|
 | `ANTHROPIC_BASE_URL` | The model server's gateway origin |
-| `ANTHROPIC_AUTH_TOKEN` | The model server's bearer token |
+| `ANTHROPIC_AUTH_TOKEN` | The model server's bearer token (token mode only) |
 | `ANTHROPIC_API_KEY` | Empty |
+
+When any slot (or an alias target of a slot) uses a Claude subscription
+model, the whole session runs in header mode instead: `ANTHROPIC_AUTH_TOKEN`
+is cleared and the token goes in `ANTHROPIC_CUSTOM_HEADERS`
+([Claude subscription slots](#claude-subscription-slots)).
 
 Removed from the inherited environment: every `ANTHROPIC_DEFAULT_*`
 variable, `ANTHROPIC_SMALL_FAST_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL`. A
@@ -435,11 +443,12 @@ The payload is illustrative and shown indented; wt passes it on one line.
   next, wt's own variables highest. `config_content.env` must be a table; a
   profile where it is anything else is a blocked row
   ([When a profile is blocked](#when-a-profile-is-blocked)).
-- **The token stays out of the command line.** `ANTHROPIC_AUTH_TOKEN` is set
-  in the process environment only, so the proxy key does not appear in the
-  process list. An `env` block in your own Claude Code settings that sets
-  `ANTHROPIC_AUTH_TOKEN` overrides it, as it does for every non-native wt
-  launch.
+- **The token stays out of the command line.** In token mode
+  `ANTHROPIC_AUTH_TOKEN` is set in the process environment only, so the
+  token does not appear in the process list. An `env` block in your own
+  Claude Code settings that sets `ANTHROPIC_AUTH_TOKEN` overrides it, as it
+  does for every non-native wt launch. In header mode the token is likewise
+  only in the process environment, in `ANTHROPIC_CUSTOM_HEADERS`.
 
 **wt writes no file.** A Claude profile's `config_content` travels only in
 `--settings`. `.claude/settings.local.json` is never written, so an
@@ -454,6 +463,57 @@ your default for new sessions`. wt does not prevent it. Profile launches are
 unaffected, because `--model` outranks the saved value. A later bare
 `claude` run starts on the saved alias, for example `"model": "sonnet"`. It
 is the alias, not a registry id.
+
+### Claude subscription slots
+
+A slot may name a model on the `claude-subscription` provider, or an alias
+with such a target: the session then uses your own Claude subscription for
+that slot, through the gateway (#597). Example (illustrative ids):
+
+```toml
+[[profile]]
+name    = "sub-mix"
+agent   = "claude"
+default = "opus"
+
+[profile.slots]
+fable  = "claude-fable-5-2"     # subscription
+opus   = "claude-opus-5-5"      # subscription
+sonnet = "alias/sonnet"         # an alias (a priority group of other models)
+haiku  = "alias/haiku"
+```
+
+> **Usage credits.** Depending on your plan and seat tier, the Fable row
+> (`claude-fable-5-2`), and other large models, may need usage credits or
+> count against your plan's limits; Claude Code's `/model` picker can show
+> "Requires usage credits" for it. Check your plan before pointing a slot at
+> one.
+
+**Your own login only.** The subscription is the user's own claude.ai
+login: never share or pool it through a model server, and never point a
+machine with someone else's login at yours.
+
+What changes:
+
+- The whole session runs in **header mode**: Claude Code keeps its claude.ai
+  login, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`
+  and every `CLAUDE_CODE_USE_*` are cleared from the inherited environment
+  (wt's empty `ANTHROPIC_API_KEY` stays), and the token is sent as the
+  `x-wt-model-token` line of `ANTHROPIC_CUSTOM_HEADERS` in the process
+  environment. The `--settings` payload is the same as in token mode; it
+  never holds a token.
+- The launch runs the pre-launch checks first, before any client session is
+  registered or any start
+  ([wt-session.md](../wt-session.md#claude-subscription-header-mode)):
+  this machine's opt-in, the endpoint, the server's mode, the profile's
+  keys, Claude Code's version and a claude.ai login.
+- The window rule does not change: the subscription slots carry their
+  registry `context_window`, but Claude Code keeps its own window for an id
+  it recognizes, so a smaller declared window still governs only the alias
+  and local slots
+  ([claude-wt.md](claude-wt.md#claude-subscription-models-header-mode)).
+- Subscription rows appear only to claude, and an alias with a subscription
+  target is claude-only too.
 
 What the 2026-10-13 run with Claude Code 2.1.296 showed of the session:
 
@@ -590,6 +650,11 @@ settings:
   { …the payload shown above… }
 ```
 
+That is a token-mode launch (`ANTHROPIC_AUTH_TOKEN`, masked). A profile with
+a Claude subscription slot shows header mode instead: no
+`ANTHROPIC_AUTH_TOKEN` line, and a `header: x-wt-model-token: ***1234` line
+with the token masked the same way.
+
 The proxy key is masked as `wt litellm status` masks it. Under the slot
 lines comes one `warning:` line per `modelOverrides` target of this profile
 that wt does not route, worded as `wt profile list` words it
@@ -667,6 +732,9 @@ without the profile.
 | The local model's start is refused or fails | The start's own error |
 | Ctrl+C with `-M profile/<name>` during the local model's start | Detaches from the start job, which keeps running on the server (exit 2, `nothing was launched`) |
 | `args` or `wrapper` cannot be applied | The apply error |
+| A profile `env` or `config_content.env` value for `ANTHROPIC_CUSTOM_HEADERS` holding an `x-wt-model-token` or `authorization` line (any mode) | A blocked row: `<where> sets ANTHROPIC_CUSTOM_HEADERS with an <name> line, which a slot profile may not send: remove that line` |
+| A subscription slot, and the profile's `env` or `config_content` sets `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR`, a `CLAUDE_CODE_USE_*`, `NODE_TLS_REJECT_UNAUTHORIZED` or a top-level `apiKeyHelper` | Refused before anything is registered, naming the key: it would replace the header wt sends or displace your login. `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` are reserved in every mode (wt sets them for every slot launch); the others stay allowed in token mode |
+| A subscription slot and a pre-launch check fails (opt-in, endpoint, server, version, login) | The check's refusal, exit 1, nothing started or registered ([wt-session.md](../wt-session.md#claude-subscription-header-mode)) |
 
 In the picker the reason is the status line and you stay on the picker. With
 a pin and no picker, wt exits non-zero with it.
@@ -753,8 +821,11 @@ routes.
 - Claude Code only. Another agent gets slot profiles when its driver
   implements `profiles.SlotCapable`.
 - One distinct local model per profile.
-- No slot can use the native Anthropic subscription: Claude Code takes one
-  base URL.
+- No slot can use a native model (`claude/native`, `claude/opus`, …):
+  Claude Code takes one base URL, the gateway. A slot can use your Claude
+  subscription only through a `claude-subscription` model, which goes
+  through the gateway in header mode
+  ([Claude subscription slots](#claude-subscription-slots)).
 - wt does not create or edit the file.
 - If the profile's local model is stopped during a session, requests to
   that slot fail at the proxy until it runs again. wt does not detect this.

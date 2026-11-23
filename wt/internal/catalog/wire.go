@@ -25,6 +25,8 @@ func ToModel(r modelapi.Row) config.Model {
 	m := config.Model{
 		ID: r.ID, GatewayID: r.GatewayID, ProviderID: r.ProviderID, ModelName: r.ModelName,
 		Family: r.Family, Tags: slices.Clone(r.Tags), Location: config.Location(r.Location), Native: r.Native,
+		// A claude launch of it keeps the owner's login (header mode, #597).
+		Subscription: UsesSubscription(r),
 	}
 	if r.Price != nil {
 		m.Cost.InputPricePerMillion = r.Price.Input
@@ -95,8 +97,14 @@ func EligibleWire(rows []modelapi.Row, a config.Agent, tags, family string) []mo
 	return out
 }
 
-// providerEligible is EligibleWire's provider test for one provider id.
+// providerEligible is EligibleWire's provider test for one provider id. The
+// subscription clause comes first (decision 6): a claude-subscription row
+// reaches only config.SubscriptionAgents, whatever SupportedProviders or
+// AllProviders say, so an alias with a subscription target is claude-only too.
 func providerEligible(a config.Agent, providerID string, native bool) bool {
+	if config.IsSubscriptionProvider(providerID) {
+		return slices.Contains(config.SubscriptionAgents, a.Name)
+	}
 	return slices.Contains(a.SupportedProviders, providerID) ||
 		(a.AllProviders && (!native || providerID == a.Name)) ||
 		(providerID == "sushi" && slices.Contains(config.SushiAgents, a.Name))
@@ -116,11 +124,12 @@ func Launchable(rows []modelapi.Row) []modelapi.Row {
 // RegisteredOrdered is the registered rows as models, in Order: the list
 // rotation walks. A discovered model is never in it, and neither is an alias
 // row (decision 14: a launch with no pin never rotates onto an alias; the
-// picker and -M alias/x list and launch one).
+// picker and -M alias/x list and launch one), nor a subscription row (#597:
+// rotation serves every agent, and only claude may use the subscription).
 func RegisteredOrdered(rows []modelapi.Row) []config.Model {
 	var reg []modelapi.Row
 	for _, r := range rows {
-		if r.Registered && r.Kind != modelapi.KindAlias {
+		if r.Registered && r.Kind != modelapi.KindAlias && !UsesSubscription(r) {
 			reg = append(reg, r)
 		}
 	}
@@ -133,15 +142,25 @@ func RegisteredOrdered(rows []modelapi.Row) []config.Model {
 }
 
 // NonNativeModels is the rows a gateway syncer lists (pi's models.json): every
-// row that is not a native model, as models, in the catalog's order.
+// row that is not a native model, as models, in the catalog's order. A row
+// that uses the subscription (UsesSubscription) is left out: only claude may
+// use one, and claude syncs no models file.
 func NonNativeModels(rows []modelapi.Row) []config.Model {
 	var out []config.Model
 	for _, r := range rows {
-		if !r.Native {
+		if !r.Native && !UsesSubscription(r) {
 			out = append(out, ToModel(r))
 		}
 	}
 	return out
+}
+
+// UsesSubscription reports whether a row is served on the owner's Claude
+// subscription: its provider is config.SubscriptionProvider, or (an alias)
+// any of its targets' is. The wire has no marker of its own (decision 6).
+func UsesSubscription(r modelapi.Row) bool {
+	return config.IsSubscriptionProvider(r.ProviderID) ||
+		slices.ContainsFunc(r.Targets, func(t modelapi.AliasTarget) bool { return config.IsSubscriptionProvider(t.ProviderID) })
 }
 
 // NeedsStart reports whether the model must be started (or its route added)

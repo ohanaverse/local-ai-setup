@@ -3,14 +3,21 @@ package modelping
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
@@ -32,16 +39,132 @@ const (
 )
 
 // NewHTTPClient is the transport every control request rides on: no
-// environment proxy, a bounded dial, and no redirect followed.
+// environment proxy, a bounded dial, no redirect followed and TLS 1.2 as the
+// floor. It is NewHTTPClientFor with no CA file, which cannot fail.
 func NewHTTPClient() *http.Client {
+	hc, _ := NewHTTPClientFor(Endpoint{})
+	return hc
+}
+
+// CAFileError is a CA file wt cannot use: unreadable, holding no PEM
+// certificate, or holding a private key. It names the path (a stand-in for
+// one that cannot be a real path, so pasted file content is never echoed)
+// and never the file's bytes.
+type CAFileError struct {
+	Path, Reason string
+}
+
+func (e *CAFileError) Error() string { return "ca_file " + shownPath(e.Path) + " " + e.Reason }
+
+// MaxCAFile is the largest ca_file wt reads (1 MiB): a certificate bundle
+// is a few KiB, and a bound keeps a wrong path from being read whole.
+const MaxCAFile = 1 << 20
+
+// CAKeyReason is the reason a ca_file holding a private-key block is refused.
+const CAKeyReason = "holds a private key: copy only the certificate"
+
+// maxShownPath is the longest path a message prints; a longer one is never a
+// real file path and may be pasted file content.
+const maxShownPath = 200
+
+// shownPath is p as a message may print it: a fixed stand-in for one holding
+// a control character (pasted PEM text spans lines) or longer than
+// maxShownPath.
+func shownPath(p string) string {
+	if len(p) > maxShownPath {
+		return "<path too long>"
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return "<unprintable path>"
+		}
+	}
+	return p
+}
+
+// NewHTTPClientFor is NewHTTPClient's transport for ep: when ep.CAFile is
+// set, its certificates are added to the system roots (a file that cannot be
+// read or holds no PEM certificate is a *CAFileError, before any dial: never
+// a fall back to the system pool alone; nor is one holding a private key);
+// ep.ServerName, when set, is the name
+// the certificate is verified as. Verification is never skipped.
+func NewHTTPClientFor(ep Endpoint) (*http.Client, error) {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	// No environment proxy: the bearer token and the prompts that pass
 	// through the gateway never go to a third party's HTTP(S)_PROXY.
 	tr.Proxy = nil
 	tr.DialContext = (&net.Dialer{Timeout: DialTimeout}).DialContext
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: ep.ServerName}
+	if !ep.VerifyAt.IsZero() {
+		at := ep.VerifyAt
+		cfg.Time = func() time.Time { return at }
+	}
+	if ep.CAFile != "" {
+		data, err := ReadCAFile(ep.CAFile)
+		if err != nil {
+			return nil, err
+		}
+		if bytes.Contains(data, []byte("PRIVATE KEY-----")) {
+			return nil, &CAFileError{Path: ep.CAFile, Reason: CAKeyReason}
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(data) {
+			return nil, &CAFileError{Path: ep.CAFile, Reason: "holds no PEM certificate"}
+		}
+		cfg.RootCAs = pool
+	}
+	tr.TLSClientConfig = cfg
 	// A 3xx is never followed: it would replay the bearer token and the
 	// request body to whatever the Location names.
-	return &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+}
+
+// RelativeCAReason is why a relative ca_file from config.toml is refused.
+const RelativeCAReason = "is a relative path under [model-server] ca_file in config.toml, which would resolve against the current directory: write it as an absolute path or ~/..."
+
+// RelativeConfigCAFile reports whether p, a ca_file read from config.toml,
+// is relative (neither absolute nor ~ or ~/...): refused by the session and
+// the Mode tab alike, since it would resolve against whatever directory wt
+// runs in, a repository's included. WT_MODEL_CA_FILE, typed in the user's
+// own shell, may be relative.
+func RelativeConfigCAFile(p string) bool {
+	return p != "" && p != "~" && !strings.HasPrefix(p, "~/") && !filepath.IsAbs(p)
+}
+
+// ReadCAFile reads a CA file within bounds: it must be a regular file
+// (following links; a FIFO or device is refused without blocking, since it is
+// opened non-blocking and checked before any read) of at most MaxCAFile
+// bytes. Every failure is a *CAFileError naming the path, never the bytes.
+func ReadCAFile(path string) ([]byte, error) {
+	fail := func(reason string) ([]byte, error) { return nil, &CAFileError{Path: path, Reason: reason} }
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		reason := err.Error()
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			reason = pe.Err.Error()
+		}
+		return fail("cannot be read: " + reason)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return fail("cannot be read: " + err.Error())
+	}
+	if !fi.Mode().IsRegular() {
+		return fail("is not a regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, MaxCAFile+1))
+	if err != nil {
+		return fail("cannot be read: " + err.Error())
+	}
+	if len(data) > MaxCAFile {
+		return fail("is larger than 1 MiB, too large for a certificate file")
+	}
+	return data, nil
 }
 
 // Response is the answer a request came back with, whatever its status.
@@ -106,6 +229,11 @@ func Send(ctx context.Context, hc *http.Client, timeout time.Duration, ep Endpoi
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return nil, ctx.Err()
 		}
+		if rctx.Err() == nil {
+			if te := tlsTrustError(ep, err); te != nil {
+				return nil, te
+			}
+		}
 		reason := ""
 		if rctx.Err() != nil {
 			reason = "timed out after " + bound.Round(10*time.Millisecond).String()
@@ -118,7 +246,11 @@ func Send(ctx context.Context, hc *http.Client, timeout time.Duration, ep Endpoi
 		}
 		return nil, &UnreachableError{Addr: Addr(ep.URL), Reason: reason}
 	}
-	return &Response{Status: resp.StatusCode, Header: resp.Header, Body: data}, nil
+	out := &Response{Status: resp.StatusCode, Header: resp.Header, Body: data}
+	if te := httpToTLSError(ep, out); te != nil {
+		return nil, te
+	}
+	return out, nil
 }
 
 // CheckPing reads one ping response: the decoded Ping beside the typed error
@@ -151,7 +283,10 @@ func CheckPing(addr string, r *Response) (modelapi.Ping, error) {
 // Ping checks that a server answers, is a wt-model and speaks this API major:
 // one GET to its ping endpoint over a fresh transport.
 func Ping(ctx context.Context, ep Endpoint) (modelapi.Ping, error) {
-	hc := NewHTTPClient()
+	hc, err := NewHTTPClientFor(ep)
+	if err != nil {
+		return modelapi.Ping{}, err
+	}
 	defer hc.CloseIdleConnections()
 	return pingOn(ctx, hc, ep)
 }
@@ -173,7 +308,10 @@ func pingOn(ctx context.Context, hc *http.Client, ep Endpoint) (modelapi.Ping, e
 // First caller: the phase 4 stage 2 admin commands; it lives here because
 // the spine puts every request the model side shares in this package.
 func GetJSON(ctx context.Context, ep Endpoint, path string, out any) error {
-	hc := NewHTTPClient()
+	hc, err := NewHTTPClientFor(ep)
+	if err != nil {
+		return err
+	}
 	defer hc.CloseIdleConnections()
 	if _, err := pingOn(ctx, hc, ep); err != nil {
 		return err

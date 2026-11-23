@@ -34,13 +34,19 @@ type fakeEnv struct {
 
 	// ConfigStore.
 	configFile config.ModelServerFile
-	updateErr  error
+	// localTLS, when set, is what LocalTLS answers; nil reads the scratch
+	// wt-model home through ReadLocalTLS (TestMain isolates it), so a test
+	// that writes a [gateway] table there sees it. Not recorded: it is a
+	// read of the host's TLS settings, never a change.
+	localTLS  *LocalTLS
+	updateErr error
 
 	// Net.
 	ping       modelapi.Ping
 	pingErr    error
 	pingErrs   []error  // consumed one per Ping before ping/pingErr apply
 	pingTokens []string // the token of each Ping, in order
+	pingCAs    []string // the CAFile of each Ping, in order
 
 	// Host.
 	env  map[string]string
@@ -160,6 +166,13 @@ func (x fakeFS) Chmod(p string, m os.FileMode) error {
 
 type fakeConfig struct{ f *fakeEnv }
 
+func (x fakeConfig) LocalTLS() LocalTLS {
+	if x.f.localTLS != nil {
+		return *x.f.localTLS
+	}
+	return ReadLocalTLS(time.Now())
+}
+
 func (x fakeConfig) Read() config.ModelServerFile { x.f.rec("Config.Read"); return x.f.configFile }
 
 func (x fakeConfig) Update(change func(config.ModelServerState) (config.ModelServerState, error)) error {
@@ -184,6 +197,7 @@ type fakeNet struct{ f *fakeEnv }
 func (x fakeNet) Ping(_ context.Context, ep modelping.Endpoint) (modelapi.Ping, modelping.Kind, string, error) {
 	x.f.rec("Net.Ping %s", ep.Origin())
 	x.f.pingTokens = append(x.f.pingTokens, ep.Token)
+	x.f.pingCAs = append(x.f.pingCAs, ep.CAFile)
 	var err error
 	if len(x.f.pingErrs) > 0 {
 		err = x.f.pingErrs[0]

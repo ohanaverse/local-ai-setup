@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -491,5 +492,54 @@ func TestValidateSlotsWithoutConfigContentCallback(t *testing.T) {
 	checks = ValidateSlots(SlotStore{Profiles: []SlotProfile{validClaudeSlot()}}, d)
 	if len(checks) != 1 || checks[0].Err != nil {
 		t.Errorf("ValidateSlots() of a profile with no config_content = %+v, want one passing check", checks)
+	}
+}
+
+// TestSlotProfileHeaderValueRefused pins the static half of decision 7's
+// profile rule: a profile env or config_content.env value for
+// ANTHROPIC_CUSTOM_HEADERS that holds an x-wt-model-token or authorization
+// line (any case, trimmed, \r\n line ends included) is refused, naming the
+// key and the header and never echoing the value: the first would replace
+// wt's own token header, the second would send a credential beside (or in
+// place of) the gateway's. A value with only other headers passes here; the
+// header-mode build refuses it later (agents'
+// TestSlotProfileHeaderValueRefusedInHeaderMode).
+func TestSlotProfileHeaderValueRefused(t *testing.T) {
+	const secret = "SENTINEL-value"
+	for _, tc := range []struct {
+		name, value, wantHeader string
+	}{
+		{"a wt line", "x-wt-model-token: " + secret, "x-wt-model-token"},
+		{"a wt line in another case", "x-litellm-tags: a\r\n  X-WT-Model-Token : " + secret, "x-wt-model-token"},
+		{"an authorization line", "x-litellm-tags: a\nAuthorization: Bearer " + secret, "authorization"},
+		{"a lone-cr separated wt line", "x-litellm-tags: a\rx-wt-model-token: " + secret, "x-wt-model-token"},
+		{"a lone-cr separated authorization line", "x-litellm-tags: a\rauthorization: " + secret, "authorization"},
+		{"other headers only", "x-litellm-tags: a\nx-other: b", ""},
+		{"near-miss names", "x-wt-model-tokenx: v\nx-wt-model-token-extra: v\nx-wt-model-token", ""},
+	} {
+		for _, where := range []string{"env", "config_content.env"} {
+			t.Run(tc.name+" in "+where, func(t *testing.T) {
+				p := validClaudeSlot()
+				if where == "env" {
+					p.Env = map[string]string{CustomHeadersVar: tc.value}
+				} else {
+					p.ConfigContent = map[string]any{"env": map[string]any{CustomHeadersVar: tc.value}}
+				}
+				err := ValidateSlots(SlotStore{Profiles: []SlotProfile{p}}, slotTestDrivers())[0].Err
+				if tc.wantHeader == "" {
+					if err != nil {
+						t.Fatalf("err = %v, want the profile to pass", err)
+					}
+					return
+				}
+				want := where + " sets " + CustomHeadersVar + " with an " + tc.wantHeader + " line"
+				if err == nil || !strings.HasPrefix(err.Error(), want) {
+					t.Fatalf("err = %v, want it to start %q", err, want)
+				}
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("the refusal echoes the value: %v", err)
+				}
+			})
+		}
 	}
 }

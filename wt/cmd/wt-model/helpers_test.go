@@ -57,7 +57,7 @@ func testHost() *host {
 	h.confirmRemove = func(string) (bool, error) { return false, errors.New("confirmRemove not stubbed in this test") }
 	// The alias commands' seams: no tiers file and no model server is read.
 	h.tiersIndex = func() tiers.Index { return tiers.Index{} }
-	h.clientSessions = func(context.Context, io.Writer, servestate.Store) func() map[string]int {
+	h.clientSessions = func(context.Context, io.Writer, servestate.Store, *error) func() map[string]int {
 		return func() map[string]int { return nil }
 	}
 	h.stdinTTY = func() bool { return false }
@@ -95,6 +95,10 @@ func testHost() *host {
 		return fmt.Errorf("stopLoading not stubbed in this test (%s, pid %d)", id, pid)
 	}
 	h.confirmStop = func(string) (bool, error) { return false, nil }
+	// serve's subscription hazard check: a clean proxy, so no test reads the
+	// real plist or dials a proxy (tests that want a hazard set their own).
+	h.ProxyEnv = func() litellm.ProxyEnv { return litellm.ProxyEnvOf("testHost", nil) }
+	h.ModelInfo = func(context.Context) ([]litellm.DeploymentInfo, error) { return nil, nil }
 	return h
 }
 

@@ -3,8 +3,11 @@ package modelmode
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // apEnv is a fake whose config file has the path a config step writes.
@@ -186,5 +189,79 @@ func TestApplyWritesConfigWithTheWantedFields(t *testing.T) {
 	}
 	if r.Recovery != "" {
 		t.Errorf("Recovery = %q, want empty", r.Recovery)
+	}
+}
+
+// TestApplyKeepsTheSubscriptionOptIn proves the Mode tab's config step
+// round-trips [model-server] subscription and never sets it (#597, decision
+// 12): the opt-in to sending this machine's Claude login is hand-edited, so a
+// mode change must neither drop a true nor write one.
+func TestApplyKeepsTheSubscriptionOptIn(t *testing.T) {
+	for _, had := range []bool{true, false} {
+		f := apEnv(t)
+		f.configFile.Exists, f.configFile.Table = true, &config.ModelServerState{Mode: "local", Subscription: had}
+		p := Plan{Want: Desired{Mode: ModeRemote, URL: "https://gpu.example:8787", TokenFile: plRemoteTok}, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}
+		if r, _ := apply(t, f, p); r.Err != nil {
+			t.Fatalf("Apply: %v", r.Err)
+		}
+		if got := f.configFile.Table.Subscription; got != had {
+			t.Errorf("subscription = %v after a mode change, want %v (kept as it was)", got, had)
+		}
+	}
+}
+
+// TestModeTabRoundTripsCAFile proves the Mode tab treats [model-server]
+// ca_file as hand-edited (decision 14): its config step keeps a hand-set
+// value through a mode change and never adds one; and its check ping trusts
+// that file (~ expanded against the home), WT_MODEL_CA_FILE winning.
+func TestModeTabRoundTripsCAFile(t *testing.T) {
+	for _, had := range []string{"/etc/wt/server.crt", ""} {
+		f := apEnv(t)
+		f.configFile.Exists, f.configFile.Table = true, &config.ModelServerState{Mode: "local", CAFile: had}
+		p := Plan{Want: Desired{Mode: ModeRemote, URL: "https://gpu.example:8787", TokenFile: plRemoteTok}, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}
+		if r, _ := apply(t, f, p); r.Err != nil {
+			t.Fatalf("Apply: %v", r.Err)
+		}
+		if got := f.configFile.Table.CAFile; got != had {
+			t.Errorf("ca_file = %q after a mode change, want %q (kept as it was)", got, had)
+		}
+	}
+
+	f := obsConfigured(t)
+	f.configFile.Table.Mode, f.configFile.Table.URL, f.configFile.Table.CAFile = "remote", "https://gpu.example:8787", "~/certs/server.crt"
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	want := "/Users/user_name/certs/server.crt"
+	if st.CAFile != want || len(f.pingCAs) != 1 || f.pingCAs[0] != want {
+		t.Errorf("config ca_file: State.CAFile = %q, ping CAs = %q, want %q", st.CAFile, f.pingCAs, want)
+	}
+	f.pingCAs = nil
+	f.env["WT_MODEL_CA_FILE"] = "/env/ca.pem"
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if st.CAFile != "/env/ca.pem" || len(f.pingCAs) != 1 || f.pingCAs[0] != "/env/ca.pem" {
+		t.Errorf("env ca_file: State.CAFile = %q, ping CAs = %q", st.CAFile, f.pingCAs)
+	}
+}
+
+// TestObserveRefusesARelativeConfigCAFile proves the Mode tab judges a
+// relative [model-server] ca_file as the session does: a problem naming the
+// key and the fix, and the https url is not pinged trusting a file that
+// would resolve against the current directory. A relative WT_MODEL_CA_FILE
+// is the user's own and is pinged with, made absolute.
+func TestObserveRefusesARelativeConfigCAFile(t *testing.T) {
+	f := obsConfigured(t)
+	f.configFile.Table.Mode, f.configFile.Table.URL, f.configFile.Table.CAFile = "remote", "https://gpu.example:8787", "certs/server.crt"
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if !strings.Contains(strings.Join(st.Config.Problems, "\n"), "[model-server] ca_file") || f.called("Net.Ping") || st.CAFile != "" {
+		t.Errorf("relative config ca_file: problems %q, pinged %v, CAFile %q", st.Config.Problems, f.called("Net.Ping"), st.CAFile)
+	}
+	if !strings.Contains(st.Server.Message, "absolute path or ~/") {
+		t.Errorf("Server.Message = %q, want the reason it was not checked", st.Server.Message)
+	}
+	f = obsConfigured(t)
+	f.configFile.Table.Mode, f.configFile.Table.URL = "remote", "https://gpu.example:8787"
+	f.env["WT_MODEL_CA_FILE"] = "certs/server.crt"
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if want, _ := filepath.Abs("certs/server.crt"); st.CAFile != want || len(f.pingCAs) != 1 || f.pingCAs[0] != want {
+		t.Errorf("relative env ca_file: CAFile %q, ping CAs %q, want %q", st.CAFile, f.pingCAs, want)
 	}
 }

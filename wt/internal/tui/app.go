@@ -38,7 +38,11 @@ const (
 // model holds the entire UI state.
 type model struct {
 	// hooks are the launch-build test seams; the zero value is the real builds.
-	hooks  launchHooks
+	hooks launchHooks
+	// guard is the pre-launch guard of a launch on the user's Claude
+	// subscription (ProfileLayer.Guard, #597), run inside a command before
+	// the client session's register and any start; nil is a no-op.
+	guard  SubscriptionGuard
 	status string
 	width  int
 	height int
@@ -945,6 +949,7 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, profileLayer ProfileLayer, slots SlotProfiles, removeFuncs RemoveFuncsBuilder, protectedPaths []string) error {
 	m := newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, models, cfg, removeFuncs)
 	m.protectedPaths = protectedPaths
+	m.guard = profileLayer.Guard
 	initial := withSlotProfiles(m, slots)
 	// Bubble Tea's own signal handler quits on the first signal in any
 	// phase — mid-removal too, losing the run's outcomes; the model handles

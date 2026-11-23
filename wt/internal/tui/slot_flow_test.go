@@ -19,7 +19,7 @@ func TestWithSlotProfilesCarriesChecksAndApplier(t *testing.T) {
 	old := slotApplier
 	t.Cleanup(func() { slotApplier = old })
 	called := false
-	apply := func(*exec.Cmd, string, catalog.Row) (func() error, error) {
+	apply := func(*exec.Cmd, string, catalog.Row, bool) (func() error, error) {
 		called = true
 		return nil, nil
 	}
@@ -33,7 +33,7 @@ func TestWithSlotProfilesCarriesChecksAndApplier(t *testing.T) {
 	if slotApplier == nil {
 		t.Fatal("slotApplier is nil: a profile launch would abort")
 	}
-	if _, _ = slotApplier(nil, "", catalog.Row{}); !called {
+	if _, _ = slotApplier(nil, "", catalog.Row{}, false); !called {
 		t.Fatal("slotApplier is not the function handed in")
 	}
 }

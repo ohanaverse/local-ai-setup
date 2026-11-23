@@ -909,3 +909,101 @@ func TestFinishedJobsAreKeptUpToTheCap(t *testing.T) {
 		}
 	}
 }
+
+// newPassthroughServer is newTestServerDeps with Options.SubscriptionPassthrough
+// set to on, behind httptest (a loopback peer).
+func newPassthroughServer(t *testing.T, on bool, upstream *url.URL) *httptest.Server {
+	t.Helper()
+	s, err := NewServer(Options{
+		Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour,
+		Upstream: upstream, UpstreamKey: "upstream-key", SubscriptionPassthrough: on,
+	}, (&fakeLife{snap: serverSnap()}).deps(serverCfg()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// TestPingAdvertisesSubscriptionPassthrough pins decision 2: the ping says
+// subscription_passthrough: true only when the server runs with the option,
+// and with it off the raw JSON carries no such key, so an off server looks
+// exactly like an older one to every client.
+func TestPingAdvertisesSubscriptionPassthrough(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		ts := newPassthroughServer(t, on, nil)
+		st, b := call(t, ts, "GET", "/control/v1/ping", "")
+		if st != http.StatusOK {
+			t.Fatalf("ping = %d %s", st, b)
+		}
+		var p modelapi.Ping
+		if err := json.Unmarshal(b, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.SubscriptionPassthrough != on {
+			t.Errorf("on=%t: ping = %+v", on, p)
+		}
+		if has := bytes.Contains(b, []byte("subscription_passthrough")); has != on {
+			t.Errorf("on=%t: raw ping %s carries the key = %t", on, b, has)
+		}
+	}
+}
+
+// TestGatewayHeaderModeThroughServer pins the switch wired through the full
+// Handler: with the option on, a header-mode request from a loopback peer
+// reaches the upstream with the client's login; with it off the gateway
+// answers 403 subscription_off. In both modes the control API keeps the
+// bearer token only and refuses x-wt-model-token alone with 401, so the
+// header never becomes a second way into the control API.
+func TestGatewayHeaderModeThroughServer(t *testing.T) {
+	var seen atomic.Int32
+	var gotAuth atomic.Value
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Add(1)
+		gotAuth.Store(r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, `{"data":[]}`)
+	}))
+	defer up.Close()
+	u, _ := url.Parse(up.URL)
+	const login = "Bearer sk-ant-oat01-test"
+	for _, on := range []bool{false, true} {
+		ts := newPassthroughServer(t, on, u)
+		req, _ := http.NewRequest("GET", ts.URL+"/v1/models", nil)
+		req.Header.Set("x-wt-model-token", testToken)
+		req.Header.Set("Authorization", login)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if on {
+			if resp.StatusCode != http.StatusOK || gotAuth.Load() != login {
+				t.Errorf("on: gateway = %d %s, upstream saw %v; want 200 with the login", resp.StatusCode, b, gotAuth.Load())
+			}
+		} else {
+			var ge modelapi.GatewayError
+			_ = json.Unmarshal(b, &ge)
+			if resp.StatusCode != http.StatusForbidden || ge.Error.Code != modelapi.CodeSubscriptionOff {
+				t.Errorf("off: gateway = %d %s, want 403 %s", resp.StatusCode, b, modelapi.CodeSubscriptionOff)
+			}
+		}
+
+		if st, _ := call(t, ts, "GET", "/control/v1/ping", ""); st != http.StatusOK {
+			t.Errorf("on=%t: bearer control call = %d, want 200", on, st)
+		}
+		creq, _ := http.NewRequest("GET", ts.URL+"/control/v1/ping", nil)
+		creq.Header.Set("x-wt-model-token", testToken)
+		cresp, err := http.DefaultClient.Do(creq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cb, _ := io.ReadAll(cresp.Body)
+		cresp.Body.Close()
+		wantAPIError(t, cresp.StatusCode, cb, http.StatusUnauthorized, modelapi.CodeUnauthorized)
+	}
+	if seen.Load() != 1 {
+		t.Errorf("upstream saw %d requests, want 1 (the on case only)", seen.Load())
+	}
+}

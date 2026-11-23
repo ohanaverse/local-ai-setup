@@ -74,7 +74,7 @@ env = { ANTHROPIC_DEFAULT_HAIKU_MODEL = "ollama/small-from-the-profile" }
 	if err != nil {
 		t.Fatal(err)
 	}
-	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil)
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil, false)
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch: %v", err)
 	}

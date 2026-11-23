@@ -324,10 +324,17 @@ nothing. The question for one provider reads
 
 - No record (no model server running on this machine): there is nothing to
   ask, and the stop goes on.
-- A record it cannot read, or a server that does not answer or refuses: one
+- A record it cannot read, or one whose server is not running (stale): one
   line
   `wt-model: note: could not read client sessions from the model server (<why>) — models they use are stopped without asking`,
   and the stop goes on without asking.
+- A record whose server is running but cannot be asked (it does not answer,
+  refuses the token or fails TLS verification): one line
+  `wt-model: note: could not read client sessions from the model server (<why>) — it is running (pid N), so wt asks before stopping any model`,
+  and the stop asks `<provider> is possibly in use: the running model
+  server's client sessions could not be read; stop anyway?` (with `--all`:
+  `running local models may be in use: …; stop them all?`); `--yes` answers,
+  and with no terminal and no `--yes` it exits 3 with nothing stopped.
 - Ctrl+C while the sessions or what is running are being read, or before
   the question is answered, stops nothing: no note, the command ends with
   `cancelled — nothing was stopped` and exit 1.

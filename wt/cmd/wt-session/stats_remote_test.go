@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
@@ -273,6 +274,34 @@ func TestRotateListsCatalogRowsByOrder(t *testing.T) {
 	}
 	if f.count("GET /control/v1/catalog") == 0 {
 		t.Errorf("rotate never asked the server: %v", f.reqs())
+	}
+}
+
+// TestRotateSkipsSubscriptionRows proves `wt rotate TAG` never walks onto a
+// subscription row (or an alias with a subscription target), even one that
+// carries the tag and comes first by Order: rotation serves every agent and
+// only claude may use the owner's subscription (#597, decision 6).
+func TestRotateSkipsSubscriptionRows(t *testing.T) {
+	sub := localRow("claude-haiku-5-5", "stopped", "launch", nil)
+	sub.ProviderID, sub.Location, sub.Order = config.SubscriptionProvider, "cloud", 0
+	group := modelapi.Row{ID: "alias/haiku", GatewayID: "alias/haiku", ProviderID: config.AliasProvider, Kind: modelapi.KindAlias,
+		Location: "cloud", Registered: true, Action: "launch", State: "running", Order: 1, Tags: []string{"code"},
+		Targets: []modelapi.AliasTarget{{ID: "claude-haiku-5-5", Order: 1, ProviderID: config.SubscriptionProvider}}}
+	plain := localRow("omlx/a", "running", "launch", nil)
+	plain.Order = 2
+	f := newFakeModelServer(t, sub, group, plain)
+	a := pointAtFake(t, f, "")
+	a.hooks.newClient = fastModelClient
+	models, err := rotateModelsRemote(context.Background(), a, "code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, m := range models {
+		ids = append(ids, m.ID)
+	}
+	if strings.Join(ids, ",") != "omlx/a" {
+		t.Errorf("rotation list = %v, want [omlx/a]", ids)
 	}
 }
 

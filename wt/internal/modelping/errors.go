@@ -88,3 +88,20 @@ type CredentialsInURLError struct{}
 func (*CredentialsInURLError) Error() string {
 	return "the model server url contains an @ (anywhere in it, read as a user:password); wt does not use credentials in the url: use a token file (WT_MODEL_TOKEN_FILE or token_file under [model-server]); write a literal @ in a path as %40"
 }
+
+// TLSTrustError is a TLS failure between this client and the model server,
+// with the one hint that fixes it (#597, decision 14): a certificate this
+// machine does not trust, one that does not name the host, one outside its
+// dates, or a scheme that does not match what the server speaks. Its text
+// is the address and the hint; Err (the TLS stack's own error) is kept for
+// errors.As and never printed. No hint holds a token.
+type TLSTrustError struct {
+	Addr, Hint string
+	Err        error
+}
+
+func (e *TLSTrustError) Error() string {
+	return fmt.Sprintf("model server at %s: %s", Clean(e.Addr), e.Hint)
+}
+
+func (e *TLSTrustError) Unwrap() error { return e.Err }

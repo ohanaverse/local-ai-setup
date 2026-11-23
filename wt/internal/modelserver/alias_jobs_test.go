@@ -420,7 +420,7 @@ func TestPrefixlessMalformedAliasNeverShadowsTheModel(t *testing.T) {
 	if exp := aliasExpansion(cfg); len(exp) != 0 {
 		t.Errorf("aliasExpansion = %v, want none", exp)
 	}
-	c := BuildCatalog(cfg, serverSnap(), nil, testSessions(), nil, testNow)
+	c := BuildCatalog(cfg, serverSnap(), nil, testSessions(), nil, testNow, CatalogOptions{})
 	var n int
 	for _, r := range c.Rows {
 		if r.ID == "omlx/a" {

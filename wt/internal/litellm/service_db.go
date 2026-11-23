@@ -36,6 +36,10 @@ type dbRoutes struct {
 	// listed.
 	current []DBModel
 	listed  bool
+	// deployments is every deployment the same listing showed (any
+	// owner's), for the write's subscription check (gateSubscription), so
+	// one write lists /model/info once.
+	deployments []DeploymentInfo
 	// fellBack is set when the local adds were handed back to config.yaml.
 	fellBack bool
 	// reason says why the database path was given up ("" when it held or was
@@ -140,12 +144,12 @@ func (d *dbRoutes) gate(f *File) bool {
 // list reads the database; a failure gives up the database path (the caller
 // then reports what it cost through unlisted).
 func (d *dbRoutes) list() bool {
-	cur, err := d.admin.List(d.context())
+	rows, err := d.admin.listRows(d.context())
 	if err != nil {
 		d.reason = oneLine(err)
 		return false
 	}
-	d.current, d.listed = cur, true
+	d.current, d.deployments, d.listed = dbModelsOf(rows), deploymentsOf(rows), true
 	return true
 }
 

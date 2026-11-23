@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
@@ -28,11 +29,13 @@ type FS interface {
 	Chmod(path string, perm os.FileMode) error
 }
 
-// ConfigStore is wt's config home: the [model-server] table. modelsetup
-// widens it with the LiteLLM proxy pair.
+// ConfigStore is wt's config home: the [model-server] table, and the
+// wt-model home's TLS settings a local url follows (read only: no code
+// writes them). modelsetup widens it with the LiteLLM proxy pair.
 type ConfigStore interface {
 	Read() config.ModelServerFile
 	Update(change func(config.ModelServerState) (config.ModelServerState, error)) error
+	LocalTLS() LocalTLS
 }
 
 // Net is a ping of the model server: the ping answer beside its
@@ -180,6 +183,10 @@ func (x RealFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
 type RealConfig struct{}
 
 func (RealConfig) Read() config.ModelServerFile { return config.ReadModelServerFile() }
+
+// LocalTLS reads the wt-model home's [gateway] TLS settings at the current
+// time.
+func (RealConfig) LocalTLS() LocalTLS { return ReadLocalTLS(time.Now()) }
 func (RealConfig) Update(change func(config.ModelServerState) (config.ModelServerState, error)) error {
 	return config.UpdateModelServer(change)
 }

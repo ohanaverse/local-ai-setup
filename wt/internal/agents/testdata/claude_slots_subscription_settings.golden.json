@@ -1,0 +1,15 @@
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "",
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:4100",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-5-2",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": "claude-fable-5-2",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "alias/haiku-local",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "haiku-local",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5-5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "claude-opus-5-5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "alias/sonnet-main",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "sonnet-main",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "32768"
+  }
+}

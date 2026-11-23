@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/claudelogin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -66,8 +68,10 @@ type hooks struct {
 	// buildGateway builds a launch against the gateway; nil is
 	// agents.BuildLaunchCmdGateway.
 	buildGateway func(agent string, m config.Model, worktreePath string, yolo bool, gw agents.Gateway, models []config.Model, extraArgs []string) (*exec.Cmd, agents.LaunchInfo, error)
-	// buildSlotGateway is the slot build; nil is agents.BuildSlotLaunchCmdGateway.
-	buildSlotGateway func(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw agents.Gateway, extraArgs []string) (*exec.Cmd, error)
+	// buildSlotGateway is the slot build; nil is
+	// agents.BuildSlotLaunchCmdGatewayInfo (its LaunchInfo says whether the
+	// command runs in claude's header mode).
+	buildSlotGateway func(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw agents.Gateway, extraArgs []string) (*exec.Cmd, agents.LaunchInfo, error)
 	// newClient builds the client for an endpoint; nil is modelclient.New (in a
 	// test binary, a client that dials loopback only).
 	newClient func(ep modelclient.Endpoint) *modelclient.Client
@@ -80,6 +84,11 @@ type hooks struct {
 	jobSleep func(ctx context.Context, d time.Duration) error
 	// smokeRun replaces the agent run of a smoke row; the zero value runs it.
 	smokeRun smoke.RowOptions
+	// claudeLogin replaces the claude.ai login check of a launch on the
+	// Claude subscription (subscriptionGuard); nil is realClaudeLogin, except
+	// in a test binary, where nil refuses with errLoginNotStubbed and runs
+	// nothing (#597, decision 8).
+	claudeLogin func(ctx context.Context) (claudelogin.Status, error)
 }
 
 // build is the gateway launch builder.
@@ -91,11 +100,11 @@ func (h hooks) build(agent string, m config.Model, worktreePath string, yolo boo
 }
 
 // buildSlot is the slot launch builder.
-func (h hooks) buildSlot(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw agents.Gateway, extraArgs []string) (*exec.Cmd, error) {
+func (h hooks) buildSlot(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw agents.Gateway, extraArgs []string) (*exec.Cmd, agents.LaunchInfo, error) {
 	if h.buildSlotGateway != nil {
 		return h.buildSlotGateway(sl, worktreePath, yolo, gw, extraArgs)
 	}
-	return agents.BuildSlotLaunchCmdGateway(sl, worktreePath, yolo, gw, extraArgs)
+	return agents.BuildSlotLaunchCmdGatewayInfo(sl, worktreePath, yolo, gw, extraArgs)
 }
 
 // client builds the model-server client for ep.
@@ -114,16 +123,26 @@ func (h hooks) client(ep modelclient.Endpoint) *modelclient.Client {
 // httptest fake is the one network a test reaches. Never used by a production
 // binary (testing.Testing() is false there). opts are extra client options a
 // test adds (fastModelClient's no-sleep poll).
+//
+// Its transport is modelping.NewHTTPClientFor(ep)'s with only DialContext
+// wrapped, so ep.CAFile is honoured as in production; when that transport
+// cannot be built (a bad CA file) the client is modelclient.New's own, which
+// fails every request with the error and never dials.
 func loopbackOnlyClient(ep modelclient.Endpoint, opts ...modelclient.Option) *modelclient.Client {
-	d := &net.Dialer{}
-	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+	hc, err := modelping.NewHTTPClientFor(ep)
+	if err != nil {
+		return modelclient.New(ep, opts...)
+	}
+	tr := hc.Transport.(*http.Transport)
+	dial := tr.DialContext
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil || (host != "localhost" && !net.ParseIP(host).IsLoopback()) {
 			return nil, fmt.Errorf("cmd/wt-session tests dial loopback only, not %q", addr)
 		}
-		return d.DialContext(ctx, network, addr)
-	}}
-	return modelclient.New(ep, append([]modelclient.Option{modelclient.WithHTTPClient(&http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }})}, opts...)...)
+		return dial(ctx, network, addr)
+	}
+	return modelclient.New(ep, append([]modelclient.Option{modelclient.WithHTTPClient(hc)}, opts...)...)
 }
 
 // stopReader is where the stop picker reads from.

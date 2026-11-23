@@ -403,3 +403,56 @@ auth = { type = "none", base_url = "http://localhost:11434" }
 		}
 	})
 }
+
+// TestWrongFileGatewayKeyPointsAtTheHome pins decision 1's wrong-file notice:
+// subscription_passthrough written under [gateway] in agent-wt's config.toml
+// (which serve never reads) gets a notice naming the wt-model home's
+// config.toml, not the legacy-routing wording, while an old [gateway] block
+// without the key keeps the legacy notice.
+func TestWrongFileGatewayKeyPointsAtTheHome(t *testing.T) {
+	msg, ok := legacyGatewayNotice([]byte("[gateway]\nsubscription_passthrough = true\n"))
+	if !ok {
+		t.Fatal("no notice for a [gateway] table in agent-wt's config.toml")
+	}
+	if !strings.Contains(msg, "~/.config/wt-model/config.toml") || !strings.Contains(msg, "subscription_passthrough") {
+		t.Errorf("notice = %q, want it to name subscription_passthrough and ~/.config/wt-model/config.toml", msg)
+	}
+	if strings.Contains(msg, "LiteLLM routing is now controlled by wt") {
+		t.Errorf("notice = %q, want the home pointer, not the legacy wording", msg)
+	}
+	legacy, ok := legacyGatewayNotice([]byte("[gateway]\nmode = \"litellm\"\n"))
+	if !ok || !strings.Contains(legacy, "LiteLLM routing is now controlled by wt") {
+		t.Errorf("legacy block notice = %q (%t), want the legacy wording", legacy, ok)
+	}
+	if _, ok := legacyGatewayNotice([]byte("default_tag = \"code\"\n")); ok {
+		t.Error("a notice without any [gateway] table")
+	}
+}
+
+// TestWrongFileGatewayTLSKeysPointAtTheHome pins decision 13's wrong-file
+// case: tls_cert/tls_key under [gateway] in agent-wt's config.toml are never
+// read (serve reads only the wt-model home), so the notice names the keys and
+// the home's config.toml instead of the legacy wording, and quotes no value.
+func TestWrongFileGatewayTLSKeysPointAtTheHome(t *testing.T) {
+	for _, body := range []string{
+		"[gateway]\ntls_cert = \"/x/SECRETPATH.crt\"\ntls_key = \"/x/SECRETPATH.key\"\n",
+		"[gateway]\ntls_key = \"/x/SECRETPATH.key\"\n",
+		"[gateway]\nsubscription_passthrough = true\ntls_cert = \"/x/SECRETPATH.crt\"\n",
+	} {
+		msg, ok := legacyGatewayNotice([]byte(body))
+		if !ok {
+			t.Fatalf("no notice for %q", body)
+		}
+		if !strings.Contains(msg, "~/.config/wt-model/config.toml") || strings.Contains(msg, "LiteLLM routing is now controlled by wt") {
+			t.Errorf("notice = %q, want the home pointer", msg)
+		}
+		for _, k := range []string{"tls_cert", "tls_key", "subscription_passthrough"} {
+			if strings.Contains(body, k+" =") && !strings.Contains(msg, k) {
+				t.Errorf("notice = %q, want it to name %s", msg, k)
+			}
+		}
+		if strings.Contains(msg, "SECRETPATH") {
+			t.Errorf("notice quotes a value: %q", msg)
+		}
+	}
+}

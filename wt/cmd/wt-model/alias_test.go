@@ -103,7 +103,7 @@ func execAlias(t *testing.T, h *host, args ...string) (stdout, stderr string, er
 // stubSessions makes h's client-session read answer counts (nil: no server
 // record).
 func stubSessions(h *host, counts map[string]int) {
-	h.clientSessions = func(context.Context, io.Writer, servestate.Store) func() map[string]int {
+	h.clientSessions = func(context.Context, io.Writer, servestate.Store, *error) func() map[string]int {
 		return func() map[string]int { return counts }
 	}
 }

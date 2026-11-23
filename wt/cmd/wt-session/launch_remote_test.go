@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,12 +24,23 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
-// remoteAgentScript is the fake claude a remote launch runs: it sleeps
-// WT_FAKE_SLEEP seconds when set, touches WT_FAKE_MARK when set, and exits
-// WT_FAKE_EXIT (0 by default).
+// remoteAgentScript is the fake claude a remote launch runs. As the login
+// check's claude (#597) it answers `--version` with the file WT_FAKE_VERSION
+// names and `auth status --json` with the file WT_FAKE_AUTH names (exit
+// WT_FAKE_AUTH_EXIT, 0 by default). As the agent it dumps its environment
+// and its argv (one per line) to the files WT_FAKE_ENV_DUMP and
+// WT_FAKE_ARGV_DUMP name when set, sleeps WT_FAKE_SLEEP seconds when set,
+// touches WT_FAKE_MARK when set, and exits WT_FAKE_EXIT (0 by default).
 const remoteAgentScript = "#!/bin/sh\n" +
+	"case \"$1\" in\n" +
+	"--version) [ -n \"$WT_FAKE_VERSION\" ] && cat \"$WT_FAKE_VERSION\"; exit 0 ;;\n" +
+	"auth) [ -n \"$WT_FAKE_AUTH\" ] && cat \"$WT_FAKE_AUTH\"; exit ${WT_FAKE_AUTH_EXIT:-0} ;;\n" +
+	"esac\n" +
+	"[ -n \"$WT_FAKE_ENV_DUMP\" ] && env > \"$WT_FAKE_ENV_DUMP\"\n" +
+	"[ -n \"$WT_FAKE_ARGV_DUMP\" ] && printf '%s\\n' \"$@\" > \"$WT_FAKE_ARGV_DUMP\"\n" +
 	"[ -n \"$WT_FAKE_SLEEP\" ] && sleep \"$WT_FAKE_SLEEP\"\n" +
 	"[ -n \"$WT_FAKE_MARK\" ] && touch \"$WT_FAKE_MARK\"\n" +
 	"exit ${WT_FAKE_EXIT:-0}\n"
@@ -616,5 +630,197 @@ func TestSeveralMatchesOpenThePickerOnTheServer(t *testing.T) {
 	}
 	if called || len(*r.built) != 0 || index(r.f.Reqs, "POST /control/v1/sessions") >= 0 {
 		t.Errorf("no terminal: tuiRun called %v, builds %d, requests %v: want nothing registered or launched", called, len(*r.built), r.f.Reqs)
+	}
+}
+
+// tlsSubRig is subRig (opted in, passthrough on, a good login stub) with the
+// fake model server on https: an httptest TLS server whose certificate only
+// its own file vouches for. With withCA, config.toml's [model-server] names
+// that file as ca_file. It returns the rig, the login call count and the
+// certificate's path.
+func tlsSubRig(t *testing.T, withCA bool) (*remoteRig, *int, string) {
+	t.Helper()
+	st := goodLogin()
+	r, calls := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+	r.f.Server.Close()
+	r.f.Server = httptest.NewUnstartedServer(http.HandlerFunc(r.f.serve))
+	r.f.StartTLS()
+	t.Cleanup(r.f.Close)
+	ca := filepath.Join(t.TempDir(), "server.crt")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: r.f.Certificate().Raw}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	extra := "subscription = true\n"
+	if withCA {
+		extra += fmt.Sprintf("ca_file = %q\n", ca)
+	}
+	hooks := r.a.hooks
+	r.a = pointAtFake(t, r.f, extra)
+	r.a.hooks = hooks
+	t.Setenv("NODE_EXTRA_CA_CERTS", "")
+	os.Unsetenv("NODE_EXTRA_CA_CERTS")
+	t.Setenv("WT_NODE_EXTRA_CA_CERTS", "")
+	os.Unsetenv("WT_NODE_EXTRA_CA_CERTS")
+	return r, calls, ca
+}
+
+// TestSubscriptionGuardUntrustedCertRefusesBeforeRegistration proves an
+// opted-in header-mode launch to an https server this machine does not
+// trust (no ca_file) stops at the handshake with decision 14's ca_file hint,
+// exit 1: the fake saw no request at all (the token was never written), so
+// no client session, no start and no login check.
+func TestSubscriptionGuardUntrustedCertRefusesBeforeRegistration(t *testing.T) {
+	r, calls, _ := tlsSubRig(t, false)
+	err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false)
+	if err == nil || exitCodeOf(err) > 1 || !strings.Contains(err.Error(), "set ca_file under [model-server]") {
+		t.Fatalf("err = %v, want the ca_file hint", err)
+	}
+	if *calls != 0 {
+		t.Errorf("login ran %d times", *calls)
+	}
+	if reqs := r.f.reqs(); len(reqs) != 0 {
+		t.Errorf("the untrusted server saw requests: %q", reqs)
+	}
+}
+
+// TestSubscriptionLaunchOverHTTPSWithCAFile proves the same launch with
+// ca_file set goes through (the test client, loopbackOnlyClient, honours the
+// endpoint's CA file like the real one) and hands the agent the CA: the
+// child's environment has NODE_EXTRA_CA_CERTS exactly once, equal to the
+// absolute ca_file.
+func TestSubscriptionLaunchOverHTTPSWithCAFile(t *testing.T) {
+	r, calls, ca := tlsSubRig(t, true)
+	envDump := filepath.Join(t.TempDir(), "env")
+	t.Setenv("WT_FAKE_ENV_DUMP", envDump)
+	if err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if *calls != 1 {
+		t.Errorf("login ran %d times, want 1", *calls)
+	}
+	env, err := os.ReadFile(envDump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, line := range strings.Split(string(env), "\n") {
+		if v, ok := strings.CutPrefix(line, "NODE_EXTRA_CA_CERTS="); ok {
+			got = append(got, v)
+		}
+	}
+	if len(got) != 1 || got[0] != ca || !filepath.IsAbs(got[0]) {
+		t.Errorf("NODE_EXTRA_CA_CERTS = %q, want once %s", got, ca)
+	}
+}
+
+// TestTLSOffNote proves decision 2's tls_off note: a server whose ping says
+// its TLS is off prints exactly one "wt: note:" line naming the reason and
+// plain http, through openModels on the CLI path (a header-mode launch after
+// it adds no second one) and through the guard on the TUI path (asked twice,
+// still once); a ping without it prints none.
+func TestTLSOffNote(t *testing.T) {
+	const note = "wt: note: the model server's TLS is off (certificate expired 2026-11-01); this connection is plain http\n"
+	st := goodLogin()
+	t.Run("cli", func(t *testing.T) {
+		r, _ := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+		r.f.TLSOff = "certificate expired 2026-11-01"
+		if _, err := r.a.openModels(context.Background(), launchStill); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false); err != nil {
+			t.Fatalf("launch: %v", err)
+		}
+		if n := strings.Count(r.stderr.String(), note); n != 1 || strings.Count(r.stderr.String(), "TLS is off") != 1 {
+			t.Errorf("stderr = %q, want the note once", r.stderr.String())
+		}
+	})
+	t.Run("tui", func(t *testing.T) {
+		r, _ := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+		r.f.TLSOff = "certificate expired 2026-11-01"
+		ms, err := r.a.buildModels(launchStill)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scfg, _ := r.a.sessionCfg()
+		if _, err := tui.NewModelClient(ms.client, ms.ep).Catalog(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		guard := tuiSubscriptionGuard(r.a, ms, scfg)
+		for range 2 {
+			if err := guard(context.Background(), []modelapi.Row{subRow("claude-haiku-5-5")}); err != nil {
+				t.Fatalf("guard: %v", err)
+			}
+		}
+		if n := strings.Count(r.stderr.String(), note); n != 1 {
+			t.Errorf("stderr = %q, want the note once", r.stderr.String())
+		}
+	})
+	t.Run("on", func(t *testing.T) {
+		r, _ := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+		if err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false); err != nil {
+			t.Fatalf("launch: %v", err)
+		}
+		if strings.Contains(r.stderr.String(), "TLS is off") {
+			t.Errorf("stderr = %q, want no note", r.stderr.String())
+		}
+	})
+}
+
+// TestSlotLaunchOverHTTPSWithCAFile proves the slot-profile launch passes
+// the session's ca_file into its gateway: a claude slot profile launched
+// against the https fake with ca_file set reaches the agent with
+// NODE_EXTRA_CA_CERTS once, equal to the ca_file.
+func TestSlotLaunchOverHTTPSWithCAFile(t *testing.T) {
+	r, _, ca := tlsSubRig(t, true)
+	r.f.Rows = slotWireRows()
+	store := profiles.SlotStore{Profiles: []profiles.SlotProfile{{Name: "mix", Agent: "claude", Default: "sonnet", Slots: map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"}}}}
+	r.a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
+	envDump := filepath.Join(t.TempDir(), "env")
+	t.Setenv("WT_FAKE_ENV_DUMP", envDump)
+	if err := r.launch(t, context.Background(), "profile/mix", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	env, err := os.ReadFile(envDump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, line := range strings.Split(string(env), "\n") {
+		if v, ok := strings.CutPrefix(line, "NODE_EXTRA_CA_CERTS="); ok {
+			got = append(got, v)
+		}
+	}
+	if len(got) != 1 || got[0] != ca {
+		t.Errorf("NODE_EXTRA_CA_CERTS = %q, want once %s", got, ca)
+	}
+}
+
+// TestSubscriptionRefusesNodeTLSRejectUnauthorized proves the guard refuses
+// a header-mode launch whose environment turns Node's certificate check off
+// (NODE_TLS_REJECT_UNAUTHORIZED 0 or false), naming the variable and never
+// its value, before any client session or login check; unset or 1 launches.
+func TestSubscriptionRefusesNodeTLSRejectUnauthorized(t *testing.T) {
+	st := goodLogin()
+	for _, v := range []string{"0", "false"} {
+		r, calls := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+		t.Setenv("NODE_TLS_REJECT_UNAUTHORIZED", v)
+		err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false)
+		if err == nil || !strings.Contains(err.Error(), "NODE_TLS_REJECT_UNAUTHORIZED") || strings.Contains(err.Error(), "NODE_TLS_REJECT_UNAUTHORIZED="+v) {
+			t.Fatalf("%s: err = %v, want the refusal naming the variable", v, err)
+		}
+		if *calls != 0 {
+			t.Errorf("%s: login ran %d times", v, *calls)
+		}
+		nothingRegistered(t, r.f)
+	}
+	for _, v := range []string{"1", ""} {
+		r, _ := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+		t.Setenv("NODE_TLS_REJECT_UNAUTHORIZED", v)
+		if v == "" {
+			os.Unsetenv("NODE_TLS_REJECT_UNAUTHORIZED")
+		}
+		if err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false); err != nil {
+			t.Errorf("%q: launch: %v", v, err)
+		}
 	}
 }

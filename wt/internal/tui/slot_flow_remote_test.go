@@ -5,12 +5,14 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
@@ -40,9 +42,11 @@ func slotRemoteCatalog() modelapi.Catalog {
 // "mix" of slots, loaded from a fake whose starts succeed. From here on the
 // fake logs its catalog reads, and the slot build is recorded as "BUILD" and
 // returns a harmless command (the fake's gateway is empty).
-func slotRemoteTable(t *testing.T, slots map[string]string) (model, *fakeModels) {
+// extra rows join the catalog (the parity table's subscription row).
+func slotRemoteTable(t *testing.T, slots map[string]string, extra ...modelapi.Row) (model, *fakeModels) {
 	t.Helper()
 	f := &fakeModels{cat: slotRemoteCatalog()}
+	f.cat.Rows = append(f.cat.Rows, extra...)
 	f.startFn = func(context.Context, int, modelapi.StartRequest, modelclient.Progress) (modelapi.JobStatus, error) {
 		return modelapi.JobStatus{State: modelapi.JobSucceeded}, nil
 	}
@@ -58,9 +62,9 @@ func slotRemoteTable(t *testing.T, slots map[string]string) (model, *fakeModels)
 	f.mu.Lock()
 	f.logCatalog = true
 	f.mu.Unlock()
-	m.hooks.slot = func(profiles.SlotLaunch, string, bool, agents.Gateway, []string) (*exec.Cmd, error) {
+	m.hooks.slot = func(profiles.SlotLaunch, string, bool, agents.Gateway, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		f.record("BUILD")
-		return exec.Command("true"), nil
+		return exec.Command("true"), agents.LaunchInfo{}, nil
 	}
 	return m, f
 }
@@ -89,6 +93,8 @@ func tuiSlotCalls(f *fakeModels) []string {
 			out = append(out, "catalog")
 		case l == "BUILD":
 			out = append(out, "build")
+		case l == "GUARD":
+			out = append(out, "guard")
 		case strings.HasPrefix(l, "register "):
 			out = append(out, "register="+strings.TrimPrefix(l, "register "))
 		case strings.HasPrefix(l, "add "):
@@ -105,6 +111,8 @@ func tuiSlotCalls(f *fakeModels) []string {
 // picker on the model server: Enter on a profile row, the prep (one catalog
 // read, the client session's register with every slot model), the start
 // flow when the local slot needs one, and the build against the gateway.
+// The subscription scenario holds the pre-launch guard (ProfileLayer.Guard)
+// before the register and any runRemoteStart (#597).
 // cmd/wt-session's TestSlotFlowParity runs the same table through the -M
 // profile/<name> pin, so the two client paths make the same server calls in
 // the same order; a register after the start or a second catalog read on one
@@ -112,13 +120,28 @@ func tuiSlotCalls(f *fakeModels) []string {
 func TestSlotFlowParity(t *testing.T) {
 	for _, sc := range readRemoteSlotParity(t) {
 		t.Run(sc.name, func(t *testing.T) {
-			m, f := slotRemoteTable(t, sc.slots)
+			m, f := slotRemoteTable(t, sc.slots, paritySubRow())
+			// The pre-launch guard (#597): logged when it judges a
+			// subscription row, which it lets through.
+			m.guard = func(_ context.Context, rows []modelapi.Row) error {
+				if slices.ContainsFunc(rows, catalog.UsesSubscription) {
+					f.record("GUARD")
+				}
+				return nil
+			}
 			m = driveSlotLaunch(t, m)
 			if got := tuiSlotCalls(f); !slices.Equal(got, sc.calls) {
 				t.Errorf("calls = %v\nwant    %v\n(status %q)", got, sc.calls, m.status)
 			}
 		})
 	}
+}
+
+// paritySubRow is the parity table's model on the Claude subscription.
+func paritySubRow() modelapi.Row {
+	return wireRow("claude-haiku-5-5", "claude", func(r *modelapi.Row) {
+		r.ProviderID, r.ModelName, r.Order = config.SubscriptionProvider, "claude-haiku-5-5", 9
+	})
 }
 
 // TestSlotFlowRemoteShowsProfileRows proves the API picker lists the agent's
@@ -398,4 +421,148 @@ func TestEscOnTheReplaceDialogDropsTheSlotProfilesModels(t *testing.T) {
 			t.Errorf("calls = %v, want %s dropped from the client session", h, id)
 		}
 	}
+}
+
+// TestTUIGuardRefusesBeforeRegister proves the picker runs the pre-launch
+// guard (ProfileLayer.Guard, #597) inside its prep command and that a refusal
+// ends the launch before the client session's register, any start and any
+// build, on the single-model row and on a slot profile alike; the status
+// shows why. The guard learns the agent and whether it is a slot launch.
+func TestTUIGuardRefusesBeforeRegister(t *testing.T) {
+	refuse := errors.New("claude-haiku-5-5 uses your Claude subscription, but no claude.ai login was found")
+	for _, tc := range []struct {
+		name, enter string
+		slot        bool
+	}{
+		{"model row", "claude-haiku-5-5", false},
+		{"slot profile", "profile/mix", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, f := slotRemoteTable(t, map[string]string{"sonnet": "openrouter/a", "haiku": "claude-haiku-5-5"}, paritySubRow())
+			var seen GuardLaunch
+			m.guard = func(ctx context.Context, rows []modelapi.Row) error {
+				seen = GuardLaunchOf(ctx)
+				if slices.ContainsFunc(rows, catalog.UsesSubscription) {
+					return refuse
+				}
+				return nil
+			}
+			m.hooks.gateway = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+				f.record("BUILD")
+				return exec.Command("true"), agents.LaunchInfo{}, nil
+			}
+			m, cmd := enterRemote(t, m, tc.enter)
+			if cmd == nil {
+				t.Fatalf("Enter returned no command (status %q)", m.status)
+			}
+			m, _ = updateMsg(m, cmd())
+			for _, l := range f.history() {
+				if strings.HasPrefix(l, "register") || strings.HasPrefix(l, "add") || strings.HasPrefix(l, "start") || l == "BUILD" {
+					t.Errorf("the refused launch reached %q (%v)", l, f.history())
+				}
+			}
+			if !strings.Contains(m.status, "no claude.ai login") {
+				t.Errorf("status = %q, want the refusal", m.status)
+			}
+			if seen.Agent != "claude" || seen.Slot != tc.slot || seen.Notes == nil {
+				t.Errorf("guard saw %+v, want agent claude, slot %v and a notes writer", seen, tc.slot)
+			}
+			// A slot launch hands the guard its own profile, so its keys are
+			// judged before the register (#597).
+			if tc.slot && (seen.SlotProfile == nil || seen.SlotProfile.Name != "mix") {
+				t.Errorf("slot guard saw profile %v, want mix", seen.SlotProfile)
+			}
+		})
+	}
+}
+
+// TestGuardForFailsClosedWithoutACatalogRow proves the picker's guard step
+// refuses a model on the Claude subscription whose catalog row it cannot
+// find (#597): it must not pass the launch unjudged. A model that does not
+// use the subscription and has no row still gets no guard (nil passes).
+func TestGuardForFailsClosedWithoutACatalogRow(t *testing.T) {
+	m, _ := slotRemoteTable(t, map[string]string{"sonnet": "openrouter/a"})
+	calls := 0
+	m.guard = func(context.Context, []modelapi.Row) error { calls++; return nil }
+	g := m.guardFor(config.Model{ID: "claude-gone-5-5", Subscription: true}, false)
+	if g == nil {
+		t.Fatal("no guard step for a subscription model with no catalog row")
+	}
+	if err := g(context.Background()); err == nil || !strings.Contains(err.Error(), "claude-gone-5-5") {
+		t.Errorf("err = %v, want a refusal naming the model", err)
+	}
+	if calls != 0 {
+		t.Errorf("the guard ran %d times on no row", calls)
+	}
+	if g := m.guardFor(config.Model{ID: "openrouter/gone"}, false); g != nil {
+		t.Error("a non-subscription model with no row got a guard step")
+	}
+}
+
+// TestHeaderModeFlagReachesTheTUIAppliers pins the header-mode flag at the
+// TUI's call sites (#597): the build's LaunchInfo.HeaderMode travels through
+// the prep (remotePreparedMsg.headerMode) to the profile applier, and through
+// launchRemoteSlot to the slot applier. The appliers here refuse exactly
+// when told header mode, as cmd/wt-session's do for a profile that would
+// undo it; the launch must stop with that error and the agent never run.
+func TestHeaderModeFlagReachesTheTUIAppliers(t *testing.T) {
+	refused := errors.New("profiles.toml: env sets ANTHROPIC_BASE_URL, which a profile using your Claude subscription may not set")
+	t.Run("model row", func(t *testing.T) {
+		m, _ := slotRemoteTable(t, map[string]string{"sonnet": "openrouter/a"})
+		old := profileApplier
+		t.Cleanup(func() { profileApplier = old })
+		profileApplier = func(_ *exec.Cmd, _ string, _ config.Model, _ *profiles.ResolvedProfile, _, headerMode bool) (func() error, error) {
+			if headerMode {
+				return nil, refused
+			}
+			return nil, nil
+		}
+		mark := filepath.Join(t.TempDir(), "ran")
+		m.hooks.gateway = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+			return exec.Command("touch", mark), agents.LaunchInfo{HeaderMode: true}, nil
+		}
+		m, cmd := enterRemote(t, m, "openrouter/a")
+		if cmd == nil {
+			t.Fatalf("Enter returned no command (status %q)", m.status)
+		}
+		m, run := updateMsg(m, cmd())
+		if run == nil {
+			t.Fatalf("no launch command (status %q)", m.status)
+		}
+		done, ok := run().(launchDoneMsg)
+		if !ok || !errors.Is(done.err, refused) {
+			t.Fatalf("launch = %#v, want the applier's refusal", done)
+		}
+		if _, err := os.Stat(mark); err == nil {
+			t.Error("the agent ran")
+		}
+	})
+	t.Run("slot profile", func(t *testing.T) {
+		m, _ := slotRemoteTable(t, map[string]string{"sonnet": "openrouter/a"})
+		stubSlotApplier(t, func(_ *exec.Cmd, _ string, _ catalog.Row, headerMode bool) (func() error, error) {
+			if headerMode {
+				return nil, refused
+			}
+			return nil, nil
+		})
+		mark := filepath.Join(t.TempDir(), "ran")
+		m.hooks.slot = func(profiles.SlotLaunch, string, bool, agents.Gateway, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+			return exec.Command("touch", mark), agents.LaunchInfo{HeaderMode: true}, nil
+		}
+		m, cmd := enterRemote(t, m, "profile/mix")
+		if cmd == nil {
+			t.Fatalf("Enter returned no command (status %q)", m.status)
+		}
+		m, run := updateMsg(m, cmd())
+		if run == nil {
+			t.Fatalf("no launch command (status %q)", m.status)
+		}
+		abort, ok := run().(slotAbortMsg)
+		if !ok || !errors.Is(abort.err, refused) {
+			t.Fatalf("launch = %#v, want the slot applier's refusal", abort)
+		}
+		if _, err := os.Stat(mark); err == nil {
+			t.Error("the agent ran")
+		}
+	})
 }

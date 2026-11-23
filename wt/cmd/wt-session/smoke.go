@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -69,7 +70,11 @@ func smokeCmd(a *app) *cobra.Command {
 			"With no model-id, shows the full model picker (requires a TTY). A local\n" +
 			"model that isn't running is started on the model server first; the\n" +
 			"server stops it after its idle grace. Needs a model server\n" +
-			"([model-server] in config.toml, or WT_MODEL_URL); with none, exit 1.",
+			"([model-server] in config.toml, or WT_MODEL_URL); with none, exit 1.\n\n" +
+			"A model on your Claude subscription (or an alias with such a target)\n" +
+			"is never smoked by default: a run without a model-id reports it as one\n" +
+			"SKIP row. Name it with --subscription to smoke it with claude, after\n" +
+			"the same checks a launch makes (opt-in, endpoint, login).",
 		Args: cobra.MaximumNArgs(1),
 		// main prints the one error line; cobra's own print made a failed
 		// start's message, log tail included, come out twice (#344).
@@ -88,6 +93,7 @@ func smokeCmd(a *app) *cobra.Command {
 	cmd.Flags().Duration("timeout", 0, "Per-agent timeout (default 3m for cloud models, 15m for local)")
 	cmd.Flags().String("only", "", "Comma-separated agents to restrict the run to")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of a table")
+	cmd.Flags().Bool("subscription", false, "Smoke the one subscription model or alias named (claude only; sends your Claude login and spends your plan)")
 	return cmd
 }
 
@@ -292,7 +298,13 @@ func filterOnlyAgents(eligible []string, only string) ([]string, error) {
 func printSmokeHuman(w io.Writer, runID, modelID string, rows []smoke.RowResult) (bool, error) {
 	var pass, fail, skip int
 	for _, r := range rows {
-		fmt.Fprintf(w, "[%-5s] %-10s %s (%s)\n", r.Status, r.Agent, modelID, formatSmokeDuration(r.Duration))
+		// A row names its own model: a walk's subscription SKIP rows are
+		// about other models than the one under test.
+		id := r.Model
+		if id == "" {
+			id = modelID
+		}
+		fmt.Fprintf(w, "[%-5s] %-10s %s (%s)\n", r.Status, r.Agent, id, formatSmokeDuration(r.Duration))
 		switch r.Status {
 		case smoke.StatusPass:
 			pass++
@@ -453,9 +465,7 @@ func (a *app) runSmokeRows(ctx context.Context, stderr io.Writer, cfg *config.Co
 		if loadErr == nil && validateErr == nil && store.Enabled {
 			rp := profiles.Resolve(store, agentName, cfg, m)
 			if !rp.Empty() {
-				pa = func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
-					return applyResolvedProfile(cmd, agentName, rp, oneShotArgs)
-				}
+				pa = smokeProfileApplier(agentName, rp)
 			}
 		}
 
@@ -498,8 +508,50 @@ func (a *app) runSmokeRows(ctx context.Context, stderr io.Writer, cfg *config.Co
 	return rows, interrupted
 }
 
+// smokeProfileApplier is the ProfileApplier of one smoke row whose agent and
+// model matched rp: it applies rp through applyResolvedProfile, the one a
+// real launch uses, so smoke and a launch cannot drift. headerMode is the
+// build's own LaunchInfo.HeaderMode (#597), passed through unchanged, so the
+// header-mode backstop judges the mode the command was really built in.
+func smokeProfileApplier(agentName string, rp profiles.ResolvedProfile) smoke.ProfileApplier {
+	return func(cmd *exec.Cmd, oneShotArgs []string, headerMode bool) (func() error, error) {
+		return applyResolvedProfile(cmd, agentName, rp, oneShotArgs, headerMode)
+	}
+}
+
+// subscriptionSkipRows is one SKIP row (agent claude, the hint as its error)
+// per subscription model or alias a walk without an id left out (#597
+// decision 9), each logged like any row. --only without claude asks about
+// other agents, so it reports none.
+func subscriptionSkipRows(stderr io.Writer, ids []string, only string) []smoke.RowResult {
+	if wanted := config.ParseFilterList(only); len(wanted) > 0 && !slices.Contains(wanted, "claude") {
+		return nil
+	}
+	var rows []smoke.RowResult
+	for _, id := range ids {
+		r := smoke.RowResult{Agent: "claude", Model: id, Status: smoke.StatusSkip, Err: errors.New(smoke.SubscriptionSkipReason)}
+		logSmokeResult(stderr, r)
+		rows = append(rows, r)
+	}
+	return rows
+}
+
+// subscriptionSkipList is ids followed by SubscriptionSkipReason with the verb
+// agreeing: "a uses ...", "a, b use ...".
+func subscriptionSkipList(ids []string) string {
+	reason := smoke.SubscriptionSkipReason
+	if len(ids) > 1 {
+		reason = "use" + strings.TrimPrefix(reason, "uses")
+	}
+	return strings.Join(ids, ", ") + " " + reason
+}
+
 // smokeStill is what a client smoke run that stopped short says is still true.
 const smokeStill = "nothing was run"
+
+// errSubscriptionNeedsID is --subscription without an id, or with one that is
+// not a subscription model or alias (#597 decision 9).
+var errSubscriptionNeedsID = errors.New("--subscription needs the id of one subscription model or alias")
 
 // resolveSmokeModelRemote resolves wt smoke's model over the model server's rows.
 // It reads the catalog and keeps the candidates (smoke.CandidatesWire over the
@@ -511,15 +563,35 @@ const smokeStill = "nothing was run"
 // over the candidates (a terminal is needed first, P5). The second result is
 // the catalog's rows, which a gateway syncer (pi) lists. Server errors carry
 // remoteExit and the still clause; a refusal is a plain error (exit 1).
-func resolveSmokeModelRemote(ctx context.Context, ms *modelSession, cfg *config.Config, theme themes.Theme, modelID string) (smokeTarget, []modelapi.Row, error) {
+//
+// Subscription rows (#597 decision 9): a named subscription model or alias
+// is refused without subscription (the hint), and subscription is refused
+// for an id that is not one (errSubscriptionNeedsID); only the id it names
+// is ever a candidate. The third result is the subscription ids a walk
+// without an id left out (for its SKIP rows); nil when an id was named.
+func resolveSmokeModelRemote(ctx context.Context, ms *modelSession, cfg *config.Config, theme themes.Theme, modelID string, subscription bool) (smokeTarget, []modelapi.Row, []string, error) {
 	if modelID == "" && !stdinTTY() {
-		return smokeTarget{}, nil, fmt.Errorf("wt smoke needs a TTY to list models; pass a model id directly (wt smoke <provider>/<name>)")
+		return smokeTarget{}, nil, nil, fmt.Errorf("wt smoke needs a TTY to list models; pass a model id directly (wt smoke <provider>/<name>)")
 	}
 	cat, err := ms.client.Catalog(ctx)
 	if err != nil {
-		return smokeTarget{}, nil, remoteExit(modelclient.Still(err, smokeStill))
+		return smokeTarget{}, nil, nil, remoteExit(modelclient.Still(err, smokeStill))
 	}
-	cands := smoke.CandidatesWire(cat.Rows, cfg.Agents)
+	var allow string
+	if modelID != "" {
+		row, known := catalog.WireByID(cat.Rows)[modelID]
+		usesSub := known && catalog.UsesSubscription(row)
+		switch {
+		case subscription && !usesSub:
+			return smokeTarget{}, nil, nil, errSubscriptionNeedsID
+		case !subscription && usesSub:
+			return smokeTarget{}, nil, nil, fmt.Errorf("%s %s", modelID, smoke.SubscriptionSkipReason)
+		}
+		if subscription {
+			allow = modelID
+		}
+	}
+	cands, dropped := smoke.CandidatesWire(cat.Rows, cfg.Agents, allow)
 	target := func(id string) (smokeTarget, bool) {
 		for _, c := range cands {
 			if c.Row.Model.ID == id {
@@ -530,27 +602,33 @@ func resolveSmokeModelRemote(ctx context.Context, ms *modelSession, cfg *config.
 	}
 	if modelID != "" {
 		if t, ok := target(modelID); ok {
-			return t, cat.Rows, nil
+			return t, cat.Rows, nil, nil
 		}
 		row, rerr := ms.client.Resolve(ctx, modelID)
 		var unknown *modelclient.UnknownModelError
 		switch {
 		case errors.As(rerr, &unknown):
-			return smokeTarget{}, nil, errors.New(unknown.Message)
+			return smokeTarget{}, nil, nil, errors.New(unknown.Message)
 		case rerr != nil:
-			return smokeTarget{}, nil, remoteExit(modelclient.Still(rerr, smokeStill))
+			return smokeTarget{}, nil, nil, remoteExit(modelclient.Still(rerr, smokeStill))
 		case row.Action == modelapi.ActionBlock:
 			reason := row.BlockReason
+			if sub := subscriptionBlockedReason(ctx, ms, []modelapi.Row{row}); sub != "" {
+				reason = sub // decision 2: off and older read the same
+			}
 			if reason == "" {
 				reason = fmt.Sprintf("model %q is blocked", row.ID)
 			}
-			return smokeTarget{}, nil, errors.New(reason)
+			return smokeTarget{}, nil, nil, errors.New(reason)
 		}
-		return smokeTarget{}, nil, fmt.Errorf(
+		return smokeTarget{}, nil, nil, fmt.Errorf(
 			"model %q cannot be smoke-tested right now (no agent supports it, or its route is not set up — check `wt litellm status` on the model server host)", modelID)
 	}
 	if len(cands) == 0 {
-		return smokeTarget{}, nil, fmt.Errorf("the model server has no models to test; add one on the server host with wt-model model add, or pull a local one there")
+		if len(dropped) > 0 {
+			return smokeTarget{}, nil, nil, fmt.Errorf("the model server has no models to test without --subscription: %s", subscriptionSkipList(dropped))
+		}
+		return smokeTarget{}, nil, nil, fmt.Errorf("the model server has no models to test; add one on the server host with wt-model model add, or pull a local one there")
 	}
 	models := make([]config.Model, len(cands))
 	for i, c := range cands {
@@ -558,15 +636,15 @@ func resolveSmokeModelRemote(ctx context.Context, ms *modelSession, cfg *config.
 	}
 	m, ok, perr := pickModelTUI(models, theme)
 	if perr != nil {
-		return smokeTarget{}, nil, perr
+		return smokeTarget{}, nil, nil, perr
 	}
 	if !ok {
-		return smokeTarget{}, nil, fmt.Errorf("model selection cancelled")
+		return smokeTarget{}, nil, nil, fmt.Errorf("model selection cancelled")
 	}
 	if t, ok := target(m.ID); ok {
-		return t, cat.Rows, nil
+		return t, cat.Rows, dropped, nil
 	}
-	return smokeTarget{}, nil, fmt.Errorf("unknown model %q", m.ID)
+	return smokeTarget{}, nil, nil, fmt.Errorf("unknown model %q", m.ID)
 }
 
 // runSmokeRemote is runSmoke on a client session (a model server is
@@ -593,6 +671,14 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var modelID string
+	if len(args) > 0 {
+		modelID = args[0]
+	}
+	subscription := mustGetBool(cmd, "subscription")
+	if subscription && modelID == "" {
+		return false, errSubscriptionNeedsID // known without the server
+	}
 	cfg, err := a.sessionCfg()
 	if err != nil {
 		return false, remoteExit(modelclient.Still(err, smokeStill))
@@ -601,15 +687,21 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 	if err != nil {
 		return false, remoteExit(err) // openModels' errors carry the still clause
 	}
-	var modelID string
-	if len(args) > 0 {
-		modelID = args[0]
-	}
-	t, catRows, err := resolveSmokeModelRemote(ctx, ms, cfg, a.theme, modelID)
+	t, catRows, droppedSub, err := resolveSmokeModelRemote(ctx, ms, cfg, a.theme, modelID, subscription)
 	if err != nil {
 		return false, err
 	}
 	m, eligible := t.Row.Model, t.Agents
+	usesSub := t.Row.Wire != nil && catalog.UsesSubscription(*t.Row.Wire)
+	if usesSub {
+		if !subscription {
+			// resolveSmokeModelRemote never offers one; kept so a later
+			// change there cannot spend the plan unasked.
+			return false, fmt.Errorf("%s %s", m.ID, smoke.SubscriptionSkipReason)
+		}
+		// Only claude ever runs a subscription row (Global Constraints).
+		eligible = slices.DeleteFunc(slices.Clone(eligible), func(ag string) bool { return !slices.Contains(config.SubscriptionAgents, ag) })
+	}
 	if len(eligible) == 0 {
 		return false, fmt.Errorf("model %q has no currently eligible agents", m.ID)
 	}
@@ -626,6 +718,15 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 	timeout = smokeTimeoutAt(t.Row.Location, timeout)
 	jsonOut, _ := cmd.Flags().GetBool("json")
 	stderr := cmd.ErrOrStderr()
+
+	// A subscription row runs only after Task 6's guard (#597 decision 9):
+	// opt-in, endpoint, the server's passthrough, the launch profile, Claude
+	// Code's version and the login, before the client session and any row.
+	if usesSub {
+		if gerr := subscriptionGuardTo(ctx, stderr, ms, []modelapi.Row{*t.Row.Wire}, launchProfileKeysFor("claude", m, cfg, a.profileState()), a.hooks.login); gerr != nil {
+			return false, remoteExit(gerr) // as a launch's refusal: exit 1, no usage
+		}
+	}
 
 	// The client session holds the model from before its start to the end of
 	// the run. end runs once, on a context no cancel reaches, and never fails
@@ -656,7 +757,7 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 	}()
 
 	runID := smoke.NewRunID()
-	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token}
+	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token, CAFile: ms.ep.CAFile}
 	gwModels := catalog.NonNativeModels(catRows)
 	sctx, stopSignals := smokeSignalCtx()
 	defer stopSignals()
@@ -686,6 +787,9 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 		}, func() bool { return fatal != nil })
 	if fatal != nil && len(rows) > 0 && rows[len(rows)-1].Err != nil && errors.Is(rows[len(rows)-1].Err, fatal) {
 		rows = rows[:len(rows)-1] // the row that found the server gone says nothing about the model
+	}
+	if !interrupted {
+		rows = append(rows, subscriptionSkipRows(stderr, droppedSub, mustGetString(cmd, "only"))...)
 	}
 	// The rows are over: the model is no longer in use. Restore the default
 	// handler too: a second Ctrl+C during the report kills wt.

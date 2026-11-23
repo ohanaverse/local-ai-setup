@@ -63,7 +63,21 @@ type AliasSkip struct {
 // (which names a secret_ref, never a resolved key). A malformed alias, or one
 // whose id is not "alias/<name>", has every target skipped Frozen. Rows come
 // in target order.
+//
+// A Claude subscription target is built as with a clean subscription check;
+// the alias half of a write passes its own check's answer (dbModelsFromAlias).
 func DBModelsFromAlias(cfg *config.Config, a config.Alias, live func(id string) bool, hashKey string) ([]DBModel, []AliasSkip) {
+	return dbModelsFromAlias(cfg, a, live, hashKey, aliasSubClean)
+}
+
+// dbModelsFromAlias is DBModelsFromAlias under the write's subscription
+// check: a Claude subscription target's rows go under a blocked check (never
+// Frozen: a seen hazard must not leave a keyless anthropic/ row live, a
+// faulty provider row included), are kept as they are under a check that
+// could not look (Frozen), and otherwise are built like any target (a faulty
+// provider row alone is Frozen, phase 2's rule) and live only while the
+// model's own row is routed.
+func dbModelsFromAlias(cfg *config.Config, a config.Alias, live func(id string) bool, hashKey string, sub aliasState) ([]DBModel, []AliasSkip) {
 	name, isAlias := strings.CutPrefix(a.ID, config.AliasIDPrefix)
 	if a.Malformed != "" || !isAlias || name == "" || strings.Contains(name, "/") {
 		reason := "malformed alias: " + a.Malformed
@@ -96,9 +110,27 @@ func DBModelsFromAlias(cfg *config.Config, a config.Alias, live func(id string) 
 			skips = append(skips, AliasSkip{Target: t.Model, Reason: "not running"})
 			continue
 		}
+		if config.IsSubscriptionProvider(m.ProviderID) {
+			switch sub {
+			case aliasSubBlocked:
+				skips = append(skips, AliasSkip{Target: t.Model, Reason: "not routed: the proxy has a Claude subscription hazard"})
+				continue
+			case aliasSubHold:
+				frozen(t, "the proxy's deployments could not be checked for Claude subscription hazards")
+				continue
+			}
+		}
 		row, err := prepareModel(cfg, m)
 		if err != nil {
 			frozen(t, "%s", oneLine(err))
+			continue
+		}
+		// A Claude subscription target is live only while its own row is
+		// routed: its alias row is a keyless anthropic/ row too, so the
+		// hazards that leave the model unrouted (SubscriptionHazards) take
+		// the alias row with it (not frozen: an old row goes).
+		if config.IsSubscriptionProvider(m.ProviderID) && (live == nil || !live(m.ID)) {
+			skips = append(skips, AliasSkip{Target: t.Model, Reason: "not routed"})
 			continue
 		}
 		ensureRowParams(row)

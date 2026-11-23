@@ -266,6 +266,13 @@ func TestLitellmSyncWorksOnValidationOnlyError(t *testing.T) {
 		t.Fatal(err)
 	}
 	modelHome(t, string(sample)+"\n[[models]]\nid = \"ghost/m\"\nprovider_id = \"ghost\"\nmodel_name = \"m\"\n")
+	// The sample has a claude-subscription model, so the sync asks the
+	// proxy's environment (litellm.LoadProxyEnv). What keeps the real plist
+	// unread is litellmEnv's WT_LITELLM_RESTART_CMD: with a restart command
+	// configured LoadProxyEnv never opens the plist (and the check then fails
+	// closed on the unknown environment). The scratch WT_LITELLM_PLIST is
+	// only a backstop should that ever change.
+	t.Setenv("WT_LITELLM_PLIST", filepath.Join(t.TempDir(), "proxy.plist"))
 	p := litellmEnv(t, "model_list: []\n")
 	if cfg, err := config.Load(); err != nil || cfg.Validate() == nil {
 		t.Fatalf("fixture: loadErr=%v, want a registry that loads and fails validation", err)

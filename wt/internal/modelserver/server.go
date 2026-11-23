@@ -2,10 +2,12 @@ package modelserver
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -43,7 +45,25 @@ type Options struct {
 	IdleGrace   time.Duration // how long an unused model survives before auto-stop
 	Upstream    *url.URL      // the LiteLLM proxy the gateway forwards to
 	UpstreamKey string        // the gateway's upstream credential
+	// SubscriptionPassthrough turns on the gateway's header mode and is
+	// advertised by the ping; serve sets it from the home's [gateway] table.
+	SubscriptionPassthrough bool
+	// ErrorLog receives the gateway proxy's transport errors; nil is the
+	// standard logger. With TLS set it is also the http.Server's ErrorLog
+	// (handshake errors, which name the client's address only).
+	ErrorLog *log.Logger
+	// TLS, when set, makes Serve speak TLS on its listener (decision 13);
+	// nil is plain http, today's server exactly.
+	TLS *tls.Config
+	// TLSOff is the fixed reason TLS is off although configured (the
+	// certificate's dates, tlsfile's DateReason), advertised by the ping as
+	// tls_off; empty otherwise.
+	TLSOff string
 }
+
+// tlsIdleTimeout closes idle keep-alive connections of a TLS server; a plain
+// server keeps net/http's defaults (no idle timeout), as before.
+const tlsIdleTimeout = 120 * time.Second
 
 // Server is the wt-model control API and gateway.
 type Server struct {
@@ -115,7 +135,9 @@ func (s *Server) routes() http.Handler {
 	// The gateway authenticates itself; it is not wrapped again.
 	root.Handle("/v1/", modelgateway.New(modelgateway.Config{
 		Upstream: s.o.Upstream, UpstreamKey: s.o.UpstreamKey, Token: s.o.Token,
-		AllowPaths: modelgateway.InferencePaths,
+		AllowPaths:              modelgateway.InferencePaths,
+		SubscriptionPassthrough: s.o.SubscriptionPassthrough,
+		ErrorLog:                s.o.ErrorLog,
 	}))
 	return root
 }
@@ -147,7 +169,11 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 func (s *Server) ping(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, modelapi.Ping{APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion, Server: "wt-model"})
+	writeJSON(w, http.StatusOK, modelapi.Ping{
+		APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion, Server: "wt-model",
+		SubscriptionPassthrough: s.o.SubscriptionPassthrough,
+		TLSOff:                  s.o.TLSOff,
+	})
 }
 
 // routed is the set of ids the gateway lists, or nil when LiteLLM cannot be
@@ -196,14 +222,14 @@ func (s *Server) invalidatingRouted(run modeljobs.RunFunc) modeljobs.RunFunc {
 func (s *Server) catalog(w http.ResponseWriter, r *http.Request) {
 	cfg := s.d.Config()
 	snap := s.d.Inventory(cfg)
-	writeJSON(w, http.StatusOK, BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now()))
+	writeJSON(w, http.StatusOK, BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now(), CatalogOptions{SubscriptionOn: s.o.SubscriptionPassthrough}))
 }
 
 func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("model")
 	cfg := s.d.Config()
 	snap := s.d.Inventory(cfg)
-	cat := BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now())
+	cat := BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now(), CatalogOptions{SubscriptionOn: s.o.SubscriptionPassthrough})
 	for _, row := range cat.Rows {
 		if row.ID == id {
 			writeJSON(w, http.StatusOK, row)
@@ -314,7 +340,7 @@ func (s *Server) Serve(ctx context.Context, announce func(addr string)) error {
 	if err != nil {
 		return fmt.Errorf("cannot listen on %s: %s (pick another with --listen HOST:PORT)", s.o.Listen, listenReason(err))
 	}
-	srv := &http.Server{Handler: s.handler, ReadHeaderTimeout: 10 * time.Second}
+	srv := s.httpServer()
 	if announce != nil {
 		announce(ln.Addr().String())
 	}
@@ -325,7 +351,14 @@ func (s *Server) Serve(ctx context.Context, announce func(addr string)) error {
 		s.stopper.Run(loopCtx, s.autoStopEvery)
 	}()
 	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
+	go func() {
+		if srv.TLSConfig != nil {
+			// The certificate is in TLSConfig; net/http adds h2 to its ALPN.
+			errc <- srv.ServeTLS(ln, "", "")
+			return
+		}
+		errc <- srv.Serve(ln)
+	}()
 
 	var serveErr error
 	select {
@@ -345,6 +378,20 @@ func (s *Server) Serve(ctx context.Context, announce func(addr string)) error {
 		return serveErr
 	}
 	return nil
+}
+
+// httpServer is the http.Server Serve runs. Plain http is today's server
+// exactly (Handler and ReadHeaderTimeout); only with Options.TLS does it
+// gain the TLS config, IdleTimeout and the ErrorLog. Never a read or write
+// timeout: prompts and streams are long.
+func (s *Server) httpServer() *http.Server {
+	srv := &http.Server{Handler: s.handler, ReadHeaderTimeout: 10 * time.Second}
+	if s.o.TLS != nil {
+		srv.TLSConfig = s.o.TLS.Clone()
+		srv.IdleTimeout = tlsIdleTimeout
+		srv.ErrorLog = s.o.ErrorLog
+	}
+	return srv
 }
 
 // listenReason is why net.Listen failed, without its "listen tcp ADDR:" lead

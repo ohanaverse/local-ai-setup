@@ -39,6 +39,8 @@ token_file = "~/.config/agent-wt/remote-model-server.token"
 | `mode` | `native`, `local` or `remote` (case-insensitive). Absent means no mode is chosen: a command that needs a model refuses (below). A stored `local` or `remote` still needs `url` and `token_file`; with `url` or `token_file` set and no `mode` the mode reads as `remote`. Any other value refuses: `mode under [model-server] is "X"; it must be one of native, local, remote`. |
 | `url` | The server's address, as `wt-model serve`'s banner prints it. |
 | `token_file` | A file holding the server's bearer token, mode `0600` (a file group or other can read is refused). `~` is expanded. |
+| `ca_file` | Hand-edited only (the Mode tab keeps it and never sets it). A PEM file of extra trusted certificates for an `https://` server, added to the system roots: for a server with a self-signed certificate, a copy of its certificate (`server.crt`, never the key). Absolute or `~/`: a relative path here is refused, since it would resolve against whatever directory wt runs in. Ignored, with one `wt: note: ca_file is ignored for an http url`, when the url is `http://`. See [TLS](#tls). |
+| `subscription` | Hand-edited only (the Mode tab keeps it and never sets it). `true` opts this machine in to sending its own claude.ai login to the model server for a Claude subscription model; absent or `false` refuses every such launch. See [Claude subscription (header mode)](#claude-subscription-header-mode). |
 | `token` | Never used for auth. Its presence is not inert: while it is set a save writes `config.toml` 0600 (and never loosens an existing stricter mode), and a command that needs a model refuses with the inline-token problem (below) until the token moves into a `token_file` (in native mode it is ignored, with one `wt: note:` asking you to remove it). |
 
 What the tab writes: for `remote`, the table above, with the token in a
@@ -69,6 +71,7 @@ token is `~/.config/agent-wt/remote-model-server.token` (same content, mode
 | `WT_MODEL_MODE` | `mode`: `native`, `local` or `remote` (case-insensitive); anything else refuses: `WT_MODEL_MODE is "X"; it must be one of native, local, remote`. Wins over everything below. |
 | `WT_MODEL_URL` | `url` (a url containing an `@` refuses; see [The refusals](#the-refusals)) |
 | `WT_MODEL_TOKEN_FILE` | `token_file` (and `WT_MODEL_TOKEN`) |
+| `WT_MODEL_CA_FILE` | `ca_file`; a relative path here is taken from the current directory (you typed it in your shell), and an empty value is the same as unset |
 | `WT_MODEL_TOKEN` | the token itself, as a literal; used when `WT_MODEL_TOKEN_FILE` is unset, and wins over `token_file` |
 
 The environment wins over the file, highest first: `WT_MODEL_URL`, then
@@ -146,9 +149,157 @@ the same last clause:
   or unreadable file names the path and the reason the same way.
 - A server that does not answer, refuses the token, or speaks another API
   version: the address tried and the reason, never a fallback.
+- A `ca_file` that cannot be used, before any request: one that is not a
+  readable regular file (or is larger than 1 MiB), `ca_file <path> holds no
+  PEM certificate`, `ca_file <path> holds a private key: copy only the
+  certificate`, and a relative `ca_file` in `config.toml`.
+- A TLS failure: one hint per cause ([TLS](#tls)).
+
+A launch on a Claude subscription model has six more refusals of its own
+([Claude subscription (header mode)](#claude-subscription-header-mode)).
 
 A `config.toml` that does not parse is the launch's `config error: ... (run
 `wt config` to repair)`, also exit 1.
+
+## TLS
+
+A model server can speak TLS itself (`[gateway] tls_cert`/`tls_key` on the
+host, [wt-model-server.md](wt-model-server.md#native-tls)). A session then
+uses an `https://` url and verifies the server's certificate against the
+system roots plus `ca_file` (or `WT_MODEL_CA_FILE`). Nothing skips the
+check: there is no flag or variable that turns it off, and TLS 1.2 is the
+floor. For a self-signed server certificate, copy the certificate file to
+this machine and name it as `ca_file`; on the server machine itself,
+`ca_file` is the `tls_cert` path (`wt-model setup` prints the line to add).
+
+A certificate in `ca_file` that is a CA without name constraints gets one
+`wt: note:` line: it can vouch for any host, Anthropic's included.
+
+Each TLS failure is one hint, exit 1:
+
+| Cause | Hint |
+|---|---|
+| The certificate is not trusted | `the model server's certificate is not trusted: set ca_file under [model-server] in ~/.config/agent-wt/config.toml (or WT_MODEL_CA_FILE) to the server's certificate` (naming the `ca_file` when one is set) |
+| It does not name the url's host | `the certificate does not name <host>: regenerate it with a subjectAltName for that host (an IP needs an IP SAN)` |
+| It is outside its dates by this machine's clock | `the model server's certificate expired on <date>` (or `is not valid until <date>`), then `: check both machines' clocks, or renew it on the host (replace tls_cert and tls_key, restart serve)` |
+| `https://` to a plain-HTTP server | `the model server speaks plain http, not https: …`, which also says that serve falls back to plain HTTP when its certificate expired |
+| `http://` to a TLS server | `the model server speaks https: use https://<addr> in [model-server] url; this request already sent the token unencrypted to <addr>`, plus `; rotate the token on the host (wt-model setup)` when the host is not loopback |
+
+The `http://`-to-TLS case is the one where something was sent: the whole
+request, the token included, crossed the network before the server's
+answer. Rotate the token when the server is on another machine.
+
+When the server was set up for TLS but its certificate's dates turned TLS
+off at its last start, its ping carries `tls_off`, and the session prints
+once:
+
+```text
+wt: note: the model server's TLS is off (certificate expired 2026-11-01); this connection is plain http
+```
+
+(Illustrative date.) A session on an `https://` url gets the plain-HTTP hint
+instead, since the server no longer speaks TLS.
+
+For claude and pi over an `https://` gateway with `ca_file` set, wt also sets
+`NODE_EXTRA_CA_CERTS` to the `ca_file` path, so the agent trusts the same
+certificate ([claude-wt.md](wt-agents/claude-wt.md#authentication--credentials)).
+
+## Claude subscription (header mode)
+
+A model on the `claude-subscription` provider (and an alias with such a
+target) runs on your own Claude subscription, through the model server's
+gateway. It is offered only to `claude`. While the server's mode is off, the
+catalog degrades an alias whose first target is a subscription model to its
+other targets, but a session still refuses to launch that alias (it has a
+subscription target, so the subscription checks below apply and the mode is
+off). It is different from a native launch:
+
+- **Native** (`claude/native`, `claude/opus`, …) runs Claude Code with its
+  own login straight to Anthropic: no model server, no gateway, no wt token.
+- **Passthrough** (a `claude-subscription` model) runs Claude Code against
+  the gateway in **header mode**. It keeps its own claude.ai login as its
+  credential and sends the wt token in an extra header,
+  `x-wt-model-token`. The gateway forwards the login to LiteLLM, which sends
+  it to Anthropic. Because the whole session uses header mode, one Claude
+  Code session can mix subscription slots with alias or local slots (a slot
+  profile; [slot-profiles.md](wt-agents/slot-profiles.md)).
+
+**Your own login only.** The subscription passthrough is for the person
+whose claude.ai login it is: never point a machine with someone else's
+login at your model server, and never share or pool a subscription through
+one. wt cannot tell whose login a request carries.
+
+**Opt-in.** The server's host turns the mode on
+([wt-model-server.md](wt-model-server.md#subscription-passthrough)), and
+each session machine opts in on its own, by hand:
+
+```toml
+[model-server]
+subscription = true
+```
+
+A url wt considers safe for the login is `https://` (any host) or `http://`
+to a loopback host (`127.0.0.0/8`, `::1`, or exactly `localhost`). A
+remote server over plain `http://` cannot be used for the subscription: use
+native TLS on the server, or a tunnel that arrives on loopback.
+
+**The refusals.** Before anything is started or registered, every launch
+path (`-M`, the picker, slot profiles, `wt smoke <id> --subscription`)
+checks, in this order; each failure is exit 1 and reads
+`wt: <model> uses your Claude subscription, but <reason> (nothing was started or registered)`:
+
+1. **Opt-in:** `this machine has not opted in to sending its Claude login to a model server: set [model-server] subscription = true in ~/.config/agent-wt/config.toml`.
+2. **Endpoint:** `the model server at <addr> is plain http to a host that is not loopback, so your Claude login would cross the network unencrypted: use an https url (native TLS) or a tunnel that arrives on loopback`. Decided from the url alone, before any request.
+3. **Server:** `the model server at <addr> does not accept a Claude login: its subscription passthrough is off, or it is older than this wt (on the host: make install, set [gateway] subscription_passthrough = true in ~/.config/wt-model/config.toml, restart wt-model serve)`. An off server and an older one look the same.
+4. **Launch profile and Node TLS:** `the profile for this launch sets <KEY>, which would replace the header wt sends or displace your Claude login: remove it from that profile` (the keys: `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`, any `CLAUDE_CODE_USE_*`, `NODE_TLS_REJECT_UNAUTHORIZED`, and a top-level `apiKeyHelper` in `config_content`; a slot profile's own keys count too); and `NODE_TLS_REJECT_UNAUTHORIZED is set in this environment to turn off certificate checks, so your Claude login could reach a server posing as the gateway: unset it` (for a value of `0` or `false`).
+5. **Version:** `it needs Claude Code 2.1.227 or newer and found <version>: update claude`.
+6. **Login:** `no claude.ai login was found: run 'claude auth login'` (or `Claude Code (claude) was not found on PATH: install it or put it on PATH`). wt runs `claude auth status --json` (within 10 s, in an environment cleared of `ANTHROPIC_*` credentials and `CLAUDE_CODE_USE_*`) and keeps only whether a first-party claude.ai login is present and when it expires: never the email or organization.
+
+When every check passes, a non-loopback url gets
+`wt: note: your Claude login will be sent to the model server at <addr>`,
+and a login that expires within 24 hours gets one `wt: note:` line naming
+the time. The format of Claude Code's `loginExpiresAt` is not yet verified
+against a real login (an RFC 3339 time or an epoch in seconds or
+milliseconds is read; anything else gives no note). The login check runs
+`claude` in its own process group, so Ctrl-C during it does not reach it
+directly; the check still ends with wt's cancel or its 10 s limit.
+
+**What the agent gets.** `ANTHROPIC_BASE_URL` (the gateway),
+`ANTHROPIC_API_KEY=` (empty, so Claude Code keeps its login) and
+`ANTHROPIC_CUSTOM_HEADERS` holding your inherited lines plus
+`x-wt-model-token: <token>` (an inherited `x-wt-model-token` or
+`authorization` line is dropped). wt clears `ANTHROPIC_AUTH_TOKEN`,
+`CLAUDE_CODE_OAUTH_TOKEN`, the two `*_FILE_DESCRIPTOR` credential variables
+and every `CLAUDE_CODE_USE_*` (Bedrock, Vertex or Foundry would take the
+session, and the header, away from the gateway). The token is only the
+value of that one environment entry: never in argv, the `--settings` JSON
+or a file, and masked in `wt profile show`. Claude Code's tool subprocesses
+and hooks inherit the environment, so **a header-mode session's shell
+carries the token**. Every other launch, for every agent, strips an
+inherited `x-wt-model-token` line, so a nested `wt -M claude/opus` from that
+shell does not send the token to Anthropic.
+
+Your own `~/.claude/settings.json` `env` block outranks the process
+environment: one that sets `ANTHROPIC_CUSTOM_HEADERS` or
+`ANTHROPIC_AUTH_TOKEN` replaces what wt sends, and the gateway refuses the
+request (401, or 403 `subscription_no_login`). The project's
+`.claude/settings.json` `env` (in the directory the session runs in)
+outranks it the same way: one that sets `ANTHROPIC_BASE_URL` could send the
+session (and the login) elsewhere, and a `CLAUDE_CODE_USE_*` could take it to
+another provider (derived from Claude Code's settings precedence, not
+verified live). wt does not detect either.
+
+**Proxy variables.** Over an `http://` gateway (loopback only, above), a
+header-mode claude gets the gateway's host added to both `NO_PROXY` and
+`no_proxy`: appended to an inherited value with a comma (never replacing
+it); when only one spelling is inherited, the other spelling starts from the
+inherited one, so your own bypass list stays under both; two that differ
+keep their own values; an IPv6 literal is listed as both `::1` and `[::1]`. An inherited
+`HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` would otherwise route the
+plain-HTTP request, with your login and the wt token, through that proxy.
+Whether Claude Code already skips a proxy for loopback is unverified until
+the phase 3 live check (#597). Token mode, `https://` gateways, native
+launches and other agents are left as they are.
 
 ## Exit codes
 

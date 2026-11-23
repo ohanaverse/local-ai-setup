@@ -21,8 +21,8 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Fatalf("loadRegistry() error: %v", err)
 	}
 
-	if len(providers) != 6 {
-		t.Fatalf("got %d providers, want 6", len(providers))
+	if len(providers) != 7 {
+		t.Fatalf("got %d providers, want 7", len(providers))
 	}
 	ollama, openrouter, agy := providers[0], providers[1], providers[2]
 	if ollama.ID != "ollama" || ollama.Auth.Type != "none" || ollama.Auth.BaseURL != "http://localhost:11434" {
@@ -54,8 +54,8 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 		t.Errorf("mlx_lm_server provider decoded wrong: %+v", mlx)
 	}
 
-	if len(models) != 7 {
-		t.Fatalf("got %d models, want 7", len(models))
+	if len(models) != 8 {
+		t.Fatalf("got %d models, want 8", len(models))
 	}
 	cloud := models[1]
 	if cloud.ID != "openrouter/contract-fixture:cloud" || cloud.Location != "cloud" || cloud.ProviderID != "openrouter" {
@@ -88,6 +88,20 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 	}
 	if absent.ID != "ollama/contract-fixture:absent" || absent.ModelName != "contract-fixture:absent" || absent.ProviderID != "ollama" {
 		t.Errorf("absent overlay decoded wrong: %+v", absent)
+	}
+
+	// claude-subscription (#597): the seeded shape (client-login, no
+	// base_url, no secret_ref), and one model under the bare real id with the
+	// context window the provider requires; its location is inherited.
+	sub := providers[6]
+	if sub.ID != SubscriptionProvider || !IsSubscriptionProvider(sub.ID) || sub.Auth.Type != "client-login" ||
+		sub.Auth.BaseURL != "" || sub.Auth.SecretRef != "" || sub.Location != LocationCloud {
+		t.Errorf("claude-subscription provider decoded wrong: %+v", sub)
+	}
+	haiku := models[7]
+	if haiku.ID != "claude-haiku-5-5" || haiku.ModelName != haiku.ID || haiku.ProviderID != SubscriptionProvider ||
+		haiku.ContextWindow != 1000000 || haiku.Location != "" {
+		t.Errorf("subscription model decoded wrong: %+v", haiku)
 	}
 
 	// [[aliases]] (#596): a single-target alias whose order is left out

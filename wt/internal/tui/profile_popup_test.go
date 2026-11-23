@@ -151,16 +151,16 @@ func TestRunRecordAndWaitWithPassesTheCarry(t *testing.T) {
 	t.Cleanup(func() { profileApplier = old })
 	var gotRP *profiles.ResolvedProfile
 	var gotApply bool
-	profileApplier = func(_ *exec.Cmd, _ string, _ config.Model, rp *profiles.ResolvedProfile, apply bool) (func() error, error) {
+	profileApplier = func(_ *exec.Cmd, _ string, _ config.Model, rp *profiles.ResolvedProfile, apply bool, _ bool) (func() error, error) {
 		gotRP, gotApply = rp, apply
 		return func() error { return nil }, nil
 	}
 	rp := testProfile
-	runRecordAndWaitWith(exec.Command("true"), "claude", config.Model{ID: "ollama/x"}, nil, nil, func() {}, &profileCarry{rp: &rp, apply: true})()
+	runRecordAndWaitWith(exec.Command("true"), "claude", config.Model{ID: "ollama/x"}, nil, nil, func() {}, &profileCarry{rp: &rp, apply: true}, false)()
 	if gotRP == nil || !gotApply {
 		t.Errorf("applier got (%v, %v); want the carried (rp, true)", gotRP, gotApply)
 	}
-	runRecordAndWaitWith(exec.Command("true"), "claude", config.Model{ID: "ollama/x"}, nil, nil, func() {}, nil)()
+	runRecordAndWaitWith(exec.Command("true"), "claude", config.Model{ID: "ollama/x"}, nil, nil, func() {}, nil, false)()
 	if gotRP != nil || gotApply {
 		t.Errorf("applier got (%v, %v) with no carry; want (nil, false)", gotRP, gotApply)
 	}

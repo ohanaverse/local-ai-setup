@@ -102,7 +102,7 @@ func TestPickerLaunchReturnsTheAgentsExitStatus(t *testing.T) {
 // exits 1 as a launch without the picker does (runAgentCmd returns it).
 func TestPickerProfileErrorIsReturned(t *testing.T) {
 	keepPendingPostExit(t)
-	profileApplier = func(*exec.Cmd, string, config.Model, *profiles.ResolvedProfile, bool) (func() error, error) {
+	profileApplier = func(*exec.Cmd, string, config.Model, *profiles.ResolvedProfile, bool, bool) (func() error, error) {
 		return nil, errors.New("wrapper missing")
 	}
 	msg := runAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "shell", config.Model{}, nil)()
@@ -118,9 +118,9 @@ func TestPickerProfileErrorIsReturned(t *testing.T) {
 // launchDoneMsg, so an agent that exits 3 makes Run's result carry status 3.
 func TestSlotProfileLaunchReturnsTheAgentsExitStatus(t *testing.T) {
 	m := model{cfg: testConfig()}
-	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
+	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row, bool) (func() error, error) { return nil, nil })
 	row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
-	msg := runSlotAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "claude", row, nil)()
+	msg := runSlotAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "claude", row, nil, false)()
 	m, _ = updateMsg(m, msg)
 	if got := exitStatusOf(runResult(m, nil)); got != 3 {
 		t.Fatalf("result status = %d, want the agent's exit status 3", got)

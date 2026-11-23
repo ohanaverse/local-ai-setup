@@ -118,6 +118,14 @@ type Route struct {
 	Display    string // m.ModelName, for catalog "name" fields
 	ProviderID string // registry provider id
 	Litellm    bool   // set on every gateway route; false only on the zero Route of a native or command launch
+	// Subscription is the model's Subscription: claude launches it in header
+	// mode, keeping its own login and sending APIKey (the gateway token) only
+	// as the x-wt-model-token header (#597).
+	Subscription bool
+	// CAFile is the gateway's ca_file (absolute; empty for a native route or
+	// a server the system trusts): a Node agent (claude, pi) reaching an
+	// https gateway gets it as NODE_EXTRA_CA_CERTS (#597, decision 14).
+	CAFile string
 }
 
 // Provider is a source of models with connection info.
@@ -476,6 +484,12 @@ type Model struct {
 	// GatewayID is the id an agent must send to the gateway; empty means ID.
 	// Session-side only, never persisted.
 	GatewayID string `toml:"-"`
+	// Subscription reports that the model is served on the owner's Claude
+	// subscription (catalog.UsesSubscription: its provider is
+	// SubscriptionProvider, or an alias with such a target), so a claude
+	// launch of it runs in header mode (#597). Session-side only, never
+	// persisted.
+	Subscription bool `toml:"-"`
 }
 
 // pricingStampLayouts are the spellings of pricing_updated_at wt reads: the
@@ -882,6 +896,20 @@ func finalizeCfg(cfg *Config, providers []Provider, models []Model, aliases []Al
 // SushiAgents are the agents that can run a Sushi model: claude (through
 // LiteLLM, as Sushi serves only openai-chat) and pi (direct).
 var SushiAgents = []string{"claude", "pi"}
+
+// SubscriptionProvider is the provider id of models served on the owner's
+// own Claude subscription (#597; provider.IDClaudeSubscription): keyless
+// anthropic/<id> LiteLLM rows that forward the client's claude.ai login.
+// Session libraries identify a subscription row by this id alone.
+const SubscriptionProvider = provider.IDClaudeSubscription
+
+// SubscriptionAgents are the agents a subscription model is offered to: only
+// claude, the one agent that holds a claude.ai login to forward.
+var SubscriptionAgents = []string{"claude"}
+
+// IsSubscriptionProvider reports whether id is the Claude subscription
+// provider.
+func IsSubscriptionProvider(id string) bool { return id == SubscriptionProvider }
 
 // deriveSushiAgents lists the sushi provider in SushiAgents' in-memory
 // supported_providers when the registry holds a sushi model and the agent

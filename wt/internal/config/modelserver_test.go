@@ -543,3 +543,37 @@ func TestReadModelServerFileReportsAKeyElsewhereAsRestErr(t *testing.T) {
 		t.Errorf("file = %+v, want RestErr set and the table still read", f)
 	}
 }
+
+// TestModelServerSubscriptionKeyRoundTrips proves the session-side opt-in
+// `[model-server] subscription = true` (#597, decision 12) loads, survives an
+// UpdateModelServer that changes another key, and is written only when true.
+func TestModelServerSubscriptionKeyRoundTrips(t *testing.T) {
+	path := sessionHome(t, "[model-server]\nmode = \"local\"\nsubscription = true\n")
+	cfg, err := LoadSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ModelServer().Subscription {
+		t.Fatal("subscription = true did not load")
+	}
+	if err := UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
+		cur.URL = "http://127.0.0.1:9"
+		return cur, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "subscription = true") {
+		t.Errorf("the opt-in was dropped:\n%s", raw)
+	}
+	if err := UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
+		cur.Subscription = false
+		return cur, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(path)
+	if strings.Contains(string(raw), "subscription") {
+		t.Errorf("a false opt-in was written:\n%s", raw)
+	}
+}

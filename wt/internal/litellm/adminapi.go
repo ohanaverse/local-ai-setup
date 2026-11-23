@@ -77,6 +77,24 @@ func (e errBodyTooLarge) Error() string {
 // List returns the deployments stored in the database (GET /model/info rows
 // whose model_info.db_model is true).
 func (c *AdminClient) List(ctx context.Context) ([]DBModel, error) {
+	rows, err := c.listRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return dbModelsOf(rows), nil
+}
+
+// modelInfoRow is one /model/info row as listed.
+type modelInfoRow struct {
+	ModelName string         `json:"model_name"`
+	Params    map[string]any `json:"litellm_params"`
+	Info      map[string]any `json:"model_info"`
+}
+
+// listRows is one GET /model/info: every deployment the proxy serves, any
+// owner's. List and ModelInfo read it, and a write that needs both (a sync's
+// database half and its subscription check) reads it once (dbRoutes.list).
+func (c *AdminClient) listRows(ctx context.Context) ([]modelInfoRow, error) {
 	status, body, err := c.do(ctx, http.MethodGet, "/model/info", nil, listBodyLimit)
 	if err != nil {
 		var big errBodyTooLarge
@@ -89,17 +107,18 @@ func (c *AdminClient) List(ctx context.Context) ([]DBModel, error) {
 		return nil, c.statusError("list models", status, body)
 	}
 	var resp struct {
-		Data []struct {
-			ModelName string         `json:"model_name"`
-			Params    map[string]any `json:"litellm_params"`
-			Info      map[string]any `json:"model_info"`
-		} `json:"data"`
+		Data []modelInfoRow `json:"data"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("litellm: list models: bad response: %w", err)
 	}
+	return resp.Data, nil
+}
+
+// dbModelsOf is the database rows of a listing (model_info.db_model true).
+func dbModelsOf(rows []modelInfoRow) []DBModel {
 	var out []DBModel
-	for _, r := range resp.Data {
+	for _, r := range rows {
 		if db, _ := r.Info["db_model"].(bool); !db {
 			continue
 		}
@@ -112,7 +131,7 @@ func (c *AdminClient) List(ctx context.Context) ([]DBModel, error) {
 		}
 		out = append(out, DBModel{ID: id, ModelName: r.ModelName, Params: r.Params, Info: info})
 	}
-	return out, nil
+	return out
 }
 
 // Routes lists the route names (model_name) of the database rows wt owns:

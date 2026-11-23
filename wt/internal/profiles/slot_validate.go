@@ -219,6 +219,9 @@ func slotBodyErr(p SlotProfile, declared []string, d SlotDrivers) error {
 			return fmt.Errorf("env sets %s, which wt sets for the launch", key)
 		}
 	}
+	if err := customHeadersErr("env", p.Env[CustomHeadersVar]); err != nil {
+		return err
+	}
 	// What config_content may hold is the agent's rule, not this package's:
 	// claude's, for one, is that an env key is a table.
 	if len(p.ConfigContent) > 0 {
@@ -235,10 +238,66 @@ func slotBodyErr(p SlotProfile, declared []string, d SlotDrivers) error {
 				return fmt.Errorf("config_content.env sets %s, which wt sets for the launch", key)
 			}
 		}
+		// A value that is not a string is Claude Code's to refuse; only a
+		// string can carry a header line.
+		if v, ok := env[CustomHeadersVar].(string); ok {
+			if err := customHeadersErr("config_content.env", v); err != nil {
+				return err
+			}
+		}
 	}
 
 	if p.Wrapper != nil && !slices.Contains(p.Wrapper.ArgsTemplate, "{{args}}") {
 		return fmt.Errorf("wrapper args_template %v has no \"{{args}}\" placeholder", p.Wrapper.ArgsTemplate)
+	}
+	return nil
+}
+
+// CustomHeadersVar is the variable Claude Code reads extra request headers
+// from: one "Name: value" per line.
+const CustomHeadersVar = "ANTHROPIC_CUSTOM_HEADERS"
+
+// WtHeaderName is the header that carries the model-server token in header
+// mode (#597), lower case. It is the gateway's modelgateway.TokenHeader,
+// which session packages cannot import; a test holds the two equal.
+const WtHeaderName = "x-wt-model-token"
+
+// CustomHeaderLines splits an ANTHROPIC_CUSTOM_HEADERS value into its lines:
+// \r\n, a lone \r and \n all end a line; each line is trimmed and blank
+// lines are dropped. Every reader of the variable splits through it, so no
+// line ending can hide a header from the merge or the profile rule.
+func CustomHeaderLines(v string) []string {
+	var out []string
+	for _, line := range strings.FieldsFunc(v, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		if line = strings.TrimSpace(line); line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// CustomHeaderName is the header name of one line of an
+// ANTHROPIC_CUSTOM_HEADERS value, lower case and trimmed ("" for a line with
+// no colon). Every reader of the variable asks it, so the launch's merge and
+// the profile rule agree on what a line names.
+func CustomHeaderName(line string) string {
+	name, _, ok := strings.Cut(line, ":")
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// customHeadersErr refuses a profile's ANTHROPIC_CUSTOM_HEADERS value (where
+// names the table) that holds an x-wt-model-token line, which would replace
+// the token header wt adds, or an authorization line, which would send a
+// credential beside the gateway's or the user's login (#597). The value is
+// never echoed.
+func customHeadersErr(where, value string) error {
+	for _, line := range CustomHeaderLines(value) {
+		if name := CustomHeaderName(line); name == WtHeaderName || name == "authorization" {
+			return fmt.Errorf("%s sets %s with an %s line, which a slot profile may not send: remove that line", where, CustomHeadersVar, name)
+		}
 	}
 	return nil
 }

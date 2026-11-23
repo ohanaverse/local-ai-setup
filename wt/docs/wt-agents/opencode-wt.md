@@ -45,6 +45,8 @@ OpenCode stores API keys in `~/.local/share/opencode/auth.json`, configured inte
 
 The `opencode-wt` launcher does not manage credentials — it relies on the user having configured providers via `/connect` or environment variables.
 
+**A model server over `https://` with a private certificate.** wt sets no certificate variable for opencode: it must trust the gateway's certificate through the system trust store (on macOS, the login keychain), or through its own setting for extra roots, which is unverified until the phase 3 live check (#597) records it. wt's own control calls trust `ca_file` ([wt-session.md](../wt-session.md#tls)); the agent does not read it.
+
 ## Model selection
 
 OpenCode requires the `provider/model` form in its config (e.g., `anthropic/claude-sonnet-4-5`). `opencode-wt` selects non-native models by generating inline JSON via the `OPENCODE_CONFIG_CONTENT` environment variable. The JSON declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) pointed at the model server's gateway (`wt-model serve`; see [wt-session.md](../wt-session.md)) — there are no direct routes — with the model's gateway id declared in the provider's `models` map and `model` and `small_model` pinned to it:
