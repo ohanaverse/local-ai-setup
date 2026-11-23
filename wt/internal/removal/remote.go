@@ -69,8 +69,8 @@ func invalidRemoteItem(it Item) string {
 		return fmt.Sprintf("branch name %q is not a safe ref name", remoteName(it.Ref))
 	case it.Path != "":
 		return "a remote item has no path"
-	case it.Saw != cleanup.StatusProven:
-		return fmt.Sprintf("only a proven origin branch can be removed (status seen %q)", it.Saw)
+	case it.Saw != cleanup.StatusProven && it.Saw != cleanup.StatusLessSure:
+		return fmt.Sprintf("only a proven or less-sure origin branch can be removed (status seen %q)", it.Saw)
 	case !cleanup.IsFullCommitID(it.SawTip):
 		return fmt.Sprintf("commit seen %q is not a full commit id", it.SawTip)
 	}
@@ -131,20 +131,46 @@ func (e Engine) remoteGate(it Item) gated {
 	if fresh.Tip != it.SawTip {
 		return skipR("branch moved since it was listed")
 	}
-	if pr := fresh.PR; pr == nil || pr.State != "MERGED" || pr.BaseRef != e.Prior.Base.Default || pr.HeadRefOid != fresh.Tip {
-		return refuseR("no merged PR into " + e.Prior.Base.Default + " with this exact head")
-	}
-	switch e.mergeInBase(fresh.PR.MergeCommit) {
-	case cleanup.TriNo:
-		return refuseR("the merged PR's merge commit is not in " + e.Prior.Base.Ref)
-	case cleanup.TriUnknown:
-		return refuseR("could not check that the merged PR's merge commit is in " + e.Prior.Base.Ref)
+	if fresh.Status == cleanup.StatusLessSure {
+		// No proof to re-check: wt could not prove the branch merged, and the
+		// user has said so (--accept-loss, the list's typed word). Everything
+		// that can be known was read above (no hard stop, not Unknown, status
+		// and tip as listed); the lease push below guards the rest.
+		if !it.Approved.Confirm {
+			return refuseR("needs --accept-loss: wt is less sure this branch is merged (" + lessSureWhy(fresh) + ")")
+		}
+	} else {
+		// The merged PR's head must be exactly this tip, unless the fresh
+		// classification's proof is a whole-tree match with the base: then
+		// nothing is lost whatever the branch took in after the PR merged (the
+		// same rule as the classifier's remotePRRung), and the merge commit
+		// check below still has to hold.
+		if pr := fresh.PR; pr == nil || pr.State != "MERGED" || pr.BaseRef != e.Prior.Base.Default || (pr.HeadRefOid != fresh.Tip && fresh.Evidence != cleanup.EvTreesMatch) {
+			return refuseR("no merged PR into " + e.Prior.Base.Default + " with this exact head")
+		}
+		switch e.mergeInBase(fresh.PR.MergeCommit) {
+		case cleanup.TriNo:
+			return refuseR("the merged PR's merge commit is not in " + e.Prior.Base.Ref)
+		case cleanup.TriUnknown:
+			return refuseR("could not check that the merged PR's merge commit is in " + e.Prior.Base.Ref)
+		}
 	}
 	g := gated{fresh: fresh, hasFresh: true, need: needsOf(it.Kind, fresh)}
 	if !it.Approved.Remote {
 		return refuseR("needs --remote: deleting an origin branch is visible to everyone with access to the repository")
 	}
 	return g
+}
+
+// lessSureWhy is the first reason detail of a less-sure row, so a refusal and
+// the confirm screen say what wt could not prove.
+func lessSureWhy(fresh cleanup.Row) string {
+	for _, r := range fresh.Reasons {
+		if r.Detail != "" {
+			return cleanup.OneLine(r.Detail)
+		}
+	}
+	return "no proof it is merged"
 }
 
 // mergeInBase asks git whether the merge commit is an ancestor of the base

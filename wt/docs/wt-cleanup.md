@@ -724,14 +724,23 @@ the rules are narrower than for a local branch:
 
 - Only a **proven** row on **`origin`**: a MERGED pull request into the default
   branch whose head is exactly the branch's tip, whose merge commit is in the
-  base; no open PR with the branch as head; no open PR (from this repository or
+  base (a branch that took more commits after its PR merged, such as a stacked
+  PR merged into it, counts too when its tree is identical to the base's:
+  evidence `trees-match`, and the gate checks that again just before
+  pushing); no open PR with the branch as head; no open PR (from this repository or
   a fork) with it as base; content in the base; and `origin` fetched cleanly
   **this run**. `--no-fetch`, a terminal list that fetched nothing (it does
   not fetch when it opens; `--fetch` and the list's `F` fetch), a failed fetch,
   a missing `gh` or a failed query each make the row
-  unproven. There is no `--accept-loss` or `-D` path.
+  unproven *and unreadable*: no approval deletes it.
+- A **less-sure** row on `origin` that wt could read in full (its verdict is
+  `check`, not unknown: for example the content is in the base but no merged PR
+  backs the branch) is removable too, with `--accept-loss` as well as
+  `--remote` (in the list, the same `delete origin` phrase, which approves each
+  item only what it needs). A row with unique work, an open PR, a dependent PR
+  or any other hard stop is never removable, and `-D` and `--force` never apply.
 - The approval is its own: `--remote` on the CLI (`delete origin` in the list's
-  confirmation, once the list can prove an origin row).
+  confirmation, once the list can read an origin row).
   `--yes`, `y`, `--accept-loss`, `-D`, `--force` and the plain `delete` never
   grant it, and `--remote` grants nothing else.
 - Right before the push the engine re-asks `gh` about this one branch (so a PR

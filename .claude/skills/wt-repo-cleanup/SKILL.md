@@ -48,7 +48,7 @@ If the preview used `--min-age`, pass the same `--min-age` to `wt remove` and `w
 | `-D` | deleting a branch not proven merged (with `--accept-loss`) |
 | `--remote` | deleting `origin/<name>`: visible to everyone with repo access, and wt cannot undo it |
 
-Targets are a worktree path, a local branch name, or `origin/<name>`. Origin deletion is `wt remove origin/<name> --remote --yes`, for a `proven` origin row only, after the user said yes to deleting that branch on origin; run it on its own, never together with other targets.
+Targets are a worktree path, a local branch name, or `origin/<name>`. Origin deletion is `wt remove origin/<name> --remote --yes`, for a `proven` origin row, or a `less_sure` one that is not `unknown` and has no blocker (add `--accept-loss`, and say so to the user: wt could not prove it merged), after the user said yes to deleting that branch on origin; run it on its own, never together with other targets.
 
 **5. Report.** From the result JSON show per item `worktree` (`removed`, `skipped_changed`, `refused`, `failed`, `not_requested`) and `branch` (`deleted`, `retained_unmerged`, `retained_moved`, `retained_checked_out`, `retained_default`, `retained_unknown`, `not_attempted`) with `reason`. For a deleted branch give `branch_tip` and the restore line in `reason` (`git branch <name> <sha>`, works until `git gc`). `skipped_changed` means the item got worse since the preview: re-preview. Exit status: 0 removed, 1 could not start, 2 some item refused, skipped or failed, 3 approval missing (no `--yes`; nothing removed). Finish with a fresh `wt worktrees --json` summary.
 

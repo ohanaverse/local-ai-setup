@@ -72,8 +72,10 @@ func TestOriginRowsAreTickableButNeverTickedForYou(t *testing.T) {
 		return -1
 	}
 	merged, old, theirs := at("origin/merged-remote"), at("origin/old-remote"), at("upstream/theirs")
-	if m.items[merged].locked || !m.items[old].locked || !m.items[theirs].locked {
-		t.Fatalf("locked: merged %v old %v theirs %v; want false true true", m.items[merged].locked, m.items[old].locked, m.items[theirs].locked)
+	// old-remote is a known less-sure origin row: removable with approval, so
+	// unlocked. Another remote's row stays locked.
+	if m.items[merged].locked || m.items[old].locked || !m.items[theirs].locked {
+		t.Fatalf("locked: merged %v old %v theirs %v; want false false true", m.items[merged].locked, m.items[old].locked, m.items[theirs].locked)
 	}
 	if m.ticked[merged] {
 		t.Fatal("a proven origin row starts ticked")
@@ -95,8 +97,8 @@ func TestOriginRowsAreTickableButNeverTickedForYou(t *testing.T) {
 		t.Errorf("detail of another remote's row: %s", d)
 	}
 	m.cursor = old
-	if d := m.detail(); !strings.Contains(d, "cannot be ticked") {
-		t.Errorf("detail of an unproven origin row: %s", d)
+	if d := m.detail(); !strings.Contains(d, "less-sure") ||!strings.Contains(d, "--accept-loss") || !strings.Contains(d, "delete origin") {
+		t.Errorf("detail of a less-sure origin row does not name its approvals:\n%s", d)
 	}
 }
 

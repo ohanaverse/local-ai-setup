@@ -114,7 +114,22 @@ func TestRemoteRowPRRungMatchesTheEngine(t *testing.T) {
 		want Status
 		code string
 	}{
-		{"head moved after the merge", func(s *Snapshot, tip string) {
+		// The branch moved after its PR merged, but its tree equals the base's:
+		// nothing is lost, so it is proven (the engine's gate accepts the same).
+		{"head moved after the merge, tree equals the base", func(s *Snapshot, tip string) {
+			s.PRs["topic"] = PRResult{Lookup: LookupKnown, PRs: []PRInfo{{Number: 9, State: "MERGED", HeadRefOid: strings.Repeat("9", 40), BaseRef: "main", MergeCommit: merge}}}
+		}, StatusProven, ""},
+		// Any other evidence does not say the whole tree equals the base's.
+		{"head moved after the merge, content proven another way", func(s *Snapshot, tip string) {
+			s.Proofs[tip] = Proof{Evidence: EvChangesInBase, Verdict: Merged}
+			s.PRs["topic"] = PRResult{Lookup: LookupKnown, PRs: []PRInfo{{Number: 9, State: "MERGED", HeadRefOid: strings.Repeat("9", 40), BaseRef: "main", MergeCommit: merge}}}
+		}, StatusLessSure, ReasonPRHeadMoved},
+		{"head moved, tree equals the base, merge commit not in the base", func(s *Snapshot, tip string) {
+			s.Merges[merge] = TriNo
+			s.PRs["topic"] = PRResult{Lookup: LookupKnown, PRs: []PRInfo{{Number: 9, State: "MERGED", HeadRefOid: strings.Repeat("9", 40), BaseRef: "main", MergeCommit: merge}}}
+		}, StatusLessSure, ReasonPRHeadMoved},
+		{"head moved, tree equals the base, merge commit unknown", func(s *Snapshot, tip string) {
+			delete(s.Merges, merge)
 			s.PRs["topic"] = PRResult{Lookup: LookupKnown, PRs: []PRInfo{{Number: 9, State: "MERGED", HeadRefOid: strings.Repeat("9", 40), BaseRef: "main", MergeCommit: merge}}}
 		}, StatusLessSure, ReasonPRHeadMoved},
 		{"merge commit not in the base", func(s *Snapshot, tip string) { s.Merges[merge] = TriNo }, StatusLessSure, ReasonNoMergedPR},

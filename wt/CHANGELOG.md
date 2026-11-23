@@ -5,6 +5,8 @@
 ### Changed
 
 - `wt worktree` is now an alias of `wt worktrees` (the singular used to fall through to the launch picker, which has no tick boxes). `wt cleanup`, the old alias, is removed and refused with a pointer to `wt worktrees`.
+- An origin branch whose PR merged but that moved on afterwards (a stacked PR merged into it) is **proven** when its tree is identical to the base's, so `wt worktrees` lists it `safe` and `wt remove origin/<name> --remote` removes it.
+- An origin branch wt could read in full but not prove merged (verdict `check`) is now removable: `wt remove origin/<name> --remote --accept-loss`, or the list's typed `delete origin`. Unique work, an Unknown row (origin not fetched, gh down) and any blocker stay refused. The refusal for any other status now reads "only a proven or less-sure origin branch can be removed".
 
 ### Added
 

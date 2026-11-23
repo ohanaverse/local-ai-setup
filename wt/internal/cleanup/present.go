@@ -96,6 +96,18 @@ func Groups(r Report) []Group {
 // never (it stays out of PROVEN unless a merged PR backs it).
 func (r Row) Tickable() bool { return r.Status == StatusProven && len(r.Blockers) == 0 }
 
+// OriginRemovable reports whether the removal engine can delete this row
+// from origin given the right approvals: an origin branch that is proven, or
+// less sure but fully read (not Unknown), with no blocker. A less-sure one
+// needs the loss approval as well as the origin approval; unique work, an
+// unreadable row (gh down, origin not fetched) and any blocker are never
+// removable. The list reads this to lock exactly what the engine refuses.
+func (r Row) OriginRemovable() bool {
+	return r.Kind == KindRemote && r.Remote == "origin" &&
+		(r.Status == StatusProven || r.Status == StatusLessSure) &&
+		!r.Unknown && r.HardStop == "" && len(r.Blockers) == 0
+}
+
 // DisplayName is the name a row is listed under: a remote row names its
 // remote, so it is not mistaken for the local branch of the same name. It
 // is one printable line (a detached worktree's directory name can hold any

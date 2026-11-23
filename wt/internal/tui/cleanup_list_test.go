@@ -785,14 +785,21 @@ func TestCleanupListHeldRowIsToggleable(t *testing.T) {
 	}
 }
 
-// TestCleanupListUnprovenRemoteRowsAreLocked pins that a remote row which is
-// not a proven origin branch is [-] and cannot be ticked by space or `a`:
-// enter removes what is ticked, and the engine deletes on origin only a
-// proven origin row (the proven one is tickable, see
+// TestCleanupListUnprovenRemoteRowsAreLocked pins that a remote row the engine
+// would refuse (a less-sure origin row wt could not fully read, or one with
+// unique work) is [-] and cannot be ticked by space or `a`: enter removes what
+// is ticked, and the engine deletes on origin only a proven or known less-sure
+// origin row (those are tickable, see
 // TestOriginRowsAreTickableButNeverTickedForYou).
 func TestCleanupListUnprovenRemoteRowsAreLocked(t *testing.T) {
-	for _, name := range []string{"origin/old-remote"} {
-		m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	r := cleanupFixture()
+	r.Rows = append(r.Rows,
+		cleanup.Row{Kind: cleanup.KindRemote, Name: "unknown-remote", Branch: "unknown-remote", Remote: "origin", Status: cleanup.StatusLessSure, Unknown: true,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonCannotVerify, Detail: "origin was not refreshed in this list"}}},
+		cleanup.Row{Kind: cleanup.KindRemote, Name: "unique-remote", Branch: "unique-remote", Remote: "origin", Status: cleanup.StatusUniqueWork,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonNotMerged, Detail: "its commits are not in the base"}}})
+	for _, name := range []string{"origin/unknown-remote", "origin/unique-remote"} {
+		m := newSizedCleanupList(t, r, 120, 40)
 		m = moveTo(t, m, name)
 		m = cleanupSend(t, m, spaceKey)
 		m = cleanupSend(t, m, keyRunes("a"))
@@ -804,7 +811,7 @@ func TestCleanupListUnprovenRemoteRowsAreLocked(t *testing.T) {
 		if line := rowBlock(t, m.View(), name); !strings.Contains(line, "[-]") {
 			t.Errorf("remote row %s not drawn [-]:\n%s", name, line)
 		}
-		if !strings.Contains(m.View(), "only a proven origin branch can be removed") {
+		if !strings.Contains(m.View(), "only a proven or fully read less-sure origin branch can be removed") {
 			t.Errorf("the detail line does not say why %s cannot be ticked:\n%s", name, m.View())
 		}
 	}

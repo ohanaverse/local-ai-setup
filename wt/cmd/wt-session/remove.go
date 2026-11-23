@@ -56,10 +56,12 @@ func removeCmd(a *app) *cobra.Command {
 			"                 branch of a named worktree (the prompt names each one)\n" +
 			"  --remote       delete a branch ON ORIGIN (origin/<name>): visible to everyone\n" +
 			"                 with access to the repository, and closing any PR that targets\n" +
-			"                 it. Only a proven row qualifies (merged PR with this exact\n" +
-			"                 head, no open PR on it or targeting it, origin fetched this run,\n" +
-			"                 so --no-fetch refuses it); none of the other flags, --yes\n" +
-			"                 included, grants it. The delete is a lease push on the sha\n" +
+			"                 it. A proven row qualifies (merged PR with this exact head, or a\n" +
+			"                 tree identical to the base's; no open PR on it or targeting it,\n" +
+			"                 origin fetched this run, so --no-fetch refuses it), and so does\n" +
+			"                 a fully read less-sure row when --accept-loss is given too (never\n" +
+			"                 one with unique work). No other flag, --yes included, grants it.\n" +
+			"                 The delete is a lease push on the sha\n" +
 			"                 listed, so a branch someone pushed to since is left alone, and\n" +
 			"                 the result prints the sha and the command that restores it.\n" +
 			"An item whose flag is missing is refused and the others go on. No flag\n" +

@@ -834,9 +834,18 @@ func (s *Snapshot) checkMerges(g Git) {
 			tips[r.Tip] = true
 		}
 	}
-	for _, res := range s.PRs {
+	// An origin branch's PR lookup is keyed by its name: a PR it merged from
+	// an older head (the branch moved on afterwards) is judged by the moved-PR
+	// rung, which needs the same answer.
+	originNames := map[string]bool{}
+	for _, r := range s.Remotes {
+		if r.Remote == "origin" {
+			originNames[r.Name] = true
+		}
+	}
+	for name, res := range s.PRs {
 		for _, pr := range res.PRs {
-			if pr.State != "MERGED" || pr.BaseRef != s.Base.Default || !tips[pr.HeadRefOid] {
+			if pr.State != "MERGED" || pr.BaseRef != s.Base.Default || (!tips[pr.HeadRefOid] && !originNames[name]) {
 				continue
 			}
 			if _, done := s.Merges[pr.MergeCommit]; done || !fullCommitID.MatchString(pr.MergeCommit) {

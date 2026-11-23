@@ -518,7 +518,8 @@ func TestRemoteReverifiesAgainstGh(t *testing.T) {
 }
 
 // TestRemoteRefusesWhatIsNotAProvenOriginBranch hands sealed items for the
-// default branch, another remote, an unproven row and a malformed name. What:
+// default branch, another remote, a unique-work or in-use row and a malformed
+// name (a less-sure item is removable with approval: remote_lesssure_test.go). What:
 // none pushes; the default is retained_default; the rest are refused with
 // "invalid target". Why: defence in depth behind the classifier, the way the
 // worktree and branch stages check what they are handed.
@@ -535,7 +536,8 @@ func TestRemoteRefusesWhatIsNotAProvenOriginBranch(t *testing.T) {
 	}{
 		"default branch":    {mk("refs/remotes/origin/main", cleanup.StatusProven, w.tip), BrRetainedDefault},
 		"other remote":      {mk("refs/remotes/upstream/topic", cleanup.StatusProven, w.tip), BrNotAttempted},
-		"less sure":         {mk(w.row.Ref, cleanup.StatusLessSure, w.tip), BrNotAttempted},
+		"unique work":       {mk(w.row.Ref, cleanup.StatusUniqueWork, w.tip), BrNotAttempted},
+		"in use":            {mk(w.row.Ref, cleanup.StatusInUse, w.tip), BrNotAttempted},
 		"option-like name":  {mk("refs/remotes/origin/-D", cleanup.StatusProven, w.tip), BrNotAttempted},
 		"colon in name":     {mk("refs/remotes/origin/a:b", cleanup.StatusProven, w.tip), BrNotAttempted},
 		"short sha":         {mk(w.row.Ref, cleanup.StatusProven, "abc"), BrNotAttempted},

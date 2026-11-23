@@ -1153,6 +1153,16 @@ func (c *classifier) remotePRRung(j *judge, rf RefFact, res PRResult) {
 		return
 	}
 	if moved := c.movedPR(res, rf.Tip); moved != nil {
+		// A merged PR plus a tip whose whole tree equals the base's leaves
+		// nothing to lose however the branch moved afterwards (a stacked PR
+		// merged into it): that is the PR proof. Any other evidence says only
+		// that some content is in the base, so the moved head stays a doubt.
+		if j.ev == EvTreesMatch && c.s.Merges[moved.MergeCommit] == TriYes {
+			if j.pr == nil {
+				j.pr = moved
+			}
+			return
+		}
 		j.weak(ReasonPRHeadMoved, fmt.Sprintf("content is in the base, but PR #%d merged a different head; the branch moved after the merge", moved.Number))
 		return
 	}

@@ -113,6 +113,66 @@ func TestRemoveCmdOriginBranch(t *testing.T) {
 	})
 }
 
+// lessSureOriginRepo is originRepo with no PR for the branch: its content is in
+// the base but nothing merged it, so after the fetch the row is known less_sure.
+func lessSureOriginRepo(t *testing.T) (dir, bare string) {
+	t.Helper()
+	dir, bare = originRepo(t)
+	t.Cleanup(cleanup.StubPRListForTest(func(_, _ string) ([]byte, error) { return []byte("[]"), nil }))
+	return dir, bare
+}
+
+// TestRemoveCmdLessSureOriginBranch drives `wt remove origin/topic` for a
+// branch wt could not prove merged. What: --remote --yes alone is refused
+// naming --accept-loss, --accept-loss alone is refused naming --remote, both
+// together delete, and in a mixed batch a proven worktree still goes while the
+// origin item is refused for its missing flag (exit 2). Why: B lets the user
+// delete such a branch, but each approval stays per item and nothing grants
+// the public deletion except --remote.
+func TestRemoveCmdLessSureOriginBranch(t *testing.T) {
+	t.Run("--remote alone is refused", func(t *testing.T) {
+		a, _ := removeApp(t)
+		dir, bare := lessSureOriginRepo(t)
+		tip := originTip(t, bare, "topic")
+		stdout, _, err := runRemove(t, a, dir, "", "origin/topic", "--remote", "--yes", "--json")
+		env := decodeOne(t, stdout)
+		if exitOf(err) != 2 || env.Items[0].Worktree != "refused" || !strings.Contains(env.Items[0].Reason, "--accept-loss") || originTip(t, bare, "topic") != tip {
+			t.Fatalf("exit %d, %+v", exitOf(err), env.Items)
+		}
+	})
+	t.Run("--accept-loss alone is refused", func(t *testing.T) {
+		a, _ := removeApp(t)
+		dir, bare := lessSureOriginRepo(t)
+		tip := originTip(t, bare, "topic")
+		stdout, _, err := runRemove(t, a, dir, "", "origin/topic", "--accept-loss", "--yes", "--json")
+		env := decodeOne(t, stdout)
+		if exitOf(err) != 2 || !strings.Contains(env.Items[0].Reason, "--remote") || originTip(t, bare, "topic") != tip {
+			t.Fatalf("exit %d, %+v", exitOf(err), env.Items)
+		}
+	})
+	t.Run("both flags delete", func(t *testing.T) {
+		a, _ := removeApp(t)
+		dir, bare := lessSureOriginRepo(t)
+		tip := originTip(t, bare, "topic")
+		stdout, _, err := runRemove(t, a, dir, "", "origin/topic", "--remote", "--accept-loss", "--yes", "--json")
+		env := decodeOne(t, stdout)
+		if exitOf(err) != 0 || env.Items[0].Branch != "deleted" || env.Items[0].BranchTip != tip || originTip(t, bare, "topic") != "" {
+			t.Fatalf("exit %d, %+v", exitOf(err), env.Items)
+		}
+	})
+	t.Run("mixed batch refuses only the origin item", func(t *testing.T) {
+		a, _ := removeApp(t)
+		dir, bare := lessSureOriginRepo(t)
+		tip := originTip(t, bare, "topic")
+		p := mergedWorktree(t, dir, "other")
+		stdout, _, err := runRemove(t, a, dir, "", p, "origin/topic", "--remote", "--yes", "--json")
+		env := decodeOne(t, stdout)
+		if exitOf(err) != 2 || len(env.Items) != 2 || exists(p) || originTip(t, bare, "topic") != tip {
+			t.Fatalf("exit %d, worktree exists %v, %+v", exitOf(err), exists(p), env.Items)
+		}
+	})
+}
+
 // TestRemoveCmdOriginArgumentMatching resolves `origin/topic` when a local
 // branch has that very name. What: it is ambiguous (exit 1) and nothing is
 // touched; a plain `topic` still means the local branch only. Why: the

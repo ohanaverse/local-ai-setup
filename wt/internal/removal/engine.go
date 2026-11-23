@@ -153,9 +153,10 @@ type gated struct {
 // it is kept.
 func needsOf(k cleanup.Kind, fresh cleanup.Row) Needs {
 	if k == cleanup.KindRemote {
-		// Only a proven, unblocked, loss-free origin branch gets this far
-		// (remoteGate); what it needs is the Remote approval and nothing else.
-		return Needs{Remote: true}
+		// Only an unblocked, known origin branch gets this far (remoteGate):
+		// proven needs the Remote approval alone; a less-sure one also needs
+		// the loss approval, since wt could not prove it merged.
+		return Needs{Remote: true, Confirm: fresh.Status != cleanup.StatusProven}
 	}
 	eff := fresh.EffectiveLosses()
 	return Needs{
