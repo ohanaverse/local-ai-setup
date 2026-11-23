@@ -50,6 +50,9 @@ func testHost() *host {
 	h.syncRoutesAfterWrite = func(io.Writer, io.Writer) string {
 		return "syncRoutesAfterWrite not stubbed in this test"
 	}
+	h.syncRoutesAfterAliasRemoval = func(io.Writer, io.Writer) string {
+		return "syncRoutesAfterAliasRemoval not stubbed in this test"
+	}
 	h.openTTY = func() (*os.File, error) { return nil, errors.New("openTTY not stubbed in this test") }
 	h.confirmRemove = func(string) (bool, error) { return false, errors.New("confirmRemove not stubbed in this test") }
 	// The alias commands' seams: no tiers file and no model server is read.
@@ -137,6 +140,7 @@ func stubRouteSync(h *host, warning string) *int {
 		calls++
 		return warning
 	}
+	h.syncRoutesAfterAliasRemoval = h.syncRoutesAfterWrite
 	return &calls
 }
 
@@ -147,6 +151,7 @@ func stubRouteSync(h *host, warning string) *int {
 func realRouteSync(t *testing.T, h *host) {
 	t.Helper()
 	h.syncRoutesAfterWrite = h.realSyncRoutesAfterWrite
+	h.syncRoutesAfterAliasRemoval = h.realSyncRoutesAfterAliasRemoval
 	stubProbeInventory(h, localmodels.Snapshot{})
 	t.Setenv("WT_LITELLM_RESTART_CMD", "true")
 }

@@ -341,3 +341,64 @@ targets = [{ model = "openrouter/unknown" }]
 		t.Fatalf("err %v\nstdout\n%s\nwant\n%s\nstderr %q", err, out, want, errOut)
 	}
 }
+
+// TestAliasRmWithDatabaseDownThenSyncHeals pins decision 4 for `alias rm`:
+// removing the last alias while LiteLLM's database cannot be listed still
+// removes it from the registry (exit 0), leaves its rows routing, and says
+// so exactly once with the repair; a later `wt-model litellm sync` with the
+// proxy back deletes the orphan rows. A sync with no alias and no removal
+// stays silent about alias routes, and an rm with a healthy proxy prints no
+// such line. Without the line the rows would keep routing a removed alias
+// with nothing said.
+func TestAliasRmWithDatabaseDownThenSyncHeals(t *testing.T) {
+	const line = "alias routes unavailable"
+	h, fake, path := aliasEnv(t, aliasRegistryWithX)
+	if _, _, err := execAlias(t, h, "litellm", "sync"); err != nil || len(aliasRows(fake, "alias/x")) != 1 {
+		t.Fatalf("setup sync: err %v rows %v", err, fake.ids())
+	}
+	setDown := func(down bool) {
+		fake.mu.Lock()
+		fake.down = down
+		fake.mu.Unlock()
+	}
+	setDown(true)
+	out, errOut, err := execAlias(t, h, "alias", "rm", "alias/x", "--yes")
+	if err != nil || !strings.HasPrefix(out, "removed alias: alias/x\n") || strings.Contains(mustRead(t, path), "alias/x") {
+		t.Fatalf("rm with the proxy down: err %v stdout %q", err, out)
+	}
+	if n := strings.Count(errOut, line); n != 1 || !strings.Contains(errOut, "run 'wt-model litellm sync' when the proxy answers") {
+		t.Fatalf("stderr has %d decision-4 lines, want 1:\n%s", n, errOut)
+	}
+	if len(aliasRows(fake, "alias/x")) != 1 {
+		t.Fatalf("rows %v, want the orphan still there", fake.ids())
+	}
+	_, errOut, _ = execAlias(t, h, "litellm", "sync")
+	if strings.Contains(errOut, line) {
+		t.Errorf("a sync with no alias and no removal warned about alias routes:\n%s", errOut)
+	}
+	setDown(false)
+	if _, _, err := execAlias(t, h, "litellm", "sync"); err != nil || len(aliasRows(fake, "alias/x")) != 0 {
+		t.Fatalf("healing sync: err %v rows %v", err, fake.ids())
+	}
+	if _, _, err := execAlias(t, h, "alias", "set", "alias/y", "--target", "openrouter/big"); err != nil {
+		t.Fatal(err)
+	}
+	_, errOut, err = execAlias(t, h, "alias", "rm", "alias/y", "--yes")
+	if err != nil || strings.Contains(errOut, line) || len(aliasRows(fake, "alias/y")) != 0 {
+		t.Fatalf("healthy rm: err %v rows %v stderr:\n%s", err, fake.ids(), errOut)
+	}
+}
+
+// TestAliasSetDryRunWithoutAProxyPair pins that a dry run with no proxy
+// pair lists no rows: the real run would write none (decision 4), and an h8
+// computed under no key would match no row the proxy ever holds. The targets
+// and the window line stay.
+func TestAliasSetDryRunWithoutAProxyPair(t *testing.T) {
+	h, _, _ := aliasEnv(t, aliasRegistry)
+	h.adminFor = func(*config.Config) *litellm.AdminClient { return nil }
+	out, _, err := execAlias(t, h, "alias", "set", "alias/x", "--target", "openrouter/big", "--dry-run")
+	if err != nil || !strings.Contains(out, "  target openrouter/big order 1\n") || !strings.Contains(out, "context: - -> 262144\n") ||
+		!strings.Contains(out, "no proxy pair: no rows would be written\n") || strings.Contains(out, " row ") || strings.Contains(out, "h8") {
+		t.Fatalf("err %v stdout:\n%s", err, out)
+	}
+}

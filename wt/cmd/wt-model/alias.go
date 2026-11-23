@@ -390,15 +390,19 @@ func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alia
 		line += " (smaller: the real run asks, or needs --accept-smaller-window)"
 	}
 	fmt.Fprintln(out, line)
+	admin := h.adminFor(cfg)
+	if admin == nil {
+		// The real run writes no row without the pair (decision 4), and an
+		// h8 under no key would match no row the proxy ever holds.
+		fmt.Fprintln(out, "no proxy pair: no rows would be written")
+		fmt.Fprintln(out, "dry run: nothing was changed")
+		return nil
+	}
 	local, _, _ := litellm.SyncInputs(cfg, h.probeInventory)
 	live := func(id string) bool {
 		return slices.ContainsFunc(local, func(m config.Model) bool { return m.ID == id })
 	}
-	hashKey := ""
-	if admin := h.adminFor(cfg); admin != nil {
-		hashKey = admin.Key
-	}
-	rows, skips := litellm.DBModelsFromAlias(cfg, a, live, hashKey)
+	rows, skips := litellm.DBModelsFromAlias(cfg, a, live, admin.Key)
 	name := strings.TrimPrefix(a.ID, config.AliasIDPrefix)
 	for _, m := range rows {
 		target, _ := m.Info[litellm.AliasTargetKey].(string)
@@ -418,7 +422,11 @@ func aliasRmCmd(h *host, rec servestate.Store) *cobra.Command {
 		Use:   "rm <alias/name>...",
 		Short: "Remove aliases from the registry and their LiteLLM routes",
 		Long: "Remove one or more aliases from the registry; the route sync that follows\n" +
-			"deletes their LiteLLM database rows. The models they target are not touched.\n\n" +
+			"deletes their LiteLLM database rows. The models they target are not touched.\n" +
+			"When LiteLLM's database cannot be reached (no proxy pair, store_model_in_db\n" +
+			"off, the proxy down), the registry is still written and a warning says the\n" +
+			"rows still route the alias; `wt-model litellm sync` deletes them once the\n" +
+			"proxy answers.\n\n" +
 			"It asks for confirmation on the terminal; --yes skips it. An alias that client\n" +
 			"sessions of the running model server use is removed only with --force-in-use\n" +
 			"as well: those sessions lose their route. When one id is not an alias,\n" +
@@ -481,5 +489,7 @@ func (h *host) runAliasRm(ctx context.Context, out, errOut io.Writer, rec serves
 	for _, id := range removed {
 		fmt.Fprintf(out, "removed alias: %s\n", id)
 	}
-	return h.syncAndWarn(out, errOut, nil)
+	// The sync that deletes the removed aliases' rows; when its database
+	// half cannot run it says so with decision 4's line and the repair.
+	return litellm.SyncAndWarn(out, errOut, nil, h.syncRoutesAfterAliasRemoval)
 }

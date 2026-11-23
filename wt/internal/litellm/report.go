@@ -196,8 +196,14 @@ func ReportSyncPlan(out, errOut io.Writer, plan SyncPlan, warnings []string, asJ
 // probe, then Sync or PlanSync, then the report. admin is Options.Admin (nil:
 // every route in config.yaml, as before #598).
 func RunSync(out, errOut io.Writer, cfg *config.Config, probe Probe, admin *AdminClient, asJSON, dryRun bool) error {
+	return runSync(out, errOut, cfg, probe, admin, asJSON, dryRun, false)
+}
+
+// runSync is RunSync; aliasesRemoved is Options.AliasesRemoved.
+func runSync(out, errOut io.Writer, cfg *config.Config, probe Probe, admin *AdminClient, asJSON, dryRun, aliasesRemoved bool) error {
 	desired, o, probeWarns := SyncInputs(cfg, probe)
 	o.Admin = admin
+	o.AliasesRemoved = aliasesRemoved
 	if dryRun {
 		plan, err := PlanSync(cfg, desired, o)
 		if err != nil {
@@ -223,6 +229,18 @@ func RunSync(out, errOut io.Writer, cfg *config.Config, probe Probe, admin *Admi
 // sync (ErrRegistryRedirected), and the refusal is the warning. admin builds
 // Options.Admin from the reloaded config (nil: no database routes).
 func SyncAfterWrite(out, errOut io.Writer, probe Probe, admin func(*config.Config) *AdminClient) string {
+	return syncAfterWrite(out, errOut, probe, admin, false)
+}
+
+// SyncAfterAliasRemoval is SyncAfterWrite after a write that removed
+// aliases (`wt-model alias rm`): a database half that cannot run says so
+// with decision 4's line (Options.AliasesRemoved), so the orphan rows that
+// still route the removed aliases are named with their repair.
+func SyncAfterAliasRemoval(out, errOut io.Writer, probe Probe, admin func(*config.Config) *AdminClient) string {
+	return syncAfterWrite(out, errOut, probe, admin, true)
+}
+
+func syncAfterWrite(out, errOut io.Writer, probe Probe, admin func(*config.Config) *AdminClient, aliasesRemoved bool) string {
 	if _, err := os.Stat(DefaultPath()); os.IsNotExist(err) {
 		// No LiteLLM here: nothing to sync, and no reason to probe providers.
 		return ""
@@ -231,7 +249,7 @@ func SyncAfterWrite(out, errOut io.Writer, probe Probe, admin func(*config.Confi
 	if err != nil {
 		return "LiteLLM routes not synced: " + err.Error()
 	}
-	err = RunSync(out, errOut, cfg, probe, adminOf(admin, cfg), false, false)
+	err = runSync(out, errOut, cfg, probe, adminOf(admin, cfg), false, false, aliasesRemoved)
 	switch {
 	case err == nil, errors.Is(err, ErrMissing):
 		return ""

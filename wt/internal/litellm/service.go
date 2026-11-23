@@ -128,6 +128,13 @@ type Options struct {
 	// (lifecycle.TryEnsureModelRouteTo), which would otherwise fail every API
 	// call and fall back to the file. Ignored without Admin.
 	DBCtx context.Context
+	// AliasesRemoved says the registry write this sync follows removed
+	// aliases (`wt-model alias rm`): their database rows are now orphans
+	// only a full sync with the database half deletes, so a Sync whose
+	// database half cannot run prints decision 4's line even when the
+	// registry has no alias left. Without it, a sync with no alias says
+	// nothing about alias routes.
+	AliasesRemoved bool
 	// dbTimeout, when positive, overrides the 15 s deadline every API call of
 	// one write shares (the package constant of the same name). Unexported:
 	// tests shorten it per call.
@@ -1197,7 +1204,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		case db == nil || db.gated:
 			// Decision 4: no database half, no alias route, and never a file
 			// fallback for one.
-			if len(cfg.Aliases) > 0 {
+			if len(cfg.Aliases) > 0 || o.AliasesRemoved {
 				if db == nil {
 					aliasNote = aliasUnavailable(aliasNoAdmin)
 				} else {
@@ -1219,7 +1226,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 			}
 		default:
 			db.unlisted(cfg, add, plan.Remove)
-			if len(cfg.Aliases) > 0 {
+			if len(cfg.Aliases) > 0 || o.AliasesRemoved {
 				db.aliasWarnings = append(db.aliasWarnings, aliasUnavailable(db.reason))
 			}
 		}

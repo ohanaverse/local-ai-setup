@@ -45,6 +45,10 @@ type seams struct {
 	// registry write and returns a warning for the user, or "" when the
 	// routes are in step.
 	syncRoutesAfterWrite func(out, errOut io.Writer) string
+	// syncRoutesAfterAliasRemoval is syncRoutesAfterWrite after `wt-model
+	// alias rm` (litellm.SyncAfterAliasRemoval): a database half that cannot
+	// run says the removed aliases' rows still route (decision 4).
+	syncRoutesAfterAliasRemoval func(out, errOut io.Writer) string
 	// openTTY opens the controlling terminal a question is asked on.
 	openTTY func() (*os.File, error)
 	// confirmRemove asks before `wt-model model rm` or `wt-model alias rm`
@@ -155,6 +159,7 @@ func newHost() *host {
 		return adminFromPair(cfg.LitellmBaseURL(), cfg.LitellmAPIKey())
 	}
 	h.syncRoutesAfterWrite = h.realSyncRoutesAfterWrite
+	h.syncRoutesAfterAliasRemoval = h.realSyncRoutesAfterAliasRemoval
 	h.confirmRemove = h.realConfirmRemove
 	h.confirmCloudSync = h.promptCloudSync
 	h.ollamaCLI = h.realOllamaCLI
@@ -187,4 +192,10 @@ func (h *host) realConfirmRemove(question string) (bool, error) {
 // seams).
 func (h *host) realSyncRoutesAfterWrite(out, errOut io.Writer) string {
 	return litellm.SyncAfterWrite(out, errOut, h.probeInventory, func(c *config.Config) *litellm.AdminClient { return h.adminFor(c) })
+}
+
+// realSyncRoutesAfterAliasRemoval is realSyncRoutesAfterWrite after a write
+// that removed aliases (litellm.SyncAfterAliasRemoval).
+func (h *host) realSyncRoutesAfterAliasRemoval(out, errOut io.Writer) string {
+	return litellm.SyncAfterAliasRemoval(out, errOut, h.probeInventory, func(c *config.Config) *litellm.AdminClient { return h.adminFor(c) })
 }
