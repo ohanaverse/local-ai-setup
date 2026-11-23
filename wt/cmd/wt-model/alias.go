@@ -425,9 +425,10 @@ func aliasRmCmd(h *host, rec servestate.Store) *cobra.Command {
 		Long: "Remove one or more aliases from the registry; the route sync that follows\n" +
 			"deletes their LiteLLM database rows. The models they target are not touched.\n" +
 			"When LiteLLM's database cannot be reached (no proxy pair, store_model_in_db\n" +
-			"off, the proxy down), the registry is still written and a warning says the\n" +
-			"rows still route the alias; `wt-model litellm sync` deletes them once the\n" +
-			"proxy answers.\n\n" +
+			"off, the proxy down), the registry is still written and one warning says\n" +
+			"`alias routes unavailable (<reason>); registry written, LiteLLM not updated;\n" +
+			"run 'wt-model litellm sync' when the proxy answers`: the alias's rows keep\n" +
+			"routing until that sync deletes them.\n\n" +
 			"It asks for confirmation on the terminal; --yes skips it. An alias that client\n" +
 			"sessions of the running model server use is removed only with --force-in-use\n" +
 			"as well: those sessions lose their route. When one id is not an alias,\n" +

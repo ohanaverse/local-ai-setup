@@ -385,7 +385,10 @@ wt-model alias rm <alias/name>... [--yes] [--force-in-use]
 `list` needs neither a model server nor the proxy: ALIAS, TARGETS
 (`order:model`), CONTEXT (the smallest window over all targets, `-` when any
 is unknown), SESSIONS (client sessions of the running model server; `-` when
-no server record answers) and ROUTED (`yes`, `no`, or `?` when the proxy
+no server record answers; a record that cannot be read, or a server that
+does not answer, is one note, `wt-model: note: could not read client sessions
+from the model server (<why>) — no alias is counted as in use`, and the
+command goes on with no counts, so `rm` then needs no `--force-in-use`) and ROUTED (`yes`, `no`, or `?` when the proxy
 pair is not set or the database cannot be read). `--json` prints one
 document, [alias-list.sample.json](../../docs/contracts/alias-list.sample.json),
 with `null` for an unknown `context`, `sessions` or `routed`. An alias the

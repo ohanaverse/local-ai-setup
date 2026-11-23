@@ -21,6 +21,18 @@ import (
 // short by Ctrl+C (ctx cancelled) is nil and silent: the command then stops
 // nothing (host.stopCancelled).
 func hostSessionReader(ctx context.Context, w io.Writer, store servestate.Store) func() map[string]int {
+	return sessionReader(ctx, w, store, "models they use are stopped without asking")
+}
+
+// aliasSessionReader is hostSessionReader for `wt-model alias list|set|rm`
+// (the clientSessions seam), with a failure note worded for them: no session
+// count is known, so none is shown or checked.
+func aliasSessionReader(ctx context.Context, w io.Writer, store servestate.Store) func() map[string]int {
+	return sessionReader(ctx, w, store, "no alias is counted as in use")
+}
+
+// sessionReader is the reader behind both: consequence ends its note line.
+func sessionReader(ctx context.Context, w io.Writer, store servestate.Store, consequence string) func() map[string]int {
 	var (
 		once sync.Once
 		got  map[string]int
@@ -42,7 +54,7 @@ func hostSessionReader(ctx context.Context, w io.Writer, store servestate.Store)
 				if ctx.Err() != nil {
 					return
 				}
-				fmt.Fprintf(w, "wt-model: note: could not read client sessions from the model server (%s) — models they use are stopped without asking\n", modelping.Clean(err.Error()))
+				fmt.Fprintf(w, "wt-model: note: could not read client sessions from the model server (%s) — %s\n", modelping.Clean(err.Error()), consequence)
 			}
 		})
 		return got

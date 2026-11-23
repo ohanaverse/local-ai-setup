@@ -62,7 +62,7 @@ type seams struct {
 	tiersIndex func() tiers.Index
 	// clientSessions is the running model server's client sessions per
 	// model or alias id, read through serve's runtime record in rec
-	// (hostSessionReader: nil with no record). `wt-model alias list|set|rm`
+	// (aliasSessionReader: nil with no record). `wt-model alias list|set|rm`
 	// read it; testHost knows none.
 	clientSessions func(ctx context.Context, w io.Writer, rec servestate.Store) func() map[string]int
 	// stdinTTY reports whether stdin is a terminal.
@@ -149,7 +149,7 @@ func newHost() *host {
 		cloudFetch:      realCloudFetch,
 		cloudSyncNow:    time.Now,
 		tiersIndex:      tiers.Load,
-		clientSessions:  hostSessionReader,
+		clientSessions:  aliasSessionReader,
 		ollamaWaitDelay: defaultOllamaWaitDelay,
 		modeleditorRun: func(theme themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error) {
 			return modeleditor.Run(theme, cfg, cfgErr, o)
