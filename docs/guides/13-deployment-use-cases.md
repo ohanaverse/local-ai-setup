@@ -118,7 +118,7 @@ token_file = "~/.config/agent-wt/remote-model-server.token"
 ca_file = "~/.config/agent-wt/model-server.crt"   # a copy of the server's certificate (never its key)
 ```
 
-A tunnel that arrives on the model machine's loopback (`ssh -L`, `tailscale serve`) works too, with an `http://127.0.0.1:<port>` url on the session side.
+A tunnel that arrives on the model machine's loopback works too. With `ssh -L` (run on the session machine) the session's url is `http://127.0.0.1:<local port>`; `tailscale serve` runs on the model machine and serves the tailnet name, so the session's url is `https://<tailnet-name>` (the machine's tailnet DNS name). Whether the subscription header mode passes through either is derived from the peer rule and unverified until the phase 3 live check (#597).
 
 **A Claude subscription model from the session machine** (#597) needs that encrypted path: a remote server over plain `http://` is refused before the login is sent. The host turns the mode on (`[gateway] subscription_passthrough = true`, then restart serve) and the session machine opts in (`[model-server] subscription = true`); [wt-model-server.md](../../wt/docs/wt-model-server.md#subscription-passthrough) and [wt-session.md](../../wt/docs/wt-session.md#claude-subscription-header-mode) have the steps and the checks.
 

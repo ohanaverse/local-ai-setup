@@ -96,9 +96,11 @@ reaches `wt-model`:
 
 - **A terminator on the same host** (`ssh -L`, `tailscale serve`, Caddy or
   cloudflared on the server machine) reaches `wt-model` from `127.0.0.1`, so
-  header mode passes.
+  header mode passes (derived from the peer rule, not yet verified until the
+  phase 3 live check, #597).
 - **A terminator on another host that re-encrypts** to `wt-model`'s own TLS
-  port arrives over TLS, so it passes.
+  port arrives over TLS, so it passes (derived, unverified until the same
+  live check).
 - **A terminator on another host that forwards plain HTTP** is a non-loopback
   peer without TLS, so header mode is refused (`subscription_insecure`).
 
@@ -194,7 +196,8 @@ reader resolves it — the key is never printed, only masked.
   gateway's header mode (off when absent or `false`; any other type is off
   with one `wt-model: warning:` line), and `tls_cert`/`tls_key` turn on
   [Native TLS](#native-tls). No command writes it, and `litellm set` keeps it
-  as written; an older `wt-model litellm set` drops the table, which turns the
+  as written; an older `wt-model litellm set` or `wt litellm set` drops the
+  table, which turns the
   mode off at the next `serve` restart (the safe direction) and brings serve
   back on plain HTTP (sessions configured with `https://` then fail at the
   handshake, never in clear).
@@ -264,11 +267,14 @@ tls_cert = "~/.config/wt-model/tls/server.crt"
 tls_key  = "~/.config/wt-model/tls/server.key"
 ```
 
-- **Both or neither, strings only.** A leading `~` is expanded. One key
-  without the other, a value that is not a string or an empty value refuses
-  the start, never a silent fall back to plain HTTP:
+- **Both or neither, strings only, absolute.** A leading `~` is expanded.
+  One key without the other, a value that is not a string, an empty value or
+  a relative path refuses the start, never a silent fall back to plain HTTP:
   `wt-model: [gateway] tls_cert and tls_key must be set together`,
-  `wt-model: [gateway] tls_cert must be a string`. The same keys in agent-wt's
+  `wt-model: [gateway] tls_cert must be a string`,
+  `wt-model: [gateway] tls_key is a relative path: write it as an absolute path or ~/...`
+  (a relative path would resolve against serve's working directory, `/`
+  under launchd). The same keys in agent-wt's
   `config.toml` are never read; a notice there names the wt-model home.
 - **A value must be a path, never the file's contents.** A value holding a
   control character (a pasted PEM spans lines), a `-----BEGIN` armor line or
@@ -282,8 +288,10 @@ tls_key  = "~/.config/wt-model/tls/server.key"
   `wt-model: [gateway] tls_cert/tls_key: TLS key PATH is accessible by group or other (mode 0644); run chmod 600 PATH`.
 - **Everything else that makes the pair unusable refuses the start** with one
   line, `wt-model: [gateway] tls_cert/tls_key: <reason> (<path>)`, exit 1
-  (every TLS refusal shares that prefix; the loose key's reason ends with
-  its chmod hint instead of `(<path>)`),
+  (every refusal of the pair's files shares that prefix, and the loose
+  key's reason ends with its chmod hint instead of `(<path>)`; a refusal of
+  one key's value, in the bullets above, starts `wt-model: [gateway] <key> …`
+  instead),
   before listening and before `serve.json` is written: a missing or
   unreadable file, a directory, a certificate file that holds a private key
   (it would be recorded and copied as "the certificate"), `tls_cert` and
@@ -491,8 +499,8 @@ The mode is off by default on both sides, and no command turns it on.
    `[model-server] subscription = true` in `~/.config/agent-wt/config.toml`
    ([wt-session.md](wt-session.md#claude-subscription-header-mode)).
 
-An older `wt-model litellm set` re-encodes the home `config.toml` and drops
-`[gateway]`. The mode is then off at the next serve restart (the safe
+An older `wt-model litellm set` or `wt litellm set` re-encodes the home
+`config.toml` and drops `[gateway]`. The mode is then off at the next serve restart (the safe
 direction), and `tls_cert`/`tls_key` go with it, so serve comes back on
 plain HTTP.
 
@@ -541,15 +549,31 @@ the proxy had a credential of its own, and LiteLLM forwards a client's
 OAuth login to every `anthropic/` deployment it has. So serve checks the
 proxy before listening (up to 5 s), and every route sync checks it before it
 routes a subscription model. The check fails closed: a hazard keeps the mode
-off in serve, with one warning naming it (never a value), and a sync leaves
-every subscription model unrouted, with one warning:
+off in serve, with one warning naming it (never a value):
 
 ```text
 wt-model: warning: subscription passthrough is kept off: <hazard> (fix it, then restart wt-model serve)
 ```
 
+and a sync leaves every subscription model unrouted (wt's rows removed, none
+added), with its own warning, which names the models rather than the mode:
+
+```text
+Claude subscription models (<id>, …) are not routed: <hazard>
+```
+
+Serve checks only at start. After changing the proxy's environment,
+`config.yaml` or its deployments (in the LiteLLM UI or its database), restart
+`wt-model serve`: a later sync that finds a hazard unroutes wt's rows but
+does not turn the mode off.
+
 The hazards:
 
+- **`config.yaml` not identified.** With the registry redirected and
+  `WT_LITELLM_CONFIG` unset, wt does not know which `config.yaml` the proxy
+  runs on, so serve keeps the mode off with the hazard
+  `config.yaml not identified (set WT_LITELLM_CONFIG when the registry is redirected)`,
+  and the subscription rows stay unrouted.
 - **The proxy's environment cannot be read.** wt reads it from the default
   LiteLLM LaunchAgent plist and never stands in its own environment. A host
   that runs LiteLLM any other way (`WT_LITELLM_RESTART_CMD` set: brew
@@ -1022,7 +1046,7 @@ No record at all (no server running) is silent: there is nothing to ask.
 - **A same-host plain-HTTP forwarder is undetectable** when it adds no
   forwarding header ([Where it runs](#where-it-runs)): a LAN client behind it
   looks like a loopback peer.
-- **An older `wt-model litellm set` drops `[gateway]`**, and with it TLS and
+- **An older `wt-model litellm set` or `wt litellm set` drops `[gateway]`**, and with it TLS and
   the subscription passthrough, at the next serve restart.
 - **A session still on `http://` after TLS is turned on has already sent its
   token in clear** by the time it shows the "the model server speaks https"
@@ -1032,6 +1056,18 @@ No record at all (no server running) is silent: there is nothing to ask.
   than stopping serve, so remote `https://` sessions and remote header mode
   stop working until the certificate is renewed and serve restarted
   ([Renewal and rotation](#renewal-and-rotation)).
+- **A header-mode claude over an `http://` gateway gets the gateway's host
+  added to `NO_PROXY` and `no_proxy`** (appended to an inherited value,
+  never replacing it; an IPv6 literal in both forms, `::1` and `[::1]`), so
+  an inherited `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` does not carry the
+  login and the wt token in clear through a proxy. Whether Claude Code
+  would skip a proxy for loopback by itself is unverified until the phase 3
+  live check (#597).
+- **Setup checks only the certificate's dates.** A loose key or a key that
+  does not match the certificate shows up only as serve refusing to start
+  (the line is in the LaunchAgent's log).
+- **`--location local` is accepted for a `claude-subscription` model** by
+  `wt-model model add|edit`, but such a row never works.
 - **The client uses no environment proxy.** The control and gateway calls ignore `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so the bearer token and the prompts go straight to the `[model-server]` url and never to a third party. A session machine that can reach the server only through a proxy cannot use it.
 - Config is read per request, job and scan, so `wt-model model …` and `wt-model cloud-sync`
   edits show without a restart.

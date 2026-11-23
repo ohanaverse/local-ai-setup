@@ -80,8 +80,10 @@ login and spends your plan, so `wt smoke` never runs one unless you name it
   `--only` naming no claude, these rows are left out. When every model the
   server offers is a subscription one, there is nothing to pick: the run is
   exit 1 (`the model server has no models to test without --subscription:
-  <ids> uses your Claude subscription: pass --subscription to smoke it`),
-  not a report of SKIP rows.
+  <id> uses your Claude subscription: pass --subscription to smoke it`, or
+  `<a>, <b> use …` for several), not a report of SKIP rows. An alias with any
+  subscription target, whatever its other targets, counts as a subscription
+  alias here.
 - Naming one without the flag (`wt smoke claude-haiku-5-5`, `--json` or not,
   terminal or not) is exit 1 with
   `claude-haiku-5-5 uses your Claude subscription: pass --subscription to smoke it`;

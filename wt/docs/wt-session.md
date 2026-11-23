@@ -208,8 +208,11 @@ certificate ([claude-wt.md](wt-agents/claude-wt.md#authentication--credentials))
 
 A model on the `claude-subscription` provider (and an alias with such a
 target) runs on your own Claude subscription, through the model server's
-gateway. It is offered only to `claude`. It is different from a native
-launch:
+gateway. It is offered only to `claude`. While the server's mode is off, the
+catalog degrades an alias whose first target is a subscription model to its
+other targets, but a session still refuses to launch that alias (it has a
+subscription target, so the subscription checks below apply and the mode is
+off). It is different from a native launch:
 
 - **Native** (`claude/native`, `claude/opus`, …) runs Claude Code with its
   own login straight to Anthropic: no model server, no gateway, no wt token.
@@ -279,7 +282,22 @@ shell does not send the token to Anthropic.
 Your own `~/.claude/settings.json` `env` block outranks the process
 environment: one that sets `ANTHROPIC_CUSTOM_HEADERS` or
 `ANTHROPIC_AUTH_TOKEN` replaces what wt sends, and the gateway refuses the
-request (401, or 403 `subscription_no_login`). wt does not detect it.
+request (401, or 403 `subscription_no_login`). The project's
+`.claude/settings.json` `env` (in the directory the session runs in)
+outranks it the same way: one that sets `ANTHROPIC_BASE_URL` could send the
+session (and the login) elsewhere, and a `CLAUDE_CODE_USE_*` could take it to
+another provider (derived from Claude Code's settings precedence, not
+verified live). wt does not detect either.
+
+**Proxy variables.** Over an `http://` gateway (loopback only, above), a
+header-mode claude gets the gateway's host added to both `NO_PROXY` and
+`no_proxy`: appended to an inherited value with a comma, created when
+absent, and an IPv6 literal listed as both `::1` and `[::1]`. An inherited
+`HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` would otherwise route the
+plain-HTTP request, with your login and the wt token, through that proxy.
+Whether Claude Code already skips a proxy for loopback is unverified until
+the phase 3 live check (#597). Token mode, `https://` gateways, native
+launches and other agents are left as they are.
 
 ## Exit codes
 
