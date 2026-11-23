@@ -168,3 +168,40 @@ func TestResolveModelRemoteSchemaSkewSurfacesAtCatalog(t *testing.T) {
 		t.Errorf("err carries a still clause: %v", err)
 	}
 }
+
+// aliasWire is an alias row over targets, launchable as a pi/claude row.
+func aliasWire(id string, n int, targets ...modelapi.AliasTarget) modelapi.Row {
+	return modelapi.Row{
+		ID: id, GatewayID: id, ProviderID: "alias", ModelName: strings.TrimPrefix(id, "alias/"), Family: "alias",
+		Kind: modelapi.KindAlias, Location: "cloud", Registered: true, State: modelapi.StateRunning,
+		Action: modelapi.ActionLaunch, Order: n, Targets: targets,
+	}
+}
+
+// TestResolveModelRemoteNoPinNeverPicksAnAlias pins decision 14 on the no-pin
+// launch: an alias row is listed (the picker shows it) but never counts as a
+// launchable choice or a rotation entry. One model plus an alias over it
+// launches the model directly (an alias counted would make it "multiple
+// models match" and a script would fail with exit 1); a lone alias is not
+// launched unasked but reads as the zero-launchable error; and `-M alias/x`
+// still resolves the alias.
+func TestResolveModelRemoteNoPinNeverPicksAnAlias(t *testing.T) {
+	target := modelapi.AliasTarget{ID: "openrouter/a", ProviderID: "openrouter", Location: "cloud", State: modelapi.StateRunning, Order: 1}
+	alias := aliasWire("alias/x", 0, target)
+	f := newFakeModelServer(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1), alias)
+	ms := openFake(t, f)
+	ctx := context.Background()
+	row, list, err := resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
+	if err != nil || row.ID != "openrouter/a" || len(list) != 1 || list[0].ID != "openrouter/a" {
+		t.Errorf("model + alias: row=%q list=%v err=%v, want openrouter/a launched directly", row.ID, list, err)
+	}
+	f.Rows = []modelapi.Row{alias}
+	row, list, err = resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "no cloud or running local model") || row.ID != "" || len(list) != 0 {
+		t.Errorf("lone alias: row=%q list=%d err=%v, want the zero-launchable error", row.ID, len(list), err)
+	}
+	row, _, err = resolveModelRemote(ctx, ms, remoteAgent(), "", "", "alias/x")
+	if err != nil || row.ID != "alias/x" {
+		t.Errorf("-M alias/x: row=%q err=%v, want the alias", row.ID, err)
+	}
+}
