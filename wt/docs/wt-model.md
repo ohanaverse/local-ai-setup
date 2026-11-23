@@ -439,8 +439,10 @@ alias routes unavailable (<reason>); registry written, LiteLLM not updated; run 
 rows survive in the database and keep routing. The repair is any full sync:
 `wt-model litellm sync` (serve also runs one at start). Until then, while the
 gateway does not list the alias id, its catalog row reads `start` when its
-lowest-order target is a local model that runs or must start (the start re-runs
-that target's route write, which adds the alias's rows), else `block`. The one
+lowest-order local target runs (the alias is unrouted) or must start (the start
+re-runs that target's route write, which adds the alias's rows); else `block`
+when any target is servable but the alias is not routed; else `start` when no
+target is servable but any target can start; else `block`. The one
 exception to the warning: with no `config.yaml` at all (no LiteLLM set up on
 this machine) the write runs no sync and prints nothing.
 
