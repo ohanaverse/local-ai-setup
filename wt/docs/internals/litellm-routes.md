@@ -50,7 +50,7 @@ Registry aliases (#596; [../wt-model.md](../wt-model.md#wt-model-alias)) are Lit
 - **A cloud target's resolved key is stored** in its alias row (encrypted by LiteLLM, as rec's key already is for model rows); it is in the hash only as an HMAC and no output, error or JSON prints a row's `litellm_params`.
 - **No file fallback.** With no proxy pair, `store_model_in_db` off, a failed list or the deadline hit, the registry write stands and one line is printed: `alias routes unavailable (<reason>); registry written, LiteLLM not updated; run 'wt-model litellm sync' when the proxy answers`. Existing alias rows stay and keep routing; any full `Sync` (also serve's start sync) converges them and deletes the rows of removed aliases. `alias rm` prints the same line when its deletes did not run.
 - **An unmarked squatter** (a row under `wta:alias/` without `wt_alias_managed`) is never deleted; the warning names it and says to remove it by hand.
-- `list` shows alias rows with kind `alias`; `sync --dry-run` has an `aliases` plan with each row's id, target, order and `h8`, never its parameters ([../../../docs/contracts/litellm-cli.sample.json](../../../docs/contracts/litellm-cli.sample.json)).
+- `list` shows each alias row under the alias id with its TARGET and ORDER (columns the text table adds only while an alias row is listed; it has no KIND column, and `--json` gives the row `"kind": "alias"`); `sync --dry-run` has an `aliases` plan with each row's id, target, order and `h8`, never its parameters ([../../../docs/contracts/litellm-cli.sample.json](../../../docs/contracts/litellm-cli.sample.json)).
 
 ## Detail moved from wt/CLAUDE.md
 

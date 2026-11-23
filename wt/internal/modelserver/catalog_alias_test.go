@@ -1,6 +1,7 @@
 package modelserver
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,15 +17,18 @@ import (
 // per rule: the location follows the lowest-order level, a local target at
 // that level that must start (or runs while the alias is not routed) makes
 // the alias start, a servable target launches only while the alias is
-// routed, and everything else blocks with a reason (a block action is always
-// the blocked state, as on every model row). A wrong answer makes a
-// client launch an alias the gateway cannot route or never start its model.
+// routed, and everything else blocks with a reason. The state follows the
+// action, as on every model row: launch is running, block is blocked, start
+// is stopped (or the local target's own state when the start is its start).
+// A wrong answer makes a client launch an alias the gateway cannot route,
+// never start its model, or read a row whose state and action disagree.
 func TestAliasActionTable(t *testing.T) {
 	cloudUp := modelapi.Row{ID: "openrouter/c", Location: "cloud", State: modelapi.StateStopped, Action: modelapi.ActionLaunch}
 	localStopped := modelapi.Row{ID: "omlx/a", Location: "local", State: modelapi.StateStopped, Action: modelapi.ActionStart}
 	localRunning := modelapi.Row{ID: "omlx/a", Location: "local", State: modelapi.StateRunning, Action: modelapi.ActionLaunch}
 	cloudBlocked := modelapi.Row{ID: "openrouter/c", Location: "cloud", State: modelapi.StateBlocked, Action: modelapi.ActionBlock, BlockReason: "no key"}
 	localBlocked := modelapi.Row{ID: "omlx/a", Location: "local", State: modelapi.StateBlocked, Action: modelapi.ActionBlock, BlockReason: "omlx is down"}
+	localLoading := modelapi.Row{ID: "omlx/a", Location: "local", State: modelapi.StateLoading, Action: modelapi.ActionStart}
 	tg := func(id string, order int) modelapi.AliasTarget { return modelapi.AliasTarget{ID: id, Order: order} }
 	rowsOf := func(rs ...modelapi.Row) map[string]modelapi.Row {
 		m := map[string]modelapi.Row{}
@@ -45,7 +49,11 @@ func TestAliasActionTable(t *testing.T) {
 		{"local stopped at order 1", []modelapi.AliasTarget{tg("omlx/a", 1), tg("openrouter/c", 2)}, rowsOf(cloudUp, localStopped), true,
 			"local", modelapi.StateStopped, modelapi.ActionStart, ""},
 		{"local running at order 1, alias unrouted", []modelapi.AliasTarget{tg("omlx/a", 1)}, rowsOf(localRunning), false,
-			"local", modelapi.StateRunning, modelapi.ActionStart, ""},
+			"local", modelapi.StateStopped, modelapi.ActionStart, ""},
+		{"local loading at order 1", []modelapi.AliasTarget{tg("omlx/a", 1)}, rowsOf(localLoading), true,
+			"local", modelapi.StateLoading, modelapi.ActionStart, ""},
+		{"local blocked at order 1, cloud fallback routed", []modelapi.AliasTarget{tg("omlx/a", 1), tg("openrouter/c", 2)}, rowsOf(localBlocked, cloudUp), true,
+			"local", modelapi.StateRunning, modelapi.ActionLaunch, ""},
 		{"local running at order 1, alias routed", []modelapi.AliasTarget{tg("omlx/a", 1)}, rowsOf(localRunning), true,
 			"local", modelapi.StateRunning, modelapi.ActionLaunch, ""},
 		{"cloud servable, alias unrouted", []modelapi.AliasTarget{tg("openrouter/c", 1)}, rowsOf(cloudUp), false,
@@ -76,6 +84,59 @@ func TestAliasActionTable(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAliasRowsKeepTheWireInvariants runs aliasRows over every combination
+// of a local order-1 target's and a cloud order-2 target's states, routed or
+// not, and checks each row against the rules every catalog row obeys (and
+// TestFixtureRowsAgreeWithServerRules pins on the fixture): blocked exactly
+// when the action is block, a block_reason exactly when blocked, a running
+// row launches, and a start row is one catalog.NeedsStart starts. Session
+// readers (wt model list --server, the launch, smoke) rely on them.
+func TestAliasRowsKeepTheWireInvariants(t *testing.T) {
+	cfg := aliasCfg()
+	cfg.Aliases = []config.Alias{{ID: "alias/x", Targets: []config.AliasTarget{{Model: "omlx/a", Order: 1}, {Model: "openrouter/c", Order: 2}}}}
+	if fault := config.AliasFault(cfg, cfg.Aliases[0]); fault != nil {
+		t.Fatalf("fixture alias is faulty: %v", fault)
+	}
+	locals := []modelapi.Row{
+		{ID: "omlx/a", Location: "local", State: modelapi.StateRunning, Action: modelapi.ActionLaunch},
+		{ID: "omlx/a", Location: "local", State: modelapi.StateLoading, Action: modelapi.ActionStart},
+		{ID: "omlx/a", Location: "local", State: modelapi.StateStopped, Action: modelapi.ActionStart},
+		{ID: "omlx/a", Location: "local", State: modelapi.StateUnknown, Action: modelapi.ActionStart},
+		{ID: "omlx/a", Location: "local", State: modelapi.StateBlocked, Action: modelapi.ActionBlock, BlockReason: "omlx is down"},
+	}
+	clouds := []modelapi.Row{
+		{ID: "openrouter/c", Location: "cloud", State: modelapi.StateRunning, Action: modelapi.ActionLaunch},
+		{ID: "openrouter/c", Location: "cloud", State: modelapi.StateBlocked, Action: modelapi.ActionBlock, BlockReason: "no key"},
+	}
+	for _, l := range locals {
+		for _, c := range clouds {
+			for _, routed := range []map[string]bool{nil, {"alias/x": true}, {}} {
+				rows := aliasRows(cfg, []modelapi.Row{l, c}, nil, testSessions(), routed, 0)
+				if len(rows) != 1 {
+					t.Fatalf("rows = %d", len(rows))
+				}
+				r := rows[0]
+				if r.Location != "local" {
+					t.Fatalf("location %s, want local (the order-1 target is local)", r.Location)
+				}
+				name := fmt.Sprintf("%s/%s/routed=%v", l.State, c.State, routed)
+				if (r.State == modelapi.StateBlocked) != (r.Action == modelapi.ActionBlock) {
+					t.Errorf("%s: state %s and action %s disagree about blocking", name, r.State, r.Action)
+				}
+				if (r.BlockReason != "") != (r.State == modelapi.StateBlocked) {
+					t.Errorf("%s: block_reason %q with state %s", name, r.BlockReason, r.State)
+				}
+				if r.State == modelapi.StateRunning && r.Action != modelapi.ActionLaunch {
+					t.Errorf("%s: a running row has action %s", name, r.Action)
+				}
+				if r.Action == modelapi.ActionStart && !catalog.NeedsStart(r) {
+					t.Errorf("%s: a start row catalog.NeedsStart does not start", name)
+				}
+			}
+		}
 	}
 }
 

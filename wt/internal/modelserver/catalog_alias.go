@@ -86,9 +86,10 @@ func aliasRows(cfg *config.Config, models []modelapi.Row, ix tiers.Index, sessio
 // alias's rows, so catalog.NeedsStart agrees); launch when a target is
 // servable and the alias routed; block when a target is servable but the
 // alias is not routed; start when any target can start; else block, joining
-// the targets' reasons. The state is the local target's when the location
-// is local, else running when a target is servable, stopped when only a
-// start helps, else blocked; a block action is always the blocked state. A
+// the targets' reasons. The state follows the action, as on every model row
+// (blocked exactly when block, a running row launches): launch is running,
+// block is blocked, and start is stopped, or the local target's own state
+// (stopped, loading, unknown) when the start is that target's start. A
 // target with no model row blocks the alias.
 func aliasAction(targets []modelapi.AliasTarget, rows map[string]modelapi.Row, routed bool) (location, state, action, blockReason string) {
 	location = string(config.LocationCloud)
@@ -110,26 +111,21 @@ func aliasAction(targets []modelapi.AliasTarget, rows map[string]modelapi.Row, r
 		servable = servable || r.Action == modelapi.ActionLaunch
 		canStart = canStart || r.Action == modelapi.ActionStart
 	}
-	switch {
-	case levelLocal != nil:
-		location, state = string(config.LocationLocal), levelLocal.State
-	case servable:
-		state = modelapi.StateRunning
-	case canStart:
-		state = modelapi.StateStopped
-	default:
-		state = modelapi.StateBlocked
+	if levelLocal != nil {
+		location = string(config.LocationLocal)
 	}
 	switch {
-	case levelLocal != nil && (levelLocal.Action == modelapi.ActionStart || levelLocal.State == modelapi.StateRunning && !routed):
-		return location, state, modelapi.ActionStart, ""
+	case levelLocal != nil && levelLocal.Action == modelapi.ActionStart:
+		return location, levelLocal.State, modelapi.ActionStart, ""
+	case levelLocal != nil && levelLocal.State == modelapi.StateRunning && !routed:
+		return location, modelapi.StateStopped, modelapi.ActionStart, ""
 	case servable && routed:
-		return location, state, modelapi.ActionLaunch, ""
+		return location, modelapi.StateRunning, modelapi.ActionLaunch, ""
 	case servable:
 		return location, modelapi.StateBlocked, modelapi.ActionBlock,
 			"the alias is not routed on the host; run 'wt-model litellm sync' there"
 	case canStart:
-		return location, state, modelapi.ActionStart, ""
+		return location, modelapi.StateStopped, modelapi.ActionStart, ""
 	}
 	var reasons []string
 	for _, t := range targets {

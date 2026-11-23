@@ -356,15 +356,24 @@ when that local target must start, or runs while the alias id is not routed
 (the start re-runs its route write, which adds the alias's rows); `launch`
 when a target is servable and the alias is routed; `block` when a target is
 servable but the alias is not routed (`run 'wt-model litellm sync'`); `start`
-when any target can start; else `block`, naming each target's reason. A
-`block` row is always in state `blocked`, so a servable alias that is not routed reads
-`blocked`, not `running`. The state of a `local` alias is its local target's;
-of a `cloud` one, `running` when a target is servable, `stopped` when only a
-start helps, else `blocked`. A malformed alias is a `block` row
-naming its fault. Only an id under `alias/` is ever an alias on the server: a
-hand-edited malformed alias whose id lacks the prefix gets no row, and a start,
-stop or client session naming that id reaches the model with that id, if any. An older client ignores `kind` and `targets` and launches
-the row like a model. A server from before aliases sends a local row's
+when any target can start; else `block`, naming each target's reason. The
+state follows the action, as on every model row: `launch` is `running`,
+`block` is `blocked` (with `block_reason`), and `start` is `stopped`, or the
+local target's own state (`stopped`, `loading`, `unknown`) when the start is
+that target's start. So a servable alias that is not routed reads `blocked`,
+a local target running while the alias is not routed reads `stopped` with
+`start`, and a `local` alias whose local target is blocked but whose routed
+cloud target is servable reads `running` with `launch`. A malformed alias is a
+`block` row naming its fault. Only an id under `alias/` is ever an alias on the
+server: a hand-edited malformed alias whose id lacks the prefix gets no row,
+and a start, stop or client session naming that id reaches the model with that
+id, if any. An older client (from before aliases) ignores `kind` and
+`targets` and reads an alias row as a model of provider `alias`: an agent
+allowed every provider (each agent a session synthesizes) finds it eligible,
+so a launch with no `-M` counts it among the launchable models (one model plus
+an alias over it is then "multiple models match") and may rotate onto it, and
+a launch of it goes to the gateway under the alias id, which LiteLLM routes;
+an agent whose `config.toml` lists its providers never sees it. A server from before aliases sends a local row's
 `context` from the tiers file, not the registry, so update the server before
 its clients: a newer client against an older server may declare a window for
 claude that no registry value set.
