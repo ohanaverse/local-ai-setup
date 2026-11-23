@@ -577,3 +577,51 @@ func TestDesiredIDsCountsAliasesWithARow(t *testing.T) {
 		t.Fatalf("ids %v, want alias/x and not alias/down", ids)
 	}
 }
+
+// TestStopDeletesALeftoverAliasRowOfTheStoppedTarget checks H1: a re-point
+// (or a removal) of an alias made while the database half was down leaves
+// the alias's row for its old local target; a later stop of that target
+// must delete that row, read from the listed row's id, though the registry
+// no longer pairs the alias with the target, or the alias keeps routing to
+// a stopped server until a full sync. Every other alias row (the alias's
+// own cloud target, an unrelated alias) is left exactly as it was.
+func TestStopDeletesALeftoverAliasRowOfTheStoppedTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		after []config.Alias // the registry after the edit made while the database was down
+		want  []string       // alias/x's remaining targets
+	}{
+		{"re-pointed", []config.Alias{{ID: "alias/x", Targets: []config.AliasTarget{{Model: "openrouter/x/y", Order: 1}}}}, []string{"openrouter/x/y@1"}},
+		{"removed", nil, []string{"openrouter/x/y@1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := groupCfg()
+			reg.Aliases = append(reg.Aliases, config.Alias{ID: "alias/c", Targets: []config.AliasTarget{{Model: "openrouter/x/y", Order: 1}}})
+			o, _, _, fake := aliasDBOpts(t, "model_list: []\n"+settledSettings, &reg)
+			if _, err := Sync(reg, localFor(reg, "ollama/gemma:9b"), o); err != nil {
+				t.Fatal(err)
+			}
+			if got := fake.aliasTargets("alias/x"); !slices.Equal(got, []string{"ollama/gemma:9b@2", "openrouter/x/y@1"}) {
+				t.Fatalf("alias/x rows %v before the edit", got)
+			}
+			var keep []string
+			for _, id := range fake.aliasIDs() {
+				if !strings.HasSuffix(id, "/ollama/gemma:9b") {
+					keep = append(keep, id)
+				}
+			}
+			// The edit while the database was down: the registry changes, no
+			// alias row does.
+			next := testConfig()
+			next.Aliases = append(slices.Clone(tc.after), config.Alias{ID: "alias/c", Targets: []config.AliasTarget{{Model: "openrouter/x/y", Order: 1}}})
+			reg = next
+			res, err := ApplyChange(reg, Change{Remove: []string{"ollama/gemma:9b"}}, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := fake.aliasIDs(); !slices.Equal(got, keep) {
+				t.Fatalf("alias rows %v, want %v (only the stopped target's row gone); warnings %v", got, keep, res.Warnings)
+			}
+		})
+	}
+}

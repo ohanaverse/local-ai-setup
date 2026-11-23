@@ -3,6 +3,9 @@ package litellm
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -337,6 +340,24 @@ func aliasFrozen(o Options, reg *config.Config) func(string) bool {
 	}
 }
 
+// scratchRegistryRealProxy reports whether the registry is redirected
+// (config.RegistryRedirected: WT_REGISTRY and the like) while the wt-model
+// home, where the proxy pair comes from, is still the default one under the
+// home directory. Then the database a write reaches is the real proxy's,
+// and the registry's aliases are not the ones that wrote its alias rows:
+// the alias half may add rows but never deletes one (no orphan or stray
+// delete). With no home directory the answer is false.
+func scratchRegistryRealProxy() bool {
+	if !config.RegistryRedirected() {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	return filepath.Clean(config.ModelHome()) == filepath.Join(home, ".config", "wt-model")
+}
+
 // loadRegistry is Options.LoadRegistry, config.Load when unset.
 func (o Options) loadRegistry() (*config.Config, error) {
 	if o.LoadRegistry != nil {
@@ -398,10 +419,12 @@ func (d *dbRoutes) listedAliasTargets(changed func(string) bool) bool {
 
 // aliasHalf runs the alias half of a listed write: it re-reads the registry
 // (a failure is one warning and nothing more), narrows the scope (scope nil:
-// every alias, else the aliases scope picks from the re-read registry, and
-// nothing when that is empty), computes liveness from what this write leaves
-// and calls routeAliases. Its warnings and outcomes are kept for finish.
-func (d *dbRoutes) aliasHalf(o Options, f *File, fileAdd []plannedAdd, rm []plannedRemove, scope func(*config.Config) map[string]bool, deleteOrphans bool) {
+// every alias, else the aliases scope picks from the re-read registry),
+// computes liveness from what this write leaves and calls routeAliases. With
+// changed set (ApplyChange) it then deletes the leftover rows of the changed
+// targets that no alias in scope accounts for (deleteStrays). Its warnings
+// and outcomes are kept for finish.
+func (d *dbRoutes) aliasHalf(o Options, f *File, fileAdd []plannedAdd, rm []plannedRemove, scope func(*config.Config) map[string]bool, changed func(*config.Config) func(string) bool, deleteOrphans bool) {
 	reg, err := o.loadRegistry()
 	if err != nil {
 		d.aliasWarnings = append(d.aliasWarnings, aliasUnavailable("the registry could not be re-read: "+oneLine(err)))
@@ -409,14 +432,59 @@ func (d *dbRoutes) aliasHalf(o Options, f *File, fileAdd []plannedAdd, rm []plan
 	}
 	var only map[string]bool
 	if scope != nil {
-		if only = scope(reg); len(only) == 0 {
-			return
+		only = scope(reg)
+	}
+	if scope == nil || len(only) > 0 {
+		all := d.leftAfter(f, fileAdd, rm)
+		w, oc := d.routeAliases(reg, only, func(id string) bool { return all[id] }, aliasFrozen(o, reg), deleteOrphans)
+		d.aliasWarnings = append(d.aliasWarnings, w...)
+		d.aliasOutcomes = append(d.aliasOutcomes, oc...)
+	}
+	if changed != nil {
+		d.aliasWarnings = append(d.aliasWarnings, d.deleteStrays(only, changed(reg), aliasFrozen(o, reg))...)
+	}
+}
+
+// deleteStrays deletes, per alias, the listed alias rows (IsAliasDB) whose
+// target (read from the row id) is a changed model and whose alias is not in
+// scope: the registry no longer pairs that alias with that target (an alias
+// re-pointed or removed while the database half was down), so the row is a
+// leftover routing to a model this write starts or stops. It touches no
+// other row, no alias without such a row, and nothing at all while a
+// redirected registry is paired with the default wt-model home's proxy
+// (scratchRegistryRealProxy: a scratch registry's aliases say nothing about
+// the real proxy's rows) or for a frozen target. Every failure is a warning.
+func (d *dbRoutes) deleteStrays(scope map[string]bool, changed, frozen func(string) bool) []string {
+	if scratchRegistryRealProxy() {
+		return nil
+	}
+	byAlias := map[string][]string{}
+	for _, m := range d.current {
+		alias, target, ok := parseAliasID(m.ID)
+		if !ok || !IsAliasDB(m) || scope[alias] || !changed(target) || frozen(target) {
+			continue
+		}
+		byAlias[alias] = append(byAlias[alias], m.ID)
+	}
+	names := slices.Sorted(maps.Keys(byAlias))
+	var warnings []string
+	for _, alias := range names {
+		ids := byAlias[alias]
+		slices.Sort(ids)
+		ctx := d.context()
+		if err := ctx.Err(); err != nil {
+			return append(warnings, aliasUnavailable(oneLine(err)))
+		}
+		_, _, warns, err := d.admin.ApplyAliasDB(ctx, AliasDBPlan{Aliases: []AliasRowPlan{{Alias: alias, Delete: ids}}})
+		warnings = append(warnings, warns...)
+		if err != nil {
+			if stopApply(ctx, err) || errors.Is(err, ErrDBModelsOff) {
+				return append(warnings, aliasUnavailable(oneLine(err)))
+			}
+			warnings = append(warnings, oneLine(err))
 		}
 	}
-	all := d.leftAfter(f, fileAdd, rm)
-	w, oc := d.routeAliases(reg, only, func(id string) bool { return all[id] }, aliasFrozen(o, reg), deleteOrphans)
-	d.aliasWarnings = append(d.aliasWarnings, w...)
-	d.aliasOutcomes = append(d.aliasOutcomes, oc...)
+	return warnings
 }
 
 // previewAliases is the dry run's alias half (PlanSync, DesiredIDs): the

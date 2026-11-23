@@ -482,7 +482,8 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 			fileAdd = db.route(cfg, f, add, names, nil, false)
 		}
 		if !ch.AddMissingOnly && (aliasing || db.listedAliasTargets(changedIDs(cfg, ch))) {
-			db.aliasHalf(o, f, fileAdd, rm, func(reg *config.Config) map[string]bool { return aliasesTouching(reg, ch) }, false)
+			db.aliasHalf(o, f, fileAdd, rm, func(reg *config.Config) map[string]bool { return aliasesTouching(reg, ch) },
+				func(reg *config.Config) func(string) bool { return changedIDs(reg, ch) }, false)
 		}
 		return fileAdd, rm, false
 	}, o, OllamaAPIBase(cfg), cfg.LitellmBaseURL())
@@ -1222,7 +1223,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 			// The alias half (#596): every alias, and the rows of aliases the
 			// registry no longer has. A cancelled context is said below.
 			if (o.Ctx == nil || o.Ctx.Err() == nil) && (len(cfg.Aliases) > 0 || db.listedAliasTargets(nil)) {
-				db.aliasHalf(o, f, add, remove, nil, true)
+				db.aliasHalf(o, f, add, remove, nil, nil, true)
 			}
 		default:
 			db.unlisted(cfg, add, plan.Remove)
