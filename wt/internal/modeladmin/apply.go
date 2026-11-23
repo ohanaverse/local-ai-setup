@@ -437,6 +437,12 @@ func Edit(id string, f Fields) (changed bool, err error) {
 			return err
 		}
 		providerID = tableString(m, "provider_id")
+		// A subscription model keeps its window (decision 5): clearing it
+		// would withdraw the window declaration of every profile it is in,
+		// the add's refusal.
+		if config.IsSubscriptionProvider(providerID) && slices.Contains(unset, "context_window") {
+			return fieldErr(FieldContextWindow, subscriptionWindowRefusal)
+		}
 		if args, ok := set["serve_args"].([]string); ok {
 			if err := checkServeArgs(providerID, args); err != nil {
 				return err

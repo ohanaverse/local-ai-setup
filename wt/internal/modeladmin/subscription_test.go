@@ -109,3 +109,31 @@ func TestBareIDRefusedForOtherProviders(t *testing.T) {
 		t.Errorf("DeriveID(claude-subscription) = %q, want the bare id", got)
 	}
 }
+
+// TestEditSubscriptionModelKeepsItsWindow pins that `wt-model model edit
+// <subscription model> --context-window 0` is refused with the add's
+// message and leaves the row alone: clearing the window would withdraw the
+// window declaration of every profile the model is in, exactly what the add
+// refuses. Another field still edits, and another provider may clear it.
+func TestEditSubscriptionModelKeepsItsWindow(t *testing.T) {
+	path := scratchRegistry(t, baseRegistry)
+	if _, err := Add(AddRequest{ProviderID: "claude-subscription", ModelName: "claude-haiku-5-5",
+		Fields: Fields{Family: ptr("claude"), ContextWindow: intp(1000000)}}, config.SeedEnv{}); err != nil {
+		t.Fatal(err)
+	}
+	before := read(t, path)
+	_, err := Edit("claude-haiku-5-5", Fields{ContextWindow: intp(0)})
+	var fe *FieldError
+	if !errors.As(err, &fe) || fe.Field != FieldContextWindow || err.Error() != subscriptionWindowRefusal {
+		t.Fatalf("edit --context-window 0: err = %v, want the add's refusal", err)
+	}
+	if read(t, path) != before {
+		t.Fatal("a refused edit changed the registry")
+	}
+	if _, err := Edit("claude-haiku-5-5", Fields{Tags: ptr("code")}); err != nil {
+		t.Errorf("an unrelated edit was refused: %v", err)
+	}
+	if _, err := Edit("ollama/gemma4:9b", Fields{ContextWindow: intp(0)}); err != nil {
+		t.Errorf("clearing another provider's window was refused: %v", err)
+	}
+}

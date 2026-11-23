@@ -108,3 +108,22 @@ func TestServeKeepsModeOffOnHazard(t *testing.T) {
 		}
 	})
 }
+
+// TestServeModeOffNeverChecksTheProxy pins that serve with the header mode
+// off never reads the proxy's environment or lists its deployments: the
+// check is for the mode alone, and a host that does not use it pays nothing
+// (the fakes fail the test if called).
+func TestServeModeOffNeverChecksTheProxy(t *testing.T) {
+	asWTModel(t)
+	seedProxyHome(t, "http://127.0.0.1:4000", "sk-test", 0o600)
+	h := testHost()
+	h.ProxyEnv = func() litellm.ProxyEnv { t.Error("ProxyEnv called with the mode off"); return litellm.ProxyEnv{} }
+	h.ModelInfo = func(context.Context) ([]litellm.DeploymentInfo, error) {
+		t.Error("ModelInfo called with the mode off")
+		return nil, nil
+	}
+	_, _, stop := serveUntilListeningOn(t, h, testRuntime(t), writeToken(t, 0o600))
+	if err := stop(); err != nil {
+		t.Fatalf("serve returned %v", err)
+	}
+}

@@ -791,18 +791,19 @@ func planSyncWithDB(cfg *config.Config, f *File, localIn []config.Model, o Optio
 			untouchedFam[fam] = true
 		}
 	}
+	// A subscription model the proxy cannot carry safely (a hazard, a
+	// provider row with a base_url or secret_ref) is managed but not
+	// desired: no row is added and wt's old row goes. One whose check could
+	// not look is held: not desired and frozen, so the row it has stays.
+	subOff, subHold, subWarnings := subscriptionUnrouted(cfg, o.subscription)
 	frozen := func(id string) bool {
-		return slices.Contains(o.Untouched, id) || untouchedFam[RowFamily(cfg, id)]
+		return slices.Contains(o.Untouched, id) || untouchedFam[RowFamily(cfg, id)] || subHold[id]
 	}
 	managed := map[string]bool{}
 	var desired []config.Model
-	// A subscription model the proxy cannot carry safely (a hazard, a check
-	// that could not look, a provider row with a base_url or secret_ref) is
-	// managed but not desired: no row is added and wt's old row goes.
-	subOff, subWarnings := subscriptionUnrouted(cfg, o.subscription)
 	for _, m := range CloudModels(cfg) {
 		managed[m.ID] = true
-		if subOff[m.ID] {
+		if subOff[m.ID] || subHold[m.ID] {
 			continue
 		}
 		desired = append(desired, m)
@@ -1089,7 +1090,7 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 	// lists them (List only: a dry run writes nothing anywhere).
 	db, dbRows := readOnlyDB(o, f)
 	defer db.close()
-	o.subscription = gateSubscription(cfg, f, o)
+	o.subscription = gateSubscription(cfg, f, o, db)
 	plan, built := planSyncWithDB(cfg, f, local, o, dbRows)
 	viaDB := db.preview(cfg, f, &plan, built)
 	// The write also fills an empty api_base on ollama rows, and those can be
@@ -1227,7 +1228,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		if db != nil && db.gate(f) && db.list() {
 			dbRows = db.routeRows()
 		}
-		o.subscription = gateSubscription(cfg, f, o)
+		o.subscription = gateSubscription(cfg, f, o, db)
 		p, built := planSyncWithDB(cfg, f, local, o, dbRows)
 		plan = p
 		// The plan already built every changed row while comparing it with the

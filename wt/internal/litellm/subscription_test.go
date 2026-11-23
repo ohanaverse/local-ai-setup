@@ -274,8 +274,9 @@ func TestSubscriptionHazardsFromTheProxyEnv(t *testing.T) {
 
 // TestSubscriptionRowsUnroutedWhenModelInfoUnreadable pins the fail-closed
 // rule: a sync that cannot list the proxy's deployments cannot rule out a
-// foreign anthropic row, so it leaves the subscription row unrouted with one
-// warning, and the next sync that can list them routes it. SubscriptionHazards
+// foreign anthropic row, so it adds no subscription row (one warning), and
+// the next sync that can list them routes it; a later unreadable sync keeps
+// the row it has rather than restarting the proxy over a transient error. SubscriptionHazards
 // itself returns the error (serve warns and keeps the mode on) but still
 // reports the hazards it could see.
 func TestSubscriptionRowsUnroutedWhenModelInfoUnreadable(t *testing.T) {
@@ -306,10 +307,11 @@ func TestSubscriptionRowsUnroutedWhenModelInfoUnreadable(t *testing.T) {
 	if err == nil || len(hazards) != 1 {
 		t.Errorf("SubscriptionHazards = %q, %v; want the env hazard and the read error", hazards, err)
 	}
-	// No ModelInfo at all (no proxy pair) is unreadable too.
+	// No ModelInfo at all (no proxy pair) is unreadable too: no hazard was
+	// seen, so the row it has is kept (not deleted), with one warning.
 	o.ModelInfo, o.Admin = nil, nil
-	if res, err := Sync(cfg, nil, o); err != nil || slices.Contains(routedIDs(t, p), subID) || len(subscriptionWarnings(res.Warnings)) != 1 {
-		t.Errorf("no reader: err %v rows %v warnings %q; want unrouted, one warning", err, routedIDs(t, p), res.Warnings)
+	if res, err := Sync(cfg, nil, o); err != nil || !slices.Contains(routedIDs(t, p), subID) || len(subscriptionWarnings(res.Warnings)) != 1 {
+		t.Errorf("no reader: err %v rows %v warnings %q; want the existing row kept, one warning", err, routedIDs(t, p), res.Warnings)
 	}
 }
 

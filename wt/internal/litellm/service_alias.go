@@ -91,7 +91,10 @@ type aliasWork struct {
 //
 // keep (PlanAliasDB) answers from the row id's alias and target: true for a
 // frozen alias, or for a frozen target still configured on its alias.
-func planAliases(reg *config.Config, current []DBModel, hashKey string, only map[string]bool, live, frozen func(string) bool, fileNames map[string]bool, deleteOrphans bool) aliasWork {
+//
+// sub is the write's subscription check, for Claude subscription targets
+// (dbModelsFromAlias).
+func planAliases(reg *config.Config, current []DBModel, hashKey string, only map[string]bool, live, frozen func(string) bool, fileNames map[string]bool, deleteOrphans bool, sub aliasState) aliasWork {
 	var w aliasWork
 	had := map[string]int{}
 	var foreign []DBModel // database rows wt's alias path does not own
@@ -159,7 +162,7 @@ func planAliases(reg *config.Config, current []DBModel, hashKey string, only map
 			skip(fmt.Sprintf("%s: %s; no alias route is added beside it", a.ID, reason), reason)
 			continue
 		}
-		rows, skips := DBModelsFromAlias(reg, a, live, hashKey)
+		rows, skips := dbModelsFromAlias(reg, a, live, hashKey, sub)
 		pairs := map[string]bool{}
 		configured[a.ID] = pairs
 		for _, t := range a.Targets {
@@ -254,12 +257,12 @@ func paramOrder(v any) int {
 // outcome. outcomes is one per alias whose change was applied whole:
 // "routed", "rewritten" or "unrouted" (Sync reports them; ApplyChange drops
 // them). Nothing here restarts the proxy or touches config.yaml.
-func (d *dbRoutes) routeAliases(reg *config.Config, only map[string]bool, live func(string) bool, frozen func(string) bool, deleteOrphans bool) (warnings []string, outcomes []Outcome) {
+func (d *dbRoutes) routeAliases(reg *config.Config, only map[string]bool, live func(string) bool, frozen func(string) bool, deleteOrphans bool, sub aliasState) (warnings []string, outcomes []Outcome) {
 	// A scratch registry paired with the real proxy's database (the
 	// default wt-model home) did not write the rows there: add, never
 	// delete (no orphan, stale or replaced row).
 	noDeletes := scratchRegistryRealProxy()
-	w := planAliases(reg, d.current, d.admin.Key, only, live, frozen, d.fileNames, deleteOrphans && !noDeletes)
+	w := planAliases(reg, d.current, d.admin.Key, only, live, frozen, d.fileNames, deleteOrphans && !noDeletes, sub)
 	warnings = w.warnings
 	held := false
 	for _, p := range w.plans {
@@ -465,7 +468,7 @@ func (d *dbRoutes) aliasHalf(o Options, f *File, fileAdd []plannedAdd, rm []plan
 	unavailable := false
 	if scope == nil || len(only) > 0 {
 		all := d.leftAfter(f, fileAdd, rm)
-		w, oc := d.routeAliases(reg, only, func(id string) bool { return all[id] }, aliasFrozen(o, reg), deleteOrphans)
+		w, oc := d.routeAliases(reg, only, func(id string) bool { return all[id] }, aliasFrozen(o, reg), deleteOrphans, aliasStateOf(o.subscription))
 		d.aliasWarnings = append(d.aliasWarnings, w...)
 		d.aliasOutcomes = append(d.aliasOutcomes, oc...)
 		// Decision 4 is one line per write: when the route pass already said
@@ -523,7 +526,7 @@ func (d *dbRoutes) deleteStrays(scope map[string]bool, changed, frozen func(stri
 // plan for every alias of cfg against the listing, writing nothing. live is
 // the route names the sync would leave; fileNames config.yaml's.
 func (d *dbRoutes) previewAliases(cfg *config.Config, o Options, live, fileNames map[string]bool) aliasWork {
-	return planAliases(cfg, d.current, d.admin.Key, nil, func(id string) bool { return live[id] }, aliasFrozen(o, cfg), fileNames, true)
+	return planAliases(cfg, d.current, d.admin.Key, nil, func(id string) bool { return live[id] }, aliasFrozen(o, cfg), fileNames, true, aliasStateOf(o.subscription))
 }
 
 // hasAliasRow reports whether the listing holds a row of alias id

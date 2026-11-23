@@ -361,9 +361,10 @@ func validationOnlyHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	modelHome(t, string(sample)+"\n[[models]]\nid = \"ghost/m\"\nprovider_id = \"ghost\"\nmodel_name = \"m\"\n")
-	// The sample has a claude-subscription model, whose route check asks the
-	// proxy's environment: a scratch plist keeps a plain `go test` off the
-	// real LaunchAgent.
+	// The sample has a claude-subscription model, but the tests that use this
+	// home run only `wt litellm status|set`, which never sync, so nothing
+	// here reads the proxy's environment (cmd/wt-session links no route
+	// code). The scratch WT_LITELLM_PLIST is only a backstop.
 	t.Setenv("WT_LITELLM_PLIST", filepath.Join(t.TempDir(), "proxy.plist"))
 }
 

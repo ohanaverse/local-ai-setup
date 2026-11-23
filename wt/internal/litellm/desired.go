@@ -32,7 +32,7 @@ func DesiredIDs(cfg *config.Config, local []config.Model, o Options) ([]string, 
 	// count for the plan and are listed beside config.yaml's.
 	db, dbRows := readOnlyDB(o, f)
 	defer db.close()
-	o.subscription = gateSubscription(cfg, f, o)
+	o.subscription = gateSubscription(cfg, f, o, db)
 	plan, _ := planSyncWithDB(cfg, f, local, o, dbRows)
 	var ids []string
 	held := f.RoutedIDs()

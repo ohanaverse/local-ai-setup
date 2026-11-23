@@ -118,12 +118,15 @@ follows when the address is not loopback and TLS is off, since header-mode
 requests from other machines over plain http are refused. A value that is
 not a boolean is off with one warning; a config.toml that does not parse
 refuses the start. Before listening with the mode on, serve checks the LiteLLM
-proxy (up to 5 s): an ANTHROPIC_API_KEY, ANTHROPIC_API_BASE or
-ANTHROPIC_BASE_URL in its environment, client-header forwarding in
-config.yaml, or an anthropic deployment on another host or a wildcard keeps
-the mode off with one warning naming it; a proxy that does not answer is one
-warning and the mode stays on (the route sync keeps Claude subscription
-models unrouted until it can check).
+proxy (up to 5 s): an environment it cannot read (wt's own never stands
+in), an ANTHROPIC_* credential or address variable in it (ANTHROPIC_API_KEY,
+ANTHROPIC_AUTH_TOKEN, the workload-identity ones, ANTHROPIC_API_BASE,
+ANTHROPIC_BASE_URL), client-header forwarding in config.yaml, a config.yaml it
+cannot read, a wildcard routed to anthropic, or an anthropic deployment that
+names a litellm credential or whose api_base or base_url is not exactly
+https://api.anthropic.com keeps the mode off with one warning naming it; a
+proxy that does not answer is one warning and the mode stays on (the route
+sync adds no Claude subscription route until it can check).
 TLS is off (plain http) unless the same table names a PEM certificate and
 its key, both hand-edited, both or neither:
 
