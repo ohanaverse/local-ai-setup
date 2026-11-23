@@ -228,3 +228,89 @@ func TestSetupWaitTrustsTheTLSCert(t *testing.T) {
 		t.Fatalf("wait trusting another certificate = %v, want a WaitError with an x509 message", err)
 	}
 }
+
+// TestSetupReloadsServeWhenTheSchemeChanges pins review finding I1: serve
+// reads [gateway] only at start, so when the local plan writes a url whose
+// scheme differs from the stored local url's, or from what the running
+// serve speaks (serve.json has tls_cert iff it runs TLS), and the
+// LaunchAgent is loaded, the plan reloads it with the same bootout and
+// bootstrap a changed plist gets (never kickstart) and waits on the new url,
+// so the url written and the server converge. An unchanged scheme adds no
+// step; an agent that is not loaded is bootstrapped as before.
+func TestSetupReloadsServeWhenTheSchemeChanges(t *testing.T) {
+	on := modelmode.LocalTLS{Cert: tlsCertPath, On: true, DialName: "127.0.0.1"}
+	local := Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}}
+
+	st := baseState() // stored http://127.0.0.1:8787, agent loaded and running
+	st.LocalTLS = on
+	p := mustPlan(t, st, local)
+	if !sameKinds(kinds(p), StepBootout, StepBootstrap, StepWait, StepConfig) {
+		t.Errorf("stored http, TLS on, loaded: steps = %v, want bootout, bootstrap, wait, config", kinds(p))
+	}
+	if ws, _ := stepOf(p, StepWait); ws.Value != "https://127.0.0.1:8787" {
+		t.Errorf("wait step = %+v, want it on the https url", ws)
+	}
+
+	st = baseState()
+	st.LocalTLS = on
+	st.Config.Table.URL = "https://127.0.0.1:8787"
+	p = mustPlan(t, st, local)
+	for _, k := range []StepKind{StepBootout, StepBootstrap, StepKickstart, StepWait} {
+		if _, ok := stepOf(p, k); ok {
+			t.Errorf("unchanged scheme: plan has a %s step: %v", k, kinds(p))
+		}
+	}
+
+	// The running serve says otherwise (its record has no tls_cert): reload.
+	st.Serve = ServeState{Seen: true, PID: st.Agent.Job.PID, TLS: false}
+	p = mustPlan(t, st, local)
+	if !sameKinds(kinds(p), StepBootout, StepBootstrap, StepWait) {
+		t.Errorf("serve runs plain http, TLS on: steps = %v, want bootout, bootstrap, wait", kinds(p))
+	}
+	// A record of another process (a stale one) is not believed.
+	st.Serve.PID = 999999
+	p = mustPlan(t, st, local)
+	if _, ok := stepOf(p, StepBootout); ok {
+		t.Errorf("a stale record forced a reload: %v", kinds(p))
+	}
+
+	// Not loaded: the agent steps are the same as without TLS (bootstrap,
+	// wait); only the config step's url differs.
+	agentSteps := func(p Plan) []StepKind {
+		var out []StepKind
+		for _, k := range kinds(p) {
+			if k != StepConfig {
+				out = append(out, k)
+			}
+		}
+		return out
+	}
+	plain := baseState()
+	plain.Agent.Job = LaunchdJob{}
+	plainKinds := agentSteps(mustPlan(t, plain, local))
+	st = baseState()
+	st.Agent.Job = LaunchdJob{}
+	st.LocalTLS = on
+	if got := agentSteps(mustPlan(t, st, local)); !sameKinds(got, plainKinds...) || !sameKinds(got, StepBootstrap, StepWait) {
+		t.Errorf("not loaded: agent steps = %v, want %v as without TLS", got, plainKinds)
+	}
+}
+
+// TestObserveReadsTheServeRecordsTLS pins where I1's running-serve fact comes
+// from: Observe reads serve.json in the wt-model home (pid, and whether it
+// names tls_cert), never anything else from it; no record is not seen.
+func TestObserveReadsTheServeRecordsTLS(t *testing.T) {
+	f := newFakeEnv(t)
+	rec := plConfigHome + "/wt-model/serve.json"
+	if st := Observe(context.Background(), f.Env(), ObserveOptions{}); st.Serve.Seen {
+		t.Errorf("no record: Serve = %+v, want not seen", st.Serve)
+	}
+	f.files[rec] = []byte(`{"version":1,"pid":4123,"listen":"127.0.0.1:8787","token_file":"/t","started":"2026-11-17T10:00:00Z","tls_cert":"/etc/wt/server.crt"}`)
+	if st := Observe(context.Background(), f.Env(), ObserveOptions{}); st.Serve != (ServeState{Seen: true, PID: 4123, TLS: true}) {
+		t.Errorf("TLS record: Serve = %+v", st.Serve)
+	}
+	f.files[rec] = []byte(`{"version":1,"pid":4123,"listen":"127.0.0.1:8787","token_file":"/t","started":"2026-11-17T10:00:00Z"}`)
+	if st := Observe(context.Background(), f.Env(), ObserveOptions{}); st.Serve != (ServeState{Seen: true, PID: 4123}) {
+		t.Errorf("plain record: Serve = %+v", st.Serve)
+	}
+}

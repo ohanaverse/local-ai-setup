@@ -1529,3 +1529,65 @@ func TestGatewaySettingsTLSKeys(t *testing.T) {
 		})
 	}
 }
+
+// pastedPEM is PEM-looking text a user might paste as tls_cert or tls_key
+// instead of a path; its body lines must never reach a message.
+const pastedPEM = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgSENTINELbody1\nQ0FGSUxFU0VOVElORUxib2R5MlNFTlRJTkVMYm9keTNTRU5USU5FTGJvZHk0\n-----END PRIVATE KEY-----\n"
+
+// TestGatewaySettingsRefusesPEMContents pins the fail-closed reading of a
+// tls_cert or tls_key whose value is the PEM text itself (pasted instead of
+// a path): any control character, a "-----BEGIN" armor line or "PRIVATE
+// KEY" refuses with a fixed *GatewayKeyError naming only the key, so no
+// part of the value can reach serve's refusal line (stderr, the LaunchAgent
+// log).
+func TestGatewaySettingsRefusesPEMContents(t *testing.T) {
+	values := map[string]string{
+		"pasted PEM":     `"""` + "\n" + pastedPEM + `"""`,
+		"one-line armor": `"-----BEGIN CERTIFICATE-----MIIBSENTINELbody"`,
+		"private key":    `"MIIBSENTINELbody PRIVATE KEY"`,
+		"newline":        `"/tmp/a\nSENTINELbody"`,
+		"carriage":       `"/tmp/a\rSENTINELbody"`,
+		"nul":            `"/tmp/a\u0000SENTINELbody"`,
+		"tab":            `"/tmp/a\tSENTINELbody"`,
+	}
+	for _, k := range []string{"tls_cert", "tls_key"} {
+		for name, v := range values {
+			t.Run(k+" "+name, func(t *testing.T) {
+				home := proxyEnv(t, "")
+				other := "tls_key"
+				if k == "tls_key" {
+					other = "tls_cert"
+				}
+				writeProxyHome(t, home, "[gateway]\n"+other+" = \"/x/ok.pem\"\n"+k+" = "+v+"\n")
+				_, _, err := GatewaySettings()
+				var ke *GatewayKeyError
+				if !errors.As(err, &ke) {
+					t.Fatalf("err = %v, want *GatewayKeyError", err)
+				}
+				if want := "[gateway] " + k + " must be a path to a PEM file, not its contents"; err.Error() != want {
+					t.Errorf("err = %q, want %q", err, want)
+				}
+				for _, frag := range []string{"SENTINEL", "MIG", "BEGIN", "body"} {
+					if strings.Contains(err.Error(), frag) {
+						t.Errorf("err %q holds %q from the value", err, frag)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestGatewaySettingsWithoutAHomeCreatesNothing pins that reading [gateway]
+// on a machine with no wt-model home config.toml (every session-only
+// machine, read by the Mode tab) creates neither the home directory nor its
+// lock file.
+func TestGatewaySettingsWithoutAHomeCreatesNothing(t *testing.T) {
+	home := proxyEnv(t, "")
+	gc, warns, err := GatewaySettings()
+	if err != nil || len(warns) != 0 || gc != (GatewayConf{}) {
+		t.Fatalf("GatewaySettings = %+v, %q, %v; want the zero value", gc, warns, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "wt-model")); !os.IsNotExist(err) {
+		t.Errorf("the wt-model home exists after a read (%v)", err)
+	}
+}

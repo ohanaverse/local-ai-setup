@@ -57,7 +57,7 @@ func testHost() *host {
 	h.confirmRemove = func(string) (bool, error) { return false, errors.New("confirmRemove not stubbed in this test") }
 	// The alias commands' seams: no tiers file and no model server is read.
 	h.tiersIndex = func() tiers.Index { return tiers.Index{} }
-	h.clientSessions = func(context.Context, io.Writer, servestate.Store) func() map[string]int {
+	h.clientSessions = func(context.Context, io.Writer, servestate.Store, *error) func() map[string]int {
 		return func() map[string]int { return nil }
 	}
 	h.stdinTTY = func() bool { return false }

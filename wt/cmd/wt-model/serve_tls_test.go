@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -51,7 +52,7 @@ func noPEMBody(t *testing.T, text string, files ...string) {
 	t.Helper()
 	for _, line := range tlstest.BodyLines(t, files...) {
 		if strings.Contains(text, line) {
-			t.Errorf("output holds a PEM body line of %v:\n%s", files, text)
+			t.Errorf("output holds a PEM body line of %v (not printed)", files)
 			return
 		}
 	}
@@ -73,7 +74,10 @@ func TestServeRefusesABadTLSConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	missing := filepath.Join(dir, "missing.crt")
-	for _, c := range []struct {
+	keyText, _ := os.ReadFile(key)
+	certText, _ := os.ReadFile(cert)
+	long := strings.Repeat("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo", 300)
+	cases := []struct {
 		name, gateway string
 		want          []string
 	}{
@@ -83,7 +87,17 @@ func TestServeRefusesABadTLSConfig(t *testing.T) {
 		{"wrong type", "[gateway]\ntls_cert = 1\ntls_key = \"" + key + "\"\n", []string{"[gateway] tls_cert must be a string"}},
 		{"mismatch", tlsGateway(cert2, key), []string{"[gateway] tls_cert/tls_key: ", key}},
 		{"unparseable", tlsGateway(junk, key), []string{"[gateway] tls_cert/tls_key: ", junk}},
-	} {
+		// A value that is the PEM text itself, pasted instead of a path,
+		// or a 10 KB or NUL-holding one: refused, and no part of it is
+		// printed (the refusal line lands in the LaunchAgent's log).
+		{"key pasted", "[gateway]\ntls_cert = \"" + cert + "\"\ntls_key = \"\"\"\n" + string(keyText) + "\"\"\"\n", []string{"[gateway] tls_key must be a path to a PEM file, not its contents"}},
+		{"cert pasted", "[gateway]\ntls_cert = \"\"\"\n" + string(certText) + "\"\"\"\ntls_key = \"" + key + "\"\n", []string{"[gateway] tls_cert must be a path to a PEM file, not its contents"}},
+		{"key 10 KB", tlsGateway(cert, long), []string{"[gateway] tls_cert/tls_key: "}},
+		{"cert 10 KB", tlsGateway(long, key), []string{"[gateway] tls_cert/tls_key: "}},
+		{"key nul", "[gateway]\ntls_cert = \"" + cert + "\"\ntls_key = \"/tmp/a\\u0000" + long[:40] + "\"\n", []string{"[gateway] tls_key must be a path to a PEM file, not its contents"}},
+		{"cert nul", "[gateway]\ntls_cert = \"/tmp/a\\u0000" + long[:40] + "\"\ntls_key = \"" + key + "\"\n", []string{"[gateway] tls_cert must be a path to a PEM file, not its contents"}},
+	}
+	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			seedProxyHome(t, "http://127.0.0.1:4000", "sk-test", 0o600)
 			appendHome(t, c.gateway)
@@ -93,17 +107,27 @@ func TestServeRefusesABadTLSConfig(t *testing.T) {
 			cmd.SetOut(&out)
 			cmd.SetErr(&out)
 			cmd.SetArgs([]string{"serve", "--listen", "127.0.0.1:0", "--token-file", writeToken(t, 0o600)})
-			err := cmd.ExecuteContext(t.Context())
-			if err == nil {
-				t.Fatalf("serve started; output %q", out.String())
+			// A fail-open regression would serve until cancelled: bound it
+			// so it fails here instead of hanging until the go test timeout.
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			err := cmd.ExecuteContext(ctx)
+			if err == nil || ctx.Err() != nil {
+				t.Fatalf("serve started on a bad TLS config (err %v)", err)
 			}
 			msg := err.Error()
+			// shown is what a failure may print: never a refusal that could
+			// echo a pasted key.
+			shown := msg
+			if strings.Contains(msg, "BEGIN") || strings.Contains(msg, long[:24]) || len(msg) > 400 {
+				shown = "(not printed)"
+			}
 			if strings.Contains(msg, "\n") {
-				t.Errorf("refusal is more than one line: %q", msg)
+				t.Errorf("refusal is more than one line: %q", shown)
 			}
 			for _, w := range c.want {
 				if !strings.Contains(msg, w) {
-					t.Errorf("refusal %q does not contain %q", msg, w)
+					t.Errorf("refusal %q does not contain %q", shown, w)
 				}
 			}
 			if strings.HasPrefix(msg, "config error") {
@@ -116,6 +140,11 @@ func TestServeRefusesABadTLSConfig(t *testing.T) {
 				t.Errorf("serve.json exists after a refusal (%v)", serr)
 			}
 			noPEMBody(t, msg+"\n"+out.String(), cert, key, cert2, looseKey)
+			for _, frag := range []string{long[:24], long[len(long)-24:], "BEGIN", "PRIVATE"} {
+				if strings.Contains(msg+out.String(), frag) {
+					t.Errorf("the refusal holds part of a pasted value (%q)", frag)
+				}
+			}
 		})
 	}
 }

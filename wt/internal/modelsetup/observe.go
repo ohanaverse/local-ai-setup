@@ -2,6 +2,7 @@ package modelsetup
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"io/fs"
@@ -168,6 +169,17 @@ type State struct {
 	LiteLLMPlist   LiteLLMPlistState
 	LiteLLMInstall LiteLLMInstallState
 	LiteLLM        LiteLLMState
+	// Serve is what the running serve's runtime record says about TLS.
+	Serve ServeState
+}
+
+// ServeState is serve.json in the wt-model home as a plan needs it: whether
+// it was read, the pid it names and whether serve speaks TLS (the record has
+// tls_cert iff it does). Only the pid and that one fact are kept.
+type ServeState struct {
+	Seen bool
+	PID  int
+	TLS  bool
 }
 
 // ToolsState is the admin host facts a plan needs: the wt-model binary
@@ -336,6 +348,20 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	// LiteLLM checks: only where the local model server is in use.
 	if st.Resolution.Mode == modelmode.ModeLocal && ctx.Err() == nil {
 		st.LiteLLM = CheckLiteLLM(ctx, env, pair)
+	}
+
+	// The running serve's record: serve reads [gateway] only at start, so
+	// a plan compares what it would write with what serve speaks now.
+	if st.Host.ConfigHome != "" {
+		if data, err := env.FS.ReadFile(filepath.Join(st.Host.ConfigHome, "wt-model", "serve.json")); err == nil {
+			var r struct {
+				PID     int    `json:"pid"`
+				TLSCert string `json:"tls_cert"`
+			}
+			if json.Unmarshal(data, &r) == nil && r.PID > 0 {
+				st.Serve = ServeState{Seen: true, PID: r.PID, TLS: r.TLSCert != ""}
+			}
+		}
 	}
 	return st
 }

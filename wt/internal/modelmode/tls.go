@@ -3,6 +3,8 @@ package modelmode
 import (
 	"errors"
 	"net"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -74,6 +76,28 @@ func LocalURL(listen string, tlsOn bool) string {
 		}
 	}
 	return "https://" + listen
+}
+
+// SwapLoopbackScheme returns u with its scheme set to https (tlsOn) or http
+// and true, when u is an http(s) url of the other scheme to a loopback host
+// (127.0.0.1, ::1, localhost) with no path beyond "/", the shape setup
+// writes; host and port are kept. Any other url (non-loopback, a path, a
+// query, credentials, the right scheme already) is ("", false).
+func SwapLoopbackScheme(u string, tlsOn bool) (string, bool) {
+	from, to := "https", "http"
+	if tlsOn {
+		from, to = "http", "https"
+	}
+	p, err := url.Parse(u)
+	if err != nil || p.Scheme != from || p.User != nil || p.RawQuery != "" || p.Fragment != "" || (p.Path != "" && p.Path != "/") {
+		return "", false
+	}
+	host := p.Hostname()
+	ip := net.ParseIP(host)
+	if !strings.EqualFold(host, "localhost") && (ip == nil || !(ip.Equal(net.IPv4(127, 0, 0, 1)) || ip.Equal(net.IPv6loopback))) {
+		return "", false
+	}
+	return to + "://" + p.Host, true
 }
 
 // LocalTLSRefusal is the refusal reason a local plan gives when the TLS

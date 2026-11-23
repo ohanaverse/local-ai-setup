@@ -63,8 +63,10 @@ type seams struct {
 	// clientSessions is the running model server's client sessions per
 	// model or alias id, read through serve's runtime record in rec
 	// (aliasSessionReader: nil with no record). `wt-model alias list|set|rm`
-	// read it; testHost knows none.
-	clientSessions func(ctx context.Context, w io.Writer, rec servestate.Store) func() map[string]int
+	// read it; testHost knows none. When the running server's sessions
+	// cannot be read the reader stores why in *unread (nil: not wanted), so
+	// `alias rm` refuses rather than reading it as "no session".
+	clientSessions func(ctx context.Context, w io.Writer, rec servestate.Store, unread *error) func() map[string]int
 	// stdinTTY reports whether stdin is a terminal.
 	stdinTTY func() bool
 	// stdoutWidth is the terminal's width in columns, or 0 when stdout is
@@ -109,6 +111,11 @@ type seams struct {
 	// id, read through serve's runtime record (nil: none known). The stop
 	// command sets it (hostSessionReader); the default knows none.
 	stopSessions func() map[string]int
+	// stopSessionsUnread is why the running model server's client sessions
+	// could not be read (hostSessionReader sets it while the server's
+	// process is alive): the stop then asks before stopping anything, as
+	// for a model in use, instead of reading the unknown as "no session".
+	stopSessionsUnread error
 	// stopCtx is the stop command's own context (cmd.Context(), which main
 	// cancels on the first Ctrl+C): one cancelled by the time the sessions
 	// and the inventory are read, or the question is answered, ends the

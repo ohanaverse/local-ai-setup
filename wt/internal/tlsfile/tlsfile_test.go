@@ -216,6 +216,35 @@ func TestErrorsNeverCarryKeyBytes(t *testing.T) {
 		add("read", cert, unreadable)
 	}
 	errs["checkdates"] = CheckDates(certWithKey, now)
+	// A path that is the pasted PEM text, a 10 KB value or one holding a NUL
+	// (what a [gateway] value could be if the config layer let it through):
+	// Error() prints a fixed stand-in, never the path.
+	keyPEM, _ := os.ReadFile(key)
+	certPEM, _ := os.ReadFile(cert)
+	long := strings.Repeat("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo", 300)
+	hostile := map[string]string{
+		"pasted key":  string(keyPEM),
+		"pasted cert": string(certPEM),
+		"10 KB":       long,
+		"nul":         "/tmp/a\x00" + long[:40],
+	}
+	for name, v := range hostile {
+		_, _, errs["load key "+name] = Load(cert, v, now)
+		_, _, errs["load cert "+name] = Load(v, key, now)
+		errs["checkdates "+name] = CheckDates(v, now)
+		for _, k := range []Kind{KindStat, KindRead, KindNotRegular, KindLoose, KindBadPEM, KindKeyInCert, KindSameFile, KindMismatch, KindExpired, KindNotYetValid} {
+			msg := (&Error{Path: v, Kind: k, Mode: 0o644, Date: now}).Error()
+			for _, frag := range []string{long[:24], long[len(long)-24:], "BEGIN", "PRIVATE"} {
+				if strings.Contains(msg, frag) {
+					// The message itself is not printed: it would echo the bytes.
+					t.Errorf("%s kind %v: Error() holds part of the path (%d bytes)", name, k, len(msg))
+				}
+			}
+			if strings.ContainsAny(msg, "\n\r\x00") {
+				t.Errorf("%s kind %v: Error() holds a control character", name, k)
+			}
+		}
+	}
 	seen := map[Kind]bool{}
 	for name, err := range errs {
 		if err == nil {
@@ -225,7 +254,7 @@ func TestErrorsNeverCarryKeyBytes(t *testing.T) {
 		seen[kindOf(t, err)] = true
 		for _, line := range body {
 			if strings.Contains(err.Error(), line) {
-				t.Errorf("%s: error %q holds a PEM body line", name, err)
+				t.Errorf("%s: the error holds a PEM body line (not printed)", name)
 			}
 		}
 	}

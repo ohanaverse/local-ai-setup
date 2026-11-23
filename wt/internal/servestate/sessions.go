@@ -19,7 +19,8 @@ import (
 // *tokenfile.Error returned as is, before any request); the address dialled
 // is r.Listen, on loopback when it is bound to every interface. A record with
 // TLSCert is dialled over https, trusting exactly that certificate file and
-// verifying it as the name a loopback dial uses (tlsfile.DialName); a record
+// verifying it as the name a loopback dial uses (tlsfile.DialName) at the
+// record's start time (serve's own validation); a record
 // without it is dialled over http, so a TLS server it does not describe is an
 // error, never an empty map. A stale record is the caller's to tolerate: it
 // is an unreachable server, an error.
@@ -35,7 +36,7 @@ func Sessions(ctx context.Context, r Record) (map[string]int, error) {
 // never a package var).
 func sessions(ctx context.Context, r Record, alive func(int) bool) (map[string]int, error) {
 	if !alive(r.PID) {
-		return nil, fmt.Errorf("the model server (pid %d) is not running: stale record", r.PID)
+		return nil, &StaleError{PID: r.PID}
 	}
 	tok, err := tokenfile.Load(r.TokenFile)
 	if err != nil {
@@ -48,6 +49,10 @@ func sessions(ctx context.Context, r Record, alive func(int) bool) (map[string]i
 			return nil, fmt.Errorf("the model server's certificate named in its runtime record: %w", err)
 		}
 		ep.URL, ep.CAFile, ep.ServerName = dialURLTLS(r.Listen), r.TLSCert, tlsfile.DialName(leaf)
+		// serve validated the certificate when it started and serves it
+		// until restarted: verify it (that file only) as of that time, so
+		// one that expired since still lets host commands read sessions.
+		ep.VerifyAt = r.Started
 	}
 	var cat modelapi.Catalog
 	if err := modelping.GetJSON(ctx, ep, "/control/v1/catalog", &cat); err != nil {
@@ -60,6 +65,15 @@ func sessions(ctx context.Context, r Record, alive func(int) bool) (map[string]i
 		}
 	}
 	return out, nil
+}
+
+// StaleError is a record whose pid is not running: the server died without
+// removing it. Every other Sessions error comes from a server whose process
+// is alive, so its client sessions are unknown, never "none".
+type StaleError struct{ PID int }
+
+func (e *StaleError) Error() string {
+	return fmt.Sprintf("the model server (pid %d) is not running: stale record", e.PID)
 }
 
 // dialAddr is the host:port a host command reaches a server bound to listen

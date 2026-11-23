@@ -233,7 +233,13 @@ func TestSessionsStaleRecordSendsNothing(t *testing.T) {
 // returns the server and the certificate's path.
 func tlsFakeServer(t *testing.T, token string, rows ...modelapi.Row) (*httptest.Server, string, *atomic.Int32) {
 	t.Helper()
-	cert, key := tlstest.Gen(t, t.TempDir(), tlstest.Opts{})
+	return tlsFakeServerWith(t, tlstest.Opts{}, token, rows...)
+}
+
+// tlsFakeServerWith is tlsFakeServer with the certificate shaped by o.
+func tlsFakeServerWith(t *testing.T, o tlstest.Opts, token string, rows ...modelapi.Row) (*httptest.Server, string, *atomic.Int32) {
+	t.Helper()
+	cert, key := tlstest.Gen(t, t.TempDir(), o)
 	var hits atomic.Int32
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -299,5 +305,43 @@ func TestSessionsDialHTTPSWhenRecorded(t *testing.T) {
 		if got := dialURLTLS(in); got != want {
 			t.Errorf("dialURLTLS(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestSessionsVerifiesAsTheCertificateNamesItself pins the ServerName half
+// of the host-command trust: a certificate naming neither 127.0.0.1 nor
+// localhost (only gpu.example and a LAN IP) is still read over loopback,
+// verified as the name it carries (tlsfile.DialName); dropping ServerName
+// would fail the name check.
+func TestSessionsVerifiesAsTheCertificateNamesItself(t *testing.T) {
+	srv, cert, _ := tlsFakeServerWith(t, tlstest.Opts{DNS: []string{"gpu.example"}, IPs: []net.IP{net.ParseIP("192.0.2.7")}},
+		"tok", modelapi.Row{ID: "omlx/busy", Sessions: 1})
+	r := rec(t, srv.Listener.Addr().String(), "tok")
+	r.TLSCert = cert
+	if got, err := sessions(context.Background(), r, func(int) bool { return true }); err != nil || got["omlx/busy"] != 1 {
+		t.Fatalf("sessions = %v, %v; want map[omlx/busy:1]", got, err)
+	}
+}
+
+// TestSessionsTrustTheCertificateAsServeDidAtStart pins review finding I2
+// (a): serve validated its certificate at start and keeps serving TLS with
+// it until restarted, so a host command verifies the recorded certificate
+// (chain and name, still only that file) at the record's start time: one
+// that expired since still reads the sessions, while one that had already
+// expired when serve started does not.
+func TestSessionsTrustTheCertificateAsServeDidAtStart(t *testing.T) {
+	now := time.Now()
+	srv, cert, _ := tlsFakeServerWith(t, tlstest.Opts{NotBefore: now.Add(-48 * time.Hour), NotAfter: now.Add(-time.Hour)},
+		"tok", modelapi.Row{ID: "omlx/busy", Sessions: 2})
+	alive := func(int) bool { return true }
+	r := rec(t, srv.Listener.Addr().String(), "tok")
+	r.TLSCert = cert
+	r.Started = now.Add(-24 * time.Hour)
+	if got, err := sessions(context.Background(), r, alive); err != nil || got["omlx/busy"] != 2 {
+		t.Fatalf("expired since start: sessions = %v, %v; want map[omlx/busy:2]", got, err)
+	}
+	r.Started = now
+	if got, err := sessions(context.Background(), r, alive); err == nil || got != nil {
+		t.Fatalf("expired before start: sessions = %v, %v; want an error", got, err)
 	}
 }

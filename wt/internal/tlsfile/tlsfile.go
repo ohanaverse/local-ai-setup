@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Kind says which check a certificate or key failed.
@@ -58,7 +59,27 @@ func (e *Error) Unwrap() error { return e.Err }
 // day is how a certificate date is written: the UTC calendar day.
 func day(t time.Time) string { return t.UTC().Format("2006-01-02") }
 
+// maxShownPath is the longest path a message prints; a longer one is never
+// a real certificate path and may be pasted file content.
+const maxShownPath = 200
+
+// shownPath is the path as a message may print it: a fixed stand-in for one
+// holding a control character (pasted PEM text spans lines) or longer than
+// maxShownPath, so no message can carry file content given as a path.
+func shownPath(p string) string {
+	if len(p) > maxShownPath {
+		return "<path too long>"
+	}
+	for _, r := range p {
+		if unicode.IsControl(r) {
+			return "<unprintable path>"
+		}
+	}
+	return p
+}
+
 func (e *Error) Error() string {
+	e = &Error{Path: shownPath(e.Path), Kind: e.Kind, Err: e.Err, Date: e.Date, Mode: e.Mode}
 	switch e.Kind {
 	case KindStat:
 		return fmt.Sprintf("the file cannot be opened: %s (%s)", osReason(e.Err), e.Path)
@@ -112,7 +133,8 @@ func osReason(err error) string {
 	if errors.As(err, &pe) {
 		return pe.Err.Error()
 	}
-	return err.Error()
+	// Any other error may quote the path; only a fixed word is shown.
+	return "operation failed"
 }
 
 // expand turns a leading ~ into the home directory and cleans the path, so
@@ -316,14 +338,16 @@ func Load(certPath, keyPath string, now time.Time) (*tls.Certificate, *x509.Cert
 
 // cipherSuites are the TLS 1.2 suites serve offers: ECDHE with AES-GCM or
 // ChaCha20-Poly1305 only (Go's default 1.2 list still has ECDHE-CBC-SHA).
-// TLS 1.3 suites are not configurable and all AEAD.
-var cipherSuites = []uint16{
-	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+// TLS 1.3 suites are not configurable and all AEAD. A fresh slice per call.
+func cipherSuites() []uint16 {
+	return []uint16{
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+	}
 }
 
 // Config is serve's TLS configuration for c: TLS 1.2 as the floor, the six
@@ -332,7 +356,7 @@ func Config(c *tls.Certificate) *tls.Config {
 	return &tls.Config{
 		Certificates: []tls.Certificate{*c},
 		MinVersion:   tls.VersionTLS12,
-		CipherSuites: append([]uint16(nil), cipherSuites...),
+		CipherSuites: cipherSuites(),
 	}
 }
 

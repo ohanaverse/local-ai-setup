@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
@@ -80,5 +81,23 @@ func TestNewHTTPClientForTrustsTheCAFile(t *testing.T) {
 	}
 	if NewHTTPClient().Transport.(*http.Transport).TLSClientConfig.MinVersion != tls.VersionTLS12 {
 		t.Error("NewHTTPClient is not the no-CA case of NewHTTPClientFor")
+	}
+}
+
+// TestNewHTTPClientForVerifiesAtVerifyAt pins Endpoint.VerifyAt: when set,
+// certificates are verified at that time (a host command checks serve's
+// certificate as of serve's start); unset, at the current time.
+func TestNewHTTPClientForVerifiesAtVerifyAt(t *testing.T) {
+	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	hc, err := NewHTTPClientFor(Endpoint{VerifyAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := hc.Transport.(*http.Transport).TLSClientConfig
+	if cfg.Time == nil || !cfg.Time().Equal(at) || cfg.InsecureSkipVerify {
+		t.Errorf("TLS config Time set %t, want a clock returning %v", cfg.Time != nil, at)
+	}
+	if hc, _ := NewHTTPClientFor(Endpoint{}); hc.Transport.(*http.Transport).TLSClientConfig.Time != nil {
+		t.Error("an unset VerifyAt set a clock")
 	}
 }

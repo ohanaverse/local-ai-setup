@@ -165,3 +165,65 @@ func TestModeLocalWritesHTTPSWhenTLSConfigured(t *testing.T) {
 		mustRefuse(t, p, err, "must be set together")
 	})
 }
+
+// TestModeLocalSwapsOnlyTheSchemeOfALoopbackURL pins review finding I3 and
+// the Mode tab half of I1: a stored local url on loopback (127.0.0.1, ::1,
+// localhost) of the opposite scheme is setup's, whatever its port, so the
+// plan swaps only the scheme (host and port kept) and notes that serve, which
+// reads its TLS settings only at start, must be restarted on the host; a
+// non-loopback or hand-written url (a path) is kept as written, and a url
+// already of the right scheme gets no restart note.
+func TestModeLocalSwapsOnlyTheSchemeOfALoopbackURL(t *testing.T) {
+	on := LocalTLS{Cert: "/etc/wt/server.crt", On: true, DialName: "127.0.0.1"}
+	off := LocalTLS{Cert: "/etc/wt/server.crt", Off: "certificate expired 2026-11-01", DialName: "127.0.0.1"}
+	for _, c := range []struct {
+		stored  string
+		tls     LocalTLS
+		want    string
+		restart bool
+	}{
+		{"http://127.0.0.1:9911", on, "https://127.0.0.1:9911", true},
+		{"http://localhost:9911", on, "https://localhost:9911", true},
+		{"http://[::1]:9911", on, "https://[::1]:9911", true},
+		{"https://127.0.0.1:9911", off, "http://127.0.0.1:9911", true},
+		{"https://127.0.0.1:9911", on, "https://127.0.0.1:9911", false},
+		{"http://127.0.0.1:9911", LocalTLS{}, "http://127.0.0.1:9911", false},
+		{"http://gpu.example:8787", on, "http://gpu.example:8787", false},
+		{"http://127.0.0.1:9911/custom", on, "http://127.0.0.1:9911/custom", false},
+	} {
+		st := localState()
+		st.Config.Table.URL = c.stored
+		st.LocalTLS = c.tls
+		st.CAFile = "/etc/wt/ca.pem"
+		p := mustPlan(t, st, Desired{Mode: ModeLocal})
+		if p.Want.URL != c.want {
+			t.Errorf("stored %q (TLS on %t): url = %q, want %q", c.stored, c.tls.On, p.Want.URL, c.want)
+		}
+		n := 0
+		for _, note := range p.Notes {
+			if strings.Contains(note, "restart") && strings.Contains(note, "wt-model setup") {
+				n++
+			}
+		}
+		if (n == 1) != c.restart || n > 1 {
+			t.Errorf("stored %q (TLS on %t): %d restart notes, want restart=%t: %q", c.stored, c.tls.On, n, c.restart, p.Notes)
+		}
+	}
+}
+
+// TestObserveWithoutAWtModelHomeCreatesNothing pins promoted minor 1: the
+// Mode tab's Observe on a machine with no wt-model home (an empty config
+// home) reads its TLS settings without creating the wt-model directory or a
+// lock file in it.
+func TestObserveWithoutAWtModelHomeCreatesNothing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	f := newFakeEnv(t)
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if st.LocalTLS != (LocalTLS{}) {
+		t.Errorf("LocalTLS = %+v, want plain", st.LocalTLS)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "wt-model")); !os.IsNotExist(err) {
+		t.Errorf("Observe created the wt-model home (%v)", err)
+	}
+}

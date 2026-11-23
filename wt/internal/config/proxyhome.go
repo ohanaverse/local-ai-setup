@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 
@@ -609,6 +610,14 @@ func GatewaySettings() (GatewayConf, []string, error) {
 	if home == "" {
 		return GatewayConf{}, nil, nil
 	}
+	// No config.toml: nothing to read, and nothing is created (no home
+	// directory, no lock file), as resolveProxy does; every session-only
+	// machine reads this through the Mode tab.
+	if _, serr := os.Stat(home); os.IsNotExist(serr) {
+		if _, lerr := os.Lstat(home); os.IsNotExist(lerr) {
+			return GatewayConf{}, nil, nil
+		}
+	}
 	var doc proxyHomeDoc
 	err := WithFileLockShared(home+".lock", func() error {
 		var derr error
@@ -625,6 +634,18 @@ func GatewaySettings() (GatewayConf, []string, error) {
 	}
 	gc.TLSCert, gc.TLSKey = cert, key
 	return gc, warns, nil
+}
+
+// looksLikePEMContents reports whether a tls_cert/tls_key value is file
+// content rather than a path: any control character (a newline, a carriage
+// return, a NUL, a tab), a PEM armor line or a "PRIVATE KEY" label.
+func looksLikePEMContents(v string) bool {
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return strings.Contains(v, "-----BEGIN") || strings.Contains(v, "PRIVATE KEY")
 }
 
 // gatewayTLSFromDoc reads [gateway] tls_cert and tls_key: both strings,
@@ -644,6 +665,12 @@ func gatewayTLSFromDoc(doc proxyHomeDoc) (cert, key string, err error) {
 		}
 		if strings.TrimSpace(s) == "" {
 			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " is empty: name the PEM file, or remove both tls_cert and tls_key for plain http"}
+		}
+		// The PEM text pasted in place of a path must never reach a
+		// message as "the path" (the refusal lands in the LaunchAgent's
+		// log): refused here, before any use, naming only the key.
+		if looksLikePEMContents(s) {
+			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " must be a path to a PEM file, not its contents"}
 		}
 		p, xerr := ExpandHome(s)
 		if xerr != nil {

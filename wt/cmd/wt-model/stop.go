@@ -49,8 +49,9 @@ func stopCmd(h *host, rec servestate.Store) *cobra.Command {
 			"not as a failed stop, and ollama unloads it when its request ends.\n\n" +
 			"It asks before stopping a model that client sessions of the running model\n" +
 			"server use (read through serve's runtime record; --yes answers; with no\n" +
-			"terminal and no --yes: exit 3, nothing stopped). With no server running\n" +
-			"there is nothing to ask. A model id is stopped with 'wt stop <model>'.\n\n" +
+			"terminal and no --yes: exit 3, nothing stopped), and also when that server\n" +
+			"is running but its sessions cannot be read. With no server running there\n" +
+			"is nothing to ask. A model id is stopped with 'wt stop <model>'.\n\n" +
 			"Exit 0 stopped (also when nothing was running, or the provider is still\n" +
 			"finishing the stop), 1 an argument mistake, a stop that failed or was\n" +
 			"cancelled with Ctrl+C, or a provider wt could not read, 3 approval missing.",
@@ -77,7 +78,8 @@ func stopCmd(h *host, rec servestate.Store) *cobra.Command {
 				return config.ConfigError(cerr)
 			}
 			h.stopCtx = cmd.Context()
-			h.stopSessions = hostSessionReader(cmd.Context(), cmd.ErrOrStderr(), rec)
+			h.stopSessionsUnread = nil
+			h.stopSessions = hostSessionReader(cmd.Context(), cmd.ErrOrStderr(), rec, &h.stopSessionsUnread)
 			if all {
 				if arg != "" {
 					return fmt.Errorf("wt-model stop --all takes no provider (got %q)", arg)
@@ -273,8 +275,12 @@ func (h *host) runStopAll(out io.Writer, cfg *config.Config, yes bool) error {
 			loading += fmt.Sprintf(", and %s is still loading (pid %d)", id, fs.Loading.PID)
 		}
 	}
-	if inUse > 0 && !yes {
-		ok, err := h.confirmStop(fmt.Sprintf("running local models are in use by %d live wt session(s) (%s)%s%s; stop them all?", inUse, strings.Join(users, ", "), unreadClause(unread, false), loading))
+	if (inUse > 0 || h.stopSessionsUnread != nil) && !yes {
+		q := fmt.Sprintf("running local models are in use by %d live wt session(s) (%s)%s%s; stop them all?", inUse, strings.Join(users, ", "), unreadClause(unread, false), loading)
+		if inUse == 0 {
+			q = fmt.Sprintf("running local models may be in use: the running model server's client sessions could not be read%s%s; stop them all?", unreadClause(unread, false), loading)
+		}
+		ok, err := h.confirmStop(q)
 		if err != nil {
 			return cli.NoTerminalRefusal(err, "--yes", "nothing was stopped")
 		}
@@ -503,8 +509,12 @@ func (h *host) runStop(out io.Writer, cfg *config.Config, arg string, yes bool) 
 			what = fmt.Sprintf("%s is still loading (pid %d) and is", arg, loadingPID)
 		}
 	}
-	if inUse > 0 && !yes {
-		ok, err := h.confirmStop(fmt.Sprintf("%s in use by %d live wt session(s) (%s)%s; stop anyway?", what, inUse, strings.Join(users, ", "), blind))
+	if (inUse > 0 || h.stopSessionsUnread != nil) && !yes {
+		q := fmt.Sprintf("%s in use by %d live wt session(s) (%s)%s; stop anyway?", what, inUse, strings.Join(users, ", "), blind)
+		if inUse == 0 {
+			q = fmt.Sprintf("%s possibly in use: the running model server's client sessions could not be read%s; stop anyway?", what, blind)
+		}
+		ok, err := h.confirmStop(q)
 		if err != nil {
 			return cli.NoTerminalRefusal(err, "--yes", "nothing was stopped")
 		}

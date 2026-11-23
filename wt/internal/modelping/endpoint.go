@@ -10,6 +10,7 @@ package modelping
 import (
 	"net/url"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/urlrule"
@@ -20,10 +21,16 @@ import (
 // pool for an https url (decision 14); ServerName, when set, is the name the
 // server's certificate is verified as (a host command dialling loopback sets
 // it to the certificate's own name, tlsfile.DialName).
+//
+// VerifyAt, when set, is the time certificates are verified at instead of
+// now: a host command verifies serve's own certificate (still only the
+// CAFile, chain and name) as of the time serve started and validated it,
+// since serve keeps serving it until restarted (decision 13).
 type Endpoint struct {
 	URL, Token string
 	CAFile     string
 	ServerName string
+	VerifyAt   time.Time
 }
 
 // Origin is the URL without trailing slashes.

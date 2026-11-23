@@ -63,6 +63,10 @@ func NewHTTPClientFor(ep Endpoint) (*http.Client, error) {
 	tr.Proxy = nil
 	tr.DialContext = (&net.Dialer{Timeout: DialTimeout}).DialContext
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: ep.ServerName}
+	if !ep.VerifyAt.IsZero() {
+		at := ep.VerifyAt
+		cfg.Time = func() time.Time { return at }
+	}
 	if ep.CAFile != "" {
 		data, err := os.ReadFile(ep.CAFile)
 		if err != nil {

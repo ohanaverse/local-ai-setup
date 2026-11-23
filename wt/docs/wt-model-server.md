@@ -247,11 +247,20 @@ tls_key  = "~/.config/wt-model/tls/server.key"
   `wt-model: [gateway] tls_cert and tls_key must be set together`,
   `wt-model: [gateway] tls_cert must be a string`. The same keys in agent-wt's
   `config.toml` are never read; a notice there names the wt-model home.
+- **A value must be a path, never the file's contents.** A value holding a
+  control character (a pasted PEM spans lines), a `-----BEGIN` armor line or
+  `PRIVATE KEY` refuses with `wt-model: [gateway] tls_key must be a path to a
+  PEM file, not its contents` (or `tls_cert`), naming the key and nothing of
+  the value. A path that could not be printed safely (a control character,
+  or longer than 200 bytes) is shown as `<unprintable path>` or
+  `<path too long>`.
 - **The key file is 0600 or stricter** (the token file's rule): a group or
-  other bit refuses with `TLS key PATH is accessible by group or other (mode
-  0644); run chmod 600 PATH`.
+  other bit refuses with
+  `wt-model: [gateway] tls_cert/tls_key: TLS key PATH is accessible by group or other (mode 0644); run chmod 600 PATH`.
 - **Everything else that makes the pair unusable refuses the start** with one
-  line, `wt-model: [gateway] tls_cert/tls_key: <reason> (<path>)`, exit 1,
+  line, `wt-model: [gateway] tls_cert/tls_key: <reason> (<path>)`, exit 1
+  (every TLS refusal shares that prefix; the loose key's reason ends with
+  its chmod hint instead of `(<path>)`),
   before listening and before `serve.json` is written: a missing or
   unreadable file, a directory, a certificate file that holds a private key
   (it would be recorded and copied as "the certificate"), `tls_cert` and
@@ -289,7 +298,13 @@ tls_key  = "~/.config/wt-model/tls/server.key"
 - **Host commands.** `serve.json` records the certificate's absolute path as
   `tls_cert` while TLS is on (never the key's), so `wt-model stop` and
   `wt-model alias` reach the server over `https://`, trusting exactly that
-  file.
+  file, verified at the record's start time (serve validated it then and
+  serves it until restarted, so one that expired since still works). When
+  the server named by the record is running but its client sessions cannot
+  be read, the count is unknown, never "none": `wt-model stop` asks before
+  stopping anything (`--yes` answers; no terminal: exit 3) and
+  `wt-model alias rm` needs `--force-in-use`. A record whose server is not
+  running is one note and the command goes on, as before.
 - **Setup and the Mode tab.** While TLS is on (`tls_cert` set and the
   certificate within its dates), `wt-model setup`'s local plan and the Mode
   tab's local plan write `https://` on the loopback listen address
@@ -299,7 +314,14 @@ tls_key  = "~/.config/wt-model/tls/server.key"
   `ca_file = "<tls_cert path>"` under `[model-server]` in
   `~/.config/agent-wt/config.toml`. With an expired certificate the plans
   write `http://`, the url serve will speak, and note the date and the
-  renewal. TLS settings that cannot be read refuse a local plan.
+  renewal. TLS settings that cannot be read refuse a local plan. Serve reads
+  `[gateway]` only at start, so when setup's local plan changes the url's
+  scheme (or the running serve's record says it speaks the other one) and
+  the LaunchAgent is loaded, the plan reloads it (bootout, then bootstrap)
+  and waits on the new url. The Mode tab swaps only the scheme of a stored
+  loopback url (`127.0.0.1`, `::1`, `localhost`, any port; a non-loopback or
+  hand-written url is kept) and, since a session cannot restart serve, notes
+  that it must be restarted on the host (`wt-model setup` does it).
 - **Rotation and renewal.** Replace both files, then reload the LaunchAgent:
   `launchctl bootout gui/$(id -u)/local.wt-model.serve` followed by
   `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.wt-model.serve.plist`
@@ -690,8 +712,10 @@ that cannot bind its address neither writes nor removes it. A killed server
 leaves its record behind. `wt-model stop <provider>|--all` reads the record to
 ask the live server for its client sessions; a record whose pid is no longer
 running is stale and is not asked (another process may hold the port now).
-A stale record, or a server that cannot be asked, is one note on stderr and
-the stop goes on without asking about any model:
+A stale record (or one that cannot be read) is one note on stderr and the
+stop goes on without asking about any model; a server that is running but
+cannot be asked makes the stop ask before stopping anything
+([wt-start-stop.md](wt-start-stop.md#in-use-confirmation)):
 
 ```text
 wt-model: note: could not read client sessions from the model server (the model server (pid 4242) is not running: stale record) — models they use are stopped without asking
