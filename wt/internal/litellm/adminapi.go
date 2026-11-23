@@ -133,6 +133,50 @@ func (c *AdminClient) Routes(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
+// ListedRoute is one route `wt-model litellm list` shows from the database:
+// a model route (Kind "model", one per name) or one alias deployment (Kind
+// "alias", one per row: Name the alias id, Target the registry model id and
+// Order the row's litellm_params.order). Never a param.
+type ListedRoute struct {
+	Name, Kind, Target string
+	Order              int
+}
+
+// RouteList lists, from one listing, the routes wt owns in the database: the
+// model routes Routes names (Kind "model"), then every alias row (IsAliasDB;
+// alias and target read from the row id, #596) sorted by alias, order and
+// target. Rows of any other owner are left out.
+func (c *AdminClient) RouteList(ctx context.Context) ([]ListedRoute, error) {
+	rows, err := c.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var models, aliases []ListedRoute
+	for _, m := range rows {
+		switch {
+		case isManagedDB(m) && strings.HasPrefix(m.ID, DBIDPrefix):
+			if !slices.ContainsFunc(models, func(r ListedRoute) bool { return r.Name == m.ModelName }) {
+				models = append(models, ListedRoute{Name: m.ModelName, Kind: "model"})
+			}
+		case IsAliasDB(m):
+			if alias, target, ok := parseAliasID(m.ID); ok {
+				aliases = append(aliases, ListedRoute{Name: alias, Kind: "alias", Target: target, Order: paramOrder(m.Params["order"])})
+			}
+		}
+	}
+	slices.SortFunc(models, func(a, b ListedRoute) int { return strings.Compare(a.Name, b.Name) })
+	slices.SortFunc(aliases, func(a, b ListedRoute) int {
+		if c := strings.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		if a.Order != b.Order {
+			return a.Order - b.Order
+		}
+		return strings.Compare(a.Target, b.Target)
+	})
+	return append(models, aliases...), nil
+}
+
 // Add creates one database row (POST /model/new). LiteLLM honors the given
 // model_info.id (checked on 1.109.1) and answers a duplicate id with an HTTP
 // 500 "Failed to add model to db", so Add is not idempotent.

@@ -347,6 +347,11 @@ func TestLitellmSyncDryRunJSONMatchesContract(t *testing.T) {
 		Remove: []string{"openrouter/old"},
 		Repair: []string{"ollama/mine"},
 		Errors: []litellm.Outcome{{ID: "ghost/m", Err: errors.New(`unknown provider "ghost"`)}},
+		Aliases: []litellm.AliasPlan{{
+			ID: "alias/x", Action: litellm.AliasActionRoute,
+			Live:    []litellm.AliasLive{{Target: "openrouter/x/y", Order: 1}},
+			Skipped: []litellm.AliasSkip{{Target: "ollama/llama3.2:3b", Reason: "not running"}},
+		}},
 	}
 	var out, errOut bytes.Buffer
 	// No probe warnings in this rendering; a plan with errors exits 1, like a

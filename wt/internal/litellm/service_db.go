@@ -71,6 +71,13 @@ type dbRoutes struct {
 	// the database: added (or found) there and confirmed, so the caller
 	// removes them from the file in the same write.
 	migrated []string
+	// The alias half (service_alias.go): fileNames is config.yaml's route
+	// names after this write (leftAfter), the twin guard's view; the
+	// warnings and outcomes routeAliases left, or decision 4's line, for
+	// finish (outcomes are Sync's only).
+	fileNames     map[string]bool
+	aliasWarnings []string
+	aliasOutcomes []Outcome
 }
 
 type dbRouted struct {
@@ -632,6 +639,15 @@ func (d *dbRoutes) finish(res *Result, sync bool) {
 	if d == nil {
 		return
 	}
+	// The alias half reports whatever happened to the model half (#596): its
+	// lines follow the model half's, and only Sync reports its outcomes
+	// (lifecycle reads every ApplyChange Outcome as its one model's).
+	defer func() {
+		res.Warnings = append(res.Warnings, d.aliasWarnings...)
+		if sync {
+			res.Outcomes = append(res.Outcomes, d.aliasOutcomes...)
+		}
+	}()
 	if d.gated {
 		// The database half was not tried. A write that saved the setting has
 		// enabled it (its restart loads it); the rows move on the next sync.

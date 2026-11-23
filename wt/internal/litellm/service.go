@@ -3,6 +3,7 @@ package litellm
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -136,6 +137,13 @@ type Options struct {
 	// restarted) and is returned. Unexported: tests simulate a process killed
 	// between the database writes and the file save.
 	beforeSave func() error
+	// LoadRegistry re-reads the registry for the alias half of a write
+	// (dbRoutes.routeAliases): it runs inside the config.yaml lock, after the
+	// model rows, so the aliases are planned from the registry as it is then,
+	// never from the caller's cfg, which a start job loaded before an `alias
+	// set` may have re-pointed an alias (Review Focus 2). nil is config.Load.
+	// A failure skips the alias half with one warning.
+	LoadRegistry func() (*config.Config, error)
 }
 
 // Outcome is one id's result. Action is "routed" or "unrouted" (ApplyChange)
@@ -353,6 +361,9 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 	// A caller that asked for the deferral is told what it owes a second
 	// attempt for; dropping an id here would lose the route.
 	var missing []string
+	// aliasNote is decision 4's line when there is no database half at all
+	// (Options.Admin nil) and the change touches an alias target.
+	var aliasNote string
 	db := newDBRoutes(o)
 	defer db.close()
 	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove, bool) {
@@ -411,35 +422,70 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 			}
 		}
 		// A deferred row holds the whole write: see Options.DeferMissingAdd.
-		if hold := len(missing) > 0; hold || db == nil || !db.gate(f) || !touchesLocal(cfg, ch, add, rm) {
-			return add, rm, hold
+		if len(missing) > 0 {
+			return add, rm, true
+		}
+		// The alias half (#596) follows a change of an alias's target, never
+		// the launch-time ensure (AddMissingOnly: it must not re-resolve an
+		// alias's cloud keys). aliasing is the caller's view; a listed alias
+		// row of a changed target also counts (that cfg may predate the alias),
+		// and the half itself plans from the registry re-read under this lock.
+		aliasing := !ch.AddMissingOnly && touchesAlias(cfg, ch)
+		if db == nil || !db.gate(f) {
+			if aliasing {
+				reason := aliasNoAdmin
+				if db != nil {
+					reason = aliasDBOff
+				}
+				aliasNote = aliasUnavailable(reason)
+			}
+			return add, rm, false
+		}
+		local := touchesLocal(cfg, ch, add, rm)
+		if !local && !aliasing {
+			return add, rm, false
 		}
 		names := make([]string, 0, len(rm))
 		for _, r := range rm {
 			names = append(names, r.id)
 		}
 		if !db.list() {
-			// The family's database rows are unknown: name the family itself
-			// ("<family>/*", which RowFamily reads as that family).
-			for _, fam := range ch.RemoveFamilies {
-				if fam != "" {
-					names = append(names, fam+"/*")
+			if local {
+				// The family's database rows are unknown: name the family
+				// itself ("<family>/*", which RowFamily reads as that family).
+				for _, fam := range ch.RemoveFamilies {
+					if fam != "" {
+						names = append(names, fam+"/*")
+					}
 				}
+				db.unlisted(cfg, add, names)
 			}
-			db.unlisted(cfg, add, names)
+			if aliasing {
+				db.aliasWarnings = append(db.aliasWarnings, aliasUnavailable(db.reason))
+			}
 			return add, rm, false
 		}
-		for _, fam := range ch.RemoveFamilies {
-			if fam != "" {
-				names = append(names, db.familyRoutes(cfg, fam, adding)...)
+		fileAdd := add
+		if local {
+			for _, fam := range ch.RemoveFamilies {
+				if fam != "" {
+					names = append(names, db.familyRoutes(cfg, fam, adding)...)
+				}
 			}
+			fileAdd = db.route(cfg, f, add, names, nil, false)
 		}
-		return db.route(cfg, f, add, names, nil, false), rm, false
+		if !ch.AddMissingOnly && (aliasing || db.listedAliasTargets(changedIDs(cfg, ch))) {
+			db.aliasHalf(o, f, fileAdd, rm, func(reg *config.Config) map[string]bool { return aliasesTouching(reg, ch) }, false)
+		}
+		return fileAdd, rm, false
 	}, o, OllamaAPIBase(cfg), cfg.LitellmBaseURL())
 	if err != nil {
 		return Result{}, err
 	}
 	db.finish(&res, false)
+	if aliasNote != "" {
+		res.Warnings = append(res.Warnings, aliasNote)
+	}
 	res.Missing = missing
 	return res, nil
 }
@@ -663,6 +709,9 @@ type SyncPlan struct {
 	Move     []string
 	EnableDB bool
 	Restart  bool
+	// Aliases is what the sync would do with each alias (#596), sorted by
+	// id; filled by PlanSync alone, and only when the database half answers.
+	Aliases []AliasPlan
 	// markedOnly holds the Remove ids owned by marker alone (not named like a
 	// managed registry id): Sync drops only their marked rows.
 	markedOnly map[string]bool
@@ -1024,6 +1073,43 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 			plan.Repair = append(plan.Repair, oc.ID)
 		}
 	}
+	// The alias half (#596), planned against the listing over the route
+	// names the sync would leave: config.yaml as just carried out on f, the
+	// database's wt rows minus the removals, and the adds and moves the
+	// database would carry. A dry run plans from cfg (it holds no lock).
+	plan.Aliases = []AliasPlan{}
+	switch {
+	case db != nil && db.listed && (len(cfg.Aliases) > 0 || db.listedAliasTargets(nil)):
+		file := map[string]bool{}
+		for _, id := range f.RoutedIDs() {
+			file[id] = true
+		}
+		live := maps.Clone(file)
+		for _, r := range dbRows {
+			if !slices.Contains(plan.Remove, r.ID) {
+				live[r.ID] = true
+			}
+		}
+		for id := range viaDB {
+			live[id] = true
+		}
+		for _, id := range plan.Move {
+			live[id] = true
+		}
+		w := db.previewAliases(cfg, o, live, file)
+		plan.Aliases = w.plans
+		plan.Warnings = append(plan.Warnings, w.warnings...)
+	case len(cfg.Aliases) > 0:
+		reason := aliasNoAdmin
+		switch {
+		case db == nil:
+		case db.gated:
+			reason = aliasDBOff
+		default:
+			reason = db.reason
+		}
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("alias routes unavailable (%s); this plan does not cover aliases", reason))
+	}
 	plan.Warnings = append(plan.Warnings, f.ollamaServeWarnings(loadProxyEnv())...)
 	plan.Warnings = append(plan.Warnings, f.settingsWarnings()...)
 	if o.Admin != nil {
@@ -1088,6 +1174,9 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	// The one caller that reports the rows LiteLLM starts its own `ollama serve`
 	// for, so the one caller that pays for the scan (Options.reportOllamaServe).
 	o.reportOllamaServe = true
+	// aliasNote is decision 4's line when there is no database half at all
+	// (Options.Admin nil) and the registry has aliases.
+	var aliasNote string
 	db := newDBRoutes(o)
 	defer db.close()
 	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove, bool) {
@@ -1106,6 +1195,15 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		add, remove := plan.planned(built)
 		switch {
 		case db == nil || db.gated:
+			// Decision 4: no database half, no alias route, and never a file
+			// fallback for one.
+			if len(cfg.Aliases) > 0 {
+				if db == nil {
+					aliasNote = aliasUnavailable(aliasNoAdmin)
+				} else {
+					db.aliasWarnings = append(db.aliasWarnings, aliasUnavailable(aliasDBOff))
+				}
+			}
 		case db.listed:
 			// The one-time move of wt's local config.yaml rows (the migration):
 			// route adds them to the database, confirms them, and only then
@@ -1114,8 +1212,16 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 			for _, id := range db.migrated {
 				remove = append(remove, plannedRemove{id: id, markedOnly: true})
 			}
+			// The alias half (#596): every alias, and the rows of aliases the
+			// registry no longer has. A cancelled context is said below.
+			if (o.Ctx == nil || o.Ctx.Err() == nil) && (len(cfg.Aliases) > 0 || db.listedAliasTargets(nil)) {
+				db.aliasHalf(o, f, add, remove, nil, true)
+			}
 		default:
 			db.unlisted(cfg, add, plan.Remove)
+			if len(cfg.Aliases) > 0 {
+				db.aliasWarnings = append(db.aliasWarnings, aliasUnavailable(db.reason))
+			}
 		}
 		// A cancelled context (wt-model serve shutting down) is why the
 		// database half failed, if it did: no fallback, no file write, no
@@ -1151,6 +1257,9 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	// the plan would not route, then the ollama-serve rows.
 	res.Warnings = append(res.Warnings, plan.Warnings...)
 	res.Warnings = append(res.Warnings, res.ollamaServe...)
+	if aliasNote != "" {
+		res.Warnings = append(res.Warnings, aliasNote)
+	}
 	return res, nil
 }
 

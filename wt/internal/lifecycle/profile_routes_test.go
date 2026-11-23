@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1034,5 +1036,87 @@ func TestProbeProxyNeverQuotesAnAtURL(t *testing.T) {
 	if err == nil || !errors.Is(err, down) || strings.Contains(err.Error(), "USERY") || strings.Contains(err.Error(), "PASSY") ||
 		!strings.HasPrefix(err.Error(), "the LiteLLM proxy does not answer at "+config.ProxyURLHidden+": ") {
 		t.Errorf("ProbeProxy = %v, want the placeholder and nothing of the url", err)
+	}
+}
+
+// aliasFailingProxy is a LiteLLM model API that stores model rows and
+// answers every alias row's /model/new (a model_name under alias/) with
+// HTTP 500, as a database refusing the write would. Stored rows list with
+// db_model true, as LiteLLM's database rows do.
+func aliasFailingProxy(t *testing.T) *httptest.Server {
+	t.Helper()
+	var mu sync.Mutex
+	rows := map[string]map[string]any{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch r.URL.Path {
+		case "/model/info":
+			data := []map[string]any{}
+			for _, row := range rows {
+				data = append(data, row)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+		case "/model/new":
+			if name, _ := req["model_name"].(string); strings.HasPrefix(name, "alias/") {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":{"message":"database unavailable"}}`))
+				return
+			}
+			info, _ := req["model_info"].(map[string]any)
+			id, _ := info["id"].(string)
+			info["db_model"] = true
+			rows[id] = req
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestFailedAliasWriteLeavesEnsureModelRoutesSuccessful pins that the alias
+// half never fails a model's own route write: an alias row that LiteLLM
+// refuses while a local target's route is ensured is one printed warning,
+// and EnsureModelRoutes still succeeds. It reads every Outcome error as its
+// one model's, so an alias failure reported as an Outcome would refuse the
+// launch of a model whose route is fine.
+func TestFailedAliasWriteLeavesEnsureModelRoutesSuccessful(t *testing.T) {
+	path, _, warn := realRoutes(t, "model_list: []\n"+
+		"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"+
+		"general_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n")
+	restarts := fakeRestarter(t)
+	cfg := profileCfg()
+	cfg.Aliases = []config.Alias{{ID: "alias/x", Targets: []config.AliasTarget{{Model: "ollama/a:1", Order: 1}}}}
+	srv := aliasFailingProxy(t)
+	applyRoutes = func(c *config.Config, ch litellm.Change, o litellm.Options) (litellm.Result, error) {
+		o.Path = path
+		o.Admin = &litellm.AdminClient{BaseURL: srv.URL, Key: "sk-test-1234"}
+		o.LoadRegistry = func() (*config.Config, error) { return cfg, nil }
+		return litellm.ApplyChange(c, ch, o)
+	}
+
+	owed, err := EnsureModelRoutes(context.Background(), nil, cfg, modelsByID(t, cfg, "ollama/a:1"), false)
+	WaitPendingRoutes()
+	if err != nil || owed {
+		t.Fatalf("EnsureModelRoutes = (%v, %v), want (false, nil); output %q", owed, err, warn.String())
+	}
+	lines := strings.Split(strings.TrimRight(warn.String(), "\n"), "\n")
+	n := 0
+	for _, l := range lines {
+		if strings.Contains(l, "alias/x") {
+			n++
+			if !strings.HasPrefix(l, "wt: ") {
+				t.Errorf("line %q, want the route warnings' wt: prefix", l)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("output %q, want one line naming alias/x", warn.String())
+	}
+	if r := restarts.Load(); r != 0 {
+		t.Fatalf("restarts = %d, want 0", r)
 	}
 }

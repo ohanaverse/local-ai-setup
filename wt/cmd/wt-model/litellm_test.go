@@ -337,7 +337,7 @@ func TestLitellmListAndProviders(t *testing.T) {
 	if err := runLitellmList(t.Context(), &out, io.Discard, true, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(out.String()) != `{"routed":["a/b"],"rows":[{"id":"a/b","managed":false,"store":"file"}]}` {
+	if strings.TrimSpace(out.String()) != `{"routed":["a/b"],"rows":[{"id":"a/b","kind":"model","managed":false,"store":"file"}]}` {
 		t.Fatalf("list = %s", out.String())
 	}
 	out.Reset()
@@ -376,8 +376,8 @@ func TestLitellmListTextOutput(t *testing.T) {
 	}
 }
 
-// TestLitellmListJSONRows pins list's ownership rows (with their store, #598)
-// next to the older "routed" id list, which stays for scripts that already
+// TestLitellmListJSONRows pins list's ownership rows (with their store, #598,
+// and kind, #596) next to the older "routed" id list, which stays for scripts that already
 // read it.
 func TestLitellmListJSONRows(t *testing.T) {
 	litellmEnv(t, `model_list:
@@ -391,7 +391,7 @@ func TestLitellmListJSONRows(t *testing.T) {
 	if err := runLitellmList(t.Context(), &out, io.Discard, true, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	const want = `{"routed":["ollama/gemma:9b","hand/alias"],"rows":[{"id":"ollama/gemma:9b","managed":true,"store":"file"},{"id":"hand/alias","managed":false,"store":"file"}]}`
+	const want = `{"routed":["ollama/gemma:9b","hand/alias"],"rows":[{"id":"ollama/gemma:9b","kind":"model","managed":true,"store":"file"},{"id":"hand/alias","kind":"model","managed":false,"store":"file"}]}`
 	if got := strings.TrimSpace(out.String()); got != want {
 		t.Fatalf("list = %s\nwant   %s", got, want)
 	}

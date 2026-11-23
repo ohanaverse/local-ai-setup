@@ -14,7 +14,8 @@ import (
 // refuses what Sync refuses (a missing or invalid file, a registry redirected
 // without a config path). Recheck is forced off, as in PlanSync. With
 // Options.Admin the database's wt routes are read (List only) and counted as
-// routes; a listing that fails leaves them out.
+// routes, and so are the alias ids that would have a row after the sync
+// (#596); a listing that fails leaves both out.
 func DesiredIDs(cfg *config.Config, local []config.Model, o Options) ([]string, error) {
 	o.Recheck = nil
 	f, err := Open(o.path())
@@ -45,6 +46,32 @@ func DesiredIDs(cfg *config.Config, local []config.Model, o Options) ([]string, 
 	for _, id := range plan.Add {
 		if !slices.Contains(ids, id) {
 			ids = append(ids, id)
+		}
+	}
+	// The alias ids that would have a row after the sync (#596): planned like
+	// PlanSync's alias half, over the route names above as liveness. An
+	// alias frozen whole keeps whatever rows it has, so it counts when it has
+	// one now.
+	if db != nil && db.listed && (len(cfg.Aliases) > 0 || db.listedAliasTargets(nil)) {
+		live, file := map[string]bool{}, map[string]bool{}
+		for _, id := range ids {
+			live[id] = true
+		}
+		for _, id := range f.RoutedIDs() {
+			file[id] = true
+		}
+		w := db.previewAliases(cfg, o, live, file)
+		for _, p := range w.plans {
+			routed := false
+			switch p.Action {
+			case AliasActionRoute, AliasActionRewrite, AliasActionKeep:
+				routed = true
+			case AliasActionSkip:
+				routed = db.hasAliasRow(p.ID)
+			}
+			if routed && !slices.Contains(ids, p.ID) {
+				ids = append(ids, p.ID)
+			}
 		}
 	}
 	return ids, nil
