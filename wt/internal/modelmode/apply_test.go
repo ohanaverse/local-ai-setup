@@ -3,6 +3,7 @@ package modelmode
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -238,5 +239,29 @@ func TestModeTabRoundTripsCAFile(t *testing.T) {
 	st = Observe(context.Background(), f.Env(), ObserveOptions{})
 	if st.CAFile != "/env/ca.pem" || len(f.pingCAs) != 1 || f.pingCAs[0] != "/env/ca.pem" {
 		t.Errorf("env ca_file: State.CAFile = %q, ping CAs = %q", st.CAFile, f.pingCAs)
+	}
+}
+
+// TestObserveRefusesARelativeConfigCAFile proves the Mode tab judges a
+// relative [model-server] ca_file as the session does: a problem naming the
+// key and the fix, and the https url is not pinged trusting a file that
+// would resolve against the current directory. A relative WT_MODEL_CA_FILE
+// is the user's own and is pinged with, made absolute.
+func TestObserveRefusesARelativeConfigCAFile(t *testing.T) {
+	f := obsConfigured(t)
+	f.configFile.Table.Mode, f.configFile.Table.URL, f.configFile.Table.CAFile = "remote", "https://gpu.example:8787", "certs/server.crt"
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	if !strings.Contains(strings.Join(st.Config.Problems, "\n"), "[model-server] ca_file") || f.called("Net.Ping") || st.CAFile != "" {
+		t.Errorf("relative config ca_file: problems %q, pinged %v, CAFile %q", st.Config.Problems, f.called("Net.Ping"), st.CAFile)
+	}
+	if !strings.Contains(st.Server.Message, "absolute path or ~/") {
+		t.Errorf("Server.Message = %q, want the reason it was not checked", st.Server.Message)
+	}
+	f = obsConfigured(t)
+	f.configFile.Table.Mode, f.configFile.Table.URL = "remote", "https://gpu.example:8787"
+	f.env["WT_MODEL_CA_FILE"] = "certs/server.crt"
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if want, _ := filepath.Abs("certs/server.crt"); st.CAFile != want || len(f.pingCAs) != 1 || f.pingCAs[0] != want {
+		t.Errorf("relative env ca_file: CAFile %q, ping CAs %q, want %q", st.CAFile, f.pingCAs, want)
 	}
 }

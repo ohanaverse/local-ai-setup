@@ -220,6 +220,7 @@ var claudeHeaderModeRefused = []struct{ key, why string }{
 	{"ANTHROPIC_API_KEY", "it would displace your Claude login"},
 	{"ANTHROPIC_AUTH_TOKEN", "it would displace your Claude login"},
 	{"CLAUDE_CODE_OAUTH_TOKEN", "it would displace your Claude login"},
+	{NodeTLSRejectVar, "it can turn off the certificate check of the gateway your Claude login is sent to"},
 }
 
 // claudeHeaderModePrefixRefused are the refused variable families:

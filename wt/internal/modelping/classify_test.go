@@ -1,8 +1,10 @@
 package modelping
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -202,5 +205,71 @@ func TestSchemeMismatchHints(t *testing.T) {
 	}
 	if h := httpToTLSHint("192.0.2.7:8787"); !strings.HasSuffix(h, "this request already sent the token unencrypted to 192.0.2.7:8787; rotate the token on the host (wt-model setup)") {
 		t.Errorf("non-loopback hint = %q", h)
+	}
+}
+
+// withTimeout runs f and fails the test when it does not return within 3 s
+// (a FIFO opened for reading blocks until a writer appears).
+func withTimeout(t *testing.T, what string, f func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { f(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("%s did not return: it blocked on the file", what)
+	}
+}
+
+// TestNewHTTPClientForRefusesUnsafeCAFiles pins the CA file reads of the
+// transport: a file holding a private-key block beside a certificate is
+// refused (it must never be trusted as a "certificate" file), a FIFO is
+// refused as not a regular file without blocking, and a file over 1 MiB is
+// refused by its size. Each is a *CAFileError naming the path.
+func TestNewHTTPClientForRefusesUnsafeCAFiles(t *testing.T) {
+	dir := t.TempDir()
+	cert, key := tlstest.Gen(t, dir, tlstest.Opts{})
+	cb, _ := os.ReadFile(cert)
+	kb, _ := os.ReadFile(key)
+	withKey := filepath.Join(dir, "with-key.pem")
+	if err := os.WriteFile(withKey, append(append([]byte{}, cb...), kb...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "fifo.pem")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	huge := filepath.Join(dir, "huge.pem")
+	if err := os.WriteFile(huge, append(append([]byte{}, cb...), bytes.Repeat([]byte("#"), MaxCAFile)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{withKey: CAKeyReason, fifo: "is not a regular file", huge: "is larger than 1 MiB"} {
+		var err error
+		withTimeout(t, path, func() { _, err = NewHTTPClientFor(Endpoint{URL: "https://127.0.0.1:1", CAFile: path}) })
+		var cfe *CAFileError
+		if !errors.As(err, &cfe) || cfe.Path != path || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want the CA file error %q", filepath.Base(path), err, want)
+		}
+	}
+}
+
+// TestNewHTTPClientForAddsToTheSystemPool proves ca_file's certificates are
+// added to this machine's own roots, never put in their place: a server
+// with a publicly trusted certificate must stay reachable with ca_file set.
+func TestNewHTTPClientForAddsToTheSystemPool(t *testing.T) {
+	cert, _ := tlstest.Gen(t, t.TempDir(), tlstest.Opts{})
+	hc, err := NewHTTPClientFor(Endpoint{URL: "https://127.0.0.1:1", CAFile: cert})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := x509.SystemCertPool()
+	if err != nil {
+		t.Skipf("no system pool here: %v", err)
+	}
+	data, _ := os.ReadFile(cert)
+	want.AppendCertsFromPEM(data)
+	got := hc.Transport.(*http.Transport).TLSClientConfig.RootCAs
+	if got == nil || !got.Equal(want) {
+		t.Errorf("RootCAs is not the system pool plus ca_file")
 	}
 }

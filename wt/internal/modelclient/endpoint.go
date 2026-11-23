@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,8 +82,10 @@ func sessionTokenError(err error, fromEnv bool) error {
 // caFile is [model-server] ca_file (decision 14); WT_MODEL_CA_FILE wins over
 // it. For an https url its leading ~ is expanded, it is made absolute (the
 // agent runs in the worktree and must read the same file) and checked before
-// any request: unreadable, holding no PEM certificate or holding a private
-// key is a *modelping.CAFileError naming the path, never its bytes; a CA
+// any request: a relative path from config.toml (modelping.RelativeConfigCAFile), a
+// file that is not regular, over 1 MiB, unreadable, holding no PEM
+// certificate or holding a private key is a *modelping.CAFileError naming
+// the path, never its bytes; a CA
 // certificate without name constraints resolves with one note. For any other
 // url it is neither read nor used, with one note.
 func ResolveEndpoint(url, tokenFile, caFile string, env func(string) string) (Endpoint, error) {
@@ -114,8 +115,9 @@ func ResolveEndpoint(url, tokenFile, caFile string, env func(string) string) (En
 		return Endpoint{}, &NotConfiguredError{MissingURL: url == "", MissingToken: tok == ""}
 	}
 	ep := Endpoint{URL: url, Token: tok}
+	caFromEnv := false
 	if v := env("WT_MODEL_CA_FILE"); v != "" {
-		caFile = v
+		caFile, caFromEnv = v, true
 	}
 	if caFile == "" {
 		return ep, nil
@@ -123,6 +125,9 @@ func ResolveEndpoint(url, tokenFile, caFile string, env func(string) string) (En
 	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(url)), "https://") {
 		ep.Notes = append(ep.Notes, "ca_file is ignored for an http url")
 		return ep, nil
+	}
+	if !caFromEnv && modelping.RelativeConfigCAFile(caFile) {
+		return Endpoint{}, &modelping.CAFileError{Path: caFile, Reason: modelping.RelativeCAReason}
 	}
 	path, notes, err := checkCAFile(caFile)
 	if err != nil {
@@ -148,14 +153,9 @@ func checkCAFile(p string) (string, []string, error) {
 	if err != nil {
 		return "", nil, &modelping.CAFileError{Path: p, Reason: "cannot be read: " + err.Error()}
 	}
-	data, err := os.ReadFile(abs)
+	data, err := modelping.ReadCAFile(abs)
 	if err != nil {
-		reason := err.Error()
-		var pe *fs.PathError
-		if errors.As(err, &pe) {
-			reason = pe.Err.Error()
-		}
-		return "", nil, &modelping.CAFileError{Path: abs, Reason: "cannot be read: " + reason}
+		return "", nil, err
 	}
 	if tlsfile.HasPrivateKey(data) {
 		return "", nil, &modelping.CAFileError{Path: abs, Reason: modelping.CAKeyReason}

@@ -121,7 +121,11 @@ func subscriptionGuardTo(ctx context.Context, w io.Writer, ms *modelSession, row
 	if !p.SubscriptionPassthrough {
 		return refuse("%s", subscriptionOffReason(ms))
 	}
-	// 4. The launch profile.
+	// 4. The launch profile, and an inherited switch that turns Node's
+	// certificate check of the gateway off (named, never its value).
+	if agents.NodeTLSVerifyOff(os.Getenv(agents.NodeTLSRejectVar)) {
+		return refuse("%s is set in this environment to turn off certificate checks, so your Claude login could reach a server posing as the gateway: unset it", agents.NodeTLSRejectVar)
+	}
 	for _, k := range profileEnvKeys {
 		if agents.HeaderModeRefusedKey(k) {
 			return refuse("the profile for this launch sets %s, which would replace the header wt sends or displace your Claude login: remove it from that profile", k)

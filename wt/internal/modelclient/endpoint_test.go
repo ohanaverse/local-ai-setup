@@ -1,6 +1,7 @@
 package modelclient
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -12,10 +13,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tlstest"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tokenfile"
 )
@@ -366,5 +369,53 @@ func TestCAFileIgnoredForHTTPNote(t *testing.T) {
 	}
 	if len(ep.Notes) != 1 || ep.Notes[0] != "ca_file is ignored for an http url" {
 		t.Errorf("notes = %q", ep.Notes)
+	}
+}
+
+// TestRelativeConfigCAFileRefused proves a relative ca_file from config.toml
+// is refused (a relative path would resolve against the current directory,
+// so a repository could ship the "server.crt" wt then trusts, and hand it to
+// Node for every host): the message names the key and the fix. The same
+// relative path in WT_MODEL_CA_FILE, typed in the user's own shell, is made
+// absolute against the current directory as before.
+func TestRelativeConfigCAFileRefused(t *testing.T) {
+	cwd := t.TempDir()
+	cert, _ := tlstest.Gen(t, cwd, tlstest.Opts{})
+	t.Chdir(cwd)
+	rel := filepath.Base(cert)
+	_, err := ResolveEndpoint("https://h:1", "", rel, envOf(map[string]string{"WT_MODEL_TOKEN": "t"}))
+	if err == nil || !strings.Contains(err.Error(), "[model-server] ca_file") || !strings.Contains(err.Error(), "absolute path or ~/") {
+		t.Fatalf("relative config ca_file: err = %v, want the refusal naming the key and the fix", err)
+	}
+	ep, err := ResolveEndpoint("https://h:1", "", "", envOf(map[string]string{"WT_MODEL_TOKEN": "t", "WT_MODEL_CA_FILE": rel}))
+	if want, _ := filepath.Abs(rel); err != nil || ep.CAFile != want {
+		t.Errorf("relative WT_MODEL_CA_FILE: ep.CAFile = %q, err = %v, want %q", ep.CAFile, err, want)
+	}
+}
+
+// TestCAFileFIFOAndHugeRefused proves checkCAFile's reads are bounded: a
+// FIFO is refused as not a regular file without blocking, and a file over
+// 1 MiB is refused by its size.
+func TestCAFileFIFOAndHugeRefused(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo.pem")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	huge := writeCA(t, dir, "huge.pem", append(caCertPEM(t), bytes.Repeat([]byte("#"), modelping.MaxCAFile)...))
+	for path, want := range map[string]string{fifo: "is not a regular file", huge: "is larger than 1 MiB"} {
+		done := make(chan error, 1)
+		go func() {
+			_, err := ResolveEndpoint("https://h:1", "", path, envOf(map[string]string{"WT_MODEL_TOKEN": "t"}))
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: err = %v, want %q", filepath.Base(path), err, want)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s: ResolveEndpoint blocked on the file", filepath.Base(path))
+		}
 	}
 }

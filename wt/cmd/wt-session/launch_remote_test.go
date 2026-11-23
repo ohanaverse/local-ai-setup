@@ -24,6 +24,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // remoteAgentScript is the fake claude a remote launch runs. As the login
@@ -763,4 +764,63 @@ func TestTLSOffNote(t *testing.T) {
 			t.Errorf("stderr = %q, want no note", r.stderr.String())
 		}
 	})
+}
+
+// TestSlotLaunchOverHTTPSWithCAFile proves the slot-profile launch passes
+// the session's ca_file into its gateway: a claude slot profile launched
+// against the https fake with ca_file set reaches the agent with
+// NODE_EXTRA_CA_CERTS once, equal to the ca_file.
+func TestSlotLaunchOverHTTPSWithCAFile(t *testing.T) {
+	r, _, ca := tlsSubRig(t, true)
+	r.f.Rows = slotWireRows()
+	store := profiles.SlotStore{Profiles: []profiles.SlotProfile{{Name: "mix", Agent: "claude", Default: "sonnet", Slots: map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"}}}}
+	r.a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
+	envDump := filepath.Join(t.TempDir(), "env")
+	t.Setenv("WT_FAKE_ENV_DUMP", envDump)
+	if err := r.launch(t, context.Background(), "profile/mix", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	env, err := os.ReadFile(envDump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, line := range strings.Split(string(env), "\n") {
+		if v, ok := strings.CutPrefix(line, "NODE_EXTRA_CA_CERTS="); ok {
+			got = append(got, v)
+		}
+	}
+	if len(got) != 1 || got[0] != ca {
+		t.Errorf("NODE_EXTRA_CA_CERTS = %q, want once %s", got, ca)
+	}
+}
+
+// TestSubscriptionRefusesNodeTLSRejectUnauthorized proves the guard refuses
+// a header-mode launch whose environment turns Node's certificate check off
+// (NODE_TLS_REJECT_UNAUTHORIZED 0 or false), naming the variable and never
+// its value, before any client session or login check; unset or 1 launches.
+func TestSubscriptionRefusesNodeTLSRejectUnauthorized(t *testing.T) {
+	st := goodLogin()
+	for _, v := range []string{"0", "false"} {
+		r, calls := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+		t.Setenv("NODE_TLS_REJECT_UNAUTHORIZED", v)
+		err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false)
+		if err == nil || !strings.Contains(err.Error(), "NODE_TLS_REJECT_UNAUTHORIZED") || strings.Contains(err.Error(), "NODE_TLS_REJECT_UNAUTHORIZED="+v) {
+			t.Fatalf("%s: err = %v, want the refusal naming the variable", v, err)
+		}
+		if *calls != 0 {
+			t.Errorf("%s: login ran %d times", v, *calls)
+		}
+		nothingRegistered(t, r.f)
+	}
+	for _, v := range []string{"1", ""} {
+		r, _ := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+		t.Setenv("NODE_TLS_REJECT_UNAUTHORIZED", v)
+		if v == "" {
+			os.Unsetenv("NODE_TLS_REJECT_UNAUTHORIZED")
+		}
+		if err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false); err != nil {
+			t.Errorf("%q: launch: %v", v, err)
+		}
+	}
 }

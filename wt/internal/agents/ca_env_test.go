@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tlstest"
 )
@@ -108,5 +110,92 @@ func TestCommandSetsNodeCAForAnHTTPSGateway(t *testing.T) {
 	}
 	if got := append(envValues(cmd.Env, "NODE_EXTRA_CA_CERTS"), envValues(cmd.Env, "WT_NODE_EXTRA_CA_CERTS")...); len(got) != 0 {
 		t.Errorf("native launch kept %q", got)
+	}
+}
+
+// TestNodeCAEnvBoundedReads proves the inherited NODE_EXTRA_CA_CERTS file is
+// read within bounds: a FIFO there does not hang the launch (it is not a
+// regular file, so it cannot hold the ca_file certificate: header mode
+// refuses at once).
+func TestNodeCAEnvBoundedReads(t *testing.T) {
+	dir := t.TempDir()
+	ca, _ := tlstest.Gen(t, dir, tlstest.Opts{})
+	fifo := filepath.Join(dir, "fifo.pem")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, _, err := nodeCAEnv("claude", "https://h:1", ca, true, []string{"NODE_EXTRA_CA_CERTS=" + fifo})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a FIFO was taken to hold the ca_file certificate")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("nodeCAEnv blocked on the FIFO")
+	}
+}
+
+// TestSlotLaunchCmdSetsNodeCA proves the slot launch applies the CA env
+// like a single-model launch: a claude slot profile over an https gateway
+// with a CA file has NODE_EXTRA_CA_CERTS once, equal to it.
+func TestSlotLaunchCmdSetsNodeCA(t *testing.T) {
+	fakeBin(t, "claude")
+	t.Setenv("NODE_EXTRA_CA_CERTS", "")
+	os.Unsetenv("NODE_EXTRA_CA_CERTS")
+	ca, _ := tlstest.Gen(t, t.TempDir(), tlstest.Opts{})
+	cmd, err := BuildSlotLaunchCmdGateway(gwSlotLaunch(gwCloudModel()), t.TempDir(), false, Gateway{Origin: "https://gw.example:9000", Token: testGWToken, CAFile: ca}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := envValues(cmd.Env, "NODE_EXTRA_CA_CERTS"); !slices.Equal(got, []string{ca}) {
+		t.Errorf("NODE_EXTRA_CA_CERTS = %q, want [%s]", got, ca)
+	}
+}
+
+// TestNodeTLSRejectUnauthorized pins the NODE_TLS_REJECT_UNAUTHORIZED rule:
+// set to 0 or false it turns off Node's certificate check of the gateway
+// leg, so a header-mode launch refuses it (naming the variable, never a
+// value) and a token-mode Node launch over an https gateway notes it once.
+// Unset or 1 is fine; codex (not Node) and an http gateway get no note.
+func TestNodeTLSRejectUnauthorized(t *testing.T) {
+	const https, http = "https://h:1", "http://127.0.0.1:1"
+	cases := []struct {
+		name, agent, origin, value string
+		set, header, err, note     bool
+	}{
+		{"header 0", "claude", https, "0", true, true, true, false},
+		{"header false", "claude", https, "FALSE", true, true, true, false},
+		{"header 1", "claude", https, "1", true, true, false, false},
+		{"header unset", "claude", https, "", false, true, false, false},
+		{"token 0", "claude", https, "0", true, false, false, true},
+		{"token pi false", "pi", https, "false", true, false, false, true},
+		{"token 1", "claude", https, "1", true, false, false, false},
+		{"token http", "claude", http, "0", true, false, false, false},
+		{"token codex", "codex", https, "0", true, false, false, false},
+	}
+	for _, c := range cases {
+		var env []string
+		if c.set {
+			env = []string{"NODE_TLS_REJECT_UNAUTHORIZED=" + c.value}
+		}
+		note, err := nodeTLSCheck(c.agent, c.origin, c.header, env)
+		if (err != nil) != c.err || (note != "") != c.note {
+			t.Errorf("%s: note %q err %v, want note %v err %v", c.name, note, err, c.note, c.err)
+		}
+		if err != nil && (!strings.Contains(err.Error(), "NODE_TLS_REJECT_UNAUTHORIZED") || strings.Contains(err.Error(), "=")) {
+			t.Errorf("%s: err = %q, want the variable named and no value", c.name, err)
+		}
+	}
+	for _, v := range []string{"0", "1"} {
+		if err := HeaderModeProfileConflict(map[string]string{"NODE_TLS_REJECT_UNAUTHORIZED": v}, nil); err == nil || !strings.Contains(err.Error(), "env sets NODE_TLS_REJECT_UNAUTHORIZED") {
+			t.Errorf("profile env %s: err = %v, want the refusal", v, err)
+		}
+	}
+	if err := HeaderModeProfileConflict(nil, map[string]any{"env": map[string]any{"NODE_TLS_REJECT_UNAUTHORIZED": "0"}}); err == nil || !strings.Contains(err.Error(), "config_content.env sets NODE_TLS_REJECT_UNAUTHORIZED") {
+		t.Errorf("config_content.env: err = %v, want the refusal", err)
 	}
 }

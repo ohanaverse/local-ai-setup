@@ -81,7 +81,15 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	// TLS: this machine's wt-model home decides a local url's scheme; the
 	// session's CA file decides whether a local plan notes the line to add.
 	st.LocalTLS = env.Config.LocalTLS()
-	st.CAFile = sessionCAFile(getenv("WT_MODEL_CA_FILE"), tbl.CAFile, home, herr)
+	// A relative ca_file from config.toml is refused as the session refuses
+	// it (modelping.RelativeConfigCAFile): a problem, and no ping trusting it.
+	caRefused := ""
+	if getenv("WT_MODEL_CA_FILE") == "" && modelping.RelativeConfigCAFile(tbl.CAFile) {
+		caRefused = (&modelping.CAFileError{Path: tbl.CAFile, Reason: modelping.RelativeCAReason}).Error()
+		st.Config.Problems = append(st.Config.Problems, caRefused)
+	} else {
+		st.CAFile = sessionCAFile(getenv("WT_MODEL_CA_FILE"), tbl.CAFile, home, herr)
+	}
 
 	// Token.
 	// This mirrors the session's resolution (modelclient.ResolveEndpoint and
@@ -184,6 +192,10 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 		st.Server = ServerState{URL: urlrule.Hidden, Message: NotCheckedAtURL}
 	case ctx.Err() != nil:
 		st.Server.Message = "not checked: " + ctx.Err().Error()
+	case url != "" && token != "" && caRefused != "" && localName == "" &&
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(url)), "https://"):
+		// The session would refuse this ca_file before any request.
+		st.Server.Message = "not checked: " + caRefused
 	case url != "" && token != "":
 		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(url)), "https://") {
 			localCA = "" // ignored for an http url, as the session ignores it

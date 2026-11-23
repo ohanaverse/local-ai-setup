@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 )
 
 // nodeCAVar is the variable Node (claude, pi) reads extra trusted roots from;
@@ -71,9 +73,16 @@ func nodeCAEnv(agent, origin, caFile string, header bool, environ []string) (set
 	return nil, clear, note, nil
 }
 
-// applyNodeCA is nodeCAEnv applied to env: the cleared names removed, then
-// the set entries appended. The note, if any, goes to stderr.
+// applyNodeCA is nodeTLSCheck, then nodeCAEnv applied to env: the cleared
+// names removed, then the set entries appended. Notes go to stderr.
 func applyNodeCA(agent string, r Route, header bool, env []string) ([]string, error) {
+	tlsNote, err := nodeTLSCheck(agent, r.BaseOrigin, header, env)
+	if err != nil {
+		return nil, err
+	}
+	if tlsNote != "" {
+		fmt.Fprintln(os.Stderr, tlsNote)
+	}
 	set, clear, note, err := nodeCAEnv(agent, r.BaseOrigin, r.CAFile, header, env)
 	if err != nil {
 		return nil, err
@@ -126,9 +135,11 @@ func holdsAll(path, caFile string) bool {
 	return true
 }
 
-// pemCerts is the DER bytes of every CERTIFICATE block in the file at path.
+// pemCerts is the DER bytes of every CERTIFICATE block in the file at path,
+// read within modelping.ReadCAFile's bounds (a regular file, 1 MiB at most;
+// a FIFO never blocks).
 func pemCerts(path string) ([][]byte, error) {
-	data, err := os.ReadFile(path)
+	data, err := modelping.ReadCAFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -157,4 +168,34 @@ func shownEnvPath(p string) string {
 		}
 	}
 	return p
+}
+
+// NodeTLSRejectVar turns off Node's certificate verification when set to 0
+// (wt also reads false that way).
+const NodeTLSRejectVar = "NODE_TLS_REJECT_UNAUTHORIZED"
+
+// NodeTLSVerifyOff reports whether v, a NODE_TLS_REJECT_UNAUTHORIZED value,
+// turns certificate verification off: 0 or false (any case, trimmed).
+func NodeTLSVerifyOff(v string) bool {
+	v = strings.TrimSpace(v)
+	return v == "0" || strings.EqualFold(v, "false")
+}
+
+// nodeTLSCheck judges NODE_TLS_REJECT_UNAUTHORIZED in a launch's
+// environment. Set to turn verification off, it lets anyone on the path
+// answer for the gateway: a header-mode launch (the user's Claude login
+// rides on it) refuses, naming the variable and never its value; a
+// token-mode Node agent over an https gateway gets one note. It is never
+// stripped silently.
+func nodeTLSCheck(agent, origin string, header bool, environ []string) (string, error) {
+	if !NodeTLSVerifyOff(lastValue(environ, NodeTLSRejectVar)) {
+		return "", nil
+	}
+	if header {
+		return "", fmt.Errorf("%s is set to turn off certificate checks, which a launch using your Claude subscription refuses: unset it", NodeTLSRejectVar)
+	}
+	if nodeCAAgents[agent] && strings.HasPrefix(strings.ToLower(origin), "https://") {
+		return fmt.Sprintf("wt: note: %s turns off %s's certificate check of the model server's gateway", NodeTLSRejectVar, agent), nil
+	}
+	return "", nil
 }

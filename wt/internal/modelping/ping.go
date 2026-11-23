@@ -14,7 +14,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
@@ -52,6 +55,10 @@ type CAFileError struct {
 }
 
 func (e *CAFileError) Error() string { return "ca_file " + shownPath(e.Path) + " " + e.Reason }
+
+// MaxCAFile is the largest ca_file wt reads (1 MiB): a certificate bundle
+// is a few KiB, and a bound keeps a wrong path from being read whole.
+const MaxCAFile = 1 << 20
 
 // CAKeyReason is the reason a ca_file holding a private-key block is refused.
 const CAKeyReason = "holds a private key: copy only the certificate"
@@ -93,14 +100,9 @@ func NewHTTPClientFor(ep Endpoint) (*http.Client, error) {
 		cfg.Time = func() time.Time { return at }
 	}
 	if ep.CAFile != "" {
-		data, err := os.ReadFile(ep.CAFile)
+		data, err := ReadCAFile(ep.CAFile)
 		if err != nil {
-			reason := err.Error()
-			var pe *fs.PathError
-			if errors.As(err, &pe) {
-				reason = pe.Err.Error()
-			}
-			return nil, &CAFileError{Path: ep.CAFile, Reason: "cannot be read: " + reason}
+			return nil, err
 		}
 		if bytes.Contains(data, []byte("PRIVATE KEY-----")) {
 			return nil, &CAFileError{Path: ep.CAFile, Reason: CAKeyReason}
@@ -118,6 +120,51 @@ func NewHTTPClientFor(ep Endpoint) (*http.Client, error) {
 	// A 3xx is never followed: it would replay the bearer token and the
 	// request body to whatever the Location names.
 	return &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+}
+
+// RelativeCAReason is why a relative ca_file from config.toml is refused.
+const RelativeCAReason = "is a relative path under [model-server] ca_file in config.toml, which would resolve against the current directory: write it as an absolute path or ~/..."
+
+// RelativeConfigCAFile reports whether p, a ca_file read from config.toml,
+// is relative (neither absolute nor ~ or ~/...): refused by the session and
+// the Mode tab alike, since it would resolve against whatever directory wt
+// runs in, a repository's included. WT_MODEL_CA_FILE, typed in the user's
+// own shell, may be relative.
+func RelativeConfigCAFile(p string) bool {
+	return p != "" && p != "~" && !strings.HasPrefix(p, "~/") && !filepath.IsAbs(p)
+}
+
+// ReadCAFile reads a CA file within bounds: it must be a regular file
+// (following links; a FIFO or device is refused without blocking, since it is
+// opened non-blocking and checked before any read) of at most MaxCAFile
+// bytes. Every failure is a *CAFileError naming the path, never the bytes.
+func ReadCAFile(path string) ([]byte, error) {
+	fail := func(reason string) ([]byte, error) { return nil, &CAFileError{Path: path, Reason: reason} }
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		reason := err.Error()
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			reason = pe.Err.Error()
+		}
+		return fail("cannot be read: " + reason)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return fail("cannot be read: " + err.Error())
+	}
+	if !fi.Mode().IsRegular() {
+		return fail("is not a regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, MaxCAFile+1))
+	if err != nil {
+		return fail("cannot be read: " + err.Error())
+	}
+	if len(data) > MaxCAFile {
+		return fail("is larger than 1 MiB, too large for a certificate file")
+	}
+	return data, nil
 }
 
 // Response is the answer a request came back with, whatever its status.
