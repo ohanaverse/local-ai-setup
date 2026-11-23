@@ -189,13 +189,66 @@ func (claudeDriver) DefaultAlias(name string) (profiles.SlotAlias, bool) {
 // replace the slot mapping: --settings carries it and --model picks the slot.
 func (claudeDriver) RefusedSlotPassthrough() []string { return []string{"--settings", "--model"} }
 
+// claudeHeaderModeClear are the inherited variables a header-mode launch
+// removes (#597): either would replace the stored claude.ai login that was
+// checked with another credential.
+var claudeHeaderModeClear = []string{"ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+
+// claudeHeaderModeRefused are the keys a header-mode slot profile may not
+// set in env or config_content.env, with why. Both land in the --settings
+// env, which outranks the process env: ANTHROPIC_CUSTOM_HEADERS would
+// replace the merged header (an opaque 401), the two tokens would displace
+// the checked login. ANTHROPIC_AUTH_TOKEN is reserved anyway (static
+// validation refuses it); it is asked again for a caller that reached the
+// build another way.
+var claudeHeaderModeRefused = []struct{ key, why string }{
+	{profiles.CustomHeadersVar, "it would replace the header wt sends the model-server token in"},
+	{"ANTHROPIC_AUTH_TOKEN", "it would displace your Claude login"},
+	{"CLAUDE_CODE_OAUTH_TOKEN", "it would displace your Claude login"},
+}
+
+// claudeHeaderModeErr refuses a header-mode profile whose env or
+// config_content.env names a claudeHeaderModeRefused key, naming the table
+// and the key, never the value.
+func claudeHeaderModeErr(in profiles.SlotBuildInput) error {
+	table, _ := claudeConfigEnv(in.ConfigContent)
+	for _, r := range claudeHeaderModeRefused {
+		where := ""
+		if _, ok := in.Env[r.key]; ok {
+			where = "env"
+		} else if _, ok := table[r.key]; ok {
+			where = "config_content.env"
+		}
+		if where != "" {
+			return fmt.Errorf("%s sets %s, which a profile using your Claude subscription may not set: %s", where, r.key, r.why)
+		}
+	}
+	return nil
+}
+
 // BuildSlots builds the command of a slot-profile launch. The slot mapping
 // travels in one inline --settings JSON, so wt writes no settings file. The
 // proxy key is set in the process environment only: argv is visible in the
 // process list, and the key must not be.
+//
+// With in.Subscription (any slot model on the owner's Claude subscription)
+// the whole session runs in header mode (#597, decision 7): no
+// ANTHROPIC_AUTH_TOKEN, an empty ANTHROPIC_API_KEY, the stray credentials
+// cleared, and the gateway token handed back only as HeaderToken, which the
+// env assembler turns into ANTHROPIC_CUSTOM_HEADERS. The token is refused when
+// a header line cannot carry it (ErrBadHeaderToken), and so is a profile
+// whose settings env would override the header or the login.
 func (claudeDriver) BuildSlots(in profiles.SlotBuildInput) (profiles.SlotCommand, error) {
 	if !slices.Contains(claudeSlots, in.Default) && in.Default != claudeOpusplan {
 		return profiles.SlotCommand{}, fmt.Errorf("default slot %q is not a claude slot", in.Default)
+	}
+	if in.Subscription {
+		if err := checkHeaderToken(in.ProxyKey); err != nil {
+			return profiles.SlotCommand{}, err
+		}
+		if err := claudeHeaderModeErr(in); err != nil {
+			return profiles.SlotCommand{}, err
+		}
 	}
 	payload, err := claudeSlotSettings(in)
 	if err != nil {
@@ -206,7 +259,7 @@ func (claudeDriver) BuildSlots(in profiles.SlotBuildInput) (profiles.SlotCommand
 		args = append(args, claudeDriver{}.YoloFlag())
 	}
 	args = append(args, "--model", in.Default, "--settings", payload)
-	return profiles.SlotCommand{
+	sc := profiles.SlotCommand{
 		Bin:  "claude",
 		Args: args,
 		Env: []string{
@@ -218,7 +271,13 @@ func (claudeDriver) BuildSlots(in profiles.SlotBuildInput) (profiles.SlotCommand
 		// the profile never chose.
 		ClearEnv:         []string{"ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"},
 		ClearEnvPrefixes: []string{"ANTHROPIC_DEFAULT_"},
-	}, nil
+	}
+	if in.Subscription {
+		sc.Env = []string{"ANTHROPIC_BASE_URL=" + in.ProxyOrigin, "ANTHROPIC_API_KEY="}
+		sc.ClearEnv = append(sc.ClearEnv, claudeHeaderModeClear...)
+		sc.HeaderToken = in.ProxyKey
+	}
+	return sc, nil
 }
 
 // claudeSlotSettings returns the --settings payload: the profile's

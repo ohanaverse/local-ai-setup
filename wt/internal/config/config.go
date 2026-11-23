@@ -118,6 +118,10 @@ type Route struct {
 	Display    string // m.ModelName, for catalog "name" fields
 	ProviderID string // registry provider id
 	Litellm    bool   // set on every gateway route; false only on the zero Route of a native or command launch
+	// Subscription is the model's Subscription: claude launches it in header
+	// mode, keeping its own login and sending APIKey (the gateway token) only
+	// as the x-wt-model-token header (#597).
+	Subscription bool
 }
 
 // Provider is a source of models with connection info.
@@ -476,6 +480,12 @@ type Model struct {
 	// GatewayID is the id an agent must send to the gateway; empty means ID.
 	// Session-side only, never persisted.
 	GatewayID string `toml:"-"`
+	// Subscription reports that the model is served on the owner's Claude
+	// subscription (catalog.UsesSubscription: its provider is
+	// SubscriptionProvider, or an alias with such a target), so a claude
+	// launch of it runs in header mode (#597). Session-side only, never
+	// persisted.
+	Subscription bool `toml:"-"`
 }
 
 // pricingStampLayouts are the spellings of pricing_updated_at wt reads: the

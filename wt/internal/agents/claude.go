@@ -49,7 +49,10 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	// ollama gateway vars so the subscription wins, and pass --model
 	// only when a specific claude/* model is named. The sentinel
 	// claude/native launches bare. Anything else routes through the
-	// ollama anthropic-compatible gateway.
+	// ollama anthropic-compatible gateway. An inherited x-wt-model-token
+	// line of ANTHROPIC_CUSTOM_HEADERS (a header-mode session's shell) is
+	// stripped by the env assembler (launchEnv), so the wt token never
+	// reaches api.anthropic.com from here.
 	if m.Native {
 		if !isNativeLaunch(m) {
 			lc.ClearEnv = []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}
@@ -60,20 +63,6 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 		return lc
 	}
 
-	// The Anthropic client needs a non-empty auth token even when the
-	// endpoint doesn't validate it; fall back to the "ollama" placeholder
-	// only when the route carries no key (a gateway route always carries
-	// the gateway token).
-	token := r.APIKey
-	if token == "" {
-		token = "ollama"
-	}
-	lc.Env = append(lc.Env,
-		"ANTHROPIC_AUTH_TOKEN="+token,
-		"ANTHROPIC_API_KEY=",
-		"ANTHROPIC_BASE_URL="+r.BaseOrigin,
-	)
-	lc.Args = append(lc.Args, "--model", r.ModelRef)
 	// Every model slot is mapped to the same reference --model carries, so a
 	// request Claude Code makes on a tier of its own choosing reaches this
 	// model instead of an Anthropic id the endpoint rejects. The inherited
@@ -82,6 +71,35 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	// profiles.ApplyEnvAndArgs), and the last entry wins, so a profile that
 	// sets one of these still overrides wt's value.
 	lc.ClearEnv = claudeSlotKeys()
+	if r.Subscription {
+		// Header mode (#597): no ANTHROPIC_AUTH_TOKEN, so Claude Code keeps
+		// its own claude.ai login; an empty ANTHROPIC_API_KEY so a stray key
+		// never beats it; an inherited auth or OAuth token is cleared so the
+		// login used is the stored one that was checked. The gateway token
+		// goes back as HeaderToken, which the env assembler sends as the
+		// x-wt-model-token line of ANTHROPIC_CUSTOM_HEADERS.
+		lc.Env = append(lc.Env,
+			"ANTHROPIC_API_KEY=",
+			"ANTHROPIC_BASE_URL="+r.BaseOrigin,
+		)
+		lc.ClearEnv = append(lc.ClearEnv, claudeHeaderModeClear...)
+		lc.HeaderToken = r.APIKey
+	} else {
+		// The Anthropic client needs a non-empty auth token even when the
+		// endpoint doesn't validate it; fall back to the "ollama" placeholder
+		// only when the route carries no key (a gateway route always carries
+		// the gateway token).
+		token := r.APIKey
+		if token == "" {
+			token = "ollama"
+		}
+		lc.Env = append(lc.Env,
+			"ANTHROPIC_AUTH_TOKEN="+token,
+			"ANTHROPIC_API_KEY=",
+			"ANTHROPIC_BASE_URL="+r.BaseOrigin,
+		)
+	}
+	lc.Args = append(lc.Args, "--model", r.ModelRef)
 	lc.Env = append(lc.Env, claudeSingleModelSlotEnv(r.ModelRef, m)...)
 	// Claude Code does not know this model's window and would assume 200K:
 	// declare the one tiers.toml records, when it has one and the user has

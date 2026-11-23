@@ -25,6 +25,8 @@ func ToModel(r modelapi.Row) config.Model {
 	m := config.Model{
 		ID: r.ID, GatewayID: r.GatewayID, ProviderID: r.ProviderID, ModelName: r.ModelName,
 		Family: r.Family, Tags: slices.Clone(r.Tags), Location: config.Location(r.Location), Native: r.Native,
+		// A claude launch of it keeps the owner's login (header mode, #597).
+		Subscription: UsesSubscription(r),
 	}
 	if r.Price != nil {
 		m.Cost.InputPricePerMillion = r.Price.Input

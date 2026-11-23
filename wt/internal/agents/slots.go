@@ -128,23 +128,39 @@ func CheckSlotPassthrough(agent string, extraArgs []string) error {
 }
 
 // BuildSlotCommand runs the agent's slot build and nothing else: no binary
-// lookup, no environment. `wt profile show` calls it with a masked key.
+// lookup, no environment. `wt profile show` calls it with a masked key. The
+// build is in header mode when any slot model uses the subscription
+// (usesSubscription), for the launch and the preview alike.
 func BuildSlotCommand(sl profiles.SlotLaunch, yolo bool, proxyOrigin, proxyKey string) (profiles.SlotCommand, error) {
 	sc, ok := SlotsFor(sl.Agent)
 	if !ok {
 		return profiles.SlotCommand{}, fmt.Errorf("agent %q does not support slot profiles", sl.Agent)
 	}
 	return sc.BuildSlots(profiles.SlotBuildInput{
-		SlotLaunch:  sl,
-		ProxyOrigin: proxyOrigin,
-		ProxyKey:    proxyKey,
-		Yolo:        yolo,
+		SlotLaunch:   sl,
+		ProxyOrigin:  proxyOrigin,
+		ProxyKey:     proxyKey,
+		Yolo:         yolo,
+		Subscription: usesSubscription(sl),
 	})
 }
 
+// usesSubscription reports whether any of sl's slot models uses the owner's
+// Claude subscription (an unfilled slot holds the default's model, so it
+// counts once more and changes nothing).
+func usesSubscription(sl profiles.SlotLaunch) bool {
+	for _, m := range sl.Models {
+		if m.Subscription {
+			return true
+		}
+	}
+	return false
+}
+
 // slotLaunchCmd is BuildSlotLaunchCmdGateway's body after the gateway check:
-// the driver's slot build, binary lookup, filtered environment, directory and
-// passthrough args.
+// the driver's slot build, binary lookup, filtered environment (with
+// ANTHROPIC_CUSTOM_HEADERS settled by launchEnv), directory and passthrough
+// args.
 func slotLaunchCmd(sl profiles.SlotLaunch, worktreePath string, yolo bool, origin, key string, extraArgs []string) (*exec.Cmd, error) {
 	sc, err := BuildSlotCommand(sl, yolo, origin, key)
 	if err != nil {
@@ -154,8 +170,12 @@ func slotLaunchCmd(sl profiles.SlotLaunch, worktreePath string, yolo bool, origi
 	if err != nil {
 		return nil, fmt.Errorf("agent %s not installed", sc.Bin)
 	}
+	env, err := launchEnv(os.Environ(), sc.ClearEnv, sc.ClearEnvPrefixes, sc.Env, sc.HeaderToken)
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.Command(bin, sc.Args...)
-	cmd.Env = append(filterEnvPrefixes(filterEnv(os.Environ(), sc.ClearEnv), sc.ClearEnvPrefixes), sc.Env...)
+	cmd.Env = env
 	SetDir(cmd, worktreePath)
 	cmd.Args = append(cmd.Args, extraArgs...)
 	return cmd, nil

@@ -18,6 +18,12 @@ type LaunchCmd struct {
 	Env      []string // extra env vars, merged over os.Environ() by the caller
 	ClearEnv []string // env var names stripped from the inherited environment
 	Warn     string   // printed to stderr by Command when non-empty
+	// HeaderToken is set only in claude's header mode (a model on the
+	// owner's Claude subscription, #597): the gateway token, which command
+	// sends as the x-wt-model-token line of ANTHROPIC_CUSTOM_HEADERS. It is
+	// never in Args or Env. With it empty, command strips an inherited wt
+	// line instead (every agent, every other launch).
+	HeaderToken string
 	// ModelFallback reports that the driver could not select the requested
 	// model and the agent will run on its OWN default model instead (Warn
 	// says why). A real launch warns and continues; wt smoke fails the row,
@@ -296,7 +302,8 @@ func launchWithRoute(d Driver, m config.Model, worktreePath string, yolo bool, r
 }
 
 // command resolves the agent binary and returns an exec.Cmd ready to run in
-// workdir, with the driver's extra env merged over the inherited environment,
+// workdir, with the driver's extra env merged over the inherited environment
+// and ANTHROPIC_CUSTOM_HEADERS settled by launchEnv,
 // plus the driver's LaunchCmd, so BuildLaunchCmdGateway can report what the
 // driver decided (ModelFallback) alongside the exec.Cmd.
 func command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exec.Cmd, LaunchCmd, error) {
@@ -308,8 +315,12 @@ func command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exe
 	if lc.Warn != "" {
 		fmt.Fprintln(os.Stderr, lc.Warn)
 	}
+	env, err := launchEnv(os.Environ(), lc.ClearEnv, nil, lc.Env, lc.HeaderToken)
+	if err != nil {
+		return nil, lc, err
+	}
 	cmd := exec.Command(bin, lc.Args...)
-	cmd.Env = append(filterEnv(os.Environ(), lc.ClearEnv), lc.Env...)
+	cmd.Env = env
 	SetDir(cmd, workdir)
 	return cmd, lc, nil
 }

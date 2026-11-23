@@ -155,8 +155,13 @@ type SlotLaunch struct {
 type SlotBuildInput struct {
 	SlotLaunch
 	ProxyOrigin string // the [litellm] url, no trailing slash
-	ProxyKey    string // the [litellm] api key
+	ProxyKey    string // the gateway token
 	Yolo        bool
+	// Subscription is true when any slot model uses the owner's Claude
+	// subscription (config.Model.Subscription): the build then runs in header
+	// mode, keeps the agent's own login and hands ProxyKey back only as
+	// SlotCommand.HeaderToken (#597). The caller derives it from Models.
+	Subscription bool
 }
 
 // SlotCommand is what a driver's slot build returns: a command before the
@@ -167,6 +172,10 @@ type SlotCommand struct {
 	Env              []string // "KEY=VALUE", appended after the filtered inherited environment
 	ClearEnv         []string // exact names removed from the inherited environment
 	ClearEnvPrefixes []string // names with one of these prefixes are removed from the inherited environment
+	// HeaderToken is set only in header mode (SlotBuildInput.Subscription):
+	// the gateway token the env assembler sends as the x-wt-model-token line
+	// of ANTHROPIC_CUSTOM_HEADERS. It is never in Args or Env.
+	HeaderToken string
 }
 
 // SlotCapable is implemented by agents.Driver values that support slot

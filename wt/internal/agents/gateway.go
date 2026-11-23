@@ -53,12 +53,13 @@ func GatewayRoute(gw Gateway, m config.Model) config.Route {
 		return config.Route{}
 	}
 	return config.Route{
-		BaseOrigin: gw.origin(),
-		APIKey:     gw.Token,
-		ModelRef:   gatewayID(m),
-		Display:    m.ModelName,
-		ProviderID: m.ProviderID,
-		Litellm:    true,
+		BaseOrigin:   gw.origin(),
+		APIKey:       gw.Token,
+		ModelRef:     gatewayID(m),
+		Display:      m.ModelName,
+		ProviderID:   m.ProviderID,
+		Litellm:      true,
+		Subscription: m.Subscription,
 	}
 }
 

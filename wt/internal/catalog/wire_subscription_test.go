@@ -103,3 +103,18 @@ func TestUsesSubscription(t *testing.T) {
 		}
 	}
 }
+
+// TestToModelSetsSubscription pins that the model a session launches knows
+// whether it uses the subscription (decision 7): a subscription row and an
+// alias with a subscription target set Model.Subscription, an ordinary row
+// and an alias without one do not. The claude driver picks header mode from
+// it; if it regresses a subscription launch goes out in token mode (a 401),
+// or an ordinary one in header mode.
+func TestToModelSetsSubscription(t *testing.T) {
+	want := map[string]bool{"claude-haiku-5-5": true, "ollama/x": false, "alias/haiku": true, "alias/x": false}
+	for _, r := range subRows() {
+		if got := ToModel(r).Subscription; got != want[r.ID] {
+			t.Errorf("ToModel(%s).Subscription = %v, want %v", r.ID, got, want[r.ID])
+		}
+	}
+}

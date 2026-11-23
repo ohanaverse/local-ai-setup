@@ -112,6 +112,13 @@ func writeSlotProfileShow(w io.Writer, agent, id string, row catalog.Row, origin
 	for _, kv := range sc.Env {
 		fmt.Fprintf(w, "env: %s\n", kv)
 	}
+	// Header mode (a subscription slot, #597): the token travels as one line
+	// of ANTHROPIC_CUSTOM_HEADERS, shown masked. The caller passed a masked
+	// key already; masking again changes nothing and keeps this line safe
+	// for any caller.
+	if sc.HeaderToken != "" {
+		fmt.Fprintf(w, "header: %s: %s\n", profiles.WtHeaderName, config.MaskKey(sc.HeaderToken))
+	}
 	for _, name := range sc.ClearEnv {
 		fmt.Fprintf(w, "unset: %s\n", name)
 	}

@@ -514,3 +514,45 @@ claude-sonnet-4-6 = 5
 		t.Errorf("the profile commands asked the model server to start or register (%d POSTs): %v", n, srv.reqs())
 	}
 }
+
+// TestProfileShowMasksTheHeaderToken verifies `wt profile show` of a profile
+// with a subscription slot: the preview is the header-mode command (no
+// ANTHROPIC_AUTH_TOKEN line, the stray credentials unset) and names the
+// header wt adds as `header: x-wt-model-token: ` followed by the masked
+// token, so the user sees what is sent without the token itself appearing
+// anywhere in the output.
+func TestProfileShowMasksTheHeaderToken(t *testing.T) {
+	const token = "wt-SENTINEL-tok"
+	f := newFakeModelServer(t,
+		modelapi.Row{ID: "claude-opus-5-5", GatewayID: "claude-opus-5-5", ProviderID: config.SubscriptionProvider, ModelName: "claude-opus-5-5",
+			Family: "claude", Location: "cloud", Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning,
+			Action: modelapi.ActionLaunch, Order: 1, Context: 1000000},
+		modelapi.Row{ID: "openrouter/b", GatewayID: "openrouter/b", ProviderID: "openrouter", ModelName: "b", Family: "b", Location: "cloud",
+			Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 2})
+	f.Token = token
+	a := pointAtFake(t, f, "")
+	a.profiles = profiles.Store{Enabled: true}
+	a.slotChecks = []profiles.SlotCheck{
+		slotFixtureCheck(0, "sub", "opus", map[string]string{"opus": "claude-opus-5-5", "haiku": "openrouter/b"}),
+	}
+	out, err := runProfileCmd(t, a, "show", "-A", "claude", "-M", "profile/sub")
+	if err != nil {
+		t.Fatalf("err = %v; stdout =\n%s", err, out)
+	}
+	for _, want := range []string{
+		"header: x-wt-model-token: " + config.MaskKey(token) + "\n",
+		"unset: ANTHROPIC_AUTH_TOKEN\n",
+		"unset: CLAUDE_CODE_OAUTH_TOKEN\n",
+		"env: ANTHROPIC_API_KEY=\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout lacks %q; stdout =\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "env: ANTHROPIC_AUTH_TOKEN") {
+		t.Errorf("a header-mode preview sets ANTHROPIC_AUTH_TOKEN:\n%s", out)
+	}
+	if strings.Contains(out, token) {
+		t.Errorf("the token is printed:\n%s", out)
+	}
+}
