@@ -1063,9 +1063,11 @@ No record at all (no server running) is silent: there is nothing to ask.
   spelling starts from the inherited one; an IPv6 literal in both forms,
   `::1` and `[::1]`), so
   an inherited `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` does not carry the
-  login and the wt token in clear through a proxy. Whether Claude Code
-  would skip a proxy for loopback by itself is unverified until the phase 3
-  live check (#597).
+  login and the wt token in clear through a proxy. A live check
+  (#597, 2026-11-23) found the gateway request bypassing a proxy set through
+  `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`, while Claude Code's other traffic
+  (telemetry, update and auth checks to Anthropic) still used it; it could
+  not tell this addition from Claude Code's own loopback handling.
 - **Setup checks only the certificate's dates.** A loose key or a key that
   does not match the certificate shows up only as serve refusing to start
   (the line is in the LaunchAgent's log).
