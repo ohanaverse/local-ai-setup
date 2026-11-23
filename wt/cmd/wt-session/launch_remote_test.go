@@ -23,10 +23,20 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
 
-// remoteAgentScript is the fake claude a remote launch runs: it sleeps
-// WT_FAKE_SLEEP seconds when set, touches WT_FAKE_MARK when set, and exits
-// WT_FAKE_EXIT (0 by default).
+// remoteAgentScript is the fake claude a remote launch runs. As the login
+// check's claude (#597) it answers `--version` with the file WT_FAKE_VERSION
+// names and `auth status --json` with the file WT_FAKE_AUTH names (exit
+// WT_FAKE_AUTH_EXIT, 0 by default). As the agent it dumps its environment
+// and its argv (one per line) to the files WT_FAKE_ENV_DUMP and
+// WT_FAKE_ARGV_DUMP name when set, sleeps WT_FAKE_SLEEP seconds when set,
+// touches WT_FAKE_MARK when set, and exits WT_FAKE_EXIT (0 by default).
 const remoteAgentScript = "#!/bin/sh\n" +
+	"case \"$1\" in\n" +
+	"--version) [ -n \"$WT_FAKE_VERSION\" ] && cat \"$WT_FAKE_VERSION\"; exit 0 ;;\n" +
+	"auth) [ -n \"$WT_FAKE_AUTH\" ] && cat \"$WT_FAKE_AUTH\"; exit ${WT_FAKE_AUTH_EXIT:-0} ;;\n" +
+	"esac\n" +
+	"[ -n \"$WT_FAKE_ENV_DUMP\" ] && env > \"$WT_FAKE_ENV_DUMP\"\n" +
+	"[ -n \"$WT_FAKE_ARGV_DUMP\" ] && printf '%s\\n' \"$@\" > \"$WT_FAKE_ARGV_DUMP\"\n" +
 	"[ -n \"$WT_FAKE_SLEEP\" ] && sleep \"$WT_FAKE_SLEEP\"\n" +
 	"[ -n \"$WT_FAKE_MARK\" ] && touch \"$WT_FAKE_MARK\"\n" +
 	"exit ${WT_FAKE_EXIT:-0}\n"

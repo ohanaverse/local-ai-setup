@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
@@ -40,9 +41,11 @@ func slotRemoteCatalog() modelapi.Catalog {
 // "mix" of slots, loaded from a fake whose starts succeed. From here on the
 // fake logs its catalog reads, and the slot build is recorded as "BUILD" and
 // returns a harmless command (the fake's gateway is empty).
-func slotRemoteTable(t *testing.T, slots map[string]string) (model, *fakeModels) {
+// extra rows join the catalog (the parity table's subscription row).
+func slotRemoteTable(t *testing.T, slots map[string]string, extra ...modelapi.Row) (model, *fakeModels) {
 	t.Helper()
 	f := &fakeModels{cat: slotRemoteCatalog()}
+	f.cat.Rows = append(f.cat.Rows, extra...)
 	f.startFn = func(context.Context, int, modelapi.StartRequest, modelclient.Progress) (modelapi.JobStatus, error) {
 		return modelapi.JobStatus{State: modelapi.JobSucceeded}, nil
 	}
@@ -89,6 +92,8 @@ func tuiSlotCalls(f *fakeModels) []string {
 			out = append(out, "catalog")
 		case l == "BUILD":
 			out = append(out, "build")
+		case l == "GUARD":
+			out = append(out, "guard")
 		case strings.HasPrefix(l, "register "):
 			out = append(out, "register="+strings.TrimPrefix(l, "register "))
 		case strings.HasPrefix(l, "add "):
@@ -105,6 +110,8 @@ func tuiSlotCalls(f *fakeModels) []string {
 // picker on the model server: Enter on a profile row, the prep (one catalog
 // read, the client session's register with every slot model), the start
 // flow when the local slot needs one, and the build against the gateway.
+// The subscription scenario holds the pre-launch guard (ProfileLayer.Guard)
+// before the register and any runRemoteStart (#597).
 // cmd/wt-session's TestSlotFlowParity runs the same table through the -M
 // profile/<name> pin, so the two client paths make the same server calls in
 // the same order; a register after the start or a second catalog read on one
@@ -112,13 +119,28 @@ func tuiSlotCalls(f *fakeModels) []string {
 func TestSlotFlowParity(t *testing.T) {
 	for _, sc := range readRemoteSlotParity(t) {
 		t.Run(sc.name, func(t *testing.T) {
-			m, f := slotRemoteTable(t, sc.slots)
+			m, f := slotRemoteTable(t, sc.slots, paritySubRow())
+			// The pre-launch guard (#597): logged when it judges a
+			// subscription row, which it lets through.
+			m.guard = func(_ context.Context, rows []modelapi.Row) error {
+				if slices.ContainsFunc(rows, catalog.UsesSubscription) {
+					f.record("GUARD")
+				}
+				return nil
+			}
 			m = driveSlotLaunch(t, m)
 			if got := tuiSlotCalls(f); !slices.Equal(got, sc.calls) {
 				t.Errorf("calls = %v\nwant    %v\n(status %q)", got, sc.calls, m.status)
 			}
 		})
 	}
+}
+
+// paritySubRow is the parity table's model on the Claude subscription.
+func paritySubRow() modelapi.Row {
+	return wireRow("claude-haiku-5-5", "claude", func(r *modelapi.Row) {
+		r.ProviderID, r.ModelName, r.Order = config.SubscriptionProvider, "claude-haiku-5-5", 9
+	})
 }
 
 // TestSlotFlowRemoteShowsProfileRows proves the API picker lists the agent's
@@ -397,5 +419,53 @@ func TestEscOnTheReplaceDialogDropsTheSlotProfilesModels(t *testing.T) {
 		if !slices.Contains(h, "remove "+id) {
 			t.Errorf("calls = %v, want %s dropped from the client session", h, id)
 		}
+	}
+}
+
+// TestTUIGuardRefusesBeforeRegister proves the picker runs the pre-launch
+// guard (ProfileLayer.Guard, #597) inside its prep command and that a refusal
+// ends the launch before the client session's register, any start and any
+// build, on the single-model row and on a slot profile alike; the status
+// shows why. The guard learns the agent and whether it is a slot launch.
+func TestTUIGuardRefusesBeforeRegister(t *testing.T) {
+	refuse := errors.New("claude-haiku-5-5 uses your Claude subscription, but no claude.ai login was found")
+	for _, tc := range []struct {
+		name, enter string
+		slot        bool
+	}{
+		{"model row", "claude-haiku-5-5", false},
+		{"slot profile", "profile/mix", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, f := slotRemoteTable(t, map[string]string{"sonnet": "openrouter/a", "haiku": "claude-haiku-5-5"}, paritySubRow())
+			var seen GuardLaunch
+			m.guard = func(ctx context.Context, rows []modelapi.Row) error {
+				seen = GuardLaunchOf(ctx)
+				if slices.ContainsFunc(rows, catalog.UsesSubscription) {
+					return refuse
+				}
+				return nil
+			}
+			m.hooks.gateway = func(string, config.Model, string, bool, agents.Gateway, []config.Model, []string) (*exec.Cmd, agents.LaunchInfo, error) {
+				f.record("BUILD")
+				return exec.Command("true"), agents.LaunchInfo{}, nil
+			}
+			m, cmd := enterRemote(t, m, tc.enter)
+			if cmd == nil {
+				t.Fatalf("Enter returned no command (status %q)", m.status)
+			}
+			m, _ = updateMsg(m, cmd())
+			for _, l := range f.history() {
+				if strings.HasPrefix(l, "register") || strings.HasPrefix(l, "add") || strings.HasPrefix(l, "start") || l == "BUILD" {
+					t.Errorf("the refused launch reached %q (%v)", l, f.history())
+				}
+			}
+			if !strings.Contains(m.status, "no claude.ai login") {
+				t.Errorf("status = %q, want the refusal", m.status)
+			}
+			if seen.Agent != "claude" || seen.Slot != tc.slot || seen.Notes == nil {
+				t.Errorf("guard saw %+v, want agent claude, slot %v and a notes writer", seen, tc.slot)
+			}
+		})
 	}
 }

@@ -36,6 +36,8 @@ type fakeModelServer struct {
 	// token); Reqs is "METHOD path?query" per request, in order.
 	Status int
 	Reqs   []string
+	// Passthrough is the ping's subscription_passthrough (#597).
+	Passthrough bool
 
 	// Starts records every POST start body, in order. Outcome, when set,
 	// is the final state of the job the n-th start (from 0) creates; nil
@@ -176,7 +178,7 @@ func (f *fakeModelServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = w.Write([]byte(`{"data":[]}`))
 	case "/control/v1/ping":
-		_ = json.NewEncoder(w).Encode(modelapi.Ping{APIMajor: f.APIMajor, Schema: f.Schema, Server: "wt-model"})
+		_ = json.NewEncoder(w).Encode(modelapi.Ping{APIMajor: f.APIMajor, Schema: f.Schema, Server: "wt-model", SubscriptionPassthrough: f.Passthrough})
 	case "/control/v1/catalog":
 		_ = json.NewEncoder(w).Encode(modelapi.Catalog{Schema: f.Schema, Generated: f.Generated, Providers: f.Providers, Rows: f.Rows, Pricing: f.Pricing})
 	case "/control/v1/spend":
