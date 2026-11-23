@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // apEnv is a fake whose config file has the path a config step writes.
@@ -186,5 +188,23 @@ func TestApplyWritesConfigWithTheWantedFields(t *testing.T) {
 	}
 	if r.Recovery != "" {
 		t.Errorf("Recovery = %q, want empty", r.Recovery)
+	}
+}
+
+// TestApplyKeepsTheSubscriptionOptIn proves the Mode tab's config step
+// round-trips [model-server] subscription and never sets it (#597, decision
+// 12): the opt-in to sending this machine's Claude login is hand-edited, so a
+// mode change must neither drop a true nor write one.
+func TestApplyKeepsTheSubscriptionOptIn(t *testing.T) {
+	for _, had := range []bool{true, false} {
+		f := apEnv(t)
+		f.configFile.Exists, f.configFile.Table = true, &config.ModelServerState{Mode: "local", Subscription: had}
+		p := Plan{Want: Desired{Mode: ModeRemote, URL: "https://gpu.example:8787", TokenFile: plRemoteTok}, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}
+		if r, _ := apply(t, f, p); r.Err != nil {
+			t.Fatalf("Apply: %v", r.Err)
+		}
+		if got := f.configFile.Table.Subscription; got != had {
+			t.Errorf("subscription = %v after a mode change, want %v (kept as it was)", got, had)
+		}
 	}
 }

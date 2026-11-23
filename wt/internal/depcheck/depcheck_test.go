@@ -172,7 +172,7 @@ func TestRatchetReportsBothFailureBranches(t *testing.T) {
 // nor in either banned set: leaves and shared packages the ratchet leaves
 // alone. TestEveryInternalPackageIsClassified makes a new package pick a side.
 var otherPackages = []string{
-	"internal/config", "internal/depcheck", "internal/dirtsnap",
+	"internal/claudelogin", "internal/config", "internal/depcheck", "internal/dirtsnap",
 	"internal/exitcode", "internal/gitenv", "internal/gittest",
 	"internal/guard", "internal/initseed", "internal/launchwarn",
 	"internal/modelapi", "internal/provider", "internal/rootclaim",

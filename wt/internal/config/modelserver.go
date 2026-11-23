@@ -25,6 +25,12 @@ type ModelServerState struct {
 	// existing stricter mode. A value here is also reported as a problem so
 	// the user moves it into a 0600 token_file.
 	Token string `toml:"token,omitempty"`
+	// Subscription is this machine's opt-in to sending its own Claude login
+	// to the model server (#597, decision 12): a launch whose model uses the
+	// Claude subscription is refused without it. It is hand-edited only: no
+	// production code path writes true (the Mode tab and wt-model setup
+	// round-trip it untouched).
+	Subscription bool `toml:"subscription,omitempty"`
 }
 
 // ModelServer returns the [model-server] table, zero when it is absent.
