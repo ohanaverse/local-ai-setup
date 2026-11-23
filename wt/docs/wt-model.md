@@ -418,9 +418,9 @@ a failed registry write), 3 approval missing, nothing changed.
 becomes one LiteLLM database row per live target (a cloud target always, a
 local one while it runs), `model_name` the alias id and the target's own
 parameters plus `order`; rows are added before the old ones are deleted, so a
-re-point has no gap and no proxy restart. Equal `order` rows are written as
-is; whether LiteLLM load-balances them is verified in the live check, not
-promised here. A cloud target's resolved key is stored, encrypted by LiteLLM,
+re-point has no gap and no proxy restart. Targets with equal `order` are
+written as is; whether LiteLLM spreads requests across them is checked in the
+live check, not promised here. A cloud target's resolved key is stored, encrypted by LiteLLM,
 in its alias row (never printed). Aliases are never written to `config.yaml`.
 Detail: [internals/litellm-routes.md](internals/litellm-routes.md#alias-rows).
 

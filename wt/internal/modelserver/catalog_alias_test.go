@@ -146,8 +146,10 @@ confidence = "high"
 }
 
 // TestAliasRowTierIsTheLowestAmongEqualOrders pins that equal-order targets
-// (which LiteLLM load-balances) give the alias the lower of their tiers, so a
-// picker never advertises an alias above what half its requests get.
+// give the alias the lower of their tiers (targets with equal order are
+// written as is; whether LiteLLM spreads requests across them is checked in
+// the live check), so a picker never advertises an alias above what some of
+// its requests may get.
 func TestAliasRowTierIsTheLowestAmongEqualOrders(t *testing.T) {
 	ix, err := tiers.Parse([]byte(`
 [[models]]

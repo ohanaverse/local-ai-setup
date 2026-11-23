@@ -187,8 +187,9 @@ tags = ["code"]
 # [[aliases]] (#596): a gateway id that names one model (an alias) or several
 # in priority order (a group). Never a model row: llmbench ignores the table,
 # wt reads it into Config.Aliases. `order` is optional and reads as the
-# target's 1-based position; equal orders load-balance. A group has at most
-# one local target.
+# target's 1-based position; targets with equal order are written as is;
+# whether LiteLLM spreads requests across them is checked in the live check.
+# A group has at most one local target.
 [[aliases]]
 id = "alias/fixture-cloud"
 targets = [{ model = "openrouter/contract-fixture:cloud" }]

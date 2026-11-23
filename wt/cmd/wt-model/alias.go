@@ -40,8 +40,9 @@ func aliasCmd(h *host, rec servestate.Store) *cobra.Command {
 		Short: "List, set and remove registry aliases (one gateway id for one model or a priority group)",
 		Long: "An alias is a registry id alias/<name> that a slot profile, pi or codex can name\n" +
 			"like a model: it routes to one model, or to several in priority order (a group;\n" +
-			"LiteLLM tries a lower order first, and equal orders share the load). Its routes\n" +
-			"live in LiteLLM's database and follow its targets: a cloud target always, a local\n" +
+			"LiteLLM tries a lower order first; targets with equal order are written as is,\n" +
+			"and whether LiteLLM spreads requests across them is checked in the live check).\n" +
+			"Its routes live in LiteLLM's database and follow its targets: a cloud target always, a local\n" +
 			"one while it runs. `wt-model alias set` re-points an alias with no gap and no\n" +
 			"restart.",
 	}

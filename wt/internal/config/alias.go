@@ -43,8 +43,9 @@ var (
 var aliasNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
 
 // AliasTarget is one target of an alias: a registry model id and its LiteLLM
-// deployment order (1 first; equal orders load-balance). An order left out of
-// the file reads as the target's 1-based position.
+// deployment order (1 first; targets with equal order are written as is;
+// whether LiteLLM spreads requests across them is checked in the live check).
+// An order left out of the file reads as the target's 1-based position.
 type AliasTarget struct {
 	Model string `toml:"model"`
 	Order int    `toml:"order,omitempty"`
