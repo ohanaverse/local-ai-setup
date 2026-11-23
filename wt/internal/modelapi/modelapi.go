@@ -58,9 +58,8 @@ const (
 const KindAlias = "alias"
 
 // AliasTarget is one target of an alias row: a registry model id, its
-// LiteLLM deployment order (1 first; targets with equal order are written as
-// is; whether LiteLLM spreads requests across them is checked in the live
-// check) and the
+// LiteLLM deployment order (1 first; targets with equal order share the
+// requests; a lower order is tried first, measured on LiteLLM 1.109.1) and the
 // target row's provider, location, state and context window (0 unknown).
 type AliasTarget struct {
 	ID         string `json:"id"`

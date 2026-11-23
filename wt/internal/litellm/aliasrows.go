@@ -51,9 +51,8 @@ type AliasSkip struct {
 // DBModelsFromAlias builds the database rows of alias a: one per live
 // target, built as that target's model row is (prepareModel, then
 // ensureRowParams and DBModelFromRow), with model_name the alias id,
-// litellm_params.order the target's order (targets with equal order are
-// written as is; whether LiteLLM spreads requests across them is checked in
-// the live check), model_info without wt_managed and with AliasManagedKey,
+// litellm_params.order the target's order (targets with equal order share
+// the requests, measured on LiteLLM 1.109.1), model_info without wt_managed and with AliasManagedKey,
 // AliasKey and AliasTargetKey, and the id
 // DBAliasIDPrefix + "<name>/<h8>/<target id>", h8 taken from the row's
 // routeHash under hashKey before any hash is stamped (ApplyAliasDB stamps
