@@ -88,7 +88,7 @@ One target is an alias, several are a priority group (equal `order` load-balance
 
 **Phases**, each with its own plan:
 1. Enable `store_model_in_db` and move local routes to database rows with deterministic ids (#598).
-2. Aliases and groups in the registry, the reconciler, catalog, slot profiles, window rule (#596, #626).
+2. Aliases and groups in the registry, the reconciler, catalog, slot profiles, window rule (#596, #626). Delivered (plan `docs/superpowers/plans/2026-11-22-litellm-aliases-groups-phase2.md`); `alias rename` (decision 8 there: a manual sequence is documented) and the Models-tab alias screen moved out of phase 2 to follow-ups.
 3. Subscription provider, gateway header mode, claude launch mode (#597).
 4. #618 (an external gateway for pi) is independent: first answer whether pi can run the credential command itself.
 

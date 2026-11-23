@@ -357,9 +357,15 @@ when that local target must start, or runs while the alias id is not routed
 when a target is servable and the alias is routed; `block` when a target is
 servable but the alias is not routed (`run 'wt-model litellm sync'`); `start`
 when any target can start; else `block`, naming each target's reason. A
-`block` row is always in state `blocked`. A malformed alias is a `block` row
+`block` row is always in state `blocked`, so a servable alias that is not routed reads
+`blocked`, not `running`. The state of a `local` alias is its local target's;
+of a `cloud` one, `running` when a target is servable, `stopped` when only a
+start helps, else `blocked`. A malformed alias is a `block` row
 naming its fault. An older client ignores `kind` and `targets` and launches
-the row like a model.
+the row like a model. A server from before aliases sends a local row's
+`context` from the tiers file, not the registry, so update the server before
+its clients: a newer client against an older server may declare a window for
+claude that no registry value set.
 
 The catalog's `pricing` object is present exactly when some model is priced
 from OpenRouter; its `updated` is the RFC 3339 time of the newest price stamp

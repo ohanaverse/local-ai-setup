@@ -148,6 +148,20 @@ for each of the four slots.
 models of different providers. It may name one distinct local model, which
 may fill several slots.
 
+**A slot may name an alias** (`alias/<name>`, [wt-model.md](../wt-model.md#wt-model-alias);
+`wt-model alias list` on the model-server host shows them). An alias is a
+catalog row like a model, so `wt profile slots add|set` accepts its id and the
+launch needs no other change. For the one-local-model rule an alias counts as
+the local model it loads: an alias and its own local target are ONE local model,
+as are two aliases that share a local target, and a start through the profile
+runs the alias's start (which also adds the alias's routes). An alias counts
+as local only when its lowest-order targets include its local target (the
+server sends any other alias as a cloud row, so a cloud-first group with a local
+fallback is not the profile's local model). A group is eligible for an agent only
+when every target's provider is one that agent can run. To rename an alias,
+add the new one, `wt profile slots set` each profile on each session machine,
+then `wt-model alias rm` the old one.
+
 ## When a profile is blocked
 
 wt checks a profile twice. The file alone is checked when it is loaded
@@ -181,7 +195,7 @@ Resolved reasons (against the model server's catalog):
 | `slot haiku: <id> is not in the model server's catalog` | The id is not a model the server lists. This is what a profile shows after `wt-model cloud-sync` or `wt-model model rm` removed a model it names |
 | `slot opus: <id> is a native model, which has no gateway route` | A slot cannot use the native Anthropic subscription (the gateway's origin and token never reach a native model) |
 | `slot opus: ` and the server's own block reason | The server blocks that model (no LiteLLM mapping, not on disk, no engine to start it, …) |
-| `slots name two local models (<id> and <id>); a slot profile may name one` | More than one distinct local model |
+| `slots name two local models (<id> and <id>); a slot profile may name one` | More than one distinct local model; an alias counts as its local target, so an alias and its own target are one |
 
 Three problems produce no usable row, and a fourth loses part of the file:
 
@@ -364,9 +378,11 @@ Claude Code 2.1.296: an inherited `ANTHROPIC_SMALL_FAST_MODEL` does not
 override `ANTHROPIC_DEFAULT_HAIKU_MODEL`; wt removes it all the same.
 
 The `--settings` env also carries `CLAUDE_CODE_MAX_CONTEXT_TOKENS` when the
-default slot's model has a host `context` in `tiers.toml` (cloud models whose
-window comes from their own host row; a local build has none, and a window
-that is only models.dev's largest row is not declared), so Claude Code does
+default slot's model has a window: its registry `context_window` (any
+location, [wt-model.md](../wt-model.md#a-models-context-window)), else for a
+cloud model the host `context` in `tiers.toml` (its own host row; a local build
+has none, and a window that is only models.dev's largest row is not declared);
+an alias's window is the smallest of its targets', none when any is unknown, so Claude Code does
 not assume 200K for an id it does not recognize. For `opusplan` the anchor is
 the smaller of the `opus` and `sonnet` slots' windows, and nothing when
 either has none. The variable is one value per session and `/model` can move
@@ -599,7 +615,7 @@ the client's own config home.
 | Command | Needs the model server |
 |---|---|
 | `wt profile slots candidates` | yes: the ranking runs on the model-server host, which holds the registry and `tiers.toml`. Same `--json` document (`tiers_generated_at`, `stale_sources`, `candidates`) |
-| `wt profile slots add`, `set` | yes: a slot id must be a row of the server's catalog. A server that does not answer fails the command (exit 1, `…; nothing was changed`) and the file is not touched |
+| `wt profile slots add`, `set` | yes: a slot id must be a row of the server's catalog, a model or an alias (otherwise `profile "<name>" slot <slot> names "<id>", which is not a model or alias on the model server`). A server that does not answer fails the command (exit 1, `…; nothing was changed`) and the file is not touched |
 | `wt profile show -A <agent> -M profile/<name>` | yes: the verdict is resolved against the catalog. The preview shows the gateway origin and the client token masked (`***` plus its last four characters); the `[litellm]` url and key are never read |
 | `wt profile slots rm`, `usage` | no: both work offline, with no server and no registry |
 | `wt profile list` | no: it reports the static check only |
