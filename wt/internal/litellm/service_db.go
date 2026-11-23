@@ -169,6 +169,18 @@ func (d *dbRoutes) owned() []DBModel {
 	return out
 }
 
+// ownedAliases is the database rows the alias path plans against (IsAliasDB);
+// owned never holds one, so the model-row path never deletes an alias row.
+func (d *dbRoutes) ownedAliases() []DBModel {
+	var out []DBModel
+	for _, m := range d.current {
+		if IsAliasDB(m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 // routeRows is owned as config.yaml-shaped rows (one per route name), for
 // planSync's ownership and removal loops.
 func (d *dbRoutes) routeRows() []RowInfo {
