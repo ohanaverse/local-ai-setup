@@ -25,7 +25,7 @@ import (
 func (d Deps) StopJob(req modelapi.StopRequest, sessions *sessionreg.Registry) modeljobs.RunFunc {
 	return guarded(func(ctx context.Context, step func(string)) modelapi.JobResult {
 		cfg := d.Config()
-		if a, ok := cfg.AliasByID(req.Model); ok {
+		if a, ok := serverAlias(cfg, req.Model); ok {
 			return aliasStop(cfg, a)
 		}
 		snap := d.Inventory(cfg)

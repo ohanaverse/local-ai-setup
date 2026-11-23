@@ -19,7 +19,8 @@ import (
 // order, with its targets, the window windows.Alias allows, the tier of its
 // lowest-order target (the lowest tier among equal orders) and no price. A
 // malformed alias, or one config.AliasFault rejects, is a block row naming
-// its fault. routed is the gateway's id set (nil: unknown, read as routed).
+// its fault; one whose id lacks the alias/ prefix gets no row (servedAliasID:
+// the id may be a model's, whose own row stands). routed is the gateway's id set (nil: unknown, read as routed).
 func aliasRows(cfg *config.Config, models []modelapi.Row, ix tiers.Index, sessions *sessionreg.Registry, routed map[string]bool, orderBase int) []modelapi.Row {
 	if len(cfg.Aliases) == 0 {
 		return nil
@@ -30,13 +31,15 @@ func aliasRows(cfg *config.Config, models []modelapi.Row, ix tiers.Index, sessio
 	}
 	var ids []string
 	for _, a := range cfg.Aliases {
-		ids = append(ids, a.ID)
+		if servedAliasID(a.ID) {
+			ids = append(ids, a.ID)
+		}
 	}
 	counts := sessions.Counts(ids)
 	seen := map[string]bool{}
 	var out []modelapi.Row
 	for i, a := range cfg.Aliases {
-		if a.ID == "" || seen[a.ID] {
+		if !servedAliasID(a.ID) || seen[a.ID] {
 			continue
 		}
 		seen[a.ID] = true

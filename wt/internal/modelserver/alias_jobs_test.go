@@ -394,3 +394,55 @@ func TestStopBlockersNameAliasSessions(t *testing.T) {
 		}
 	}
 }
+
+// prefixlessAliasCfg is serverCfg plus a malformed alias whose id has no
+// alias/ prefix and equals a model id (a hand edit the reader keeps, marked
+// Malformed), with a local target other than that model.
+func prefixlessAliasCfg() *config.Config {
+	cfg := serverCfg()
+	cfg.Aliases = []config.Alias{{ID: "omlx/a", Malformed: `id must start with "alias/"`,
+		Targets: []config.AliasTarget{{Model: "omlx/b", Order: 1}}}}
+	return cfg
+}
+
+// TestPrefixlessMalformedAliasNeverShadowsTheModel pins that only an id under
+// alias/ is ever an alias on the server: a hand-edited registry whose
+// malformed alias keeps the id of a model (omlx/a) must leave that model
+// startable, stoppable, listed once as itself and unexpanded in session
+// accounting. Read as an alias it would refuse a stop ("has nothing to
+// stop"), block a start, key the start by another model and list a second
+// omlx/a row.
+func TestPrefixlessMalformedAliasNeverShadowsTheModel(t *testing.T) {
+	cfg := prefixlessAliasCfg()
+	if got := startKey(cfg, "omlx/a"); got != "omlx/a" {
+		t.Errorf("startKey(omlx/a) = %q, want omlx/a", got)
+	}
+	if exp := aliasExpansion(cfg); len(exp) != 0 {
+		t.Errorf("aliasExpansion = %v, want none", exp)
+	}
+	c := BuildCatalog(cfg, serverSnap(), nil, testSessions(), nil, testNow)
+	var n int
+	for _, r := range c.Rows {
+		if r.ID == "omlx/a" {
+			n++
+			if r.Kind == modelapi.KindAlias {
+				t.Errorf("omlx/a row is an alias row: %+v", r)
+			}
+		}
+	}
+	if n != 1 {
+		t.Errorf("catalog lists omlx/a %d times, want once", n)
+	}
+
+	f := &fakeLife{snap: serverSnap()}
+	res := f.deps(cfg).StartJob(modelapi.StartRequest{Model: "omlx/a"}, nil)(context.Background(), func(string) {})
+	if !res.OK || !slices.Contains(f.callList(), "Start omlx/a") {
+		t.Errorf("start omlx/a: result %+v, engine calls %v, want the model started", res.Error, f.callList())
+	}
+
+	f = &fakeLife{snap: serverSnap("omlx/a")}
+	res = f.deps(cfg).StopJob(modelapi.StopRequest{Model: "omlx/a"}, testSessions())(context.Background(), func(string) {})
+	if !res.OK || len(f.stopped()) != 1 || f.stopped()[0].ModelID != "omlx/a" {
+		t.Errorf("stop omlx/a: result %+v, stopped %v, want the model stopped", res.Error, f.stopped())
+	}
+}

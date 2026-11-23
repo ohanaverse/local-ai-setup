@@ -33,7 +33,7 @@ func (d Deps) StartJob(req modelapi.StartRequest, sessions *sessionreg.Registry)
 	return guarded(func(ctx context.Context, step func(string)) modelapi.JobResult {
 		cfg := d.Config()
 		model := req.Model
-		alias, isAlias := cfg.AliasByID(req.Model)
+		alias, isAlias := serverAlias(cfg, req.Model)
 		if isAlias {
 			if fault := config.AliasFault(cfg, alias); fault != nil {
 				return problem(modelapi.CodeBlocked, fault.Error())

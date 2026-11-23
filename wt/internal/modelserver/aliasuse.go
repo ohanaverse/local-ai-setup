@@ -1,6 +1,7 @@
 package modelserver
 
 import (
+	"strings"
 	"sync/atomic"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -18,6 +19,9 @@ func aliasExpansion(cfg *config.Config) map[string][]string {
 	}
 	out := map[string][]string{}
 	for _, a := range cfg.Aliases {
+		if !servedAliasID(a.ID) {
+			continue
+		}
 		for _, t := range a.Targets {
 			i := config.IndexModelByID(cfg.Models, t.Model)
 			if i < 0 {
@@ -31,6 +35,21 @@ func aliasExpansion(cfg *config.Config) map[string][]string {
 	return out
 }
 
+// servedAliasID reports whether id can name an alias on the server: only an
+// id under config.AliasIDPrefix. The reader keeps a malformed alias whose id
+// lacks the prefix (a hand edit), and such an id may be a model's: it must
+// never take that model over.
+func servedAliasID(id string) bool { return strings.HasPrefix(id, config.AliasIDPrefix) }
+
+// serverAlias is cfg.AliasByID for the server's paths (start, stop, the
+// start key): an id without the alias/ prefix is never an alias here.
+func serverAlias(cfg *config.Config, id string) (config.Alias, bool) {
+	if !servedAliasID(id) {
+		return config.Alias{}, false
+	}
+	return cfg.AliasByID(id)
+}
+
 // startKey is the id a start job is keyed by: an alias's local target id
 // for an alias id, else id itself. A start of alias/x and a start of its
 // target then share one job (modeljobs.SubmitOnce), and Jobs.Pending(target)
@@ -40,7 +59,7 @@ func startKey(cfg *config.Config, id string) string {
 	if cfg == nil {
 		return id
 	}
-	if a, ok := cfg.AliasByID(id); ok {
+	if a, ok := serverAlias(cfg, id); ok {
 		if m, ok := cfg.AliasLocalTarget(a); ok {
 			return m.ID
 		}

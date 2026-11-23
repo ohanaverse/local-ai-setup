@@ -361,7 +361,9 @@ when any target can start; else `block`, naming each target's reason. A
 `blocked`, not `running`. The state of a `local` alias is its local target's;
 of a `cloud` one, `running` when a target is servable, `stopped` when only a
 start helps, else `blocked`. A malformed alias is a `block` row
-naming its fault. An older client ignores `kind` and `targets` and launches
+naming its fault. Only an id under `alias/` is ever an alias on the server: a
+hand-edited malformed alias whose id lacks the prefix gets no row, and a start,
+stop or client session naming that id reaches the model with that id, if any. An older client ignores `kind` and `targets` and launches
 the row like a model. A server from before aliases sends a local row's
 `context` from the tiers file, not the registry, so update the server before
 its clients: a newer client against an older server may declare a window for
