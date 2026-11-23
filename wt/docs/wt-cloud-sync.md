@@ -477,7 +477,9 @@ included. `--yes` has nobody reading, so it never deletes on its own.
 - **Mass removal.** A plan that would remove more than half the ollama cloud
   entries is refused unless `--force` is given, with or without `--yes`: it
   is more likely a page that parsed wrong than a catalog that shrank.
-  Re-tagged entries do not count, since they come straight back. `--force`
+  Re-tagged entries do not count, since they come straight back, and entries
+  added by hand or targeted by an alias are not in the total (both are kept,
+  never removed). `--force`
   does not replace the digest. A dry run of such a plan still exits 0; the
   refusal is the apply's.
 
@@ -486,8 +488,8 @@ update, no addition, no pull. The other flow is not held up.
 
 The openrouter flow works the same way. Its plan ends with its own
 `Registry removals` section and `Removal digest:` line, and a plan that would
-remove more than half the OpenRouter-priced models (models added by hand do
-not count) is refused unless `--force` is given. When both flows remove
+remove more than half the OpenRouter-priced models (models added by hand or
+targeted by an alias do not count) is refused unless `--force` is given. When both flows remove
 something, the plans end with a line that names both digests
 (`removals: approve both with --yes --approve-removals <openrouter>,<ollama>`);
 `--approve-removals` takes a comma-separated list, and each flow looks for its

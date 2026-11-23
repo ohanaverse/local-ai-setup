@@ -183,8 +183,8 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
    registry removal and every `ollama rm` by name and get an explicit yes to
    those in particular. The OpenRouter removals are models OpenRouter no
    longer lists. A dry run does not flag a mass removal (more than half the
-   flow's entries, re-tagged ollama ones not counted, manual ones left
-   out); the apply does. Estimate it: the `Registry removals` lines without `(re-tagged as
+   flow's entries, re-tagged ollama ones not counted, manual ones and alias
+   targets left out); the apply does. Estimate it: the `Registry removals` lines without `(re-tagged as
    …)`, against the counts of `Price updates`, `Unchanged prices` and
    `Registry removals` added together. If that looks like more than half,
    say so now: the apply refuses it without `--force` (exit 4, whose line

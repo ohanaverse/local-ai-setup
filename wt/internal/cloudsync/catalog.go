@@ -44,7 +44,9 @@ type Pull struct{ ID, Tag string }
 // the registry's ollama cloud entries both mirror the page.
 type CatalogPlan struct {
 	CatalogSize int
-	// CloudEntries counts the registry's ollama cloud entries before the sync.
+	// CloudEntries counts the registry's ollama cloud entries before the
+	// sync that a sync may remove: not manual, and no alias targets them.
+	// It is the denominator of the mass-removal guard.
 	CloudEntries int
 	Updates      []CostUpdate
 	Unchanged    []string
@@ -369,7 +371,9 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 	ids := map[string]bool{}
 	for _, e := range entries {
 		ids[e.ID] = true
-		if isOllamaCloud(e) && !e.Manual() {
+		if isOllamaCloud(e) && !e.Manual() && len(e.AliasUsers) == 0 {
+			// An alias target is kept (decision 11), so it never dilutes
+			// the mass-removal guard.
 			plan.CloudEntries++
 		}
 	}

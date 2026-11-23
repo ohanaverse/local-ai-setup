@@ -108,3 +108,43 @@ targets = [{ model = "openrouter/a" }]
 		t.Errorf("alias users = %v, want openrouter/a used by alias/odd and openrouter/b by none", got)
 	}
 }
+
+// TestMassRemovalGuardIgnoresAliasTargets pins that a kept alias target never
+// dilutes the mass-removal guard: with six entries, three of them alias
+// targets, and all six gone from a healthy list or page, the three that go
+// are every removable entry, so both flows flag a mass removal. Counted in
+// the denominator they read as 3 of 6 and the guard stays silent exactly
+// when aliases target cloud models. A registry with no alias plans the same
+// removals and digest as before.
+func TestMassRemovalGuardIgnoresAliasTargets(t *testing.T) {
+	var or, ol []Entry
+	for i, n := range []string{"a", "b", "c", "d", "e", "f"} {
+		o, c := orEntry(n, nil), cloudEntry(n+":cloud")
+		if i < 3 {
+			aliased("alias/x")(&o)
+			aliased("alias/x")(&c)
+		}
+		or, ol = append(or, o), append(ol, c)
+	}
+	pp := PlanPrices(or, healthyList("vendor/other"))
+	if pp.EntriesGone() != 3 || !pp.MassRemoval() {
+		t.Errorf("openrouter: gone %d of %d, mass = %v; want 3 of 3 flagged", pp.EntriesGone(), pp.RemovableCandidates, pp.MassRemoval())
+	}
+	cp := PlanCatalog(ol, catalogOf(cm("other")), nil, nil)
+	if cp.EntriesGone() != 3 || !cp.MassRemoval() {
+		t.Errorf("ollama: gone %d of %d, mass = %v; want 3 of 3 flagged", cp.EntriesGone(), cp.CloudEntries, cp.MassRemoval())
+	}
+
+	// No alias: the same entries plan the counts and digests they always did.
+	for i := range or {
+		or[i].AliasUsers, ol[i].AliasUsers = nil, nil
+	}
+	pp = PlanPrices(or[:4], healthyList("vendor/a", "vendor/b"))
+	if pp.RemovableCandidates != 4 || pp.MassRemoval() || pp.RemovalDigest() != digestOf([]string{"openrouter/c", "openrouter/d"}) {
+		t.Errorf("openrouter, no alias: %d candidates, mass %v, digest %s", pp.RemovableCandidates, pp.MassRemoval(), pp.RemovalDigest())
+	}
+	cp = PlanCatalog(ol[:4], catalogOf(cm("a"), cm("b")), nil, nil)
+	if cp.CloudEntries != 4 || cp.MassRemoval() || len(cp.Removals) != 2 {
+		t.Errorf("ollama, no alias: %d entries, mass %v, removals %v", cp.CloudEntries, cp.MassRemoval(), cp.Removals)
+	}
+}
