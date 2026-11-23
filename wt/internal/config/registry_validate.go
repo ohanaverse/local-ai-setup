@@ -254,6 +254,10 @@ func validateModelRow(row *tomlw.Table) error {
 		if n < 0 {
 			return errors.New("context_window must not be negative")
 		}
+		if n > math.MaxInt32 {
+			// The reader (ContextTokens) reads a larger value as malformed.
+			return fmt.Errorf("context_window must be at most %d tokens", math.MaxInt32)
+		}
 	}
 	if v, ok := row.Get("serve_args"); ok {
 		args, isStrings := stringList(v)
