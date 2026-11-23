@@ -153,7 +153,7 @@ func SubscriptionHazards(ctx context.Context, cfgPath string, env ProxyEnv, info
 			f = opened
 		case errors.Is(oerr, ErrMissing):
 		default:
-			hazards = append(hazards, "config.yaml could not be read to check forward_client_headers_to_llm_api")
+			hazards = append(hazards, "config.yaml could not be read to check the proxy's settings")
 		}
 	}
 	h, w, err := subscriptionHazards(ctx, f, env, info)
@@ -193,6 +193,11 @@ func subscriptionHazards(ctx context.Context, f *File, env ProxyEnv, info ModelI
 			if env.IsSet(name) {
 				hazards = append(hazards, fmt.Sprintf("%s is set in the proxy's environment (%s): a keyless anthropic/ row would send the client's login to that address", name, env.Source))
 			}
+		}
+		// The proxy loads its config from a bucket instead of the
+		// config.yaml checked here (proxy_server.py get_config).
+		if env.IsSet("LITELLM_CONFIG_BUCKET_NAME") {
+			hazards = append(hazards, fmt.Sprintf("LITELLM_CONFIG_BUCKET_NAME is set in the proxy's environment (%s): the proxy loads its config from a bucket, not the config.yaml wt checks", env.Source))
 		}
 	}
 	if f != nil {
@@ -234,8 +239,22 @@ func subscriptionHazards(ctx context.Context, f *File, env ProxyEnv, info ModelI
 //   - general_settings.key_management_system: the secret manager is asked
 //     for ANTHROPIC_API_KEY (and the rest) before the environment, so any
 //     configured one fails closed.
+//   - general_settings.use_azure_key_vault with any value but false (null
+//     included: LiteLLM tests `is not False`) and a truthy
+//     general_settings.use_google_kms, the deprecated switches that install
+//     a secret manager the same way;
+//   - a duplicated mapping key anywhere (wt reads the first copy, LiteLLM's
+//     PyYAML the last, so a duplicate could hide any other check);
+//   - a non-empty top-level include: LiteLLM merges the included files over
+//     this one, and wt does not follow them.
 func configCredentialHazards(root *yaml.Node) []string {
 	var hazards []string
+	for _, k := range duplicateKeys(root) {
+		hazards = append(hazards, fmt.Sprintf("config.yaml has a duplicate key %s: the proxy reads the last copy, which wt does not check", oneLineString(k)))
+	}
+	if inc := aliasValue(mapGet(root, "include")); inc != nil && !isNull(inc) && !emptyNode(inc) {
+		hazards = append(hazards, "config.yaml uses include (not followed): the included files can carry any setting")
+	}
 	if ev := aliasValue(mergedGet(root, "environment_variables")); ev != nil && ev.Kind == yaml.MappingNode {
 		for _, name := range append(subscriptionCredentialVars(), subscriptionAddressVars()...) {
 			if mergedGet(ev, name) != nil {
@@ -253,8 +272,77 @@ func configCredentialHazards(root *yaml.Node) []string {
 	if v := aliasValue(mergedGet(gs, "key_management_system")); v != nil && !isNull(v) {
 		hazards = append(hazards, "config.yaml sets general_settings.key_management_system: the proxy asks that secret manager for Anthropic credentials before its environment, so a keyless anthropic/ row could take one")
 	}
+	if v := aliasValue(mergedGet(gs, "use_azure_key_vault")); v != nil && !isFalse(v) {
+		hazards = append(hazards, "config.yaml sets general_settings.use_azure_key_vault: the proxy asks Azure Key Vault for Anthropic credentials before its environment, so a keyless anthropic/ row could take one")
+	}
+	if v := aliasValue(mergedGet(gs, "use_google_kms")); v != nil && pyTruthy(v) {
+		hazards = append(hazards, "config.yaml sets general_settings.use_google_kms: the proxy asks Google KMS for Anthropic credentials before its environment, so a keyless anthropic/ row could take one")
+	}
 	return hazards
 }
+
+// duplicateKeys walks every mapping of the document under root and returns
+// each key that one mapping holds more than once (merge keys, "<<", are
+// legal repeated and never counted), in the order found. Alias nodes are not
+// followed: the anchor they point at is walked where it is defined.
+func duplicateKeys(root *yaml.Node) []string {
+	var out []string
+	var walk func(n *yaml.Node, depth int)
+	walk = func(n *yaml.Node, depth int) {
+		if n == nil || n.Kind == yaml.AliasNode || depth > 64 {
+			return
+		}
+		if n.Kind == yaml.MappingNode {
+			seen := map[string]bool{}
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				k := n.Content[i]
+				if k.Kind == yaml.ScalarNode && k.Tag != "!!merge" && k.Value != "<<" {
+					if seen[k.Value] && !slices.Contains(out, k.Value) {
+						out = append(out, k.Value)
+					}
+					seen[k.Value] = true
+				}
+			}
+		}
+		for _, c := range n.Content {
+			walk(c, depth+1)
+		}
+	}
+	walk(root, 0)
+	return out
+}
+
+// emptyNode reports whether n is an empty string, sequence or mapping.
+func emptyNode(n *yaml.Node) bool {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		return n.Tag == "!!str" && n.Value == ""
+	case yaml.SequenceNode, yaml.MappingNode:
+		return len(n.Content) == 0
+	}
+	return false
+}
+
+// pyTruthy is Python's truth value of the YAML value n as PyYAML loads it:
+// null, false, a zero number, an empty string and an empty sequence or
+// mapping are false; anything else is true.
+func pyTruthy(n *yaml.Node) bool {
+	if n == nil || isNull(n) || isFalse(n) || emptyNode(n) {
+		return false
+	}
+	if n.Kind == yaml.ScalarNode && (n.Tag == "!!int" || n.Tag == "!!float") {
+		var f float64
+		if err := n.Decode(&f); err == nil && f == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// oneLineString folds s onto one line (whitespace runs, newlines included,
+// become one space): the proxy's own text, a model_name or a key, never
+// starts a second output line.
+func oneLineString(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // deploymentHazard is the one hazard deployment d is for a keyless
 // anthropic/ row, "" for none (SubscriptionHazards' deployment rules).
@@ -263,6 +351,7 @@ func deploymentHazard(d DeploymentInfo) string {
 	if name == "" {
 		name = d.Model
 	}
+	name = oneLineString(name)
 	noProvider := d.Provider == ""
 	anthropic := strings.EqualFold(d.Provider, "anthropic") ||
 		noProvider && (strings.HasPrefix(strings.ToLower(d.Model), "claude") || strings.HasPrefix(strings.ToLower(d.ModelName), "claude"))
@@ -279,7 +368,7 @@ func deploymentHazard(d DeploymentInfo) string {
 	case d.BaseURL != "" && d.BaseURL != anthropicAPIBase:
 		return fmt.Sprintf("the proxy has an anthropic deployment %s whose base_url is not exactly %s: LiteLLM forwards a client's login to every anthropic deployment", name, anthropicAPIBase)
 	case len(d.AnthropicParams) > 0:
-		return fmt.Sprintf("the proxy has an anthropic deployment %s with %s in its litellm_params: per-deployment anthropic settings can give it a credential or an address", name, strings.Join(d.AnthropicParams, ", "))
+		return fmt.Sprintf("the proxy has an anthropic deployment %s with %s in its litellm_params: per-deployment anthropic settings can give it a credential or an address", name, oneLineString(strings.Join(d.AnthropicParams, ", ")))
 	}
 	return ""
 }
