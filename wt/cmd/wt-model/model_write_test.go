@@ -875,3 +875,24 @@ func TestRouteSyncThatChangesNothingDoesNotRestartTheProxy(t *testing.T) {
 		t.Errorf("restarts = %q after a sync that changed nothing, want still one", got)
 	}
 }
+
+// TestModelEditContextWindowZeroClears pins `--context-window`: N writes the
+// key, and 0 removes it (the way an empty value clears every other field), so
+// the file loses the key rather than holding a meaningless 0.
+func TestModelEditContextWindowZeroClears(t *testing.T) {
+	h := testHost()
+	registry := modelHome(t, writeRegistry)
+	stubRouteSync(h, "")
+	if _, err := runEditCmd(t, h, "ollama/gemma4:9b", "--context-window", "65536"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, registry); !strings.Contains(got, "context_window = 65536") {
+		t.Fatalf("registry has no context_window = 65536:\n%s", got)
+	}
+	if _, err := runEditCmd(t, h, "ollama/gemma4:9b", "--context-window", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, registry); strings.Contains(got, "context_window") {
+		t.Errorf("registry still has context_window after 0:\n%s", got)
+	}
+}

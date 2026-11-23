@@ -575,3 +575,20 @@ func TestTestMainGuardsTheDevelopersRegistry(t *testing.T) {
 		t.Errorf("a temp registry should be allowed, got %v", err)
 	}
 }
+
+// TestNegativeContextWindowRefused pins that a write giving a model a negative
+// context_window is refused as an invalid registry and leaves the file alone: a
+// window is a token count, and a negative one would reach a launch as nonsense.
+func TestNegativeContextWindowRefused(t *testing.T) {
+	path := scratchRegistry(t, docRegistry)
+	before := readFile(t, path)
+	_, err := UpdateRegistry(func(d *RegistryDoc) error {
+		return d.PatchModel("ollama/beta", map[string]any{"context_window": -1}, nil)
+	})
+	if !errors.Is(err, ErrRegistryInvalid) {
+		t.Fatalf("err = %v, want ErrRegistryInvalid", err)
+	}
+	if readFile(t, path) != before {
+		t.Error("the registry changed despite the refusal")
+	}
+}

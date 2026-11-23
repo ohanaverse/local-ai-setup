@@ -37,6 +37,7 @@ func modelFieldFlags(c *cobra.Command) func() modeladmin.Fields {
 	f.String(modeladmin.FieldSubscriptionPrice, "", "subscription price, $ per period")
 	f.String(modeladmin.FieldSubscriptionPeriod, "", "month or year")
 	f.StringArray(modeladmin.FieldServeArg, nil, "mtplx only: one argument for `mtplx serve`, appended after wt's own; repeat it, one element each (--serve-arg --profile --serve-arg turbo)")
+	f.Int(modeladmin.FieldContextWindow, 0, "context window in tokens; 0 removes it (edit)")
 	return func() modeladmin.Fields {
 		get := func(name string) *string {
 			if !f.Changed(name) {
@@ -50,9 +51,14 @@ func modelFieldFlags(c *cobra.Command) func() modeladmin.Fields {
 			v, _ := f.GetStringArray(modeladmin.FieldServeArg)
 			serveArgs = &v
 		}
+		var contextWindow *int
+		if f.Changed(modeladmin.FieldContextWindow) {
+			v, _ := f.GetInt(modeladmin.FieldContextWindow)
+			contextWindow = &v
+		}
 		return modeladmin.Fields{
-			ServeArgs: serveArgs,
-			Family:    get(modeladmin.FieldFamily), Tags: get(modeladmin.FieldTags), Location: get(modeladmin.FieldLocation),
+			ServeArgs: serveArgs, ContextWindow: contextWindow,
+			Family: get(modeladmin.FieldFamily), Tags: get(modeladmin.FieldTags), Location: get(modeladmin.FieldLocation),
 			InputPrice: get(modeladmin.FieldInputPrice), CachePrice: get(modeladmin.FieldCachePrice), OutputPrice: get(modeladmin.FieldOutputPrice),
 			SubscriptionPrice: get(modeladmin.FieldSubscriptionPrice), SubscriptionPeriod: get(modeladmin.FieldSubscriptionPeriod),
 		}
@@ -274,7 +280,7 @@ func modelEditCmd(h *host) *cobra.Command {
 		if f.Empty() {
 			// A usage mistake, unlike every other failure here: show the flags.
 			cmd.SilenceUsage = false
-			return errors.New("nothing to change: pass at least one of --family, --tags, --location, --source, --serve-arg, --clear-serve-args or a price flag")
+			return errors.New("nothing to change: pass at least one of --family, --tags, --location, --source, --serve-arg, --clear-serve-args, --context-window or a price flag")
 		}
 		return h.runModelEdit(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], f)
 	}

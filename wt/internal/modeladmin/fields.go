@@ -28,6 +28,7 @@ const (
 	FieldDraft              = "draft"
 	FieldSource             = "source"
 	FieldServeArg           = "serve-arg"
+	FieldContextWindow      = "context-window"
 )
 
 // FieldError is a value the user gave that cannot be used. Field names the
@@ -60,12 +61,15 @@ type Fields struct {
 	// flag and its value are two): nil is not given, an empty list clears
 	// the key. mtplx models only (config.ServeArgsProblems).
 	ServeArgs *[]string
+	// ContextWindow is the model's context_window in tokens: nil is not
+	// given, 0 clears the key, a negative number is refused.
+	ContextWindow *int
 }
 
 // Empty reports whether no field was given.
 func (f Fields) Empty() bool {
 	return f.Family == nil && f.Tags == nil && f.Location == nil && f.InputPrice == nil && f.CachePrice == nil &&
-		f.OutputPrice == nil && f.SubscriptionPrice == nil && f.SubscriptionPeriod == nil && f.Source == nil && f.ServeArgs == nil
+		f.OutputPrice == nil && f.SubscriptionPrice == nil && f.SubscriptionPeriod == nil && f.Source == nil && f.ServeArgs == nil && f.ContextWindow == nil
 }
 
 // priceKeys maps each price field to its key in the model row.
@@ -155,6 +159,16 @@ func (f Fields) patch() (set map[string]any, unset []string, err error) {
 			unset = append(unset, "serve_args")
 		} else {
 			set["serve_args"] = slices.Clone(*f.ServeArgs)
+		}
+	}
+	if f.ContextWindow != nil {
+		switch {
+		case *f.ContextWindow < 0:
+			return nil, nil, fieldErr(FieldContextWindow, "context window must not be negative, got %d", *f.ContextWindow)
+		case *f.ContextWindow == 0:
+			unset = append(unset, "context_window")
+		default:
+			set["context_window"] = *f.ContextWindow
 		}
 	}
 	return set, unset, nil

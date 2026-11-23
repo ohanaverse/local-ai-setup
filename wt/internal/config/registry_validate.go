@@ -119,6 +119,20 @@ func validateModelRow(row *tomlw.Table) error {
 			}
 		}
 	}
+	if v, ok := row.Get("context_window"); ok {
+		var n int64
+		switch w := v.(type) {
+		case int:
+			n = int64(w)
+		case int64:
+			n = w
+		default:
+			return errors.New("context_window must be a whole number of tokens")
+		}
+		if n < 0 {
+			return errors.New("context_window must not be negative")
+		}
+	}
 	if v, ok := row.Get("serve_args"); ok {
 		args, isStrings := stringList(v)
 		if !isStrings {

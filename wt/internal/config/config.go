@@ -439,6 +439,12 @@ type Model struct {
 	// LiteLLM rows merge it over the derived pricing keys, so hand-written
 	// keys (context windows, capability flags) reach the proxy.
 	ModelInfo map[string]any `toml:"model_info,omitempty"`
+	// ContextWindow is `context_window`: the window in tokens the owner says
+	// this model is served with (#626). 0 is absent; a negative value is
+	// refused on write (validateModelRow). For a cloud model it overrides the
+	// tiers file's window (windows.Model); for a local model it is the only
+	// source.
+	ContextWindow int `toml:"context_window,omitempty"`
 	// Fetch and Draft say where a local model's weights come from: the
 	// registry's [models.fetch] table, and [models.draft] for the draft half
 	// of an mlx_lm_server pairing. wt reads them here — to show a local_path

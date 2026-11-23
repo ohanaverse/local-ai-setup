@@ -45,7 +45,7 @@ var (
 	}
 	modelSchemas = map[string][]string{
 		"": {"id", "family", "provider_id", "model_name", "location", "source", "tags", "serve_args", "cost",
-			"model_info", "fetch", "quantization", "pricing_updated_at", "draft"},
+			"model_info", "context_window", "fetch", "quantization", "pricing_updated_at", "draft"},
 		"cost": {"input_price_per_million", "cache_price_per_million", "output_price_per_million",
 			"subscription_price", "subscription_period", "time_prices"},
 		"cost.time_prices": {"label", "timezone", "input_price_per_million", "cache_price_per_million",
