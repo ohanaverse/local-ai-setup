@@ -81,7 +81,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	// TLS: this machine's wt-model home decides a local url's scheme; the
 	// session's CA file decides whether a local plan notes the line to add.
 	st.LocalTLS = env.Config.LocalTLS()
-	st.CAFile = getenv("WT_MODEL_CA_FILE")
+	st.CAFile = sessionCAFile(getenv("WT_MODEL_CA_FILE"), tbl.CAFile, home, herr)
 
 	// Token.
 	// This mirrors the session's resolution (modelclient.ResolveEndpoint and
@@ -143,7 +143,9 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	// The derived local url follows serve's TLS (LocalURL); a ping of it
 	// trusts the home's certificate as setup's wait does. TLS settings that
 	// cannot be read leave it unpinged, never a silent http://.
-	var localCA, localName string
+	// Any other url is pinged trusting the session's own ca_file, as the
+	// session's client would (decision 14).
+	localCA, localName := st.CAFile, ""
 	if url == "" && st.Resolution.Mode == ModeLocal {
 		listen := opts.Local.Listen
 		if listen == "" {
@@ -153,6 +155,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			st.Server.Message = "not checked: wt-model's TLS settings cannot be used (" + st.LocalTLS.Err + ")"
 		} else {
 			url = LocalURL(listen, st.LocalTLS.On)
+			localCA = ""
 			if st.LocalTLS.On {
 				localCA, localName = st.LocalTLS.Cert, st.LocalTLS.DialName
 			}
@@ -160,7 +163,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 	if check := strings.TrimSpace(opts.CheckURL); check != "" {
 		url, token = check, strings.TrimSpace(opts.CheckToken.Reveal())
-		localCA, localName = "", ""
+		localCA, localName = st.CAFile, ""
 		if path := strings.TrimSpace(opts.CheckTokenFile); token == "" && path != "" {
 			ts := TokenState{Path: path}
 			if x, err := expandHome(path, home, herr); err == nil {
@@ -182,6 +185,9 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	case ctx.Err() != nil:
 		st.Server.Message = "not checked: " + ctx.Err().Error()
 	case url != "" && token != "":
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(url)), "https://") {
+			localCA = "" // ignored for an http url, as the session ignores it
+		}
 		st.Server = PingServer(ctx, env, modelping.Endpoint{URL: url, Token: token, CAFile: localCA, ServerName: localName})
 		st.Server.URL = ShownURL(url)
 		// Defence in depth: the url pinged holds no '@' here, but the stored
@@ -212,6 +218,28 @@ func PingServer(ctx context.Context, env Env, ep modelping.Endpoint) ServerState
 		s.Schema = p.Schema
 	}
 	return s
+}
+
+// sessionCAFile is the CA file a session trusts, as modelclient's
+// ResolveEndpoint settles it: WT_MODEL_CA_FILE wins over the config's
+// ca_file, a leading ~ is expanded against the Host seam's home and a
+// relative path made absolute. A path that cannot be expanded is kept as
+// written (the ping then fails on it, naming it).
+func sessionCAFile(env, cfg, home string, herr error) string {
+	p := env
+	if p == "" {
+		p = cfg
+	}
+	if p == "" {
+		return ""
+	}
+	if x, err := expandHome(p, home, herr); err == nil {
+		p = x
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	return p
 }
 
 // ExpandIn expands a leading ~ against home; a path it cannot expand is

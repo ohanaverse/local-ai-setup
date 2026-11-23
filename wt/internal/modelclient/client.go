@@ -27,8 +27,12 @@ const (
 // Client talks to the model server's control API. It is safe for concurrent
 // use.
 type Client struct {
-	ep      Endpoint
-	hc      *http.Client
+	ep Endpoint
+	hc *http.Client
+	// hcErr is why New could not build its transport for ep (a CA file
+	// that cannot be used): every request returns it, without a dial and
+	// never over a fall-back client.
+	hcErr   error
 	timeout time.Duration
 	sleep   func(time.Duration) // nil: a ctx-aware timer
 	gwCap   time.Duration
@@ -59,14 +63,17 @@ func withGatewayCap(d time.Duration) Option { return func(c *Client) { c.gwCap =
 // between polls.
 func WithSleep(f func(time.Duration)) Option { return func(c *Client) { c.sleep = f } }
 
-// New returns a client for ep.
+// New returns a client for ep. Its transport is modelping.NewHTTPClientFor's
+// (ep.CAFile's certificates added to the system roots); when that fails the
+// error is kept and every request returns it, never dialling and never
+// falling back to a client without the CA file.
 func New(ep Endpoint, opts ...Option) *Client {
 	c := &Client{ep: ep, timeout: defaultRequestTimeout, gwCap: gatewayWaitCap}
 	for _, o := range opts {
 		o(c)
 	}
 	if c.hc == nil {
-		c.hc = modelping.NewHTTPClient()
+		c.hc, c.hcErr = modelping.NewHTTPClientFor(ep)
 	}
 	return c
 }
@@ -93,6 +100,9 @@ type response = modelping.Response
 // the one client-side effect of a response: the Date offset that makes Now()
 // the server's clock.
 func (c *Client) send(ctx context.Context, method, rawurl string, body any) (*response, error) {
+	if c.hcErr != nil {
+		return nil, c.hcErr
+	}
 	r, err := modelping.Send(ctx, c.hc, c.timeout, c.ep, method, rawurl, body)
 	if err != nil {
 		return nil, err

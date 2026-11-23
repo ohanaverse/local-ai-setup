@@ -1,12 +1,22 @@
 package modelclient
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tlstest"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tokenfile"
 )
 
@@ -54,7 +64,7 @@ func TestResolveEndpointPrecedence(t *testing.T) {
 	good := tokenFileWith(t, "good", "filetok\n", 0o600)
 	other := tokenFileWith(t, "other", "othertok\n", 0o600)
 
-	ep, err := ResolveEndpoint("http://cfg:1/", good, envOf(nil))
+	ep, err := ResolveEndpoint("http://cfg:1/", good, "", envOf(nil))
 	if err != nil || ep.URL != "http://cfg:1/" || ep.Token != "filetok" {
 		t.Fatalf("config only = %+v, %v", ep, err)
 	}
@@ -66,28 +76,28 @@ func TestResolveEndpointPrecedence(t *testing.T) {
 		t.Errorf("Gateway = %q, %q", o, tok)
 	}
 
-	ep, err = ResolveEndpoint("http://cfg:1", good, envOf(map[string]string{"WT_MODEL_URL": "http://env:2", "WT_MODEL_TOKEN_FILE": other}))
+	ep, err = ResolveEndpoint("http://cfg:1", good, "", envOf(map[string]string{"WT_MODEL_URL": "http://env:2", "WT_MODEL_TOKEN_FILE": other}))
 	if err != nil || ep.URL != "http://env:2" || ep.Token != "othertok" {
 		t.Fatalf("env override = %+v, %v", ep, err)
 	}
 
-	ep, err = ResolveEndpoint("", "", envOf(map[string]string{"WT_MODEL_URL": "http://env:2", "WT_MODEL_TOKEN": "literal"}))
+	ep, err = ResolveEndpoint("", "", "", envOf(map[string]string{"WT_MODEL_URL": "http://env:2", "WT_MODEL_TOKEN": "literal"}))
 	if err != nil || ep.Token != "literal" {
 		t.Fatalf("literal = %+v, %v", ep, err)
 	}
 
-	ep, err = ResolveEndpoint("", "", envOf(map[string]string{"WT_MODEL_URL": "http://env:2", "WT_MODEL_TOKEN": "literal", "WT_MODEL_TOKEN_FILE": other}))
+	ep, err = ResolveEndpoint("", "", "", envOf(map[string]string{"WT_MODEL_URL": "http://env:2", "WT_MODEL_TOKEN": "literal", "WT_MODEL_TOKEN_FILE": other}))
 	if err != nil || ep.Token != "othertok" {
 		t.Fatalf("file beats literal = %+v, %v", ep, err)
 	}
 
-	ep, err = ResolveEndpoint("", good, envOf(map[string]string{"WT_MODEL_URL": "http://env:2", "WT_MODEL_TOKEN": "literal"}))
+	ep, err = ResolveEndpoint("", good, "", envOf(map[string]string{"WT_MODEL_URL": "http://env:2", "WT_MODEL_TOKEN": "literal"}))
 	if err != nil || ep.Token != "literal" {
 		t.Fatalf("literal beats config token_file = %+v, %v", ep, err)
 	}
 
 	loose := tokenFileWith(t, "loose", "x", 0o644)
-	_, err = ResolveEndpoint("http://cfg:1", loose, envOf(nil))
+	_, err = ResolveEndpoint("http://cfg:1", loose, "", envOf(nil))
 	var te *tokenfile.Error
 	if !errors.As(err, &te) || te.Kind != tokenfile.KindLoose {
 		t.Errorf("loose file err = %v", err)
@@ -100,11 +110,11 @@ func TestResolveEndpointPrecedence(t *testing.T) {
 // directory) is a KindRead error.
 func TestEnvTokenFileErrorsNameTheEnvVar(t *testing.T) {
 	loose := tokenFileWith(t, "loose", "x", 0o644)
-	_, err := ResolveEndpoint("http://cfg:1", "", envOf(map[string]string{"WT_MODEL_TOKEN_FILE": loose}))
+	_, err := ResolveEndpoint("http://cfg:1", "", "", envOf(map[string]string{"WT_MODEL_TOKEN_FILE": loose}))
 	if err == nil || !strings.Contains(err.Error(), "WT_MODEL_TOKEN_FILE") || strings.Contains(err.Error(), "token_file under [model-server]") {
 		t.Errorf("env-sourced err = %v", err)
 	}
-	_, err = ResolveEndpoint("http://cfg:1", loose, envOf(nil))
+	_, err = ResolveEndpoint("http://cfg:1", loose, "", envOf(nil))
 	if err == nil || !strings.Contains(err.Error(), "token_file under [model-server]") || strings.Contains(err.Error(), "WT_MODEL_TOKEN_FILE") {
 		t.Errorf("config-sourced err = %v", err)
 	}
@@ -113,7 +123,7 @@ func TestEnvTokenFileErrorsNameTheEnvVar(t *testing.T) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, err = ResolveEndpoint("http://cfg:1", dir, envOf(nil))
+	_, err = ResolveEndpoint("http://cfg:1", dir, "", envOf(nil))
 	var te *tokenfile.Error
 	if !errors.As(err, &te) || te.Kind != tokenfile.KindRead {
 		t.Errorf("directory err = %v, want KindRead", err)
@@ -146,12 +156,12 @@ func TestNotConfiguredMessages(t *testing.T) {
 			t.Errorf("got  %q\nwant %q", got, c.want)
 		}
 	}
-	_, err := ResolveEndpoint("", "", envOf(nil))
+	_, err := ResolveEndpoint("", "", "", envOf(nil))
 	var nc *NotConfiguredError
 	if !errors.As(err, &nc) || !nc.MissingURL || !nc.MissingToken {
 		t.Errorf("empty resolve = %v", err)
 	}
-	_, err = ResolveEndpoint("http://x", "", envOf(nil))
+	_, err = ResolveEndpoint("http://x", "", "", envOf(nil))
 	if !errors.As(err, &nc) || nc.MissingURL || !nc.MissingToken {
 		t.Errorf("no token resolve = %v", err)
 	}
@@ -220,5 +230,141 @@ func TestNotConfiguredErrorLeadsAreUnchangedAndTheTailNamesWtConfig(t *testing.T
 		if strings.Contains(got, "wt never starts one") || strings.Contains(got, "\n") {
 			t.Errorf("%q still says wt never starts a server, or is not one line", got)
 		}
+	}
+}
+
+// writeCA writes data to a new file under dir and returns its path.
+func writeCA(t *testing.T, dir, name string, data []byte) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// caCertPEM is a self-signed CA certificate (basicConstraints CA:TRUE) with
+// no name constraints, generated in memory: the shape that can vouch for any
+// host and earns ResolveEndpoint's one note.
+func caCertPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "test CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageCertSign, BasicConstraintsValid: true, IsCA: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// TestHTTPSEndpointAccepted proves an https url resolves exactly as written:
+// TLS needs no change to the url rules.
+func TestHTTPSEndpointAccepted(t *testing.T) {
+	ep, err := ResolveEndpoint("https://192.0.2.7:8787", "", "", envOf(map[string]string{"WT_MODEL_TOKEN": "t"}))
+	if err != nil || ep.URL != "https://192.0.2.7:8787" || ep.Token != "t" || ep.CAFile != "" {
+		t.Fatalf("ep = %+v, err = %v", ep, err)
+	}
+}
+
+// TestCAFileEnvWinsAndExpandsHome proves decision 14's path rule: a config
+// ca_file's leading ~ is expanded against HOME, WT_MODEL_CA_FILE wins over
+// the config, and a relative path is made absolute, so the agent (which runs
+// in the worktree) reads the same file.
+func TestCAFileEnvWinsAndExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	certPath, _ := tlstest.Gen(t, home, tlstest.Opts{})
+	pemBytes, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCA(t, home, "ca.pem", pemBytes)
+	env := map[string]string{"WT_MODEL_TOKEN": "t"}
+	ep, err := ResolveEndpoint("https://h:1", "", "~/ca.pem", envOf(env))
+	if err != nil || ep.CAFile != filepath.Join(home, "ca.pem") {
+		t.Fatalf("~ expansion: ep.CAFile = %q, err = %v", ep.CAFile, err)
+	}
+	if len(ep.Notes) != 0 {
+		t.Errorf("a non-CA leaf got notes: %q", ep.Notes)
+	}
+	cwd := t.TempDir()
+	writeCA(t, cwd, "env.pem", pemBytes)
+	t.Chdir(cwd)
+	env["WT_MODEL_CA_FILE"] = "env.pem"
+	ep, err = ResolveEndpoint("https://h:1", "", "~/ca.pem", envOf(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.Abs("env.pem")
+	if ep.CAFile != want || !filepath.IsAbs(ep.CAFile) {
+		t.Errorf("env: ep.CAFile = %q, want %q (absolute, the env's file)", ep.CAFile, want)
+	}
+}
+
+// TestCAFileWithoutPEMRefused proves a ca_file wt cannot trust is refused
+// when the endpoint resolves (exit 1 before any request): one holding no PEM
+// certificate, and one holding a private-key block beside a certificate. The
+// message names the path and never the file's bytes. A CA certificate
+// without name constraints resolves, with one note.
+func TestCAFileWithoutPEMRefused(t *testing.T) {
+	dir := t.TempDir()
+	env := envOf(map[string]string{"WT_MODEL_TOKEN": "t"})
+	certPath, keyPath := tlstest.Gen(t, dir, tlstest.Opts{})
+	cert, _ := os.ReadFile(certPath)
+	key, _ := os.ReadFile(keyPath)
+	cases := map[string]struct {
+		data []byte
+		want string
+	}{
+		"no pem":      {[]byte("SECRETBYTES not a certificate\n"), "holds no PEM certificate"},
+		"key in file": {append(append([]byte{}, cert...), key...), "holds a private key: copy only the certificate"},
+	}
+	for name, c := range cases {
+		p := writeCA(t, dir, strings.ReplaceAll(name, " ", "-")+".pem", c.data)
+		_, err := ResolveEndpoint("https://h:1", "", p, env)
+		if err == nil {
+			t.Fatalf("%s: resolved", name)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "ca_file "+p+" "+c.want) {
+			t.Errorf("%s: err = %q, want the path and %q", name, msg, c.want)
+		}
+		if strings.Contains(msg, "SECRETBYTES") || strings.Contains(msg, "BEGIN") {
+			t.Errorf("%s: err holds file bytes: %q", name, msg)
+		}
+		if exitcode.Of(err) != 1 {
+			t.Errorf("%s: exit = %d, want 1", name, exitcode.Of(err))
+		}
+	}
+	ca := writeCA(t, dir, "ca.pem", caCertPEM(t))
+	ep, err := ResolveEndpoint("https://h:1", "", ca, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ep.Notes) != 1 || !strings.Contains(ep.Notes[0], "without name constraints") || !strings.Contains(ep.Notes[0], ca) {
+		t.Errorf("notes = %q, want one naming the CA without name constraints", ep.Notes)
+	}
+}
+
+// TestCAFileIgnoredForHTTPNote proves a ca_file beside an http url is not
+// used (nor read): the endpoint carries no CAFile and one note says so.
+func TestCAFileIgnoredForHTTPNote(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nope.pem")
+	ep, err := ResolveEndpoint("http://127.0.0.1:1", "", missing, envOf(map[string]string{"WT_MODEL_TOKEN": "t"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.CAFile != "" {
+		t.Errorf("CAFile = %q for an http url", ep.CAFile)
+	}
+	if len(ep.Notes) != 1 || ep.Notes[0] != "ca_file is ignored for an http url" {
+		t.Errorf("notes = %q", ep.Notes)
 	}
 }

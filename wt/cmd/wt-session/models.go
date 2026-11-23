@@ -4,17 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessioneditor"
 )
 
@@ -33,6 +37,21 @@ type modelSession struct {
 	// subscription is this machine's [model-server] subscription opt-in
 	// (#597, decision 12), read with the rest of the table.
 	subscription bool
+	// tlsOffNoted makes the tls_off note (decision 2) print once per
+	// session, whichever of openModels and the guard reads the ping first.
+	tlsOffNoted sync.Once
+}
+
+// noteTLSOff prints decision 2's one note when the server's ping says its
+// TLS is off (configured, but its certificate is outside its dates), at most
+// once per session.
+func (ms *modelSession) noteTLSOff(w io.Writer, p modelapi.Ping) {
+	if p.TLSOff == "" {
+		return
+	}
+	ms.tlsOffNoted.Do(func() {
+		fmt.Fprintf(w, "wt: note: the model server's TLS is off (%s); this connection is plain http\n", modelping.Clean(p.TLSOff))
+	})
 }
 
 // agentDriverNames is the agent drivers a session synthesizes an agent for:
@@ -80,9 +99,11 @@ func (a *app) openModels(ctx context.Context, still string) (*modelSession, erro
 	if err != nil {
 		return nil, err
 	}
-	if _, err := ms.client.Ping(ctx); err != nil {
+	p, err := ms.client.Ping(ctx)
+	if err != nil {
 		return nil, modelclient.Still(pingHint(err, ms), still)
 	}
+	ms.noteTLSOff(osStderr, p)
 	a.models = ms
 	return a.models, nil
 }
@@ -206,9 +227,12 @@ func (a *app) resolveModels() (*modelSession, error) {
 			return nil, err
 		}
 	}
-	ep, err := modelclient.ResolveEndpoint(ms.URL, tokenFile, os.Getenv)
+	ep, err := modelclient.ResolveEndpoint(ms.URL, tokenFile, ms.CAFile, os.Getenv)
 	if err != nil {
 		return nil, err
+	}
+	for _, n := range ep.Notes {
+		fmt.Fprintln(osStderr, "wt: note: "+modelping.Clean(n))
 	}
 	return &modelSession{client: a.hooks.client(ep), ep: ep, hooks: &a.hooks, mode: res.Mode, subscription: ms.Subscription}, nil
 }

@@ -659,7 +659,7 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 	}()
 
 	runID := smoke.NewRunID()
-	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token}
+	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token, CAFile: ms.ep.CAFile}
 	gwModels := catalog.NonNativeModels(catRows)
 	sctx, stopSignals := smokeSignalCtx()
 	defer stopSignals()

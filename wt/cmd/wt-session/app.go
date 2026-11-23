@@ -16,6 +16,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/claudelogin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -122,16 +123,26 @@ func (h hooks) client(ep modelclient.Endpoint) *modelclient.Client {
 // httptest fake is the one network a test reaches. Never used by a production
 // binary (testing.Testing() is false there). opts are extra client options a
 // test adds (fastModelClient's no-sleep poll).
+//
+// Its transport is modelping.NewHTTPClientFor(ep)'s with only DialContext
+// wrapped, so ep.CAFile is honoured as in production; when that transport
+// cannot be built (a bad CA file) the client is modelclient.New's own, which
+// fails every request with the error and never dials.
 func loopbackOnlyClient(ep modelclient.Endpoint, opts ...modelclient.Option) *modelclient.Client {
-	d := &net.Dialer{}
-	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+	hc, err := modelping.NewHTTPClientFor(ep)
+	if err != nil {
+		return modelclient.New(ep, opts...)
+	}
+	tr := hc.Transport.(*http.Transport)
+	dial := tr.DialContext
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil || (host != "localhost" && !net.ParseIP(host).IsLoopback()) {
 			return nil, fmt.Errorf("cmd/wt-session tests dial loopback only, not %q", addr)
 		}
-		return d.DialContext(ctx, network, addr)
-	}}
-	return modelclient.New(ep, append([]modelclient.Option{modelclient.WithHTTPClient(&http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }})}, opts...)...)
+		return dial(ctx, network, addr)
+	}
+	return modelclient.New(ep, append([]modelclient.Option{modelclient.WithHTTPClient(hc)}, opts...)...)
 }
 
 // stopReader is where the stop picker reads from.

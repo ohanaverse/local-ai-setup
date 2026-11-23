@@ -312,8 +312,8 @@ func launchWithRoute(d Driver, m config.Model, worktreePath string, yolo bool, r
 
 // command resolves the agent binary and returns an exec.Cmd ready to run in
 // workdir, with the driver's extra env merged over the inherited environment
-// and ANTHROPIC_CUSTOM_HEADERS settled by launchEnv,
-// plus the driver's LaunchCmd, so BuildLaunchCmdGateway can report what the
+// and ANTHROPIC_CUSTOM_HEADERS settled by launchEnv (NODE_EXTRA_CA_CERTS by
+// applyNodeCA), plus the driver's LaunchCmd, so BuildLaunchCmdGateway can report what the
 // driver decided (ModelFallback) alongside the exec.Cmd.
 func command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exec.Cmd, LaunchCmd, error) {
 	lc := d.Build(m, yolo, r)
@@ -328,10 +328,26 @@ func command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exe
 	if err != nil {
 		return nil, lc, err
 	}
+	env, err = applyNodeCA(driverName(d), r, lc.HeaderToken != "", env)
+	if err != nil {
+		return nil, lc, err
+	}
 	cmd := exec.Command(bin, lc.Args...)
 	cmd.Env = env
 	SetDir(cmd, workdir)
 	return cmd, lc, nil
+}
+
+// driverName is the registered name of a Node driver (claude, pi), whose
+// launches may get NODE_EXTRA_CA_CERTS; "" for every other driver.
+func driverName(d Driver) string {
+	switch d.(type) {
+	case claudeDriver, *claudeDriver:
+		return "claude"
+	case piDriver, *piDriver:
+		return "pi"
+	}
+	return ""
 }
 
 // SetDir makes dir the working directory cmd runs in, PWD included. cmd's

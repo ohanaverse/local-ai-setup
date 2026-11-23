@@ -208,3 +208,35 @@ func TestApplyKeepsTheSubscriptionOptIn(t *testing.T) {
 		}
 	}
 }
+
+// TestModeTabRoundTripsCAFile proves the Mode tab treats [model-server]
+// ca_file as hand-edited (decision 14): its config step keeps a hand-set
+// value through a mode change and never adds one; and its check ping trusts
+// that file (~ expanded against the home), WT_MODEL_CA_FILE winning.
+func TestModeTabRoundTripsCAFile(t *testing.T) {
+	for _, had := range []string{"/etc/wt/server.crt", ""} {
+		f := apEnv(t)
+		f.configFile.Exists, f.configFile.Table = true, &config.ModelServerState{Mode: "local", CAFile: had}
+		p := Plan{Want: Desired{Mode: ModeRemote, URL: "https://gpu.example:8787", TokenFile: plRemoteTok}, Steps: []Step{{Kind: StepConfig, Path: plCfgPath}}}
+		if r, _ := apply(t, f, p); r.Err != nil {
+			t.Fatalf("Apply: %v", r.Err)
+		}
+		if got := f.configFile.Table.CAFile; got != had {
+			t.Errorf("ca_file = %q after a mode change, want %q (kept as it was)", got, had)
+		}
+	}
+
+	f := obsConfigured(t)
+	f.configFile.Table.Mode, f.configFile.Table.URL, f.configFile.Table.CAFile = "remote", "https://gpu.example:8787", "~/certs/server.crt"
+	st := Observe(context.Background(), f.Env(), ObserveOptions{})
+	want := "/Users/user_name/certs/server.crt"
+	if st.CAFile != want || len(f.pingCAs) != 1 || f.pingCAs[0] != want {
+		t.Errorf("config ca_file: State.CAFile = %q, ping CAs = %q, want %q", st.CAFile, f.pingCAs, want)
+	}
+	f.pingCAs = nil
+	f.env["WT_MODEL_CA_FILE"] = "/env/ca.pem"
+	st = Observe(context.Background(), f.Env(), ObserveOptions{})
+	if st.CAFile != "/env/ca.pem" || len(f.pingCAs) != 1 || f.pingCAs[0] != "/env/ca.pem" {
+		t.Errorf("env ca_file: State.CAFile = %q, ping CAs = %q", st.CAFile, f.pingCAs)
+	}
+}

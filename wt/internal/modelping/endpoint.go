@@ -26,11 +26,16 @@ import (
 // now: a host command verifies serve's own certificate (still only the
 // CAFile, chain and name) as of the time serve started and validated it,
 // since serve keeps serving it until restarted (decision 13).
+//
+// Notes are the notes modelclient.ResolveEndpoint found while resolving it
+// (a ca_file ignored for an http url, a CA without name constraints): the
+// session prints each once as a "wt: note:" line. Nothing else reads them.
 type Endpoint struct {
 	URL, Token string
 	CAFile     string
 	ServerName string
 	VerifyAt   time.Time
+	Notes      []string
 }
 
 // Origin is the URL without trailing slashes.

@@ -117,7 +117,7 @@ const probeBound = 5 * time.Second
 func gatewayIs503(ctx context.Context, gw agents.Gateway) bool {
 	pctx, cancel := context.WithTimeout(ctx, probeBound)
 	defer cancel()
-	status, err := modelclient.New(modelclient.Endpoint{URL: gw.Origin, Token: gw.Token}).GatewayStatus(pctx)
+	status, err := modelclient.New(modelclient.Endpoint{URL: gw.Origin, Token: gw.Token, CAFile: gw.CAFile}).GatewayStatus(pctx)
 	return err == nil && status == http.StatusServiceUnavailable
 }
 

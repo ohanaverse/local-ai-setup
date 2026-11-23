@@ -160,8 +160,9 @@ func usesSubscription(sl profiles.SlotLaunch) bool {
 // slotLaunchCmd is BuildSlotLaunchCmdGateway's body after the gateway check:
 // the driver's slot build, binary lookup, filtered environment (with
 // ANTHROPIC_CUSTOM_HEADERS settled by launchEnv), directory and passthrough
-// args.
-func slotLaunchCmd(sl profiles.SlotLaunch, worktreePath string, yolo bool, origin, key string, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
+// args. caFile is the gateway's ca_file, which a Node agent over an https
+// origin gets as NODE_EXTRA_CA_CERTS (applyNodeCA).
+func slotLaunchCmd(sl profiles.SlotLaunch, worktreePath string, yolo bool, origin, key, caFile string, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
 	sc, err := BuildSlotCommand(sl, yolo, origin, key)
 	if err != nil {
 		return nil, LaunchInfo{}, err
@@ -171,6 +172,10 @@ func slotLaunchCmd(sl profiles.SlotLaunch, worktreePath string, yolo bool, origi
 		return nil, LaunchInfo{}, fmt.Errorf("agent %s not installed", sc.Bin)
 	}
 	env, err := launchEnv(os.Environ(), sc.ClearEnv, sc.ClearEnvPrefixes, sc.Env, sc.HeaderToken)
+	if err != nil {
+		return nil, LaunchInfo{}, err
+	}
+	env, err = applyNodeCA(sl.Agent, Route{BaseOrigin: origin, CAFile: caFile}, sc.HeaderToken != "", env)
 	if err != nil {
 		return nil, LaunchInfo{}, err
 	}

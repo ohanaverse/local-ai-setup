@@ -43,18 +43,43 @@ func NewHTTPClient() *http.Client {
 	return hc
 }
 
-// CAFileError is a CA file NewHTTPClientFor cannot use: unreadable, or
-// holding no PEM certificate. It names the path and never the file's bytes.
+// CAFileError is a CA file wt cannot use: unreadable, holding no PEM
+// certificate, or holding a private key. It names the path (a stand-in for
+// one that cannot be a real path, so pasted file content is never echoed)
+// and never the file's bytes.
 type CAFileError struct {
 	Path, Reason string
 }
 
-func (e *CAFileError) Error() string { return "ca_file " + e.Path + " " + e.Reason }
+func (e *CAFileError) Error() string { return "ca_file " + shownPath(e.Path) + " " + e.Reason }
+
+// CAKeyReason is the reason a ca_file holding a private-key block is refused.
+const CAKeyReason = "holds a private key: copy only the certificate"
+
+// maxShownPath is the longest path a message prints; a longer one is never a
+// real file path and may be pasted file content.
+const maxShownPath = 200
+
+// shownPath is p as a message may print it: a fixed stand-in for one holding
+// a control character (pasted PEM text spans lines) or longer than
+// maxShownPath.
+func shownPath(p string) string {
+	if len(p) > maxShownPath {
+		return "<path too long>"
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return "<unprintable path>"
+		}
+	}
+	return p
+}
 
 // NewHTTPClientFor is NewHTTPClient's transport for ep: when ep.CAFile is
 // set, its certificates are added to the system roots (a file that cannot be
 // read or holds no PEM certificate is a *CAFileError, before any dial: never
-// a fall back to the system pool alone); ep.ServerName, when set, is the name
+// a fall back to the system pool alone; nor is one holding a private key);
+// ep.ServerName, when set, is the name
 // the certificate is verified as. Verification is never skipped.
 func NewHTTPClientFor(ep Endpoint) (*http.Client, error) {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
@@ -76,6 +101,9 @@ func NewHTTPClientFor(ep Endpoint) (*http.Client, error) {
 				reason = pe.Err.Error()
 			}
 			return nil, &CAFileError{Path: ep.CAFile, Reason: "cannot be read: " + reason}
+		}
+		if bytes.Contains(data, []byte("PRIVATE KEY-----")) {
+			return nil, &CAFileError{Path: ep.CAFile, Reason: CAKeyReason}
 		}
 		pool, err := x509.SystemCertPool()
 		if err != nil || pool == nil {
@@ -154,6 +182,11 @@ func Send(ctx context.Context, hc *http.Client, timeout time.Duration, ep Endpoi
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return nil, ctx.Err()
 		}
+		if rctx.Err() == nil {
+			if te := tlsTrustError(ep, err); te != nil {
+				return nil, te
+			}
+		}
 		reason := ""
 		if rctx.Err() != nil {
 			reason = "timed out after " + bound.Round(10*time.Millisecond).String()
@@ -166,7 +199,11 @@ func Send(ctx context.Context, hc *http.Client, timeout time.Duration, ep Endpoi
 		}
 		return nil, &UnreachableError{Addr: Addr(ep.URL), Reason: reason}
 	}
-	return &Response{Status: resp.StatusCode, Header: resp.Header, Body: data}, nil
+	out := &Response{Status: resp.StatusCode, Header: resp.Header, Body: data}
+	if te := httpToTLSError(ep, out); te != nil {
+		return nil, te
+	}
+	return out, nil
 }
 
 // CheckPing reads one ping response: the decoded Ping beside the typed error

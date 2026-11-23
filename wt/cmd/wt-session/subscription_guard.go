@@ -115,6 +115,9 @@ func subscriptionGuardTo(ctx context.Context, w io.Writer, ms *modelSession, row
 	if err != nil {
 		return refuse("the model server did not answer its ping (%v)", err)
 	}
+	// The TUI path never runs openModels: the tls_off note is said here
+	// (once per session, whichever reads the ping first).
+	ms.noteTLSOff(w, p)
 	if !p.SubscriptionPassthrough {
 		return refuse("%s", subscriptionOffReason(ms))
 	}

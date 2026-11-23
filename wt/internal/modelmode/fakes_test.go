@@ -46,6 +46,7 @@ type fakeEnv struct {
 	pingErr    error
 	pingErrs   []error  // consumed one per Ping before ping/pingErr apply
 	pingTokens []string // the token of each Ping, in order
+	pingCAs    []string // the CAFile of each Ping, in order
 
 	// Host.
 	env  map[string]string
@@ -196,6 +197,7 @@ type fakeNet struct{ f *fakeEnv }
 func (x fakeNet) Ping(_ context.Context, ep modelping.Endpoint) (modelapi.Ping, modelping.Kind, string, error) {
 	x.f.rec("Net.Ping %s", ep.Origin())
 	x.f.pingTokens = append(x.f.pingTokens, ep.Token)
+	x.f.pingCAs = append(x.f.pingCAs, ep.CAFile)
 	var err error
 	if len(x.f.pingErrs) > 0 {
 		err = x.f.pingErrs[0]

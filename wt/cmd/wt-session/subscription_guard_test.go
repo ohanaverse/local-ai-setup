@@ -301,7 +301,7 @@ func TestSubscriptionPlainHTTPRemoteRefusedBeforeSending(t *testing.T) {
 		}
 		return ""
 	}
-	ep, err := modelclient.ResolveEndpoint("http://127.0.0.1:9", tok, env)
+	ep, err := modelclient.ResolveEndpoint("http://127.0.0.1:9", tok, "", env)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -627,4 +630,137 @@ func TestSeveralMatchesOpenThePickerOnTheServer(t *testing.T) {
 	if called || len(*r.built) != 0 || index(r.f.Reqs, "POST /control/v1/sessions") >= 0 {
 		t.Errorf("no terminal: tuiRun called %v, builds %d, requests %v: want nothing registered or launched", called, len(*r.built), r.f.Reqs)
 	}
+}
+
+// tlsSubRig is subRig (opted in, passthrough on, a good login stub) with the
+// fake model server on https: an httptest TLS server whose certificate only
+// its own file vouches for. With withCA, config.toml's [model-server] names
+// that file as ca_file. It returns the rig, the login call count and the
+// certificate's path.
+func tlsSubRig(t *testing.T, withCA bool) (*remoteRig, *int, string) {
+	t.Helper()
+	st := goodLogin()
+	r, calls := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+	r.f.Server.Close()
+	r.f.Server = httptest.NewUnstartedServer(http.HandlerFunc(r.f.serve))
+	r.f.StartTLS()
+	t.Cleanup(r.f.Close)
+	ca := filepath.Join(t.TempDir(), "server.crt")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: r.f.Certificate().Raw}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	extra := "subscription = true\n"
+	if withCA {
+		extra += fmt.Sprintf("ca_file = %q\n", ca)
+	}
+	hooks := r.a.hooks
+	r.a = pointAtFake(t, r.f, extra)
+	r.a.hooks = hooks
+	t.Setenv("NODE_EXTRA_CA_CERTS", "")
+	os.Unsetenv("NODE_EXTRA_CA_CERTS")
+	t.Setenv("WT_NODE_EXTRA_CA_CERTS", "")
+	os.Unsetenv("WT_NODE_EXTRA_CA_CERTS")
+	return r, calls, ca
+}
+
+// TestSubscriptionGuardUntrustedCertRefusesBeforeRegistration proves an
+// opted-in header-mode launch to an https server this machine does not
+// trust (no ca_file) stops at the handshake with decision 14's ca_file hint,
+// exit 1: the fake saw no request at all (the token was never written), so
+// no client session, no start and no login check.
+func TestSubscriptionGuardUntrustedCertRefusesBeforeRegistration(t *testing.T) {
+	r, calls, _ := tlsSubRig(t, false)
+	err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false)
+	if err == nil || exitCodeOf(err) > 1 || !strings.Contains(err.Error(), "set ca_file under [model-server]") {
+		t.Fatalf("err = %v, want the ca_file hint", err)
+	}
+	if *calls != 0 {
+		t.Errorf("login ran %d times", *calls)
+	}
+	if reqs := r.f.reqs(); len(reqs) != 0 {
+		t.Errorf("the untrusted server saw requests: %q", reqs)
+	}
+}
+
+// TestSubscriptionLaunchOverHTTPSWithCAFile proves the same launch with
+// ca_file set goes through (the test client, loopbackOnlyClient, honours the
+// endpoint's CA file like the real one) and hands the agent the CA: the
+// child's environment has NODE_EXTRA_CA_CERTS exactly once, equal to the
+// absolute ca_file.
+func TestSubscriptionLaunchOverHTTPSWithCAFile(t *testing.T) {
+	r, calls, ca := tlsSubRig(t, true)
+	envDump := filepath.Join(t.TempDir(), "env")
+	t.Setenv("WT_FAKE_ENV_DUMP", envDump)
+	if err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if *calls != 1 {
+		t.Errorf("login ran %d times, want 1", *calls)
+	}
+	env, err := os.ReadFile(envDump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, line := range strings.Split(string(env), "\n") {
+		if v, ok := strings.CutPrefix(line, "NODE_EXTRA_CA_CERTS="); ok {
+			got = append(got, v)
+		}
+	}
+	if len(got) != 1 || got[0] != ca || !filepath.IsAbs(got[0]) {
+		t.Errorf("NODE_EXTRA_CA_CERTS = %q, want once %s", got, ca)
+	}
+}
+
+// TestTLSOffNote proves decision 2's tls_off note: a server whose ping says
+// its TLS is off prints exactly one "wt: note:" line naming the reason and
+// plain http, through openModels on the CLI path (a header-mode launch after
+// it adds no second one) and through the guard on the TUI path (asked twice,
+// still once); a ping without it prints none.
+func TestTLSOffNote(t *testing.T) {
+	const note = "wt: note: the model server's TLS is off (certificate expired 2026-11-01); this connection is plain http\n"
+	st := goodLogin()
+	t.Run("cli", func(t *testing.T) {
+		r, _ := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+		r.f.TLSOff = "certificate expired 2026-11-01"
+		if _, err := r.a.openModels(context.Background(), launchStill); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false); err != nil {
+			t.Fatalf("launch: %v", err)
+		}
+		if n := strings.Count(r.stderr.String(), note); n != 1 || strings.Count(r.stderr.String(), "TLS is off") != 1 {
+			t.Errorf("stderr = %q, want the note once", r.stderr.String())
+		}
+	})
+	t.Run("tui", func(t *testing.T) {
+		r, _ := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+		r.f.TLSOff = "certificate expired 2026-11-01"
+		ms, err := r.a.buildModels(launchStill)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scfg, _ := r.a.sessionCfg()
+		if _, err := tui.NewModelClient(ms.client, ms.ep).Catalog(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		guard := tuiSubscriptionGuard(r.a, ms, scfg)
+		for range 2 {
+			if err := guard(context.Background(), []modelapi.Row{subRow("claude-haiku-5-5")}); err != nil {
+				t.Fatalf("guard: %v", err)
+			}
+		}
+		if n := strings.Count(r.stderr.String(), note); n != 1 {
+			t.Errorf("stderr = %q, want the note once", r.stderr.String())
+		}
+	})
+	t.Run("on", func(t *testing.T) {
+		r, _ := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
+		if err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false); err != nil {
+			t.Fatalf("launch: %v", err)
+		}
+		if strings.Contains(r.stderr.String(), "TLS is off") {
+			t.Errorf("stderr = %q, want no note", r.stderr.String())
+		}
+	})
 }

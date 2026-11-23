@@ -31,6 +31,11 @@ type ModelServerState struct {
 	// production code path writes true (the Mode tab and wt-model setup
 	// round-trip it untouched).
 	Subscription bool `toml:"subscription,omitempty"`
+	// CAFile is a PEM file of extra trusted roots for an https model server
+	// (#597, decision 14); WT_MODEL_CA_FILE wins over it. Hand-edited only:
+	// no production code path writes it (the Mode tab and wt-model setup
+	// round-trip it untouched).
+	CAFile string `toml:"ca_file,omitempty"`
 }
 
 // ModelServer returns the [model-server] table, zero when it is absent.

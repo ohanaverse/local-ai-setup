@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -145,18 +146,18 @@ func TestResolveEndpointRefusesAnAtURLFromEverySource(t *testing.T) {
 		}
 		for name, call := range map[string]func() (Endpoint, error){
 			"env url, env token": func() (Endpoint, error) {
-				return ResolveEndpoint("", "", envOf(map[string]string{"WT_MODEL_URL": raw, "WT_MODEL_TOKEN": "t"}))
+				return ResolveEndpoint("", "", "", envOf(map[string]string{"WT_MODEL_URL": raw, "WT_MODEL_TOKEN": "t"}))
 			},
 			"env url, config file": func() (Endpoint, error) {
-				return ResolveEndpoint("", tf, envOf(map[string]string{"WT_MODEL_URL": raw}))
+				return ResolveEndpoint("", tf, "", envOf(map[string]string{"WT_MODEL_URL": raw}))
 			},
-			"config url, token file": func() (Endpoint, error) { return ResolveEndpoint(raw, tf, envOf(nil)) },
+			"config url, token file": func() (Endpoint, error) { return ResolveEndpoint(raw, tf, "", envOf(nil)) },
 			"config url, env file": func() (Endpoint, error) {
-				return ResolveEndpoint(raw, "", envOf(map[string]string{"WT_MODEL_TOKEN_FILE": tf}))
+				return ResolveEndpoint(raw, "", "", envOf(map[string]string{"WT_MODEL_TOKEN_FILE": tf}))
 			},
-			"config url, no token": func() (Endpoint, error) { return ResolveEndpoint(raw, "", envOf(nil)) },
+			"config url, no token": func() (Endpoint, error) { return ResolveEndpoint(raw, "", "", envOf(nil)) },
 			"env over a plain config": func() (Endpoint, error) {
-				return ResolveEndpoint("http://cfg:1", tf, envOf(map[string]string{"WT_MODEL_URL": raw}))
+				return ResolveEndpoint("http://cfg:1", tf, "", envOf(map[string]string{"WT_MODEL_URL": raw}))
 			},
 		} {
 			ep, err := call()
@@ -165,7 +166,7 @@ func TestResolveEndpointRefusesAnAtURLFromEverySource(t *testing.T) {
 				t.Errorf("%s: %q resolved to %+v, %v; want *CredentialsInURLError", name, raw, ep, err)
 				continue
 			}
-			if NoServer(err) || ep != (Endpoint{}) {
+			if NoServer(err) || !reflect.DeepEqual(ep, Endpoint{}) {
 				t.Errorf("%s: %q: NoServer %v, endpoint %+v; want a hard refusal and no endpoint", name, raw, NoServer(err), ep)
 			}
 			if p := leakedPiece(raw, err.Error()); p != "" {
@@ -180,11 +181,11 @@ func TestResolveEndpointRefusesAnAtURLFromEverySource(t *testing.T) {
 // exactly as given.
 func TestResolveEndpointKeepsPlainURLs(t *testing.T) {
 	for _, raw := range plainEndpointURLs {
-		ep, err := ResolveEndpoint(raw, "", envOf(map[string]string{"WT_MODEL_TOKEN": "t"}))
+		ep, err := ResolveEndpoint(raw, "", "", envOf(map[string]string{"WT_MODEL_TOKEN": "t"}))
 		if err != nil || ep.URL != raw || ep.Token != "t" {
 			t.Errorf("config %q = %+v, %v; want it unchanged", raw, ep, err)
 		}
-		ep, err = ResolveEndpoint("", "", envOf(map[string]string{"WT_MODEL_URL": raw, "WT_MODEL_TOKEN": "t"}))
+		ep, err = ResolveEndpoint("", "", "", envOf(map[string]string{"WT_MODEL_URL": raw, "WT_MODEL_TOKEN": "t"}))
 		if err != nil || ep.URL != raw {
 			t.Errorf("env %q = %+v, %v; want it unchanged", raw, ep, err)
 		}

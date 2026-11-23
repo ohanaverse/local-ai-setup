@@ -122,6 +122,10 @@ type Route struct {
 	// mode, keeping its own login and sending APIKey (the gateway token) only
 	// as the x-wt-model-token header (#597).
 	Subscription bool
+	// CAFile is the gateway's ca_file (absolute; empty for a native route or
+	// a server the system trusts): a Node agent (claude, pi) reaching an
+	// https gateway gets it as NODE_EXTRA_CA_CERTS (#597, decision 14).
+	CAFile string
 }
 
 // Provider is a source of models with connection info.

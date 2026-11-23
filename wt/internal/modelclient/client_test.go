@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 )
 
 const tok = "test-token"
@@ -961,5 +962,50 @@ func TestEveryDecodedStringIsCleaned(t *testing.T) {
 	other := pingServer(t, `{"api_major":1,"schema":1,"server":"`+`a\nb\u001b[2J"}`)
 	if _, err := other.Ping(ctx()); err == nil || !isOneLine(err.Error()) {
 		t.Errorf("ping refusal = %q", err)
+	}
+}
+
+// TestClientWithBadCAFileNeverDials proves a CA file that went bad after
+// ResolveEndpoint checked it (removed, or replaced by bytes holding no
+// certificate) fails every request of New's client with the CA file error:
+// the ping and a gateway call alike, with no connection made (a counting
+// listener accepts none, so no bearer token is written) and never a fall back
+// to the system pool or the default client.
+func TestClientWithBadCAFileNeverDials(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var conns atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conns.Add(1)
+			c.Close()
+		}
+	}()
+	dir := t.TempDir()
+	garbage := dir + "/garbage.pem"
+	if err := os.WriteFile(garbage, []byte("not a certificate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, ca := range map[string]string{"removed": dir + "/gone.pem", "no certificate": garbage} {
+		c := New(Endpoint{URL: "https://" + ln.Addr().String(), Token: tok, CAFile: ca})
+		_, perr := c.Ping(context.Background())
+		_, gerr := c.GatewayStatus(context.Background())
+		for call, err := range map[string]error{"ping": perr, "gateway": gerr} {
+			var cfe *modelping.CAFileError
+			if !errors.As(err, &cfe) || cfe.Path != ca {
+				t.Errorf("%s, %s: err = %v, want the CA file error naming %s", name, call, err, ca)
+			}
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := conns.Load(); n != 0 {
+		t.Errorf("the listener saw %d connections, want none", n)
 	}
 }

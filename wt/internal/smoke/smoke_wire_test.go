@@ -2,8 +2,11 @@ package smoke
 
 import (
 	"context"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -205,5 +208,31 @@ func TestSmokeRowGatewayNativeModelNeverWaitsForTheGateway(t *testing.T) {
 	res := r.run(m)
 	if res.Status != StatusFail || r.readyCalls != 0 || r.probes != 0 {
 		t.Fatalf("status=%s ready=%d probes=%d, want FAIL, 0, 0", res.Status, r.readyCalls, r.probes)
+	}
+}
+
+// TestSmokeRowOverTLSWithCAFile proves the row's 503 probe trusts the
+// gateway's ca_file: against an https fake whose certificate only the CA
+// file vouches for, the probe reaches the fake (its 503 earns the rerun)
+// rather than failing the handshake and reading silently as "not 503".
+func TestSmokeRowOverTLSWithCAFile(t *testing.T) {
+	r := newGatewayRig(t, http.StatusServiceUnavailable, StubOutcome("connection refused", 1), StubOutcome("SENTINEL", 0))
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		r.mu.Lock()
+		r.probes++
+		r.probeAuth = req.Header.Get("Authorization")
+		r.mu.Unlock()
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.gw = agents.Gateway{Origin: srv.URL, Token: "gw-token", CAFile: ca}
+	res := r.run(gatewayModel)
+	if res.Status != StatusPass || r.probes != 1 || r.probeAuth != "Bearer gw-token" {
+		t.Fatalf("status = %s (err %v), probes = %d, want PASS after the probe reached the TLS fake", res.Status, res.Err, r.probes)
 	}
 }

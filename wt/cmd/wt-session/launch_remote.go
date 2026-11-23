@@ -166,7 +166,7 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	}
 
 	m := catalog.ToModel(row)
-	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token}
+	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token, CAFile: ms.ep.CAFile}
 	var models []config.Model
 	if _, ok := agents.ByName(agent).(agents.GatewaySyncer); ok && !m.Native {
 		models, err = gatewayModels(ctx, ms)

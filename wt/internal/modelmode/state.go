@@ -97,10 +97,10 @@ type State struct {
 	// LocalTLS is this machine's wt-model home TLS settings (ConfigStore's
 	// LocalTLS): a local url is https:// only while it says On.
 	LocalTLS LocalTLS
-	// CAFile is the CA file this session trusts for an https model server,
-	// today WT_MODEL_CA_FILE (the [model-server] ca_file key arrives with
-	// the client half, Task 6b); a local plan with TLS on and no CA file
-	// notes the line to add.
+	// CAFile is the CA file this session trusts for an https model server:
+	// WT_MODEL_CA_FILE, else [model-server] ca_file (~ expanded, made
+	// absolute); a local plan with TLS on and no CA file notes the line to
+	// add, and a ping of a configured or entered url trusts it.
 	CAFile string
 }
 

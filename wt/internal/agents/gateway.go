@@ -16,6 +16,10 @@ import (
 type Gateway struct {
 	Origin string // scheme://host:port, no wire-path suffix
 	Token  string // the gateway token (not a provider key)
+	// CAFile is the session's ca_file (absolute; empty when the system
+	// trusts the gateway or it is plain http): a Node agent reaching an
+	// https gateway gets it as NODE_EXTRA_CA_CERTS (#597, decision 14).
+	CAFile string
 }
 
 // ErrGatewayUnconfigured is what errors.Is finds in every empty-gateway
@@ -60,6 +64,7 @@ func GatewayRoute(gw Gateway, m config.Model) config.Route {
 		ProviderID:   m.ProviderID,
 		Litellm:      true,
 		Subscription: m.Subscription,
+		CAFile:       gw.CAFile,
 	}
 }
 
@@ -122,5 +127,5 @@ func BuildSlotLaunchCmdGatewayInfo(sl profiles.SlotLaunch, worktreePath string, 
 	if gw.origin() == "" || gw.Token == "" {
 		return nil, LaunchInfo{}, gatewayUnconfigured("a slot profile needs the model-server gateway, but its origin or token is empty")
 	}
-	return slotLaunchCmd(sl, worktreePath, yolo, gw.origin(), gw.Token, extraArgs)
+	return slotLaunchCmd(sl, worktreePath, yolo, gw.origin(), gw.Token, gw.CAFile, extraArgs)
 }

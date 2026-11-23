@@ -309,7 +309,7 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 
 	// Step 5: the command against the gateway, the applier, the record, the
 	// run. A failure before the agent runs ends the client session first.
-	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token}
+	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token, CAFile: ms.ep.CAFile}
 	cmd, info, err := a.hooks.buildSlot(p.Launch(), worktreePath, yolo, gw, extraArgs)
 	if err != nil {
 		end()
