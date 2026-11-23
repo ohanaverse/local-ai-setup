@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,10 @@ type Deps struct {
 	// error means LiteLLM could not be asked (the catalog then leaves
 	// Row.Routed unset).
 	RoutedIDs func(ctx context.Context) (map[string]bool, error)
+	// AliasListed reports whether LiteLLM lists alias's database row for
+	// target (an alias start confirms it after the target's route write); an
+	// error means the rows could not be listed. nil is never asked.
+	AliasListed func(ctx context.Context, cfg *config.Config, alias, target string) (bool, error)
 	// Rank orders the registry's models for a slot (the candidates endpoint).
 	Rank func(cfg *config.Config, ix tiers.Index, q candidates.Query) []candidates.Candidate
 	// TiersFile reads the tiers file once, returning its entries and its
@@ -112,14 +117,31 @@ func DefaultDeps(cfg *config.Config, reload func() (*config.Config, error), upst
 			lifecycle.SettleRoutesTo(ctx, out, cfg)
 			lifecycle.WaitPendingRoutes()
 		},
-		Routed:    w.wait,
-		RoutedIDs: w.ids,
+		Routed:      w.wait,
+		RoutedIDs:   w.ids,
+		AliasListed: aliasListed,
 		Rank: func(cfg *config.Config, ix tiers.Index, q candidates.Query) []candidates.Candidate {
 			return candidates.Rank(cfg.Models, ix, q)
 		},
 		TiersFile: tiers.LoadWithFreshness,
 		Spend:     realQuerySpend,
 	}
+}
+
+// aliasListed is the default AliasListed: one admin list of the proxy pair
+// cfg names (litellm.AdminClient.RouteList, which never carries a param).
+func aliasListed(ctx context.Context, cfg *config.Config, alias, target string) (bool, error) {
+	admin := litellm.AdminFor(cfg)
+	if admin == nil {
+		return false, errors.New("the LiteLLM proxy pair is not set")
+	}
+	routes, err := admin.RouteList(ctx)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(routes, func(r litellm.ListedRoute) bool {
+		return r.Kind == modelapi.KindAlias && r.Name == alias && r.Target == target
+	}), nil
 }
 
 // realQuerySpend reads the spend log through the DSN litellm.DatabaseURL

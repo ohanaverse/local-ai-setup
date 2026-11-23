@@ -409,8 +409,11 @@ func TestCatalogDecodesTheFixture(t *testing.T) {
 	})
 	c := f.client()
 	cat, err := c.Catalog(ctx())
-	if err != nil || len(cat.Rows) != 7 || cat.Pricing == nil || cat.Rows[1].Price == nil || !cat.Rows[1].Price.TimePriced || cat.Rows[0].Routed == nil {
+	if err != nil || len(cat.Rows) != 8 || cat.Pricing == nil || cat.Rows[1].Price == nil || !cat.Rows[1].Price.TimePriced || cat.Rows[0].Routed == nil {
 		t.Fatalf("catalog: %+v %v", cat, err)
+	}
+	if a := cat.Rows[7]; a.Kind != modelapi.KindAlias || len(a.Targets) != 2 || a.Targets[1].ID != "omlx/qwen3.8-35b" || a.Targets[1].Order != 2 {
+		t.Errorf("alias row: %+v", a)
 	}
 	js, err := c.Job(ctx(), "job-0001")
 	if err != nil || js.Result == nil || js.Result.Error == nil || js.Result.Error.Code != "occupied" || len(js.Result.Error.Others) != 1 || js.Result.Error.Others[0].Figure != "4.2 GB loaded" {
@@ -636,6 +639,23 @@ func isOneLine(s string) bool {
 		}
 	}
 	return true
+}
+
+// TestCleanRowCleansAliasStrings pins that an alias row's own strings and
+// every target's strings come back as one printable line each (M11): the
+// server is a remote party, and a target id or state is printed by the
+// picker and `wt model list --server` like any row id.
+func TestCleanRowCleansAliasStrings(t *testing.T) {
+	r := modelapi.Row{ID: "alias/x", Kind: hostile, Targets: []modelapi.AliasTarget{
+		{ID: hostile, ProviderID: hostile, Location: hostile, State: hostile},
+	}}
+	cleanRow(&r)
+	tg := r.Targets[0]
+	for _, s := range []string{r.Kind, tg.ID, tg.ProviderID, tg.Location, tg.State} {
+		if !isOneLine(s) {
+			t.Errorf("not cleaned: %q", s)
+		}
+	}
 }
 
 // TestServerTextCannotForgeLines is M11: the server is a remote party, so

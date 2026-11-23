@@ -83,6 +83,29 @@
       "block_reason": "ollama is not running; start it with 'ollama serve'",
       "protocols": [],
       "sessions": 0
+    },
+    {
+      "id": "alias/coder",
+      "gateway_id": "alias/coder",
+      "order": 5,
+      "routed": true,
+      "family": "alias",
+      "provider_id": "alias",
+      "model_name": "coder",
+      "location": "cloud",
+      "tags": [],
+      "registered": true,
+      "discovered": false,
+      "state": "running",
+      "action": "launch",
+      "context": 131072,
+      "protocols": ["openai"],
+      "sessions": 1,
+      "kind": "alias",
+      "targets": [
+        {"id": "openrouter/z-ai/glm-5.3", "order": 1, "provider_id": "openrouter", "location": "cloud", "state": "running", "context": 202752},
+        {"id": "omlx/qwen3.8-27b", "order": 2, "provider_id": "omlx", "location": "local", "state": "running", "context": 131072}
+      ]
     }
   ]
 }

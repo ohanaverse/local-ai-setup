@@ -17,7 +17,8 @@ const modelListServerFixture = "../../../docs/contracts/model-list.server.sample
 func floatp(f float64) *float64 { return &f }
 
 // serverListRows are the catalog rows the fixture documents: a running local
-// model with a tier, a priced cloud model, a stopped one and a blocked one.
+// model with a tier, a priced cloud model, a stopped one, a blocked one and an
+// alias over two of them (#596).
 func serverListRows() []modelapi.Row {
 	return []modelapi.Row{
 		{ID: "omlx/qwen3.8-27b", GatewayID: "omlx/qwen3.8-27b", Order: 1, Routed: boolp(true), Family: "qwen3.8", ProviderID: "omlx",
@@ -33,6 +34,13 @@ func serverListRows() []modelapi.Row {
 		{ID: "ollama/old-model", GatewayID: "ollama/old-model", Order: 4, Family: "old", ProviderID: "ollama",
 			ModelName: "old-model", Location: "local", Tags: []string{}, Discovered: true, State: modelapi.StateBlocked,
 			Action: modelapi.ActionBlock, BlockReason: "ollama is not running; start it with 'ollama serve'", Protocols: []string{}},
+		{ID: "alias/coder", GatewayID: "alias/coder", Order: 5, Routed: boolp(true), Family: "alias", ProviderID: "alias",
+			ModelName: "coder", Location: "cloud", Tags: []string{}, Registered: true, State: modelapi.StateRunning,
+			Action: modelapi.ActionLaunch, Context: 131072, Protocols: []string{"openai"}, Sessions: 1, Kind: modelapi.KindAlias,
+			Targets: []modelapi.AliasTarget{
+				{ID: "openrouter/z-ai/glm-5.3", Order: 1, ProviderID: "openrouter", Location: "cloud", State: modelapi.StateRunning, Context: 202752},
+				{ID: "omlx/qwen3.8-27b", Order: 2, ProviderID: "omlx", Location: "local", State: modelapi.StateRunning, Context: 131072},
+			}},
 	}
 }
 
@@ -98,7 +106,7 @@ func TestModelListServerMatchesTheFixture(t *testing.T) {
 	if err := dec.Decode(&doc); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	if doc.Version != 1 || doc.Schema != modelapi.SchemaVersion || doc.Generated == "" || len(doc.Providers) == 0 || len(doc.Rows) != 4 {
+	if doc.Version != 1 || doc.Schema != modelapi.SchemaVersion || doc.Generated == "" || len(doc.Providers) == 0 || len(doc.Rows) != 5 {
 		t.Errorf("fixture says %+v", doc)
 	}
 	// An empty catalog still has "rows": [] and every row's slices are arrays.
@@ -150,8 +158,8 @@ func TestModelListServerPlainColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 5 {
-		t.Fatalf("want a header and four rows, got:\n%s", out)
+	if len(lines) != 6 {
+		t.Fatalf("want a header and five rows, got:\n%s", out)
 	}
 	if got := strings.Join(strings.Fields(lines[0]), " "); got != "MODEL STATE LOC TIER CLIENT SESSIONS" {
 		t.Errorf("header = %q", got)
@@ -161,6 +169,7 @@ func TestModelListServerPlainColumns(t *testing.T) {
 		"openrouter/z-ai/glm-5.3": "openrouter/z-ai/glm-5.3 running cloud - 0",
 		"omlx/gemma4-9b":          "omlx/gemma4-9b stopped local - 0",
 		"ollama/old-model":        "ollama/old-model blocked local - 0",
+		"alias/coder":             "alias/coder running cloud - 1",
 	}
 	for _, l := range lines[1:] {
 		id := strings.Fields(l)[0]

@@ -52,6 +52,23 @@ const (
 	ActionBlock  = "block"
 )
 
+// KindAlias is the Kind of an alias row (#596): a gateway id that names one
+// model (an alias) or several in priority order (a group). An older client
+// ignores Kind and sees an ordinary row it can launch.
+const KindAlias = "alias"
+
+// AliasTarget is one target of an alias row: a registry model id, its
+// LiteLLM deployment order (1 first; equal orders load-balance) and the
+// target row's provider, location, state and context window (0 unknown).
+type AliasTarget struct {
+	ID         string `json:"id"`
+	Order      int    `json:"order"`
+	ProviderID string `json:"provider_id"`
+	Location   string `json:"location"`
+	State      string `json:"state"`
+	Context    int    `json:"context,omitempty"`
+}
+
 // Row is one model in the catalog.
 type Row struct {
 	ID string `json:"id"`
@@ -86,6 +103,11 @@ type Row struct {
 	Protocols   []string `json:"protocols"`
 	Price       *Price   `json:"price,omitempty"`
 	Sessions    int      `json:"sessions"`
+	// Kind is KindAlias for an alias row and absent for a model row.
+	Kind string `json:"kind,omitempty"`
+	// Targets are an alias row's targets, in the alias's order; absent on a
+	// model row.
+	Targets []AliasTarget `json:"targets,omitempty"`
 }
 
 // Pricing describes the OpenRouter price refresh.

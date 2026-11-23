@@ -77,8 +77,11 @@ func NewServer(o Options, d Deps, opts ...serverOption) (*Server, error) {
 	if o.IdleGrace <= 0 {
 		return nil, fmt.Errorf("the idle grace must be greater than zero, got %s", o.IdleGrace)
 	}
-	s := &Server{o: o, d: d, autoStopEvery: autoStopEvery, routedTTL: routedTTL}
-	s.sessions = sessionreg.New(sessionTTL, d.Now)
+	sessions := sessionreg.New(sessionTTL, d.Now)
+	// A client session on an alias uses the alias's local target (#596):
+	// the registry expands aliases from the config each read loaded.
+	d = tapConfig(d, sessions)
+	s := &Server{o: o, d: d, sessions: sessions, autoStopEvery: autoStopEvery, routedTTL: routedTTL}
 	s.jobs = modeljobs.NewManager(d.Now)
 	s.stopper = &AutoStopper{Deps: d, Sessions: s.sessions, Grace: o.IdleGrace, Jobs: s.jobs}
 	for _, opt := range opts {
@@ -226,8 +229,10 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	// A start of a model whose start is already queued or running joins that
 	// job, and so its answers (allow_replace, others): two client sessions
 	// starting one model at once must not queue a second start behind the
-	// first one's route restart.
-	id, _ := s.jobs.SubmitOnce("start", req.Model, s.invalidatingRouted(s.d.StartJob(req, s.sessions)))
+	// first one's route restart. An alias's start is keyed by its local
+	// target (startKey), so it joins a start of that model and the reverse.
+	key := startKey(s.d.Config(), req.Model)
+	id, _ := s.jobs.SubmitOnce("start", key, s.invalidatingRouted(s.d.StartJob(req, s.sessions)))
 	writeJSON(w, http.StatusAccepted, modelapi.JobRef{ID: id})
 }
 

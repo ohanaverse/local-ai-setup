@@ -14,6 +14,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionreg"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/windows"
 )
 
 // BuildCatalog turns the registry, the live inventory snapshot, the tiers
@@ -79,6 +80,7 @@ func buildRows(rows []catalog.Row, cfg *config.Config, ix tiers.Index, sessions 
 		}
 		out = append(out, w)
 	}
+	out = append(out, aliasRows(cfg, out, ix, sessions, routed, len(order))...)
 	slices.SortFunc(out, func(a, b modelapi.Row) int { return strings.Compare(a.ID, b.ID) })
 	return out
 }
@@ -120,10 +122,10 @@ func wireRow(cfg *config.Config, r catalog.Row, ix tiers.Index, sessions int, no
 			row.Aligned = &a
 		}
 		row.TierSources = e.Sources
-		if e.ContextBasis == tiers.ContextBasisHost {
-			row.Context = e.Context
-		}
 	}
+	// The window rule is windows.Model's (decision 6): the registry's
+	// context_window for any location, else a cloud model's host tiers window.
+	row.Context = windows.Model(cfg, m, ix)
 	if p := m.Cost.PriceAt(now); p.Input != nil || p.Cache != nil || p.Output != nil {
 		row.Price = &modelapi.Price{Input: p.Input, Cache: p.Cache, Output: p.Output, TimePriced: len(m.Cost.TimePrices) > 0}
 	}
