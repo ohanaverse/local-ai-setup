@@ -17,7 +17,7 @@ import (
 // not resolve reads as 0.
 func Model(cfg *config.Config, m config.Model, ix tiers.Index) int {
 	if m.ContextWindow > 0 {
-		return m.ContextWindow
+		return int(m.ContextWindow)
 	}
 	loc, err := cfg.ResolveLocation(m)
 	if err != nil || loc != config.LocationCloud {

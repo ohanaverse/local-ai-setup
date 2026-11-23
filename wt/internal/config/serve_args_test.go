@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -177,5 +178,56 @@ func TestUpdateRegistryWritesAndRefusesServeArgs(t *testing.T) {
 	}
 	if text := readFile(t, path); strings.Contains(text, "serve_args") {
 		t.Errorf("clearing left the key behind:\n%s", text)
+	}
+}
+
+// TestMalformedContextWindowReadsAsAbsent pins that a hand-edited
+// context_window that is not a non-negative whole number (a string, a float, a
+// negative) does not fail the load, as for every neighbouring key: the row
+// reads with no window and Malformed names the value, while a good one reads
+// as written.
+func TestMalformedContextWindowReadsAsAbsent(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		body      string
+		want      ContextTokens
+		malformed bool
+	}{
+		{"absent", ``, 0, false},
+		{"a window", `context_window = 65536`, 65536, false},
+		{"a string", `context_window = "big"`, MalformedContextTokens, true},
+		{"a float", `context_window = 1.5`, MalformedContextTokens, true},
+		{"a negative", `context_window = -4`, MalformedContextTokens, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			writeRegistry(t, t.TempDir(), serveArgsHead+c.body+"\n"+serveArgsTail)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() = %v, want the registry to load", err)
+			}
+			first := cfg.Models[0]
+			if first.ContextWindow != c.want {
+				t.Errorf("ContextWindow = %d, want %d", first.ContextWindow, c.want)
+			}
+			if got := slices.Contains(first.Malformed(), "context_window is not a non-negative whole number"); got != c.malformed {
+				t.Errorf("Malformed() = %v, names the value: %v, want %v", first.Malformed(), got, c.malformed)
+			}
+		})
+	}
+}
+
+// TestMalformedContextWindowStillRefusedOnWrite pins that the lenient reader
+// does not weaken the writer: a write that gives a model a context_window that
+// is not a non-negative whole number is refused as ErrRegistryInvalid.
+func TestMalformedContextWindowStillRefusedOnWrite(t *testing.T) {
+	for _, v := range []any{"big", 1.5, -1} {
+		path := scratchRegistry(t, docRegistry)
+		before := readFile(t, path)
+		_, err := UpdateRegistry(func(d *RegistryDoc) error {
+			return d.PatchModel("ollama/beta", map[string]any{"context_window": v}, nil)
+		})
+		if !errors.Is(err, ErrRegistryInvalid) || readFile(t, path) != before {
+			t.Errorf("%v: err = %v, want ErrRegistryInvalid and no change", v, err)
+		}
 	}
 }

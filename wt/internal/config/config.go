@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -444,7 +445,7 @@ type Model struct {
 	// refused on write (validateModelRow). For a cloud model it overrides the
 	// tiers file's window (windows.Model); for a local model it is the only
 	// source.
-	ContextWindow int `toml:"context_window,omitempty"`
+	ContextWindow ContextTokens `toml:"context_window,omitempty"`
 	// Fetch and Draft say where a local model's weights come from: the
 	// registry's [models.fetch] table, and [models.draft] for the draft half
 	// of an mlx_lm_server pairing. wt reads them here — to show a local_path
@@ -518,6 +519,25 @@ type ArtifactFaults struct {
 	NotTable bool
 	// Repo and LocalPath: that key is there and is not a string.
 	Repo, LocalPath bool
+}
+
+// ContextTokens is a model's context_window in tokens. It never fails a load
+// (see ModelArtifact.UnmarshalTOML for why): a value that is not a whole
+// number, or is negative, reads as MalformedContextTokens, which is not a
+// window (every reader tests > 0) and which Model.Malformed names.
+type ContextTokens int
+
+// MalformedContextTokens is what a context_window the loader could not read
+// as a non-negative whole number decodes to.
+const MalformedContextTokens ContextTokens = -1
+
+// UnmarshalTOML reads a context_window value and never fails.
+func (c *ContextTokens) UnmarshalTOML(v any) error {
+	*c = MalformedContextTokens
+	if n, ok := v.(int64); ok && n >= 0 && n <= math.MaxInt32 {
+		*c = ContextTokens(n)
+	}
+	return nil
 }
 
 // ServeArgs is a model's serve_args: the argv elements, one per array element
@@ -673,6 +693,9 @@ func (m Model) ServeArgsRefused() []string {
 func (m Model) Malformed() []string {
 	out := append(m.Fetch.problems("fetch"), m.Draft.problems("draft")...)
 	out = append(out, m.ServeArgsProblems()...)
+	if m.ContextWindow < 0 {
+		out = append(out, "context_window is not a non-negative whole number")
+	}
 	for i, row := range m.Cost.TimePrices {
 		if problem := row.Problem(); problem != "" {
 			out = append(out, fmt.Sprintf("cost.time_prices[%d]: %s", i, problem))
