@@ -580,7 +580,8 @@ const subscriptionGateBound = 5 * time.Second
 
 // subscriptionGate is serve's start-time check of the proxy while the header
 // mode is switched on (decision 5): litellm.SubscriptionHazards over the
-// config.yaml at cfgPath ("" reads none), the proxy's environment and its
+// config.yaml at cfgPath (an empty path is the "config.yaml not identified"
+// hazard: the mode stays off), the proxy's environment and its
 // deployments, bounded by bound. A hazard keeps the mode off, with one warning
 // naming it (never a value); a proxy that cannot be read within the bound
 // keeps the mode on with one warning, because the route sync leaves every

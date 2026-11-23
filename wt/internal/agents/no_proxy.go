@@ -15,8 +15,12 @@ var noProxyVars = []string{"NO_PROXY", "no_proxy"}
 // inherited HTTP_PROXY/HTTPS_PROXY/ALL_PROXY could route it through a proxy
 // (whether Claude Code skips a proxy for loopback by itself is unverified).
 // So the gateway's host is added to both NO_PROXY and no_proxy: appended to
-// an inherited value with a comma (never replacing it), created when absent,
-// and not added again when already listed. Every other launch (token mode,
+// an inherited value with a comma (never replacing it), and not added again
+// when already listed. A spelling that is absent starts from the other's
+// inherited value (undici, curl and Python read the lowercase one first, Go
+// the uppercase one), so the user's bypass list is never hidden; when both
+// are set and differ, each keeps its own value. An inherited "*" stays (the
+// append is harmless). With neither set, both hold just the host. Every other launch (token mode,
 // an https origin, native with no origin, an agent other than claude) gets
 // env back unchanged.
 //
@@ -37,13 +41,26 @@ func noProxyEnv(agent, origin string, header bool, env []string) []string {
 	if strings.Contains(host, ":") {
 		hosts = append(hosts, "["+host+"]")
 	}
+	// Read both spellings before changing either: an absent one starts from
+	// the other's inherited value (tools read one spelling first, so the
+	// user's own bypass list must stay visible under both); two that are set
+	// keep their own values (never merged across).
+	inherited := map[string]string{}
+	present := map[string]bool{}
 	for _, name := range noProxyVars {
-		cur, set := lookupLast(env, name)
+		inherited[name], present[name] = lookupLast(env, name)
+	}
+	for i, name := range noProxyVars {
+		cur, set := inherited[name], present[name]
+		base := cur
+		if other := noProxyVars[1-i]; !set && present[other] {
+			base = inherited[other]
+		}
 		listed := map[string]bool{}
-		for _, e := range strings.Split(cur, ",") {
+		for _, e := range strings.Split(base, ",") {
 			listed[strings.ToLower(strings.TrimSpace(e))] = true
 		}
-		val := cur
+		val := base
 		for _, h := range hosts {
 			if listed[h] {
 				continue

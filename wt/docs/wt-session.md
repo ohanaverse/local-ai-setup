@@ -291,8 +291,10 @@ verified live). wt does not detect either.
 
 **Proxy variables.** Over an `http://` gateway (loopback only, above), a
 header-mode claude gets the gateway's host added to both `NO_PROXY` and
-`no_proxy`: appended to an inherited value with a comma, created when
-absent, and an IPv6 literal listed as both `::1` and `[::1]`. An inherited
+`no_proxy`: appended to an inherited value with a comma (never replacing
+it); when only one spelling is inherited, the other spelling starts from the
+inherited one, so your own bypass list stays under both; two that differ
+keep their own values; an IPv6 literal is listed as both `::1` and `[::1]`. An inherited
 `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` would otherwise route the
 plain-HTTP request, with your login and the wt token, through that proxy.
 Whether Claude Code already skips a proxy for loopback is unverified until

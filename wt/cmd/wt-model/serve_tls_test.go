@@ -185,7 +185,6 @@ func TestServeExpiredCertServesPlainHTTP(t *testing.T) {
 			cert, key := tlstest.Gen(t, t.TempDir(), c.opts)
 			seedProxyHome(t, up.URL, "sk-test", 0o600)
 			pairScratchConfig(t)
-			pairScratchConfig(t)
 			appendHome(t, "[gateway]\nsubscription_passthrough = true\ntls_cert = \""+cert+"\"\ntls_key = \""+key+"\"\n")
 			tok := filepath.Join(t.TempDir(), "token")
 			if err := os.WriteFile(tok, []byte("tok-abc\n"), 0o600); err != nil {

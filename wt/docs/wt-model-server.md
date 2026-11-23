@@ -1058,7 +1058,9 @@ No record at all (no server running) is silent: there is nothing to ask.
   ([Renewal and rotation](#renewal-and-rotation)).
 - **A header-mode claude over an `http://` gateway gets the gateway's host
   added to `NO_PROXY` and `no_proxy`** (appended to an inherited value,
-  never replacing it; an IPv6 literal in both forms, `::1` and `[::1]`), so
+  never replacing it; when only one spelling is inherited, the other
+  spelling starts from the inherited one; an IPv6 literal in both forms,
+  `::1` and `[::1]`), so
   an inherited `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` does not carry the
   login and the wt token in clear through a proxy. Whether Claude Code
   would skip a proxy for loopback by itself is unverified until the phase 3
