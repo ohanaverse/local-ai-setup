@@ -148,7 +148,7 @@ wt-model model add claude-subscription claude-haiku-5-5 --family claude --contex
 - **Usage credits.** Depending on the plan and seat tier, a Fable row (`claude-fable-5-2`), and other large models, may need usage credits or count against the plan's limits; Claude Code's `/model` picker can show "Requires usage credits". Check the plan before pointing a slot at one.
 - **Off by default on both sides.** Before the first model: run `make install` (and restart serve) on every machine with a `wt-model`, and upgrade every session machine; then set `[gateway] subscription_passthrough = true` in `~/.config/wt-model/config.toml` on the host and restart serve, and `[model-server] subscription = true` on each session machine that may send its login. No command writes either key.
 - **Routed only when safe.** A sync leaves every subscription model unrouted, with one warning, while the LiteLLM proxy could bill or redirect a keyless row (an `ANTHROPIC_*` credential in its environment, header forwarding, a foreign `anthropic/` deployment and more): [wt-model-server.md](../../wt/docs/wt-model-server.md#what-keeps-it-off).
-- The rows are offered only to claude. LiteLLM books $0 for them, while Claude Code shows list price.
+- The rows are offered only to claude. LiteLLM books its own list price for them (not $0), and Claude Code shows list price too; neither is what your plan charges.
 
 Details: [wt-model.md](../../wt/docs/wt-model.md#claude-subscription-models) (the command), [wt-session.md](../../wt/docs/wt-session.md#claude-subscription-header-mode) (the launch and its refusals).
 

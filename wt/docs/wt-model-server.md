@@ -609,8 +609,9 @@ stays on; the sync then keeps the subscription routes that exist and adds
 none until it can check. `general_settings.store_prompts_in_spend_logs` on
 is one warning, not a hazard: the proxy then keeps the prompts of
 subscription requests in its spend log, so never paste a token into a
-prompt. LiteLLM books $0 for a subscription row (it has no price), while
-Claude Code shows list price.
+prompt. LiteLLM books its own list price for a subscription row (the route
+carries a zero cost, which LiteLLM 1.109.1 does not honour; seen on a live
+check), while Claude Code shows list price; neither is what your plan charges.
 
 **What the check cannot see** (known gaps; check them yourself before turning
 the mode on):

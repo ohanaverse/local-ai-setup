@@ -237,8 +237,10 @@ wt-model model add claude-subscription claude-haiku-5-5 --family claude --contex
   `base_url`, no key) is added in the same write. It is left out of the
   Models tab's form, which has no context-window field.
 - No price and no `source` key are written, and `wt-model cloud-sync` never
-  touches the provider. LiteLLM books $0 for such a row, while Claude Code
-  shows list price.
+  touches the provider. LiteLLM books its own list price for such a row
+  (the route's zero cost is not honoured by LiteLLM 1.109.1; seen on a live
+  check), and Claude Code shows list price too; neither is what your plan
+  charges.
 - The route is a keyless `anthropic/<id>` row in `config.yaml` (a cloud
   row, so adding or removing one restarts the proxy), routed only while the
   proxy shows none of the hazards the host checks. An alias over one is a
