@@ -256,6 +256,14 @@ server elsewhere (remote)", the mirror of the Mode tab's local pointer note.
   changes nothing else. A plan that restarts or unloads a running LiteLLM or
   wt-model (`launchctl kickstart -k`, `bootout`) says so: requests in flight
   are cut at once, unlike `wt-model litellm restart`, which lets them finish.
+  A key rotation reloads LiteLLM (it unloads the job and bootstraps the edited
+  plist; a `kickstart -k` would restart the definition launchd already holds,
+  with the old key), so LiteLLM is down for the reload, about 15 seconds.
+  One apply runs at a time on a machine: a second `wt-model setup` or
+  `wt config` apply waits for the first to finish, on
+  `~/.config/wt-model/setup.lock` (a plain lock file, never removed), and
+  Create writes the LiteLLM plist only when none exists, even if one appears
+  while the plan runs.
 - It needs a terminal. Without one it exits 1 with `wt-model setup needs a
   terminal to open the Setup tab`.
 

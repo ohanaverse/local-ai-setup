@@ -639,7 +639,7 @@ func TestBuildPlanRotateOrdersBackupEditPairKickstart(t *testing.T) {
 		t.Errorf("rotate carries a create spec")
 	}
 	text := p.Format()
-	for _, w := range []string{"old key", plCfgPath, "LITELLM_SALT_KEY", "DATABASE_URL", "kickstart -k gui/501/local.litellm.proxy"} {
+	for _, w := range []string{"old key", plCfgPath, "LITELLM_SALT_KEY", "DATABASE_URL", "launchctl bootout gui/501/local.litellm.proxy", "launchctl bootstrap gui/501 " + plLiteLLM} {
 		if !strings.Contains(text, w) {
 			t.Errorf("Format does not say %q:\n%s", w, text)
 		}

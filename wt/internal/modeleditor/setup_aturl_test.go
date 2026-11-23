@@ -34,6 +34,7 @@ func (n recNet) Get(_ context.Context, url, _ string) (int, []byte, error) {
 	return 0, nil, errors.New("refused")
 }
 func (recNet) ListenerPID(context.Context, int) (int, bool, error) { return 0, false, nil }
+func (recNet) ParentPID(context.Context, int) (int, error)         { return 0, nil }
 func (recNet) ProcessStart(context.Context, int) (time.Time, error) {
 	return time.Time{}, errors.New("no process")
 }

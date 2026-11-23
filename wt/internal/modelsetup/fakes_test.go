@@ -47,8 +47,16 @@ type fakeEnv struct {
 	// loadedAfterBootout makes Print report the label still loaded for this
 	// many calls after a successful Bootout (launchd's lag on a real machine).
 	loadedAfterBootout int
-	lingering          map[string]int
-	kickstartErr       map[string]error // by label
+	// lingerLabel limits loadedAfterBootout to one label ("" means every
+	// label): a plan that unloads two jobs can then time out on one.
+	lingerLabel string
+	lingering   map[string]int
+	// parents is each pid's parent for the fake ParentPID (absent: none).
+	parents map[int]int
+	// onCall, when set, sees every recorded call as it is made: a test
+	// plants a file or changes a state at one exact point of an apply.
+	onCall       func(call string)
+	kickstartErr map[string]error // by label
 	// litellmPID, when set, makes a Bootstrap of the LiteLLM plist load and
 	// run the local.litellm.proxy job with this pid.
 	litellmPID int
@@ -111,6 +119,7 @@ func newFakeEnv(t *testing.T) *fakeEnv {
 		modes:        map[string]os.FileMode{},
 		jobs:         map[string]LaunchdJob{},
 		lingering:    map[string]int{},
+		parents:      map[int]int{},
 		writeErr:     map[string]error{},
 		kickstartErr: map[string]error{},
 		env:          map[string]string{},
@@ -139,7 +148,11 @@ func (f *fakeEnv) Env() Env {
 }
 
 func (f *fakeEnv) rec(format string, args ...any) {
-	f.calls = append(f.calls, fmt.Sprintf(format, args...))
+	call := fmt.Sprintf(format, args...)
+	f.calls = append(f.calls, call)
+	if f.onCall != nil {
+		f.onCall(call)
+	}
 }
 
 // called reports whether any recorded call starts with prefix.
@@ -212,6 +225,26 @@ func (x fakeFS) WriteAtomic(p string, d []byte, m os.FileMode) error {
 	}
 	x.f.files[p], x.f.modes[p] = append([]byte(nil), d...), m
 	return nil
+}
+
+// WriteNew refuses a path that exists, like the real link-based write.
+func (x fakeFS) WriteNew(p string, d []byte, m os.FileMode) error {
+	x.f.rec("FS.WriteNew %s %04o", p, m)
+	if err := x.f.writeErr[p]; err != nil {
+		return err
+	}
+	if _, ok := x.f.files[p]; ok {
+		return &fs.PathError{Op: "link", Path: p, Err: fs.ErrExist}
+	}
+	x.f.files[p], x.f.modes[p] = append([]byte(nil), d...), m
+	return nil
+}
+
+// WithLock records the lock's begin and end around fn.
+func (x fakeFS) WithLock(p string, fn func() error) error {
+	x.f.rec("FS.Lock begin %s", p)
+	defer x.f.rec("FS.Lock end %s", p)
+	return fn()
 }
 
 func (x fakeFS) Chmod(p string, m os.FileMode) error {
@@ -295,7 +328,9 @@ func (x fakeLaunchd) Bootout(_ context.Context, label string) error {
 		// A bootout launchd accepted unloads the job (after the lag
 		// loadedAfterBootout models).
 		delete(x.f.jobs, label)
-		x.f.lingering[label] = x.f.loadedAfterBootout
+		if x.f.lingerLabel == "" || x.f.lingerLabel == label {
+			x.f.lingering[label] = x.f.loadedAfterBootout
+		}
 	}
 	return x.f.launchdErr
 }
@@ -394,6 +429,11 @@ func (x fakeNet) ListenerPID(_ context.Context, port int) (int, bool, error) {
 		return 0, false, nil
 	}
 	return x.f.listenerPID, x.f.listenerOK, x.f.listenerErr
+}
+
+func (x fakeNet) ParentPID(_ context.Context, pid int) (int, error) {
+	x.f.rec("Net.ParentPID %d", pid)
+	return x.f.parents[pid], nil
 }
 
 func (x fakeNet) ProcessStart(_ context.Context, pid int) (time.Time, error) {

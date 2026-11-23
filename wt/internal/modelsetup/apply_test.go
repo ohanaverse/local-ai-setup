@@ -48,7 +48,7 @@ func apEnv(t *testing.T) *fakeEnv {
 func (f *fakeEnv) mutations() []string {
 	var out []string
 	for _, c := range f.calls {
-		for _, p := range []string{"FS.WriteAtomic", "FS.Chmod", "FS.Remove", "Launchd.", "Config.Update", "Config.SetPair", "LiteLLM.PlistVar", "Host.RandRead", "Net.Ping", "Net.Get http://localhost:4000"} {
+		for _, p := range []string{"FS.WriteAtomic", "FS.WriteNew", "FS.Chmod", "FS.Remove", "Launchd.", "Config.Update", "Config.SetPair", "LiteLLM.PlistVar", "Host.RandRead", "Net.Ping", "Net.Get http://localhost:4000"} {
 			if strings.HasPrefix(c, p) {
 				out = append(out, c)
 				break
@@ -595,7 +595,9 @@ func TestApplyRotateKeepsTheBackupAndTightensTheMode(t *testing.T) {
 		"Host.RandRead 32",
 		"FS.WriteAtomic " + plLiteLLM + " 0600",
 		"Config.SetPair url=true key=true",
-		"Launchd.Kickstart local.litellm.proxy kill=true",
+		"Launchd.Bootout local.litellm.proxy",
+		"Launchd.Print local.litellm.proxy",
+		"Launchd.Bootstrap " + plLiteLLM,
 		"Net.Get http://localhost:4000/health/liveliness bearer=false",
 		"Net.Get http://localhost:4000/v1/models bearer=true",
 		"Launchd.Kickstart " + AgentLabel + " kill=true",
@@ -674,10 +676,12 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 		noSecrets(t, f, lines, r, apOldMaster, apOldSalt)
 	}
 
-	// A failed LiteLLM restart: plist and pair agree, and the Result says
-	// exactly what to run.
+	// A failed LiteLLM reload after the job was unloaded: plist and pair
+	// agree, and the Result says exactly what to run — a bootstrap, with no
+	// bootout (it is gone) and no kickstart (#681: a kickstart restarts the
+	// old loaded definition, which holds the old key).
 	f := rotEnv(t)
-	f.kickstartErr["local.litellm.proxy"] = errors.New("Could not find service")
+	f.bootstrapErr = errors.New("Bootstrap failed: 5: Input/output error")
 	r, lines := apply(t, f, plan())
 	if r.Failed == nil || r.Failed.Kind != StepKickstartLiteLLM {
 		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
@@ -686,15 +690,33 @@ func TestApplyRotateFailureLeavesThePairUntouched(t *testing.T) {
 	if newKey == apOldMaster || f.pair.APIKey != newKey {
 		t.Errorf("plist and pair disagree after a failed restart")
 	}
-	for _, w := range []string{"launchctl kickstart -k gui/501/local.litellm.proxy", "launchctl kickstart -k gui/501/" + AgentLabel, "launchctl bootstrap gui/501 " + plLiteLLM} {
+	for _, w := range []string{"LiteLLM was unloaded", "launchctl bootstrap gui/501 " + plLiteLLM, "launchctl kickstart -k gui/501/" + AgentLabel} {
 		if !strings.Contains(r.Recovery, w) {
 			t.Errorf("Recovery %q does not say %q", r.Recovery, w)
 		}
+	}
+	if strings.Contains(r.Recovery, "launchctl bootout") || strings.Contains(r.Recovery, "kickstart -k gui/501/local.litellm.proxy") {
+		t.Errorf("Recovery %q names a bootout of the gone job or a LiteLLM kickstart", r.Recovery)
 	}
 	if f.called("Launchd.Kickstart " + AgentLabel) {
 		t.Errorf("wt-model restarted after LiteLLM failed")
 	}
 	noSecrets(t, f, lines, r, newKey, apOldMaster, apOldSalt)
+
+	// A bootout launchd refuses while the job is loaded: LiteLLM still runs
+	// with the old key, and the Result names the whole reload.
+	f = rotEnv(t)
+	f.jobs[litellm.ProxyLabel] = LaunchdJob{Loaded: true, Running: true, PID: 5}
+	f.bootoutErr = errors.New("Boot-out failed: 5: Input/output error")
+	r, _ = apply(t, f, plan())
+	if r.Failed == nil || r.Failed.Kind != StepKickstartLiteLLM {
+		t.Fatalf("bootout refused: Failed = %+v, Err = %v", r.Failed, r.Err)
+	}
+	for _, w := range []string{"LiteLLM still runs with the old one", "launchctl bootout gui/501/" + litellm.ProxyLabel, "launchctl bootstrap gui/501 " + plLiteLLM} {
+		if !strings.Contains(r.Recovery, w) {
+			t.Errorf("bootout refused: Recovery %q does not say %q", r.Recovery, w)
+		}
+	}
 
 	// A step failing after the edit and before the pair: the plist holds the
 	// new key, the pair the old one, and the Result says how to restore the
@@ -750,7 +772,7 @@ func TestApplyCreateWritesThePlistLoadsItAndPairsTheSameKey(t *testing.T) {
 		"FS.WriteAtomic " + plLocalTok + " 0600",
 		"Launchd.Print local.litellm.proxy",
 		"Host.RandRead 32", "Host.RandRead 32",
-		"FS.WriteAtomic " + plLiteLLM + " 0600",
+		"FS.WriteNew " + plLiteLLM + " 0600",
 		"Launchd.Bootstrap " + plLiteLLM,
 		"Net.Get http://localhost:4000/health/liveliness bearer=false",
 		"Launchd.Print local.litellm.proxy",
@@ -842,6 +864,116 @@ func TestApplyCreateRefusesAnAnswerFromAnotherProcess(t *testing.T) {
 	}
 }
 
+// TestApplyCreateAcceptsAListenerDescendedFromTheJob pins #641's first item:
+// the job launchd supervises is not always the process that listens — a
+// litellm that is a shell wrapper forking Python without exec, or one with
+// several workers, listens from a descendant of the job's pid. Such an
+// answer is the new job's; a listener with no path to the job's pid is still
+// another process's, and the pair is not written.
+func TestApplyCreateAcceptsAListenerDescendedFromTheJob(t *testing.T) {
+	p := mustPlan(t, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
+
+	for name, parents := range map[string]map[int]int{
+		"child":      {88: 77},
+		"grandchild": {99: 88, 88: 77},
+	} {
+		f := apEnv(t)
+		liteLLMUp(f, 77)
+		f.listeners[4000] = 88
+		if name == "grandchild" {
+			f.listeners[4000] = 99
+		}
+		f.parents = parents
+		r, _ := apply(t, f, p)
+		if r.Failed != nil || r.Err != nil || !f.called("Config.SetPair") {
+			t.Errorf("%s: Failed = %+v, Err = %v; want the create to finish", name, r.Failed, r.Err)
+		}
+	}
+
+	// A listener whose ancestors never reach the job is another process's.
+	f := apEnv(t)
+	liteLLMUp(f, 77)
+	f.listeners[4000] = 99
+	f.parents = map[int]int{99: 55, 55: 1}
+	r, _ := apply(t, f, p)
+	if r.Failed == nil || r.Failed.Kind != StepWait || f.called("Config.SetPair") {
+		t.Errorf("unrelated listener: Failed = %+v, Err = %v; want a refusal with no pair written", r.Failed, r.Err)
+	}
+}
+
+// TestApplyHoldsTheSetupLockForTheWholeApply pins #642's first item: two wt
+// sessions applying at once could interleave their steps (two creates
+// writing one plist, a rotate racing a create). Apply holds one cross-process
+// lock, <config home>/wt-model/setup.lock, from before its first step to
+// after its last — a failed run releases it too.
+func TestApplyHoldsTheSetupLockForTheWholeApply(t *testing.T) {
+	lock := plHome + "/.config/wt-model/setup.lock"
+	for name, setup := range map[string]func(*fakeEnv){
+		"success": func(*fakeEnv) {},
+		"failure": func(f *fakeEnv) { f.backupErr = errors.New("disk full") },
+	} {
+		f := rotEnv(t)
+		setup(f)
+		r, _ := apply(t, f, mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}))
+		if name == "success" && (r.Failed != nil || r.Err != nil) {
+			t.Fatalf("%s: Failed = %+v, Err = %v", name, r.Failed, r.Err)
+		}
+		begin, end := -1, -1
+		for i, c := range f.calls {
+			switch c {
+			case "FS.Lock begin " + lock:
+				begin = i
+			case "FS.Lock end " + lock:
+				end = i
+			}
+		}
+		if begin < 0 || end < begin {
+			t.Fatalf("%s: no lock held around the apply (begin %d, end %d); calls: %v", name, begin, end, f.calls)
+		}
+		for i, c := range f.calls {
+			if i >= begin && i <= end {
+				continue
+			}
+			for _, m := range f.mutations() {
+				if m == c {
+					t.Errorf("%s: %q ran outside the lock", name, c)
+				}
+			}
+		}
+	}
+}
+
+// TestApplyCreateNeverReplacesAPlistThatAppearsMeanwhile pins #642's second
+// item: Create looked for "no plist", then wrote one, and a plist created in
+// between would be replaced. The write now fails if the target exists, so a
+// plist that appears after the look is refused and left exactly as it is.
+func TestApplyCreateNeverReplacesAPlistThatAppearsMeanwhile(t *testing.T) {
+	p := mustPlan(t, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}})
+	f := apEnv(t)
+	liteLLMUp(f, 77)
+	planted := []byte("a plist somebody wrote while the apply ran")
+	f.onCall = func(call string) {
+		// After the apply's look at the label, before its write.
+		if call == "Launchd.Print "+litellm.ProxyLabel {
+			f.files[plLiteLLM], f.modes[plLiteLLM] = planted, 0o600
+			f.onCall = nil
+		}
+	}
+	r, _ := apply(t, f, p)
+	if r.Failed == nil || r.Failed.Kind != StepLiteLLMPlist {
+		t.Fatalf("Failed = %+v, Err = %v; want the plist step refused", r.Failed, r.Err)
+	}
+	if string(f.files[plLiteLLM]) != string(planted) {
+		t.Errorf("the plist that appeared meanwhile was replaced")
+	}
+	if f.called("Config.SetPair") {
+		t.Errorf("the pair was written after the refused plist")
+	}
+	if !strings.Contains(r.Err.Error(), "exists") {
+		t.Errorf("Err %q does not say the plist exists", r.Err)
+	}
+}
+
 // TestApplyRotateNeverWritesTheKeyAtALooseMode pins Important 1: the edited
 // plist is written in one step without group or other bits (0644 is written
 // 0600, never 0644 first), the backup (which holds the salt key and any
@@ -899,6 +1031,34 @@ func TestApplyRotateWaitsForLiteLLMWithTheNewKey(t *testing.T) {
 		if !strings.Contains(r.Err.Error()+r.Recovery, w) {
 			t.Errorf("Err/Recovery do not say %q: %v / %q", w, r.Err, r.Recovery)
 		}
+	}
+}
+
+// TestApplyRotateReloadsLiteLLMFromTheEditedPlist pins #681: a rotation
+// restarts LiteLLM by unloading the job and bootstrapping the EDITED plist.
+// kickstart -k restarts the definition launchd loaded at bootstrap time, so
+// it never reads the new key: the plist and the pair held the new key while
+// the running LiteLLM kept the old one and rejected it (found live, #643).
+func TestApplyRotateReloadsLiteLLMFromTheEditedPlist(t *testing.T) {
+	f := rotEnv(t)
+	r, _ := apply(t, f, mustPlan(t, rotateState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}))
+	if r.Failed != nil || r.Err != nil {
+		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
+	}
+	if f.called("Launchd.Kickstart " + litellm.ProxyLabel) {
+		t.Errorf("LiteLLM was kickstarted: that restarts the old loaded definition, never the edited plist's new key")
+	}
+	at := func(prefix string) int {
+		for i, c := range f.calls {
+			if strings.HasPrefix(c, prefix) {
+				return i
+			}
+		}
+		return -1
+	}
+	out, in := at("Launchd.Bootout "+litellm.ProxyLabel), at("Launchd.Bootstrap "+plLiteLLM)
+	if out < 0 || in < 0 || out > in {
+		t.Errorf("want a bootout of %s, then a bootstrap of %s; calls: %v", litellm.ProxyLabel, plLiteLLM, f.calls)
 	}
 }
 
@@ -980,6 +1140,7 @@ func TestApplyRecoveryAfterABootoutTimeoutBootstrapsTheNewAgent(t *testing.T) {
 	}
 	f := rotEnv(t)
 	f.loadedAfterBootout = 1 << 20
+	f.lingerLabel = AgentLabel // LiteLLM's own bootout, earlier in the plan, completes
 	r, _ := apply(t, f, plan())
 	if r.Failed == nil || r.Failed.Kind != StepBootout || !f.called("Config.SetPair") {
 		t.Fatalf("Failed = %+v, Err = %v", r.Failed, r.Err)
@@ -1021,7 +1182,7 @@ func TestNoPlanOrResultTextContainsAKey(t *testing.T) {
 		c2 := apEnv(t)
 		c2.getStatus = 500
 		r2 := rotEnv(t)
-		r2.kickstartErr["local.litellm.proxy"] = errors.New("boom")
+		r2.bootstrapErr = errors.New("boom")
 		return []run{
 			{"create", c, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}}, nil},
 			{"create down", c2, createState(), Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMCreate}}, nil},

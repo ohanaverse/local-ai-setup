@@ -60,7 +60,8 @@ type applyRun struct {
 	edited           bool   // a rotate step wrote the plist (verified or not)
 	pairURL          string
 	pairSet          bool // the pair holds newKey
-	litellmRestarted bool // a rotation's LiteLLM restart was accepted
+	litellmRestarted bool // a rotation's LiteLLM reload (bootout, then bootstrap) was accepted
+	litellmUnloaded  bool // a rotation's bootout of the LiteLLM job was accepted
 	litellmReady     bool // LiteLLM answered (and accepted the new key)
 	wtRestarted      bool // wt-model was restarted or loaded after the pair
 }
@@ -88,6 +89,23 @@ func (e *WaitError) Error() string {
 // revealed only inside the step that writes them and never appear in
 // progress, the Result or an error.
 func Apply(ctx context.Context, env Env, p Plan, progress func(string)) Result {
+	if p.LockPath == "" {
+		return applySteps(ctx, env, p, progress)
+	}
+	// One apply at a time across sessions (#642): two creates could both
+	// write the plist, a rotate could race a create. The lock is held for
+	// every step and released on any outcome.
+	var r Result
+	if err := env.FS.WithLock(p.LockPath, func() error {
+		r = applySteps(ctx, env, p, progress)
+		return nil
+	}); err != nil {
+		return Result{Err: fmt.Errorf("take the setup lock %s: %w", p.LockPath, err), Recovery: "nothing was changed: no step ran"}
+	}
+	return r
+}
+
+func applySteps(ctx context.Context, env Env, p Plan, progress func(string)) Result {
 	if progress == nil {
 		progress = func(string) {}
 	}
@@ -239,7 +257,20 @@ func applyStep(ctx context.Context, env Env, p Plan, s Step, r *Result, run *app
 	case StepChmod:
 		return env.FS.Chmod(s.Path, 0o600)
 	case StepKickstartLiteLLM:
-		if err := env.Launchd.Kickstart(ctx, litellm.ProxyLabel, true); err != nil {
+		// A reload, not a kickstart (#681): kickstart -k restarts the
+		// definition launchd loaded at bootstrap time and never reads the
+		// edited plist, so LiteLLM would keep the old master key. Unload the
+		// job (waiting until launchd stops listing it), then bootstrap the
+		// edited plist.
+		w, err := bootout(ctx, env, litellm.ProxyLabel)
+		if w != "" {
+			r.Warnings = append(r.Warnings, w)
+		}
+		if err != nil {
+			return err
+		}
+		run.litellmUnloaded = true
+		if err := env.Launchd.Bootstrap(ctx, s.Path); err != nil {
 			return err
 		}
 		run.litellmRestarted = true
@@ -475,7 +506,12 @@ func applyLiteLLMPlist(ctx context.Context, env Env, p Plan, s Step, run *applyR
 		return err
 	}
 	spec.MasterKey, spec.SaltKey = master, salt
-	if err := env.FS.WriteAtomic(s.Path, RenderLiteLLMPlist(spec), 0o600); err != nil {
+	// WriteNew, not WriteAtomic: a plist created since the look above (a
+	// second session, the user) is refused, never replaced (#642).
+	if err := env.FS.WriteNew(s.Path, RenderLiteLLMPlist(spec), 0o600); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("%s exists now, and wt never replaces a LiteLLM plist; nothing was written: check again", s.Path)
+		}
 		return fmt.Errorf("write %s: %w", s.Path, err)
 	}
 	run.plist, run.created = s.Path, true
@@ -682,11 +718,42 @@ func ownListener(ctx context.Context, env Env, s Step) error {
 	if err != nil {
 		return fmt.Errorf("look for the listener on port %d: %w", port, err)
 	}
-	if !ok || !job.Running || job.PID == 0 || pid != job.PID {
+	if ok && job.Running && job.PID != 0 && !descendsFrom(ctx, env, pid, job.PID) {
+		ok = false
+	}
+	if !ok || !job.Running || job.PID == 0 {
 		return fmt.Errorf("LiteLLM answered on port %d, but the listener there (pid %d) is not the new %s job (pid %d): another process holds the port; the pair was not written",
 			port, pid, litellm.ProxyLabel, job.PID)
 	}
 	return nil
+}
+
+// listenerAncestors bounds the walk from a listener up to the job's pid: a
+// wrapper script, a worker pool and a spawn each add one level.
+const listenerAncestors = 4
+
+// descendsFrom reports whether pid is job or a descendant of it, found by
+// walking up at most listenerAncestors parents. The job launchd supervises is
+// not always the process that listens (a litellm that is a shell wrapper
+// forking Python without exec, or one with several workers): a process with
+// no path to the job's pid is another process's, which is the case the check
+// exists for. A parent that cannot be read ends the walk with "no" — the
+// check fails closed (#641).
+func descendsFrom(ctx context.Context, env Env, pid, job int) bool {
+	for i := 0; i <= listenerAncestors; i++ {
+		if pid == job {
+			return true
+		}
+		if pid <= 1 {
+			return false
+		}
+		parent, err := env.Net.ParentPID(ctx, pid)
+		if err != nil {
+			return false
+		}
+		pid = parent
+	}
+	return false
 }
 
 // keyAccepted makes one authenticated request (GET /v1/models, the key only
@@ -741,9 +808,16 @@ func (run *applyRun) recovery(env Env, p Plan, failed *Step) string {
 		return "the plist " + run.plist + " and wt-model's pair both hold the new master key and LiteLLM was restarted, but it did not answer with the new key (see " +
 			filepath.Join(home, ".litellm.err.log") + "): once it does, run " + restartWt
 	case run.pairSet && !run.litellmReady:
-		return "the plist " + run.plist + " and wt-model's pair both hold the new master key, but LiteLLM still runs with the old one: run " +
-			"`launchctl kickstart -k " + domain + "/" + litellm.ProxyLabel + "` (or `launchctl bootstrap " + domain + " " + run.plist +
-			"` if it is not loaded), then " + restartWt
+		// A kickstart would restart the OLD loaded definition, which holds the
+		// old key: the edited plist has to be bootstrapped (#681).
+		state := "LiteLLM still runs with the old one"
+		unload := "`launchctl bootout " + domain + "/" + litellm.ProxyLabel + "` (skip it if the job is already gone), then "
+		if run.litellmUnloaded {
+			state = "LiteLLM was unloaded and not loaded again"
+			unload = ""
+		}
+		return "the plist " + run.plist + " and wt-model's pair both hold the new master key, but " + state + ": run " + unload +
+			"`launchctl bootstrap " + domain + " " + run.plist + "`, then " + restartWt
 	case run.pairSet && !run.wtRestarted && failed != nil && (failed.Kind == StepBootout || failed.Kind == StepBootstrap):
 		// A kickstart would restart the OLD definition (or nothing is loaded):
 		// the new agent plist has to be bootstrapped.

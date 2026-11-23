@@ -143,6 +143,18 @@ type Plan struct {
 	Admin   AdminWant
 	Agent   *AgentSpec
 	LiteLLM *LiteLLMSpec
+	// LockPath is the cross-process lock Apply holds for the whole run
+	// (<config home>/wt-model/setup.lock), so two sessions' applies never
+	// interleave (#642). Empty when the config home is unknown.
+	LockPath string
+}
+
+// SetupLockPath is where an Apply's lock lives for a config home.
+func SetupLockPath(configHome string) string {
+	if configHome == "" {
+		return ""
+	}
+	return filepath.Join(configHome, "wt-model", "setup.lock")
 }
 
 // RefusalError is a plan that cannot be made. Each reason says what is still
@@ -163,6 +175,15 @@ const DefaultLiteLLMPort = 4000
 // BuildPlan decides the steps that take the machine from st to want. It is
 // pure: everything it needs is in st, and it reads no clock and no file.
 func BuildPlan(st State, want Desired) (Plan, error) {
+	p, err := buildPlan(st, want)
+	if err != nil {
+		return Plan{}, err
+	}
+	p.LockPath = SetupLockPath(st.Host.ConfigHome)
+	return p, nil
+}
+
+func buildPlan(st State, want Desired) (Plan, error) {
 	d, err := modelmode.Preflight(st.State, want.Desired)
 	if err != nil {
 		return Plan{}, err
@@ -604,9 +625,10 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 	case !lp.HasMasterKey:
 		reasons = append(reasons, reason(path+" has no LITELLM_MASTER_KEY to replace", "add one as "+guide14+" describes"))
 	case lp.JobChecked && !lp.JobLoaded:
-		// The restart is kickstart -k, which cannot start a job that is not
-		// loaded; by then the plist and the pair would hold the new key.
-		reasons = append(reasons, reason("the LiteLLM job "+litellm.ProxyLabel+" is not loaded, so a restart after the new key would fail",
+		// The reload unloads the running job and bootstraps the edited plist;
+		// with no job loaded there is no running LiteLLM to move to the new
+		// key, and loading one is Create's or the user's step.
+		reasons = append(reasons, reason("the LiteLLM job "+litellm.ProxyLabel+" is not loaded, so there is no running LiteLLM to move to the new key",
 			"load it with `launchctl bootstrap gui/"+strconv.Itoa(st.Tools.UID)+" "+path+"`, then check again"))
 	case lp.HasDatabaseURL && !lp.HasSaltKey:
 		// LiteLLM encrypts stored provider credentials with the master key
@@ -628,7 +650,8 @@ func planLiteLLMRotate(st State) ([]Step, []string, []string) {
 	url := liteLLMURL(st, LiteLLMRotateKey)
 	steps = append(steps,
 		Step{Kind: StepKickstartLiteLLM, Path: lp.Path,
-			Detail: "restart LiteLLM so it uses the new key: launchctl kickstart -k gui/" + strconv.Itoa(st.Tools.UID) + "/" + litellm.ProxyLabel},
+			Detail: "restart LiteLLM so it uses the new key: unload it (launchctl bootout gui/" + strconv.Itoa(st.Tools.UID) + "/" + litellm.ProxyLabel +
+				") and load the edited plist (launchctl bootstrap gui/" + strconv.Itoa(st.Tools.UID) + " " + lp.Path + "); a kickstart -k would restart the definition launchd already holds, with the old key"},
 		Step{Kind: StepWait, Action: ActionWaitLiteLLM, Value: url,
 			Detail: "wait for LiteLLM to answer at " + url + "/health/liveliness and accept the new master key"})
 	cfg := ""
