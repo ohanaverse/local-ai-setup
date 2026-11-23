@@ -31,6 +31,8 @@ Codex stores API keys in `~/.codex/auth.json`. See the [Codex CLI authentication
 
 When using `codex-wt` with a non-native model, codex talks to a wt-declared provider endpoint instead of `api.openai.com`; that endpoint is the model server's gateway (`wt-model serve`; see [Through the model server's gateway](#through-the-model-servers-gateway) below). `codex-wt` declares that provider inline on the command line, so **no `auth.json` and no `~/.codex/config.toml` entry are required** for that flow. The old failure mode — codex defaulting to the `openai` provider and prompting to **sign in** — no longer happens for wt-launched models.
 
+**A model server over `https://` with a private certificate.** wt sets no certificate variable for codex: it must trust the gateway's certificate through the system trust store (on macOS, the login keychain), or through its own setting for extra roots, which is unverified until the phase 3 live check (#597) records it. wt's own control calls trust `ca_file` ([wt-session.md](../wt-session.md#tls)); the agent does not read it.
+
 ## Model selection
 
 Codex picks a model from `--model <name>` (or a `--profile <name>` + `-m <model>` combination). `codex-wt` handles two cases:

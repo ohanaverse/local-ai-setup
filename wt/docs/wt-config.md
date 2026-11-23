@@ -61,6 +61,27 @@ answer `y` to `Apply this plan? [y/N]` (default no).
   ``wt-model is on PATH: run `wt-model setup` now? [y/N]`` (default no): `y`
   runs `wt-model setup` once the editor has closed, on the same terminal.
 
+Two keys of the table are hand-edited only. The tab keeps them as written
+and never sets them:
+
+- `ca_file` (or `WT_MODEL_CA_FILE`, which wins): a PEM certificate file this
+  machine trusts for an `https://` server, such as a copy of a self-signed
+  server's certificate. Write it absolute or as `~/...`: a relative
+  `ca_file` in `config.toml` is listed as a problem and an `https://` url
+  is not pinged. The tab pings an `https://` url trusting it; for an `http://` url
+  it is ignored. When this machine's own wt-model serves TLS, the local plan
+  writes `https://` and, if `ca_file` is unset, carries a note naming the
+  line to add (the `tls_cert` path). The plan also swaps only the scheme of
+  a stored loopback url when the host's TLS setting changed, and notes that
+  serve must be restarted on the host.
+- `subscription = true`: this machine's opt-in to sending its own claude.ai
+  login to the model server for a Claude subscription model
+  ([`wt-session.md`](wt-session.md#claude-subscription-header-mode)).
+  The subscription is the user's own login only: never share or pool it
+  through a model server. A remote server over plain `http://` cannot be
+  used for it (the login would cross the network in clear); an `https://`
+  url (the server's native TLS) or a tunnel arriving on loopback can.
+
 Leaving local (for native or remote) from this tab never touches wt-model's
 LaunchAgent: the plan notes it untouched. When the last check said the local
 server answers, the note grows to name it and the step that resolves the
@@ -164,7 +185,8 @@ All `wt config` settings live in `~/.config/agent-wt/` (or
 > **The Agents tab's save writes only the agents and `default_tag`.** The
 > `[model-server]` table (`mode`, `url`, `token_file`;
 > [`wt-session.md`](wt-session.md)) is written by the Mode tab and
-> `wt-model setup`, as the plan each shows, and a save keeps it as it is.
+> `wt-model setup`, as the plan each shows, and a save keeps it as it is,
+> including the hand-edited `ca_file` and `subscription` keys.
 > The proxy's url and key
 > are not `config.toml` settings: they live in the `wt-model` config home
 > (`~/.config/wt-model/`), which the model server reads; `wt-model litellm

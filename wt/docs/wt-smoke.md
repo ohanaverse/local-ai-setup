@@ -77,7 +77,11 @@ login and spends your plan, so `wt smoke` never runs one unless you name it
   stderr's progress line and in the report (`--json` included, the same row
   shape): agent `claude`, the model's id, and the error
   `uses your Claude subscription: pass --subscription to smoke it`. With
-  `--only` naming no claude, these rows are left out.
+  `--only` naming no claude, these rows are left out. When every model the
+  server offers is a subscription one, there is nothing to pick: the run is
+  exit 1 (`the model server has no models to test without --subscription:
+  <ids> uses your Claude subscription: pass --subscription to smoke it`),
+  not a report of SKIP rows.
 - Naming one without the flag (`wt smoke claude-haiku-5-5`, `--json` or not,
   terminal or not) is exit 1 with
   `claude-haiku-5-5 uses your Claude subscription: pass --subscription to smoke it`;
@@ -87,11 +91,18 @@ login and spends your plan, so `wt smoke` never runs one unless you name it
   pre-launch checks a launch makes, in the same order: this machine opted in
   (`[model-server] subscription = true`), the endpoint is https or loopback,
   the server's passthrough is on, no launch profile overrides the header
-  mode's keys, Claude Code is new enough, and a claude.ai login is present. A
+  mode's keys and `NODE_TLS_REJECT_UNAUTHORIZED` is not `0` or `false` in the
+  environment, Claude Code is new enough, and a claude.ai login is present
+  ([wt-session.md](wt-session.md#claude-subscription-header-mode) has each
+  message). A
   failed check is exit 1 with its message, before the client session is
   registered and before any row runs. The row is built in header mode like a
   launch: the gateway token travels only in `ANTHROPIC_CUSTOM_HEADERS` (an
   inherited `x-wt-model-token` line is replaced), never in the output.
+- The subscription is your own claude.ai login: a smoke row spends your plan
+  like any session. A Fable row (and other large models) may need usage
+  credits or count against the plan's limits, depending on plan and seat
+  tier.
 
 ## Eligibility
 

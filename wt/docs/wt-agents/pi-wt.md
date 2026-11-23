@@ -30,6 +30,8 @@ pi obtains API keys from environment variables referenced in `~/.pi/agent/models
 
 In the NYT LiteLLM deployment on this machine, the wrapper is `~/.pi/agent/activate-litellm.sh`. It calls `/usr/local/bin/litellm-credential-helper.sh` to fetch a LiteLLM key, exports `ANTHROPIC_API_KEY` and `LITELLM_API_KEY`, sets `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-7` and `ANTHROPIC_CUSTOM_HEADERS="x-litellm-tags: cc_settings:6ebaf51"`, then `exec`s `pi "$@"`. The wrapper also injects `--provider anthropic --model claude-opus-4-7` when neither `--model` nor `--provider` is already in `"$@"`.
 
+**A model server over `https://` with a private certificate.** When the gateway's url is `https://` and `ca_file` (or `WT_MODEL_CA_FILE`) is set ([wt-session.md](../wt-session.md#tls)), wt sets `NODE_EXTRA_CA_CERTS` to that file for pi (and `WT_NODE_EXTRA_CA_CERTS`, a marker naming the same path), unless your environment already names another file there: then wt leaves yours and prints one `wt: note:`. A launch that does not reach an `https://` gateway removes a value wt set (the marker says which). Whether pi honours it end to end is to be confirmed by the phase 3 live check (#597).
+
 ## Model selection
 
 pi picks a model from `~/.pi/agent/models.json` based on `--model <id>` and `--provider <name>` arguments. With no flags, pi prompts the user (or, in the LiteLLM wrapper, falls back to the injected default).
