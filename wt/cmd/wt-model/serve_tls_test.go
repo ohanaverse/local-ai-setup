@@ -85,6 +85,8 @@ func TestServeRefusesABadTLSConfig(t *testing.T) {
 		{"loose key", tlsGateway(cert, looseKey), []string{"[gateway] tls_cert/tls_key: ", looseKey, "chmod 600"}},
 		{"half pair", "[gateway]\ntls_cert = \"" + cert + "\"\n", []string{"[gateway] tls_cert and tls_key must be set together"}},
 		{"wrong type", "[gateway]\ntls_cert = 1\ntls_key = \"" + key + "\"\n", []string{"[gateway] tls_cert must be a string"}},
+		{"relative cert", "[gateway]\ntls_cert = \"tls/server.crt\"\ntls_key = \"" + key + "\"\n", []string{"[gateway] tls_cert is a relative path: write it as an absolute path or ~/..."}},
+		{"relative key", "[gateway]\ntls_cert = \"" + cert + "\"\ntls_key = \"server.key\"\n", []string{"[gateway] tls_key is a relative path: write it as an absolute path or ~/..."}},
 		{"mismatch", tlsGateway(cert2, key), []string{"[gateway] tls_cert/tls_key: ", key}},
 		{"unparseable", tlsGateway(junk, key), []string{"[gateway] tls_cert/tls_key: ", junk}},
 		// A value that is the PEM text itself, pasted instead of a path,
@@ -92,8 +94,8 @@ func TestServeRefusesABadTLSConfig(t *testing.T) {
 		// printed (the refusal line lands in the LaunchAgent's log).
 		{"key pasted", "[gateway]\ntls_cert = \"" + cert + "\"\ntls_key = \"\"\"\n" + string(keyText) + "\"\"\"\n", []string{"[gateway] tls_key must be a path to a PEM file, not its contents"}},
 		{"cert pasted", "[gateway]\ntls_cert = \"\"\"\n" + string(certText) + "\"\"\"\ntls_key = \"" + key + "\"\n", []string{"[gateway] tls_cert must be a path to a PEM file, not its contents"}},
-		{"key 10 KB", tlsGateway(cert, long), []string{"[gateway] tls_cert/tls_key: "}},
-		{"cert 10 KB", tlsGateway(long, key), []string{"[gateway] tls_cert/tls_key: "}},
+		{"key 10 KB", tlsGateway(cert, "/"+long), []string{"[gateway] tls_cert/tls_key: "}},
+		{"cert 10 KB", tlsGateway("/"+long, key), []string{"[gateway] tls_cert/tls_key: "}},
 		{"key nul", "[gateway]\ntls_cert = \"" + cert + "\"\ntls_key = \"/tmp/a\\u0000" + long[:40] + "\"\n", []string{"[gateway] tls_key must be a path to a PEM file, not its contents"}},
 		{"cert nul", "[gateway]\ntls_cert = \"/tmp/a\\u0000" + long[:40] + "\"\ntls_key = \"" + key + "\"\n", []string{"[gateway] tls_cert must be a path to a PEM file, not its contents"}},
 	}
@@ -182,6 +184,8 @@ func TestServeExpiredCertServesPlainHTTP(t *testing.T) {
 			defer up.Close()
 			cert, key := tlstest.Gen(t, t.TempDir(), c.opts)
 			seedProxyHome(t, up.URL, "sk-test", 0o600)
+			pairScratchConfig(t)
+			pairScratchConfig(t)
 			appendHome(t, "[gateway]\nsubscription_passthrough = true\ntls_cert = \""+cert+"\"\ntls_key = \""+key+"\"\n")
 			tok := filepath.Join(t.TempDir(), "token")
 			if err := os.WriteFile(tok, []byte("tok-abc\n"), 0o600); err != nil {
@@ -281,6 +285,7 @@ func TestServeTLSAnnounceUnchanged(t *testing.T) {
 	asWTModel(t)
 	cert, key := tlstest.Gen(t, t.TempDir(), tlstest.Opts{NotAfter: time.Now().AddDate(0, 3, 0)})
 	seedProxyHome(t, "http://127.0.0.1:4000", "sk-test", 0o600)
+	pairScratchConfig(t)
 	appendHome(t, "[gateway]\nsubscription_passthrough = true\ntls_cert = \""+cert+"\"\ntls_key = \""+key+"\"\n")
 	tok := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tok, []byte("tok-abc\n"), 0o600); err != nil {

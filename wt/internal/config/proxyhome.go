@@ -649,7 +649,7 @@ func looksLikePEMContents(v string) bool {
 }
 
 // gatewayTLSFromDoc reads [gateway] tls_cert and tls_key: both strings,
-// both non-empty, both or neither, a leading ~ expanded. Anything else is a
+// both non-empty, both or neither, a leading ~ expanded, absolute. Anything else is a
 // *GatewayKeyError naming the key, never the value (fail closed: TLS asked
 // for and not usable refuses the start rather than serving plain http).
 func gatewayTLSFromDoc(doc proxyHomeDoc) (cert, key string, err error) {
@@ -675,6 +675,13 @@ func gatewayTLSFromDoc(doc proxyHomeDoc) (cert, key string, err error) {
 		p, xerr := ExpandHome(s)
 		if xerr != nil {
 			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " starts with ~ and the home directory is not known"}
+		}
+		// A relative path would resolve against serve's working
+		// directory, which under launchd is / : the start would fail and
+		// KeepAlive would restart it in a loop. Refused here, naming the
+		// key, never the value (as [model-server] ca_file is).
+		if !filepath.IsAbs(p) {
+			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " is a relative path: write it as an absolute path or ~/..."}
 		}
 		vals[k] = p
 	}

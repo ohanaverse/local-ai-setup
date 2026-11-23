@@ -210,7 +210,7 @@ func claudeHeaderModeClearPrefixes() []string { return []string{"CLAUDE_CODE_USE
 // both of which outrank the process env; a launch profile's env is appended
 // after wt's own and wins. ANTHROPIC_CUSTOM_HEADERS would replace the merged
 // header (an opaque 401), the tokens and the key would displace the checked
-// login, the base url would redirect the session. ANTHROPIC_BASE_URL,
+// login (the two *_FILE_DESCRIPTOR variables too), the base url would redirect the session. ANTHROPIC_BASE_URL,
 // ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY are reserved for slot profiles
 // anyway (static validation refuses them); they are asked again for a caller
 // that reached the build another way.
@@ -220,6 +220,8 @@ var claudeHeaderModeRefused = []struct{ key, why string }{
 	{"ANTHROPIC_API_KEY", "it would displace your Claude login"},
 	{"ANTHROPIC_AUTH_TOKEN", "it would displace your Claude login"},
 	{"CLAUDE_CODE_OAUTH_TOKEN", "it would displace your Claude login"},
+	{"CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "it would displace your Claude login"},
+	{"CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR", "it would displace your Claude login"},
 	{NodeTLSRejectVar, "it can turn off the certificate check of the gateway your Claude login is sent to"},
 }
 

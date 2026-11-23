@@ -766,3 +766,24 @@ func TestHeaderModeClearsTheFileDescriptorCredentials(t *testing.T) {
 		}
 	}
 }
+
+// TestHeaderModeRefusesFileDescriptorCredentialsInAProfile pins that a
+// header-mode profile's env or config_content.env naming
+// CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR or
+// CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR is refused (naming the key, never the
+// value): a launch clears both from the inherited env, but a profile's value
+// lands after that clear (appended env, --settings env) and would make Claude
+// Code read a token or key from a descriptor instead of the checked login.
+func TestHeaderModeRefusesFileDescriptorCredentialsInAProfile(t *testing.T) {
+	for _, key := range []string{"CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR"} {
+		if err := HeaderModeProfileConflict(map[string]string{key: "V-SENTINEL"}, nil); err == nil || !strings.Contains(err.Error(), "env sets "+key) || strings.Contains(err.Error(), "V-SENTINEL") {
+			t.Errorf("env %s: err = %v", key, err)
+		}
+		if err := HeaderModeProfileConflict(nil, map[string]any{"env": map[string]any{key: "V-SENTINEL"}}); err == nil || !strings.Contains(err.Error(), "config_content.env sets "+key) || strings.Contains(err.Error(), "V-SENTINEL") {
+			t.Errorf("config_content.env %s: err = %v", key, err)
+		}
+		if !HeaderModeRefusedKey(key) {
+			t.Errorf("HeaderModeRefusedKey(%s) = false", key)
+		}
+	}
+}

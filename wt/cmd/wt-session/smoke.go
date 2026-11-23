@@ -465,12 +465,7 @@ func (a *app) runSmokeRows(ctx context.Context, stderr io.Writer, cfg *config.Co
 		if loadErr == nil && validateErr == nil && store.Enabled {
 			rp := profiles.Resolve(store, agentName, cfg, m)
 			if !rp.Empty() {
-				pa = func(cmd *exec.Cmd, oneShotArgs []string, headerMode bool) (func() error, error) {
-					// headerMode is the build's own LaunchInfo.HeaderMode
-					// (#597), so the backstop judges the mode the command
-					// was really built in.
-					return applyResolvedProfile(cmd, agentName, rp, oneShotArgs, headerMode)
-				}
+				pa = smokeProfileApplier(agentName, rp)
 			}
 		}
 
@@ -513,6 +508,17 @@ func (a *app) runSmokeRows(ctx context.Context, stderr io.Writer, cfg *config.Co
 	return rows, interrupted
 }
 
+// smokeProfileApplier is the ProfileApplier of one smoke row whose agent and
+// model matched rp: it applies rp through applyResolvedProfile, the one a
+// real launch uses, so smoke and a launch cannot drift. headerMode is the
+// build's own LaunchInfo.HeaderMode (#597), passed through unchanged, so the
+// header-mode backstop judges the mode the command was really built in.
+func smokeProfileApplier(agentName string, rp profiles.ResolvedProfile) smoke.ProfileApplier {
+	return func(cmd *exec.Cmd, oneShotArgs []string, headerMode bool) (func() error, error) {
+		return applyResolvedProfile(cmd, agentName, rp, oneShotArgs, headerMode)
+	}
+}
+
 // subscriptionSkipRows is one SKIP row (agent claude, the hint as its error)
 // per subscription model or alias a walk without an id left out (#597
 // decision 9), each logged like any row. --only without claude asks about
@@ -528,6 +534,16 @@ func subscriptionSkipRows(stderr io.Writer, ids []string, only string) []smoke.R
 		rows = append(rows, r)
 	}
 	return rows
+}
+
+// subscriptionSkipList is ids followed by SubscriptionSkipReason with the verb
+// agreeing: "a uses ...", "a, b use ...".
+func subscriptionSkipList(ids []string) string {
+	reason := smoke.SubscriptionSkipReason
+	if len(ids) > 1 {
+		reason = "use" + strings.TrimPrefix(reason, "uses")
+	}
+	return strings.Join(ids, ", ") + " " + reason
 }
 
 // smokeStill is what a client smoke run that stopped short says is still true.
@@ -610,7 +626,7 @@ func resolveSmokeModelRemote(ctx context.Context, ms *modelSession, cfg *config.
 	}
 	if len(cands) == 0 {
 		if len(dropped) > 0 {
-			return smokeTarget{}, nil, nil, fmt.Errorf("the model server has no models to test without --subscription: %s %s", strings.Join(dropped, ", "), smoke.SubscriptionSkipReason)
+			return smokeTarget{}, nil, nil, fmt.Errorf("the model server has no models to test without --subscription: %s", subscriptionSkipList(dropped))
 		}
 		return smokeTarget{}, nil, nil, fmt.Errorf("the model server has no models to test; add one on the server host with wt-model model add, or pull a local one there")
 	}

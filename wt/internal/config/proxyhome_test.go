@@ -1505,6 +1505,9 @@ func TestGatewaySettingsTLSKeys(t *testing.T) {
 		{"cert wrong type", "tls_cert = 1234567\ntls_key = \"/x/k\"\n", "[gateway] tls_cert must be a string"},
 		{"key wrong type", "tls_cert = \"/x/c\"\ntls_key = [\"SECRETPATH\"]\n", "[gateway] tls_key must be a string"},
 		{"empty cert", "tls_cert = \"\"\ntls_key = \"/x/k\"\n", "[gateway] tls_cert"},
+		{"relative cert", "tls_cert = \"SECRETPATH/server.crt\"\ntls_key = \"/x/k\"\n", "[gateway] tls_cert is a relative path: write it as an absolute path or ~/..."},
+		{"relative key", "tls_cert = \"/x/c\"\ntls_key = \"./SECRETPATH.key\"\n", "[gateway] tls_key is a relative path: write it as an absolute path or ~/..."},
+		{"tilde-user key", "tls_cert = \"/x/c\"\ntls_key = \"~SECRETPATH/k\"\n", "[gateway] tls_key"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := proxyEnv(t, "")

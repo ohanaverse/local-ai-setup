@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -97,12 +98,13 @@ func TestServeKeepsModeOffOnHazard(t *testing.T) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		}
+		missingYAML := filepath.Join(t.TempDir(), "config.yaml")
 		start := time.Now()
-		on, line := subscriptionGate(t.Context(), "", litellm.ProxyEnvOf("test env", nil), block, 50*time.Millisecond)
+		on, line := subscriptionGate(t.Context(), missingYAML, litellm.ProxyEnvOf("test env", nil), block, 50*time.Millisecond)
 		if !on || !strings.HasPrefix(line, "wt-model: warning: ") || time.Since(start) > 5*time.Second {
 			t.Errorf("subscriptionGate = %v, %q after %s; want on, one warning, within the bound", on, line, time.Since(start))
 		}
-		on, line = subscriptionGate(t.Context(), "", litellm.ProxyEnvOf("test env", map[string]string{"ANTHROPIC_API_KEY": "wtSENTINEL"}), block, 50*time.Millisecond)
+		on, line = subscriptionGate(t.Context(), missingYAML, litellm.ProxyEnvOf("test env", map[string]string{"ANTHROPIC_API_KEY": "wtSENTINEL"}), block, 50*time.Millisecond)
 		if on || !strings.Contains(line, "ANTHROPIC_API_KEY") || strings.Contains(line, "SENTINEL") {
 			t.Errorf("env hazard with an unreadable proxy = %v, %q; want off, naming the variable", on, line)
 		}
@@ -125,5 +127,36 @@ func TestServeModeOffNeverChecksTheProxy(t *testing.T) {
 	_, _, stop := serveUntilListeningOn(t, h, testRuntime(t), writeToken(t, 0o600))
 	if err := stop(); err != nil {
 		t.Fatalf("serve returned %v", err)
+	}
+}
+
+// TestServeKeepsModeOffWhenConfigNotIdentified pins the fail-closed start
+// when serve cannot tell which config.yaml the proxy runs on (the registry is
+// redirected and WT_LITELLM_CONFIG is unset, so PairedConfigPath is ""): the
+// mode stays off, one warning names "config.yaml not identified" through the
+// same line as every other hazard, and the ping says off. subscriptionGate
+// given "" says the same.
+func TestServeKeepsModeOffWhenConfigNotIdentified(t *testing.T) {
+	asWTModel(t)
+	seedProxyHome(t, "http://127.0.0.1:4000", "sk-test", 0o600)
+	enablePassthrough(t)
+	t.Setenv("WT_LITELLM_CONFIG", "")
+	h := testHost()
+	h.ModelInfo = func(context.Context) ([]litellm.DeploymentInfo, error) { return nil, nil }
+	read, _, stop := serveUntilListeningOn(t, h, testRuntime(t), writeToken(t, 0o600))
+	ping := pingServe(t, listeningAddr(t, read()))
+	if err := stop(); err != nil {
+		t.Fatalf("serve returned %v", err)
+	}
+	if ping.SubscriptionPassthrough {
+		t.Errorf("ping reports the mode on with config.yaml not identified")
+	}
+	want := "wt-model: warning: subscription passthrough is kept off: " + litellm.ConfigNotIdentifiedHazard + " (fix it, then restart wt-model serve)"
+	if ws := warningLines(read()); len(ws) != 1 || ws[0] != want {
+		t.Errorf("warnings = %q, want [%q]", ws, want)
+	}
+	on, line := subscriptionGate(t.Context(), "", litellm.ProxyEnvOf("test env", nil), h.ModelInfo, time.Second)
+	if on || line != want {
+		t.Errorf("subscriptionGate(\"\") = %v, %q; want off, %q", on, line, want)
 	}
 }

@@ -69,6 +69,7 @@ func TestSubscriptionLines(t *testing.T) {
 // config.toml (seedProxyHome's file, or a new one).
 func enablePassthrough(t *testing.T) {
 	t.Helper()
+	pairScratchConfig(t)
 	p := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "wt-model", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
@@ -244,4 +245,13 @@ func TestServeNeverPrintsForwardedSecrets(t *testing.T) {
 			}
 		}
 	}
+}
+
+// pairScratchConfig names a scratch config.yaml (absent: nothing to check)
+// for serve's start-time hazard check: the test binary's registry is
+// redirected, and with nothing naming config.yaml the check would keep the
+// mode off ("config.yaml not identified").
+func pairScratchConfig(t *testing.T) {
+	t.Helper()
+	t.Setenv("WT_LITELLM_CONFIG", filepath.Join(t.TempDir(), "config.yaml"))
 }

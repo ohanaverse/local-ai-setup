@@ -74,7 +74,9 @@ func nodeCAEnv(agent, origin, caFile string, header bool, environ []string) (set
 }
 
 // applyNodeCA is nodeTLSCheck, then nodeCAEnv applied to env: the cleared
-// names removed, then the set entries appended. Notes go to stderr.
+// names removed, then the set entries appended; then noProxyEnv (the
+// header-mode proxy leak guard). Notes go to stderr. Both launch paths
+// (command, slotLaunchCmd) call it.
 func applyNodeCA(agent string, r Route, header bool, env []string) ([]string, error) {
 	tlsNote, err := nodeTLSCheck(agent, r.BaseOrigin, header, env)
 	if err != nil {
@@ -93,7 +95,7 @@ func applyNodeCA(agent string, r Route, header bool, env []string) ([]string, er
 	if len(clear) > 0 {
 		env = filterEnv(env, clear)
 	}
-	return append(env, set...), nil
+	return noProxyEnv(agent, r.BaseOrigin, header, append(env, set...)), nil
 }
 
 // lastValue is the value of the last entry naming key in env ("" when none):

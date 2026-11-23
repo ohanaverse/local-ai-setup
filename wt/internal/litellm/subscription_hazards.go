@@ -122,6 +122,12 @@ func deploymentsOf(rows []modelInfoRow) []DeploymentInfo {
 	return out
 }
 
+// ConfigNotIdentifiedHazard is the hazard a subscription check names when it
+// does not know which config.yaml the proxy runs on (PairedConfigPath is "":
+// the registry is redirected and WT_LITELLM_CONFIG is unset). It holds no
+// value.
+const ConfigNotIdentifiedHazard = "config.yaml not identified (set WT_LITELLM_CONFIG when the registry is redirected)"
+
 // SubscriptionHazards checks the proxy for what makes a keyless anthropic/
 // row unsafe (decision 5), worded without a value:
 //   - env is wt's own environment standing in for the proxy's (the plist
@@ -129,7 +135,9 @@ func deploymentsOf(rows []modelInfoRow) []DeploymentInfo {
 //   - env (the proxy's environment, ProxyEnv.IsSet) sets an ANTHROPIC_*
 //     variable LiteLLM 1.109.1's anthropic provider reads as a credential
 //     (llms/anthropic/common_utils.py, wif.py) or an address;
-//   - the config.yaml at cfgPath ("" or a missing file: not read) turns on
+//   - cfgPath is "" (which config.yaml is not known): one hazard,
+//     ConfigNotIdentifiedHazard;
+//   - the config.yaml at cfgPath (a missing file: not read) turns on
 //     forward_client_headers_to_llm_api in general_settings or
 //     litellm_settings (at any depth: model_group_settings included), so the
 //     master key could be forwarded to Anthropic; a file that cannot be read
@@ -146,7 +154,12 @@ func deploymentsOf(rows []modelInfoRow) []DeploymentInfo {
 // environment and config.yaml show are returned with it.
 func SubscriptionHazards(ctx context.Context, cfgPath string, env ProxyEnv, info ModelInfoFunc) (hazards, warnings []string, err error) {
 	var f *File
-	if cfgPath != "" {
+	if cfgPath == "" {
+		// Which config.yaml the proxy runs on is not known (the registry is
+		// redirected and nothing names config.yaml): its settings cannot be
+		// checked, so that is a hazard (fail closed).
+		hazards = append(hazards, ConfigNotIdentifiedHazard)
+	} else {
 		opened, oerr := Open(cfgPath)
 		switch {
 		case oerr == nil:
@@ -566,6 +579,11 @@ func gateSubscription(cfg *config.Config, f *File, o Options, db *dbRoutes) *sub
 		defer cancel()
 	}
 	hazards, warnings, err := subscriptionHazards(ctx, f, env(), info)
+	if f == nil {
+		// No config.yaml to check (every write opens one today; a caller
+		// that has none must not route on an unchecked proxy).
+		hazards = append([]string{ConfigNotIdentifiedHazard}, hazards...)
+	}
 	g := &subscriptionGate{warnings: warnings}
 	switch {
 	case len(hazards) > 0:
