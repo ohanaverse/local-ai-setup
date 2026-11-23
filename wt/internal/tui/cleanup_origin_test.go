@@ -97,7 +97,7 @@ func TestOriginRowsAreTickableButNeverTickedForYou(t *testing.T) {
 		t.Errorf("detail of another remote's row: %s", d)
 	}
 	m.cursor = old
-	if d := m.detail(); !strings.Contains(d, "less-sure") ||!strings.Contains(d, "--accept-loss") || !strings.Contains(d, "delete origin") {
+	if d := m.detail(); !strings.Contains(d, "less-sure") || !strings.Contains(d, "--accept-loss") || !strings.Contains(d, "delete origin") {
 		t.Errorf("detail of a less-sure origin row does not name its approvals:\n%s", d)
 	}
 }
