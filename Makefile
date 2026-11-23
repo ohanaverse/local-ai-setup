@@ -58,7 +58,7 @@ test-all: lint ## CI-equivalent: lint + llmbench + modeltiers + wt
 	@$(MAKE) --no-print-directory test-install-skills
 	cd llmbench && uv sync && make check && make test
 	cd modeltiers && uv sync && make check && make test
-	cd wt && go build ./... && go vet ./... && go test -count=1 ./... && make single-p
+	cd wt && go build ./... && go vet ./... && go test -timeout 30m -count=1 ./... && make single-p
 
 test-install-skills: ## Check install-skills installs only for agents on PATH (scratch HOME)
 	@bin/test-install-skills

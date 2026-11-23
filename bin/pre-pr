@@ -57,6 +57,13 @@ trap cleanup EXIT
 
 export HOME=$scratch
 unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME
+# A runner has no agent session either. Run from inside Claude Code, the
+# ANTHROPIC_* gateway settings and CLAUDE_CODE_* variables would reach the
+# wt-session tests that assert an agent's environment carries none of them.
+for v in $(compgen -v | grep -E '^(ANTHROPIC_|CLAUDE_CODE_)'); do
+    unset "$v"
+done
+unset CLAUDECODE
 export PATH=$real_path
 export GOCACHE=$go_cache GOPATH=$go_path GOMODCACHE=$go_mod_cache GOTOOLCHAIN=$go_toolchain
 export UV_CACHE_DIR=$uv_cache
