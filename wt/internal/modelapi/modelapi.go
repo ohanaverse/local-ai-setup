@@ -28,6 +28,12 @@ type Ping struct {
 	// mode (x-wt-model-token beside the client's own claude.ai login). It is
 	// omitted when off, so an off server and an older one look the same.
 	SubscriptionPassthrough bool `json:"subscription_passthrough,omitempty"`
+	// TLSOff is set only when TLS was configured ([gateway] tls_cert and
+	// tls_key) and serve fell back to plain http because the certificate is
+	// expired or not yet valid: the fixed reason ("certificate expired
+	// 2026-11-01", "certificate not valid until …"), a date, never
+	// certificate bytes. A client then knows its connection is plain http.
+	TLSOff string `json:"tls_off,omitempty"`
 }
 
 // Price is a model's per-token price, in the unit config.PriceInForce uses.

@@ -2,6 +2,7 @@ package modelserver
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,9 +49,21 @@ type Options struct {
 	// advertised by the ping; serve sets it from the home's [gateway] table.
 	SubscriptionPassthrough bool
 	// ErrorLog receives the gateway proxy's transport errors; nil is the
-	// standard logger.
+	// standard logger. With TLS set it is also the http.Server's ErrorLog
+	// (handshake errors, which name the client's address only).
 	ErrorLog *log.Logger
+	// TLS, when set, makes Serve speak TLS on its listener (decision 13);
+	// nil is plain http, today's server exactly.
+	TLS *tls.Config
+	// TLSOff is the fixed reason TLS is off although configured (the
+	// certificate's dates, tlsfile's DateReason), advertised by the ping as
+	// tls_off; empty otherwise.
+	TLSOff string
 }
+
+// tlsIdleTimeout closes idle keep-alive connections of a TLS server; a plain
+// server keeps net/http's defaults (no idle timeout), as before.
+const tlsIdleTimeout = 120 * time.Second
 
 // Server is the wt-model control API and gateway.
 type Server struct {
@@ -159,6 +172,7 @@ func (s *Server) ping(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, modelapi.Ping{
 		APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion, Server: "wt-model",
 		SubscriptionPassthrough: s.o.SubscriptionPassthrough,
+		TLSOff:                  s.o.TLSOff,
 	})
 }
 
@@ -326,7 +340,7 @@ func (s *Server) Serve(ctx context.Context, announce func(addr string)) error {
 	if err != nil {
 		return fmt.Errorf("cannot listen on %s: %s (pick another with --listen HOST:PORT)", s.o.Listen, listenReason(err))
 	}
-	srv := &http.Server{Handler: s.handler, ReadHeaderTimeout: 10 * time.Second}
+	srv := s.httpServer()
 	if announce != nil {
 		announce(ln.Addr().String())
 	}
@@ -337,7 +351,14 @@ func (s *Server) Serve(ctx context.Context, announce func(addr string)) error {
 		s.stopper.Run(loopCtx, s.autoStopEvery)
 	}()
 	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
+	go func() {
+		if srv.TLSConfig != nil {
+			// The certificate is in TLSConfig; net/http adds h2 to its ALPN.
+			errc <- srv.ServeTLS(ln, "", "")
+			return
+		}
+		errc <- srv.Serve(ln)
+	}()
 
 	var serveErr error
 	select {
@@ -357,6 +378,20 @@ func (s *Server) Serve(ctx context.Context, announce func(addr string)) error {
 		return serveErr
 	}
 	return nil
+}
+
+// httpServer is the http.Server Serve runs. Plain http is today's server
+// exactly (Handler and ReadHeaderTimeout); only with Options.TLS does it
+// gain the TLS config, IdleTimeout and the ErrorLog. Never a read or write
+// timeout: prompts and streams are long.
+func (s *Server) httpServer() *http.Server {
+	srv := &http.Server{Handler: s.handler, ReadHeaderTimeout: 10 * time.Second}
+	if s.o.TLS != nil {
+		srv.TLSConfig = s.o.TLS.Clone()
+		srv.IdleTimeout = tlsIdleTimeout
+		srv.ErrorLog = s.o.ErrorLog
+	}
+	return srv
 }
 
 // listenReason is why net.Listen failed, without its "listen tcp ADDR:" lead

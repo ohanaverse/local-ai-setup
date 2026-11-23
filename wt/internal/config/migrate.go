@@ -400,9 +400,10 @@ func dropLegacyGateway(path string) (changed bool) {
 
 // legacyGatewayNotice is dropLegacyGateway's decision on config.toml's bytes:
 // the one notice line and whether there is a [gateway] table at all.
-// A table holding subscription_passthrough is the host switch written in the
-// wrong file (serve never reads agent-wt's config.toml): the notice then
-// names the wt-model home's config.toml instead of the legacy wording.
+// A table holding subscription_passthrough, tls_cert or tls_key is the host
+// side written in the wrong file (serve never reads agent-wt's config.toml):
+// the notice then names those keys and the wt-model home's config.toml
+// instead of the legacy wording.
 func legacyGatewayNotice(raw []byte) (string, bool) {
 	var probe struct {
 		Gateway map[string]any `toml:"gateway"`
@@ -410,8 +411,23 @@ func legacyGatewayNotice(raw []byte) (string, bool) {
 	if err := toml.Unmarshal(raw, &probe); err != nil || probe.Gateway == nil {
 		return "", false
 	}
-	if _, ok := probe.Gateway[gatewayPassthroughKey]; ok {
-		return BinaryName + ": config.toml: [gateway] " + gatewayPassthroughKey + " is not read here — it belongs under [gateway] in ~/.config/wt-model/config.toml, which wt-model serve reads; this block will be dropped on next save", true
+	var keys []string
+	for _, k := range []string{gatewayPassthroughKey, gatewayTLSCertKey, gatewayTLSKeyKey} {
+		if _, ok := probe.Gateway[k]; ok {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) > 0 {
+		verb, pron := "is", "it belongs"
+		if len(keys) > 1 {
+			verb, pron = "are", "they belong"
+		}
+		named := strings.Join(keys[:len(keys)-1], ", ")
+		if named != "" {
+			named += " and "
+		}
+		named += keys[len(keys)-1]
+		return BinaryName + ": config.toml: [gateway] " + named + " " + verb + " not read here — " + pron + " under [gateway] in ~/.config/wt-model/config.toml, which wt-model serve reads; this block will be dropped on next save", true
 	}
 	return BinaryName + ": found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by wt (see 'wt litellm status'); this block will be dropped on next save", true
 }

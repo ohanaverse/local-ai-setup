@@ -3,13 +3,17 @@ package modelping
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 
@@ -32,16 +36,56 @@ const (
 )
 
 // NewHTTPClient is the transport every control request rides on: no
-// environment proxy, a bounded dial, and no redirect followed.
+// environment proxy, a bounded dial, no redirect followed and TLS 1.2 as the
+// floor. It is NewHTTPClientFor with no CA file, which cannot fail.
 func NewHTTPClient() *http.Client {
+	hc, _ := NewHTTPClientFor(Endpoint{})
+	return hc
+}
+
+// CAFileError is a CA file NewHTTPClientFor cannot use: unreadable, or
+// holding no PEM certificate. It names the path and never the file's bytes.
+type CAFileError struct {
+	Path, Reason string
+}
+
+func (e *CAFileError) Error() string { return "ca_file " + e.Path + " " + e.Reason }
+
+// NewHTTPClientFor is NewHTTPClient's transport for ep: when ep.CAFile is
+// set, its certificates are added to the system roots (a file that cannot be
+// read or holds no PEM certificate is a *CAFileError, before any dial: never
+// a fall back to the system pool alone); ep.ServerName, when set, is the name
+// the certificate is verified as. Verification is never skipped.
+func NewHTTPClientFor(ep Endpoint) (*http.Client, error) {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	// No environment proxy: the bearer token and the prompts that pass
 	// through the gateway never go to a third party's HTTP(S)_PROXY.
 	tr.Proxy = nil
 	tr.DialContext = (&net.Dialer{Timeout: DialTimeout}).DialContext
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: ep.ServerName}
+	if ep.CAFile != "" {
+		data, err := os.ReadFile(ep.CAFile)
+		if err != nil {
+			reason := err.Error()
+			var pe *fs.PathError
+			if errors.As(err, &pe) {
+				reason = pe.Err.Error()
+			}
+			return nil, &CAFileError{Path: ep.CAFile, Reason: "cannot be read: " + reason}
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(data) {
+			return nil, &CAFileError{Path: ep.CAFile, Reason: "holds no PEM certificate"}
+		}
+		cfg.RootCAs = pool
+	}
+	tr.TLSClientConfig = cfg
 	// A 3xx is never followed: it would replay the bearer token and the
 	// request body to whatever the Location names.
-	return &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
 }
 
 // Response is the answer a request came back with, whatever its status.
@@ -151,7 +195,10 @@ func CheckPing(addr string, r *Response) (modelapi.Ping, error) {
 // Ping checks that a server answers, is a wt-model and speaks this API major:
 // one GET to its ping endpoint over a fresh transport.
 func Ping(ctx context.Context, ep Endpoint) (modelapi.Ping, error) {
-	hc := NewHTTPClient()
+	hc, err := NewHTTPClientFor(ep)
+	if err != nil {
+		return modelapi.Ping{}, err
+	}
 	defer hc.CloseIdleConnections()
 	return pingOn(ctx, hc, ep)
 }
@@ -173,7 +220,10 @@ func pingOn(ctx context.Context, hc *http.Client, ep Endpoint) (modelapi.Ping, e
 // First caller: the phase 4 stage 2 admin commands; it lives here because
 // the spine puts every request the model side shares in this package.
 func GetJSON(ctx context.Context, ep Endpoint, path string, out any) error {
-	hc := NewHTTPClient()
+	hc, err := NewHTTPClientFor(ep)
+	if err != nil {
+		return err
+	}
 	defer hc.CloseIdleConnections()
 	if _, err := pingOn(ctx, hc, ep); err != nil {
 		return err

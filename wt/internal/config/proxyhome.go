@@ -569,22 +569,41 @@ type GatewayConf struct {
 	// (x-wt-model-token beside the client's own claude.ai login). Off unless
 	// the table says subscription_passthrough = true.
 	SubscriptionPassthrough bool
+	// TLSCert and TLSKey are the PEM files serve speaks TLS with (a leading
+	// ~ expanded); both empty is plain http. GatewaySettings sets both or
+	// neither: one without the other, a value that is not a string or an
+	// empty string is an error (decision 13: fail closed, never a silent
+	// plain http).
+	TLSCert, TLSKey string
 }
 
-// gatewayPassthroughKey is the host switch's key under [gateway].
-const gatewayPassthroughKey = "subscription_passthrough"
+// The [gateway] keys: the host switch and the TLS pair.
+const (
+	gatewayPassthroughKey = "subscription_passthrough"
+	gatewayTLSCertKey     = "tls_cert"
+	gatewayTLSKeyKey      = "tls_key"
+)
 
 // proxyHomeKeys is every key the home's config.toml knows, the one list a
 // value-free parse error may name (valueFreeParseError): [litellm]'s url and
 // key_file and [gateway]'s keys. A key added to either table goes here.
-var proxyHomeKeys = []string{"url", "key_file", gatewayPassthroughKey}
+var proxyHomeKeys = []string{"url", "key_file", gatewayPassthroughKey, gatewayTLSCertKey, gatewayTLSKeyKey}
+
+// GatewayKeyError is a [gateway] key serve cannot start with: a TLS key that
+// is not a string, empty, or set without the other. Msg names the key and
+// never its value; serve prints it as its one refusal line.
+type GatewayKeyError struct{ Msg string }
+
+func (e *GatewayKeyError) Error() string { return e.Msg }
 
 // GatewaySettings reads the wt-model home's [gateway] table (ProxyHomePath,
 // through decodeProxyHome, under the same shared lock as the pair). No file,
 // no table or an absent key is the zero value. A key holding the wrong type
 // ("true", 1) is off plus one warning naming the key and the type it needs:
-// off is the safe direction. A file that does not parse is an error, worded
-// without any value from it. No code writes this table.
+// off is the safe direction. tls_cert and tls_key fail closed instead: one
+// without the other, a wrong type or an empty value is a *GatewayKeyError.
+// A file that does not parse is an error, worded without any value from it.
+// No code writes this table.
 func GatewaySettings() (GatewayConf, []string, error) {
 	home := ProxyHomePath()
 	if home == "" {
@@ -600,7 +619,42 @@ func GatewaySettings() (GatewayConf, []string, error) {
 		return GatewayConf{}, nil, err
 	}
 	gc, warns := gatewayFromDoc(doc)
+	cert, key, err := gatewayTLSFromDoc(doc)
+	if err != nil {
+		return GatewayConf{}, nil, err
+	}
+	gc.TLSCert, gc.TLSKey = cert, key
 	return gc, warns, nil
+}
+
+// gatewayTLSFromDoc reads [gateway] tls_cert and tls_key: both strings,
+// both non-empty, both or neither, a leading ~ expanded. Anything else is a
+// *GatewayKeyError naming the key, never the value (fail closed: TLS asked
+// for and not usable refuses the start rather than serving plain http).
+func gatewayTLSFromDoc(doc proxyHomeDoc) (cert, key string, err error) {
+	vals := map[string]string{}
+	for _, k := range []string{gatewayTLSCertKey, gatewayTLSKeyKey} {
+		v, ok := doc.Gateway[k]
+		if !ok {
+			continue
+		}
+		s, isString := v.(string)
+		if !isString {
+			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " must be a string"}
+		}
+		if strings.TrimSpace(s) == "" {
+			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " is empty: name the PEM file, or remove both tls_cert and tls_key for plain http"}
+		}
+		p, xerr := ExpandHome(s)
+		if xerr != nil {
+			return "", "", &GatewayKeyError{Msg: "[gateway] " + k + " starts with ~ and the home directory is not known"}
+		}
+		vals[k] = p
+	}
+	if len(vals) == 1 {
+		return "", "", &GatewayKeyError{Msg: "[gateway] tls_cert and tls_key must be set together"}
+	}
+	return vals[gatewayTLSCertKey], vals[gatewayTLSKeyKey], nil
 }
 
 // gatewayFromDoc interprets a decoded home document's [gateway] table.

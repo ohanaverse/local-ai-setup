@@ -428,3 +428,31 @@ func TestWrongFileGatewayKeyPointsAtTheHome(t *testing.T) {
 		t.Error("a notice without any [gateway] table")
 	}
 }
+
+// TestWrongFileGatewayTLSKeysPointAtTheHome pins decision 13's wrong-file
+// case: tls_cert/tls_key under [gateway] in agent-wt's config.toml are never
+// read (serve reads only the wt-model home), so the notice names the keys and
+// the home's config.toml instead of the legacy wording, and quotes no value.
+func TestWrongFileGatewayTLSKeysPointAtTheHome(t *testing.T) {
+	for _, body := range []string{
+		"[gateway]\ntls_cert = \"/x/SECRETPATH.crt\"\ntls_key = \"/x/SECRETPATH.key\"\n",
+		"[gateway]\ntls_key = \"/x/SECRETPATH.key\"\n",
+		"[gateway]\nsubscription_passthrough = true\ntls_cert = \"/x/SECRETPATH.crt\"\n",
+	} {
+		msg, ok := legacyGatewayNotice([]byte(body))
+		if !ok {
+			t.Fatalf("no notice for %q", body)
+		}
+		if !strings.Contains(msg, "~/.config/wt-model/config.toml") || strings.Contains(msg, "LiteLLM routing is now controlled by wt") {
+			t.Errorf("notice = %q, want the home pointer", msg)
+		}
+		for _, k := range []string{"tls_cert", "tls_key", "subscription_passthrough"} {
+			if strings.Contains(body, k+" =") && !strings.Contains(msg, k) {
+				t.Errorf("notice = %q, want it to name %s", msg, k)
+			}
+		}
+		if strings.Contains(msg, "SECRETPATH") {
+			t.Errorf("notice quotes a value: %q", msg)
+		}
+	}
+}

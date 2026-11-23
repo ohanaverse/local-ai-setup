@@ -16,8 +16,14 @@ import (
 )
 
 // Endpoint is where the model server is and the token that opens it.
+// CAFile, when set, is a PEM file of extra trusted roots added to the system
+// pool for an https url (decision 14); ServerName, when set, is the name the
+// server's certificate is verified as (a host command dialling loopback sets
+// it to the certificate's own name, tlsfile.DialName).
 type Endpoint struct {
 	URL, Token string
+	CAFile     string
+	ServerName string
 }
 
 // Origin is the URL without trailing slashes.

@@ -79,8 +79,15 @@ same way and differ only in `--listen` and in what is allowed to reach it:
   workstation. Listen on the workstation's LAN address.
 - **The same machine.** Listen on `127.0.0.1`. The token is still required.
 
-The server speaks plain HTTP and has no TLS. Keep it on a network you trust,
-or reach it through a tunnel.
+By default the server speaks plain HTTP. It can speak TLS itself
+([Native TLS](#native-tls)); without it, keep it on a network you trust, or
+reach it through a tunnel. Either way the shared token is the only
+authenticator: anyone who holds it can use the server, and the gateway's
+header mode (a client's own claude.ai login forwarded) is accepted only from
+a loopback peer or over a real TLS connection to `wt-model` itself, never
+from another machine over plain HTTP. With TLS on a LAN, any holder of the
+token can send header-mode requests from anywhere, forwarding whatever login
+it carries; the owner-only rule is not something wt can enforce.
 
 ## Flags
 
@@ -97,7 +104,7 @@ or reach it through a tunnel.
 | Code | Meaning |
 |---|---|
 | 0 | stopped cleanly on SIGINT or SIGTERM |
-| 1 | any failure (a bad flag, an unreadable token file, an unconfigured LiteLLM proxy, an address that cannot be bound) |
+| 1 | any failure (a bad flag, an unreadable token file, an unconfigured LiteLLM proxy, a `config.toml` in the wt-model home that does not parse, a `[gateway]` TLS pair serve cannot use ([Native TLS](#native-tls)), an address that cannot be bound) |
 
 A failure prints one line on stderr, `wt-model: <message>`, with the way out
 last, for example `wt-model: token file PATH is accessible by group or other
@@ -162,9 +169,12 @@ reader resolves it — the key is never printed, only masked.
 - The same `config.toml` may hold a hand-edited `[gateway]` table, which
   `serve` reads once at start: `subscription_passthrough = true` turns on the
   gateway's header mode (off when absent or `false`; any other type is off
-  with one `wt-model: warning:` line). No command writes it, and `litellm set`
-  keeps it as written; an older `wt-model litellm set` drops the table, which
-  turns the mode off at the next `serve` restart (the safe direction).
+  with one `wt-model: warning:` line), and `tls_cert`/`tls_key` turn on
+  [Native TLS](#native-tls). No command writes it, and `litellm set` keeps it
+  as written; an older `wt-model litellm set` drops the table, which turns the
+  mode off at the next `serve` restart (the safe direction) and brings serve
+  back on plain HTTP (sessions configured with `https://` then fail at the
+  handshake, never in clear).
 - The key is the file's content with surrounding whitespace trimmed. A
   missing or empty key file is no key at all, and `--api-key ""` clears the
   value without deleting the file. wt never deletes the file.
@@ -216,6 +226,85 @@ reader resolves it — the key is never printed, only masked.
 Both commands answer `0` done and `1` any failure. A set that wrote the pair
 prints `litellm: updated`; a set with no flag is refused with `nothing to
 set: pass --url and/or --api-key`.
+
+## Native TLS
+
+`wt-model serve` speaks TLS itself when the wt-model home's `config.toml`
+(`~/.config/wt-model/config.toml`) names a PEM certificate and its key under
+the same hand-edited `[gateway]` table, read once at start (there is no
+`serve` flag: `wt-model setup` re-renders the LaunchAgent's arguments, so the
+table survives a re-render). Absent means plain HTTP, exactly as before.
+
+```toml
+[gateway]
+tls_cert = "~/.config/wt-model/tls/server.crt"
+tls_key  = "~/.config/wt-model/tls/server.key"
+```
+
+- **Both or neither, strings only.** A leading `~` is expanded. One key
+  without the other, a value that is not a string or an empty value refuses
+  the start, never a silent fall back to plain HTTP:
+  `wt-model: [gateway] tls_cert and tls_key must be set together`,
+  `wt-model: [gateway] tls_cert must be a string`. The same keys in agent-wt's
+  `config.toml` are never read; a notice there names the wt-model home.
+- **The key file is 0600 or stricter** (the token file's rule): a group or
+  other bit refuses with `TLS key PATH is accessible by group or other (mode
+  0644); run chmod 600 PATH`.
+- **Everything else that makes the pair unusable refuses the start** with one
+  line, `wt-model: [gateway] tls_cert/tls_key: <reason> (<path>)`, exit 1,
+  before listening and before `serve.json` is written: a missing or
+  unreadable file, a directory, a certificate file that holds a private key
+  (it would be recorded and copied as "the certificate"), `tls_cert` and
+  `tls_key` naming one file, a file that is not a PEM certificate or key that
+  parses, or a key that does not match the certificate. The reason is fixed
+  per failure; no message ever holds certificate or key bytes.
+- **An expired or not-yet-valid certificate is not a refusal** (a LaunchAgent
+  that kept refusing would restart in a loop and take every local session
+  down). The dates are checked last, so every other check passed. Serve
+  starts on plain HTTP, exactly as if no certificate were configured, prints
+  one warning after the listening line and records no `tls_cert` in
+  `serve.json`:
+
+  ```text
+  wt-model: warning: TLS is off: the certificate <path> expired on <date>; serving plain http. Remote https clients fail and the subscription header mode is refused from non-loopback peers until it is renewed and serve restarted
+  ```
+
+  The ping says so (`tls_off`). Consequences until both files are replaced
+  and serve restarted: every `https://` client (a local session whose url
+  setup wrote as `https://` included) gets a connection error, the header
+  mode is refused from every non-loopback peer, and ordinary token-swap
+  sessions on `http://` keep working. A certificate that expires while serve
+  runs keeps serving TLS until the next restart.
+- **Protocol.** TLS 1.2 is the floor; for TLS 1.2 serve offers only the six
+  ECDHE AES-GCM and ChaCha20-Poly1305 suites. HTTP/2 stays on, and streaming
+  (server-sent events) is flushed per event over it as over HTTP/1.1. With
+  TLS the server closes idle keep-alive connections after 120 seconds and
+  writes TLS handshake errors (the client's address only) to its stderr;
+  there is still no read or write timeout.
+- **Report.** After the listening line (unchanged, still the bare address)
+  serve prints `wt-model: TLS is on (tls_cert <path>, TLS 1.2+; clients that do
+  not trust it need ca_file or a CA the system trusts)`, then a warning when
+  the certificate expires within 14 days and one when it names neither
+  `127.0.0.1` nor `localhost` (local sessions dial loopback).
+- **Host commands.** `serve.json` records the certificate's absolute path as
+  `tls_cert` while TLS is on (never the key's), so `wt-model stop` and
+  `wt-model alias` reach the server over `https://`, trusting exactly that
+  file.
+- **Setup and the Mode tab.** While TLS is on (`tls_cert` set and the
+  certificate within its dates), `wt-model setup`'s local plan and the Mode
+  tab's local plan write `https://` on the loopback listen address
+  (`127.0.0.1` for an unspecified host), and setup's readiness wait trusts
+  `tls_cert` directly. Neither writes any TLS key or `ca_file`: when the
+  session trusts no CA file, the plan carries one note naming the line to add,
+  `ca_file = "<tls_cert path>"` under `[model-server]` in
+  `~/.config/agent-wt/config.toml`. With an expired certificate the plans
+  write `http://`, the url serve will speak, and note the date and the
+  renewal. TLS settings that cannot be read refuse a local plan.
+- **Rotation and renewal.** Replace both files, then reload the LaunchAgent:
+  `launchctl bootout gui/$(id -u)/local.wt-model.serve` followed by
+  `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.wt-model.serve.plist`
+  (not `launchctl kickstart -k`, which restarts the job launchd already
+  holds). There is no hot reload, and a restart cuts the streams in flight.
 
 ## `wt-model setup`
 
@@ -301,7 +390,7 @@ All control paths are under `/control/v1/` and answer JSON.
 
 | Method and path | Meaning |
 |---|---|
-| `GET /control/v1/ping` | Liveness and version: `api_major`, `schema`, `server`, and `subscription_passthrough: true` when the server accepts the gateway's header mode (`x-wt-model-token` beside the client's own claude.ai login; `[gateway] subscription_passthrough = true` in the wt-model home's `config.toml`, read once at `serve` start). The key is omitted when the mode is off, so an off server and an older one answer alike. A client refuses a server whose `api_major` or `schema` differs from its own: a newer `schema` needs a newer wt, an older one is a `wt-model` still running from before wt was updated (`bin/update-tools` does not restart it), and the error says `restart wt-model`. |
+| `GET /control/v1/ping` | Liveness and version: `api_major`, `schema`, `server`, and `subscription_passthrough: true` when the server accepts the gateway's header mode (`x-wt-model-token` beside the client's own claude.ai login; `[gateway] subscription_passthrough = true` in the wt-model home's `config.toml`, read once at `serve` start). The key is omitted when the mode is off, so an off server and an older one answer alike. `tls_off` is set only when TLS was configured and serve fell back to plain HTTP on the certificate's dates ([Native TLS](#native-tls)), holding the fixed reason (`certificate expired 2026-11-01`, `certificate not valid until <date>`): a date, never certificate bytes; it is omitted otherwise. A client refuses a server whose `api_major` or `schema` differs from its own: a newer `schema` needs a newer wt, an older one is a `wt-model` still running from before wt was updated (`bin/update-tools` does not restart it), and the error says `restart wt-model`. |
 | `GET /control/v1/catalog` | Every model and every registry alias: state, action, tier, price, protocols, and how many live client sessions use it. Slot-profile rows are not included. |
 | `GET /control/v1/resolve?model=ID` | One catalog row, or a 404 `unknown_model` naming why. |
 | `GET /control/v1/candidates` | The registry's models ranked for a slot, as `wt profile slots candidates --json` ranks them. Query: `open_only=BOOL`, `provider=a,b`, `near=ID`, `per_provider=N` (needs `near`, else 400 `bad_request`). Answers `{"tiers_generated", "stale_sources", "candidates"}`: `tiers_generated` is the RFC 3339 time of the tiers file and is absent when there is none; `stale_sources` and `candidates` are always present. A candidate carries `id`, `provider`, `location`, `flags` (always a list) and, where they apply, `tier`, `confidence`, `score` (absent when unscored), `rated`, `open_weights`, `context`, `output_per_million`, `subscription`, `subscription_period`. |
@@ -528,6 +617,10 @@ prints the real port:
 wt-model: listening on <addr> (gateway /v1, control /control/v1)
 ```
 
+With TLS the line is the same (the address, no scheme). The TLS state
+([Native TLS](#native-tls)) and the header mode are reported on their own
+lines after it, TLS first.
+
 Right after that line it reconciles the LiteLLM routes once, as
 `wt-model litellm sync` does, through the same pair (local routes in
 LiteLLM's database): a database that was wiped is repopulated the next
@@ -575,6 +668,15 @@ time; never the token itself or any key:
 ```json
 {"version": 1, "pid": 4242, "listen": "127.0.0.1:8787", "token_file": "/Users/user_name/.config/wt-model/server.token", "started": "2026-11-19T10:00:00Z"}
 ```
+
+| Key | Meaning |
+|---|---|
+| `version` | the record format, `1` |
+| `pid` | the serving process |
+| `listen` | the bound address the listening line printed |
+| `token_file` | the token file's absolute path (never the token) |
+| `started` | the start time, UTC |
+| `tls_cert` | only while serve speaks TLS: the certificate's absolute path (never the key's). A host command then dials `https://`, trusting exactly this file. Absent for plain HTTP, the expired-certificate fallback included. Additive: the version stays `1` |
 
 The file is mode 0600 (the home is made 0700 only when serve has to create it;
 an existing home keeps its mode) and is written (atomically) before the

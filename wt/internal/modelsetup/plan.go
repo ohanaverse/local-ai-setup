@@ -286,6 +286,11 @@ func planLocal(st State, want Desired) (Plan, error) {
 			"stop that process or choose another port"))
 	}
 
+	// TLS settings that cannot be read refuse (never a silent http://).
+	if r := modelmode.LocalTLSRefusal(st.State); r != "" {
+		reasons = append(reasons, r)
+	}
+
 	// The plist path must be wt's or free.
 	if st.Agent.Present && !st.Agent.Managed {
 		reasons = append(reasons, reason(st.Agent.PlistPath+" exists and is not marked \"managed by wt\", so wt will not overwrite it",
@@ -384,7 +389,8 @@ func planLocal(st State, want Desired) (Plan, error) {
 
 	want.Listen = listen
 	want.TokenFile = tokPath
-	want.URL = "http://" + listen
+	// https:// only while serve will speak TLS (decision 13).
+	want.URL = modelmode.LocalURL(listen, st.LocalTLS.On)
 	spec := AgentSpec{Binary: st.Tools.Binary, Listen: listen, TokenFile: tokPath, Path: st.Tools.Path, Home: st.Host.Home}
 	p := Plan{Plan: modelmode.Plan{Want: want.Desired}, Admin: want.AdminWant, Agent: &spec, LiteLLM: lspec}
 	pairChanged := false
@@ -455,6 +461,7 @@ func planLocal(st State, want Desired) (Plan, error) {
 	}
 	p.AddConfigStep(st.State)
 	p.Notes = append(p.Notes, lnotes...)
+	p.AddLocalTLSNotes(st.State)
 	p.AddEnvNote(st.State)
 	return p, nil
 }

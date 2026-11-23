@@ -390,6 +390,15 @@ func waitReady(ctx context.Context, env Env, p Plan, s Step) error {
 		return fmt.Errorf("read the token file: %w", err)
 	}
 	ep := modelping.Endpoint{URL: url, Token: strings.TrimSpace(string(raw))}
+	// An https url is serve's own TLS: the wait trusts the home's tls_cert
+	// directly, verified as the name a loopback dial uses, the trust
+	// servestate gets (a private certificate must not end setup in a
+	// WaitError). It reads the public certificate only.
+	if strings.HasPrefix(url, "https://") {
+		if lt := env.Config.LocalTLS(); lt.Cert != "" {
+			ep.CAFile, ep.ServerName = lt.Cert, lt.DialName
+		}
+	}
 	deadline := env.Host.Now().Add(ReadyTimeout)
 	for {
 		st := modelmode.PingServer(ctx, env.Mode(), ep)

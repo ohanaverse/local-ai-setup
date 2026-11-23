@@ -78,6 +78,11 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	}
 	st.Host.ConfigHome = configHome(getenv("XDG_CONFIG_HOME"), home, herr)
 
+	// TLS: this machine's wt-model home decides a local url's scheme; the
+	// session's CA file decides whether a local plan notes the line to add.
+	st.LocalTLS = env.Config.LocalTLS()
+	st.CAFile = getenv("WT_MODEL_CA_FILE")
+
 	// Token.
 	// This mirrors the session's resolution (modelclient.ResolveEndpoint and
 	// cmd/wt-session/models.go), read through the FS seam: an env token file
@@ -135,15 +140,27 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	if url == "" {
 		url = rawURL
 	}
+	// The derived local url follows serve's TLS (LocalURL); a ping of it
+	// trusts the home's certificate as setup's wait does. TLS settings that
+	// cannot be read leave it unpinged, never a silent http://.
+	var localCA, localName string
 	if url == "" && st.Resolution.Mode == ModeLocal {
 		listen := opts.Local.Listen
 		if listen == "" {
 			listen = DefaultListen
 		}
-		url = "http://" + listen
+		if st.LocalTLS.Err != "" {
+			st.Server.Message = "not checked: wt-model's TLS settings cannot be used (" + st.LocalTLS.Err + ")"
+		} else {
+			url = LocalURL(listen, st.LocalTLS.On)
+			if st.LocalTLS.On {
+				localCA, localName = st.LocalTLS.Cert, st.LocalTLS.DialName
+			}
+		}
 	}
 	if check := strings.TrimSpace(opts.CheckURL); check != "" {
 		url, token = check, strings.TrimSpace(opts.CheckToken.Reveal())
+		localCA, localName = "", ""
 		if path := strings.TrimSpace(opts.CheckTokenFile); token == "" && path != "" {
 			ts := TokenState{Path: path}
 			if x, err := expandHome(path, home, herr); err == nil {
@@ -165,7 +182,7 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 	case ctx.Err() != nil:
 		st.Server.Message = "not checked: " + ctx.Err().Error()
 	case url != "" && token != "":
-		st.Server = PingServer(ctx, env, modelping.Endpoint{URL: url, Token: token})
+		st.Server = PingServer(ctx, env, modelping.Endpoint{URL: url, Token: token, CAFile: localCA, ServerName: localName})
 		st.Server.URL = ShownURL(url)
 		// Defence in depth: the url pinged holds no '@' here, but the stored
 		// or entered one beside it may.

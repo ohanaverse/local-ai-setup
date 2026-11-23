@@ -23,10 +23,12 @@ const (
 // pure function: off prints nothing; on prints the info line, plus one
 // warning when the listen address is not loopback and TLS is off; TLS on
 // silences the warning; TLS off on the certificate's dates ends the info
-// line with the reason and prints no second warning.
+// line with the reason, worded as decision 2 says ("the certificate expired
+// on <date>", "is not valid until <date>"), and prints no second warning.
 func TestSubscriptionLines(t *testing.T) {
 	const reason = "certificate expired 2026-11-01"
-	tlsOffInfo := "wt-model: subscription passthrough is on (x-wt-model-token; refused from non-loopback peers over plain http; owner's own login only; TLS is off: the certificate expired 2026-11-01, so header mode is refused from every non-loopback peer)"
+	tlsOffInfo := "wt-model: subscription passthrough is on (x-wt-model-token; refused from non-loopback peers over plain http; owner's own login only; TLS is off: the certificate expired on 2026-11-01, so header mode is refused from every non-loopback peer)"
+	notYet := "wt-model: subscription passthrough is on (x-wt-model-token; refused from non-loopback peers over plain http; owner's own login only; TLS is off: the certificate is not valid until 2026-12-05, so header mode is refused from every non-loopback peer)"
 	type tc struct {
 		addr   string
 		on     bool
@@ -46,6 +48,7 @@ func TestSubscriptionLines(t *testing.T) {
 		tc{"127.0.0.1:0", true, false, "", []string{subInfo}},
 		tc{"[::1]:8787", true, false, "", []string{subInfo}},
 		tc{"localhost:8787", true, false, "", []string{subInfo}},
+		tc{"0.0.0.0:8787", true, false, "certificate not valid until 2026-12-05", []string{notYet}},
 		tc{"0.0.0.0:8787", false, false, "", nil},
 		tc{"127.0.0.1:0", false, false, "", nil},
 	)

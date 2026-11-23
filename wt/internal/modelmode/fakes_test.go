@@ -34,7 +34,12 @@ type fakeEnv struct {
 
 	// ConfigStore.
 	configFile config.ModelServerFile
-	updateErr  error
+	// localTLS, when set, is what LocalTLS answers; nil reads the scratch
+	// wt-model home through ReadLocalTLS (TestMain isolates it), so a test
+	// that writes a [gateway] table there sees it. Not recorded: it is a
+	// read of the host's TLS settings, never a change.
+	localTLS  *LocalTLS
+	updateErr error
 
 	// Net.
 	ping       modelapi.Ping
@@ -159,6 +164,13 @@ func (x fakeFS) Chmod(p string, m os.FileMode) error {
 }
 
 type fakeConfig struct{ f *fakeEnv }
+
+func (x fakeConfig) LocalTLS() LocalTLS {
+	if x.f.localTLS != nil {
+		return *x.f.localTLS
+	}
+	return ReadLocalTLS(time.Now())
+}
 
 func (x fakeConfig) Read() config.ModelServerFile { x.f.rec("Config.Read"); return x.f.configFile }
 

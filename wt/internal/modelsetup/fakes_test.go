@@ -15,6 +15,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 )
 
@@ -63,9 +64,14 @@ type fakeEnv struct {
 
 	// ConfigStore.
 	configFile config.ModelServerFile
-	pair       config.ProxyPair
-	pairErr    error
-	updateErr  error
+	// localTLS, when set, is what LocalTLS answers; nil reads the scratch
+	// wt-model home through modelmode.ReadLocalTLS (TestMain isolates it),
+	// so a test that writes a [gateway] table there sees it. Not recorded:
+	// it is a read of the host's TLS settings, never a change.
+	localTLS  *modelmode.LocalTLS
+	pair      config.ProxyPair
+	pairErr   error
+	updateErr error
 
 	// Net.
 	ping        modelapi.Ping
@@ -362,6 +368,13 @@ func (x fakeConfig) Update(change func(config.ModelServerState) (config.ModelSer
 	}
 	x.f.configFile.Exists, x.f.configFile.Table = true, &next
 	return nil
+}
+
+func (x fakeConfig) LocalTLS() modelmode.LocalTLS {
+	if x.f.localTLS != nil {
+		return *x.f.localTLS
+	}
+	return modelmode.ReadLocalTLS(time.Now())
 }
 
 func (x fakeConfig) Pair() (config.ProxyPair, error) {

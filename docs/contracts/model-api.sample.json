@@ -1,5 +1,5 @@
 {
-  "ping": {"api_major": 1, "schema": 2, "server": "wt-model", "subscription_passthrough": true},
+  "ping": {"api_major": 1, "schema": 2, "server": "wt-model", "subscription_passthrough": true, "tls_off": "certificate expired 2026-11-01"},
   "catalog": {
     "schema": 2,
     "generated": "2026-11-15T10:00:00Z",

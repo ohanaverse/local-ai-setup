@@ -1472,3 +1472,60 @@ func TestHomeParseErrorsNameOnlyKnownKeys(t *testing.T) {
 		t.Errorf("known key: err = %v, want no value and the neutral suffix", err)
 	}
 }
+
+// TestGatewaySettingsTLSKeys pins decision 13's fail-closed reading of
+// [gateway] tls_cert/tls_key: both set is TLS (a leading ~ expanded), absent
+// is plain http, and one key alone, a wrong type or an empty value is an
+// error naming the key and no value (never a silent fall back to plain http,
+// never the text written). The error is a *GatewayKeyError, so serve can
+// print it as its one line.
+func TestGatewaySettingsTLSKeys(t *testing.T) {
+	t.Run("both", func(t *testing.T) {
+		home := proxyEnv(t, "")
+		writeProxyHome(t, home, "[gateway]\ntls_cert = \"~/tls/server.crt\"\ntls_key = \"/etc/wt/server.key\"\n")
+		gc, warns, err := GatewaySettings()
+		if err != nil || len(warns) != 0 {
+			t.Fatalf("GatewaySettings = %+v, %q, %v", gc, warns, err)
+		}
+		if gc.TLSCert != filepath.Join(home, "tls", "server.crt") || gc.TLSKey != "/etc/wt/server.key" {
+			t.Errorf("TLSCert %q TLSKey %q, want ~ expanded against %s", gc.TLSCert, gc.TLSKey, home)
+		}
+	})
+	t.Run("absent", func(t *testing.T) {
+		home := proxyEnv(t, "")
+		writeProxyHome(t, home, "[gateway]\nsubscription_passthrough = true\n")
+		gc, _, err := GatewaySettings()
+		if err != nil || gc.TLSCert != "" || gc.TLSKey != "" {
+			t.Errorf("GatewaySettings = %+v, %v; want plain http", gc, err)
+		}
+	})
+	for _, tc := range []struct{ name, body, wantMsg string }{
+		{"cert alone", "tls_cert = \"/x/SECRETPATH.crt\"\n", "[gateway] tls_cert and tls_key must be set together"},
+		{"key alone", "tls_key = \"/x/SECRETPATH.key\"\n", "[gateway] tls_cert and tls_key must be set together"},
+		{"cert wrong type", "tls_cert = 1234567\ntls_key = \"/x/k\"\n", "[gateway] tls_cert must be a string"},
+		{"key wrong type", "tls_cert = \"/x/c\"\ntls_key = [\"SECRETPATH\"]\n", "[gateway] tls_key must be a string"},
+		{"empty cert", "tls_cert = \"\"\ntls_key = \"/x/k\"\n", "[gateway] tls_cert"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := proxyEnv(t, "")
+			writeProxyHome(t, home, "[gateway]\n"+tc.body)
+			gc, _, err := GatewaySettings()
+			if err == nil {
+				t.Fatalf("GatewaySettings = %+v, nil; want an error", gc)
+			}
+			var ke *GatewayKeyError
+			if !errors.As(err, &ke) {
+				t.Errorf("err = %T, want *GatewayKeyError", err)
+			}
+			if !strings.HasPrefix(err.Error(), tc.wantMsg) {
+				t.Errorf("err = %q, want it to start %q", err, tc.wantMsg)
+			}
+			if strings.Contains(err.Error(), "SECRETPATH") || strings.Contains(err.Error(), "1234567") {
+				t.Errorf("err quotes a value: %q", err)
+			}
+			if gc.TLSCert != "" || gc.TLSKey != "" {
+				t.Errorf("a refused table still set TLS: %+v", gc)
+			}
+		})
+	}
+}

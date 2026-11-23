@@ -2,8 +2,8 @@
 // runs, so a host command can find the live server; it never holds the token.
 //
 // The record is serve.json in the wt-model home, mode 0600 (the directory is
-// made 0700 only when it does not exist yet), and names the server's pid, its bound listen address and the
-// path of its token file. A stale record (a server that died without
+// made 0700 only when it does not exist yet), and names the server's pid, its bound listen address, the
+// path of its token file and, while it speaks TLS, its certificate's path. A stale record (a server that died without
 // removing it) is tolerated: a reader always verifies by pinging the address.
 package servestate
 
@@ -29,6 +29,11 @@ type Record struct {
 	Listen    string    `json:"listen"`     // the bound address serve announced
 	TokenFile string    `json:"token_file"` // absolute path; never the token
 	Started   time.Time `json:"started"`
+	// TLSCert is the public certificate's absolute path while serve speaks
+	// TLS (never the key's path): a host command then dials https://,
+	// trusting exactly this file. Absent for plain http, an expired
+	// certificate's fallback included. Additive: RecordVersion stays 1.
+	TLSCert string `json:"tls_cert,omitempty"`
 }
 
 // Store is where the record lives. A Store with an empty Path writes, reads

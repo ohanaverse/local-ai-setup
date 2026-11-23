@@ -177,7 +177,8 @@ var otherPackages = []string{
 	"internal/guard", "internal/initseed", "internal/launchwarn",
 	"internal/modelapi", "internal/provider", "internal/rootclaim",
 	"internal/scratchdir", "internal/sessionclaim", "internal/slotedit",
-	"internal/themes", "internal/tiers", "internal/tokenfile",
+	"internal/themes", "internal/tiers", "internal/tlsfile",
+	"internal/tlstest", "internal/tokenfile",
 	"internal/tomlw", "internal/tuilayout", "internal/usage",
 	"internal/windows", "internal/worktree",
 }

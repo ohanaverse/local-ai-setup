@@ -345,8 +345,10 @@ func TestFixtureRowsAgreeWithServerRules(t *testing.T) {
 			t.Errorf("the fixture has no row in state %q", s)
 		}
 	}
-	// The fixture's ping shows the mode on (the field is omitted when off).
-	srv, err := NewServer(Options{Listen: "127.0.0.1:0", Token: "t", IdleGrace: time.Minute, SubscriptionPassthrough: true}, (&fakeLife{}).deps(serverCfg()))
+	// The fixture's ping shows the mode on and TLS off on its certificate's
+	// dates (both fields are omitted otherwise).
+	srv, err := NewServer(Options{Listen: "127.0.0.1:0", Token: "t", IdleGrace: time.Minute, SubscriptionPassthrough: true,
+		TLSOff: "certificate expired 2026-11-01"}, (&fakeLife{}).deps(serverCfg()))
 	if err != nil {
 		t.Fatal(err)
 	}

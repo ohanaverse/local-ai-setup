@@ -2,8 +2,11 @@ package servestate
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +20,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tlstest"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tokenfile"
 )
 
@@ -216,14 +220,84 @@ func TestSessionsGivesUpOnAServerThatNeverAnswers(t *testing.T) {
 func TestSessionsStaleRecordSendsNothing(t *testing.T) {
 	srv, hits := fakeServer(t, "tok", modelapi.Row{ID: "omlx/busy", Sessions: 1})
 	r := rec(t, srv.Listener.Addr().String(), "tok")
-	old := pidAlive
-	pidAlive = func(int) bool { return false }
-	t.Cleanup(func() { pidAlive = old })
-	got, err := Sessions(context.Background(), r)
+	got, err := sessions(context.Background(), r, func(int) bool { return false })
 	if err == nil || got != nil {
 		t.Fatalf("Sessions = %v, %v; want nil, error", got, err)
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("catalog hit %d times, want 0", hits.Load())
+	}
+}
+
+// tlsFakeServer is fakeServer behind TLS with a tlstest certificate; it
+// returns the server and the certificate's path.
+func tlsFakeServer(t *testing.T, token string, rows ...modelapi.Row) (*httptest.Server, string, *atomic.Int32) {
+	t.Helper()
+	cert, key := tlstest.Gen(t, t.TempDir(), tlstest.Opts{})
+	var hits atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/control/v1/ping":
+			_ = json.NewEncoder(w).Encode(modelapi.Ping{APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion, Server: "wt-model"})
+		case "/control/v1/catalog":
+			_ = json.NewEncoder(w).Encode(modelapi.Catalog{Schema: modelapi.SchemaVersion, Rows: rows})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{tlstest.Pair(t, cert, key)}}
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0) // refused handshakes are expected
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv, cert, &hits
+}
+
+// TestSessionsDialHTTPSWhenRecorded pins decision 13's host-command half:
+// a record carrying tls_cert is dialled over https, trusting exactly that
+// certificate, so wt-model stop and wt-model alias keep reading client
+// sessions once serve speaks TLS; a record without it against the same
+// server is an error (http to a TLS port), never an empty map that would read
+// as "no client session uses this model". Liveness comes through the
+// per-call alive argument (no package var).
+func TestSessionsDialHTTPSWhenRecorded(t *testing.T) {
+	srv, cert, _ := tlsFakeServer(t, "tok", modelapi.Row{ID: "omlx/busy", Sessions: 3})
+	alive := func(int) bool { return true }
+	r := rec(t, srv.Listener.Addr().String(), "tok")
+	r.TLSCert = cert
+	got, err := sessions(context.Background(), r, alive)
+	if err != nil || got["omlx/busy"] != 3 {
+		t.Fatalf("sessions over TLS = %v, %v; want map[omlx/busy:3]", got, err)
+	}
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	r.Listen = "0.0.0.0:" + port
+	if got, err := sessions(context.Background(), r, alive); err != nil || got["omlx/busy"] != 3 {
+		t.Fatalf("sessions over TLS on an unspecified listen = %v, %v", got, err)
+	}
+	r.Listen = srv.Listener.Addr().String()
+	r.TLSCert = ""
+	got, err = sessions(context.Background(), r, alive)
+	if err == nil || got != nil {
+		t.Fatalf("a record without tls_cert against a TLS server = %v, %v; want nil and an error", got, err)
+	}
+	// A record naming another certificate fails verification: nothing is
+	// trusted beyond the recorded file.
+	other, _ := tlstest.Gen(t, t.TempDir(), tlstest.Opts{})
+	r.TLSCert = other
+	if got, err := sessions(context.Background(), r, alive); err == nil || got != nil {
+		t.Fatalf("sessions trusting another certificate = %v, %v; want an error", got, err)
+	}
+	for in, want := range map[string]string{
+		"0.0.0.0:8787":   "https://127.0.0.1:8787",
+		"127.0.0.1:8787": "https://127.0.0.1:8787",
+	} {
+		if got := dialURLTLS(in); got != want {
+			t.Errorf("dialURLTLS(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
