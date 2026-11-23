@@ -71,6 +71,10 @@ func aliasEnv(t *testing.T, registry string) (*host, *fakeModelAPI, string) {
 	t.Helper()
 	dir := t.TempDir()
 	withCleanConfigEnv(t, dir)
+	// The wt-model home is redirected with the registry, as a scratch run
+	// must: beside the default home the alias half deletes no row
+	// (litellm's scratchRegistryRealProxy).
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
 	path := filepath.Join(dir, "scratch", "registry.toml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
