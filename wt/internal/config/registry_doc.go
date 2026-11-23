@@ -25,8 +25,8 @@ var (
 	// ErrProviderExists: a provider row already has the id.
 	ErrProviderExists = errors.New("provider already exists")
 	// ErrRegistryTopLevel: registry.toml holds a top-level key that is not
-	// providers, families or models, or one of those is not an array of
-	// tables. The write is refused: `[[model]]` for `[[models]]` parses and
+	// providers, families, models or aliases, or one of those is not an
+	// array of tables. The write is refused: `[[model]]` for `[[models]]` parses and
 	// reads as no models, so a write on top of it would hide the typo (#247).
 	ErrRegistryTopLevel = errors.New("registry.toml has an unexpected top level")
 )
@@ -37,7 +37,7 @@ var (
 // and reads like the rows around it. They order keys; they are not a list of
 // what a row may hold.
 var (
-	registryTopLevelKeys = []string{"providers", "families", "models"}
+	registryTopLevelKeys = []string{"providers", "families", "models", "aliases"}
 
 	providerSchemas = map[string][]string{
 		"":     {"id", "name", "location", "model_dir", "protocols", "auth"},
@@ -53,6 +53,10 @@ var (
 		"cost.time_prices.windows": {"days", "start", "end"},
 		"fetch":                    {"repo", "files", "quantizations", "local_path"},
 		"draft":                    {"repo", "local_path"},
+	}
+	aliasSchemas = map[string][]string{
+		"":        {"id", "targets"},
+		"targets": {"model", "order"},
 	}
 )
 
@@ -77,6 +81,12 @@ type RegistryDoc struct {
 	// these are validated before the write.
 	touchedModels    []*tomlw.Table
 	touchedProviders []*tomlw.Table
+	touchedAliases   []*tomlw.Table
+	// before is the registry as it was handed to apply, read as far as the
+	// alias rules need (refConfig): an alias a write re-checks only because
+	// it targets a touched model is refused when the write gave it a fault,
+	// never for one it already had.
+	before *Config
 }
 
 // newRegistryDoc wraps a decoded registry, refusing a top level a write
@@ -95,10 +105,12 @@ func newRegistryDoc(root *tomlw.Table) (*RegistryDoc, error) {
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return nil, fmt.Errorf("%w: unknown top-level key(s) %s: a registry holds providers/families/models only",
+		return nil, fmt.Errorf("%w: unknown top-level key(s) %s: a registry holds providers/families/models/aliases only",
 			ErrRegistryTopLevel, strings.Join(unknown, ", "))
 	}
-	return &RegistryDoc{root: root}, nil
+	d := &RegistryDoc{root: root}
+	d.before = d.refConfig()
+	return d, nil
 }
 
 // tableArray reads v as an array holding only tables.
@@ -343,11 +355,19 @@ func (d *RegistryDoc) CloneModel(fromID string, overrides map[string]any) error 
 // RemoveModel deletes the model row id and returns it, so the caller can
 // still read what it held (where its weights are, say). An id more than one
 // row has is ErrModelAmbiguous and removes none of them: that is a registry
-// to repair by hand, where the user can see which row is which.
+// to repair by hand, where the user can see which row is which. A model any
+// alias targets is ErrModelInUse, naming the aliases, and stays.
 func (d *RegistryDoc) RemoveModel(id string) (*tomlw.Table, error) {
 	rows, i, err := d.modelRow(id)
 	if err != nil {
 		return nil, err
+	}
+	// A model an alias targets stays (decision 11): touched-row validation
+	// never looks at a removed row, so without this the alias would be left
+	// naming nothing.
+	if users := d.aliasesTargeting(id); len(users) > 0 {
+		return nil, fmt.Errorf("%w: model %q is a target of %s; change or remove the alias first",
+			ErrModelInUse, id, strings.Join(users, ", "))
 	}
 	row := rows[i]
 	d.setRows("models", slices.Delete(slices.Clone(rows), i, i+1))
@@ -551,4 +571,173 @@ func orderedTable(m map[string]any, schemas map[string][]string, path string) (*
 		t.Set(k, val)
 	}
 	return t, nil
+}
+
+// Aliases returns a copy of every [[aliases]] table, in file order.
+func (d *RegistryDoc) Aliases() []*tomlw.Table { return cloneRows(d.rows("aliases")) }
+
+// aliasRow finds the one alias table with the id: ErrAliasNotFound for none,
+// and a refusal for an id more than one table has (a hand edit to repair,
+// like ErrModelAmbiguous).
+func (d *RegistryDoc) aliasRow(id string) (rows []*tomlw.Table, i int, err error) {
+	rows = d.rows("aliases")
+	i, n := -1, 0
+	for k, r := range rows {
+		if rowID(r) == id {
+			if i < 0 {
+				i = k
+			}
+			n++
+		}
+	}
+	switch {
+	case n == 0:
+		return nil, -1, fmt.Errorf("%w: %q", ErrAliasNotFound, id)
+	case n > 1:
+		return nil, -1, fmt.Errorf("alias %q is in the registry %d times; wt cannot tell which one you mean — %s",
+			id, n, RegistryFixHint(ErrRegistryEntry))
+	}
+	return rows, i, nil
+}
+
+func (d *RegistryDoc) touchAlias(row *tomlw.Table) {
+	if !slices.Contains(d.touchedAliases, row) {
+		d.touchedAliases = append(d.touchedAliases, row)
+	}
+}
+
+// AddAlias appends an alias table, its keys laid out in schema order (id,
+// targets; each target model, order; keys wt does not model first, sorted).
+// The table needs a non-empty string id that no alias has yet
+// (ErrAliasExists). Its shape and its targets are validated with the write.
+func (d *RegistryDoc) AddAlias(t *tomlw.Table) error {
+	if t == nil {
+		return errors.New("nil alias table")
+	}
+	id := rowID(t)
+	if id == "" {
+		return errors.New("an alias needs a non-empty string id")
+	}
+	rows := d.rows("aliases")
+	if findRow(rows, id) >= 0 {
+		return fmt.Errorf("%w: %q", ErrAliasExists, id)
+	}
+	row := reorderTable(t.Clone(), aliasSchemas, "")
+	d.setRows("aliases", append(rows, row))
+	d.touchAlias(row)
+	return nil
+}
+
+// SetAliasTargets replaces the targets array of the alias id with targets
+// (each a model and, optionally, an order); every other key stays. Targets
+// equal to the ones already there are not rewritten.
+func (d *RegistryDoc) SetAliasTargets(id string, targets []map[string]any) error {
+	rows, i, err := d.aliasRow(id)
+	if err != nil {
+		return err
+	}
+	if targets == nil {
+		targets = []map[string]any{}
+	}
+	work := rows[i].Clone()
+	changed, err := patchRow(work, aliasSchemas, map[string]any{"targets": targets}, nil)
+	if err != nil {
+		return fmt.Errorf("alias %q: %w", id, err)
+	}
+	if changed {
+		*rows[i] = *work
+		d.touchAlias(rows[i])
+	}
+	return nil
+}
+
+// RemoveAlias deletes the alias id and returns its table. Removing the last
+// alias removes the top-level `aliases` key, so the file is again one an
+// older wt-model (which refuses a top-level key it does not know) can write.
+func (d *RegistryDoc) RemoveAlias(id string) (*tomlw.Table, error) {
+	rows, i, err := d.aliasRow(id)
+	if err != nil {
+		return nil, err
+	}
+	row := rows[i]
+	if rest := slices.Delete(slices.Clone(rows), i, i+1); len(rest) > 0 {
+		d.setRows("aliases", rest)
+	} else {
+		d.root.Delete("aliases")
+	}
+	d.touchedAliases = slices.DeleteFunc(d.touchedAliases, func(r *tomlw.Table) bool { return r == row })
+	return row, nil
+}
+
+// aliasesTargeting lists the ids of the alias tables with a target whose
+// model is id, in file order. It reads the raw tables, so an alias that is
+// malformed elsewhere still keeps its target.
+func (d *RegistryDoc) aliasesTargeting(id string) []string {
+	var out []string
+	for _, row := range d.rows("aliases") {
+		for _, model := range aliasTargetModels(row) {
+			if model == id && !slices.Contains(out, rowID(row)) {
+				out = append(out, rowID(row))
+			}
+		}
+	}
+	return out
+}
+
+// aliasTargetModels is the model of each target table of an alias table
+// that has a string one.
+func aliasTargetModels(row *tomlw.Table) []string {
+	v, _ := row.Get("targets")
+	targets, _ := tableArray(v)
+	var out []string
+	for _, t := range targets {
+		if m, ok := t.Get("model"); ok {
+			if s, isString := m.(string); isString {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+// reorderTable lays t's keys out as orderedTable does (unmodelled keys
+// first, sorted, then the schema's), recursing into tables and arrays of
+// tables at their schema paths. t is the caller's to give up: its values are
+// moved, not copied.
+func reorderTable(t *tomlw.Table, schemas map[string][]string, path string) *tomlw.Table {
+	schema := schemas[path]
+	var unknown []string
+	for _, k := range t.Keys() {
+		if !slices.Contains(schema, k) {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	out := tomlw.NewTable()
+	for _, k := range append(unknown, schema...) {
+		v, ok := t.Get(k)
+		if !ok {
+			continue
+		}
+		child := k
+		if path != "" {
+			child = path + "." + k
+		}
+		switch x := v.(type) {
+		case *tomlw.Table:
+			v = reorderTable(x, schemas, child)
+		case []any:
+			arr := make([]any, len(x))
+			for i, e := range x {
+				if sub, isTable := e.(*tomlw.Table); isTable {
+					arr[i] = reorderTable(sub, schemas, child)
+				} else {
+					arr[i] = e
+				}
+			}
+			v = arr
+		}
+		out.Set(k, v)
+	}
+	return out
 }

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
@@ -37,7 +38,122 @@ func (d *RegistryDoc) validateTouched() error {
 			return fmt.Errorf("%w: %w", ErrRegistryInvalid, err)
 		}
 	}
+	return d.validateAliases()
+}
+
+// validateAliases holds the aliases this write touched to every alias rule
+// (validateAliasRow), and re-checks each other alias that targets a touched
+// model or a model of a touched provider: a write that touches only a model
+// row (`wt-model model edit --location local`, a location unset so the model
+// inherits its provider's) must not give an alias a second local target.
+// Such an alias is refused only for a fault the write gave it; one it
+// already had (a hand edit elsewhere) is not this write's doing.
+func (d *RegistryDoc) validateAliases() error {
+	if len(d.touchedAliases)+len(d.touchedModels)+len(d.touchedProviders) == 0 {
+		return nil
+	}
+	after := d.refConfig()
+	for _, row := range d.touchedAliases {
+		if err := d.validateAliasRow(after, row); err != nil {
+			return fmt.Errorf("%w: %w", ErrRegistryInvalid, err)
+		}
+	}
+	ids := map[string]bool{}
+	for _, row := range d.touchedModels {
+		ids[rowID(row)] = true
+	}
+	providers := map[string]bool{}
+	for _, row := range d.touchedProviders {
+		providers[rowID(row)] = true
+	}
+	for _, m := range after.Models {
+		if providers[m.ProviderID] {
+			ids[m.ID] = true
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	for i, row := range d.rows("aliases") {
+		if slices.Contains(d.touchedAliases, row) || !slices.ContainsFunc(aliasTargetModels(row), func(m string) bool { return ids[m] }) {
+			continue
+		}
+		a := after.Aliases[i]
+		err := AliasFault(after, a)
+		if err == nil {
+			continue
+		}
+		if b, ok := d.before.AliasByID(a.ID); ok {
+			if was := AliasFault(d.before, b); was != nil && was.Error() == err.Error() {
+				continue
+			}
+		}
+		return fmt.Errorf("%w: %w", ErrRegistryInvalid, err)
+	}
 	return nil
+}
+
+// validateAliasRow holds one alias table to every alias rule: its shape (the
+// reader's judge, readAlias, through wt's typed decode), an id no other alias
+// has, and the cross-table rules (AliasFault) over the document's rows as
+// they are after apply (cfg, from refConfig).
+func (d *RegistryDoc) validateAliasRow(cfg *Config, row *tomlw.Table) error {
+	a := decodeAliasRow(row)
+	if a.Malformed != "" {
+		return fmt.Errorf("alias %q: %s", a.ID, a.Malformed)
+	}
+	n := 0
+	for _, o := range cfg.Aliases {
+		if o.ID == a.ID {
+			n++
+		}
+	}
+	if n > 1 {
+		return fmt.Errorf("alias %q is in the registry %d times", a.ID, n)
+	}
+	return AliasFault(cfg, a)
+}
+
+// decodeAliasRow reads an alias table as wt's typed reader would
+// (Alias.UnmarshalTOML), so the writer and the reader share one judge.
+func decodeAliasRow(row *tomlw.Table) Alias {
+	var reg struct {
+		Aliases []Alias `toml:"aliases"`
+	}
+	if err := typedDecode("aliases", row, &reg); err != nil || len(reg.Aliases) != 1 {
+		return Alias{ID: rowID(row), Malformed: fmt.Sprintf("cannot be read: %v", err)}
+	}
+	return reg.Aliases[0]
+}
+
+// refConfig reads the document's rows as far as the cross-table rules need
+// them: each provider's id, location and auth type, each model's id,
+// provider and location, and every alias (decodeAliasRow). Native-ness is
+// derived as the loader derives it.
+func (d *RegistryDoc) refConfig() *Config {
+	str := func(t *tomlw.Table, key string) string {
+		v, _ := t.Get(key)
+		s, _ := v.(string)
+		return s
+	}
+	cfg := &Config{}
+	for _, p := range d.rows("providers") {
+		prov := Provider{ID: rowID(p), Location: Location(str(p, "location"))}
+		if auth, ok := p.Get("auth"); ok {
+			if t, isTable := auth.(*tomlw.Table); isTable {
+				prov.Auth.Type = str(t, "type")
+			}
+		}
+		cfg.Providers = append(cfg.Providers, prov)
+	}
+	for _, m := range d.rows("models") {
+		cfg.Models = append(cfg.Models, Model{ID: rowID(m), ProviderID: str(m, "provider_id"), Location: Location(str(m, "location"))})
+	}
+	for _, a := range d.rows("aliases") {
+		cfg.Aliases = append(cfg.Aliases, decodeAliasRow(a))
+	}
+	deriveNative(cfg)
+	return cfg
 }
 
 // ErrNoProviderRow marks a model whose provider_id names no provider row, so a
@@ -79,6 +195,9 @@ func validateProviderRow(row *tomlw.Table) error {
 	if err := requireStrings(row, "id"); err != nil {
 		return err
 	}
+	if rowID(row) == AliasProvider {
+		return fmt.Errorf("id %q is reserved for aliases", AliasProvider)
+	}
 	auth, _ := row.Get("auth")
 	authTable, ok := auth.(*tomlw.Table)
 	if !ok {
@@ -99,6 +218,9 @@ func validateProviderRow(row *tomlw.Table) error {
 func validateModelRow(row *tomlw.Table) error {
 	if err := requireStrings(row, "id", "family", "provider_id", "model_name"); err != nil {
 		return err
+	}
+	if strings.HasPrefix(rowID(row), AliasIDPrefix) {
+		return fmt.Errorf("the %s prefix is reserved for aliases", AliasIDPrefix)
 	}
 	if cost, ok := row.Get("cost"); ok {
 		table, isTable := cost.(*tomlw.Table)

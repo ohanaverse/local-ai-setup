@@ -129,6 +129,23 @@ def test_load_registry_tolerates_unknown_top_level_keys(tmp_path):
     assert [m.id for m in load_registry(path).models] == ["ollama/a"]
 
 
+def test_registry_ignores_aliases(tmp_path):
+    """wt's `[[aliases]]` (#596) are LiteLLM gateway names, not models:
+    llmbench benchmarks providers and models only, so the table must load
+    and leave the model list exactly the registry's `[[models]]` rows, both
+    for a hand-written registry and for the two shared fixtures, which hold
+    aliases."""
+    text = MINIMAL + (
+        '\n[[aliases]]\nid = "alias/a"\n'
+        'targets = [{ model = "ollama/a", order = 1 }, { model = "ollama/a" }]\n'
+    )
+    registry = load_registry(_write(tmp_path / "registry.toml", text))
+    assert [m.id for m in registry.models] == ["ollama/a"]
+    assert not hasattr(registry, "aliases")
+    for fixture in (FIXTURE, WRITTEN_FIXTURE):
+        assert not any(m.id.startswith("alias/") for m in load_registry(fixture).models)
+
+
 def test_load_registry_reports_a_file_it_cannot_parse(tmp_path):
     path = _write(tmp_path / "registry.toml", "[[models]\n")
     with pytest.raises(RegistryError, match=re.escape(f"cannot read {path}")):

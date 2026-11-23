@@ -515,16 +515,19 @@ func TestModelsAndProvidersAreCopies(t *testing.T) {
 }
 
 // TestNewRegistryDocRefusesAnUnexpectedTopLevel pins the #247 rule on the
-// write path: a top-level key that is not providers/families/models (the
-// classic is [[model]] for [[models]], which parses and reads as no models)
-// refuses the write and names the key, and so does one of the three that is
-// not an array of tables.
+// write path: a top-level key that is not providers/families/models/aliases
+// (the classic is [[model]] for [[models]], which parses and reads as no
+// models) refuses the write and names the key, and so does one of the four
+// that is not an array of tables. The message lists `aliases` among the keys
+// a registry may hold, so a user who misspells it is told the right name.
 func TestNewRegistryDocRefusesAnUnexpectedTopLevel(t *testing.T) {
 	cases := []struct{ name, text, want string }{
 		{"a misspelled section", "[[model]]\nid = \"a\"\n", "`model`"},
 		{"two unknown keys, sorted", "zeta = 1\nalpha = 2\n[[models]]\nid = \"a\"\n", "`alpha`, `zeta`"},
 		{"models is not an array of tables", "models = \"none\"\n", "`models` is not an array of tables"},
 		{"providers is a table", "[providers]\nid = \"a\"\n", "`providers` is not an array of tables"},
+		{"aliases is not an array of tables", "aliases = \"none\"\n", "`aliases` is not an array of tables"},
+		{"a misspelled aliases names the allowed keys", "[[alias]]\nid = \"alias/a\"\n", "providers/families/models/aliases"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -538,7 +541,8 @@ func TestNewRegistryDocRefusesAnUnexpectedTopLevel(t *testing.T) {
 			}
 		})
 	}
-	for _, ok := range []string{"", "providers = []\nfamilies = []\nmodels = []\n"} {
+	for _, ok := range []string{"", "providers = []\nfamilies = []\nmodels = []\naliases = []\n",
+		"[[aliases]]\nid = \"alias/a\"\ntargets = [{ model = \"m\" }]\n"} {
 		root, _ := tomlw.Decode([]byte(ok))
 		if _, err := newRegistryDoc(root); err != nil {
 			t.Errorf("%q should be accepted: %v", ok, err)

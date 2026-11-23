@@ -28,3 +28,27 @@ func Model(cfg *config.Config, m config.Model, ix tiers.Index) int {
 	}
 	return 0
 }
+
+// Alias returns the context window an alias may declare: the smallest of its
+// targets' windows (Model), over every configured target, and the target
+// that sets it. It is withheld — 0, with limiting naming the first such
+// target — when any target's window is unknown or a target does not name
+// exactly one model: a minimum over the known targets alone would
+// over-declare, and a client would compact too late on the target with the
+// smaller window. An alias with no targets reads (0, "").
+func Alias(cfg *config.Config, a config.Alias, ix tiers.Index) (min int, limiting string) {
+	for _, t := range a.Targets {
+		i := config.IndexModelByID(cfg.Models, t.Model)
+		if i < 0 || cfg.CheckModelRow(t.Model) != nil {
+			return 0, t.Model
+		}
+		w := Model(cfg, cfg.Models[i], ix)
+		if w <= 0 {
+			return 0, t.Model
+		}
+		if limiting == "" || w < min {
+			min, limiting = w, t.Model
+		}
+	}
+	return min, limiting
+}

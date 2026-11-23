@@ -75,3 +75,55 @@ func TestLocalModelWindowComesOnlyFromRegistry(t *testing.T) {
 		t.Errorf("a model whose location does not resolve read %d, want 0", got)
 	}
 }
+
+// aliasCfg has a cloud model with a registry window, a cloud model whose
+// window comes from tiers, and a local model with no window.
+func aliasCfg() *config.Config {
+	return &config.Config{
+		Providers: []config.Provider{{ID: "openrouter", Location: config.LocationCloud}, {ID: "ollama", Location: config.LocationLocal}},
+		Models: []config.Model{
+			{ID: "openrouter/a", ProviderID: "openrouter", ModelName: "a", ContextWindow: 200000},
+			{ID: "openrouter/t", ProviderID: "openrouter", ModelName: "t"},
+			{ID: "ollama/b", ProviderID: "ollama", ModelName: "b"},
+		},
+	}
+}
+
+// TestAliasWindowWithheldWhenATargetIsUnknown pins Review Focus 4: an alias
+// declares no window (0) when any one target's window is unknown, or a
+// target names no model, and `limiting` names that target. A min over the
+// known targets alone would over-declare, and Claude would compact too late
+// on the target with the smaller window.
+func TestAliasWindowWithheldWhenATargetIsUnknown(t *testing.T) {
+	cfg := aliasCfg()
+	ix := tiersIndex(t, "openrouter", "t", 128000, tiers.ContextBasisHost)
+	a := config.Alias{ID: "alias/x", Targets: []config.AliasTarget{{Model: "openrouter/a", Order: 1}, {Model: "ollama/b", Order: 2}}}
+	if got, lim := Alias(cfg, a, ix); got != 0 || lim != "ollama/b" {
+		t.Errorf("Alias = (%d, %q), want (0, ollama/b): the local target's window is unknown", got, lim)
+	}
+	a.Targets[1].Model = "ollama/ghost"
+	if got, lim := Alias(cfg, a, ix); got != 0 || lim != "ollama/ghost" {
+		t.Errorf("Alias = (%d, %q), want (0, ollama/ghost): a missing target", got, lim)
+	}
+	if got, _ := Alias(cfg, config.Alias{ID: "alias/empty"}, ix); got != 0 {
+		t.Errorf("an alias with no targets read %d, want 0", got)
+	}
+}
+
+// TestAliasWindowIsTheMinimum pins Review Focus 4 from the other side: with
+// every target's window known, the alias declares the smallest, from any
+// source (registry or host-basis tiers), and names the target that sets it.
+func TestAliasWindowIsTheMinimum(t *testing.T) {
+	cfg := aliasCfg()
+	cfg.Models[2].ContextWindow = 32768
+	ix := tiersIndex(t, "openrouter", "t", 128000, tiers.ContextBasisHost)
+	a := config.Alias{ID: "alias/x", Targets: []config.AliasTarget{
+		{Model: "openrouter/a", Order: 1}, {Model: "openrouter/t", Order: 2}, {Model: "ollama/b", Order: 3}}}
+	if got, lim := Alias(cfg, a, ix); got != 32768 || lim != "ollama/b" {
+		t.Errorf("Alias = (%d, %q), want (32768, ollama/b)", got, lim)
+	}
+	a.Targets = a.Targets[:2]
+	if got, lim := Alias(cfg, a, ix); got != 128000 || lim != "openrouter/t" {
+		t.Errorf("Alias = (%d, %q), want (128000, openrouter/t) from the tiers file", got, lim)
+	}
+}

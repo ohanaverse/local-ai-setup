@@ -735,7 +735,11 @@ type Config struct {
 	DefaultTag string     `toml:"default_tag"`
 	Providers  []Provider `toml:"providers"`
 	Models     []Model    `toml:"models"`
-	Agents     []Agent    `toml:"agents"`
+	// Aliases are registry.toml's [[aliases]] tables (#596), malformed ones
+	// included (Alias.Malformed set). Like Providers and Models they come
+	// from the registry alone and are never persisted from a Config.
+	Aliases []Alias `toml:"-"`
+	Agents  []Agent `toml:"agents"`
 	// LitellmTable is the wt-owned persisted [litellm] routing state.
 	LitellmTable *LitellmState `toml:"litellm,omitempty"`
 	litellm      LitellmState  `toml:"-"` // runtime pair, resolved at load by applyProxyState (home → legacy)
@@ -809,7 +813,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	providers, models, err := loadRegistry()
+	reg, err := readRegistry()
 	if err != nil {
 		// cfg already carries the Agents/DefaultTag decoded from config.toml
 		// above — a missing registry must not throw that away. A genuinely
@@ -821,7 +825,7 @@ func Load() (*Config, error) {
 		return cfgOrNilOnMissingRegistry(cfg, err), err
 	}
 	if !exists {
-		return finalizeCfg(cfg, providers, models)
+		return finalizeCfg(cfg, reg.Providers, reg.Models, reg.Aliases)
 	}
 
 	// migrateConfigSchema runs against a fresh, lock-protected read (via
@@ -841,7 +845,7 @@ func Load() (*Config, error) {
 	// in memory (schema fixups above only ever see wt-owned config.toml
 	// content). Providers/Models from a pre-Phase-4 config.toml are
 	// overwritten here — registry.toml is the source of truth.
-	return finalizeCfg(fresh, providers, models)
+	return finalizeCfg(fresh, reg.Providers, reg.Models, reg.Aliases)
 }
 
 // cfgOrNilOnMissingRegistry returns cfg (whatever Load has decoded from
@@ -857,7 +861,7 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 	return nil
 }
 
-// finalizeCfg joins registry providers/models into cfg, derives native-ness
+// finalizeCfg joins registry providers/models/aliases into cfg, derives native-ness
 // from provider auth types, and resolves the LiteLLM proxy pair into the
 // runtime routing state (applyProxyState: the wt-model home's [litellm] table
 // first, config.toml's legacy table as the read-only fallback). With no
@@ -865,8 +869,8 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 // — a broken wt-model home or key file — leaves the pair empty (fail closed,
 // never the legacy values) and is recorded for ProxyErr, not returned: only
 // the commands that use the pair fail on it.
-func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
-	cfg.Providers, cfg.Models = providers, models
+func finalizeCfg(cfg *Config, providers []Provider, models []Model, aliases []Alias) (*Config, error) {
+	cfg.Providers, cfg.Models, cfg.Aliases = providers, models, aliases
 	deriveNative(cfg)
 	deriveSushiAgents(cfg)
 	applyProxyState(cfg)
@@ -952,6 +956,9 @@ func (c *Config) validate() []error {
 			errs = append(errs, registryEntryError(fmt.Errorf("duplicate provider id %q", p.ID)))
 		}
 		provIDs[p.ID] = true
+		if p.ID == AliasProvider {
+			errs = append(errs, registryEntryError(fmt.Errorf("provider id %q is reserved for aliases", p.ID)))
+		}
 		// A provider entry may leave its location out (its models then need
 		// their own), but a value that is set must be a location — checked
 		// here as well as per model, so an entry with no models, or one whose
@@ -971,6 +978,9 @@ func (c *Config) validate() []error {
 			errs = append(errs, registryEntryError(fmt.Errorf("duplicate model id %q", m.ID)))
 		}
 		modelIDs[m.ID] = true
+		if strings.HasPrefix(m.ID, AliasIDPrefix) {
+			errs = append(errs, registryEntryError(fmt.Errorf("model id %q: the %s prefix is reserved for aliases", m.ID, AliasIDPrefix)))
+		}
 		if m.ModelName == "" {
 			// The lifecycle engine matches a start target against a provider's
 			// reported names by this field; an empty one matches nothing, so the
@@ -983,6 +993,24 @@ func (c *Config) validate() []error {
 		} else if _, err := c.ResolveLocation(m); err != nil {
 			// Location must be resolvable. A mistyped one is ErrLocation
 			// already; no location at all is marked here.
+			errs = append(errs, registryEntryError(err))
+		}
+	}
+
+	// Aliases. A malformed one is the reader's to tolerate, as a malformed
+	// serve_args is (Alias.Malformed; the route path freezes it): it is not a
+	// validation error. A repeated id and a cross-table fault (AliasFault)
+	// are, marked like the rows above so the hint names registry.toml.
+	aliasIDs := map[string]bool{}
+	for _, a := range c.Aliases {
+		if a.ID != "" && aliasIDs[a.ID] {
+			errs = append(errs, registryEntryError(fmt.Errorf("duplicate alias id %q", a.ID)))
+		}
+		aliasIDs[a.ID] = true
+		if a.Malformed != "" {
+			continue
+		}
+		if err := AliasFault(c, a); err != nil {
 			errs = append(errs, registryEntryError(err))
 		}
 	}

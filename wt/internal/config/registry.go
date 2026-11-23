@@ -172,36 +172,52 @@ func resolveRegistryFile(path string) (target string, exists bool, err error) {
 	return "", false, fmt.Errorf("%w: %s is a symlink to %s, which cannot be followed: %v", ErrRegistryLink, path, dest, err)
 }
 
+// registryData is registry.toml as wt's typed reader decodes it.
+type registryData struct {
+	Providers []Provider `toml:"providers"`
+	Models    []Model    `toml:"models"`
+	// Aliases are the [[aliases]] tables (#596); a malformed one reads with
+	// Alias.Malformed set and never fails the load.
+	Aliases []Alias `toml:"aliases"`
+}
+
 // loadRegistry decodes the shared registry.toml into providers and
-// models. A model's fetch and draft tables are decoded into Model.Fetch and
+// models (readRegistry without the aliases).
+func loadRegistry() ([]Provider, []Model, error) {
+	reg, err := readRegistry()
+	return reg.Providers, reg.Models, err
+}
+
+// readRegistry decodes the shared registry.toml into providers, models and
+// aliases. A model's fetch and draft tables are decoded into Model.Fetch and
 // Model.Draft (a repo or a local_path each; a malformed one reads as absent
 // and never fails the load); model_info is decoded into
 // Model.ModelInfo and merged into the LiteLLM rows wt writes; model_dir and auth fields are parsed into the
 // provider data, and auth.type drives Model.Native — the single source of
 // truth for native-ness, consumed by driver dispatch and route resolution.
+// An [[aliases]] table whose shape is wrong reads as an Alias with Malformed
+// set (Alias.UnmarshalTOML); a top-level `aliases` that is not an array at
+// all is a parse error, as `models = 3` is.
 //
 // Fail-closed: a missing or malformed registry is an error — wt has no
 // editor for this file; `wt-model model init` creates it.
 // A symlinked registry is read through; a link that leads nowhere is
 // ErrRegistryLink, never "missing" (resolveRegistryFile).
-func loadRegistry() ([]Provider, []Model, error) {
+func readRegistry() (registryData, error) {
 	path := RegistryPath()
 	missing := fmt.Errorf("%w at %s — seed it with `wt-model model init`", ErrRegistryMissing, path)
 	_, data, exists, err := readRegistryFile(path)
 	if err != nil {
-		return nil, nil, err
+		return registryData{}, err
 	}
 	if !exists {
-		return nil, nil, missing
+		return registryData{}, missing
 	}
-	var reg struct {
-		Providers []Provider `toml:"providers"`
-		Models    []Model    `toml:"models"`
-	}
+	var reg registryData
 	if _, err := toml.Decode(string(data), &reg); err != nil {
-		return nil, nil, registryFileError(fmt.Errorf("parse %s: %w", path, err))
+		return registryData{}, registryFileError(fmt.Errorf("parse %s: %w", path, err))
 	}
-	return reg.Providers, reg.Models, nil
+	return reg, nil
 }
 
 // RegistryRedirected reports whether the environment sends RegistryPath
