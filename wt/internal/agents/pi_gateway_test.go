@@ -3,6 +3,7 @@ package agents
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -125,5 +126,44 @@ func TestSyncLitellmBlockKeepsWhatIsThere(t *testing.T) {
 	}
 	if syncLitellmBlock(f, "http://gw", "tok", []string{"ollama/a"}) {
 		t.Error("a second sync with nothing new reported a change")
+	}
+}
+
+// TestPiGatewayKeepsAnExternalGatewayBlockByteForByte pins the documented way to
+// reach an external gateway with pi (#618): a user-written provider whose apiKey
+// is a `!command` pi runs itself, with a compat entry and fields wt has no
+// struct for (headers, per-model name/maxTokens/cost). A gateway sync that
+// writes the file for another reason must not rewrite or drop any of it.
+func TestPiGatewayKeepsAnExternalGatewayBlockByteForByte(t *testing.T) {
+	path := piHomeModelsPath(t)
+	m := gwCloudModel()
+	block := `{"api":"openai-completions","apiKey":"!/usr/local/bin/cred-helper.sh","baseUrl":"https://gw.invalid/v1","compat":{"supportsStore":false,"supportsDeveloperRole":false},"headers":{"x-tag":"a"},"models":[{"id":"claude-x","name":"Claude X","maxTokens":8192,"cost":{"input":1,"output":2},"contextWindow":200000,"input":["text"],"reasoning":true}]}`
+	writeFile(t, path, `{"$schema":"keep-me","providers":{"ext":`+block+`}}`)
+	if err := (piDriver{}).SyncGateway(testGW(), []config.Model{m}, m); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Schema    string                     `json:"$schema"`
+		Providers map[string]json.RawMessage `json:"providers"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw.Schema != "keep-me" {
+		t.Errorf("top-level $schema = %q, want it kept", raw.Schema)
+	}
+	var got, want any
+	if err := json.Unmarshal(raw.Providers["ext"], &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(block), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("user block changed:\n got  %s\n want %s", raw.Providers["ext"], block)
 	}
 }
