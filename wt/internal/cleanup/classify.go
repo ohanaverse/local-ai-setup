@@ -1047,7 +1047,11 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 			j.unsure(ReasonCannotVerify, why)
 		}
 	}
-	candidate := j.ev != ""
+	// A row the engine may delete needs the "who targets this branch" answer:
+	// one with a proof, or (since a less-sure origin branch is removable with
+	// approval) one with only a weak signal. Deleting closes every PR that
+	// targets the branch, a fork's included.
+	candidate := j.ev != "" || (ok && p.Verdict == NotMerged && len(p.Weak) > 0)
 	deps, baseErr := c.dependants(rf.Name, candidate, prLookups)
 	if baseErr != "" {
 		j.unsure(ReasonCannotVerify, baseErr)

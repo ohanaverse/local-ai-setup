@@ -102,6 +102,62 @@ func TestRemoteRowBaseQuery(t *testing.T) {
 	}
 }
 
+// TestRemoteRowWithAWeakSignalNeedsTheBaseQuery varies the live "open PRs
+// based on this branch" answer for an origin row with no proof but a weak
+// signal (cherry or patch-id equivalent), which is less_sure and so removable
+// with approval. What: a missing or failed answer makes the row Unknown
+// (cannot_verify), a dependent PR blocks it, an answered "none" leaves it
+// known. Why: deleting the branch closes every PR that targets it (a fork's
+// too, invisible to the head lookups), so a row the engine may delete must
+// have had that question answered; the query used to be asked only for rows
+// with a proof, which were the only ones ever deletable.
+func TestRemoteRowWithAWeakSignalNeedsTheBaseQuery(t *testing.T) {
+	open := PRInfo{Number: 12, State: "OPEN", HeadRefOid: strings.Repeat("e", 40), BaseRef: "topic"}
+	cases := []struct {
+		name    string
+		base    map[string]PRResult
+		status  Status
+		unknown bool
+	}{
+		{"query missing", nil, StatusLessSure, true},
+		{"query failed", map[string]PRResult{"topic": {Lookup: LookupUnknown, Err: "boom"}}, StatusLessSure, true},
+		{"dependent PR", map[string]PRResult{"topic": {Lookup: LookupKnown, PRs: []PRInfo{open}}}, StatusInUse, false},
+		{"none", map[string]PRResult{"topic": {Lookup: LookupNone}}, StatusLessSure, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := remoteSnap(func(s *Snapshot, tip string) {
+				s.Proofs[tip] = Proof{Verdict: NotMerged, Weak: []Evidence{EvPatchID}}
+				s.PRs["topic"] = PRResult{Lookup: LookupNone}
+				s.BasePRs = c.base
+			})
+			row := findRow(t, Classify(s, Options{Now: later()}), KindRemote, "topic")
+			if row.Status != c.status || row.Unknown != c.unknown {
+				t.Fatalf("got (%s, unknown %v), want (%s, %v) %v", row.Status, row.Unknown, c.status, c.unknown, reasonCodes(row.Reasons))
+			}
+		})
+	}
+}
+
+// TestBaseCandidatesIncludeWeakSignalOriginRows is the gather half of the
+// test above. What: an origin branch with only a weak signal is among the
+// names asked "who targets this branch"; one with unique work is not. Why:
+// without the query's answer the classifier cannot mark the row unknown.
+func TestBaseCandidatesIncludeWeakSignalOriginRows(t *testing.T) {
+	weak, unique := strings.Repeat("1", 40), strings.Repeat("2", 40)
+	s := handSnapshot()
+	s.Remotes = []RefFact{
+		{Ref: "refs/remotes/origin/weak", Name: "weak", Remote: "origin", Tip: weak},
+		{Ref: "refs/remotes/origin/unique", Name: "unique", Remote: "origin", Tip: unique},
+	}
+	s.Proofs[weak] = Proof{Verdict: NotMerged, Weak: []Evidence{EvCherryEquivalent}}
+	s.Proofs[unique] = Proof{Verdict: NotMerged}
+	got := s.baseCandidates()
+	if len(got) != 1 || got[0] != "weak" {
+		t.Fatalf("baseCandidates = %v, want [weak]", got)
+	}
+}
+
 // TestRemoteRowPRRungMatchesTheEngine varies the merged PR. What: proven
 // needs a MERGED PR into the default branch whose head is the tip and whose
 // merge commit is in the base. Why: the removal engine re-verifies exactly

@@ -376,8 +376,9 @@ func FillPRs(g Git, s *Snapshot, in GatherInputs) {
 }
 
 // baseCandidates are the names of the origin branches that could be offered
-// for deletion: content already in the base, or a merged PR into the default
-// branch whose head is the tip. Only these need the live "who targets this
+// for deletion: content already in the base, a merged PR into the default
+// branch whose head is the tip, or a weak signal (a less-sure row is
+// removable with approval). Only these need the live "who targets this
 // branch" query (one gh call each).
 func (s *Snapshot) baseCandidates() []string {
 	var out []string
@@ -385,7 +386,7 @@ func (s *Snapshot) baseCandidates() []string {
 		if r.Remote != "origin" || slices.Contains(out, r.Name) {
 			continue
 		}
-		if p, ok := s.Proofs[r.Tip]; ok && p.Verdict == Merged {
+		if p, ok := s.Proofs[r.Tip]; ok && (p.Verdict == Merged || (p.Verdict == NotMerged && len(p.Weak) > 0)) {
 			out = append(out, r.Name)
 			continue
 		}
