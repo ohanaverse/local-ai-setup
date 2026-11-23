@@ -574,6 +574,11 @@ type GatewayConf struct {
 // gatewayPassthroughKey is the host switch's key under [gateway].
 const gatewayPassthroughKey = "subscription_passthrough"
 
+// proxyHomeKeys is every key the home's config.toml knows, the one list a
+// value-free parse error may name (valueFreeParseError): [litellm]'s url and
+// key_file and [gateway]'s keys. A key added to either table goes here.
+var proxyHomeKeys = []string{"url", "key_file", gatewayPassthroughKey}
+
 // GatewaySettings reads the wt-model home's [gateway] table (ProxyHomePath,
 // through decodeProxyHome, under the same shared lock as the pair). No file,
 // no table or an absent key is the zero value. A key holding the wrong type

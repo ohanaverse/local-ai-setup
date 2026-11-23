@@ -1426,3 +1426,49 @@ func TestGatewaySettingsSyntaxErrorIsAnError(t *testing.T) {
 		t.Errorf("error quotes a value: %v", err)
 	}
 }
+
+// TestHomeParseErrorsNameOnlyKnownKeys pins #640 for the wt-model home's
+// value-free parse errors: the text left of an '=' on a bad line is printed
+// only when it is one of the home's known keys, so a token pasted on its own
+// line (a bare `X==`, or a line inside a multi-line url array) never reaches
+// serve's refusal, `litellm set` or `litellm status`. A known key still names
+// itself and the line, with the neutral suffix unless secretSafe's rule
+// calls the key secret.
+func TestHomeParseErrorsNameOnlyKnownKeys(t *testing.T) {
+	sentinels := []string{"sk-ant-oat01-wtSENTINEL", "wt-SENTINEL-tok", "abc123"}
+	for _, body := range []string{
+		"[litellm]\nurl = \"http://x\"\nsk-ant-oat01-wtSENTINEL==\n",
+		"[gateway]\nwt-SENTINEL-tok=\n",
+		"[litellm]\nurl = \"http://x\"\nabc123==\n",
+		"[litellm]\nurl = [\n  \"http://x\",\n  sk-ant-oat01-wtSENTINEL=x\n]\n",
+		"[litellm]\nurl = [\n  \"http://x\",\n  wt-SENTINEL-tok=x\n]\n",
+		"[gateway]\nsubscription_passthrough = [\n  abc123==\n]\n",
+	} {
+		home := proxyEnv(t, "")
+		writeProxyHome(t, home, body)
+		for name, f := range map[string]func() error{
+			"ResolveProxy":    func() error { _, err := ResolveProxy(); return err },
+			"GatewaySettings": func() error { _, _, err := GatewaySettings(); return err },
+		} {
+			err := f()
+			if err == nil {
+				t.Fatalf("%s on %q = nil, want a parse error", name, body)
+			}
+			for _, s := range sentinels {
+				if strings.Contains(err.Error(), s) {
+					t.Errorf("%s on %q: the error quotes %q: %v", name, body, s, err)
+				}
+			}
+		}
+	}
+
+	home := proxyEnv(t, "")
+	writeProxyHome(t, home, "[gateway]\nsubscription_passthrough = 1x\n")
+	_, _, err := GatewaySettings()
+	if err == nil || !strings.Contains(err.Error(), "line 2") || !strings.Contains(err.Error(), "subscription_passthrough") {
+		t.Fatalf("known key: err = %v, want the line and the key named", err)
+	}
+	if strings.Contains(err.Error(), "1x") || strings.Contains(err.Error(), "may hold a secret") {
+		t.Errorf("known key: err = %v, want no value and the neutral suffix", err)
+	}
+}

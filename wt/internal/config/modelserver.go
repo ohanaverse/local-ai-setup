@@ -144,54 +144,71 @@ func ReadModelServerFile() ModelServerFile {
 // value, say a base64 token typed without quotes) is replaced by the line
 // number and the key name. Any other error is returned as it is.
 func secretSafe(err error, data []byte) error {
-	return withheldParseError(err, data, secretKeyName)
+	var pe toml.ParseError
+	if !errors.As(err, &pe) {
+		return err
+	}
+	line := parseErrorLine(pe)
+	for _, name := range parseErrorKeys(pe, data) {
+		if secretKeyName(name) {
+			return fmt.Errorf("toml: line %d: the value of %s does not parse (not shown: it may hold a secret)", line, name)
+		}
+	}
+	return err
 }
 
-// valueFreeParseError is secretSafe for a file whose every value is withheld
-// (the wt-model home's config.toml: a url, and the hand-edited [gateway]
-// table serve reads at start): any TOML parse error is reported by its line
-// and key name only, never the parser's message, which can quote a value.
+// valueFreeParseError is the wt-model home's parse-error wording: the
+// parser's message (which can quote a value) is never shown. A key is named
+// only when it is one of the home's known keys (proxyHomeKeys): the text left
+// of an '=' on the failing line may be a pasted token, never a key (#640).
+// The suffix says "may hold a secret" only for a key secretSafe would call
+// secret; any other failure is the line number alone.
 func valueFreeParseError(err error, data []byte) error {
 	var pe toml.ParseError
 	if !errors.As(err, &pe) {
 		return err
 	}
-	if out := withheldParseError(err, data, func(string) bool { return true }); out != err {
-		return out
-	}
-	line := pe.Position.Line
-	if line == 0 {
-		line = pe.Line
+	line := parseErrorLine(pe)
+	for _, name := range parseErrorKeys(pe, data) {
+		if !slices.Contains(proxyHomeKeys, name) {
+			continue
+		}
+		suffix := "(not shown)"
+		if secretKeyName(name) {
+			suffix = "(not shown: it may hold a secret)"
+		}
+		return fmt.Errorf("toml: line %d: the value of %s does not parse %s", line, name, suffix)
 	}
 	return fmt.Errorf("toml: line %d does not parse (the text is not shown)", line)
 }
 
-// withheldParseError replaces a TOML parse error by its line and key name
-// when withhold names that key (the line's own key or the last key parsed);
-// any other error is returned as it is.
-func withheldParseError(err error, data []byte, withhold func(string) bool) error {
-	var pe toml.ParseError
-	if !errors.As(err, &pe) {
-		return err
+// parseErrorLine is a TOML parse error's line number.
+func parseErrorLine(pe toml.ParseError) int {
+	if pe.Position.Line != 0 {
+		return pe.Position.Line
 	}
-	line := pe.Position.Line
-	if line == 0 {
-		line = pe.Line
-	}
+	return pe.Line
+}
+
+// parseErrorKeys is the candidate key names of a parse error, in order: the
+// text left of the first '=' on the failing line (which may not be a key at
+// all), then the last segment of the last key parsed.
+func parseErrorKeys(pe toml.ParseError, data []byte) []string {
+	line := parseErrorLine(pe)
 	key := ""
 	if lines := strings.Split(string(data), "\n"); line >= 1 && line <= len(lines) {
 		if k, _, ok := strings.Cut(lines[line-1], "="); ok {
 			key = strings.Trim(strings.TrimSpace(k), `"'`)
 		}
 	}
+	var out []string
 	for _, k := range []string{key, pe.LastKey} {
 		parts := strings.Split(k, ".")
-		name := strings.Trim(strings.TrimSpace(parts[len(parts)-1]), `"'`)
-		if name != "" && withhold(name) {
-			return fmt.Errorf("toml: line %d: the value of %s does not parse (not shown: it may hold a secret)", line, name)
+		if name := strings.Trim(strings.TrimSpace(parts[len(parts)-1]), `"'`); name != "" {
+			out = append(out, name)
 		}
 	}
-	return err
+	return out
 }
 
 // secretKeyName reports whether a config key's value is, or may hold, a
