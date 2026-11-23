@@ -143,19 +143,22 @@ type SubscriptionGuard func(ctx context.Context, rows []modelapi.Row) error
 
 // GuardLaunch is what a guard learns about the launch beyond its rows: the
 // agent, whether it is a slot-profile launch (which applies no launch
-// profile), and where its notes go (the queue printed once the terminal is
-// released; stderr is not the user's while the alt screen is up).
+// profile) and, for one, the slot profile itself (its own env and
+// config_content are judged before the register), and where its notes go
+// (the queue printed once the terminal is released; stderr is not the
+// user's while the alt screen is up).
 type GuardLaunch struct {
-	Agent string
-	Slot  bool
-	Notes io.Writer
+	Agent       string
+	Slot        bool
+	SlotProfile *profiles.SlotProfile
+	Notes       io.Writer
 }
 
 // guardLaunchKey is GuardLaunch's context key.
 type guardLaunchKey struct{}
 
-// withGuardLaunch puts gl on ctx for the guard.
-func withGuardLaunch(ctx context.Context, gl GuardLaunch) context.Context {
+// WithGuardLaunch puts gl on ctx for the guard.
+func WithGuardLaunch(ctx context.Context, gl GuardLaunch) context.Context {
 	return context.WithValue(ctx, guardLaunchKey{}, gl)
 }
 
@@ -174,7 +177,7 @@ func runGuard(ctx context.Context, g SubscriptionGuard, gl GuardLaunch, rows []m
 	if gl.Notes == nil {
 		gl.Notes = clientNotes
 	}
-	return g(withGuardLaunch(ctx, gl), rows)
+	return g(WithGuardLaunch(ctx, gl), rows)
 }
 
 // profileCarry is the profile popup's answer, carried on the model from the

@@ -746,3 +746,23 @@ func TestHeaderModeProfileConflict(t *testing.T) {
 		t.Errorf("an ordinary profile: %v", err)
 	}
 }
+
+// TestHeaderModeClearsTheFileDescriptorCredentials proves a header-mode
+// launch removes CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR and
+// CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR from the inherited environment: Claude
+// Code reads a token or key from either, which would displace the checked
+// claude.ai login (#597).
+func TestHeaderModeClearsTheFileDescriptorCredentials(t *testing.T) {
+	fakeBin(t, "claude")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "3")
+	t.Setenv("CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR", "4")
+	cmd, info, err := BuildLaunchCmdGateway("claude", subModel("claude-opus-5-5"), t.TempDir(), false, testGW(), nil, nil)
+	if err != nil || !info.HeaderMode {
+		t.Fatalf("build: %v (header mode %v)", err, info.HeaderMode)
+	}
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=") || strings.HasPrefix(kv, "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR=") {
+			t.Errorf("the header-mode child inherits %s", kv)
+		}
+	}
+}

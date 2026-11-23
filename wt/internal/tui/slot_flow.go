@@ -160,7 +160,7 @@ func prepRemoteSlot(ctx context.Context, id int, client ModelClient, hold *clien
 	if err := agents.CheckSlotPassthrough(agent, extraArgs); err != nil {
 		return remoteSlotPreparedMsg{id: id, row: row, err: err}
 	}
-	if err := runGuard(ctx, guard, GuardLaunch{Agent: agent, Slot: true}, slotRows(cat.Rows, check)); err != nil {
+	if err := runGuard(ctx, guard, GuardLaunch{Agent: agent, Slot: true, SlotProfile: &check.Profile}, slotRows(cat.Rows, check)); err != nil {
 		return remoteSlotPreparedMsg{id: id, row: row, err: err}
 	}
 	ids := slotModelIDs(row)

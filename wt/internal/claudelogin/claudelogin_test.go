@@ -2,9 +2,12 @@ package claudelogin
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -55,7 +58,8 @@ func TestCheckScrubsCredentialEnv(t *testing.T) {
 	env = append(env, "FAKE_ENV_DUMP="+dump,
 		"ANTHROPIC_API_KEY=sk-FAKE", "ANTHROPIC_AUTH_TOKEN=FAKE", "ANTHROPIC_BASE_URL=http://127.0.0.1:9",
 		"CLAUDE_CODE_OAUTH_TOKEN=FAKE", "CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CODE_USE_VERTEX=1",
-		"CLAUDE_CODE_USE_SOMETHINGNEW=1", "ANTHROPIC_CUSTOM_HEADERS=x-wt-model-token: FAKE", "KEEP_ME=1")
+		"CLAUDE_CODE_USE_SOMETHINGNEW=1", "ANTHROPIC_CUSTOM_HEADERS=x-wt-model-token: FAKE", "KEEP_ME=1",
+		"CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3", "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR=4")
 	st, err := Check(context.Background(), bin, env)
 	if err != nil || !st.OK() {
 		t.Fatalf("Check = %+v, %v; want a login", st, err)
@@ -68,7 +72,8 @@ func TestCheckScrubsCredentialEnv(t *testing.T) {
 		name, _, _ := strings.Cut(line, "=")
 		switch {
 		case name == "ANTHROPIC_API_KEY", name == "ANTHROPIC_AUTH_TOKEN", name == "ANTHROPIC_BASE_URL",
-			name == "CLAUDE_CODE_OAUTH_TOKEN", name == "ANTHROPIC_CUSTOM_HEADERS", strings.HasPrefix(name, "CLAUDE_CODE_USE_"):
+			name == "CLAUDE_CODE_OAUTH_TOKEN", name == "ANTHROPIC_CUSTOM_HEADERS", strings.HasPrefix(name, "CLAUDE_CODE_USE_"),
+			name == "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", name == "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR":
 			t.Errorf("claude saw %s", name)
 		}
 	}
@@ -165,5 +170,75 @@ func TestCheckReadsVersionAndExpiry(t *testing.T) {
 	st, _ = Check(context.Background(), bin, env)
 	if st.ExpiresAt.Unix() != 1893553445 {
 		t.Errorf("ExpiresAt from ms = %v", st.ExpiresAt)
+	}
+}
+
+// TestCheckTimeoutKillsTheProcessGroupAndSaysWhy proves a claude (or a shim
+// in front of it) that forks a child and hangs is killed with its whole
+// process group when the check gives up, so no orphan outlives wt, and that
+// the error says the real reason: the check's own deadline is ErrTimeout, a
+// caller's cancel or deadline is ErrCancelled.
+func TestCheckTimeoutKillsTheProcessGroupAndSaysWhy(t *testing.T) {
+	const forking = "#!/bin/sh\nsleep 30 &\necho $! > \"$FAKE_CHILD_PID\"\nwait\n"
+	run := func(t *testing.T, parent time.Duration, own time.Duration) (error, string) {
+		t.Helper()
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "claude")
+		if err := os.WriteFile(bin, []byte(forking), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		pidFile := filepath.Join(dir, "child.pid")
+		ctx, cancel := context.WithTimeout(context.Background(), parent)
+		defer cancel()
+		_, err := check(ctx, bin, []string{"PATH=/usr/bin:/bin", "FAKE_CHILD_PID=" + pidFile}, own)
+		return err, pidFile
+	}
+	alive := func(pidFile string) bool {
+		b, err := os.ReadFile(pidFile)
+		if err != nil {
+			return false
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+		if err != nil {
+			return false
+		}
+		return syscall.Kill(pid, 0) == nil
+	}
+	err, pidFile := run(t, time.Minute, 300*time.Millisecond)
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("own deadline: err = %v, want ErrTimeout", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for alive(pidFile) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if alive(pidFile) {
+		t.Error("the forked child outlived the check")
+	}
+	err, _ = run(t, 300*time.Millisecond, time.Minute)
+	if !errors.Is(err, ErrCancelled) || strings.Contains(err.Error(), "10 s") {
+		t.Errorf("caller's deadline: err = %v, want ErrCancelled", err)
+	}
+}
+
+// TestExpiryIgnoresImplausibleValues proves loginExpiresAt is used only when
+// it is a plausible future time: an epoch before 2000 (a seconds/ms mix-up
+// or a zero), and a time already past, read as unknown, so the guard never
+// prints a misleading date.
+func TestExpiryIgnoresImplausibleValues(t *testing.T) {
+	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	for raw, want := range map[string]bool{
+		`"2026-11-24T12:00:00Z"`: true,
+		`1795521600000`:          true,
+		`"2026-11-01T00:00:00Z"`: false,
+		`"1970-01-02T00:00:00Z"`: false,
+		`86400`:                  false,
+		`5`:                      false,
+		`0`:                      false,
+		`"soon"`:                 false,
+	} {
+		if got := !expiryOf([]byte(raw), now).IsZero(); got != want {
+			t.Errorf("expiryOf(%s) known = %v, want %v", raw, got, want)
+		}
 	}
 }

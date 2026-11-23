@@ -193,7 +193,10 @@ func (claudeDriver) RefusedSlotPassthrough() []string { return []string{"--setti
 // removes (#597): each would replace the stored claude.ai login that was
 // checked with another credential. wt sets ANTHROPIC_API_KEY empty itself;
 // clearing the inherited one leaves that entry the only one.
-var claudeHeaderModeClear = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+// The two *_FILE_DESCRIPTOR variables make Claude Code read a token or a key
+// from an inherited descriptor, which would displace the login too.
+var claudeHeaderModeClear = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+	"CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR"}
 
 // claudeHeaderModeClearPrefixes are the inherited variable families a
 // header-mode launch removes: CLAUDE_CODE_USE_* (Bedrock, Vertex, Foundry and

@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -72,9 +73,12 @@ func (s Status) VersionAtLeast(min string) bool {
 // scrubbedNames are removed from the environment the check runs in.
 // ANTHROPIC_CUSTOM_HEADERS goes too: a nested session's copy carries the wt
 // token, which the check has no use for.
+// The *_FILE_DESCRIPTOR variables make Claude Code read a token or a key
+// from an inherited descriptor: a false positive like the token itself.
 var scrubbedNames = []string{
 	"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
 	"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS",
+	"CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
 }
 
 // scrubbedPrefixes are removed by prefix: Bedrock, Vertex, Foundry and any
@@ -108,8 +112,16 @@ func Scrub(environ []string) []string {
 var (
 	ErrNoStatus     = errors.New("claude auth status did not report a login")
 	ErrStatusFailed = errors.New("claude auth status exited with an error (no login)")
-	ErrTimeout      = errors.New("claude did not answer within 10 s")
+	// ErrTimeout is the check's own deadline (Timeout, 10 s).
+	ErrTimeout = errors.New("claude did not answer within 10 s")
+	// ErrCancelled is the caller's context ending first (a cancel, or a
+	// deadline of its own).
+	ErrCancelled = errors.New("the claude login check was cancelled before claude answered")
 )
+
+// errOwnDeadline is the cause the check's own deadline carries, so the
+// error can tell it from the caller's.
+var errOwnDeadline = errors.New("claudelogin: own deadline")
 
 // Check runs bin (the claude binary's path) twice in a scrubbed copy of
 // environ, within Timeout: `--version`, then `auth status --json`. The
@@ -117,18 +129,30 @@ var (
 // could be read (a non-zero exit, unreadable output, a timeout); the Status
 // then reports no login.
 func Check(ctx context.Context, bin string, environ []string) (Status, error) {
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	return check(ctx, bin, environ, Timeout)
+}
+
+// check is Check with its own deadline as a parameter (tests use a short
+// one; the error is ErrTimeout whatever its length).
+func check(parent context.Context, bin string, environ []string, timeout time.Duration) (Status, error) {
+	ctx, cancel := context.WithTimeoutCause(parent, timeout, errOwnDeadline)
 	defer cancel()
+	stopped := func() error {
+		if parent.Err() == nil && errors.Is(context.Cause(ctx), errOwnDeadline) {
+			return ErrTimeout
+		}
+		return ErrCancelled
+	}
 	env := Scrub(environ)
 	var st Status
 	if out, err := run(ctx, bin, env, "--version"); err == nil {
 		st.Version = versionOf(out)
 	} else if ctx.Err() != nil {
-		return st, ErrTimeout
+		return st, stopped()
 	}
 	out, err := run(ctx, bin, env, "auth", "status", "--json")
 	if ctx.Err() != nil {
-		return st, ErrTimeout
+		return st, stopped()
 	}
 	if err != nil {
 		return st, ErrStatusFailed
@@ -143,17 +167,26 @@ func Check(ctx context.Context, bin string, environ []string) (Status, error) {
 		return st, ErrNoStatus
 	}
 	st.LoggedIn, st.Method, st.Provider = *raw.LoggedIn, raw.AuthMethod, raw.APIProvider
-	st.ExpiresAt = expiryOf(raw.LoginExpiresAt)
+	st.ExpiresAt = expiryOf(raw.LoginExpiresAt, time.Now())
 	return st, nil
 }
 
 // run runs bin with args and returns its stdout (bounded); stderr is
-// discarded, stdin is empty.
+// discarded, stdin is empty. bin runs in its own process group, and when ctx
+// ends the whole group is killed, so a shim that forked a child leaves no
+// orphan behind.
 func run(ctx context.Context, bin string, env []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = env
 	cmd.Stdin = nil
 	cmd.Stderr = io.Discard
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	// A child that leaves a grandchild holding the pipe must not hold the
 	// check past its deadline.
 	cmd.WaitDelay = time.Second
@@ -205,10 +238,24 @@ func parseVersion(v string) ([3]int, bool) {
 	return out, true
 }
 
+// earliestExpiry is the floor below which an expiry is not plausible (a
+// seconds/milliseconds mix-up, a zero).
+var earliestExpiry = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // expiryOf reads loginExpiresAt: an RFC 3339 string, or a number of epoch
 // milliseconds (seconds when it is too small to be milliseconds). Anything
-// else is the zero time (unknown).
-func expiryOf(raw json.RawMessage) time.Time {
+// else, a time before 2000 and a time not after now are the zero time
+// (unknown): a note never shows a misleading date.
+func expiryOf(raw json.RawMessage, now time.Time) time.Time {
+	t := parseExpiry(raw)
+	if t.Before(earliestExpiry) || !t.After(now) {
+		return time.Time{}
+	}
+	return t
+}
+
+// parseExpiry is expiryOf's parse alone.
+func parseExpiry(raw json.RawMessage) time.Time {
 	if len(raw) == 0 {
 		return time.Time{}
 	}

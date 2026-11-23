@@ -24,7 +24,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
+	"github.com/spf13/cobra"
 )
 
 // subTok is the wt token sentinel of the subscription tests.
@@ -443,8 +445,10 @@ func trueCmd(t *testing.T) *exec.Cmd {
 func TestSubscriptionLaunchChildEnvAndArgv(t *testing.T) {
 	native := modelapi.Row{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true,
 		Location: "cloud", Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Tags: []string{"code"}}
+	named := native
+	named.ID, named.ModelName, named.Order = "claude/opus", "opus", 2
 	st := goodLogin()
-	r, calls := subRig(t, true, true, &st, subRow("claude-haiku-5-5"), native)
+	r, calls := subRig(t, true, true, &st, subRow("claude-haiku-5-5"), native, named)
 	dir := t.TempDir()
 	envDump, argvDump := filepath.Join(dir, "env"), filepath.Join(dir, "argv")
 	t.Setenv("WT_FAKE_ENV_DUMP", envDump)
@@ -474,21 +478,32 @@ func TestSubscriptionLaunchChildEnvAndArgv(t *testing.T) {
 		t.Errorf("argv is empty or holds the token (%d bytes)", len(argv))
 	}
 
-	// Nested: the parent's environment has a header-mode line.
+	// Nested: the parent's environment has a header-mode line. Neither the
+	// bare native row nor a named native model (claude/opus, Claude Code's
+	// own) may carry it on to Anthropic.
 	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "x-wt-model-token: "+subTok)
-	if err := r.launch(t, context.Background(), "claude/native", "", false); err != nil {
-		t.Fatalf("native launch: %v", err)
-	}
-	env, _ = os.ReadFile(envDump)
-	if strings.Contains(string(env), "x-wt-model-token") {
-		t.Error("the nested native launch carries the wt token line")
+	for _, id := range []string{"claude/native", "claude/opus"} {
+		if err := os.Remove(envDump); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if err := r.launch(t, context.Background(), id, "", false); err != nil {
+			t.Fatalf("%s launch: %v", id, err)
+		}
+		env, err := os.ReadFile(envDump)
+		if err != nil {
+			t.Fatalf("%s: no env dump: %v", id, err)
+		}
+		if strings.Contains(string(env), "x-wt-model-token") {
+			t.Errorf("the nested %s launch carries the wt token line", id)
+		}
 	}
 }
 
 // TestSubscriptionLaunchWritesNoFileAndNoArgv proves header mode writes the
 // wt token nowhere: with the token given only as WT_MODEL_TOKEN (no token
 // file), a full subscription launch leaves no file holding the token bytes
-// under the scratch worktree, the scratch HOME or the config home.
+// under the scratch worktree, the scratch HOME or the config home, and the
+// agent's argv does not hold it either.
 func TestSubscriptionLaunchWritesNoFileAndNoArgv(t *testing.T) {
 	st := goodLogin()
 	r, _ := subRig(t, true, true, &st, subRow("claude-haiku-5-5"))
@@ -504,6 +519,9 @@ func TestSubscriptionLaunchWritesNoFileAndNoArgv(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WT_MODEL_TOKEN", subTok)
+	// The agent's argv is dumped outside the walked directories.
+	argvDump := filepath.Join(t.TempDir(), "argv")
+	t.Setenv("WT_FAKE_ARGV_DUMP", argvDump)
 	wt := t.TempDir()
 	var err error
 	captureFile(t, &os.Stdout, func() {
@@ -511,6 +529,9 @@ func TestSubscriptionLaunchWritesNoFileAndNoArgv(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)
+	}
+	if argv, rerr := os.ReadFile(argvDump); rerr != nil || len(argv) == 0 || bytes.Contains(argv, []byte(subTok)) {
+		t.Errorf("argv dump missing (%v), empty or holding the token", rerr)
 	}
 	for _, root := range []string{wt, home, cfgHome} {
 		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, werr error) error {
@@ -587,4 +608,149 @@ func TestLoginExpiringSoonNotes(t *testing.T) {
 			t.Errorf("expiry in %v: notes %q", d, out.String())
 		}
 	}
+}
+
+// TestSubscriptionClaudeNotOnPathSaysSo proves a machine with no claude on
+// PATH is told to install it (or put it on PATH), not to run
+// `claude auth login`, a command it cannot run; nothing is registered.
+func TestSubscriptionClaudeNotOnPathSaysSo(t *testing.T) {
+	r, _ := subRig(t, true, true, nil, subRow("claude-haiku-5-5"))
+	r.a.hooks.claudeLogin = realClaudeLogin
+	t.Setenv("PATH", t.TempDir())
+	err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false)
+	if err == nil || exitCodeOf(err) != 1 || !strings.Contains(err.Error(), "not found on PATH") || strings.Contains(err.Error(), "claude auth login") {
+		t.Fatalf("err = %v, want the not-on-PATH refusal", err)
+	}
+	nothingRegistered(t, r.f)
+}
+
+// TestPickerGetsTheSubscriptionGuard pins main.go's wiring of the TUI guard
+// (#597): the picker's ProfileLayer carries a Guard whenever a model server
+// is configured, and that Guard is the real one: with a subscription row and
+// no [model-server] subscription opt-in it refuses, and with no subscription
+// row it passes without running the login check.
+func TestPickerGetsTheSubscriptionGuard(t *testing.T) {
+	st := goodLogin()
+	r, calls := subRig(t, false, true, &st, subRow("claude-haiku-5-5"), wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+	oldTUI, oldGuard := tuiRun, maybeInstallGuard
+	t.Cleanup(func() { tuiRun, maybeInstallGuard = oldTUI, oldGuard })
+	maybeInstallGuard = func() {}
+	var got tui.ProfileLayer
+	tuiRun = func(_, _ bool, _ string, _, _, _, _ string, _ []string, _ themes.Theme, _ string, _ tui.ModelClient, _ *config.Config, pl tui.ProfileLayer, _ tui.SlotProfiles, _ tui.RemoveFuncsBuilder, _ []string) error {
+		got = pl
+		return nil
+	}
+	cmd := &cobra.Command{}
+	cmd.Flags().String("model", "", "")
+	cmd.Flags().Bool("yolo", false, "")
+	if err := runLaunchPath(cmd, r.a, "", "", "", "", nil, "", ""); err != nil {
+		t.Fatalf("runLaunchPath: %v", err)
+	}
+	if got.Guard == nil {
+		t.Fatal("the picker's ProfileLayer has no Guard")
+	}
+	ctx := tui.WithGuardLaunch(context.Background(), tui.GuardLaunch{Agent: "claude"})
+	if err := got.Guard(ctx, []modelapi.Row{subRow("claude-haiku-5-5")}); err == nil || !strings.Contains(err.Error(), "has not opted in") {
+		t.Errorf("subscription row, no opt-in: err = %v, want the opt-in refusal", err)
+	}
+	if err := got.Guard(ctx, []modelapi.Row{wireRow("openrouter/a", modelapi.ActionLaunch, 1)}); err != nil {
+		t.Errorf("ordinary row: err = %v, want nil", err)
+	}
+	if *calls != 0 {
+		t.Errorf("the login check ran %d times, want 0", *calls)
+	}
+}
+
+// TestSubscriptionSlotProfileKeysRefusedBeforeRegister proves a slot
+// profile whose own env or config_content would undo header mode (here a
+// top-level apiKeyHelper) is refused by the pre-launch guard, before the
+// client session's register, any start and the login check, on the -M
+// profile pin and through the TUI's guard closure, not only later by the
+// slot build.
+func TestSubscriptionSlotProfileKeysRefusedBeforeRegister(t *testing.T) {
+	st := goodLogin()
+	r, calls := subRig(t, true, true, &st, append(slotWireRows(), subRow("claude-haiku-5-5"))...)
+	sp := profiles.SlotProfile{Name: "mix", Agent: "claude", Default: "sonnet",
+		Slots:         map[string]string{"sonnet": "openrouter/a", "haiku": "claude-haiku-5-5"},
+		ConfigContent: map[string]any{"apiKeyHelper": "/bin/echo VAL-SENTINEL"}}
+	r.a.slotChecks = profiles.ValidateSlots(profiles.SlotStore{Profiles: []profiles.SlotProfile{sp}}, agents.SlotDrivers())
+	if r.a.slotChecks[0].Err != nil {
+		t.Fatalf("static validation refused the profile: %v", r.a.slotChecks[0].Err)
+	}
+	err := r.launch(t, context.Background(), "profile/mix", "", false)
+	if err == nil || exitCodeOf(err) != 1 || !strings.Contains(err.Error(), "apiKeyHelper") || strings.Contains(err.Error(), "VAL-SENTINEL") {
+		t.Fatalf("err = %v, want the guard's refusal naming apiKeyHelper", err)
+	}
+	if !strings.Contains(err.Error(), "nothing was started or registered") {
+		t.Errorf("err = %v, want the guard's refusal (not the build's)", err)
+	}
+	nothingRegistered(t, r.f)
+	if *calls != 0 {
+		t.Errorf("the login check ran %d times, want 0", *calls)
+	}
+
+	ms, merr := r.a.openModels(context.Background(), launchStill)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	scfg, _ := r.a.sessionCfg()
+	ctx := tui.WithGuardLaunch(context.Background(), tui.GuardLaunch{Agent: "claude", Slot: true, SlotProfile: &sp})
+	gerr := tuiSubscriptionGuard(r.a, ms, scfg)(ctx, []modelapi.Row{wireRow("openrouter/a", modelapi.ActionLaunch, 1), subRow("claude-haiku-5-5")})
+	if gerr == nil || !strings.Contains(gerr.Error(), "apiKeyHelper") {
+		t.Errorf("TUI guard: err = %v, want the apiKeyHelper refusal", gerr)
+	}
+}
+
+// TestHeaderModeFlagReachesTheAppliers pins the header-mode flag at the two
+// non-TUI call sites (#597): the build's LaunchInfo.HeaderMode reaches
+// runTail.HeaderMode (launchFilteredRemote) and applySlotProfile
+// (launchSlotProfileRemote). The guard is out of the way (no row uses the
+// subscription) and the build reports header mode, so only the applier can
+// refuse: a matching launch profile setting ANTHROPIC_BASE_URL or
+// ANTHROPIC_CUSTOM_HEADERS, and a slot profile with a top-level
+// apiKeyHelper, must still stop the launch before the agent runs.
+func TestHeaderModeFlagReachesTheAppliers(t *testing.T) {
+	for _, key := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS"} {
+		t.Run("single "+key, func(t *testing.T) {
+			r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+			mark := filepath.Join(t.TempDir(), "ran")
+			t.Setenv("WT_FAKE_MARK", mark)
+			r.a.hooks.buildGateway = func(agent string, m config.Model, wt string, yolo bool, gw agents.Gateway, models []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
+				cmd, info, err := agents.BuildLaunchCmdGateway(agent, m, wt, yolo, gw, models, extra)
+				info.HeaderMode = true
+				return cmd, info, err
+			}
+			stubLaunchProfile(t, "openrouter/a", map[string]string{key: "x-litellm-tags: a"}, nil)
+			var err error
+			captureFile(t, &os.Stdout, func() {
+				err = launchFilteredRemote(context.Background(), r.a, "claude", t.TempDir(), false, "", "", "openrouter/a", true, nil, "", false, nil)
+			})
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("err = %v, want the applier's refusal naming %s", err, key)
+			}
+			if _, serr := os.Stat(mark); serr == nil {
+				t.Error("the agent ran")
+			}
+		})
+	}
+	t.Run("slot apiKeyHelper", func(t *testing.T) {
+		r, _ := slotRig(t, map[string]string{"sonnet": "openrouter/a"})
+		mark := filepath.Join(t.TempDir(), "ran")
+		t.Setenv("WT_FAKE_MARK", mark)
+		sp := profiles.SlotProfile{Name: "mix", Agent: "claude", Default: "sonnet", Slots: map[string]string{"sonnet": "openrouter/a"},
+			ConfigContent: map[string]any{"apiKeyHelper": "/bin/echo x"}}
+		r.a.slotChecks = profiles.ValidateSlots(profiles.SlotStore{Profiles: []profiles.SlotProfile{sp}}, agents.SlotDrivers())
+		r.a.hooks.buildSlotGateway = func(sl profiles.SlotLaunch, wt string, yolo bool, gw agents.Gateway, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
+			cmd, info, err := agents.BuildSlotLaunchCmdGatewayInfo(sl, wt, yolo, gw, extra)
+			info.HeaderMode = true
+			return cmd, info, err
+		}
+		err := r.launch(t, context.Background(), "profile/mix", "", false)
+		if err == nil || !strings.Contains(err.Error(), "apiKeyHelper") {
+			t.Fatalf("err = %v, want the slot applier's refusal", err)
+		}
+		if _, serr := os.Stat(mark); serr == nil {
+			t.Error("the agent ran")
+		}
+	})
 }

@@ -43,6 +43,10 @@ const loginExpiryNotice = 24 * time.Hour
 // test never runs the real claude (decision 8).
 var errLoginNotStubbed = errors.New("claude login check not stubbed in a test")
 
+// errClaudeNotFound is realClaudeLogin's answer when no claude is on PATH:
+// the refusal then says to install it, not to log in.
+var errClaudeNotFound = errors.New("claude is not on PATH")
+
 // login is the claude.ai login check: the hook, else (outside a test binary)
 // realClaudeLogin.
 func (h hooks) login(ctx context.Context) (claudelogin.Status, error) {
@@ -60,7 +64,7 @@ func (h hooks) login(ctx context.Context) (claudelogin.Status, error) {
 func realClaudeLogin(ctx context.Context) (claudelogin.Status, error) {
 	bin, err := exec.LookPath("claude")
 	if err != nil {
-		return claudelogin.Status{}, errors.New("claude is not on PATH")
+		return claudelogin.Status{}, errClaudeNotFound
 	}
 	return claudelogin.Check(ctx, bin, os.Environ())
 }
@@ -117,7 +121,7 @@ func subscriptionGuardTo(ctx context.Context, w io.Writer, ms *modelSession, row
 	// 4. The launch profile.
 	for _, k := range profileEnvKeys {
 		if agents.HeaderModeRefusedKey(k) {
-			return refuse("the launch profile in profiles.toml that matches it sets %s, which would replace the header wt sends or displace your Claude login: remove it from that profile", k)
+			return refuse("the profile for this launch sets %s, which would replace the header wt sends or displace your Claude login: remove it from that profile", k)
 		}
 	}
 	// 5 and 6. Claude Code's version, then the login.
@@ -125,6 +129,9 @@ func subscriptionGuardTo(ctx context.Context, w io.Writer, ms *modelSession, row
 		return refuse("no claude.ai login was found: run 'claude auth login'")
 	}
 	st, lerr := login(ctx)
+	if errors.Is(lerr, errClaudeNotFound) {
+		return refuse("Claude Code (claude) was not found on PATH: install it or put it on PATH")
+	}
 	if st.Version == "" && lerr != nil {
 		return refuse("no claude.ai login was found (%v): run 'claude auth login'", lerr)
 	}
@@ -246,6 +253,13 @@ func launchProfileKeys(rp profiles.ResolvedProfile) []string {
 	return slices.Compact(keys)
 }
 
+// slotProfileKeys is the keys of a slot profile's own env and
+// config_content (launchProfileKeys' reading): the guard judges them before
+// the register, ahead of the slot build's own refusal.
+func slotProfileKeys(sp profiles.SlotProfile) []string {
+	return launchProfileKeys(profiles.ResolvedProfile{Env: sp.Env, ConfigContent: sp.ConfigContent})
+}
+
 // launchProfileKeysFor is launchProfileKeys of the launch profile that
 // matches agent and m, nil when none does (or profiles.toml does not load,
 // which disables profiles for the launch anyway). The guard reads it before
@@ -292,14 +306,18 @@ func headerModeProfileErr(rp profiles.ResolvedProfile) error {
 // tuiSubscriptionGuard is the guard the TUI runs (tui.ProfileLayer.Guard),
 // inside a command, before it registers a client session or starts a model.
 // It closes over the session (ms), the session config and the loaded
-// profiles: a single-model launch's matching launch profile is judged too
+// profiles: a single-model launch's matching launch profile, or a slot
+// launch's own slot profile (tui.GuardLaunch.SlotProfile), is judged too
 // (tui.GuardLaunchOf names the agent); a slot launch applies no launch
 // profile. Its notes wait in the TUI's note queue for the terminal.
 func tuiSubscriptionGuard(a *app, ms *modelSession, scfg *config.Config) tui.SubscriptionGuard {
 	return func(ctx context.Context, rows []modelapi.Row) error {
 		gl := tui.GuardLaunchOf(ctx)
 		var keys []string
-		if !gl.Slot && len(rows) == 1 && gl.Agent != "" {
+		switch {
+		case gl.Slot && gl.SlotProfile != nil:
+			keys = slotProfileKeys(*gl.SlotProfile)
+		case !gl.Slot && len(rows) == 1 && gl.Agent != "":
 			keys = launchProfileKeysFor(gl.Agent, catalog.ToModel(rows[0]), scfg, a.profileState())
 		}
 		w := gl.Notes

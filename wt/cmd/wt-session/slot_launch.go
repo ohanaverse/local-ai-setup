@@ -279,9 +279,9 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 
 	// A slot on the user's Claude subscription: the pre-launch guard, before
 	// the client session and any start (#597). A slot launch applies no
-	// launch profile, so there are no profile keys to judge here; the slot
-	// profile's own env is the build's to refuse.
-	if gerr := subscriptionGuard(ctx, ms, slotRows, nil, a.hooks.login); gerr != nil {
+	// launch profile; the slot profile's own env and config_content keys are
+	// judged here, ahead of the build's own refusal.
+	if gerr := subscriptionGuard(ctx, ms, slotRows, slotProfileKeys(p.Check.Profile), a.hooks.login); gerr != nil {
 		return remoteExit(gerr)
 	}
 

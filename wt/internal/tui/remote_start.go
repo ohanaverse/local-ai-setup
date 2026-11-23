@@ -250,7 +250,7 @@ func (m model) beginRemoteStart(it *modelItem, allow bool, others othersPlan) (m
 	m.startRun++
 	id := m.startRun
 	req := modelapi.StartRequest{Model: it.model.ID, AllowReplace: allow, Others: wireOthers(others)}
-	ch, _ := runRemoteStart(ctx, m.client, m.hold, req, id, m.guardFor(it.model.ID, m.rslot != nil))
+	ch, _ := runRemoteStart(ctx, m.client, m.hold, req, id, m.guardFor(it.model, m.rslot != nil))
 	m.start = &startState{id: id, item: it, allow: allow, others: others, began: time.Now(), cancel: cancel, ch: ch}
 	m.phase = phaseStarting
 	m.status = ""
@@ -586,16 +586,24 @@ func (m model) launchRemote(it *modelItem) (model, tea.Cmd) {
 	return m, prepRemoteLaunchCmd(ctx, prepInput{
 		id: m.prepRun, client: m.client, hold: m.hold, agent: m.agent, model: mdl,
 		path: m.selectedPath, yolo: m.yolo, extraArgs: m.extraArgs,
-		build: m.hooks.buildLaunch(), guard: m.guardFor(mdl.ID, false),
+		build: m.hooks.buildLaunch(), guard: m.guardFor(mdl, false),
 	})
 }
 
-// guardFor is the pre-launch guard (#597) of a launch of id as a command's
-// step: m.guard over id's catalog row, nil when there is no guard or no row
-// (a nil guard is a no-op). slot marks the local start of a slot-profile
-// launch, whose prep already ran the guard over every slot.
-func (m model) guardFor(id string, slot bool) func(context.Context) error {
-	row, ok := m.wire[id]
+// guardFor is the pre-launch guard (#597) of a launch of mdl as a command's
+// step: m.guard over mdl's catalog row, nil when there is no guard (a nil
+// guard is a no-op). With no catalog row it is nil too, unless mdl uses the
+// subscription: then it fails closed, refusing the launch. slot marks the
+// local start of a slot-profile launch, whose prep already ran the guard
+// over every slot.
+func (m model) guardFor(mdl config.Model, slot bool) func(context.Context) error {
+	row, ok := m.wire[mdl.ID]
+	if !ok && mdl.Subscription {
+		id := mdl.ID
+		return func(context.Context) error {
+			return fmt.Errorf("%s uses your Claude subscription, but the picker has no catalog row for it to check: refresh the table with F (nothing was started or registered)", id)
+		}
+	}
 	if m.guard == nil || !ok {
 		return nil
 	}
