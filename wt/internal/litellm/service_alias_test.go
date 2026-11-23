@@ -625,3 +625,53 @@ func TestStopDeletesALeftoverAliasRowOfTheStoppedTarget(t *testing.T) {
 		})
 	}
 }
+
+// scratchRegistryRealHome points the registry at a scratch file (WT_REGISTRY)
+// while the wt-model home stays the default one under a temporary HOME: the
+// documented ad-hoc recipe that redirects the registry and config.yaml but
+// not the proxy pair.
+func scratchRegistryRealHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("WT_REGISTRY", filepath.Join(t.TempDir(), "registry.toml"))
+	if !scratchRegistryRealProxy() {
+		t.Fatal("the fixture is not a scratch registry beside the default wt-model home")
+	}
+}
+
+// TestScratchRegistrySyncDeletesNoAliasRow checks H2: a full sync run with a
+// redirected registry but the default wt-model home reaches the real proxy's
+// database with a registry that did not write its alias rows. It must
+// delete none of them (an orphan delete would wipe every real alias) and
+// say so once, while an alias the scratch registry has is still added.
+func TestScratchRegistrySyncDeletesNoAliasRow(t *testing.T) {
+	reg := groupCfg()
+	o, _, _, fake := aliasDBOpts(t, "model_list: []\n"+settledSettings, &reg)
+	if _, err := Sync(reg, localFor(reg, "ollama/gemma:9b"), o); err != nil {
+		t.Fatal(err)
+	}
+	before := fake.aliasIDs()
+	if len(before) != 2 {
+		t.Fatalf("alias rows %v, want both of alias/x", before)
+	}
+	scratchRegistryRealHome(t)
+	reg = cloudAliasCfg() // the scratch registry: no alias/x, an alias/c of its own
+	res, err := Sync(reg, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fake.aliasIDs()
+	for _, id := range before {
+		if !slices.Contains(got, id) {
+			t.Errorf("alias row %s was deleted; rows now %v", id, got)
+		}
+	}
+	if targets := fake.aliasTargets("alias/c"); !slices.Equal(targets, []string{"openrouter/x/y@1"}) {
+		t.Errorf("alias/c rows %v, want the scratch registry's alias added", targets)
+	}
+	if n := countWarnings(res, "no alias row was deleted"); n != 1 {
+		t.Errorf("warnings %v, want one saying no alias row was deleted", res.Warnings)
+	}
+}

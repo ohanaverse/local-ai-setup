@@ -252,12 +252,24 @@ func paramOrder(v any) int {
 // "routed", "rewritten" or "unrouted" (Sync reports them; ApplyChange drops
 // them). Nothing here restarts the proxy or touches config.yaml.
 func (d *dbRoutes) routeAliases(reg *config.Config, only map[string]bool, live func(string) bool, frozen func(string) bool, deleteOrphans bool) (warnings []string, outcomes []Outcome) {
-	w := planAliases(reg, d.current, d.admin.Key, only, live, frozen, d.fileNames, deleteOrphans)
+	// A scratch registry paired with the real proxy's database (the
+	// default wt-model home) did not write the rows there: add, never
+	// delete (no orphan, stale or replaced row).
+	noDeletes := scratchRegistryRealProxy()
+	w := planAliases(reg, d.current, d.admin.Key, only, live, frozen, d.fileNames, deleteOrphans && !noDeletes)
 	warnings = w.warnings
+	held := false
 	for _, p := range w.plans {
 		rp, ok := w.rows[p.ID]
 		if !ok {
 			continue
+		}
+		if noDeletes && (len(rp.Delete) > 0 || len(rp.Replace) > 0) {
+			held = true
+			rp.Delete, rp.Replace = nil, nil
+			if rp.empty() {
+				continue
+			}
 		}
 		ctx := d.context()
 		if err := ctx.Err(); err != nil {
@@ -284,7 +296,20 @@ func (d *dbRoutes) routeAliases(reg *config.Config, only map[string]bool, live f
 			outcomes = append(outcomes, Outcome{ID: p.ID, Action: "unrouted"})
 		}
 	}
+	if held || noDeletes && deleteOrphans && hasOrphans(d.current, reg) {
+		warnings = append(warnings, fmt.Sprintf("the registry is redirected (%s) but the proxy pair is the default wt-model home's (%s): no alias row was deleted; redirect HOME or XDG_CONFIG_HOME too for a scratch run",
+			config.RegistryPath(), config.ModelHome()))
+	}
 	return warnings, outcomes
+}
+
+// hasOrphans reports whether current holds an alias row (IsAliasDB) of an
+// alias reg does not have.
+func hasOrphans(current []DBModel, reg *config.Config) bool {
+	return slices.ContainsFunc(current, func(m DBModel) bool {
+		alias, _, ok := parseAliasID(m.ID)
+		return ok && IsAliasDB(m) && !slices.ContainsFunc(reg.Aliases, func(a config.Alias) bool { return a.ID == alias })
+	})
 }
 
 // leftAfter is the route names this write leaves, for the alias half's
