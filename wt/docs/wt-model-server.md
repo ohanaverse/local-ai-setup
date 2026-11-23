@@ -427,12 +427,25 @@ constant `modelapi.StepStillFinishing`); it is not an error.
 
 **Gateway.** An error the gateway itself writes is OpenAI-style, because
 agents parse it: `{"error": {"message": "...", "type": "...", "code":
-"..."}}`. There are three: 401 `unauthorized` (type `authentication_error`,
-the same message as the control API), 404 `not_found` (type
-`invalid_request_error`, message `path is not served by the gateway`) for a
-path the gateway does not serve, and 503 `proxy_unavailable` (type
-`api_error`, message `model proxy is restarting`, with `Retry-After: 5`) when
-LiteLLM cannot be reached. Whatever LiteLLM answers passes through untouched.
+"..."}}`. Whatever LiteLLM answers passes through untouched. The three 403s
+answer only a request that carries the `x-wt-model-token` header (the header
+mode, which forwards the client's own claude.ai login; a request without the
+header is served by the token swap exactly as before). Each message is fixed
+text and never carries a header value.
+
+| Status | Code | Type | Message | When |
+|---|---|---|---|---|
+| 401 | `unauthorized` | `authentication_error` | `missing or wrong bearer token` (the control API's wording) | The token is missing or wrong. In the header mode: the header is not exactly one value equal to the token (an empty or second value included, even beside a valid `Authorization: Bearer TOKEN`), or `Authorization` holds the token itself |
+| 403 | `subscription_off` | `permission_error` | `subscription passthrough is off on this model server` | The header is valid but the host has not turned the mode on (off by default); a wrong header is the 401, so the mode is not disclosed |
+| 403 | `subscription_insecure` | `permission_error` | `a Claude login is accepted only from a loopback peer or over TLS` | The peer is neither loopback (`127.0.0.0/8`, `::1`, `::ffff:127.x`) nor a TLS connection to wt-model itself, or a forwarding header refuses: any `X-Forwarded-Proto` value or `Forwarded` `proto=` element that is not `https`, or, from a loopback peer, any `X-Forwarded-For`, `X-Real-IP` or `Forwarded` `for=` element naming a non-loopback client while no proto indicator says `https`. Forwarding headers are only ever read to refuse |
+| 403 | `subscription_no_login` | `permission_error` | `the Authorization header is not a Claude login (Bearer sk-ant-oat...)` | In the header mode, `Authorization` is present and is not one `Bearer sk-ant-oat…` value (an API key, any other string, two values). An absent `Authorization` is forwarded absent |
+| 404 | `not_found` | `invalid_request_error` | `path is not served by the gateway` | A path the gateway does not serve (checked after the token, both modes) |
+| 503 | `proxy_unavailable` | `api_error` | `model proxy is restarting` | LiteLLM cannot be reached; with `Retry-After: 5` |
+
+In the header mode the upstream request loses `x-wt-model-token` and
+`x-api-key`, keeps the client's `Authorization` (the login) and
+`anthropic-beta` as sent, and gets `x-litellm-api-key` set to the host's
+LiteLLM key (a client's own value is replaced).
 
 ## Jobs and client sessions
 

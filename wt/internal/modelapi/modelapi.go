@@ -323,6 +323,15 @@ const (
 	// string.
 	CodeSpendNotConfigured = "spend_not_configured"
 	CodeSpendUnavailable   = "spend_unavailable"
+	// The gateway's header-mode refusals (x-wt-model-token, #597), each a
+	// 403 of type TypePermission: CodeSubscriptionOff, the host has not
+	// turned subscription passthrough on; CodeSubscriptionInsecure, the peer
+	// is neither loopback nor a TLS connection, or a forwarding header says
+	// the client is remote or came over plain http; CodeSubscriptionNoLogin,
+	// the Authorization header is not a claude.ai login.
+	CodeSubscriptionOff      = "subscription_off"
+	CodeSubscriptionInsecure = "subscription_insecure"
+	CodeSubscriptionNoLogin  = "subscription_no_login"
 )
 
 // Shared error wording and the OpenAI-style error types.
@@ -341,10 +350,17 @@ const (
 	// nothing names the LiteLLM database (or this server cannot read spend):
 	// fixed text, never a wrapped error, which can name host paths.
 	MsgSpendNotConfigured = "spend is not configured on the model server"
+	// MsgSubscriptionOff, MsgSubscriptionInsecure and MsgSubscriptionNoLogin
+	// word the gateway's header-mode 403s. Fixed text: none ever carries a
+	// header value.
+	MsgSubscriptionOff      = "subscription passthrough is off on this model server"
+	MsgSubscriptionInsecure = "a Claude login is accepted only from a loopback peer or over TLS"
+	MsgSubscriptionNoLogin  = "the Authorization header is not a Claude login (Bearer sk-ant-oat...)"
 
 	TypeAuthentication = "authentication_error"
 	TypeAPI            = "api_error"
 	TypeInvalidRequest = "invalid_request_error"
+	TypePermission     = "permission_error"
 )
 
 // ErrorObject is the object inside every non-2xx control response.
@@ -391,4 +407,5 @@ var ErrorCodes = []string{
 	CodeBadRequest, CodeUnauthorized, CodeNotFound, CodeMethodNotAllowed,
 	CodeUnknownJob, CodeUnknownSession, CodeProxyUnavailable,
 	CodeSpendNotConfigured, CodeSpendUnavailable,
+	CodeSubscriptionOff, CodeSubscriptionInsecure, CodeSubscriptionNoLogin,
 }

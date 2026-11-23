@@ -50,6 +50,10 @@ func TestFixtureMatchesTypes(t *testing.T) {
 		"error_method_not_allowed":        &APIError{},
 		"gateway_error_unauthorized":      &GatewayError{},
 		"gateway_error_proxy_unavailable": &GatewayError{},
+
+		"gateway_error_subscription_off":      &GatewayError{},
+		"gateway_error_subscription_insecure": &GatewayError{},
+		"gateway_error_subscription_no_login": &GatewayError{},
 	}
 	if len(doc) != len(members) {
 		t.Fatalf("fixture has %d members, want %d", len(doc), len(members))
@@ -106,6 +110,10 @@ func TestEveryProblemCodeIsDocumented(t *testing.T) {
 		"CodeProxyUnavailable":   CodeProxyUnavailable,
 		"CodeSpendNotConfigured": CodeSpendNotConfigured,
 		"CodeSpendUnavailable":   CodeSpendUnavailable,
+
+		"CodeSubscriptionOff":      CodeSubscriptionOff,
+		"CodeSubscriptionInsecure": CodeSubscriptionInsecure,
+		"CodeSubscriptionNoLogin":  CodeSubscriptionNoLogin,
 	}
 	// The table must list every Code* constant the package declares.
 	fset := token.NewFileSet()
@@ -180,6 +188,9 @@ func TestErrorSamplesUseConstants(t *testing.T) {
 		NotAllowed    APIError     `json:"error_method_not_allowed"`
 		GwUnauth      GatewayError `json:"gateway_error_unauthorized"`
 		GwUnavailable GatewayError `json:"gateway_error_proxy_unavailable"`
+		GwSubOff      GatewayError `json:"gateway_error_subscription_off"`
+		GwSubInsecure GatewayError `json:"gateway_error_subscription_insecure"`
+		GwSubNoLogin  GatewayError `json:"gateway_error_subscription_no_login"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
@@ -202,7 +213,22 @@ func TestErrorSamplesUseConstants(t *testing.T) {
 	if doc.GwUnavailable.Error != (GatewayErrorObject{Message: MsgProxyUnavailable, Type: TypeAPI, Code: CodeProxyUnavailable}) {
 		t.Errorf("gateway_error_proxy_unavailable = %+v", doc.GwUnavailable)
 	}
-	for _, c := range []string{CodeBadRequest, CodeUnauthorized, CodeNotFound, CodeMethodNotAllowed, CodeUnknownJob, CodeUnknownSession, CodeProxyUnavailable} {
+	for name, got := range map[string]GatewayError{
+		"gateway_error_subscription_off":      doc.GwSubOff,
+		"gateway_error_subscription_insecure": doc.GwSubInsecure,
+		"gateway_error_subscription_no_login": doc.GwSubNoLogin,
+	} {
+		want := map[string]GatewayErrorObject{
+			"gateway_error_subscription_off":      {Message: MsgSubscriptionOff, Type: TypePermission, Code: CodeSubscriptionOff},
+			"gateway_error_subscription_insecure": {Message: MsgSubscriptionInsecure, Type: TypePermission, Code: CodeSubscriptionInsecure},
+			"gateway_error_subscription_no_login": {Message: MsgSubscriptionNoLogin, Type: TypePermission, Code: CodeSubscriptionNoLogin},
+		}[name]
+		if got.Error != want {
+			t.Errorf("%s = %+v, want %+v", name, got.Error, want)
+		}
+	}
+	for _, c := range []string{CodeBadRequest, CodeUnauthorized, CodeNotFound, CodeMethodNotAllowed, CodeUnknownJob, CodeUnknownSession, CodeProxyUnavailable,
+		CodeSubscriptionOff, CodeSubscriptionInsecure, CodeSubscriptionNoLogin} {
 		if !slices.Contains(ErrorCodes, c) {
 			t.Errorf("%q missing from ErrorCodes", c)
 		}
