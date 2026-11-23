@@ -262,6 +262,20 @@ const CustomHeadersVar = "ANTHROPIC_CUSTOM_HEADERS"
 // which session packages cannot import; a test holds the two equal.
 const WtHeaderName = "x-wt-model-token"
 
+// CustomHeaderLines splits an ANTHROPIC_CUSTOM_HEADERS value into its lines:
+// \r\n, a lone \r and \n all end a line; each line is trimmed and blank
+// lines are dropped. Every reader of the variable splits through it, so no
+// line ending can hide a header from the merge or the profile rule.
+func CustomHeaderLines(v string) []string {
+	var out []string
+	for _, line := range strings.FieldsFunc(v, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		if line = strings.TrimSpace(line); line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 // CustomHeaderName is the header name of one line of an
 // ANTHROPIC_CUSTOM_HEADERS value, lower case and trimmed ("" for a line with
 // no colon). Every reader of the variable asks it, so the launch's merge and
@@ -280,7 +294,7 @@ func CustomHeaderName(line string) string {
 // credential beside the gateway's or the user's login (#597). The value is
 // never echoed.
 func customHeadersErr(where, value string) error {
-	for _, line := range strings.Split(value, "\n") {
+	for _, line := range CustomHeaderLines(value) {
 		if name := CustomHeaderName(line); name == WtHeaderName || name == "authorization" {
 			return fmt.Errorf("%s sets %s with an %s line, which a slot profile may not send: remove that line", where, CustomHeadersVar, name)
 		}

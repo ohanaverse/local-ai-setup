@@ -108,11 +108,19 @@ func BuildLaunchCmdGateway(agent string, m config.Model, worktreePath string, yo
 // BuildSlotLaunchCmdGateway builds a slot profile's launch against gw, the
 // only proxy a slot profile uses.
 func BuildSlotLaunchCmdGateway(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw Gateway, extraArgs []string) (*exec.Cmd, error) {
+	cmd, _, err := BuildSlotLaunchCmdGatewayInfo(sl, worktreePath, yolo, gw, extraArgs)
+	return cmd, err
+}
+
+// BuildSlotLaunchCmdGatewayInfo is BuildSlotLaunchCmdGateway that also says
+// what the build decided (LaunchInfo.HeaderMode), for a caller that must know
+// whether the launch sends the user's Claude login.
+func BuildSlotLaunchCmdGatewayInfo(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw Gateway, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
 	if err := CheckSlotPassthrough(sl.Agent, extraArgs); err != nil {
-		return nil, err
+		return nil, LaunchInfo{}, err
 	}
 	if gw.origin() == "" || gw.Token == "" {
-		return nil, gatewayUnconfigured("a slot profile needs the model-server gateway, but its origin or token is empty")
+		return nil, LaunchInfo{}, gatewayUnconfigured("a slot profile needs the model-server gateway, but its origin or token is empty")
 	}
 	return slotLaunchCmd(sl, worktreePath, yolo, gw.origin(), gw.Token, extraArgs)
 }

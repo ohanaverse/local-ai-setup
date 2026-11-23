@@ -512,7 +512,10 @@ func TestSlotProfileHeaderValueRefused(t *testing.T) {
 		{"a wt line", "x-wt-model-token: " + secret, "x-wt-model-token"},
 		{"a wt line in another case", "x-litellm-tags: a\r\n  X-WT-Model-Token : " + secret, "x-wt-model-token"},
 		{"an authorization line", "x-litellm-tags: a\nAuthorization: Bearer " + secret, "authorization"},
+		{"a lone-cr separated wt line", "x-litellm-tags: a\rx-wt-model-token: " + secret, "x-wt-model-token"},
+		{"a lone-cr separated authorization line", "x-litellm-tags: a\rauthorization: " + secret, "authorization"},
 		{"other headers only", "x-litellm-tags: a\nx-other: b", ""},
+		{"near-miss names", "x-wt-model-tokenx: v\nx-wt-model-token-extra: v\nx-wt-model-token", ""},
 	} {
 		for _, where := range []string{"env", "config_content.env"} {
 			t.Run(tc.name+" in "+where, func(t *testing.T) {

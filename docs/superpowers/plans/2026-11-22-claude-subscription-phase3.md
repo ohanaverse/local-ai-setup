@@ -142,7 +142,7 @@ Each decision is binding for this plan. "If wrong" is what reversing it later co
    - `ANTHROPIC_BASE_URL=<gateway>`
    - `ANTHROPIC_API_KEY=` (empty; verified to keep the login)
    - `ANTHROPIC_CUSTOM_HEADERS=<merged>`
-   - `ClearEnv` adds `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN`, so the credential used is the stored login that was checked.
+   - `ClearEnv` adds `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN`, so the credential used is the stored login that was checked. It also adds `ANTHROPIC_API_KEY` (leaving wt's empty entry the only one), and every inherited `CLAUDE_CODE_USE_*` is cleared by prefix (`ClearEnvPrefixes`), since Bedrock, Vertex or Foundry would take the session, and the token header with it, away from the gateway (review fix round 1).
 
    The merged value keeps the inherited `ANTHROPIC_CUSTOM_HEADERS` lines minus any `x-wt-model-token` or `authorization` line (case-insensitive), then appends `x-wt-model-token: <token>`. Merging happens where `cmd.Env` is built (`slotLaunchCmd`, `command`), because the builders are pure.
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -523,36 +524,46 @@ claude-sonnet-4-6 = 5
 // anywhere in the output.
 func TestProfileShowMasksTheHeaderToken(t *testing.T) {
 	const token = "wt-SENTINEL-tok"
-	f := newFakeModelServer(t,
-		modelapi.Row{ID: "claude-opus-5-5", GatewayID: "claude-opus-5-5", ProviderID: config.SubscriptionProvider, ModelName: "claude-opus-5-5",
+	rows := []modelapi.Row{
+		{ID: "claude-opus-5-5", GatewayID: "claude-opus-5-5", ProviderID: config.SubscriptionProvider, ModelName: "claude-opus-5-5",
 			Family: "claude", Location: "cloud", Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning,
 			Action: modelapi.ActionLaunch, Order: 1, Context: 1000000},
-		modelapi.Row{ID: "openrouter/b", GatewayID: "openrouter/b", ProviderID: "openrouter", ModelName: "b", Family: "b", Location: "cloud",
-			Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 2})
+		{ID: "openrouter/b", GatewayID: "openrouter/b", ProviderID: "openrouter", ModelName: "b", Family: "b", Location: "cloud",
+			Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 2},
+	}
+	check := slotFixtureCheck(0, "sub", "opus", map[string]string{"opus": "claude-opus-5-5", "haiku": "openrouter/b"})
+	f := newFakeModelServer(t, rows...)
 	f.Token = token
 	a := pointAtFake(t, f, "")
 	a.profiles = profiles.Store{Enabled: true}
-	a.slotChecks = []profiles.SlotCheck{
-		slotFixtureCheck(0, "sub", "opus", map[string]string{"opus": "claude-opus-5-5", "haiku": "openrouter/b"}),
-	}
+	a.slotChecks = []profiles.SlotCheck{check}
 	out, err := runProfileCmd(t, a, "show", "-A", "claude", "-M", "profile/sub")
 	if err != nil {
 		t.Fatalf("err = %v; stdout =\n%s", err, out)
 	}
-	for _, want := range []string{
-		"header: x-wt-model-token: " + config.MaskKey(token) + "\n",
-		"unset: ANTHROPIC_AUTH_TOKEN\n",
-		"unset: CLAUDE_CODE_OAUTH_TOKEN\n",
-		"env: ANTHROPIC_API_KEY=\n",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("stdout lacks %q; stdout =\n%s", want, out)
+	// The writer itself masks: handed the raw token, it still never prints
+	// it (a caller that forgot to mask would otherwise leak it).
+	var direct bytes.Buffer
+	row := catalog.ResolveSlotProfileWire(catalog.WireByID(rows), check)
+	if err := writeSlotProfileShow(&direct, "claude", "profile/sub", row, "http://127.0.0.1:1", token); err != nil {
+		t.Fatalf("writeSlotProfileShow: %v", err)
+	}
+	for name, out := range map[string]string{"command": out, "raw-token writer": direct.String()} {
+		for _, want := range []string{
+			"header: x-wt-model-token: " + config.MaskKey(token) + "\n",
+			"unset: ANTHROPIC_AUTH_TOKEN\n",
+			"unset: CLAUDE_CODE_OAUTH_TOKEN\n",
+			"env: ANTHROPIC_API_KEY=\n",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: stdout lacks %q; stdout =\n%s", name, want, out)
+			}
 		}
-	}
-	if strings.Contains(out, "env: ANTHROPIC_AUTH_TOKEN") {
-		t.Errorf("a header-mode preview sets ANTHROPIC_AUTH_TOKEN:\n%s", out)
-	}
-	if strings.Contains(out, token) {
-		t.Errorf("the token is printed:\n%s", out)
+		if strings.Contains(out, "env: ANTHROPIC_AUTH_TOKEN") {
+			t.Errorf("%s: a header-mode preview sets ANTHROPIC_AUTH_TOKEN", name)
+		}
+		if strings.Contains(out, token) {
+			t.Errorf("%s: the token is printed", name)
+		}
 	}
 }

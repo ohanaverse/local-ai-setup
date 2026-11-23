@@ -74,8 +74,10 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	if r.Subscription {
 		// Header mode (#597): no ANTHROPIC_AUTH_TOKEN, so Claude Code keeps
 		// its own claude.ai login; an empty ANTHROPIC_API_KEY so a stray key
-		// never beats it; an inherited auth or OAuth token is cleared so the
-		// login used is the stored one that was checked. The gateway token
+		// never beats it; an inherited key, auth or OAuth token is cleared so
+		// the login used is the stored one that was checked, and every
+		// CLAUDE_CODE_USE_* so the session cannot go to Bedrock or Vertex
+		// (with the token header) instead of the gateway. The gateway token
 		// goes back as HeaderToken, which the env assembler sends as the
 		// x-wt-model-token line of ANTHROPIC_CUSTOM_HEADERS.
 		lc.Env = append(lc.Env,
@@ -83,6 +85,7 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 			"ANTHROPIC_BASE_URL="+r.BaseOrigin,
 		)
 		lc.ClearEnv = append(lc.ClearEnv, claudeHeaderModeClear...)
+		lc.ClearEnvPrefixes = claudeHeaderModeClearPrefixes()
 		lc.HeaderToken = r.APIKey
 	} else {
 		// The Anthropic client needs a non-empty auth token even when the

@@ -161,24 +161,24 @@ func usesSubscription(sl profiles.SlotLaunch) bool {
 // the driver's slot build, binary lookup, filtered environment (with
 // ANTHROPIC_CUSTOM_HEADERS settled by launchEnv), directory and passthrough
 // args.
-func slotLaunchCmd(sl profiles.SlotLaunch, worktreePath string, yolo bool, origin, key string, extraArgs []string) (*exec.Cmd, error) {
+func slotLaunchCmd(sl profiles.SlotLaunch, worktreePath string, yolo bool, origin, key string, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
 	sc, err := BuildSlotCommand(sl, yolo, origin, key)
 	if err != nil {
-		return nil, err
+		return nil, LaunchInfo{}, err
 	}
 	bin, err := exec.LookPath(sc.Bin)
 	if err != nil {
-		return nil, fmt.Errorf("agent %s not installed", sc.Bin)
+		return nil, LaunchInfo{}, fmt.Errorf("agent %s not installed", sc.Bin)
 	}
 	env, err := launchEnv(os.Environ(), sc.ClearEnv, sc.ClearEnvPrefixes, sc.Env, sc.HeaderToken)
 	if err != nil {
-		return nil, err
+		return nil, LaunchInfo{}, err
 	}
 	cmd := exec.Command(bin, sc.Args...)
 	cmd.Env = env
 	SetDir(cmd, worktreePath)
 	cmd.Args = append(cmd.Args, extraArgs...)
-	return cmd, nil
+	return cmd, LaunchInfo{HeaderMode: sc.HeaderToken != ""}, nil
 }
 
 // filterEnvPrefixes returns env without the entries whose key starts with

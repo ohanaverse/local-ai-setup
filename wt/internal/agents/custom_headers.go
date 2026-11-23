@@ -39,17 +39,9 @@ func checkHeaderToken(token string) error {
 	return nil
 }
 
-// headerLines splits an ANTHROPIC_CUSTOM_HEADERS value into its lines,
-// trimmed, \r\n read as \n, blank lines dropped.
-func headerLines(v string) []string {
-	var out []string
-	for _, line := range strings.Split(v, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			out = append(out, line)
-		}
-	}
-	return out
-}
+// headerLines splits an ANTHROPIC_CUSTOM_HEADERS value into its trimmed,
+// non-blank lines (\r\n, a lone \r and \n all end one).
+func headerLines(v string) []string { return profiles.CustomHeaderLines(v) }
 
 // keepHeaders is v's lines without those whose header name drop reports,
 // joined with \n.

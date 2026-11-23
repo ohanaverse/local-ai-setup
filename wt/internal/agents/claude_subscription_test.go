@@ -278,6 +278,10 @@ func TestMergeCustomHeaders(t *testing.T) {
 		{"an authorization line", "Authorization: x", "x-wt-model-token: T", "Authorization: x"},
 		{"all three", "x-litellm-tags: a\nX-WT-Model-Token: old\nAuthorization: x", "x-litellm-tags: a\nx-wt-model-token: T", "x-litellm-tags: a\nAuthorization: x"},
 		{"crlf line ends", "x-litellm-tags: a\r\n  x-wt-model-token : old\r\nauthorization: x\r\n", "x-litellm-tags: a\nx-wt-model-token: T", "x-litellm-tags: a\nauthorization: x"},
+		{"lone cr line ends", "a: 1\rx-wt-model-token: old\rauthorization: x", "a: 1\nx-wt-model-token: T", "a: 1\nauthorization: x"},
+		{"near-miss names are not the wt header", "x-wt-model-tokenx: v\nx-wt-model-token-extra: v\nx-wt-model-token",
+			"x-wt-model-tokenx: v\nx-wt-model-token-extra: v\nx-wt-model-token\nx-wt-model-token: T",
+			"x-wt-model-tokenx: v\nx-wt-model-token-extra: v\nx-wt-model-token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := mergeCustomHeaders(tc.in, "T"); got != tc.merged {
@@ -539,5 +543,135 @@ func TestHeaderTokenRejectsControlChars(t *testing.T) {
 	_, _, err := BuildLaunchCmdGateway("claude", subModel("claude-opus-5-5"), t.TempDir(), false, Gateway{Origin: testGWOrigin, Token: "wt-SENTINEL\ntok"}, nil, nil)
 	if !errors.Is(err, ErrBadHeaderToken) || strings.Contains(err.Error(), "SENTINEL") {
 		t.Errorf("single-model launch err = %v, want ErrBadHeaderToken without the token", err)
+	}
+}
+
+// TestHeaderModeClearsProviderSwitchesAndKey pins the rest of decision 7's
+// header-mode clear list: an inherited CLAUDE_CODE_USE_BEDROCK or
+// CLAUDE_CODE_USE_VERTEX (any CLAUDE_CODE_USE_*) would send the session to
+// AWS or GCP instead of the gateway, carrying ANTHROPIC_CUSTOM_HEADERS (the
+// wt token) with it, so it never reaches a header-mode child; an inherited
+// ANTHROPIC_API_KEY is removed, leaving only wt's empty entry. A token-mode
+// launch leaves the switches alone, as before.
+func TestHeaderModeClearsProviderSwitchesAndKey(t *testing.T) {
+	fakeBin(t, "claude")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+	t.Setenv("CLAUDE_CODE_USE_VERTEX", "1")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api-FAKE")
+	in := subSlotInput()
+	gw := Gateway{Origin: in.ProxyOrigin, Token: subTestToken}
+	slot, err := BuildSlotLaunchCmdGateway(in.SlotLaunch, t.TempDir(), false, gw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	single, _, err := BuildLaunchCmdGateway("claude", subModel("claude-opus-5-5"), t.TempDir(), false, gw, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, cmd := range map[string]*exec.Cmd{"slot": slot, "single": single} {
+		for _, k := range []string{"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"} {
+			if _, ok := lastEnv(cmd.Env, k); ok {
+				t.Errorf("%s: %s reached the header-mode child", name, k)
+			}
+		}
+		if n := envCount(cmd.Env, "ANTHROPIC_API_KEY"); n != 1 {
+			t.Errorf("%s: ANTHROPIC_API_KEY appears %d times, want wt's one empty entry", name, n)
+		}
+		if v, _ := lastEnv(cmd.Env, "ANTHROPIC_API_KEY"); v != "" {
+			t.Errorf("%s: ANTHROPIC_API_KEY is not empty", name)
+		}
+	}
+	tokSlot, err := BuildSlotLaunchCmdGateway(slotTestLaunch(), t.TempDir(), false, Gateway{Origin: "http://localhost:4000", Token: slotTestKey}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokSingle, _, err := BuildLaunchCmdGateway("claude", gwCloudModel(), t.TempDir(), false, testGW(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, cmd := range map[string]*exec.Cmd{"token slot": tokSlot, "token single": tokSingle} {
+		if v, _ := lastEnv(cmd.Env, "CLAUDE_CODE_USE_BEDROCK"); v != "1" {
+			t.Errorf("%s: token mode dropped CLAUDE_CODE_USE_BEDROCK", name)
+		}
+	}
+}
+
+// TestLoneCRHeaderLinesAreCleaned pins that a value whose lines end in a lone
+// \r is read line by line too: header mode drops the stale wt line, and
+// every other launch strips it. Split on \n alone, the whole value would be
+// one line naming "a" and the stale token would survive.
+func TestLoneCRHeaderLinesAreCleaned(t *testing.T) {
+	fakeBin(t, "claude")
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "a: 1\rx-wt-model-token: old")
+	sub, _, err := BuildLaunchCmdGateway("claude", subModel("claude-opus-5-5"), t.TempDir(), false, testGW(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := lastEnv(sub.Env, "ANTHROPIC_CUSTOM_HEADERS"); v != "a: 1\nx-wt-model-token: "+testGWToken {
+		t.Errorf("header mode ANTHROPIC_CUSTOM_HEADERS = %q", strings.ReplaceAll(v, testGWToken, "<token>"))
+	}
+	tok, _, err := BuildLaunchCmdGateway("claude", gwCloudModel(), t.TempDir(), false, testGW(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := lastEnv(tok.Env, "ANTHROPIC_CUSTOM_HEADERS"); v != "a: 1" {
+		t.Errorf("token mode ANTHROPIC_CUSTOM_HEADERS = %q, want %q", v, "a: 1")
+	}
+}
+
+// TestBuildSlotsHeaderModeRefusesGatewayKeys pins the build's backstop for
+// the keys wt itself owns: in header mode a profile env or
+// config_content.env that names ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY or
+// ANTHROPIC_BASE_URL is refused, naming the key and never its value, even
+// when static validation (which reserves them) was bypassed. Any of them in
+// the --settings env would displace the login or redirect the session.
+func TestBuildSlotsHeaderModeRefusesGatewayKeys(t *testing.T) {
+	const val = "VALUE-SENTINEL"
+	for _, key := range []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"} {
+		for _, where := range []string{"env", "config_content.env"} {
+			t.Run(key+" in "+where, func(t *testing.T) {
+				in := subSlotInput()
+				if where == "env" {
+					in.Env = map[string]string{key: val}
+				} else {
+					in.ConfigContent = map[string]any{"env": map[string]any{key: val}}
+				}
+				_, err := claudeDriver{}.BuildSlots(in)
+				if err == nil || !strings.Contains(err.Error(), where+" sets "+key) {
+					t.Fatalf("err = %v, want a refusal naming %s in %s", err, key, where)
+				}
+				if strings.Contains(err.Error(), val) || strings.Contains(err.Error(), subTestToken) {
+					t.Errorf("the refusal echoes a value: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// TestLaunchInfoReportsHeaderMode pins LaunchInfo.HeaderMode, which the
+// pre-launch guard (Task 6) reads: true for a single-model launch and a slot
+// launch built in header mode, false for token mode and native launches.
+func TestLaunchInfoReportsHeaderMode(t *testing.T) {
+	fakeBin(t, "claude")
+	_, info, err := BuildLaunchCmdGateway("claude", subModel("claude-opus-5-5"), t.TempDir(), false, testGW(), nil, nil)
+	if err != nil || !info.HeaderMode {
+		t.Errorf("subscription single-model: HeaderMode = %v, err = %v", info.HeaderMode, err)
+	}
+	_, info, err = BuildLaunchCmdGateway("claude", gwCloudModel(), t.TempDir(), false, testGW(), nil, nil)
+	if err != nil || info.HeaderMode {
+		t.Errorf("token single-model: HeaderMode = %v, err = %v", info.HeaderMode, err)
+	}
+	_, info, err = BuildLaunchCmdGateway("claude", NativeModel(), t.TempDir(), false, Gateway{}, nil, nil)
+	if err != nil || info.HeaderMode {
+		t.Errorf("native: HeaderMode = %v, err = %v", info.HeaderMode, err)
+	}
+	in := subSlotInput()
+	_, info, err = BuildSlotLaunchCmdGatewayInfo(in.SlotLaunch, t.TempDir(), false, Gateway{Origin: in.ProxyOrigin, Token: subTestToken}, nil)
+	if err != nil || !info.HeaderMode {
+		t.Errorf("subscription slot: HeaderMode = %v, err = %v", info.HeaderMode, err)
+	}
+	_, info, err = BuildSlotLaunchCmdGatewayInfo(slotTestLaunch(), t.TempDir(), false, Gateway{Origin: "http://localhost:4000", Token: slotTestKey}, nil)
+	if err != nil || info.HeaderMode {
+		t.Errorf("token slot: HeaderMode = %v, err = %v", info.HeaderMode, err)
 	}
 }

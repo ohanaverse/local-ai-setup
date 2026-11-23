@@ -17,7 +17,10 @@ type LaunchCmd struct {
 	Args     []string
 	Env      []string // extra env vars, merged over os.Environ() by the caller
 	ClearEnv []string // env var names stripped from the inherited environment
-	Warn     string   // printed to stderr by Command when non-empty
+	// ClearEnvPrefixes strips every inherited variable whose name starts
+	// with one of these (claude's header mode: CLAUDE_CODE_USE_*).
+	ClearEnvPrefixes []string
+	Warn             string // printed to stderr by Command when non-empty
 	// HeaderToken is set only in claude's header mode (a model on the
 	// owner's Claude subscription, #597): the gateway token, which command
 	// sends as the x-wt-model-token line of ANTHROPIC_CUSTOM_HEADERS. It is
@@ -275,6 +278,12 @@ type LaunchInfo struct {
 	// reason (already printed to stderr by Command).
 	ModelFallback bool
 	Warn          string
+	// HeaderMode reports that the command was built in claude's header mode
+	// (#597): the model, a slot model or an alias target uses the owner's
+	// Claude subscription, so the agent keeps its own login and the gateway
+	// token travels only in ANTHROPIC_CUSTOM_HEADERS. The pre-launch guard
+	// reads it.
+	HeaderMode bool
 }
 
 // launchWithRoute is the part of a launch every route source shares: hand
@@ -293,7 +302,7 @@ func launchWithRoute(d Driver, m config.Model, worktreePath string, yolo bool, r
 	if err != nil {
 		return nil, info, err
 	}
-	info = LaunchInfo{ModelFallback: lc.ModelFallback, Warn: lc.Warn}
+	info = LaunchInfo{ModelFallback: lc.ModelFallback, Warn: lc.Warn, HeaderMode: lc.HeaderToken != ""}
 	// Append passthrough args for regular agents.
 	if len(extraArgs) > 0 {
 		cmd.Args = append(cmd.Args, extraArgs...)
@@ -315,7 +324,7 @@ func command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exe
 	if lc.Warn != "" {
 		fmt.Fprintln(os.Stderr, lc.Warn)
 	}
-	env, err := launchEnv(os.Environ(), lc.ClearEnv, nil, lc.Env, lc.HeaderToken)
+	env, err := launchEnv(os.Environ(), lc.ClearEnv, lc.ClearEnvPrefixes, lc.Env, lc.HeaderToken)
 	if err != nil {
 		return nil, lc, err
 	}

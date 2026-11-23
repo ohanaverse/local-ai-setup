@@ -190,19 +190,29 @@ func (claudeDriver) DefaultAlias(name string) (profiles.SlotAlias, bool) {
 func (claudeDriver) RefusedSlotPassthrough() []string { return []string{"--settings", "--model"} }
 
 // claudeHeaderModeClear are the inherited variables a header-mode launch
-// removes (#597): either would replace the stored claude.ai login that was
-// checked with another credential.
-var claudeHeaderModeClear = []string{"ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+// removes (#597): each would replace the stored claude.ai login that was
+// checked with another credential. wt sets ANTHROPIC_API_KEY empty itself;
+// clearing the inherited one leaves that entry the only one.
+var claudeHeaderModeClear = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+
+// claudeHeaderModeClearPrefixes are the inherited variable families a
+// header-mode launch removes: CLAUDE_CODE_USE_* (Bedrock, Vertex, Foundry and
+// any later one) would send the session, and the token header with it, to a
+// cloud provider instead of the gateway.
+func claudeHeaderModeClearPrefixes() []string { return []string{"CLAUDE_CODE_USE_"} }
 
 // claudeHeaderModeRefused are the keys a header-mode slot profile may not
-// set in env or config_content.env, with why. Both land in the --settings
+// set in env or config_content.env, with why. All land in the --settings
 // env, which outranks the process env: ANTHROPIC_CUSTOM_HEADERS would
-// replace the merged header (an opaque 401), the two tokens would displace
-// the checked login. ANTHROPIC_AUTH_TOKEN is reserved anyway (static
-// validation refuses it); it is asked again for a caller that reached the
-// build another way.
+// replace the merged header (an opaque 401), the tokens and the key would
+// displace the checked login, the base url would redirect the session.
+// ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY are reserved
+// anyway (static validation refuses them); they are asked again for a caller
+// that reached the build another way.
 var claudeHeaderModeRefused = []struct{ key, why string }{
 	{profiles.CustomHeadersVar, "it would replace the header wt sends the model-server token in"},
+	{"ANTHROPIC_BASE_URL", "wt sets it to the model server's gateway"},
+	{"ANTHROPIC_API_KEY", "it would displace your Claude login"},
 	{"ANTHROPIC_AUTH_TOKEN", "it would displace your Claude login"},
 	{"CLAUDE_CODE_OAUTH_TOKEN", "it would displace your Claude login"},
 }
@@ -275,6 +285,7 @@ func (claudeDriver) BuildSlots(in profiles.SlotBuildInput) (profiles.SlotCommand
 	if in.Subscription {
 		sc.Env = []string{"ANTHROPIC_BASE_URL=" + in.ProxyOrigin, "ANTHROPIC_API_KEY="}
 		sc.ClearEnv = append(sc.ClearEnv, claudeHeaderModeClear...)
+		sc.ClearEnvPrefixes = append(sc.ClearEnvPrefixes, claudeHeaderModeClearPrefixes()...)
 		sc.HeaderToken = in.ProxyKey
 	}
 	return sc, nil
