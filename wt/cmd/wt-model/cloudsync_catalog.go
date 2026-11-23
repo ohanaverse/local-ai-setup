@@ -91,7 +91,7 @@ func (h *host) planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *c
 		}
 		return nil
 	}
-	entries, providers := cloudsync.Entries(doc.Models()), cloudsync.Providers(doc.Providers())
+	entries, providers := cloudsync.EntriesOf(doc), cloudsync.Providers(doc.Providers())
 	// A registry that does not use ollama has no catalog to mirror, however
 	// the flow was asked for (--only ollama and the ollama flow's own flags
 	// included): it is skipped, never an error. A new entry would be a row

@@ -1346,3 +1346,24 @@ func TestAHeldQuitIsShownOnTheModelsTab(t *testing.T) {
 		t.Errorf("the refusal that called the quit off: quitPending = %v\n%s\nwant it shown on the Models tab", m.quitPending, m.View())
 	}
 }
+
+// TestModelsTabRefusesToRemoveAnAliasTarget pins decision 11 in the Models
+// tab: d on a model an alias targets opens no prompt and says, as the
+// registry writer would, that the alias targets it, naming the alias and the
+// commands that change it; the file is untouched and no route sync is owed.
+// A removal would leave the alias naming nothing.
+func TestModelsTabRefusesToRemoveAnAliasTarget(t *testing.T) {
+	registry := tabRegistry + "\n[[aliases]]\nid = \"alias/main\"\ntargets = [{ model = \"omlx/Gone-4bit\" }]\n"
+	tm := newTabMachine(t, registry)
+	m := keys(t, selectModel(t, modelsEditor(t, tm, 80, 24), "omlx/Gone-4bit"), "d")
+	if m.models.phase != modelsList {
+		t.Fatalf("d on an alias target opened the remove prompt:\n%s", m.View())
+	}
+	want := `not removed: model is an alias target: model "omlx/Gone-4bit" is a target of alias/main; change or remove the alias first (wt-model alias set|rm)`
+	if m.models.status != want {
+		t.Errorf("status = %q, want %q", m.models.status, want)
+	}
+	if tm.text(t) != registry || m.registryChanged {
+		t.Error("the registry changed or a route sync is owed")
+	}
+}

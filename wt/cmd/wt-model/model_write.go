@@ -362,6 +362,13 @@ func (h *host) runModelRm(out, errOut io.Writer, cfg *config.Config, ids []strin
 			if err := cfg.CheckModelRow(id); err != nil {
 				return unknownModelHint(err)
 			}
+			// A model an alias targets stays (decision 11, #596): refused
+			// before the question, in the words of the write's own refusal
+			// (RegistryDoc.RemoveModel), which still guards a config that
+			// did not load or went stale.
+			if users := cfg.AliasesTargeting(id); len(users) > 0 {
+				return config.ModelInUseError(id, users)
+			}
 		}
 		local := slices.ContainsFunc(cfg.Models, func(m config.Model) bool {
 			loc, err := cfg.ResolveLocation(m)

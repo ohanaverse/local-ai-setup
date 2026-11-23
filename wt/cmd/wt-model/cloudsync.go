@@ -318,7 +318,7 @@ type openRouterRun struct {
 // line, no fetch is made, res.failed stays false), a fetch that failed, or a
 // plan the write would refuse (both reported, and res.failed set).
 func (h *host) planOpenRouterFlow(ctx context.Context, out, errOut io.Writer, doc *config.RegistryDoc, res *cloudSyncOutcome) *openRouterRun {
-	entries := cloudsync.Entries(doc.Models())
+	entries := cloudsync.EntriesOf(doc)
 	if !slices.ContainsFunc(entries, cloudsync.OpenRouterPriced) {
 		fmt.Fprintln(out, "openrouter: no OpenRouter-priced model in the registry; nothing to refresh")
 		return nil
@@ -615,7 +615,7 @@ func writeCloudSync(openrouter *openRouterRun, ollama *ollamaRun, now time.Time)
 	_, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
 		// Afresh on every run: apply may run more than once.
 		applied = cloudSyncApplied{}
-		entries, providers := cloudsync.Entries(d.Models()), cloudsync.Providers(d.Providers())
+		entries, providers := cloudsync.EntriesOf(d), cloudsync.Providers(d.Providers())
 		var freshOpenRouter *cloudsync.PricePlan
 		if openrouter != nil {
 			freshOpenRouter = cloudsync.PlanPrices(entries, openrouter.api)

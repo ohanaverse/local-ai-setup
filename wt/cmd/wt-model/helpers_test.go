@@ -17,7 +17,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeleditor"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
 // The helpers below are copied from cmd/wt-session's tests (helpers_test.go,
@@ -31,7 +33,8 @@ import (
 // registry write's route sync reports that it was not stubbed, no terminal
 // opens and a removal's question fails unanswered, cloud-sync fetches no
 // page, runs no ollama and asks nothing, a stop probes nothing, stops
-// nothing and is declined when it asks, and stdout is no terminal (width 0,
+// nothing and is declined when it asks, the alias commands read no tiers file
+// and no model server, and stdout is no terminal (width 0,
 // so a table does not depend on where `go test` was started). A test replaces the fields it exercises; each test owns its
 // host, so nothing is shared between parallel tests.
 func testHost() *host {
@@ -49,6 +52,11 @@ func testHost() *host {
 	}
 	h.openTTY = func() (*os.File, error) { return nil, errors.New("openTTY not stubbed in this test") }
 	h.confirmRemove = func(string) (bool, error) { return false, errors.New("confirmRemove not stubbed in this test") }
+	// The alias commands' seams: no tiers file and no model server is read.
+	h.tiersIndex = func() tiers.Index { return tiers.Index{} }
+	h.clientSessions = func(context.Context, io.Writer, servestate.Store) func() map[string]int {
+		return func() map[string]int { return nil }
+	}
 	h.stdinTTY = func() bool { return false }
 	h.stdoutWidth = func() int { return 0 }
 	h.modeleditorRun = func(themes.Theme, *config.Config, error, modeleditor.Options) (modeleditor.Result, error) {

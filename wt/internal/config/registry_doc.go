@@ -366,8 +366,7 @@ func (d *RegistryDoc) RemoveModel(id string) (*tomlw.Table, error) {
 	// never looks at a removed row, so without this the alias would be left
 	// naming nothing.
 	if users := d.aliasesTargeting(id); len(users) > 0 {
-		return nil, fmt.Errorf("%w: model %q is a target of %s; change or remove the alias first",
-			ErrModelInUse, id, strings.Join(users, ", "))
+		return nil, ModelInUseError(id, users)
 	}
 	row := rows[i]
 	d.setRows("models", slices.Delete(slices.Clone(rows), i, i+1))
@@ -668,6 +667,25 @@ func (d *RegistryDoc) RemoveAlias(id string) (*tomlw.Table, error) {
 	d.touchedAliases = slices.DeleteFunc(d.touchedAliases, func(r *tomlw.Table) bool { return r == row })
 	return row, nil
 }
+
+// ModelInUseError is RemoveModel's refusal of a model the aliases users
+// target (ErrModelInUse), worded once so a caller that refuses before the
+// write (`wt-model model rm`, the Models tab) says what the write says.
+func ModelInUseError(id string, users []string) error {
+	return fmt.Errorf("%w: model %q is a target of %s; change or remove the alias first (wt-model alias set|rm)",
+		ErrModelInUse, id, strings.Join(users, ", "))
+}
+
+// AliasesTargeting lists the ids of the alias tables with a target whose
+// model is id, in file order, read as RemoveModel reads them: from the raw
+// tables, so an alias that is malformed elsewhere still protects its target.
+// cloud-sync plans its removals with it (decision 11).
+func (d *RegistryDoc) AliasesTargeting(id string) []string { return d.aliasesTargeting(id) }
+
+// RefConfig is the document's rows as the writer's cross-table alias rules
+// read them (refConfig): what an alias write checks its request against
+// inside the apply (modeladmin.SetAlias).
+func (d *RegistryDoc) RefConfig() *Config { return d.refConfig() }
 
 // aliasesTargeting lists the ids of the alias tables with a target whose
 // model is id, in file order. It reads the raw tables, so an alias that is

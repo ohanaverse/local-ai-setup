@@ -31,11 +31,14 @@ func TestHelpNamesSushiWhereItListsProviders(t *testing.T) {
 }
 
 // wtModelCommandFloor is the commands (the root included) wt-model has after
-// phase 4 stage 2; lower it only when a command leaves on purpose.
-const wtModelCommandFloor = 20
+// phase 4 stage 2 plus `alias list|set|rm` (#596); lower it only when a
+// command leaves on purpose.
+const wtModelCommandFloor = 24
 
-// staleNameRE matches an admin command written under its old wt name.
-var staleNameRE = regexp.MustCompile(`(^|[^-\w/])wt (model( (init|list|add|edit|rm))?|cloud-sync|litellm (sync|list|providers|restart)|served|warm|stop (--all|<provider>|omlx|ollama|mtplx|rec|sushi|mlx_lm_server|llamacpp))([^/\w-]|$)`)
+// staleNameRE matches an admin command written under its old wt name, and
+// `wt alias`, which never existed: the alias commands are wt-model's alone
+// (decision 9, no pointer stub).
+var staleNameRE = regexp.MustCompile(`(^|[^-\w/])wt (model( (init|list|add|edit|rm))?|alias( (list|set|rm))?|cloud-sync|litellm (sync|list|providers|restart)|served|warm|stop (--all|<provider>|omlx|ollama|mtplx|rec|sushi|mlx_lm_server|llamacpp))([^/\w-]|$)`)
 
 // staleHelpHits returns each stale old-name use in text; `wt model list --server` (a session command) is not one.
 func staleHelpHits(text string) []string {
@@ -63,6 +66,8 @@ func TestStaleHelpHitsSeesOnlyOldAdminNames(t *testing.T) {
 		"wt " + "stop omlx",
 		"wt " + "litellm restart",
 		"bare wt " + "model opens it",
+		"wt " + "alias set alias/x",
+		"run wt " + "alias list",
 	} {
 		if len(staleHelpHits(text)) == 0 {
 			t.Errorf("staleHelpHits(%q) found nothing, want a hit", text)
@@ -75,6 +80,8 @@ func TestStaleHelpHitsSeesOnlyOldAdminNames(t *testing.T) {
 		"wt stop omlx/gemma",
 		"wt models",
 		"wt litellm status",
+		"wt-model alias set alias/x",
+		"alias/x",
 	} {
 		if hits := staleHelpHits(text); len(hits) != 0 {
 			t.Errorf("staleHelpHits(%q) = %q, want no hit", text, hits)

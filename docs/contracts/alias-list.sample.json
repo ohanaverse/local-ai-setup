@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "aliases": [
+    {
+      "id": "alias/main",
+      "targets": [
+        {
+          "model": "openrouter/big",
+          "order": 1
+        },
+        {
+          "model": "openrouter/small",
+          "order": 2
+        }
+      ],
+      "context": 131072,
+      "sessions": 2,
+      "routed": true
+    },
+    {
+      "id": "alias/spare",
+      "targets": [
+        {
+          "model": "openrouter/unknown",
+          "order": 1
+        }
+      ],
+      "context": null,
+      "sessions": 0,
+      "routed": false
+    }
+  ],
+  "warnings": []
+}

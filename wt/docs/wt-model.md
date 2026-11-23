@@ -342,6 +342,11 @@ before the question and with the message `wt-model model edit` gives: none of th
 ids named is removed, whichever of them it is. Removing one of two rows that
 share an id is a hand edit — only there can you see which row is which.
 
+A model a registry alias targets is refused too, before the question: the
+message names the aliases (`model is an alias target: model "<id>" is a
+target of alias/<x>; change or remove the alias first (wt-model alias
+set|rm)`), and nothing is removed. The Models tab's `d` says the same.
+
 ## What stays a hand edit of `registry.toml`
 
 - A `[[providers]]` row wt has no default for (a cloud provider other than

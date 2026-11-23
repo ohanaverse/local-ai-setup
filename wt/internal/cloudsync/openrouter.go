@@ -291,6 +291,10 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 				if note != "" {
 					plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is %s", e.ID, e.ModelName, note))
 				}
+			case len(e.AliasUsers) > 0:
+				// An alias target stays (decision 11): out of Removals, so
+				// out of the digest and the mass-removal count.
+				plan.Warnings = append(plan.Warnings, keptForAliases(e))
 			default:
 				plan.Removals = append(plan.Removals, e.ID)
 			}

@@ -1,6 +1,9 @@
 package cloudsync
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
 )
@@ -19,6 +22,11 @@ type Entry struct {
 	Source string
 	// Cost is nil when the row has no cost table.
 	Cost *Cost
+	// AliasUsers are the registry aliases that target the model (EntriesOf
+	// reads them from the raw [[aliases]] tables, as RemoveModel does). A
+	// model an alias targets is never a removal (decision 11, #596): the
+	// planners keep it and say so (keptForAliases).
+	AliasUsers []string
 }
 
 // Manual reports whether the row was added by hand and has not yet been seen
@@ -78,6 +86,28 @@ func Entries(rows []*tomlw.Table) []Entry {
 		out = append(out, e)
 	}
 	return out
+}
+
+// EntriesOf reads doc's model rows (Entries) with, on each, the aliases that
+// target it, read from the raw [[aliases]] tables exactly as
+// RegistryDoc.RemoveModel reads them, so a malformed alias still protects
+// its target. Both flows plan from it, inside and outside the registry lock.
+func EntriesOf(doc *config.RegistryDoc) []Entry {
+	entries := Entries(doc.Models())
+	for i := range entries {
+		entries[i].AliasUsers = doc.AliasesTargeting(entries[i].ID)
+	}
+	return entries
+}
+
+// keptForAliases is the warning a plan carries for a model it would have
+// removed but keeps because aliases target it.
+func keptForAliases(e Entry) string {
+	verb := "targets"
+	if len(e.AliasUsers) > 1 {
+		verb = "target"
+	}
+	return fmt.Sprintf("kept %s: %s %s it", e.ID, strings.Join(e.AliasUsers, ", "), verb)
 }
 
 // Providers reads provider rows (config.RegistryDoc.Providers).
