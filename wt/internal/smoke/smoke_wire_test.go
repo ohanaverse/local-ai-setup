@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -44,13 +45,14 @@ func wireFixtureRows() []modelapi.Row {
 func TestCandidatesWireRules(t *testing.T) {
 	ags := []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}, {Name: "shell", AllProviders: true}}
 	var got []string
-	for _, c := range CandidatesWire(wireFixtureRows(), ags) {
+	cands, _ := CandidatesWire(wireFixtureRows(), ags, "")
+	for _, c := range cands {
 		got = append(got, c.Row.Model.ID+"="+joinAgents(c.Agents))
 	}
 	if want := []string{"ollama/idle:1=claude,", "ollama/running:1=claude,"}; !slices.Equal(got, want) {
 		t.Fatalf("CandidatesWire = %v, want %v", got, want)
 	}
-	models, agentsFor := EligibilityWire(wireFixtureRows(), ags)
+	models, agentsFor, _ := EligibilityWire(wireFixtureRows(), ags, "")
 	var ids []string
 	for _, m := range models {
 		ids = append(ids, m.ID)
@@ -234,5 +236,86 @@ func TestSmokeRowOverTLSWithCAFile(t *testing.T) {
 	res := r.run(gatewayModel)
 	if res.Status != StatusPass || r.probes != 1 || r.probeAuth != "Bearer gw-token" {
 		t.Fatalf("status = %s (err %v), probes = %d, want PASS after the probe reached the TLS fake", res.Status, res.Err, r.probes)
+	}
+}
+
+// subscriptionWireRows are a cloud row, a model on the Claude subscription
+// and an alias whose one target is on the subscription.
+func subscriptionWireRows() []modelapi.Row {
+	return []modelapi.Row{
+		{ID: "openrouter/a", GatewayID: "openrouter/a", ProviderID: "openrouter", ModelName: "a", Location: "cloud",
+			Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 1},
+		{ID: "claude-haiku-5-5", GatewayID: "claude-haiku-5-5", ProviderID: config.SubscriptionProvider, ModelName: "claude-haiku-5-5",
+			Location: "cloud", Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 2},
+		{ID: "alias/sonnet", GatewayID: "alias/sonnet", ProviderID: "alias", ModelName: "sonnet", Kind: modelapi.KindAlias,
+			Location: "cloud", Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 3,
+			Targets: []modelapi.AliasTarget{{ID: "claude-sonnet-5-5", Order: 1, ProviderID: config.SubscriptionProvider, Location: "cloud", State: modelapi.StateRunning}}},
+	}
+}
+
+// TestSmokeWireDropsSubscriptionRows pins decision 9's walk (#597): with no
+// allowed id, a subscription row and an alias with a subscription target are
+// never candidates nor eligible, and come back once each in the dropped list
+// (sorted); allowing one id keeps exactly that row, for claude alone, and
+// still drops the other. It matters because a smoke candidate is a real
+// request: one on the subscription spends the owner's plan without being
+// asked.
+func TestSmokeWireDropsSubscriptionRows(t *testing.T) {
+	ags := []config.Agent{{Name: "claude", AllProviders: true}, {Name: "pi", AllProviders: true}, {Name: "codex", AllProviders: true}}
+	ids := func(cs []Candidate) []string {
+		var out []string
+		for _, c := range cs {
+			out = append(out, c.Row.Model.ID+"="+joinAgents(c.Agents))
+		}
+		return out
+	}
+	cands, dropped := CandidatesWire(subscriptionWireRows(), ags, "")
+	if got, want := ids(cands), []string{"openrouter/a=claude,codex,pi,"}; !slices.Equal(got, want) {
+		t.Fatalf("CandidatesWire = %v, want %v", got, want)
+	}
+	if want := []string{"alias/sonnet", "claude-haiku-5-5"}; !slices.Equal(dropped, want) {
+		t.Fatalf("dropped = %v, want %v", dropped, want)
+	}
+	models, _, edropped := EligibilityWire(subscriptionWireRows(), ags, "")
+	if len(models) != 1 || models[0].ID != "openrouter/a" || !slices.Equal(edropped, dropped) {
+		t.Fatalf("EligibilityWire = %v dropped %v, want only openrouter/a and %v", models, edropped, dropped)
+	}
+
+	cands, dropped = CandidatesWire(subscriptionWireRows(), ags, "claude-haiku-5-5")
+	if got, want := ids(cands), []string{"claude-haiku-5-5=claude,", "openrouter/a=claude,codex,pi,"}; !slices.Equal(got, want) {
+		t.Fatalf("CandidatesWire allowing claude-haiku-5-5 = %v, want %v", got, want)
+	}
+	if want := []string{"alias/sonnet"}; !slices.Equal(dropped, want) {
+		t.Fatalf("dropped allowing claude-haiku-5-5 = %v, want %v", dropped, want)
+	}
+}
+
+// TestSmokeSubscriptionHeaderModeReachesTheApplier proves the row's profile
+// applier gets the build's own LaunchInfo.HeaderMode (#597): true for claude
+// on a subscription model, false for a model that is not. Smoke used to
+// re-derive the flag beside the build; reading the build's flag keeps the
+// applier's backstop (a profile undoing header mode) on the real mode.
+func TestSmokeSubscriptionHeaderModeReachesTheApplier(t *testing.T) {
+	writeFakeAgentBinary(t, "claude")
+	for _, tc := range []struct {
+		m    config.Model
+		want bool
+	}{
+		{config.Model{ID: "claude-haiku-5-5", ModelName: "claude-haiku-5-5", Location: config.LocationCloud, Subscription: true}, true},
+		{config.Model{ID: "openrouter/a", ModelName: "a", Location: config.LocationCloud}, false},
+	} {
+		var got []bool
+		applier := func(cmd *exec.Cmd, oneShotArgs []string, headerMode bool) (func() error, error) {
+			got = append(got, headerMode)
+			cmd.Args = append(cmd.Args, oneShotArgs...)
+			return func() error { return nil }, nil
+		}
+		var cleanup func() error
+		if out := gatewayRunForTest(context.Background(), "claude", tc.m, "hi", FixedDir(t.TempDir()), 5*time.Second, applier, &cleanup); out.StartErr != nil {
+			t.Fatalf("%s: outcome = %+v", tc.m.ID, out)
+		}
+		if len(got) != 1 || got[0] != tc.want {
+			t.Errorf("%s: the applier saw headerMode %v, want [%v]", tc.m.ID, got, tc.want)
+		}
 	}
 }

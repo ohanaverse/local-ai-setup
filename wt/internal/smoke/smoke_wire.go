@@ -23,24 +23,34 @@ import (
 // own route is not re-judged here: every client reaches the model through the
 // gateway, which makes the per-agent protocol route irrelevant (R5), and the
 // server already blocks an Unmapped row. It starts nothing.
-func CandidatesWire(rows []modelapi.Row, ags []config.Agent) []Candidate {
-	return walkWire(rows, ags, true)
+//
+// A row on the owner's Claude subscription (catalog.UsesSubscription: the
+// subscription provider, or an alias with such a target) is a candidate only
+// when its id is allowSubscription (`wt smoke <id> --subscription`, #597
+// decision 9); every other one that would have been a candidate is left out
+// and returned, sorted, in the second result.
+func CandidatesWire(rows []modelapi.Row, ags []config.Agent, allowSubscription string) ([]Candidate, []string) {
+	return walkWire(rows, ags, true, allowSubscription)
 }
 
 // EligibilityWire is Eligibility over the model server's rows: the deduped,
 // id-sorted models some non-command agent could launch as they are (no start
-// row), and per model id the sorted agents that could.
-func EligibilityWire(rows []modelapi.Row, ags []config.Agent) (models []config.Model, agentsForModel map[string][]string) {
+// row), and per model id the sorted agents that could. Subscription rows
+// follow CandidatesWire's rule: only allowSubscription stays, the others
+// that would have been eligible are returned, sorted.
+func EligibilityWire(rows []modelapi.Row, ags []config.Agent, allowSubscription string) (models []config.Model, agentsForModel map[string][]string, droppedSubscription []string) {
 	agentsForModel = map[string][]string{}
-	for _, c := range walkWire(rows, ags, false) {
+	cands, dropped := walkWire(rows, ags, false, allowSubscription)
+	for _, c := range cands {
 		models = append(models, c.Row.Model)
 		agentsForModel[c.Row.Model.ID] = c.Agents
 	}
-	return models, agentsForModel
+	return models, agentsForModel, dropped
 }
 
-func walkWire(rows []modelapi.Row, ags []config.Agent, includeStart bool) []Candidate {
+func walkWire(rows []modelapi.Row, ags []config.Agent, includeStart bool, allowSubscription string) (cands []Candidate, droppedSubscription []string) {
 	byID := map[string]*Candidate{}
+	dropped := map[string]bool{}
 	for _, a := range ags {
 		if agents.IsCommand(a.Name) {
 			continue
@@ -49,6 +59,10 @@ func walkWire(rows []modelapi.Row, ags []config.Agent, includeStart bool) []Cand
 			r := catalog.FromWire(w)
 			act := r.Action()
 			if act == catalog.ActionBlock || (act == catalog.ActionStart && !includeStart) {
+				continue
+			}
+			if catalog.UsesSubscription(w) && (allowSubscription == "" || w.ID != allowSubscription) {
+				dropped[w.ID] = true
 				continue
 			}
 			c := byID[r.Model.ID]
@@ -65,8 +79,17 @@ func walkWire(rows []modelapi.Row, ags []config.Agent, includeStart bool) []Cand
 		out = append(out, *c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Row.Model.ID < out[j].Row.Model.ID })
-	return out
+	for id := range dropped {
+		droppedSubscription = append(droppedSubscription, id)
+	}
+	sort.Strings(droppedSubscription)
+	return out, droppedSubscription
 }
+
+// SubscriptionSkipReason is the error of the SKIP row (agent claude) a smoke
+// run without a model id reports for each subscription model or alias it left
+// out, and, after the id, the refusal of one named without --subscription.
+const SubscriptionSkipReason = "uses your Claude subscription: pass --subscription to smoke it"
 
 // RowOptions is the per-call knobs of RunRowGateway. The zero value is the
 // real behavior: production passes RowOptions{}.

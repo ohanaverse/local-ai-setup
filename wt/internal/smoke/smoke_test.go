@@ -201,7 +201,7 @@ func TestRealGatewayRunOpencodeYolo(t *testing.T) {
 func TestRealGatewayRunOneShotArgsPlacedByApplier(t *testing.T) {
 	writeFakeAgentBinary(t, "agy")
 	cleanupCalled := false
-	applier := func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
+	applier := func(cmd *exec.Cmd, oneShotArgs []string, _ bool) (func() error, error) {
 		cmd.Args = append(cmd.Args, "--extra")
 		cmd.Args = append(cmd.Args, oneShotArgs...)
 		return func() error { cleanupCalled = true; return nil }, nil
@@ -228,7 +228,7 @@ func TestRealGatewayRunOneShotArgsPlacedByApplier(t *testing.T) {
 // or land the degraded command with no oneShotArgs at all.
 func TestRealGatewayRunRevertsAndReappendsOneShotArgsOnApplierError(t *testing.T) {
 	writeFakeAgentBinary(t, "agy")
-	applier := func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
+	applier := func(cmd *exec.Cmd, oneShotArgs []string, _ bool) (func() error, error) {
 		cmd.Args = append(cmd.Args, "--partial")
 		return func() error { return nil }, fmt.Errorf("boom")
 	}
@@ -867,7 +867,7 @@ func TestRealGatewayRunSetsPWDToTheRowDir(t *testing.T) {
 	// wrong one on startup), so read the command the agent is started with.
 	var gotDir string
 	var pwd []string
-	applier := func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
+	applier := func(cmd *exec.Cmd, oneShotArgs []string, _ bool) (func() error, error) {
 		gotDir = cmd.Dir
 		for _, kv := range cmd.Env {
 			if strings.HasPrefix(kv, "PWD=") {

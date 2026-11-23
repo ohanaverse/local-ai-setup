@@ -91,12 +91,14 @@ func FixedDir(dir string) RowDir { return func() (string, error) { return dir, n
 // codex "-c"/"--profile" flag trailing "exec <prompt>" makes codex silently
 // drop an earlier provider override), but before a wrapper mechanism runs
 // (which must splice the complete command, prompt included, into its own
-// argv). It returns a cleanup function that MUST be called after the
+// argv). headerMode is the build's own agents.LaunchInfo.HeaderMode (#597):
+// claude on a subscription model, where a profile that would replace the
+// merged header or displace the login is refused. It returns a cleanup function that MUST be called after the
 // command exits (success or failure) to restore any config file a
 // profile's config_content mechanism rewrote, and an error if the profile
 // itself could not be applied (e.g. wrapper binary missing). A nil
 // ProfileApplier is a no-op.
-type ProfileApplier func(cmd *exec.Cmd, oneShotArgs []string) (cleanup func() error, err error)
+type ProfileApplier func(cmd *exec.Cmd, oneShotArgs []string, headerMode bool) (cleanup func() error, err error)
 
 // notInstalledMessage mirrors the launch build's exact error text
 // ("agent %s not installed") so a row can classify a missing binary as SKIP rather
@@ -222,7 +224,7 @@ func runAgent(ctx context.Context, agentName string, m config.Model, prompt stri
 		origEnv := slices.Clone(cmd.Env)
 		origArgs := slices.Clone(cmd.Args)
 		var applyErr error
-		*cleanup, applyErr = profileApplier(cmd, oneShotArgs)
+		*cleanup, applyErr = profileApplier(cmd, oneShotArgs, info.HeaderMode)
 		if applyErr != nil {
 			// oneShotArgs must still land on the reverted, unprofiled
 			// argv — the applier failed before (or while) placing it, but

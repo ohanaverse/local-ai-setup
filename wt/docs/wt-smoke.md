@@ -18,6 +18,7 @@ wt smoke <model-id> --timeout 60s
 wt smoke <model-id> --prompt "explain what 2+2 is"
 wt smoke <model-id> --json
 wt smoke <model-id> --cwd        # run the agents in the current directory
+wt smoke claude-haiku-5-5 --subscription  # a Claude subscription model: only when named, claude only
 ```
 
 - `model-id` — a model id (`provider/name`): a registry id, or a discovered
@@ -59,6 +60,38 @@ wt smoke <model-id> --cwd        # run the agents in the current directory
 - `--only` — comma-separated agents to restrict the run to; must be a
   subset of the model's currently eligible agents.
 - `--json` — emit a machine-readable report instead of the human table.
+- `--subscription` — smoke the one Claude subscription model, or alias with a
+  subscription target, named as `model-id` (see "Claude subscription models"
+  below). Without an id, or with an id that is not on the subscription, it is
+  exit 1: `--subscription needs the id of one subscription model or alias`.
+
+## Claude subscription models
+
+A model served on your own Claude subscription (provider
+`claude-subscription`), and an alias with such a target, sends your claude.ai
+login and spends your plan, so `wt smoke` never runs one unless you name it
+(#597):
+
+- A run without a model id never offers one in the picker and never runs
+  claude on it. Each one it left out is reported as one ordinary SKIP row, on
+  stderr's progress line and in the report (`--json` included, the same row
+  shape): agent `claude`, the model's id, and the error
+  `uses your Claude subscription: pass --subscription to smoke it`. With
+  `--only` naming no claude, these rows are left out.
+- Naming one without the flag (`wt smoke claude-haiku-5-5`, `--json` or not,
+  terminal or not) is exit 1 with
+  `claude-haiku-5-5 uses your Claude subscription: pass --subscription to smoke it`;
+  nothing is registered or run.
+- `wt smoke <id> --subscription` runs that one row, with `claude` only
+  (`--only` naming another agent is refused as not eligible), after the same
+  pre-launch checks a launch makes, in the same order: this machine opted in
+  (`[model-server] subscription = true`), the endpoint is https or loopback,
+  the server's passthrough is on, no launch profile overrides the header
+  mode's keys, Claude Code is new enough, and a claude.ai login is present. A
+  failed check is exit 1 with its message, before the client session is
+  registered and before any row runs. The row is built in header mode like a
+  launch: the gateway token travels only in `ANTHROPIC_CUSTOM_HEADERS` (an
+  inherited `x-wt-model-token` line is replaced), never in the output.
 
 ## Eligibility
 
