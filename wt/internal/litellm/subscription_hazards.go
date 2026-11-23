@@ -253,13 +253,21 @@ func subscriptionHazards(ctx context.Context, f *File, env ProxyEnv, info ModelI
 //     PyYAML the last, so a duplicate could hide any other check), named with
 //     its line;
 //   - any YAML construct wt does not evaluate the way LiteLLM's PyYAML does
-//     (yamlConstructs: anchors, aliases, merge keys, include at any depth,
-//     explicit tags). Rather than emulate PyYAML's merges and YAML 1.1
-//     rules, the check refuses them: wt's own writer emits none.
+//     (yamlConstructs: anchors, aliases, merge keys, an include key of the
+//     root mapping, explicit tags). Rather than emulate PyYAML's merges and
+//     YAML 1.1 rules, the check refuses them: wt's own writer emits no
+//     anchor, alias, merge key, tag or root include (a registry model_info
+//     key it copies into a row may be named include; LiteLLM reads include
+//     only from the root, so a nested one is not counted);
+//   - a document nested deeper than maxYAMLDepth levels: the walks stop
+//     there, so what lies below would go unseen (fail closed).
 func configCredentialHazards(root *yaml.Node) []string {
 	var hazards []string
 	for _, k := range duplicateKeys(root) {
 		hazards = append(hazards, fmt.Sprintf("config.yaml has a duplicate key %s (line %d): the proxy reads the last copy, which wt does not check", oneLineString(k.Value), k.Line))
+	}
+	if nestsDeeperThan(root, maxYAMLDepth) {
+		hazards = append(hazards, fmt.Sprintf("config.yaml nests deeper than %d levels, which wt does not check", maxYAMLDepth))
 	}
 	if c := yamlConstructs(root); len(c) > 0 {
 		hazards = append(hazards, fmt.Sprintf("config.yaml uses %s, which wt does not evaluate the way LiteLLM does", strings.Join(c, ", ")))
@@ -298,7 +306,7 @@ func duplicateKeys(root *yaml.Node) []*yaml.Node {
 	var out []*yaml.Node
 	var walk func(n *yaml.Node, depth int)
 	walk = func(n *yaml.Node, depth int) {
-		if n == nil || n.Kind == yaml.AliasNode || depth > 64 {
+		if n == nil || n.Kind == yaml.AliasNode || depth > maxYAMLDepth {
 			return
 		}
 		if n.Kind == yaml.MappingNode {
@@ -328,14 +336,16 @@ func isMergeKey(k *yaml.Node) bool {
 
 // yamlConstructs names, in a fixed order, the YAML constructs under root
 // whose meaning wt does not evaluate the way LiteLLM's PyYAML does: anchors,
-// aliases, merge keys, an include key at any depth (LiteLLM merges included
-// files; wt does not follow them) and explicit tags (! or !!). Each one is a
-// subscription hazard: wt's own config.yaml writer emits none of them.
+// aliases, merge keys, an include key of the root mapping (LiteLLM reads
+// include only there and merges the included files; wt does not follow
+// them; a root merge that could bring one in is already a merge key) and
+// explicit tags (! or !!). Each one is a subscription hazard: wt's own
+// config.yaml writer emits none of them.
 func yamlConstructs(root *yaml.Node) []string {
 	found := map[string]bool{}
 	var walk func(n *yaml.Node, depth int)
 	walk = func(n *yaml.Node, depth int) {
-		if n == nil || depth > 64 {
+		if n == nil || depth > maxYAMLDepth {
 			return
 		}
 		if n.Anchor != "" {
@@ -354,7 +364,7 @@ func yamlConstructs(root *yaml.Node) []string {
 				if isMergeKey(k) {
 					found["merge keys"] = true
 				}
-				if k.Kind == yaml.ScalarNode && k.Value == "include" {
+				if depth == 0 && k.Kind == yaml.ScalarNode && k.Value == "include" {
 					found["include"] = true
 				}
 			}
@@ -371,6 +381,31 @@ func yamlConstructs(root *yaml.Node) []string {
 		}
 	}
 	return out
+}
+
+// maxYAMLDepth is how deep the hazard walks go into config.yaml; a document
+// nested deeper is a hazard of its own (nestsDeeperThan).
+const maxYAMLDepth = 64
+
+// nestsDeeperThan reports whether a node under root (aliases not followed)
+// lies deeper than limit levels below it.
+func nestsDeeperThan(root *yaml.Node, limit int) bool {
+	var walk func(n *yaml.Node, depth int) bool
+	walk = func(n *yaml.Node, depth int) bool {
+		if n == nil || n.Kind == yaml.AliasNode {
+			return false
+		}
+		if depth > limit {
+			return true
+		}
+		for _, c := range n.Content {
+			if walk(c, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(root, 0)
 }
 
 // plainFalse reports whether n is a plain (unquoted, untagged) scalar that

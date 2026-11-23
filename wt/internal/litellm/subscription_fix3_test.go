@@ -68,8 +68,7 @@ func TestSubscriptionHazardsYAMLConstructs(t *testing.T) {
 		{"azure false then true", "model_list: []\na: &a\n  use_azure_key_vault: false\nb: &b\n  use_azure_key_vault: true\ngeneral_settings:\n  <<: *a\n  <<: *b\n", "merge keys"},
 		{"kms null then set", "model_list: []\na: &a\n  key_management_system: null\nb: &b\n  key_management_system: wtSENTINEL\ngeneral_settings:\n  <<: *a\n  <<: *b\n", "merge keys"},
 		{"root merge with litellm_settings", "x: &x\n  litellm_settings:\n    api_key: wtSENTINEL\n<<: *x\nmodel_list: []\n", "merge keys"},
-		{"root merged include", "x: &x\n  include: [more.yaml]\n<<: *x\nmodel_list: []\n", "include"},
-		{"nested include", "model_list: []\nlitellm_settings:\n  include: more.yaml\n", "include"},
+		{"root merged include", "x: &x\n  include: [more.yaml]\n<<: *x\nmodel_list: []\n", "merge keys"},
 		{"null include", "model_list: []\ninclude: null\n", "include"},
 		{"explicit tag", "model_list: []\ngeneral_settings:\n  use_google_kms: !!str 0\n", "tags"},
 		{"local tag", "model_list: []\ngeneral_settings:\n  master_key: !secret m\n", "tags"},
@@ -98,13 +97,46 @@ func TestSubscriptionHazardsYAMLConstructs(t *testing.T) {
 
 // TestSubscriptionHazardsInclude pins that a top-level include is a hazard:
 // LiteLLM merges the included files over config.yaml, and wt does not follow
-// them, so anything could hide there. Any include key is one, empty or null
-// included (strict: wt's own file never has one).
+// them, so anything could hide there. Any include key of the root mapping is
+// one, empty, null or quoted included. LiteLLM reads include only from the
+// root, so a nested include (an OpenAI extra_body include, a registry
+// model_info key wt copies into a row) is not one.
 func TestSubscriptionHazardsInclude(t *testing.T) {
-	for _, body := range []string{"model_list: []\ninclude:\n  - more.yaml\n", "model_list: []\ninclude: null\n", "model_list: []\ninclude: []\n"} {
+	for _, body := range []string{"model_list: []\ninclude:\n  - more.yaml\n", "model_list: []\ninclude: null\n", "model_list: []\ninclude: []\n", "model_list: []\n\"include\": x.yaml\n"} {
 		if h := rawHazards(t, body); len(h) != 1 || !strings.Contains(h[0], "include") {
 			t.Errorf("%q: hazards = %q; want one naming include", body, h)
 		}
+	}
+	for _, body := range []string{
+		"model_list:\n  - model_name: m\n    litellm_params:\n      model: openai/m\n      extra_body:\n        include: [reasoning.encrypted_content]\n",
+		"model_list:\n  - model_name: m\n    litellm_params:\n      model: openai/m\n    model_info:\n      include: [x]\n",
+		"model_list: []\nlitellm_settings:\n  include: more.yaml\n",
+	} {
+		if h := rawHazards(t, body); len(h) != 0 {
+			t.Errorf("%q: hazards = %q; want none for a nested include", body, h)
+		}
+	}
+}
+
+// TestSubscriptionHazardsDeepNesting pins that a document nested deeper than
+// the walks' cap is a hazard of its own (fail closed): a construct, a
+// duplicate or anything else below the cap would otherwise go unseen.
+func TestSubscriptionHazardsDeepNesting(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("model_list: []\ndeep:\n")
+	for i := 1; i <= 66; i++ {
+		b.WriteString(strings.Repeat(" ", i) + "k:\n")
+	}
+	b.WriteString(strings.Repeat(" ", 67) + "a: 1\n" + strings.Repeat(" ", 67) + "a: 2\n")
+	h := rawHazards(t, b.String())
+	found := false
+	for _, l := range h {
+		if strings.Contains(l, "config.yaml nests deeper than 64 levels") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("hazards = %q; want the nesting hazard", h)
 	}
 }
 
@@ -185,6 +217,13 @@ func TestWtsOwnConfigHasNoSubscriptionHazard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A registry model_info table wt copies into its row may hold any key,
+	// include among them; it is not LiteLLM's root include.
+	for i := range cfg.Models {
+		if cfg.Models[i].ID == "openrouter/contract-fixture:cloud" {
+			cfg.Models[i].ModelInfo = map[string]any{"include": []any{"x"}, "supports_function_calling": true}
+		}
+	}
 	o, _, p := opts(t, "model_list: []\n")
 	o = cleanProxy(o)
 	if _, err := Sync(cfg, nil, o); err != nil {
@@ -194,7 +233,7 @@ func TestWtsOwnConfigHasNoSubscriptionHazard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "anthropic/claude-haiku-5-5") {
+	if !strings.Contains(string(body), "anthropic/claude-haiku-5-5") || !strings.Contains(string(body), "include") {
 		t.Fatalf("the sync did not route the subscription model:\n%s", body)
 	}
 	if h := rawHazards(t, string(body)); len(h) != 0 {
