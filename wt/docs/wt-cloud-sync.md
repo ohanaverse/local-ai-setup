@@ -477,7 +477,9 @@ included. `--yes` has nobody reading, so it never deletes on its own.
 - **Mass removal.** A plan that would remove more than half the ollama cloud
   entries is refused unless `--force` is given, with or without `--yes`: it
   is more likely a page that parsed wrong than a catalog that shrank.
-  Re-tagged entries do not count, since they come straight back. `--force`
+  Re-tagged entries do not count, since they come straight back, and entries
+  added by hand or targeted by an alias are not in the total (both are kept,
+  never removed). `--force`
   does not replace the digest. A dry run of such a plan still exits 0; the
   refusal is the apply's.
 
@@ -486,8 +488,8 @@ update, no addition, no pull. The other flow is not held up.
 
 The openrouter flow works the same way. Its plan ends with its own
 `Registry removals` section and `Removal digest:` line, and a plan that would
-remove more than half the OpenRouter-priced models (models added by hand do
-not count) is refused unless `--force` is given. When both flows remove
+remove more than half the OpenRouter-priced models (models added by hand or
+targeted by an alias do not count) is refused unless `--force` is given. When both flows remove
 something, the plans end with a line that names both digests
 (`removals: approve both with --yes --approve-removals <openrouter>,<ollama>`);
 `--approve-removals` takes a comma-separated list, and each flow looks for its
@@ -520,6 +522,18 @@ name (`beam:cloud` against a published `beam:120b-cloud`) is kept as it is,
 not graduated and not duplicated by an added row; the plan warns about it.
 wt does not pull the tag of a kept manual entry: pulling a model that is off
 the page is yours to do, as it is when you add a local model.
+
+## Models an alias targets
+
+A model that a registry alias targets (`wt-model alias list`) is never
+removed by either flow, whatever its source says: it stays out of
+`Registry removals` and out of the removal digest, an ollama entry keeps its
+tag (no `ollama rm`), and one the page now lists under another tag is kept
+as it is rather than replaced. The plan says so in one warning per model,
+`kept <id>: alias/<x> targets it`. To let such a model go, re-point or
+remove the alias first (`wt-model alias set` or `wt-model alias rm`); the
+next sync then plans its removal. The aliases are read from the registry
+file as written, so a malformed alias still protects its targets.
 
 ## Flags
 

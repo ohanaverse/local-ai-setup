@@ -142,3 +142,16 @@ model_name = "written-fixture:native"
 tags = [
     "native",
 ]
+
+[[aliases]]
+id = "alias/written-single"
+targets = [
+    { model = "openrouter/written-fixture:cloud", order = 1 },
+]
+
+[[aliases]]
+id = "alias/written-group"
+targets = [
+    { model = "openrouter/written-fixture:cloud", order = 1 },
+    { model = "ollama/written-fixture:int", order = 2 },
+]

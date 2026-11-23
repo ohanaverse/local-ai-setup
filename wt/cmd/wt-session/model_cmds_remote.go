@@ -205,7 +205,9 @@ func runStopRemote(ctx context.Context, out io.Writer, ms *modelSession, arg str
 		var running []modelapi.Row
 		var labels []string
 		for _, r := range localRowsOf(cat.Rows) {
-			if r.State != modelapi.StateRunning {
+			// An alias row has nothing of its own to stop: its local target
+			// is listed as itself (#596).
+			if r.State != modelapi.StateRunning || r.Kind == modelapi.KindAlias {
 				continue
 			}
 			label := r.ID

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
@@ -75,8 +76,32 @@ type SyncPlanJSON struct {
 		Move     []string `json:"move"`
 		EnableDB bool     `json:"enable_db"`
 		Restart  bool     `json:"restart"`
+		// Aliases: SyncPlan.Aliases (#596), always present. Added beside the
+		// older keys like move; a skipped target's reason is a warning, never
+		// a key here.
+		Aliases []AliasPlanJSON `json:"aliases"`
 	} `json:"plan"`
 	Warnings []string `json:"warnings"`
+}
+
+// AliasPlanJSON is one AliasPlan in the dry run's JSON.
+type AliasPlanJSON struct {
+	ID      string          `json:"id"`
+	Action  string          `json:"action"`
+	Live    []AliasLiveJSON `json:"live"`
+	Skipped []AliasSkipJSON `json:"skipped"`
+}
+
+// AliasLiveJSON is one AliasLive: a target that gets a row, and its order.
+type AliasLiveJSON struct {
+	Target string `json:"target"`
+	Order  int    `json:"order"`
+}
+
+// AliasSkipJSON is one AliasSkip without its reason (a warning line says it).
+type AliasSkipJSON struct {
+	Target string `json:"target"`
+	Frozen bool   `json:"frozen"`
 }
 
 // ReportSyncPlan prints a dry-run plan plus the probe warnings the real sync
@@ -91,6 +116,17 @@ func ReportSyncPlan(out, errOut io.Writer, plan SyncPlan, warnings []string, asJ
 	doc.Plan.Repair = append([]string{}, plan.Repair...)
 	doc.Plan.Move = append([]string{}, plan.Move...)
 	doc.Plan.EnableDB, doc.Plan.Restart = plan.EnableDB, plan.Restart
+	doc.Plan.Aliases = []AliasPlanJSON{}
+	for _, a := range plan.Aliases {
+		j := AliasPlanJSON{ID: a.ID, Action: a.Action, Live: []AliasLiveJSON{}, Skipped: []AliasSkipJSON{}}
+		for _, l := range a.Live {
+			j.Live = append(j.Live, AliasLiveJSON{Target: l.Target, Order: l.Order})
+		}
+		for _, sk := range a.Skipped {
+			j.Skipped = append(j.Skipped, AliasSkipJSON{Target: sk.Target, Frozen: sk.Frozen})
+		}
+		doc.Plan.Aliases = append(doc.Plan.Aliases, j)
+	}
 	doc.Plan.Errors = []OutcomeJSON{}
 	for _, e := range plan.Errors {
 		doc.Plan.Errors = append(doc.Plan.Errors, OutcomeJSON{ID: e.ID, Error: e.Err.Error()})
@@ -119,6 +155,22 @@ func ReportSyncPlan(out, errOut io.Writer, plan SyncPlan, warnings []string, asJ
 		for _, id := range plan.Move {
 			fmt.Fprintf(out, "%s: would move to the database\n", id)
 		}
+		// Aliases (#596): only the ones the sync would change; a skipped one
+		// is a warning line below.
+		for _, a := range plan.Aliases {
+			switch a.Action {
+			case AliasActionRoute, AliasActionRewrite, AliasActionUnroute:
+				targets := make([]string, 0, len(a.Live))
+				for _, l := range a.Live {
+					targets = append(targets, fmt.Sprintf("%s order %d", l.Target, l.Order))
+				}
+				line := fmt.Sprintf("%s: would %s", a.ID, a.Action)
+				if len(targets) > 0 {
+					line += " (" + strings.Join(targets, ", ") + ")"
+				}
+				fmt.Fprintln(out, line)
+			}
+		}
 		// The two database cases cost a restart a reader would not expect
 		// from the lines above, so the plan says so (#598).
 		switch {
@@ -144,8 +196,14 @@ func ReportSyncPlan(out, errOut io.Writer, plan SyncPlan, warnings []string, asJ
 // probe, then Sync or PlanSync, then the report. admin is Options.Admin (nil:
 // every route in config.yaml, as before #598).
 func RunSync(out, errOut io.Writer, cfg *config.Config, probe Probe, admin *AdminClient, asJSON, dryRun bool) error {
+	return runSync(out, errOut, cfg, probe, admin, asJSON, dryRun, false)
+}
+
+// runSync is RunSync; aliasesRemoved is Options.AliasesRemoved.
+func runSync(out, errOut io.Writer, cfg *config.Config, probe Probe, admin *AdminClient, asJSON, dryRun, aliasesRemoved bool) error {
 	desired, o, probeWarns := SyncInputs(cfg, probe)
 	o.Admin = admin
+	o.AliasesRemoved = aliasesRemoved
 	if dryRun {
 		plan, err := PlanSync(cfg, desired, o)
 		if err != nil {
@@ -171,6 +229,18 @@ func RunSync(out, errOut io.Writer, cfg *config.Config, probe Probe, admin *Admi
 // sync (ErrRegistryRedirected), and the refusal is the warning. admin builds
 // Options.Admin from the reloaded config (nil: no database routes).
 func SyncAfterWrite(out, errOut io.Writer, probe Probe, admin func(*config.Config) *AdminClient) string {
+	return syncAfterWrite(out, errOut, probe, admin, false)
+}
+
+// SyncAfterAliasRemoval is SyncAfterWrite after a write that removed
+// aliases (`wt-model alias rm`): a database half that cannot run says so
+// with decision 4's line (Options.AliasesRemoved), so the orphan rows that
+// still route the removed aliases are named with their repair.
+func SyncAfterAliasRemoval(out, errOut io.Writer, probe Probe, admin func(*config.Config) *AdminClient) string {
+	return syncAfterWrite(out, errOut, probe, admin, true)
+}
+
+func syncAfterWrite(out, errOut io.Writer, probe Probe, admin func(*config.Config) *AdminClient, aliasesRemoved bool) string {
 	if _, err := os.Stat(DefaultPath()); os.IsNotExist(err) {
 		// No LiteLLM here: nothing to sync, and no reason to probe providers.
 		return ""
@@ -179,7 +249,7 @@ func SyncAfterWrite(out, errOut io.Writer, probe Probe, admin func(*config.Confi
 	if err != nil {
 		return "LiteLLM routes not synced: " + err.Error()
 	}
-	err = RunSync(out, errOut, cfg, probe, adminOf(admin, cfg), false, false)
+	err = runSync(out, errOut, cfg, probe, adminOf(admin, cfg), false, false, aliasesRemoved)
 	switch {
 	case err == nil, errors.Is(err, ErrMissing):
 		return ""

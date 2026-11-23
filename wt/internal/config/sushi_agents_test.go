@@ -51,7 +51,7 @@ func TestFinalizeCfgDerivesSushiForClaudeAndPi(t *testing.T) {
 // on a broken home (applyProxyState).
 func mustFinalize(t *testing.T, cfg *Config, providers []Provider, models []Model) *Config {
 	t.Helper()
-	out, err := finalizeCfg(cfg, providers, models)
+	out, err := finalizeCfg(cfg, providers, models, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

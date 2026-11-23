@@ -25,6 +25,9 @@ import (
 func (d Deps) StopJob(req modelapi.StopRequest, sessions *sessionreg.Registry) modeljobs.RunFunc {
 	return guarded(func(ctx context.Context, step func(string)) modelapi.JobResult {
 		cfg := d.Config()
+		if a, ok := serverAlias(cfg, req.Model); ok {
+			return aliasStop(cfg, a)
+		}
 		snap := d.Inventory(cfg)
 		en, found := runningEntry(snap, req.Model)
 		if !found {
@@ -67,6 +70,15 @@ func (d Deps) StopJob(req modelapi.StopRequest, sessions *sessionreg.Registry) m
 		}
 		return problem(modelapi.CodeFailed, withOutput(fmt.Sprintf("failed to stop %s: %v", id, err), out))
 	})
+}
+
+// aliasStop answers a stop of an alias id: an alias is a name, so nothing
+// is stopped and the message names the local target to stop instead.
+func aliasStop(cfg *config.Config, a config.Alias) modelapi.JobResult {
+	if m, ok := cfg.AliasLocalTarget(a); ok {
+		return problem(modelapi.CodeFailed, fmt.Sprintf("%s has nothing to stop; stop %s", a.ID, m.ID))
+	}
+	return problem(modelapi.CodeFailed, fmt.Sprintf("%s has nothing to stop: it has no local target", a.ID))
 }
 
 // runningEntry finds the inventory entry for id that is running.

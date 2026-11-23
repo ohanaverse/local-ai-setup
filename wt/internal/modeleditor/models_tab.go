@@ -681,6 +681,11 @@ func (m *model) updateModels(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case !ok:
 		case !r.Registered:
 			mt.status = r.ID + " is not in the registry: there is nothing to remove"
+		case m.cfg != nil && len(m.cfg.AliasesTargeting(r.ID)) > 0:
+			// Decision 11 (#596): no prompt for a removal the writer refuses;
+			// the status says what the writer would (a removal since the
+			// load still meets the same refusal from the write).
+			mt.status = "not removed: " + config.ModelInUseError(r.ID, m.cfg.AliasesTargeting(r.ID)).Error()
 		default:
 			mt.phase, mt.remove = modelsRemove, r
 		}

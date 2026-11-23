@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -573,5 +574,47 @@ func TestTestMainGuardsTheDevelopersRegistry(t *testing.T) {
 	}
 	if err := registryWriteGuard(filepath.Join(t.TempDir(), "registry.toml"), ""); err != nil {
 		t.Errorf("a temp registry should be allowed, got %v", err)
+	}
+}
+
+// TestNegativeContextWindowRefused pins that a write giving a model a negative
+// context_window is refused as an invalid registry and leaves the file alone: a
+// window is a token count, and a negative one would reach a launch as nonsense.
+func TestNegativeContextWindowRefused(t *testing.T) {
+	path := scratchRegistry(t, docRegistry)
+	before := readFile(t, path)
+	_, err := UpdateRegistry(func(d *RegistryDoc) error {
+		return d.PatchModel("ollama/beta", map[string]any{"context_window": -1}, nil)
+	})
+	if !errors.Is(err, ErrRegistryInvalid) {
+		t.Fatalf("err = %v, want ErrRegistryInvalid", err)
+	}
+	if readFile(t, path) != before {
+		t.Error("the registry changed despite the refusal")
+	}
+}
+
+// TestContextWindowAboveInt32Refused pins that the writer and the reader
+// agree on the largest window: the reader takes a context_window above
+// math.MaxInt32 as malformed (absent), so a write of one is refused as an
+// invalid registry and leaves the file alone, rather than storing a window
+// the next load silently drops. The largest window the reader keeps still
+// writes.
+func TestContextWindowAboveInt32Refused(t *testing.T) {
+	path := scratchRegistry(t, docRegistry)
+	before := readFile(t, path)
+	_, err := UpdateRegistry(func(d *RegistryDoc) error {
+		return d.PatchModel("ollama/beta", map[string]any{"context_window": int64(math.MaxInt32) + 1}, nil)
+	})
+	if !errors.Is(err, ErrRegistryInvalid) || !strings.Contains(err.Error(), "context_window") {
+		t.Fatalf("err = %v, want ErrRegistryInvalid naming context_window", err)
+	}
+	if readFile(t, path) != before {
+		t.Error("the registry changed despite the refusal")
+	}
+	if _, err := UpdateRegistry(func(d *RegistryDoc) error {
+		return d.PatchModel("ollama/beta", map[string]any{"context_window": int64(math.MaxInt32)}, nil)
+	}); err != nil {
+		t.Fatalf("MaxInt32 window: %v", err)
 	}
 }

@@ -139,3 +139,92 @@ func TestSlotPrefixHolderWire(t *testing.T) {
 		t.Errorf("provider holder: %q, want the provider named", got)
 	}
 }
+
+// aliasWireRows adds alias rows to wireSlotRows: alias/idle and alias/idle2
+// both front the stopped local omlx/idle (local-first), alias/run fronts the
+// running omlx/run, and alias/cloudfirst puts openrouter/a before omlx/idle,
+// so the server sends it as a cloud row.
+func aliasWireRows() map[string]modelapi.Row {
+	byID := wireSlotRows()
+	alias := func(id, loc, state, action string, targets ...modelapi.AliasTarget) {
+		byID[id] = modelapi.Row{ID: id, GatewayID: id, ProviderID: "alias", Family: "alias", ModelName: id[len("alias/"):],
+			Kind: modelapi.KindAlias, Location: loc, State: state, Action: action, Registered: true, Targets: targets}
+	}
+	idle := modelapi.AliasTarget{ID: "omlx/idle", Order: 1, ProviderID: "omlx", Location: "local", State: modelapi.StateStopped}
+	alias("alias/idle", "local", modelapi.StateStopped, modelapi.ActionStart, idle)
+	alias("alias/idle2", "local", modelapi.StateStopped, modelapi.ActionStart,
+		modelapi.AliasTarget{ID: "openrouter/b", Order: 2, ProviderID: "openrouter", Location: "cloud", State: modelapi.StateRunning}, idle)
+	alias("alias/run", "local", modelapi.StateRunning, modelapi.ActionLaunch,
+		modelapi.AliasTarget{ID: "omlx/run", Order: 1, ProviderID: "omlx", Location: "local", State: modelapi.StateRunning})
+	alias("alias/cloudfirst", "cloud", modelapi.StateRunning, modelapi.ActionLaunch,
+		modelapi.AliasTarget{ID: "openrouter/a", Order: 1, ProviderID: "openrouter", Location: "cloud", State: modelapi.StateRunning},
+		modelapi.AliasTarget{ID: "omlx/idle", Order: 2, ProviderID: "omlx", Location: "local", State: modelapi.StateStopped})
+	return byID
+}
+
+// TestSlotProfileAliasAndItsTargetAreOneLocalModel pins that the one-local-
+// model rule counts local TARGETS, not slot ids: two slots on one alias, an
+// alias beside its own local target, and two aliases fronting the same local
+// target all name one local model, which one start brings up. Counting ids
+// would refuse a profile that loads nothing twice. The start goes to the row
+// that needs it, an alias first in slot order (its start also adds the
+// alias's routes); a cloud-first alias is a cloud slot and starts nothing.
+func TestSlotProfileAliasAndItsTargetAreOneLocalModel(t *testing.T) {
+	byID := aliasWireRows()
+	for _, tc := range []struct {
+		name    string
+		slots   map[string]string
+		verdict Action
+		local   string
+		loc     string
+	}{
+		{"two slots on one alias", map[string]string{"sonnet": "alias/idle", "haiku": "alias/idle"}, ActionStart, "alias/idle", "local"},
+		{"alias and its target", map[string]string{"sonnet": "alias/idle", "haiku": "omlx/idle"}, ActionStart, "alias/idle", "local"},
+		{"target and its alias", map[string]string{"sonnet": "omlx/idle", "haiku": "alias/idle"}, ActionStart, "omlx/idle", "local"},
+		{"two aliases on one target", map[string]string{"sonnet": "alias/idle", "haiku": "alias/idle2", "opus": "openrouter/a"}, ActionStart, "alias/idle", "mixed"},
+		{"running alias and target", map[string]string{"sonnet": "alias/run", "haiku": "omlx/run"}, ActionLaunch, "alias/run", "local"},
+		{"cloud-first alias beside a local model", map[string]string{"sonnet": "alias/cloudfirst", "haiku": "omlx/run"}, ActionLaunch, "omlx/run", "mixed"},
+		{"cloud-first alias alone", map[string]string{"sonnet": "alias/cloudfirst"}, ActionLaunch, "", "cloud"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := ResolveSlotProfileWire(byID, slotCheck(0, "p", "sonnet", tc.slots))
+			if row.Action() != tc.verdict {
+				t.Fatalf("verdict = %v (%q), want %v", row.Action(), row.BlockReason(), tc.verdict)
+			}
+			p := row.Profile
+			switch {
+			case tc.local == "" && p.Local != nil:
+				t.Errorf("Local = %q, want none", p.Local.Model.ID)
+			case tc.local != "" && (p.Local == nil || p.Local.Model.ID != tc.local || p.Local.Wire == nil):
+				t.Errorf("Local = %+v, want the server's row for %s", p.Local, tc.local)
+			}
+			if p.Loc != tc.loc {
+				t.Errorf("loc = %q, want %q", p.Loc, tc.loc)
+			}
+		})
+	}
+}
+
+// TestSlotProfileTwoAliasesTwoLocalTargetsRefused pins that the one-local-
+// model rule still holds across aliases: two aliases whose local targets are
+// different models load two local models, and are refused as two local ids
+// always were, naming the slot rows; so is an alias beside a different local
+// model. The blocked row reports no running local model.
+func TestSlotProfileTwoAliasesTwoLocalTargetsRefused(t *testing.T) {
+	byID := aliasWireRows()
+	for _, tc := range []struct {
+		slots map[string]string
+		want  string
+	}{
+		{map[string]string{"sonnet": "alias/idle", "haiku": "alias/run"}, "slots name two local models (alias/idle and alias/run); a slot profile may name one"},
+		{map[string]string{"sonnet": "alias/run", "haiku": "omlx/idle"}, "slots name two local models (alias/run and omlx/idle); a slot profile may name one"},
+	} {
+		row := ResolveSlotProfileWire(byID, slotCheck(0, "p", "sonnet", tc.slots))
+		if row.Action() != ActionBlock || row.BlockReason() != tc.want {
+			t.Errorf("%v: %v %q, want block %q", tc.slots, row.Action(), row.BlockReason(), tc.want)
+		}
+		if row.Running || row.Profile.Local != nil {
+			t.Errorf("%v: running %v local %v, want neither", tc.slots, row.Running, row.Profile.Local)
+		}
+	}
+}

@@ -32,12 +32,15 @@ type AutoStopper struct {
 // it (family-wide on an Exclusive provider), its idle clock is at least Grace old and no job for it is queued
 // or running. The stop is an ordinary StopJob without ConfirmInUse, so a
 // session that registers between the scan and the job still blocks it.
+//
+// The config is loaded first, so every session read of the scan expands
+// aliases (a client session on an alias uses its local target) from it.
 func (a *AutoStopper) Tick(ctx context.Context) {
+	cfg := a.Deps.Config()
 	seen := a.Sessions.Seen()
 	if len(seen) == 0 || ctx.Err() != nil {
 		return
 	}
-	cfg := a.Deps.Config()
 	snap := a.Deps.Inventory(cfg)
 	now := a.Deps.Now()
 	for _, id := range seen {
@@ -76,7 +79,8 @@ func (a *AutoStopper) Tick(ctx context.Context) {
 // that session lapses after its TTL while the job may still be waiting, and
 // a model forgotten then starts unseen (Touch does not bring a forgotten
 // model back) and is never auto-stopped — the same job check the stop path
-// above makes.
+// above makes. An alias (never running itself) is forgotten by the same
+// rules; Forget then carries its idle clock to its local target.
 func (a *AutoStopper) forgetIdle(cfg *config.Config, snap localmodels.Snapshot, id string, now time.Time) {
 	if fam := modelFamily(cfg, id); fam != "" && !lifecycle.ProbeTrusted(snap, fam) {
 		return
@@ -84,7 +88,8 @@ func (a *AutoStopper) forgetIdle(cfg *config.Config, snap localmodels.Snapshot, 
 	if len(a.Sessions.Users(id)) > 0 {
 		return
 	}
-	if a.Jobs.Pending(id) {
+	// An alias's start is keyed by its local target (startKey).
+	if a.Jobs.Pending(id) || a.Jobs.Pending(startKey(cfg, id)) {
 		return
 	}
 	if since, ok := a.Sessions.IdleSince(id); !ok || now.Sub(since) < a.Grace {

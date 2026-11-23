@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -145,14 +146,104 @@ func TestListShowsStoreColumn(t *testing.T) {
 	}
 }
 
+// seedAliasRow stores one alias row (wt_alias_managed, under wta:alias/) of
+// alias for target at order, as ApplyAliasDB would leave it.
+func (f *fakeModelAPI) seedAliasRow(alias, target string, order int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := litellm.DBAliasIDPrefix + strings.TrimPrefix(alias, "alias/") + "/0123abcd/" + target
+	f.rows[id] = map[string]any{
+		"model_name":     alias,
+		"litellm_params": map[string]any{"model": "openai/" + target, "order": order},
+		"model_info":     map[string]any{litellm.AliasManagedKey: true, litellm.AliasKey: alias, litellm.AliasTargetKey: target},
+	}
+}
+
+// listFixtureAPI is the database behind the fixture's list block: one wt
+// model row and alias/x, a group of two targets.
+func listFixtureAPI(t *testing.T) *httptest.Server {
+	t.Helper()
+	fake, srv := newFakeModelAPI(t, "omlx/qwen")
+	fake.seedAliasRow("alias/x", "omlx/qwen", 2)
+	fake.seedAliasRow("alias/x", "openrouter/x/y", 1)
+	return srv
+}
+
+// TestListShowsAliasTargetAndOrder pins the alias rows of `wt-model litellm
+// list` (#596): one line per deployment of an alias, with the TARGET it
+// routes to and its ORDER, so a group's fallback order is visible where
+// routes are reviewed. Model rows show "-" in both columns.
+func TestListShowsAliasTargetAndOrder(t *testing.T) {
+	litellmEnv(t, listFixtureYAML)
+	srv := listFixtureAPI(t)
+	var out, errOut bytes.Buffer
+	if err := runLitellmList(t.Context(), &out, &errOut, false, adminFromPair(srv.URL, "sk-test"), nil); err != nil {
+		t.Fatal(err)
+	}
+	const want = "ID               STORE  OWNER         TARGET          ORDER\n" +
+		"ollama/gemma:9b  file   wt            -               -\n" +
+		"openrouter/x/y   file   hand-written  -               -\n" +
+		"omlx/qwen        db     wt            -               -\n" +
+		"alias/x          db     wt            openrouter/x/y  1\n" +
+		"alias/x          db     wt            omlx/qwen       2\n"
+	if out.String() != want || errOut.Len() != 0 {
+		t.Fatalf("list =\n%s\nwant\n%s\nstderr %q", out.String(), want, errOut.String())
+	}
+}
+
+// TestListJSONCarriesKindTargetOrder pins the additive alias keys of `list
+// --json` (#596): every row has kind (model or alias), an alias deployment
+// carries target and order and repeats its id once per target, and routed
+// names the alias once. A script reading routed or rows[].id keeps working.
+func TestListJSONCarriesKindTargetOrder(t *testing.T) {
+	litellmEnv(t, listFixtureYAML)
+	srv := listFixtureAPI(t)
+	var out, errOut bytes.Buffer
+	if err := runLitellmList(t.Context(), &out, &errOut, true, adminFromPair(srv.URL, "sk-test"), nil); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Routed []string         `json:"routed"`
+		Rows   []map[string]any `json:"rows"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, id := range doc.Routed {
+		if id == "alias/x" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("routed %v, want alias/x once", doc.Routed)
+	}
+	var aliasRows []string
+	for _, r := range doc.Rows {
+		switch r["kind"] {
+		case "model":
+			if _, ok := r["target"]; ok {
+				t.Fatalf("model row %v carries target", r)
+			}
+		case "alias":
+			aliasRows = append(aliasRows, fmt.Sprintf("%v@%v", r["target"], r["order"]))
+		default:
+			t.Fatalf("row %v has no kind", r)
+		}
+	}
+	if !slices.Equal(aliasRows, []string{"openrouter/x/y@1", "omlx/qwen@2"}) {
+		t.Fatalf("alias rows %v", aliasRows)
+	}
+}
+
 // TestListJSONCarriesStore pins `wt-model litellm list --json` against the
 // list block of docs/contracts/litellm-cli.sample.json: every row carries
-// "store", database rows are listed beside config.yaml's, and "routed" names
-// them too. The change is additive: the older keys keep their meaning, so a
+// "store" and "kind", database rows (alias deployments too, #596) are listed
+// beside config.yaml's, and "routed" names them too. The change is additive: the older keys keep their meaning, so a
 // script reading "routed" or "rows[].managed" still works.
 func TestListJSONCarriesStore(t *testing.T) {
 	litellmEnv(t, listFixtureYAML)
-	_, srv := newFakeModelAPI(t, "omlx/qwen")
+	srv := listFixtureAPI(t)
 	var out, errOut bytes.Buffer
 	if err := runLitellmList(t.Context(), &out, &errOut, true, adminFromPair(srv.URL, "sk-test"), nil); err != nil {
 		t.Fatal(err)

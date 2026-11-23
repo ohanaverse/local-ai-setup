@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
@@ -1500,6 +1501,40 @@ func TestResolveLaunchProfileGuards(t *testing.T) {
 	t.Cleanup(func() { loadProfileStore = oldLoad })
 	if _, ok, err := resolveLaunchProfile("claude", m, cfg, nil); ok || err == nil {
 		t.Errorf("load error: (%v, %v), want the error", ok, err)
+	}
+}
+
+// TestCloudFirstAliasIsNotALocalLaunch pins decision 5 on the session side:
+// a group whose order 1 is a cloud model and order 2 a local one comes as a
+// cloud row, so a launch of it matches no location = "local" profile (no
+// local-model profile prompt) and smoke gives it the cloud budget, while a
+// local-first alias over the same targets is a local launch on both counts.
+// Treating the cloud-first group as local would ask a local-tuning question
+// for a cloud session and wait 15 minutes on a cloud hang.
+func TestCloudFirstAliasIsNotALocalLaunch(t *testing.T) {
+	cfg, _ := profileFixture(t)
+	alias := func(loc string, first, second modelapi.AliasTarget) modelapi.Row {
+		return modelapi.Row{ID: "alias/g", GatewayID: "alias/g", ProviderID: "alias", Family: "alias", ModelName: "g",
+			Kind: modelapi.KindAlias, Location: loc, Registered: true, State: modelapi.StateRunning,
+			Action: modelapi.ActionLaunch, Targets: []modelapi.AliasTarget{first, second}}
+	}
+	cloud := modelapi.AliasTarget{ID: "openrouter/c", ProviderID: "openrouter", Location: "cloud", State: modelapi.StateRunning}
+	local := modelapi.AliasTarget{ID: "omlx/l", ProviderID: "omlx", Location: "local", State: modelapi.StateRunning}
+	cloud.Order, local.Order = 1, 2
+	cloudFirst := alias("cloud", cloud, local)
+	if _, ok, err := resolveLaunchProfile("claude", catalog.ToModel(cloudFirst), cfg, nil); ok || err != nil {
+		t.Errorf("cloud-first alias: profile match (%v, %v), want none", ok, err)
+	}
+	if got := smokeTimeoutAt(catalog.FromWire(cloudFirst).Location, 0); got != smokeCloudTimeout {
+		t.Errorf("cloud-first alias: smoke timeout %s, want the cloud %s", got, smokeCloudTimeout)
+	}
+	local.Order, cloud.Order = 1, 2
+	localFirst := alias("local", local, cloud)
+	if _, ok, err := resolveLaunchProfile("claude", catalog.ToModel(localFirst), cfg, nil); !ok || err != nil {
+		t.Errorf("local-first alias: profile match (%v, %v), want the local profile", ok, err)
+	}
+	if got := smokeTimeoutAt(catalog.FromWire(localFirst).Location, 0); got != smokeLocalTimeout {
+		t.Errorf("local-first alias: smoke timeout %s, want the local %s", got, smokeLocalTimeout)
 	}
 }
 

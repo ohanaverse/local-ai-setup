@@ -875,3 +875,47 @@ func TestRouteSyncThatChangesNothingDoesNotRestartTheProxy(t *testing.T) {
 		t.Errorf("restarts = %q after a sync that changed nothing, want still one", got)
 	}
 }
+
+// TestModelEditContextWindowZeroClears pins `--context-window`: N writes the
+// key, and 0 removes it (the way an empty value clears every other field), so
+// the file loses the key rather than holding a meaningless 0.
+func TestModelEditContextWindowZeroClears(t *testing.T) {
+	h := testHost()
+	registry := modelHome(t, writeRegistry)
+	stubRouteSync(h, "")
+	if _, err := runEditCmd(t, h, "ollama/gemma4:9b", "--context-window", "65536"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, registry); !strings.Contains(got, "context_window = 65536") {
+		t.Fatalf("registry has no context_window = 65536:\n%s", got)
+	}
+	if _, err := runEditCmd(t, h, "ollama/gemma4:9b", "--context-window", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, registry); strings.Contains(got, "context_window") {
+		t.Errorf("registry still has context_window after 0:\n%s", got)
+	}
+}
+
+// TestModelRmNamesTheAlias pins decision 11 at the command line: removing a
+// model an alias targets is a plain refusal (exit 1) that names the alias
+// and the commands that change it, made before the question is asked, and
+// the registry is left byte for byte. A removal would leave the alias naming
+// nothing and silently shrink a group.
+func TestModelRmNamesTheAlias(t *testing.T) {
+	registry := modelHome(t, writeRegistry+"\n[[aliases]]\nid = \"alias/main\"\ntargets = [{ model = \"openrouter/a--b\" }]\n")
+	before := mustRead(t, registry)
+	h := testHost()
+	asked := stubConfirmRemove(h, true)
+	stubRouteSync(h, "")
+	out, err := runWTModelOn(t, h, "model", "rm", "openrouter/a--b")
+	if err == nil || !errors.Is(err, config.ErrModelInUse) || !strings.Contains(err.Error(), "alias/main") || !strings.Contains(err.Error(), "wt-model alias") {
+		t.Fatalf("err = %v, want ErrModelInUse naming alias/main and the alias commands (output %q)", err, out)
+	}
+	if *asked != "" {
+		t.Errorf("asked %q before refusing", *asked)
+	}
+	if mustRead(t, registry) != before {
+		t.Error("the registry changed")
+	}
+}

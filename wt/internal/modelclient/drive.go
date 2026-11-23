@@ -114,19 +114,23 @@ func (e *DeclinedError) Error() string { return "declined — nothing was " + e.
 
 // RunStart submits a start, polls it to the end and answers its questions by
 // re-posting. A start for a model whose start job is already active joins that
-// job (the server hands back its id); a problem that job ends with is asked of
+// job (the server hands back its id; an alias's start joins its local
+// target's); a problem that job ends with is asked of
 // this caller and answered with this caller's own choices. Cancelling ctx
 // while the job runs detaches (*DetachedError); the job is never cancelled.
 func (c *Client) RunStart(ctx context.Context, req modelapi.StartRequest, ans Answerer, prog Progress) (modelapi.JobStatus, error) {
-	active := ""
-	jobs, err := c.ActiveJobs(ctx, req.Model)
+	// Every active start job, not only those named by req.Model: the server
+	// keys an alias's start by its local target and names the job after it
+	// (#596), so a start of alias/x joins the target's job. Joining is the
+	// POST handing back an id that was already active.
+	jobs, err := c.ActiveJobs(ctx, "")
 	if err != nil {
 		return modelapi.JobStatus{}, err
 	}
+	active := map[string]bool{}
 	for _, j := range jobs {
-		if j.Kind == "start" && j.Model == req.Model {
-			active = j.ID
-			break
+		if j.Kind == "start" {
+			active[j.ID] = true
 		}
 	}
 	r := c.newRun(prog)
@@ -136,8 +140,8 @@ func (c *Client) RunStart(ctx context.Context, req modelapi.StartRequest, ans An
 		if err != nil {
 			return modelapi.JobStatus{}, err
 		}
-		attached := active != "" && id == active
-		active = ""
+		attached := active[id]
+		active = nil // a re-post's job is this run's own
 		js, err := r.poll(ctx, id, attached)
 		if err != nil || js.State == modelapi.JobSucceeded {
 			return js, err

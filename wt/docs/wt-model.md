@@ -16,6 +16,7 @@ wt-model model init [--json]      # create the registry if it is missing; add th
 wt-model model add <provider> <name> --family F [--tags a,b] [--location local|cloud] [price flags] [--id ID]
 wt-model model edit <id> [--family F] [--tags a,b] [--location local|cloud] [--source manual|curated] [price flags]
 wt-model model rm <id>... [--yes]
+wt-model alias list|set|rm ...    # registry aliases and priority groups; see "wt-model alias" below
 wt-model model add mlx_lm_server <target> --draft <draft> --family F   # a target+draft pairing
 ```
 
@@ -172,6 +173,7 @@ or after adding it; `wt-model model list` shows what is on disk and unregistered
 | `--input-price`, `--cache-price`, `--output-price` | $ per million tokens |
 | `--subscription-price`, `--subscription-period month\|year` | a subscription price needs a period |
 | `--id` | the id, instead of the derived one: `<provider>/<name>`, with no spaces |
+| `--context-window N` | the model's context window in tokens (#626); see [the window](#a-models-context-window) |
 
 A cloud model that `wt-model cloud-sync` covers (any `openrouter` model, an ollama
 model with `--location cloud` or a cloud tag) is written with `source =
@@ -275,9 +277,22 @@ model inherit its provider's. `--source manual|curated` sets the row's
 source; it is for models `wt-model cloud-sync` covers (an `openrouter` model, an
 ollama cloud model) and is refused for any other. Use `--source manual` on a
 cloud model you added by hand before cloud-sync knew the mark, so the next sync
-does not offer to remove it. No flag at all is a usage error. It does not
+does not offer to remove it. `--context-window N` sets the window (`0` removes the key). No flag at all is a usage error. It does not
 change `pricing_updated_at`. When nothing changes it says `no change` and
 syncs nothing.
+
+### A model's context window
+
+`context_window` is an optional whole number of tokens on a `[[models]]` row
+(`wt-model model add|edit --context-window N`; `0` on `edit` removes it; a
+negative is refused, and a hand-written value that is not a whole number reads
+as absent, it never fails the load). It is the one way to give a **local**
+model a window, which `tiers.toml` never records. The model server sends the
+window as the catalog row's `context`: the registry value when set (any
+location), else, for a cloud model, the tiers file's window when it is the
+model's own host window. Claude Code reads it to declare
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` ([claude-wt.md](wt-agents/claude-wt.md#context-window-of-a-gateway-model)).
+Other agents do not use it yet.
 
 ### `serve_args`: extra flags for an mtplx model
 
@@ -341,6 +356,121 @@ An id that more than one registry row carries is refused in the same way,
 before the question and with the message `wt-model model edit` gives: none of the
 ids named is removed, whichever of them it is. Removing one of two rows that
 share an id is a hand edit — only there can you see which row is which.
+
+A model a registry alias targets is refused too, before the question: the
+message names the aliases (`model is an alias target: model "<id>" is a
+target of alias/<x>; change or remove the alias first (wt-model alias
+set|rm)`), and nothing is removed. The Models tab's `d` says the same.
+
+## `wt-model alias`
+
+A registry alias is a gateway id `alias/<name>` (`<name>` matches
+`^[a-z0-9][a-z0-9.-]*$`) that a slot profile, pi or codex names like a model
+and that routes to one model, or to several in priority order (a group: a
+lower `order` is tried first). Aliases live in a top-level `[[aliases]]`
+array of `registry.toml`, never in `[[models]]`: `id` and
+`targets = [{ model = "<registry id>", order = N }, ...]`, and nothing else
+(a `notes` key, or any unknown key, marks the alias malformed, and wt freezes
+it: reserved words are not accepted yet). `order` left out is the target's
+position, from 1. A target names exactly one registry model; no alias or native
+model is a target; at most one target is local. An alias id never equals a
+model id, and provider id `alias` and model ids under `alias/` are refused.
+
+```bash
+wt-model alias list [--json]
+wt-model alias set <alias/name> --target ID[:ORDER]... [--accept-smaller-window] [--dry-run]
+wt-model alias rm <alias/name>... [--yes] [--force-in-use]
+```
+
+`list` needs neither a model server nor the proxy: ALIAS, TARGETS
+(`order:model`), CONTEXT (the smallest window over all targets, `-` when any
+is unknown), SESSIONS (client sessions of the running model server; `-` when
+no server record answers; a record that cannot be read, or a server that
+does not answer, is one note, `wt-model: note: could not read client sessions
+from the model server (<why>) — no alias is counted as in use`, and the
+command goes on with no counts, so `rm` then needs no `--force-in-use`) and ROUTED (`yes`, `no`, or `?` when the proxy
+pair is not set or the database cannot be read). `--json` prints one
+document, [alias-list.sample.json](../../docs/contracts/alias-list.sample.json),
+with `null` for an unknown `context`, `sessions` or `routed`. An alias the
+registry cannot use is listed with a warning. No output carries a route's
+parameters.
+
+`set` creates the alias or replaces its **whole** target list. A `--target`
+whose id is a registry model is read whole (an ollama tag such as
+`ollama/qwen3:8b` holds a colon); otherwise a digit suffix after the last
+colon is the order. It prints `set alias: <id>` or `no change: <id>`. A set
+that makes the alias's window smaller, or unknown where it was known, asks
+y/N (default No) and names the client sessions using the alias (they keep the
+window they launched with); `--accept-smaller-window` answers yes. Without a
+terminal it refuses: `approval missing: pass --accept-smaller-window (there is
+no terminal to ask); nothing was changed`, exit 3. `--dry-run` prints the
+targets, the window change and each database row the write would plan (row
+id, target, order and the 8-character hash `h8`, never the parameters),
+changes nothing and writes no row at all when no proxy pair is set.
+
+`rm` removes the aliases and, through the sync that follows, their rows; the
+models they target are not touched. It asks on the terminal (`--yes` skips;
+without either it refuses, exit 3). An alias that client sessions use also
+needs `--force-in-use`. When one id is not an alias none is removed.
+
+Exit codes of `set` and `rm`: 0 done (also when the routes could not be
+written: a warning says so), 1 a plain error (a bad target, a refused alias,
+a failed registry write), 3 approval missing, nothing changed.
+
+**The routes.** After the registry write one route sync runs. Each alias
+becomes one LiteLLM database row per live target (a cloud target always, a
+local one while it runs), `model_name` the alias id and the target's own
+parameters plus `order`; rows are added before the old ones are deleted, so a
+re-point has no gap and no proxy restart. Targets with equal `order` share
+the requests (measured on LiteLLM 1.109.1: two equal-order targets each served
+part of 30 requests, no even split promised); a lower order is tried first. A cloud target's resolved key is stored, encrypted by LiteLLM,
+in its alias row (never printed). Aliases are never written to `config.yaml`.
+Detail: [internals/litellm-routes.md](internals/litellm-routes.md#alias-rows).
+
+**When the database cannot be reached** (no proxy pair, `store_model_in_db`
+off, a failed list, the deadline) the registry write still happens, exit stays
+0, nothing is written to the file, and one warning says:
+
+```text
+alias routes unavailable (<reason>); registry written, LiteLLM not updated; run 'wt-model litellm sync' when the proxy answers
+```
+
+`alias rm` prints it too, when the rows could not be deleted. Existing alias
+rows survive in the database and keep routing. The repair is any full sync:
+`wt-model litellm sync` (serve also runs one at start). Until then, while the
+gateway does not list the alias id, its catalog row reads `start` when its
+lowest-order local target runs (the alias is unrouted) or must start (the start
+re-runs that target's route write, which adds the alias's rows); else `block`
+when any target is servable but the alias is not routed; else `start` when no
+target is servable but any target can start; else `block`. The one
+exception to the warning: with no `config.yaml` at all (no LiteLLM set up on
+this machine) the write runs no sync and prints nothing.
+
+**Renaming** is not a command. The sequence: `wt-model alias set alias/new
+--target ...` with the same targets, then `wt profile slots set` on each
+session machine to name the new id, and later `wt-model alias rm alias/old`
+once `alias list` shows no SESSIONS on it (rm refuses an alias in use without
+`--force-in-use`).
+
+**Upgrade order.** An older `wt-model` refuses every registry write once
+`[[aliases]]` exists, and ignores alias rows (its start, stop and sync neither
+add nor remove them). Run `make install` and restart the serve LaunchAgent
+before the first `alias set`; edit the plist if its program changed, then
+`launchctl bootout` and `bootstrap` it: a `kickstart` alone keeps the old
+loaded definition. Update the server before the clients: an older server sends
+a local row's `context` from the tiers file, so a newer client against it may
+declare a window the registry never set.
+
+An alias with no live target has no rows: LiteLLM answers its unknown-model
+error and a warning says `alias/<x> has no live target`. A target that is
+only unresolvable (a cloud key missing from serve's environment) keeps its
+existing row and warns. Rows are compared by the hash stamped on them, so a
+hand edit in the LiteLLM UI that keeps the stamp is not detected. Two aliases
+with one id fail the registry load, the one case where a bad alias does.
+
+**Launching.** `-M alias/<name>`, the picker and slot profiles list and launch an alias like a model. A launch with no pin (and rotation) never picks an alias: it walks the registered models only.
+
+The Models tab has no alias screen yet: use `wt-model alias`.
 
 ## What stays a hand edit of `registry.toml`
 

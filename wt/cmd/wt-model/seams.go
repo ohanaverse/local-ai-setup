@@ -16,7 +16,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeleditor"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
 // seams are the hooks of wt-model's admin commands, carried per call on the
@@ -43,12 +45,26 @@ type seams struct {
 	// registry write and returns a warning for the user, or "" when the
 	// routes are in step.
 	syncRoutesAfterWrite func(out, errOut io.Writer) string
+	// syncRoutesAfterAliasRemoval is syncRoutesAfterWrite after `wt-model
+	// alias rm` (litellm.SyncAfterAliasRemoval): a database half that cannot
+	// run says the removed aliases' rows still route (decision 4).
+	syncRoutesAfterAliasRemoval func(out, errOut io.Writer) string
 	// openTTY opens the controlling terminal a question is asked on.
 	openTTY func() (*os.File, error)
-	// confirmRemove asks before `wt-model model rm` removes rows: a y/N
-	// prompt on the controlling terminal (realConfirmRemove), so piped input
-	// can never authorise a removal.
+	// confirmRemove asks before `wt-model model rm` or `wt-model alias rm`
+	// removes rows, and before `wt-model alias set` makes an alias's window
+	// smaller: a y/N prompt on the controlling terminal (realConfirmRemove),
+	// so piped input can never authorise it.
 	confirmRemove func(question string) (bool, error)
+	// tiersIndex is the tiers file as the alias commands read a cloud
+	// model's window from it (tiers.Load; windows.Model). testHost reads no
+	// file.
+	tiersIndex func() tiers.Index
+	// clientSessions is the running model server's client sessions per
+	// model or alias id, read through serve's runtime record in rec
+	// (aliasSessionReader: nil with no record). `wt-model alias list|set|rm`
+	// read it; testHost knows none.
+	clientSessions func(ctx context.Context, w io.Writer, rec servestate.Store) func() map[string]int
 	// stdinTTY reports whether stdin is a terminal.
 	stdinTTY func() bool
 	// stdoutWidth is the terminal's width in columns, or 0 when stdout is
@@ -132,6 +148,8 @@ func newHost() *host {
 		stdoutWidth:     cli.StdoutWidth,
 		cloudFetch:      realCloudFetch,
 		cloudSyncNow:    time.Now,
+		tiersIndex:      tiers.Load,
+		clientSessions:  aliasSessionReader,
 		ollamaWaitDelay: defaultOllamaWaitDelay,
 		modeleditorRun: func(theme themes.Theme, cfg *config.Config, cfgErr error, o modeleditor.Options) (modeleditor.Result, error) {
 			return modeleditor.Run(theme, cfg, cfgErr, o)
@@ -141,6 +159,7 @@ func newHost() *host {
 		return adminFromPair(cfg.LitellmBaseURL(), cfg.LitellmAPIKey())
 	}
 	h.syncRoutesAfterWrite = h.realSyncRoutesAfterWrite
+	h.syncRoutesAfterAliasRemoval = h.realSyncRoutesAfterAliasRemoval
 	h.confirmRemove = h.realConfirmRemove
 	h.confirmCloudSync = h.promptCloudSync
 	h.ollamaCLI = h.realOllamaCLI
@@ -173,4 +192,10 @@ func (h *host) realConfirmRemove(question string) (bool, error) {
 // seams).
 func (h *host) realSyncRoutesAfterWrite(out, errOut io.Writer) string {
 	return litellm.SyncAfterWrite(out, errOut, h.probeInventory, func(c *config.Config) *litellm.AdminClient { return h.adminFor(c) })
+}
+
+// realSyncRoutesAfterAliasRemoval is realSyncRoutesAfterWrite after a write
+// that removed aliases (litellm.SyncAfterAliasRemoval).
+func (h *host) realSyncRoutesAfterAliasRemoval(out, errOut io.Writer) string {
+	return litellm.SyncAfterAliasRemoval(out, errOut, h.probeInventory, func(c *config.Config) *litellm.AdminClient { return h.adminFor(c) })
 }

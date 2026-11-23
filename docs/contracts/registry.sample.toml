@@ -1,7 +1,8 @@
 # Shared fixture for cross-language contract tests. Exercises every schema
 # variant wt writes and reads: all three provider auth types
 # (none, api_key, native), full per-token + subscription pricing, model_info,
-# a per-model location override, and a free model. Since #179 Phase B it also
+# a per-model location override, a free model, and [[aliases]] (one alias,
+# one group of a cloud and a local target). Since #179 Phase B it also
 # pins local overlay matching: a local registry entry is an overlay matched to
 # a discovered model by provider family + model_name, never by id — so an id
 # spelling "/" as "--" matches exactly like one shaped provider/model_name, and
@@ -19,12 +20,12 @@
 #
 # Read by:
 #   - wt/internal/config/registry_fixture_test.go (Go)
-#   - wt/internal/catalog/registry_fixture_test.go (Go)
+#   - wt/internal/localmodels/registry_fixture_test.go (Go)
 #   - wt/cmd/wt-session/litellm_proxy_test.go (Go)
 #   - wt/cmd/wt-model/litellm_sync_test.go (Go)
 #   - wt/internal/config/model_artifact_test.go (Go)
 #   - llmbench/tests/test_registry.py (Python; reads id/family/provider_id/
-#     model_name/location/fetch/draft only)
+#     model_name/location/fetch/draft only; ignores [[aliases]])
 #
 # The point of this file is that changing a field here without updating
 # every test listed above should make each of their CI jobs (wt-ci,
@@ -182,3 +183,20 @@ family = "contract-fixture"
 provider_id = "ollama"
 model_name = "contract-fixture:absent"
 tags = ["code"]
+
+# [[aliases]] (#596): a gateway id that names one model (an alias) or several
+# in priority order (a group). Never a model row: llmbench ignores the table,
+# wt reads it into Config.Aliases. `order` is optional and reads as the
+# target's 1-based position; targets with equal order share the requests
+# (measured on LiteLLM 1.109.1); a lower order is tried first.
+# A group has at most one local target.
+[[aliases]]
+id = "alias/fixture-cloud"
+targets = [{ model = "openrouter/contract-fixture:cloud" }]
+
+[[aliases]]
+id = "alias/fixture-group"
+targets = [
+  { model = "pinned-cloud/contract-fixture:inherit", order = 1 },
+  { model = "ollama/contract-fixture:local", order = 2 },
+]

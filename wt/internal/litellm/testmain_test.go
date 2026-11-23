@@ -6,6 +6,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // TestMain replaces the shell runner with a hard failure so no test in this
@@ -19,6 +21,10 @@ import (
 // set proxyProc themselves (stubDefaultRestart), and the readiness half of
 // the default restart is replaced too (see below).
 func TestMain(m *testing.M) {
+	// The alias half re-reads the registry (config.Load) and the proxy pair
+	// comes from the wt-model home: both resolve inside a throwaway config
+	// home, with the registry write guard armed.
+	_, cleanup := config.IsolateConfigHomeForTest()
 	runShell = func(context.Context, string) error {
 		return errors.New("runShell not stubbed in this test")
 	}
@@ -36,5 +42,17 @@ func TestMain(m *testing.M) {
 	bounce.WaitReady = func(context.Context, string, time.Duration) error {
 		return errors.New("bounce.WaitReady not stubbed in this test")
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
+}
+
+// TestRegistryWriteGuardIsArmedHere verifies this test binary cannot read or
+// write the developer's registry: the alias half re-reads the registry
+// (Options.loadRegistry's default, config.Load), so without the throwaway
+// config home a test that forgot to redirect it would read the real one.
+func TestRegistryWriteGuardIsArmedHere(t *testing.T) {
+	if !config.RegistryWriteGuardArmed() {
+		t.Fatal("the registry write guard is not armed: TestMain must call config.IsolateConfigHomeForTest")
+	}
 }

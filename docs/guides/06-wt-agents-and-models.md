@@ -275,6 +275,8 @@ Full reference — all four agents' mechanisms, file-safety/self-heal rules, cla
 
 ### 10. Slot profiles (Claude Code)
 
+A slot may name an alias (`alias/<name>`, guide 04 step 7) as well as a model. For the profile's one-local-model rule an alias and its own local target count as one model, and the alias's window (the smallest of its targets') is what claude declares.
+
 A launch names one model, and Claude Code uses several tiers (background work, subagents, a `/model` switch). A single-model launch sends every tier to the one model it names (wt sets `ANTHROPIC_DEFAULT_<SLOT>_MODEL` for all four; see `wt/docs/wt-agents/claude-wt.md`), so none of the four keeps an Anthropic id for the endpoint to reject. A **slot profile** gives the tiers different models: it maps each of Claude Code's four slots (`fable`, `opus`, `sonnet`, `haiku`) to a registry model, in one launch, always through the LiteLLM proxy. It is a different thing from the automatic profiles of §9: you write it, name it and choose it.
 
 **Step 1 — write the file.** `~/.config/agent-wt/slot-profiles.toml`, by hand, or with `wt profile slots add <name> --slot <slot>=<id> …` (see [08 §8](08-maintenance-and-troubleshooting.md)). Take the ids from `wt-model model list`; the ones below are placeholders:

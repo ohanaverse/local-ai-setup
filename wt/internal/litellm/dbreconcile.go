@@ -171,7 +171,7 @@ func (c *AdminClient) ApplyDB(ctx context.Context, p DBPlan) (added, updated, de
 			}
 			continue
 		}
-		if e := c.addConverged(ctx, m); e != nil {
+		if e := c.addConverged(ctx, m, isManagedDB); e != nil {
 			errs = append(errs, fmt.Errorf("litellm: update database model %s: deleted but not re-added, its route is missing until the next sync: %w", m.ID, e))
 			if stopApply(ctx, e) {
 				return added, updated, deleted, errors.Join(errs...)
@@ -181,7 +181,7 @@ func (c *AdminClient) ApplyDB(ctx context.Context, p DBPlan) (added, updated, de
 		updated++
 	}
 	for _, m := range p.Add {
-		if e := c.addConverged(ctx, m); e != nil {
+		if e := c.addConverged(ctx, m, isManagedDB); e != nil {
 			errs = append(errs, fmt.Errorf("litellm: add database model %s: %w", m.ID, e))
 			if stopApply(ctx, e) {
 				return added, updated, deleted, errors.Join(errs...)
@@ -200,8 +200,11 @@ func stopApply(ctx context.Context, err error) bool {
 }
 
 // addConverged adds m with its hash stamped; when the Add fails it re-lists
-// and returns nil only if a wt-managed row with m's id and hash is now stored.
-func (c *AdminClient) addConverged(ctx context.Context, m DBModel) error {
+// and returns nil only if a row with m's id and hash that owned accepts is
+// now stored. owned is the caller's ownership test: isManagedDB for a model
+// row (ApplyDB), IsAliasDB for an alias row (ApplyAliasDB), so neither path
+// counts the other's row as its own.
+func (c *AdminClient) addConverged(ctx context.Context, m DBModel, owned func(DBModel) bool) error {
 	info := make(map[string]any, len(m.Info)+1)
 	for k, v := range m.Info {
 		info[k] = v
@@ -222,7 +225,7 @@ func (c *AdminClient) addConverged(ctx context.Context, m DBModel) error {
 		return errors.Join(addErr, fmt.Errorf("re-list after the failed add: %w", listErr))
 	}
 	for _, r := range rows {
-		if r.ID == m.ID && isManagedDB(r) && hashMatches(r, m, c.Key) {
+		if r.ID == m.ID && owned(r) && hashMatches(r, m, c.Key) {
 			return nil
 		}
 	}

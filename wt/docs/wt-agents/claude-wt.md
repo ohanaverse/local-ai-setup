@@ -106,10 +106,15 @@ other id it assumes 200K tokens and prints `Model "…" isn't recognized ·
 context assumed to be 200k tokens` at startup. That notice is Claude Code's
 own message, not a wt fault.
 
-When the model's entry in the host's `tiers.toml` (modeltiers' output, read
-by the model server, which reports it as the row's `context`) has a `context`
-**taken from the model's own host row** (`context_basis = "host"`), wt also
-sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to it, so Claude Code compacts against the real window and the notice goes away.
+The model server reports a window as the catalog row's `context`, from one of
+these sources, in this order: the model's registry `context_window` (any
+location, including a local model, [wt-model.md](../wt-model.md#a-models-context-window);
+#626); else, for a cloud model, its entry in the host's `tiers.toml`
+(modeltiers' output) when the `context` is **taken from the model's own host
+row** (`context_basis = "host"`); for an alias (`alias/<name>`), the smallest
+window over all its targets, none when any target's is unknown (a larger
+window would make Claude Code compact too late on the smaller target). When
+the row has a window wt also sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to it, so Claude Code compacts against the real window and the notice goes away.
 `tiers.toml` records a window for **cloud** models from models.dev, and none
 for a local build, whose served window modeltiers cannot know. When the
 model's host has no row of its own, modeltiers still writes the largest
@@ -118,7 +123,8 @@ marks it `context_basis = "largest_row"`, and wt does not declare it: no host
 serves that window, and Claude Code would compact too late against one the
 provider rejects. A `tiers.toml` written before the key existed has no basis,
 so it declares nothing until the next `modeltiers run`. A model with no
-declarable window gets nothing from wt: set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+declarable window gets nothing from wt: give it a registry `context_window`
+(`wt-model model edit <id> --context-window N`), or set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
 yourself, in your shell or in a profile's `env`, to the window you serve.
 
 The variable holds one value per session. A value already exported in your

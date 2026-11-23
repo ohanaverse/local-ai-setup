@@ -172,14 +172,19 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      ones the source now lists. Neither needs a decision. A model the user
      says they added by hand and sees under `Registry removals` is one to
      protect: `wt-model model edit <id> --source manual`, then a new dry run.
+   - `warning: kept <id>: alias/<x> targets it` means a model the source no
+     longer lists stays because a registry alias targets it (it is not in
+     `Registry removals` or the digest, and its ollama tag is not removed).
+     No decision is needed now; to let it go, re-point or remove the alias
+     (`wt-model alias set|rm`), then run a new dry run.
    - A non-zero exit here is 1, 2 or 3 from the table below (a dry run never
      exits 4 or 5). Nothing was changed.
 2. **Ask.** Get the user's go-ahead for the whole of both plans. List every
    registry removal and every `ollama rm` by name and get an explicit yes to
    those in particular. The OpenRouter removals are models OpenRouter no
    longer lists. A dry run does not flag a mass removal (more than half the
-   flow's entries, re-tagged ollama ones not counted, manual ones left
-   out); the apply does. Estimate it: the `Registry removals` lines without `(re-tagged as
+   flow's entries, re-tagged ollama ones not counted, manual ones and alias
+   targets left out); the apply does. Estimate it: the `Registry removals` lines without `(re-tagged as
    …)`, against the counts of `Price updates`, `Unchanged prices` and
    `Registry removals` added together. If that looks like more than half,
    say so now: the apply refuses it without `--force` (exit 4, whose line

@@ -44,7 +44,9 @@ type Pull struct{ ID, Tag string }
 // the registry's ollama cloud entries both mirror the page.
 type CatalogPlan struct {
 	CatalogSize int
-	// CloudEntries counts the registry's ollama cloud entries before the sync.
+	// CloudEntries counts the registry's ollama cloud entries before the
+	// sync that a sync may remove: not manual, and no alias targets them.
+	// It is the denominator of the mass-removal guard.
 	CloudEntries int
 	Updates      []CostUpdate
 	Unchanged    []string
@@ -369,7 +371,9 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 	ids := map[string]bool{}
 	for _, e := range entries {
 		ids[e.ID] = true
-		if isOllamaCloud(e) && !e.Manual() {
+		if isOllamaCloud(e) && !e.Manual() && len(e.AliasUsers) == 0 {
+			// An alias target is kept (decision 11), so it never dilutes
+			// the mass-removal guard.
 			plan.CloudEntries++
 		}
 	}
@@ -406,13 +410,18 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 				}
 			}
 		}
-		if retagged != nil && retagged.Manual() {
-			// A hand-added entry is never replaced: keep it as it is, with
-			// both tags counted as listed so neither becomes a stray, and
-			// say so. It does not graduate on this match.
+		if retagged != nil && (retagged.Manual() || len(retagged.AliasUsers) > 0) {
+			// A hand-added entry, or one an alias targets (decision 11), is
+			// never replaced: keep it as it is, with both tags counted as
+			// listed so neither becomes a stray, and say so. It does not
+			// graduate on this match.
 			matched[retagged.ID] = true
 			listed[retagged.ModelName], listed[tag] = true, true
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s: manual entry's tag %q is not the one ollama publishes (%q); kept as it is", retagged.ID, retagged.ModelName, tag))
+			if retagged.Manual() {
+				plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s: manual entry's tag %q is not the one ollama publishes (%q); kept as it is", retagged.ID, retagged.ModelName, tag))
+			} else {
+				plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s (its tag %q is not the one ollama publishes, %q)", keptForAliases(*retagged), retagged.ModelName, tag))
+			}
 			continue
 		}
 		if tag == "" {
@@ -505,6 +514,10 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 		}
 		if e.Manual() {
 			plan.Kept = append(plan.Kept, e.ID)
+		} else if len(e.AliasUsers) > 0 {
+			// An alias target stays (decision 11), and so does its tag: it
+			// is registered, so never a stray, and only Removals are rm'd.
+			plan.Warnings = append(plan.Warnings, keptForAliases(e))
 		} else {
 			plan.Removals = append(plan.Removals, e.ID)
 			if !IsCloudTag(e.ModelName) {

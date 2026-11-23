@@ -31,9 +31,11 @@ func ToModel(r modelapi.Row) config.Model {
 		m.Cost.CachePricePerMillion = r.Price.Cache
 		m.Cost.OutputPricePerMillion = r.Price.Output
 	}
-	if r.Location == string(config.LocationCloud) {
-		m.HostContext = r.Context
-	}
+	// Every row's window: a cloud model's from the host's tiers.toml, any
+	// model's own registry context_window, an alias's minimum over its
+	// targets (0 when one is unknown). The server decides; claude's window
+	// rules read it (#626).
+	m.HostContext = r.Context
 	return m
 }
 
@@ -63,15 +65,21 @@ func FromWire(r modelapi.Row) Row {
 // in config.SushiAgents; an AllProviders agent takes every row but another
 // agent's native one (the ProviderID == a.Name test relies on the convention
 // that a native provider id equals its agent driver name: agy, claude,
-// copilot). No protocol filter is applied (R5).
+// copilot). No protocol filter is applied (R5). An alias row (#596) is
+// eligible when it has targets and every target's provider passes the same
+// test (a target is never native: it is reached through the gateway), so a
+// group never falls back onto a model the agent could not run itself.
 func EligibleWire(rows []modelapi.Row, a config.Agent, tags, family string) []modelapi.Row {
 	tagSet := config.ParseFilterList(tags)
 	familySet := config.ParseFilterList(family)
 	var out []modelapi.Row
 	for _, r := range rows {
-		ok := slices.Contains(a.SupportedProviders, r.ProviderID) ||
-			(a.AllProviders && (!r.Native || r.ProviderID == a.Name)) ||
-			(r.ProviderID == "sushi" && slices.Contains(config.SushiAgents, a.Name))
+		ok := providerEligible(a, r.ProviderID, r.Native)
+		if r.Kind == modelapi.KindAlias {
+			ok = len(r.Targets) > 0 && !slices.ContainsFunc(r.Targets, func(t modelapi.AliasTarget) bool {
+				return !providerEligible(a, t.ProviderID, false)
+			})
+		}
 		if !ok {
 			continue
 		}
@@ -87,6 +95,13 @@ func EligibleWire(rows []modelapi.Row, a config.Agent, tags, family string) []mo
 	return out
 }
 
+// providerEligible is EligibleWire's provider test for one provider id.
+func providerEligible(a config.Agent, providerID string, native bool) bool {
+	return slices.Contains(a.SupportedProviders, providerID) ||
+		(a.AllProviders && (!native || providerID == a.Name)) ||
+		(providerID == "sushi" && slices.Contains(config.SushiAgents, a.Name))
+}
+
 // Launchable keeps the rows that can be launched as they are.
 func Launchable(rows []modelapi.Row) []modelapi.Row {
 	var out []modelapi.Row
@@ -99,11 +114,13 @@ func Launchable(rows []modelapi.Row) []modelapi.Row {
 }
 
 // RegisteredOrdered is the registered rows as models, in Order: the list
-// rotation walks. A discovered model is never in it.
+// rotation walks. A discovered model is never in it, and neither is an alias
+// row (decision 14: a launch with no pin never rotates onto an alias; the
+// picker and -M alias/x list and launch one).
 func RegisteredOrdered(rows []modelapi.Row) []config.Model {
 	var reg []modelapi.Row
 	for _, r := range rows {
-		if r.Registered {
+		if r.Registered && r.Kind != modelapi.KindAlias {
 			reg = append(reg, r)
 		}
 	}

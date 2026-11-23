@@ -21,7 +21,8 @@ import (
 //  3. a native row has no gateway route (Review Focus 4: the gateway's
 //     origin and token never reach a native model);
 //  4. a row the server blocks blocks the profile with its block_reason;
-//  5. at most one distinct local model.
+//  5. at most one distinct local model, counted by the model each slot row
+//     loads (an alias row's local target, or the row itself).
 //
 // The one local model's row is Profile.Local (FromWire) and supplies the
 // row's RUNNING cell; the verdict is start exactly when NeedsStart says the
@@ -95,26 +96,67 @@ func ResolveSlotProfileWire(byID map[string]modelapi.Row, c profiles.SlotCheck) 
 		}
 	}
 
-	var locals []config.Model
+	// Local models are counted by the model each one loads (localTarget): an
+	// alias and its own local target, or two aliases on one target, are one
+	// local model and one start.
+	var groups [][]modelapi.Row
+	group := map[string]int{}
 	for _, m := range p.Distinct() {
-		if m.Location == config.LocationLocal {
-			locals = append(locals, m)
+		r := byID[m.ID]
+		key := localTarget(r)
+		if key == "" {
+			continue
 		}
+		i, ok := group[key]
+		if !ok {
+			i = len(groups)
+			group[key] = i
+			groups = append(groups, nil)
+		}
+		groups[i] = append(groups[i], r)
 	}
-	if len(locals) > 1 {
-		return block(fmt.Sprintf("slots name two local models (%s and %s); a slot profile may name one", locals[0].ID, locals[1].ID))
+	if len(groups) > 1 {
+		return block(fmt.Sprintf("slots name two local models (%s and %s); a slot profile may name one", groups[0][0].ID, groups[1][0].ID))
 	}
-	if len(locals) == 0 {
+	if len(groups) == 0 {
 		return row
 	}
-	own := FromWire(byID[locals[0].ID])
+	// The row the launch starts is the first, in slot order, that needs a
+	// start (an alias's start also adds the alias's routes), else the first.
+	pick := groups[0][0]
+	for _, r := range groups[0] {
+		if NeedsStart(r) {
+			pick = r
+			break
+		}
+	}
+	own := FromWire(pick)
 	judged = true
 	p.Local = &own
 	row.Running, row.Loading = own.Running, own.Loading
-	if NeedsStart(*own.Wire) {
+	if NeedsStart(pick) {
 		p.Verdict = ActionStart
 	}
 	return row
+}
+
+// localTarget is the local model a catalog row loads: its own id for a local
+// model row, an alias row's local target for a local alias (one whose
+// lowest-order level holds its local target; the server sends any other
+// alias as a cloud row), and "" for a cloud row. A local alias row whose
+// targets name no local model (an older server) counts as itself.
+func localTarget(r modelapi.Row) string {
+	if r.Location != string(config.LocationLocal) {
+		return ""
+	}
+	if r.Kind == modelapi.KindAlias {
+		for _, t := range r.Targets {
+			if t.Location == string(config.LocationLocal) {
+				return t.ID
+			}
+		}
+	}
+	return r.ID
 }
 
 // slotLocalStateWire is slotLocalState over catalog rows: the Running and
@@ -125,10 +167,10 @@ func slotLocalStateWire(byID map[string]modelapi.Row, sp profiles.SlotProfile) (
 	var local *modelapi.Row
 	for _, id := range sp.Slots {
 		r, ok := byID[id]
-		if !ok || r.Location != string(config.LocationLocal) {
+		if !ok || localTarget(r) == "" {
 			continue
 		}
-		if local != nil && local.ID != r.ID {
+		if local != nil && localTarget(*local) != localTarget(r) {
 			return false, false
 		}
 		local = &r

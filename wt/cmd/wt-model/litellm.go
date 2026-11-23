@@ -18,7 +18,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
@@ -274,7 +276,8 @@ func runLitellmSet(out io.Writer, url, key *string) error {
 
 // runLitellmList is `wt-model litellm list`: every route the proxy has, from
 // config.yaml and (#598) the wt-managed rows of LiteLLM's database, with where
-// each lives (STORE: file or db) and who owns it. It reads no registry. admin
+// each lives (STORE: file or db) and who owns it, and (#596) one row per
+// alias deployment with its TARGET and ORDER. It reads no registry. admin
 // is the proxy pair's model-API client (nil: no pair, so only config.yaml is
 // read, as before #598); adminErr is why the pair could not be read. A
 // database that cannot be listed costs one warning line on errOut and the
@@ -284,48 +287,70 @@ func runLitellmList(ctx context.Context, out, errOut io.Writer, asJSON bool, adm
 	if err != nil {
 		return err
 	}
+	// kind, target and order were added beside the older keys (#596): an
+	// alias deployment is one row each, its id the alias id (repeated once per
+	// target), and routed names each id once.
 	type rowJSON struct {
 		ID      string `json:"id"`
+		Kind    string `json:"kind"`
 		Managed bool   `json:"managed"`
 		Store   string `json:"store"`
+		Target  string `json:"target,omitempty"`
+		Order   int    `json:"order,omitempty"`
 	}
 	var rows []rowJSON
 	for _, r := range f.Rows() {
-		rows = append(rows, rowJSON{r.ID, r.Managed, "file"})
+		rows = append(rows, rowJSON{ID: r.ID, Kind: "model", Managed: r.Managed, Store: "file"})
 	}
 	switch {
 	case adminErr != nil:
 		fmt.Fprintf(errOut, "wt-model: warning: database routes not listed (the LiteLLM proxy pair could not be read: %v); showing config.yaml only\n", adminErr)
 	case admin != nil:
-		names, lerr := admin.Routes(ctx)
+		listed, lerr := admin.RouteList(ctx)
 		if lerr != nil {
 			fmt.Fprintf(errOut, "wt-model: warning: database routes not listed (%s); showing config.yaml only\n", strings.Join(strings.Fields(lerr.Error()), " "))
 		}
-		for _, n := range names {
-			rows = append(rows, rowJSON{n, true, "db"})
+		for _, r := range listed {
+			rows = append(rows, rowJSON{ID: r.Name, Kind: r.Kind, Managed: true, Store: "db", Target: r.Target, Order: r.Order})
 		}
 	}
 	if asJSON {
 		ids := make([]string, 0, len(rows))
 		for _, r := range rows {
-			ids = append(ids, r.ID)
+			if !slices.Contains(ids, r.ID) {
+				ids = append(ids, r.ID)
+			}
 		}
 		if rows == nil {
 			rows = []rowJSON{}
 		}
 		return json.NewEncoder(out).Encode(map[string]any{"routed": ids, "rows": rows})
 	}
+	// TARGET and ORDER appear only when an alias row is listed, so a list
+	// with no alias reads as it did before #596.
+	aliases := slices.ContainsFunc(rows, func(r rowJSON) bool { return r.Kind == "alias" })
 	cells := make([][]string, 0, len(rows))
 	for _, r := range rows {
 		owner := "wt"
 		if !r.Managed {
 			owner = "hand-written"
 		}
-		cells = append(cells, []string{r.ID, r.Store, owner})
+		row := []string{r.ID, r.Store, owner}
+		if aliases {
+			target, order := "-", "-"
+			if r.Kind == "alias" {
+				target, order = r.Target, strconv.Itoa(r.Order)
+			}
+			row = append(row, target, order)
+		}
+		cells = append(cells, row)
 	}
 	// The id column is never cut (cli.RenderPlainTable), so a reader can copy
 	// it into another command; width 0: no terminal limit, one row per line.
 	cols := []cli.PlainColumn{{Head: "ID"}, {Head: "STORE"}, {Head: "OWNER"}}
+	if aliases {
+		cols = append(cols, cli.PlainColumn{Head: "TARGET"}, cli.PlainColumn{Head: "ORDER"})
+	}
 	fmt.Fprintln(out, cli.RenderPlainTable(cols, cells, 0))
 	return nil
 }

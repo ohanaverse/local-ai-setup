@@ -231,7 +231,7 @@ func fixtureRows(t *testing.T) []map[string]json.RawMessage {
 // TestCatalogJSONMatchesFixture pins the marshalled rows against the contract
 // fixture docs/contracts/model-api.sample.json: the keys the server marshals
 // across a catalog that exercises every optional field (tier, price, context,
-// block reason) are exactly the keys the fixture's rows use, so the fixture
+// block reason, an alias row's kind and targets) are exactly the keys the fixture's rows use, so the fixture
 // neither misses a key the server sends nor documents one it never sends; no
 // key marshals as null.
 func TestCatalogJSONMatchesFixture(t *testing.T) {
@@ -266,6 +266,7 @@ context_basis = "host"
 	cfg.Providers = append(cfg.Providers, config.Provider{ID: "acme", Location: config.LocationCloud},
 		config.Provider{ID: "nat", Location: config.LocationCloud})
 	cfg.Models[0].Cost.TimePrices = []config.TimePrice{{Label: "night", Timezone: "UTC"}}
+	cfg.Aliases = []config.Alias{{ID: "alias/x", Targets: []config.AliasTarget{{Model: "openrouter/c", Order: 1}, {Model: "acme/m", Order: 2}}}}
 	b, err := json.Marshal(BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), map[string]bool{"acme/m": true}, testNow))
 	if err != nil {
 		t.Fatal(err)

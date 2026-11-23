@@ -16,8 +16,9 @@ import (
 // unknown-model message and a blocked row's block_reason are the errors, and a
 // start row comes back for the caller to start. Without a pin it lists the
 // catalog, narrows it to what agent can use (tags, family) and keeps the
-// launch rows. The second result is the list rotation walks: registered rows
-// only, in Order, never a blocked or start row and never a discovered model.
+// launch rows that are not aliases (a no-pin launch never chooses an alias).
+// The second result is the list rotation walks: registered rows only, in
+// Order, never a blocked or start row, an alias or a discovered model.
 // One launchable row is the answer; several are "multiple models match". A pin
 // must also be one the agent can use under -T and -F.
 //
@@ -49,9 +50,15 @@ func resolveModelRemote(ctx context.Context, ms *modelSession, agent config.Agen
 		return modelapi.Row{}, nil, err
 	}
 	eligible := catalog.EligibleWire(cat.Rows, agent, tags, family)
-	launchable := catalog.Launchable(eligible)
-	var rotation []modelapi.Row
-	for _, r := range launchable {
+	// A no-pin launch never chooses an alias (decision 14): the picker
+	// lists one and -M launches it, but it is neither the one launchable
+	// row nor a rotation entry.
+	var launchable, rotation []modelapi.Row
+	for _, r := range catalog.Launchable(eligible) {
+		if r.Kind == modelapi.KindAlias {
+			continue
+		}
+		launchable = append(launchable, r)
 		if r.Registered {
 			rotation = append(rotation, r)
 		}

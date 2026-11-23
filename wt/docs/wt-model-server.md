@@ -296,12 +296,12 @@ All control paths are under `/control/v1/` and answer JSON.
 | Method and path | Meaning |
 |---|---|
 | `GET /control/v1/ping` | Liveness and version: `api_major`, `schema`, `server`. A client refuses a server whose `api_major` or `schema` differs from its own: a newer `schema` needs a newer wt, an older one is a `wt-model` still running from before wt was updated (`bin/update-tools` does not restart it), and the error says `restart wt-model`. |
-| `GET /control/v1/catalog` | Every model: state, action, tier, price, protocols, and how many live client sessions use it. Slot-profile rows are not included. |
+| `GET /control/v1/catalog` | Every model and every registry alias: state, action, tier, price, protocols, and how many live client sessions use it. Slot-profile rows are not included. |
 | `GET /control/v1/resolve?model=ID` | One catalog row, or a 404 `unknown_model` naming why. |
 | `GET /control/v1/candidates` | The registry's models ranked for a slot, as `wt profile slots candidates --json` ranks them. Query: `open_only=BOOL`, `provider=a,b`, `near=ID`, `per_provider=N` (needs `near`, else 400 `bad_request`). Answers `{"tiers_generated", "stale_sources", "candidates"}`: `tiers_generated` is the RFC 3339 time of the tiers file and is absent when there is none; `stale_sources` and `candidates` are always present. A candidate carries `id`, `provider`, `location`, `flags` (always a list) and, where they apply, `tier`, `confidence`, `score` (absent when unscored), `rated`, `open_weights`, `context`, `output_per_million`, `subscription`, `subscription_period`. |
 | `GET /control/v1/spend?start=T&end=T` | Per-model request, token and spend totals from LiteLLM's spend log, for the window between two RFC 3339 times (fractional seconds allowed; `wt stats` sends them, so its spend window ends at the report's exact instant; both required, else 400 `bad_request`; a `+` in an RFC 3339 offset must be URL-encoded as `%2B`, since a bare `+` decodes to a space and the request is a 400): `{"rows", "unattributed"}`, `rows` always present, `unattributed` the requests logged without a model. The database address is read on the host and never sent; see the 503 codes below. |
-| `POST /control/v1/start` | Start a local model. Body `{"model", "allow_replace", "others"}`. Answers 202 with a job id. While a start of the same model is queued or running, the answer is that job's id instead of a new job (see [Jobs and client sessions](#jobs-and-client-sessions)). |
-| `POST /control/v1/stop` | Stop a model. Body `{"model", "confirm_in_use", "session"}`. Answers 202 with a job id. A model that is not running is a succeeded no-op. `session` is the requester's own client session id: it does not count as a user of the model, so a session stopping a model only it uses needs no `confirm_in_use`. |
+| `POST /control/v1/start` | Start a local model. Body `{"model", "allow_replace", "others"}`. Answers 202 with a job id. While a start of the same model is queued or running, the answer is that job's id instead of a new job (see [Jobs and client sessions](#jobs-and-client-sessions)). An alias id starts the alias's local target (below). |
+| `POST /control/v1/stop` | Stop a model. Body `{"model", "confirm_in_use", "session"}`. Answers 202 with a job id. A model that is not running is a succeeded no-op; an alias id fails (`failed`, `alias/x has nothing to stop; stop <target>`). `session` is the requester's own client session id: it does not count as a user of the model, so a session stopping a model only it uses needs no `confirm_in_use`. |
 | `GET /control/v1/jobs?model=ID` | The queued and running jobs of one model, or of every model without `model`, oldest first: `{"jobs": [...]}`. `jobs` is always present, `[]` when none is active. |
 | `GET /control/v1/jobs/{id}` | A job's state, step text and, once finished, its result. |
 | `POST /control/v1/jobs/{id}/cancel` | Cancel a job. 204. |
@@ -339,8 +339,44 @@ Every row carries `id`, `family`, `provider_id`, `model_name`, `location`,
 | `routed` | Whether LiteLLM lists the model. Three states: `true`, `false`, and **absent** when the server could not ask LiteLLM (a proxy restart). Absent means unknown, never "not routed". The same goes for `resolve`. The server asks LiteLLM at most once per 2 seconds. |
 | `tier`, `tier_code`, `confidence` | Present for a rated model only. |
 | `aligned`, `tier_sources` | The aligned score and how many scores it was made from; present for any model the tiers file has them for, rated or not. |
-| `context` | The context window in tokens, present only when the tiers file records the model's own host window (not the largest row of its key). |
+| `context` | The context window in tokens: the registry's `context_window` (any location), else, for a cloud model, the tiers file's window when it records the model's own host window (not the largest row of its key). Absent when unknown. |
 | `price.time_priced` | True when the model has time-windowed prices, so the figures are those in force at `generated`. |
+| `kind` | `"alias"` on an alias row, absent on a model row. |
+| `targets` | An alias row's targets in the alias's order, each `{"id", "order", "provider_id", "location", "state", "context"}` (`context` absent when unknown). Absent on a model row. |
+
+**Alias rows** (#596). Each registry `[[aliases]]` entry is one row:
+`id` and `gateway_id` are the alias id, `provider_id` and `family` are
+`alias`, `model_name` is the name after `alias/`, `registered` is true,
+`order` follows every model's, there is no `price`, and the tier fields are
+the lowest-order target's (the lowest tier among targets that share that
+order). `context` is the smallest window over all targets, absent when any
+target's window is unknown. `location` is `local` only when the lowest-order
+targets include the alias's local target, else `cloud`. The action: `start`
+when that local target must start, or runs while the alias id is not routed
+(the start re-runs its route write, which adds the alias's rows); `launch`
+when a target is servable and the alias is routed; `block` when a target is
+servable but the alias is not routed (`run 'wt-model litellm sync'`); `start`
+when any target can start; else `block`, naming each target's reason. The
+state follows the action, as on every model row: `launch` is `running`,
+`block` is `blocked` (with `block_reason`), and `start` is `stopped`, or the
+local target's own state (`stopped`, `loading`, `unknown`) when the start is
+that target's start. So a servable alias that is not routed reads `blocked`,
+a local target running while the alias is not routed reads `stopped` with
+`start`, and a `local` alias whose local target is blocked but whose routed
+cloud target is servable reads `running` with `launch`. A malformed alias is a
+`block` row naming its fault. Only an id under `alias/` is ever an alias on the
+server: a hand-edited malformed alias whose id lacks the prefix gets no row,
+and a start, stop or client session naming that id reaches the model with that
+id, if any. An older client (from before aliases) ignores `kind` and
+`targets` and reads an alias row as a model of provider `alias`: an agent
+allowed every provider (each agent a session synthesizes) finds it eligible,
+so a launch with no `-M` counts it among the launchable models (one model plus
+an alias over it is then "multiple models match") and may rotate onto it, and
+a launch of it goes to the gateway under the alias id, which LiteLLM routes;
+an agent whose `config.toml` lists its providers never sees it. A server from before aliases sends a local row's
+`context` from the tiers file, not the registry, so update the server before
+its clients: a newer client against an older server may declare a window for
+claude that no registry value set.
 
 The catalog's `pricing` object is present exactly when some model is priced
 from OpenRouter; its `updated` is the RFC 3339 time of the newest price stamp
@@ -407,7 +443,13 @@ state is re-derived from live probes. The server never asks a question: a
 prompt becomes a typed error the client answers by posting again.
 
 - **One start per model.** A start of a model whose start is already queued
-  or running joins that job: the answer is its id, and it runs once. The
+  or running joins that job: the answer is its id, and it runs once. A start
+  of an alias is keyed by its local target, so it joins a start of that model
+  (and the reverse); the job's `model` is the target id. It waits for the
+  target to answer through the gateway, then checks that LiteLLM lists the
+  alias's row for it: a missing row fails the job only when the gateway does
+  not list the alias id at all, otherwise it is one `warning:` step. An alias
+  with no local target answers `failed` (nothing to start). The
   joining request's own `allow_replace` and `others` are ignored; the job keeps
   the answers of the request that created it, so a replace another client
   agreed to goes ahead for both. A start that has already been cancelled is
@@ -424,6 +466,12 @@ A client session is a client-chosen id plus the models it uses.
 - A heartbeat adds models; removing one is a new register.
 - Ending a client session, or letting it lapse, starts the idle clock of the models
   only it used.
+- A client session that names an alias also uses the alias's current local
+  target, read from the registry at each scan and request: a re-point is seen
+  without registering again. While the session is live the target counts it
+  as a user (and the target's idle clock follows the session's heartbeats, so
+  after a re-point the old target is stopped once idle past the grace);
+  after it ends the target's idle clock is the alias's.
 
 **Auto-stop.** Every 30 seconds the server scans for local models to stop. A
 model stops when some client session registered it at some point, no live client session

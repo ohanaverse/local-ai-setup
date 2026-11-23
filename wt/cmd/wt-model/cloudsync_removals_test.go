@@ -405,3 +405,55 @@ func TestCloudSyncKeptVariantBesideARemovalStillNeedsTheDigest(t *testing.T) {
 		t.Errorf("approved run: exit %d, stderr %q; want old removed and the variant kept:\n%s", code, stderr, after)
 	}
 }
+
+// TestCloudSyncKeepsAnAliasTargetAndWarns pins Review Focus 5 for cloud-sync
+// (decision 11): in both flows a model an alias targets is kept out of the
+// removal set while planning, with a `kept <id>: alias/<x> targets it`
+// warning; the dry run's digests are the ones the `--yes --approve-removals`
+// run accepts (a mismatch would be exit 5); that run removes the other
+// vanished model, keeps both targets and never runs `ollama rm` on the kept
+// entry's tag. Before, an approved removal of an alias target aborted the
+// whole write on RemoveModel's ErrModelInUse.
+func TestCloudSyncKeepsAnAliasTargetAndWarns(t *testing.T) {
+	h := testHost()
+	registry := vanishedRegistry("old", "gone") + `
+[[aliases]]
+id = "alias/x"
+targets = [{ model = "openrouter/vendor--old", order = 1 }, { model = "ollama/retired:cloud", order = 2 }]
+`
+	path, cfg := cloudSyncHome(t, h, registry)
+	pages := ollamaPages()
+	pages[cloudsync.OpenRouterModelsURL] = healthyOpenRouterBody()
+	stubCloudFetch(t, h, pages)
+	ollama := stubOllama(t, h, ollamaPulled...)
+	stubRouteSync(h, "")
+
+	dry, _, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, ollama: true, dryRun: true})
+	for _, want := range []string{
+		"openrouter: warning: kept openrouter/vendor--old: alias/x targets it\n",
+		"ollama: warning: kept ollama/retired:cloud: alias/x targets it\n",
+		"openrouter:   openrouter/vendor--gone\n",
+	} {
+		if !strings.Contains(dry, want) {
+			t.Errorf("dry run lacks %q:\n%s", want, dry)
+		}
+	}
+	if code != 0 || strings.Contains(dry, "openrouter:   openrouter/vendor--old\n") || strings.Contains(dry, "ollama:   ollama/retired:cloud\n") {
+		t.Fatalf("dry run exit %d plans an alias target's removal:\n%s", code, dry)
+	}
+	approve := orDigestIn(t, dry) + "," + digestIn(t, dry)
+	ollama.calls = nil
+	stdout, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, ollama: true, yes: true, approve: approve})
+	if code != 0 {
+		t.Fatalf("approved run: exit %d, stderr %q\n%s", code, stderr, stdout)
+	}
+	text := mustRead(t, path)
+	if strings.Contains(text, "vendor--gone") || !strings.Contains(text, `id = "openrouter/vendor--old"`) || !strings.Contains(text, `id = "ollama/retired:cloud"`) {
+		t.Errorf("want vendor--gone removed and both alias targets kept:\n%s", text)
+	}
+	for _, call := range ollama.changes() {
+		if call == "rm retired:cloud" {
+			t.Errorf("ollama rm ran on the kept entry's tag: %q", ollama.changes())
+		}
+	}
+}

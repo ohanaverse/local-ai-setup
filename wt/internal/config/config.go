@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -439,6 +440,12 @@ type Model struct {
 	// LiteLLM rows merge it over the derived pricing keys, so hand-written
 	// keys (context windows, capability flags) reach the proxy.
 	ModelInfo map[string]any `toml:"model_info,omitempty"`
+	// ContextWindow is `context_window`: the window in tokens the owner says
+	// this model is served with (#626). 0 is absent; a negative value is
+	// refused on write (validateModelRow). For a cloud model it overrides the
+	// tiers file's window (windows.Model); for a local model it is the only
+	// source.
+	ContextWindow ContextTokens `toml:"context_window,omitempty"`
 	// Fetch and Draft say where a local model's weights come from: the
 	// registry's [models.fetch] table, and [models.draft] for the draft half
 	// of an mlx_lm_server pairing. wt reads them here — to show a local_path
@@ -461,8 +468,10 @@ type Model struct {
 	// load; read it through PricingUpdated.
 	PricingUpdatedAt any  `toml:"pricing_updated_at,omitempty"`
 	Native           bool `toml:"-"` // derived: provider auth.type == "native"; not persisted
-	// HostContext is a cloud model's context window as the wt-model server
-	// reports it; 0 otherwise. Session-side only, never persisted.
+	// HostContext is the model's context window as the wt-model server
+	// reports it (a registry context_window, a cloud model's host tiers
+	// window, an alias's minimum over its targets); 0 when unknown.
+	// Session-side only, never persisted.
 	HostContext int `toml:"-"`
 	// GatewayID is the id an agent must send to the gateway; empty means ID.
 	// Session-side only, never persisted.
@@ -512,6 +521,25 @@ type ArtifactFaults struct {
 	NotTable bool
 	// Repo and LocalPath: that key is there and is not a string.
 	Repo, LocalPath bool
+}
+
+// ContextTokens is a model's context_window in tokens. It never fails a load
+// (see ModelArtifact.UnmarshalTOML for why): a value that is not a whole
+// number, or is negative, reads as MalformedContextTokens, which is not a
+// window (every reader tests > 0) and which Model.Malformed names.
+type ContextTokens int
+
+// MalformedContextTokens is what a context_window the loader could not read
+// as a non-negative whole number decodes to.
+const MalformedContextTokens ContextTokens = -1
+
+// UnmarshalTOML reads a context_window value and never fails.
+func (c *ContextTokens) UnmarshalTOML(v any) error {
+	*c = MalformedContextTokens
+	if n, ok := v.(int64); ok && n >= 0 && n <= math.MaxInt32 {
+		*c = ContextTokens(n)
+	}
+	return nil
 }
 
 // ServeArgs is a model's serve_args: the argv elements, one per array element
@@ -667,6 +695,9 @@ func (m Model) ServeArgsRefused() []string {
 func (m Model) Malformed() []string {
 	out := append(m.Fetch.problems("fetch"), m.Draft.problems("draft")...)
 	out = append(out, m.ServeArgsProblems()...)
+	if m.ContextWindow < 0 {
+		out = append(out, "context_window is not a non-negative whole number")
+	}
 	for i, row := range m.Cost.TimePrices {
 		if problem := row.Problem(); problem != "" {
 			out = append(out, fmt.Sprintf("cost.time_prices[%d]: %s", i, problem))
@@ -706,7 +737,11 @@ type Config struct {
 	DefaultTag string     `toml:"default_tag"`
 	Providers  []Provider `toml:"providers"`
 	Models     []Model    `toml:"models"`
-	Agents     []Agent    `toml:"agents"`
+	// Aliases are registry.toml's [[aliases]] tables (#596), malformed ones
+	// included (Alias.Malformed set). Like Providers and Models they come
+	// from the registry alone and are never persisted from a Config.
+	Aliases []Alias `toml:"-"`
+	Agents  []Agent `toml:"agents"`
 	// LitellmTable is the wt-owned persisted [litellm] routing state.
 	LitellmTable *LitellmState `toml:"litellm,omitempty"`
 	litellm      LitellmState  `toml:"-"` // runtime pair, resolved at load by applyProxyState (home → legacy)
@@ -780,7 +815,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	providers, models, err := loadRegistry()
+	reg, err := readRegistry()
 	if err != nil {
 		// cfg already carries the Agents/DefaultTag decoded from config.toml
 		// above — a missing registry must not throw that away. A genuinely
@@ -792,7 +827,7 @@ func Load() (*Config, error) {
 		return cfgOrNilOnMissingRegistry(cfg, err), err
 	}
 	if !exists {
-		return finalizeCfg(cfg, providers, models)
+		return finalizeCfg(cfg, reg.Providers, reg.Models, reg.Aliases)
 	}
 
 	// migrateConfigSchema runs against a fresh, lock-protected read (via
@@ -812,7 +847,7 @@ func Load() (*Config, error) {
 	// in memory (schema fixups above only ever see wt-owned config.toml
 	// content). Providers/Models from a pre-Phase-4 config.toml are
 	// overwritten here — registry.toml is the source of truth.
-	return finalizeCfg(fresh, providers, models)
+	return finalizeCfg(fresh, reg.Providers, reg.Models, reg.Aliases)
 }
 
 // cfgOrNilOnMissingRegistry returns cfg (whatever Load has decoded from
@@ -828,7 +863,7 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 	return nil
 }
 
-// finalizeCfg joins registry providers/models into cfg, derives native-ness
+// finalizeCfg joins registry providers/models/aliases into cfg, derives native-ness
 // from provider auth types, and resolves the LiteLLM proxy pair into the
 // runtime routing state (applyProxyState: the wt-model home's [litellm] table
 // first, config.toml's legacy table as the read-only fallback). With no
@@ -836,8 +871,8 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 // — a broken wt-model home or key file — leaves the pair empty (fail closed,
 // never the legacy values) and is recorded for ProxyErr, not returned: only
 // the commands that use the pair fail on it.
-func finalizeCfg(cfg *Config, providers []Provider, models []Model) (*Config, error) {
-	cfg.Providers, cfg.Models = providers, models
+func finalizeCfg(cfg *Config, providers []Provider, models []Model, aliases []Alias) (*Config, error) {
+	cfg.Providers, cfg.Models, cfg.Aliases = providers, models, aliases
 	deriveNative(cfg)
 	deriveSushiAgents(cfg)
 	applyProxyState(cfg)
@@ -923,6 +958,9 @@ func (c *Config) validate() []error {
 			errs = append(errs, registryEntryError(fmt.Errorf("duplicate provider id %q", p.ID)))
 		}
 		provIDs[p.ID] = true
+		if p.ID == AliasProvider {
+			errs = append(errs, registryEntryError(fmt.Errorf("provider id %q is reserved for aliases", p.ID)))
+		}
 		// A provider entry may leave its location out (its models then need
 		// their own), but a value that is set must be a location — checked
 		// here as well as per model, so an entry with no models, or one whose
@@ -942,6 +980,9 @@ func (c *Config) validate() []error {
 			errs = append(errs, registryEntryError(fmt.Errorf("duplicate model id %q", m.ID)))
 		}
 		modelIDs[m.ID] = true
+		if strings.HasPrefix(m.ID, AliasIDPrefix) {
+			errs = append(errs, registryEntryError(fmt.Errorf("model id %q: the %s prefix is reserved for aliases", m.ID, AliasIDPrefix)))
+		}
 		if m.ModelName == "" {
 			// The lifecycle engine matches a start target against a provider's
 			// reported names by this field; an empty one matches nothing, so the
@@ -954,6 +995,24 @@ func (c *Config) validate() []error {
 		} else if _, err := c.ResolveLocation(m); err != nil {
 			// Location must be resolvable. A mistyped one is ErrLocation
 			// already; no location at all is marked here.
+			errs = append(errs, registryEntryError(err))
+		}
+	}
+
+	// Aliases. A malformed one is the reader's to tolerate, as a malformed
+	// serve_args is (Alias.Malformed; the route path freezes it): it is not a
+	// validation error. A repeated id and a cross-table fault (AliasFault)
+	// are, marked like the rows above so the hint names registry.toml.
+	aliasIDs := map[string]bool{}
+	for _, a := range c.Aliases {
+		if a.ID != "" && aliasIDs[a.ID] {
+			errs = append(errs, registryEntryError(fmt.Errorf("duplicate alias id %q", a.ID)))
+		}
+		aliasIDs[a.ID] = true
+		if a.Malformed != "" {
+			continue
+		}
+		if err := AliasFault(c, a); err != nil {
 			errs = append(errs, registryEntryError(err))
 		}
 	}

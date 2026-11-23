@@ -1,11 +1,13 @@
 {
-  "_comment": "Fixture for the shapes `wt-model litellm ... --json` (and its `wt litellm status --json` twin) prints. Read by wt/cmd/wt-model/litellm_test.go, wt/cmd/wt-model/litellm_sync_test.go, wt/cmd/wt-model/litellm_db_test.go and wt/cmd/wt-session/litellm_proxy_test.go. list rows carry store (file: a config.yaml row; db: a wt-managed row in LiteLLM's database, #598), and routed names both; sync_dry_run's plan carries move (routes the sync would move from config.yaml to the database), enable_db (it would write general_settings.store_model_in_db first) and restart (config.yaml would change, so the proxy would restart once). All three were added beside the older keys, whose meaning did not change.",
+  "_comment": "Fixture for the shapes `wt-model litellm ... --json` (and its `wt litellm status --json` twin) prints. Read by wt/cmd/wt-model/litellm_test.go, wt/cmd/wt-model/litellm_sync_test.go, wt/cmd/wt-model/litellm_db_test.go, wt/cmd/wt-session/litellm_proxy_test.go, wt/internal/config/proxyhome_test.go and wt/internal/litellm/restart_graceful_test.go. list rows carry store (file: a config.yaml row; db: a wt-managed row in LiteLLM's database, #598), and routed names both; sync_dry_run's plan carries move (routes the sync would move from config.yaml to the database), enable_db (it would write general_settings.store_model_in_db first) and restart (config.yaml would change, so the proxy would restart once). All three were added beside the older keys, whose meaning did not change. Aliases (#596), also additive: every list row carries kind (model, or alias for a deployment of a registry alias); an alias row carries target (the registry model id it routes to) and order (its LiteLLM deployment order), and rows[].id repeats once per target of the alias (kind and target tell them apart), while routed names each id once. sync_dry_run's plan carries aliases, always present: one entry per alias with id, action (route, rewrite, unroute, keep, none or skip), live (the targets that get a row, with their order) and skipped (targets that get none; frozen ones keep the rows they have); a skipped target's reason is a warning line, never a key. A real sync reports aliases as ordinary outcomes (routed, rewritten, unrouted) under the alias id.",
   "list": {
-    "routed": ["ollama/gemma:9b", "openrouter/x/y", "omlx/qwen"],
+    "routed": ["ollama/gemma:9b", "openrouter/x/y", "omlx/qwen", "alias/x"],
     "rows": [
-      {"id": "ollama/gemma:9b", "managed": true, "store": "file"},
-      {"id": "openrouter/x/y", "managed": false, "store": "file"},
-      {"id": "omlx/qwen", "managed": true, "store": "db"}
+      {"id": "ollama/gemma:9b", "kind": "model", "managed": true, "store": "file"},
+      {"id": "openrouter/x/y", "kind": "model", "managed": false, "store": "file"},
+      {"id": "omlx/qwen", "kind": "model", "managed": true, "store": "db"},
+      {"id": "alias/x", "kind": "alias", "managed": true, "store": "db", "target": "openrouter/x/y", "order": 1},
+      {"id": "alias/x", "kind": "alias", "managed": true, "store": "db", "target": "omlx/qwen", "order": 2}
     ]
   },
   "sync": {
@@ -32,7 +34,10 @@
       "errors": [{"id": "ghost/m", "error": "unknown provider \"ghost\""}],
       "move": [],
       "enable_db": false,
-      "restart": false
+      "restart": false,
+      "aliases": [
+        {"id": "alias/x", "action": "route", "live": [{"target": "openrouter/x/y", "order": 1}], "skipped": [{"target": "ollama/llama3.2:3b", "frozen": false}]}
+      ]
     },
     "warnings": []
   },

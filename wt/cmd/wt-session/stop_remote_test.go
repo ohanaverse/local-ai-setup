@@ -121,6 +121,30 @@ func TestStopRemotePickerMarksClientSessions(t *testing.T) {
 	}
 }
 
+// TestStopRemotePickerLeavesOutAliasRows proves the stop picker lists no
+// alias row (#596): a local-first alias is a running local row on the wire,
+// but stopping it means stopping its target, and offering it only led to
+// "alias/x has nothing to stop; stop <target>". The target itself stays.
+func TestStopRemotePickerLeavesOutAliasRows(t *testing.T) {
+	target := localRow("omlx/t", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true))
+	alias := localRow("alias/x", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true))
+	alias.ProviderID, alias.Family, alias.Kind = "alias", "alias", modelapi.KindAlias
+	alias.Targets = []modelapi.AliasTarget{{ID: "omlx/t", Order: 1, ProviderID: "omlx", Location: "local", State: modelapi.StateRunning}}
+	r, ms := startRig(t, alias, target)
+	stubStdinTTY(t, true)
+	ms.hooks.stopIn = func() io.Reader { return strings.NewReader("1\n") }
+	var out bytes.Buffer
+	if err := runStopRemote(context.Background(), &out, ms, "", false); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(out.String(), "alias/x") {
+		t.Errorf("picker lists the alias row:\n%s", out.String())
+	}
+	if len(r.f.Stops) != 1 || r.f.Stops[0].Model != "omlx/t" {
+		t.Errorf("stops = %+v, want omlx/t", r.f.Stops)
+	}
+}
+
 // TestStopProviderAndAllPointAtWtModel pins the pointer: a provider name or
 // --all is wt-model's now, so the session prints the one moved line and exits
 // 1. It never reads a registry for it (hostConfig is never called) and never

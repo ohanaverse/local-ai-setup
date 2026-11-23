@@ -166,7 +166,8 @@ type PricePlan struct {
 	Matched    []PriceChange
 	Warnings   []string
 	// RemovableCandidates counts the OpenRouter-priced models that are not
-	// manual: the denominator of the mass-removal guard.
+	// manual and no alias targets (both are kept, never removed): the
+	// denominator of the mass-removal guard.
 	RemovableCandidates int
 	// Removals are the ids of registry models absent from OpenRouter's list.
 	// Only absence removes: a model listed with no usable price still exists.
@@ -229,7 +230,9 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 			continue
 		}
 		plan.Candidates++
-		if !e.Manual() {
+		if !e.Manual() && len(e.AliasUsers) == 0 {
+			// An alias target is kept like a manual model, so it never
+			// dilutes the mass-removal guard.
 			plan.RemovableCandidates++
 		}
 		price, ok := api[e.ModelName]
@@ -291,6 +294,10 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 				if note != "" {
 					plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is %s", e.ID, e.ModelName, note))
 				}
+			case len(e.AliasUsers) > 0:
+				// An alias target stays (decision 11): out of Removals, so
+				// out of the digest and the mass-removal count.
+				plan.Warnings = append(plan.Warnings, keptForAliases(e))
 			default:
 				plan.Removals = append(plan.Removals, e.ID)
 			}

@@ -189,6 +189,7 @@ type fakeDBServer struct {
 	failDeleteID string
 	failAddID    string
 	abortAddID   string
+	onAdd        func() // runs on every /model/new before it answers
 	calls        int
 	log          []string
 }
@@ -235,6 +236,9 @@ func (f *fakeDBServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 	case "/model/new":
+		if f.onAdd != nil {
+			f.onAdd()
+		}
 		if f.addFailBody != "" {
 			w.WriteHeader(500)
 			w.Write([]byte(f.addFailBody))

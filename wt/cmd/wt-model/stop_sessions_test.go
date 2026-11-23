@@ -172,3 +172,22 @@ func TestHostSessionReaderIsSilentWhenCancelled(t *testing.T) {
 		t.Errorf("sessions = %v, note = %q; want nil and no note", got, w.String())
 	}
 }
+
+// TestAliasCommandsSessionNoteFitsTheirContext proves the session reader the
+// alias commands get (newHost's clientSessions) words its failure note for
+// them: `wt-model stop`'s "models they use are stopped without asking" would
+// tell an `alias list|set|rm` user something that never happens.
+func TestAliasCommandsSessionNoteFitsTheirContext(t *testing.T) {
+	store := testRuntime(t).Record
+	if err := os.WriteFile(store.Path, []byte(`{"pid":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var w bytes.Buffer
+	if got := newHost().clientSessions(t.Context(), &w, store)(); got != nil {
+		t.Errorf("sessions = %v, want nil", got)
+	}
+	s := w.String()
+	if !strings.HasPrefix(s, noteHead) || strings.Contains(s, "stopped without asking") || strings.Count(s, "\n") != 1 {
+		t.Errorf("note = %q, want one line starting %q and not worded for wt-model stop", s, noteHead)
+	}
+}

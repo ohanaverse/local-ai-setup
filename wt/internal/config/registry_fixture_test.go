@@ -89,6 +89,34 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 	if absent.ID != "ollama/contract-fixture:absent" || absent.ModelName != "contract-fixture:absent" || absent.ProviderID != "ollama" {
 		t.Errorf("absent overlay decoded wrong: %+v", absent)
 	}
+
+	// [[aliases]] (#596): a single-target alias whose order is left out
+	// (reads as its position, 1) and a group of one cloud target and one
+	// local target. Both are well formed and pass every cross-table rule.
+	reg, err := readRegistry()
+	if err != nil {
+		t.Fatalf("readRegistry() error: %v", err)
+	}
+	wantAliases := []Alias{
+		{ID: "alias/fixture-cloud", Targets: []AliasTarget{{Model: "openrouter/contract-fixture:cloud", Order: 1}}},
+		{ID: "alias/fixture-group", Targets: []AliasTarget{
+			{Model: "pinned-cloud/contract-fixture:inherit", Order: 1},
+			{Model: "ollama/contract-fixture:local", Order: 2},
+		}},
+	}
+	if !slices.EqualFunc(reg.Aliases, wantAliases, aliasEqual) {
+		t.Fatalf("aliases decoded wrong: %+v, want %+v", reg.Aliases, wantAliases)
+	}
+	cfg := &Config{Providers: providers, Models: models, Aliases: reg.Aliases}
+	deriveNative(cfg)
+	for _, a := range cfg.Aliases {
+		if err := AliasFault(cfg, a); err != nil {
+			t.Errorf("fixture alias %s: %v", a.ID, err)
+		}
+	}
+	if m, ok := cfg.AliasLocalTarget(cfg.Aliases[1]); !ok || m.ID != "ollama/contract-fixture:local" {
+		t.Errorf("the group's local target = %q, %v", m.ID, ok)
+	}
 }
 
 // TestRegistryFixtureCost verifies that the shared fixture's full pricing
@@ -309,7 +337,24 @@ func TestTypedReaderLoadsTheWrittenFixture(t *testing.T) {
 	if cloud.Cost.SubscriptionPrice == nil || *cloud.Cost.SubscriptionPrice != 20 || cloud.Cost.SubscriptionPeriod != "month" {
 		t.Errorf("subscription decoded wrong: %+v", cloud.Cost)
 	}
-	cfg := &Config{DefaultTag: "code", Providers: providers, Models: models}
+	// The [[aliases]] tables in tomli-w's form: an inline targets array of
+	// inline tables keyed model, order.
+	reg, err := readRegistry()
+	if err != nil {
+		t.Fatalf("readRegistry() error: %v", err)
+	}
+	wantAliases := []Alias{
+		{ID: "alias/written-single", Targets: []AliasTarget{{Model: "openrouter/written-fixture:cloud", Order: 1}}},
+		{ID: "alias/written-group", Targets: []AliasTarget{
+			{Model: "openrouter/written-fixture:cloud", Order: 1},
+			{Model: "ollama/written-fixture:int", Order: 2},
+		}},
+	}
+	if !slices.EqualFunc(reg.Aliases, wantAliases, aliasEqual) {
+		t.Errorf("aliases decoded wrong: %+v, want %+v", reg.Aliases, wantAliases)
+	}
+	cfg := &Config{DefaultTag: "code", Providers: providers, Models: models, Aliases: reg.Aliases}
+	deriveNative(cfg)
 	if err := cfg.ValidateAll(); err != nil {
 		t.Errorf("the written fixture should validate: %v", err)
 	}

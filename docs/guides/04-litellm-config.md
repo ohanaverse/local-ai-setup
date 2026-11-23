@@ -220,7 +220,7 @@ If the database cannot be listed (the proxy is down), one `database routes not l
 - A hand-written row whose name is a registry local id gets a warning and no database twin.
 - Database rows an earlier build wrote get deleted and re-added once, because the parameter hash changed; this matters only if you seeded rows by hand.
 
-Without a database route, no file records routing but `config.yaml`: the row there is the whole record.
+Without a database route, no file records routing but `config.yaml`: the row there is the whole record. The one exception is an alias row (step 7), which lives only in the database.
 
 On the proxy vs. **through** the proxy: `wt-model litellm sync` (and the automatic route updates) decide which models exist on :4000; every agent session reaches them through the model server (`wt-model serve`), whose gateway forwards to the proxy at the pair's url with its api key — the pair lives in the `~/.config/wt-model/` home, the `[litellm]` table of `config.toml` its read-only fallback ([wt-session.md](../../wt/docs/wt-session.md); the session itself never reads it). There is no routing toggle any more: `[litellm] enabled` is retired and ignored, and `wt litellm on|off` are hidden stubs that exit 1 and change nothing. `wt-model litellm set` (and its `wt litellm set` twin) never touches the proxy service (no restart).
 
@@ -305,6 +305,19 @@ new PID: 65475
 ```
 
 (401, not 000/200: the proxy is up and once again demanding the master key. `KeepAlive=true` in the plist means launchd respawns it if it dies — use `wt-model litellm restart` (or `kickstart -k`), not bare `stop`.) To bring up whatever part of the stack is down: `uv run --directory llmbench llmbench provider restore` (from the repo root) (see guide 01 §7).
+
+### 7. Aliases and priority groups — `wt-model alias`
+
+An alias is a registry id `alias/<name>` that a slot profile, pi or codex names like a model. It routes to one model, or to several in priority order (a group). `wt-model alias list` shows what exists, with each alias's targets, window, client sessions and whether LiteLLM has a row for it; `wt-model alias set alias/<name> --target ID[:ORDER] [--target ...]` creates one or replaces its whole target list (start with `--dry-run`); `wt-model alias rm alias/<name>` removes it. Flags, exit codes and JSON: [wt/docs/wt-model.md](../../wt/docs/wt-model.md#wt-model-alias).
+
+- **Rows.** Each alias becomes one LiteLLM **database** row per live target (a cloud target always, a local one while it runs), named by the alias id, with the target's own parameters and an `order` (lowest tried first). Alias rows are never written to `config.yaml`, so they cost no proxy restart; `wt-model litellm list` lists them as rows under the alias id with TARGET and ORDER filled in (those two columns appear only while an alias row is listed; the text table has no KIND column, and `--json` gives each row `"kind": "alias"`). They need the proxy pair (`wt-model litellm set`) and `store_model_in_db: true`.
+- **A re-point has no gap.** `alias set` adds the new rows, confirms them, and only then deletes the superseded ones. A start or stop of a local target adds or removes just that target's row.
+- **Equal `order`.** Rows with the same order share the requests (measured on LiteLLM 1.109.1: two equal-order targets each served part of 30 requests, no even split promised); a lower order is tried first.
+- **Cloud keys are stored in the database.** A cloud target's resolved key is written into its alias row, where LiteLLM stores it encrypted, as it already does for rec's key on a model row. wt prints no row's parameters.
+- **Database unavailable.** The registry write still happens and exits 0, nothing goes to `config.yaml`, and one warning says `alias routes unavailable (<reason>); registry written, LiteLLM not updated; run 'wt-model litellm sync' when the proxy answers`. Rows already in the database keep routing. Run the sync once the proxy answers (or let serve's start-up sync do it). The exception: with no `config.yaml` at all (LiteLLM not set up on this machine) the write runs no sync and prints no warning.
+- **Rename.** There is no rename command. Add `alias/new` with the same targets, run `wt profile slots set` on each session machine, and remove `alias/old` once `wt-model alias list` shows no client sessions on it (`alias rm` refuses an alias in use without `--force-in-use`).
+- **Install order.** An older `wt-model` refuses every registry write once `[[aliases]]` exists, and ignores alias rows (its start, stop and sync neither add nor remove them). Run `make install` and restart the `wt-model serve` LaunchAgent before the first `alias set`. After editing its plist, `launchctl bootout` then `bootstrap` the job: a `kickstart` alone keeps the old loaded definition.
+- **Hand edits.** Alias rows are compared by the hash wt stamped on them, so an edit in the admin UI that keeps the stamp is not noticed; a row that lost it is replaced. A row under `wta:alias/` without wt's marker is never deleted: remove it by hand.
 
 ## Verification
 

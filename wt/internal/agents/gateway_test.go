@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -288,4 +289,57 @@ func TestClaudeWindowFromHostContext(t *testing.T) {
 	if _, ok := claudeWindowSetting(map[string]any{}, in); ok {
 		t.Error("window-less default slot must give none")
 	}
+}
+
+// gwAliasModel is an alias row as a launch sees it: its id is the gateway id
+// (alias/x), its provider "alias".
+func gwAliasModel() config.Model {
+	return config.Model{ID: "alias/x", GatewayID: "alias/x", ProviderID: "alias", Family: "alias",
+		ModelName: "x", Location: config.LocationCloud, HostContext: 131072}
+}
+
+// TestPiLaunchesAnAliasID pins pi on an alias: --model litellm/alias/x, and
+// models.json's litellm block holds an entry keyed alias/x (pi splits the
+// --model value on its first slash, so the alias id stays whole under the
+// litellm provider and reaches the gateway verbatim).
+func TestPiLaunchesAnAliasID(t *testing.T) {
+	path := piHomeModelsPath(t)
+	fakeBin(t, "pi")
+	m := gwAliasModel()
+	cmd, _, err := BuildLaunchCmdGateway("pi", m, t.TempDir(), false, testGW(), []config.Model{gwCloudModel(), m}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := argsFlagValue(cmd.Args, "--model"); v != "litellm/alias/x" {
+		t.Errorf("--model = %q, want litellm/alias/x", v)
+	}
+	f := readPiFile(t, path)
+	var ids []string
+	for _, e := range f.Providers["litellm"].Models {
+		ids = append(ids, e.ID)
+	}
+	if !slices.Contains(ids, "alias/x") {
+		t.Errorf("litellm models = %v, want an entry keyed alias/x", ids)
+	}
+	if _, ok := f.Providers["alias"]; ok {
+		t.Error("pi models.json gained an \"alias\" provider block")
+	}
+}
+
+// TestCodexLaunchesAnAliasID pins codex on an alias: --model alias/x through
+// the gateway provider, with the gateway token, so the gateway resolves the
+// alias's database rows.
+func TestCodexLaunchesAnAliasID(t *testing.T) {
+	fakeBin(t, "codex")
+	cmd, _, err := BuildLaunchCmdGateway("codex", gwAliasModel(), t.TempDir(), false, testGW(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := argsFlagValue(cmd.Args, "--model"); v != "alias/x" {
+		t.Errorf("--model = %q, want alias/x", v)
+	}
+	if !strings.Contains(strings.Join(cmd.Args, " "), testGWOrigin+"/v1/") {
+		t.Errorf("codex args = %v, want the gateway origin", cmd.Args)
+	}
+	assertEnv(t, cmd.Env, codexGatewayEnvKey, testGWToken)
 }

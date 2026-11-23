@@ -179,7 +179,7 @@ var otherPackages = []string{
 	"internal/scratchdir", "internal/sessionclaim", "internal/slotedit",
 	"internal/themes", "internal/tiers", "internal/tokenfile",
 	"internal/tomlw", "internal/tuilayout", "internal/usage",
-	"internal/worktree",
+	"internal/windows", "internal/worktree",
 }
 
 // TestEveryInternalPackageIsClassified keeps the ratchet's lists complete:

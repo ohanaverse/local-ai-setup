@@ -41,7 +41,13 @@ func slotWireRows() []modelapi.Row {
 // log (the real build runs after, against the fake claude on PATH).
 func slotRig(t *testing.T, slots map[string]string) (*remoteRig, *[]*exec.Cmd) {
 	t.Helper()
-	r := newRemoteRig(t, slotWireRows()...)
+	return slotRigRows(t, slotWireRows(), slots)
+}
+
+// slotRigRows is slotRig over rows in place of slotWireRows.
+func slotRigRows(t *testing.T, rows []modelapi.Row, slots map[string]string) (*remoteRig, *[]*exec.Cmd) {
+	t.Helper()
+	r := newRemoteRig(t, rows...)
 	store := profiles.SlotStore{Profiles: []profiles.SlotProfile{{Name: "mix", Agent: "claude", Default: "sonnet", Slots: slots}}}
 	r.a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
 	built := &[]*exec.Cmd{}
@@ -145,6 +151,50 @@ func TestSlotLaunchRemoteStartsTheLocalSlotOnce(t *testing.T) {
 			}
 			if n := r.f.count("GET /control/v1/resolve"); n != 0 {
 				t.Errorf("resolve calls = %d, want 0", n)
+			}
+		})
+	}
+}
+
+// TestSlotLaunchStartsTheAliasLocalTarget proves a slot naming a local-first
+// alias whose local target is stopped posts one start, with the ALIAS id (the
+// server starts the alias's local target and adds the alias's routes, which a
+// start of the target alone may not), registers the alias id with the client
+// session, and hands the agent the alias id as the slot's model. A slot on
+// the alias beside one on its own target is still one local model and one
+// start.
+func TestSlotLaunchStartsTheAliasLocalTarget(t *testing.T) {
+	alias := localRow("alias/x", modelapi.StateStopped, modelapi.ActionStart, nil)
+	alias.ProviderID, alias.Family, alias.ModelName, alias.Kind = "alias", "alias", "x", modelapi.KindAlias
+	alias.Order = 9
+	alias.Targets = []modelapi.AliasTarget{{ID: "omlx/idle", Order: 1, ProviderID: "omlx", Location: "local", State: modelapi.StateStopped}}
+	rows := append(slotWireRows(), alias)
+	for _, tc := range []struct {
+		name  string
+		slots map[string]string
+		reg   []string
+	}{
+		{"alias only", map[string]string{"sonnet": "openrouter/a", "haiku": "alias/x"}, []string{"openrouter/a", "alias/x"}},
+		{"alias and its target", map[string]string{"sonnet": "alias/x", "haiku": "omlx/idle"}, []string{"alias/x", "omlx/idle"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, built := slotRigRows(t, rows, tc.slots)
+			failOnRegistry(t)
+			if err := r.launch(t, context.Background(), "profile/mix", "", false); err != nil {
+				t.Fatalf("launch: %v", err)
+			}
+			var starts []string
+			for _, s := range r.f.Starts {
+				starts = append(starts, s.Model)
+			}
+			if !slices.Equal(starts, []string{"alias/x"}) {
+				t.Errorf("starts = %v, want [alias/x]", starts)
+			}
+			if got := r.f.Registers; len(got) == 0 || !slices.Equal(got[0], tc.reg) {
+				t.Errorf("registers = %v, want %v first", got, tc.reg)
+			}
+			if len(*built) != 1 || !strings.Contains(strings.Join((*built)[0].Args, " "), `"alias/x"`) {
+				t.Errorf("the slot build does not name alias/x: %v", *built)
 			}
 		})
 	}

@@ -11,6 +11,13 @@ bin/wt-model
 /cmd/wt-session/wt-session
 /cmd/wt-session/wt
 
+# Root-anchored: a stray `wt-model` binary at the repo root (from
+# `go build ./cmd/wt-model` run inside wt/) was once swept into a commit; the
+# `cmd/wt-model` source directory stays tracked.
+/wt-model
+# The same stray binary from `go build` run inside cmd/wt-model.
+/cmd/wt-model/wt-model
+
 # NOTE: a global ~/.gitignore (outside this repo's control) ignores `.claude/`.
 # This repo intentionally tracks `.claude/skills/` — a local negation pattern
 # here can't override the global ignore, so new files under `.claude/` need

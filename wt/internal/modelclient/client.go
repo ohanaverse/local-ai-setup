@@ -411,8 +411,14 @@ func cleanRow(r *modelapi.Row) {
 	r.ProviderID, r.ModelName, r.Location = clean(r.ProviderID), clean(r.ModelName), clean(r.Location)
 	r.State, r.Action, r.BlockReason = clean(r.State), clean(r.Action), clean(r.BlockReason)
 	r.Tier, r.TierCode, r.Confidence = clean(r.Tier), clean(r.TierCode), clean(r.Confidence)
+	r.Kind = clean(r.Kind)
 	cleanAll(r.Tags)
 	cleanAll(r.Protocols)
+	for i := range r.Targets {
+		t := &r.Targets[i]
+		t.ID, t.ProviderID = clean(t.ID), clean(t.ProviderID)
+		t.Location, t.State = clean(t.Location), clean(t.State)
+	}
 }
 
 func cleanCatalog(c *modelapi.Catalog) {
