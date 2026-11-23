@@ -222,14 +222,14 @@ func (s *Server) invalidatingRouted(run modeljobs.RunFunc) modeljobs.RunFunc {
 func (s *Server) catalog(w http.ResponseWriter, r *http.Request) {
 	cfg := s.d.Config()
 	snap := s.d.Inventory(cfg)
-	writeJSON(w, http.StatusOK, BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now()))
+	writeJSON(w, http.StatusOK, BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now(), CatalogOptions{SubscriptionOn: s.o.SubscriptionPassthrough}))
 }
 
 func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("model")
 	cfg := s.d.Config()
 	snap := s.d.Inventory(cfg)
-	cat := BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now())
+	cat := BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now(), CatalogOptions{SubscriptionOn: s.o.SubscriptionPassthrough})
 	for _, row := range cat.Rows {
 		if row.ID == id {
 			writeJSON(w, http.StatusOK, row)

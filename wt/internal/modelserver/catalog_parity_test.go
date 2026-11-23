@@ -35,7 +35,7 @@ func TestFromWireParityWithServerBuiltRows(t *testing.T) {
 		{ProviderID: "llamacpp", Artifact: "x", ModelID: "llamacpp/x", ModelName: "x", Registered: true, ArtifactKnown: true},
 	}}
 	orig := localmodels.CatalogRows(localmodels.CatalogInput{Config: cfg, Models: cfg.Models, Inventory: &snap})
-	c := BuildCatalog(cfg, snap, nil, testSessions(), nil, testNow)
+	c := BuildCatalog(cfg, snap, nil, testSessions(), nil, testNow, CatalogOptions{})
 	if len(orig) != 7 || len(c.Rows) != 7 {
 		t.Fatalf("rows: built %d, wire %d, want 7 each", len(orig), len(c.Rows))
 	}

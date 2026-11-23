@@ -68,7 +68,7 @@ func TestCatalogStatesAndActions(t *testing.T) {
 		},
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
 	}
-	c := BuildCatalog(cfg, snap, nil, testSessions(), nil, testNow)
+	c := BuildCatalog(cfg, snap, nil, testSessions(), nil, testNow, CatalogOptions{})
 	for _, w := range []struct{ id, state, action string }{
 		{"omlx/run", modelapi.StateRunning, modelapi.ActionLaunch},
 		{"omlx/idle", modelapi.StateStopped, modelapi.ActionStart},
@@ -109,7 +109,7 @@ func TestCatalogSkipsProfileRows(t *testing.T) {
 		{Model: config.Model{ID: "slot/profile", ProviderID: "openrouter"}, Location: config.LocationCloud, Profile: &catalog.ProfileRow{}},
 		{Model: config.Model{ID: "openrouter/c", ProviderID: "openrouter", ModelName: "c"}, Location: config.LocationCloud},
 	}
-	got := buildRows(rows, cfg, nil, testSessions(), nil, testNow)
+	got := buildRows(rows, cfg, nil, testSessions(), nil, testNow, CatalogOptions{})
 	if len(got) != 1 || got[0].ID != "openrouter/c" {
 		t.Errorf("rows = %+v, want only openrouter/c", got)
 	}
@@ -121,7 +121,7 @@ func TestCatalogIncludesDiscoveredLocalModels(t *testing.T) {
 	snap := localmodels.Snapshot{Entries: []localmodels.Entry{
 		{ProviderID: "omlx", Artifact: "found", ModelID: "omlx/found", ModelName: "found", Running: true},
 	}}
-	c := BuildCatalog(testCfg(), snap, nil, testSessions(), nil, testNow)
+	c := BuildCatalog(testCfg(), snap, nil, testSessions(), nil, testNow, CatalogOptions{})
 	r := rowByID(t, c, "omlx/found")
 	if !r.Discovered || r.Registered || r.State != modelapi.StateRunning {
 		t.Errorf("row = %+v, want discovered, unregistered, running", r)
@@ -162,7 +162,7 @@ context_basis = "largest_row"
 		config.Model{ID: "openrouter/big", Family: "f", ProviderID: "openrouter", ModelName: "big"},
 		config.Model{ID: "openrouter/none", Family: "f", ProviderID: "openrouter", ModelName: "none"},
 	)
-	c := BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), nil, testNow)
+	c := BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), nil, testNow, CatalogOptions{})
 	h, b, n := rowByID(t, c, "openrouter/host"), rowByID(t, c, "openrouter/big"), rowByID(t, c, "openrouter/none")
 	if h.Context != 200000 || h.Tier != "standard" || h.TierCode != "S" || h.Confidence != "high" || h.Aligned == nil || *h.Aligned != 61 {
 		t.Errorf("host row = %+v", h)
@@ -185,7 +185,7 @@ func TestCatalogSessionsCount(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, reg, nil, testNow)
+	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, reg, nil, testNow, CatalogOptions{})
 	if got := rowByID(t, c, "openrouter/c").Sessions; got != 2 {
 		t.Errorf("Sessions = %d, want 2", got)
 	}
@@ -197,7 +197,7 @@ func TestCatalogPriceAndProtocols(t *testing.T) {
 	in, out := 0.3, 1.2
 	cfg := testCfg(config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c",
 		Cost: config.ModelCost{InputPricePerMillion: &in, OutputPricePerMillion: &out}})
-	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow), "openrouter/c")
+	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow, CatalogOptions{}), "openrouter/c")
 	if r.Price == nil || r.Price.Input == nil || *r.Price.Input != 0.3 || r.Price.Output == nil || *r.Price.Output != 1.2 || r.Price.Cache != nil {
 		t.Errorf("price = %+v", r.Price)
 	}
@@ -267,7 +267,7 @@ context_basis = "host"
 		config.Provider{ID: "nat", Location: config.LocationCloud})
 	cfg.Models[0].Cost.TimePrices = []config.TimePrice{{Label: "night", Timezone: "UTC"}}
 	cfg.Aliases = []config.Alias{{ID: "alias/x", Targets: []config.AliasTarget{{Model: "openrouter/c", Order: 1}, {Model: "acme/m", Order: 2}}}}
-	b, err := json.Marshal(BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), map[string]bool{"acme/m": true}, testNow))
+	b, err := json.Marshal(BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), map[string]bool{"acme/m": true}, testNow, CatalogOptions{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestFixtureRowsAgreeWithServerRules(t *testing.T) {
 func TestCatalogUnmappedCloudRowIsBlocked(t *testing.T) {
 	cfg := testCfg(config.Model{ID: "acme/m", Family: "f", ProviderID: "acme", ModelName: "m"})
 	cfg.Providers = append(cfg.Providers, config.Provider{ID: "acme", Location: config.LocationCloud})
-	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow)
+	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow, CatalogOptions{})
 	r := rowByID(t, c, "acme/m")
 	if r.State != modelapi.StateBlocked || r.Action != modelapi.ActionBlock {
 		t.Fatalf("state/action = %s/%s, want blocked/block", r.State, r.Action)
@@ -397,7 +397,7 @@ func TestCatalogUnmappedCloudRowIsBlocked(t *testing.T) {
 func TestCatalogNativeRowHasNoGatewayID(t *testing.T) {
 	cfg := testCfg(config.Model{ID: "nat/m", Family: "f", ProviderID: "nat", ModelName: "m", Native: true})
 	cfg.Providers = append(cfg.Providers, config.Provider{ID: "nat", Location: config.LocationCloud})
-	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow), "nat/m")
+	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow, CatalogOptions{}), "nat/m")
 	if !r.Native || r.GatewayID != "" || r.ID != "nat/m" {
 		t.Errorf("row = %+v, want native, empty gateway id, id nat/m", r)
 	}
@@ -414,7 +414,7 @@ func TestCatalogOrderFollowsRegistry(t *testing.T) {
 	snap := localmodels.Snapshot{Entries: []localmodels.Entry{
 		{ProviderID: "omlx", Artifact: "found", ModelID: "omlx/found", ModelName: "found", Running: true},
 	}}
-	c := BuildCatalog(cfg, snap, nil, testSessions(), nil, testNow)
+	c := BuildCatalog(cfg, snap, nil, testSessions(), nil, testNow, CatalogOptions{})
 	for id, want := range map[string]int{"openrouter/z": 0, "openrouter/a": 1, "omlx/found": 2} {
 		if got := rowByID(t, c, id).Order; got != want {
 			t.Errorf("%s: order = %d, want %d", id, got, want)
@@ -433,11 +433,11 @@ func TestCatalogRoutedFlag(t *testing.T) {
 		config.Model{ID: "openrouter/a", Family: "f", ProviderID: "openrouter", ModelName: "a"},
 		config.Model{ID: "openrouter/b", Family: "f", ProviderID: "openrouter", ModelName: "b"},
 	)
-	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), map[string]bool{"openrouter/a": true}, testNow)
+	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), map[string]bool{"openrouter/a": true}, testNow, CatalogOptions{})
 	if a, b := rowByID(t, c, "openrouter/a").Routed, rowByID(t, c, "openrouter/b").Routed; a == nil || !*a || b == nil || *b {
 		t.Errorf("routed a/b = %v/%v, want true/false", a, b)
 	}
-	for _, r := range BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), map[string]bool{}, testNow).Rows {
+	for _, r := range BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), map[string]bool{}, testNow, CatalogOptions{}).Rows {
 		if r.Routed == nil || *r.Routed {
 			t.Errorf("%s: routed = %v, want false for an empty map", r.ID, r.Routed)
 		}
@@ -637,7 +637,7 @@ aligned_sources = ["a", "b", "c"]
 		t.Fatal(err)
 	}
 	cfg := testCfg(config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c"})
-	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), nil, testNow), "openrouter/c")
+	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), nil, testNow, CatalogOptions{}), "openrouter/c")
 	if r.Aligned == nil || *r.Aligned != 44 || r.TierSources != 3 {
 		t.Errorf("aligned/sources = %v/%d, want 44/3", r.Aligned, r.TierSources)
 	}
@@ -665,7 +665,7 @@ context_basis = "` + basis + `"
 			t.Fatal(err)
 		}
 		cfg := testCfg(config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c"})
-		if got := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), nil, testNow), "openrouter/c").Context; got != want {
+		if got := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), nil, testNow, CatalogOptions{}), "openrouter/c").Context; got != want {
 			t.Errorf("basis %s: context = %d, want %d", basis, got, want)
 		}
 	}
@@ -677,7 +677,7 @@ func TestCatalogTimePricedFlag(t *testing.T) {
 	in := 1.0
 	cfg := testCfg(config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c",
 		Cost: config.ModelCost{InputPricePerMillion: &in, TimePrices: []config.TimePrice{{Label: "night", Timezone: "UTC"}}}})
-	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow), "openrouter/c")
+	r := rowByID(t, BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), nil, testNow, CatalogOptions{}), "openrouter/c")
 	if r.Price == nil || !r.Price.TimePriced {
 		t.Errorf("price = %+v, want time_priced", r.Price)
 	}
@@ -689,16 +689,16 @@ func TestCatalogTimePricedFlag(t *testing.T) {
 func TestCatalogPricingStamp(t *testing.T) {
 	stamp := testNow.Add(-72 * time.Hour)
 	stamped := config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c", PricingUpdatedAt: stamp}
-	c := BuildCatalog(testCfg(stamped), localmodels.Snapshot{}, nil, testSessions(), nil, testNow)
+	c := BuildCatalog(testCfg(stamped), localmodels.Snapshot{}, nil, testSessions(), nil, testNow, CatalogOptions{})
 	if c.Pricing == nil || c.Pricing.Updated != stamp.Format(time.RFC3339) {
 		t.Errorf("pricing = %+v, want updated %s", c.Pricing, stamp.Format(time.RFC3339))
 	}
 	other := config.Model{ID: "omlx/x", Family: "f", ProviderID: "omlx", ModelName: "x"}
-	if c := BuildCatalog(testCfg(other), localmodels.Snapshot{}, nil, testSessions(), nil, testNow); c.Pricing != nil {
+	if c := BuildCatalog(testCfg(other), localmodels.Snapshot{}, nil, testSessions(), nil, testNow, CatalogOptions{}); c.Pricing != nil {
 		t.Errorf("pricing = %+v, want nil with no OpenRouter model", c.Pricing)
 	}
 	unstamped := config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c"}
-	if c := BuildCatalog(testCfg(unstamped), localmodels.Snapshot{}, nil, testSessions(), nil, testNow); c.Pricing == nil || c.Pricing.Updated != "" {
+	if c := BuildCatalog(testCfg(unstamped), localmodels.Snapshot{}, nil, testSessions(), nil, testNow, CatalogOptions{}); c.Pricing == nil || c.Pricing.Updated != "" {
 		t.Errorf("pricing = %+v, want an empty object", c.Pricing)
 	}
 }

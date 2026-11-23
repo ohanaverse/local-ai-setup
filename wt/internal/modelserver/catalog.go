@@ -22,8 +22,9 @@ import (
 // every input is a value, so a test hand-builds them. Rows are sorted by ID
 // and carry no slot-profile rows; Generated is now in UTC. routed is the set
 // of ids the gateway lists: nil means LiteLLM could not be asked and leaves
-// every Row.Routed nil, a non-nil map (even empty) sets every row's.
-func BuildCatalog(cfg *config.Config, snap localmodels.Snapshot, ix tiers.Index, sessions *sessionreg.Registry, routed map[string]bool, now time.Time) modelapi.Catalog {
+// every Row.Routed nil, a non-nil map (even empty) sets every row's. opts
+// carries the host switches the catalog enforces (decision 6).
+func BuildCatalog(cfg *config.Config, snap localmodels.Snapshot, ix tiers.Index, sessions *sessionreg.Registry, routed map[string]bool, now time.Time, opts CatalogOptions) modelapi.Catalog {
 	rows := localmodels.CatalogRows(localmodels.CatalogInput{Config: cfg, Models: cfg.Models, Inventory: &snap})
 	out := modelapi.Catalog{
 		Schema:    modelapi.SchemaVersion,
@@ -33,7 +34,7 @@ func BuildCatalog(cfg *config.Config, snap localmodels.Snapshot, ix tiers.Index,
 	for family, st := range snap.Providers {
 		out.Providers[family] = string(st)
 	}
-	out.Rows = buildRows(rows, cfg, ix, sessions, routed, now)
+	out.Rows = buildRows(rows, cfg, ix, sessions, routed, now, opts)
 	if cfg.OpenRouterPricedModel() {
 		out.Pricing = &modelapi.Pricing{}
 		if at, ok := cfg.LastPriceRefresh(now); ok {
@@ -45,7 +46,7 @@ func BuildCatalog(cfg *config.Config, snap localmodels.Snapshot, ix tiers.Index,
 
 // buildRows converts already-built catalog rows to wire rows, skipping
 // slot-profile rows, sorted by ID.
-func buildRows(rows []catalog.Row, cfg *config.Config, ix tiers.Index, sessions *sessionreg.Registry, routed map[string]bool, now time.Time) []modelapi.Row {
+func buildRows(rows []catalog.Row, cfg *config.Config, ix tiers.Index, sessions *sessionreg.Registry, routed map[string]bool, now time.Time, opts CatalogOptions) []modelapi.Row {
 	var ids []string
 	for _, r := range rows {
 		if !r.IsProfile() {
@@ -72,7 +73,7 @@ func buildRows(rows []catalog.Row, cfg *config.Config, ix tiers.Index, sessions 
 		if r.IsProfile() {
 			continue
 		}
-		w := wireRow(cfg, r, ix, counts[r.Model.ID], now)
+		w := wireRow(cfg, r, ix, counts[r.Model.ID], now, opts)
 		w.Order = order[r.Model.ID]
 		if routed != nil {
 			v := routed[r.Model.ID]
@@ -85,8 +86,22 @@ func buildRows(rows []catalog.Row, cfg *config.Config, ix tiers.Index, sessions 
 	return out
 }
 
-// wireRow converts one catalog row.
-func wireRow(cfg *config.Config, r catalog.Row, ix tiers.Index, sessions int, now time.Time) modelapi.Row {
+// CatalogOptions are the host switches BuildCatalog enforces on the rows.
+type CatalogOptions struct {
+	// SubscriptionOn is Options.SubscriptionPassthrough: while it is false a
+	// claude-subscription row is blocked with subscriptionOffReason, and an
+	// alias over one degrades to its other targets (aliasAction).
+	SubscriptionOn bool
+}
+
+// subscriptionOffReason is a subscription row's block reason while the
+// host's passthrough is off: it names the key that turns it on (decision 6).
+const subscriptionOffReason = "subscription passthrough is off on the model server ([gateway] subscription_passthrough in ~/.config/wt-model/config.toml)"
+
+// wireRow converts one catalog row. A subscription row is blocked while
+// opts.SubscriptionOn is false, after every other rule, so an unmapped or
+// otherwise blocked row keeps its own reason.
+func wireRow(cfg *config.Config, r catalog.Row, ix tiers.Index, sessions int, now time.Time, opts CatalogOptions) modelapi.Row {
 	m := r.Model
 	row := modelapi.Row{
 		ID: m.ID, GatewayID: m.ID, Native: m.Native, Family: m.Family, ProviderID: m.ProviderID, ModelName: m.ModelName,
@@ -107,6 +122,8 @@ func wireRow(cfg *config.Config, r catalog.Row, ix tiers.Index, sessions int, no
 		row.BlockReason = fmt.Sprintf("provider %q has no LiteLLM mapping, so the gateway cannot route %s", m.ProviderID, m.ID)
 	case row.Action == modelapi.ActionBlock:
 		row.BlockReason = r.BlockReason()
+	case config.IsSubscriptionProvider(m.ProviderID) && !opts.SubscriptionOn:
+		row.State, row.Action, row.BlockReason = modelapi.StateBlocked, modelapi.ActionBlock, subscriptionOffReason
 	}
 	if p := cfg.ProviderByID(m.ProviderID); p != nil {
 		for _, proto := range p.EffectiveProtocols() {

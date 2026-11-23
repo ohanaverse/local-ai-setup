@@ -180,7 +180,7 @@ confidence = "high"
 	cfg := aliasCfg()
 	tapConfig(Deps{Config: func() *config.Config { return cfg }}, sess).Config() // the server's wiring
 	_ = sess.Register("s", []string{"alias/x"})
-	c := BuildCatalog(cfg, aliasSnap(false), ix, sess, map[string]bool{"alias/x": true, "openrouter/c": true}, testNow)
+	c := BuildCatalog(cfg, aliasSnap(false), ix, sess, map[string]bool{"alias/x": true, "openrouter/c": true}, testNow, CatalogOptions{})
 	r := rowByID(t, c, "alias/x")
 	if r.GatewayID != "alias/x" || r.ProviderID != "alias" || r.Family != "alias" || r.ModelName != "x" || !r.Registered || r.Discovered {
 		t.Errorf("identity = %+v", r)
@@ -231,7 +231,7 @@ confidence = "low"
 	}
 	cfg := aliasCfg()
 	cfg.Aliases[0].Targets[1].Order = 1
-	r := rowByID(t, BuildCatalog(cfg, aliasSnap(true), ix, testSessions(), nil, testNow), "alias/x")
+	r := rowByID(t, BuildCatalog(cfg, aliasSnap(true), ix, testSessions(), nil, testNow, CatalogOptions{}), "alias/x")
 	if r.Tier != "quick" || r.TierCode != "Q" || r.Confidence != "low" {
 		t.Errorf("tier = %q %q %q, want quick", r.Tier, r.TierCode, r.Confidence)
 	}
@@ -241,7 +241,7 @@ confidence = "low"
 // smallest window over all its targets, so claude never compacts too late on
 // the target with the smaller window.
 func TestAliasRowContextIsTheMinimum(t *testing.T) {
-	r := rowByID(t, BuildCatalog(aliasCfg(), aliasSnap(true), nil, testSessions(), nil, testNow), "alias/x")
+	r := rowByID(t, BuildCatalog(aliasCfg(), aliasSnap(true), nil, testSessions(), nil, testNow, CatalogOptions{}), "alias/x")
 	if r.Context != 131072 {
 		t.Errorf("context = %d, want the minimum 131072", r.Context)
 	}
@@ -253,7 +253,7 @@ func TestAliasRowContextIsTheMinimum(t *testing.T) {
 func TestAliasRowContextWithheldWithAnUnknownTarget(t *testing.T) {
 	cfg := aliasCfg()
 	cfg.Models[1].ContextWindow = 0
-	r := rowByID(t, BuildCatalog(cfg, aliasSnap(true), nil, testSessions(), nil, testNow), "alias/x")
+	r := rowByID(t, BuildCatalog(cfg, aliasSnap(true), nil, testSessions(), nil, testNow, CatalogOptions{}), "alias/x")
 	if r.Context != 0 {
 		t.Errorf("context = %d, want 0 (withheld)", r.Context)
 	}
@@ -290,7 +290,7 @@ context_basis = "host"
 	)
 	snap := aliasSnap(true)
 	snap.Entries = append(snap.Entries, omlxEntry("omlx/b", "b", true))
-	c := BuildCatalog(cfg, snap, ix, testSessions(), nil, testNow)
+	c := BuildCatalog(cfg, snap, ix, testSessions(), nil, testNow, CatalogOptions{})
 	for id, want := range map[string]int{"omlx/a": 65536, "omlx/b": 0, "openrouter/c": 100000} {
 		if got := rowByID(t, c, id).Context; got != want {
 			t.Errorf("%s: context = %d, want %d", id, got, want)
@@ -307,7 +307,7 @@ func TestMalformedAliasIsABlockRow(t *testing.T) {
 	cfg.Aliases = append(cfg.Aliases,
 		config.Alias{ID: "alias/bad", Malformed: "targets is required"},
 		config.Alias{ID: "alias/orphan", Targets: []config.AliasTarget{{Model: "omlx/gone", Order: 1}}})
-	c := BuildCatalog(cfg, aliasSnap(true), nil, testSessions(), nil, testNow)
+	c := BuildCatalog(cfg, aliasSnap(true), nil, testSessions(), nil, testNow, CatalogOptions{})
 	for id, want := range map[string]string{"alias/bad": "targets is required", "alias/orphan": "names no model"} {
 		r := rowByID(t, c, id)
 		if r.Action != modelapi.ActionBlock || r.State != modelapi.StateBlocked || !strings.Contains(r.BlockReason, want) {
