@@ -391,6 +391,17 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 	// aliasNote is decision 4's line when there is no database half at all
 	// (Options.Admin nil) and the change touches an alias target.
 	var aliasNote string
+	// A Claude subscription row is added only by a sync, which runs the
+	// hazard check (gateSubscription); a targeted write runs none, so it
+	// never adds one.
+	var subRefused []string
+	ch.Add = slices.DeleteFunc(slices.Clone(ch.Add), func(m config.Model) bool {
+		if config.IsSubscriptionProvider(m.ProviderID) {
+			subRefused = append(subRefused, m.ID)
+			return true
+		}
+		return false
+	})
 	db := newDBRoutes(o)
 	defer db.close()
 	res, err := applyPlanned(func(f *File) ([]plannedAdd, []plannedRemove, bool) {
@@ -513,6 +524,9 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 	db.finish(&res, false)
 	if aliasNote != "" {
 		res.Warnings = append(res.Warnings, aliasNote)
+	}
+	if len(subRefused) > 0 {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("Claude subscription models (%s) were not routed: only a sync, which checks the proxy for subscription hazards, routes them ('wt-model litellm sync')", strings.Join(subRefused, ", ")))
 	}
 	res.Missing = missing
 	return res, nil

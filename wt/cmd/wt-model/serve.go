@@ -126,7 +126,8 @@ cannot read, a wildcard routed to anthropic, or an anthropic deployment that
 names a litellm credential or whose api_base or base_url is not exactly
 https://api.anthropic.com keeps the mode off with one warning naming it; a
 proxy that does not answer is one warning and the mode stays on (the route
-sync adds no Claude subscription route until it can check).
+sync keeps the Claude subscription routes that exist and adds none until it
+can check).
 TLS is off (plain http) unless the same table names a PEM certificate and
 its key, both hand-edited, both or neither:
 
@@ -593,7 +594,7 @@ func subscriptionGate(ctx context.Context, cfgPath string, env litellm.ProxyEnv,
 	case len(hazards) > 0:
 		return false, "wt-model: warning: subscription passthrough is kept off: " + strings.Join(hazards, "; ") + " (fix it, then restart wt-model serve)"
 	case err != nil:
-		return true, "wt-model: warning: subscription passthrough is on, but the proxy could not be checked for hazards (" + oneLineText(err.Error()) + "); Claude subscription models stay unrouted until 'wt-model litellm sync' can check"
+		return true, "wt-model: warning: subscription passthrough is on, but the proxy could not be checked for hazards (" + oneLineText(err.Error()) + "); the route sync keeps the Claude subscription routes that exist and adds none until it can check"
 	}
 	return true, ""
 }

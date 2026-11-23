@@ -42,6 +42,11 @@ type DeploymentInfo struct {
 	// time and /model/info never shows them (the name may be masked, so only
 	// its presence counts).
 	Credential bool
+	// AnthropicParams are the names (never the values) of the
+	// litellm_params keys starting "anthropic_", sorted: per-deployment
+	// settings LiteLLM's anthropic provider reads (wif.py's
+	// anthropic_federation_* and the like).
+	AnthropicParams []string
 }
 
 // ModelInfoFunc lists the proxy's deployments: AdminClient.ModelInfo in a
@@ -71,10 +76,13 @@ func (c *AdminClient) ModelInfo(ctx context.Context) ([]DeploymentInfo, error) {
 }
 
 // deploymentsOf reads a listing's deployments. A deployment's provider is
-// "anthropic" when any of litellm_params.custom_llm_provider, the model's
-// prefix before "/" and model_info.litellm_provider says so; otherwise the
-// first of them that is set ("" when none is: SubscriptionHazards judges such
-// a deployment by its model).
+// "anthropic" when litellm_params.custom_llm_provider, the model's prefix
+// before "/" or model_info.litellm_provider says so; otherwise it is what
+// custom_llm_provider or the prefix names, which are what LiteLLM routes on
+// ("" when neither names one: SubscriptionHazards then judges the deployment
+// by its model). model_info.litellm_provider is only ever a signal for
+// anthropic: a hand-set model_info overrides it on /model/info, and LiteLLM
+// does not route on it, so it never makes a deployment another provider's.
 func deploymentsOf(rows []modelInfoRow) []DeploymentInfo {
 	out := make([]DeploymentInfo, 0, len(rows))
 	for _, r := range rows {
@@ -89,6 +97,12 @@ func deploymentsOf(rows []modelInfoRow) []DeploymentInfo {
 			prefix = p
 		}
 		d := DeploymentInfo{ModelName: r.ModelName, Model: model, APIBase: base, BaseURL: baseURL, Credential: cred != ""}
+		for k := range r.Params {
+			if strings.HasPrefix(strings.ToLower(k), "anthropic_") {
+				d.AnthropicParams = append(d.AnthropicParams, k)
+			}
+		}
+		slices.Sort(d.AnthropicParams)
 		// A credential name that is not a string (masked into another
 		// shape) still names one.
 		if v, ok := r.Params["litellm_credential_name"]; ok && v != nil && !d.Credential {
@@ -96,14 +110,12 @@ func deploymentsOf(rows []modelInfoRow) []DeploymentInfo {
 				d.Credential = true
 			}
 		}
-		for _, p := range []string{custom, prefix, listed} {
-			if strings.EqualFold(p, "anthropic") {
-				d.Provider = "anthropic"
-				break
-			}
-			if d.Provider == "" {
-				d.Provider = p
-			}
+		d.Provider = custom
+		if d.Provider == "" {
+			d.Provider = prefix
+		}
+		if strings.EqualFold(custom, "anthropic") || strings.EqualFold(prefix, "anthropic") || strings.EqualFold(listed, "anthropic") {
+			d.Provider = "anthropic"
 		}
 		out = append(out, d)
 	}
@@ -189,6 +201,7 @@ func subscriptionHazards(ctx context.Context, f *File, env ProxyEnv, info ModelI
 				hazards = append(hazards, fmt.Sprintf("config.yaml turns on forward_client_headers_to_llm_api under %s: the proxy's master key could be forwarded to Anthropic", section))
 			}
 		}
+		hazards = append(hazards, configCredentialHazards(f.root())...)
 		gs := aliasValue(mergedGet(f.root(), "general_settings"))
 		if v := aliasValue(mergedGet(gs, "store_prompts_in_spend_logs")); v != nil && !isNull(v) && !isFalse(v) {
 			warnings = append(warnings, "general_settings.store_prompts_in_spend_logs is on: the proxy keeps the prompts of Claude subscription requests in its spend logs")
@@ -207,6 +220,40 @@ func subscriptionHazards(ctx context.Context, f *File, env ProxyEnv, info ModelI
 		}
 	}
 	return hazards, warnings, nil
+}
+
+// configCredentialHazards are config.yaml's other ways to hand a keyless
+// anthropic/ row a credential or an address (LiteLLM 1.109.1,
+// proxy_server.py and main.py), each named, never valued:
+//   - a credential or address variable named in the top-level
+//     environment_variables block, which the proxy copies into its own
+//     environment at load;
+//   - litellm_settings.api_base, api_key or anthropic_key, which the proxy
+//     sets as module globals and the anthropic dispatch falls back to for a
+//     row that has none (wt's keyless row has none of them);
+//   - general_settings.key_management_system: the secret manager is asked
+//     for ANTHROPIC_API_KEY (and the rest) before the environment, so any
+//     configured one fails closed.
+func configCredentialHazards(root *yaml.Node) []string {
+	var hazards []string
+	if ev := aliasValue(mergedGet(root, "environment_variables")); ev != nil && ev.Kind == yaml.MappingNode {
+		for _, name := range append(subscriptionCredentialVars(), subscriptionAddressVars()...) {
+			if mergedGet(ev, name) != nil {
+				hazards = append(hazards, fmt.Sprintf("config.yaml's environment_variables names %s, which the proxy copies into its environment: a keyless anthropic/ row would take it", name))
+			}
+		}
+	}
+	ls := aliasValue(mergedGet(root, "litellm_settings"))
+	for _, key := range []string{"api_base", "api_key", "anthropic_key"} {
+		if v := aliasValue(mergedGet(ls, key)); v != nil && !isNull(v) {
+			hazards = append(hazards, fmt.Sprintf("config.yaml sets litellm_settings.%s, which a keyless anthropic/ row falls back to: it would bill a host credential or send the client's login elsewhere", key))
+		}
+	}
+	gs := aliasValue(mergedGet(root, "general_settings"))
+	if v := aliasValue(mergedGet(gs, "key_management_system")); v != nil && !isNull(v) {
+		hazards = append(hazards, "config.yaml sets general_settings.key_management_system: the proxy asks that secret manager for Anthropic credentials before its environment, so a keyless anthropic/ row could take one")
+	}
+	return hazards
 }
 
 // deploymentHazard is the one hazard deployment d is for a keyless
@@ -231,6 +278,8 @@ func deploymentHazard(d DeploymentInfo) string {
 		return fmt.Sprintf("the proxy has an anthropic deployment %s whose api_base is not exactly %s: LiteLLM forwards a client's login to every anthropic deployment", name, anthropicAPIBase)
 	case d.BaseURL != "" && d.BaseURL != anthropicAPIBase:
 		return fmt.Sprintf("the proxy has an anthropic deployment %s whose base_url is not exactly %s: LiteLLM forwards a client's login to every anthropic deployment", name, anthropicAPIBase)
+	case len(d.AnthropicParams) > 0:
+		return fmt.Sprintf("the proxy has an anthropic deployment %s with %s in its litellm_params: per-deployment anthropic settings can give it a credential or an address", name, strings.Join(d.AnthropicParams, ", "))
 	}
 	return ""
 }
