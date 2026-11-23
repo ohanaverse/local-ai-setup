@@ -42,14 +42,23 @@ func TestToModelCarriesGatewayID(t *testing.T) {
 	}
 }
 
-// TestToModelHostContextOnlyForCloud pins that the server's context window
-// is a cloud model's host context and never a local model's.
-func TestToModelHostContextOnlyForCloud(t *testing.T) {
-	if got := ToModel(modelapi.Row{Location: "cloud", Context: 1000}).HostContext; got != 1000 {
-		t.Errorf("cloud HostContext = %d", got)
+// TestToModelKeepsALocalRowsContext pins that the server's context window
+// becomes HostContext for every row, local and alias rows included: the
+// server now sends a local row's window only from the registry's
+// context_window (#626), and an alias's is the minimum over its targets, so
+// a session that dropped it would leave claude on its assumed 200K window.
+func TestToModelKeepsALocalRowsContext(t *testing.T) {
+	for _, r := range []modelapi.Row{
+		{Location: "cloud", Context: 1000},
+		{Location: "local", Context: 1000},
+		{Location: "local", Kind: modelapi.KindAlias, ProviderID: "alias", Context: 1000},
+	} {
+		if got := ToModel(r).HostContext; got != 1000 {
+			t.Errorf("%s %q row: HostContext = %d, want 1000", r.Location, r.Kind, got)
+		}
 	}
-	if got := ToModel(modelapi.Row{Location: "local", Context: 1000}).HostContext; got != 0 {
-		t.Errorf("local HostContext = %d", got)
+	if got := ToModel(modelapi.Row{Location: "local"}).HostContext; got != 0 {
+		t.Errorf("a row with no context: HostContext = %d, want 0", got)
 	}
 }
 
@@ -105,6 +114,68 @@ func TestEligibleWireOrdersByOrder(t *testing.T) {
 	a := config.Agent{Name: "x", SupportedProviders: []string{"claude", "ollama", "sushi", "copilot"}}
 	if got := wid(EligibleWire(eligRows(), a, "", "")); !slices.Equal(got, []string{"a", "b", "d", "c"}) {
 		t.Errorf("got %v", got)
+	}
+}
+
+// aliasRow is an alias row over targets, as the model server sends it.
+func aliasRow(id, loc string, order int, targets ...modelapi.AliasTarget) modelapi.Row {
+	return modelapi.Row{ID: id, GatewayID: id, ProviderID: "alias", Family: "alias", Kind: modelapi.KindAlias,
+		Location: loc, Order: order, Registered: true, Action: modelapi.ActionLaunch, State: modelapi.StateRunning, Targets: targets}
+}
+
+// TestEligibleWireAliasNeedsEveryTargetProvider pins that an alias row (whose
+// own provider id is "alias", which no agent lists) reaches an agent exactly
+// when every one of its targets' providers would: a group with one target
+// the agent cannot use would fall back, through the gateway, onto a model
+// the agent was never meant to run. An AllProviders agent takes every alias.
+func TestEligibleWireAliasNeedsEveryTargetProvider(t *testing.T) {
+	both := aliasRow("alias/both", "cloud", 5,
+		modelapi.AliasTarget{ID: "ollama/x", Order: 1, ProviderID: "ollama", Location: "cloud"},
+		modelapi.AliasTarget{ID: "omlx/y", Order: 2, ProviderID: "omlx", Location: "local"})
+	ollamaOnly := aliasRow("alias/one", "cloud", 6,
+		modelapi.AliasTarget{ID: "ollama/x", Order: 1, ProviderID: "ollama", Location: "cloud"})
+	sushi := aliasRow("alias/sushi", "local", 7,
+		modelapi.AliasTarget{ID: "sushi/p", Order: 1, ProviderID: "sushi", Location: "local"})
+	rows := append(eligRows(), both, ollamaOnly, sushi)
+
+	codex := config.Agent{Name: "codex", SupportedProviders: []string{"ollama"}}
+	if got := wid(EligibleWire(rows, codex, "", "")); !slices.Equal(got, []string{"b", "alias/one"}) {
+		t.Errorf("codex (ollama only): %v, want [b alias/one]", got)
+	}
+	wide := config.Agent{Name: "codex", SupportedProviders: []string{"ollama", "omlx"}}
+	if got := wid(EligibleWire(rows, wide, "", "")); !slices.Equal(got, []string{"b", "alias/both", "alias/one"}) {
+		t.Errorf("codex (ollama, omlx): %v, want both aliases", got)
+	}
+	pi := config.Agent{Name: "pi", SupportedProviders: []string{"none"}}
+	if got := wid(EligibleWire(rows, pi, "", "")); !slices.Equal(got, []string{"a", "alias/sushi"}) {
+		t.Errorf("pi (sushi through SushiAgents): %v, want [a alias/sushi]", got)
+	}
+	all := config.Agent{Name: "claude", AllProviders: true}
+	if got := wid(EligibleWire(rows, all, "", "")); !slices.Equal(got, []string{"a", "b", "c", "alias/both", "alias/one", "alias/sushi"}) {
+		t.Errorf("AllProviders: %v", got)
+	}
+	empty := aliasRow("alias/none", "cloud", 8)
+	if got := wid(EligibleWire([]modelapi.Row{empty}, all, "", "")); len(got) != 0 {
+		t.Errorf("an alias with no targets reached an agent: %v", got)
+	}
+}
+
+// TestRotationSkipsAliasRows pins decision 14: alias rows are registered
+// (they count in stats families) but RegisteredOrdered, the list a no-pin
+// launch rotates over, leaves them out, so wt never rotates onto an alias
+// the user did not ask for; the picker and -M alias/x still launch one.
+func TestRotationSkipsAliasRows(t *testing.T) {
+	rows := []modelapi.Row{
+		{ID: "z", Order: 2, Registered: true, Action: "launch"},
+		aliasRow("alias/x", "cloud", 3, modelapi.AliasTarget{ID: "z", Order: 1, ProviderID: "openrouter", Location: "cloud"}),
+		{ID: "y", Order: 1, Registered: true, Action: "launch"},
+	}
+	var ids []string
+	for _, m := range RegisteredOrdered(rows) {
+		ids = append(ids, m.ID)
+	}
+	if !slices.Equal(ids, []string{"y", "z"}) {
+		t.Errorf("rotation list = %v, want [y z] (no alias)", ids)
 	}
 }
 

@@ -97,9 +97,16 @@ func newJobFake(t *testing.T) *jobFake {
 	}
 	jf.mux.HandleFunc("POST /control/v1/start", func(w http.ResponseWriter, r *http.Request) { post(w, r, false) })
 	jf.mux.HandleFunc("POST /control/v1/stop", func(w http.ResponseWriter, r *http.Request) { post(w, r, true) })
-	jf.mux.HandleFunc("GET /control/v1/jobs", func(w http.ResponseWriter, _ *http.Request) {
+	jf.mux.HandleFunc("GET /control/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		// As the server's Active: a model filter keeps the jobs named by it.
+		model := r.URL.Query().Get("model")
 		jf.mu.Lock()
-		jobs := append([]modelapi.JobStatus{}, jf.active...)
+		var jobs []modelapi.JobStatus
+		for _, j := range jf.active {
+			if model == "" || j.Model == model {
+				jobs = append(jobs, j)
+			}
+		}
 		jf.mu.Unlock()
 		writeJSONBody(w, 200, modelapi.JobList{Jobs: jobs})
 	})
@@ -340,6 +347,47 @@ func TestRunStartAttachesToAnActiveJob(t *testing.T) {
 	jf2.job = func(_ http.ResponseWriter, _ *http.Request, id string, _ int) *modelapi.JobStatus { return done(id) }
 	var v2 views
 	if _, err := jf2.driver(newFakeClock()).RunStart(ctx(), modelapi.StartRequest{Model: "omlx/m"}, &fakeAnswerer{}, v2.prog); err != nil {
+		t.Fatal(err)
+	}
+	if vs := v2.all(); len(vs) == 0 || vs[0].Attached {
+		t.Errorf("views = %+v, want not attached", vs)
+	}
+}
+
+// TestRunStartMarksAnAliasJoinAttached pins that a start of an alias whose
+// local target already has a start job running is reported as joined: the
+// server keys and names an alias's start job by its target (startKey), so
+// the POST of alias/x hands back the target's job. Matching active jobs by
+// the requested id alone missed it, and `wt start alias/x` said "started"
+// for a start another client began. A start whose POST makes a new job is
+// still not attached, even while another model's start job runs.
+func TestRunStartMarksAnAliasJoinAttached(t *testing.T) {
+	jf := newJobFake(t)
+	target := running("j9")
+	target.Model = "omlx/target"
+	jf.active = []modelapi.JobStatus{*target}
+	jf.submit = func(int) string { return "j9" }
+	jf.job = func(_ http.ResponseWriter, _ *http.Request, id string, n int) *modelapi.JobStatus {
+		if n < 1 {
+			return running(id)
+		}
+		return done(id)
+	}
+	var v views
+	if _, err := jf.driver(newFakeClock()).RunStart(ctx(), modelapi.StartRequest{Model: "alias/x"}, &fakeAnswerer{}, v.prog); err != nil {
+		t.Fatal(err)
+	}
+	if vs := v.all(); len(vs) == 0 || !vs[0].Attached || vs[0].ID != "j9" {
+		t.Errorf("views = %+v, want the first attached to j9", vs)
+	}
+
+	// Another model's job is running, and this POST starts a new one.
+	jf2 := newJobFake(t)
+	jf2.active = []modelapi.JobStatus{*target}
+	jf2.submit = func(int) string { return "j10" }
+	jf2.job = func(_ http.ResponseWriter, _ *http.Request, id string, _ int) *modelapi.JobStatus { return done(id) }
+	var v2 views
+	if _, err := jf2.driver(newFakeClock()).RunStart(ctx(), modelapi.StartRequest{Model: "omlx/other"}, &fakeAnswerer{}, v2.prog); err != nil {
 		t.Fatal(err)
 	}
 	if vs := v2.all(); len(vs) == 0 || vs[0].Attached {

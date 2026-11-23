@@ -80,12 +80,14 @@ func TestApplyWritesBackupAndFile(t *testing.T) {
 }
 
 // TestApplyRefusesUnknownModelID checks that a slot naming an id the
-// registry does not hold is refused before any write: the file and its
+// model server's catalog does not list is refused before any write: the file and its
 // backups stay untouched, so a typo can never break a launchable profile.
+// The refusal says "model or alias": ModelIDs are the model server's
+// catalog rows, alias ids among them (#596).
 func TestApplyRefusesUnknownModelID(t *testing.T) {
 	p := setup(t, applyBase)
 	_, err := Apply(p, replace(`"m/b"`, `"m/zzz"`), applyOpts("alpha"))
-	if err == nil || !strings.Contains(err.Error(), "m/zzz") {
+	if err == nil || !strings.Contains(err.Error(), `names "m/zzz", which is not a model or alias on the model server`) {
 		t.Fatalf("err = %v", err)
 	}
 	assertUntouched(t, p, applyBase)

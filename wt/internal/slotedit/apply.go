@@ -16,7 +16,7 @@ import (
 // Options configures Apply.
 type Options struct {
 	Drivers  profiles.SlotDrivers
-	ModelIDs []string // registry ids a slot of Target may name
+	ModelIDs []string // catalog row ids (models and aliases) a slot of Target may name
 	// Target is the profile that must be usable afterwards; "" for a
 	// removal, where no profile is checked for usability or ids.
 	Target string
@@ -110,7 +110,7 @@ func check(before, after profiles.SlotStore, o Options) error {
 			}
 			for _, slot := range sortedKeys(p.Slots) {
 				if id := p.Slots[slot]; !slices.Contains(o.ModelIDs, id) {
-					return fmt.Errorf("profile %q slot %s names %q, which is not a registered model", p.Name, slot, id)
+					return fmt.Errorf("profile %q slot %s names %q, which is not a model or alias on the model server", p.Name, slot, id)
 				}
 			}
 		}

@@ -16,8 +16,9 @@ const claudeContextVar = "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
 
 // claudeWindow is the context window, in tokens, of every one of models, the
 // smallest of them: each model's HostContext, the window the model server
-// reports for it (from the host's tiers.toml entry when its context_basis is
-// "host", #405, #470). It reports false when any model is native (Claude Code
+// reports for it (its registry context_window, #626; else, for a cloud model,
+// the host's tiers.toml entry when its context_basis is "host", #405, #470;
+// for an alias, the minimum over its targets, #596). It reports false when any model is native (Claude Code
 // knows those) or has no HostContext: a window for some of the models says
 // nothing about the others, which may be smaller.
 func claudeWindow(models ...config.Model) (int, bool) {
