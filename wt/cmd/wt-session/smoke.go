@@ -454,7 +454,10 @@ func (a *app) runSmokeRows(ctx context.Context, stderr io.Writer, cfg *config.Co
 			rp := profiles.Resolve(store, agentName, cfg, m)
 			if !rp.Empty() {
 				pa = func(cmd *exec.Cmd, oneShotArgs []string) (func() error, error) {
-					return applyResolvedProfile(cmd, agentName, rp, oneShotArgs)
+					// Header mode is claude on a subscription model (#597);
+					// smoke builds its command elsewhere, so it is read from
+					// the same inputs the build reads.
+					return applyResolvedProfile(cmd, agentName, rp, oneShotArgs, agentName == "claude" && m.Subscription)
 				}
 			}
 		}

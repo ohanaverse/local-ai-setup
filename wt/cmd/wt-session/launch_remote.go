@@ -137,6 +137,14 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 		return remoteExit(modelclient.Still(err, launchStill))
 	}
 
+	// A model on the user's Claude subscription: the pre-launch guard, before
+	// the client session, any start and any gateway call (#597). The launch
+	// profile that matches the model is judged too (it is applied after the
+	// build, and its env would win).
+	if gerr := subscriptionGuard(ctx, ms, []modelapi.Row{row}, launchProfileKeysFor(agent, catalog.ToModel(row), cfg, pp), a.hooks.login); gerr != nil {
+		return remoteExit(gerr)
+	}
+
 	// The client session holds the model from before its start to the
 	// agent's exit. Its notes (a failed or recovered heartbeat) are notes.
 	// The heartbeat goroutine calls note: it captures the stream once.
@@ -167,7 +175,7 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 			return remoteExit(modelclient.Still(err, launchStill))
 		}
 	}
-	cmd, _, err := a.hooks.build(agent, m, worktreePath, yolo, gw, models, extraArgs)
+	cmd, info, err := a.hooks.build(agent, m, worktreePath, yolo, gw, models, extraArgs)
 	if err != nil {
 		end()
 		return remoteExit(modelclient.Still(err, launchStill))
@@ -176,7 +184,7 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 		// RecordFor names the file that failed.
 		fmt.Fprintf(osStderr, "wt: note: %v\n", rerr)
 	}
-	return runLaunch(cmd, agent, m, cfg, pp, extraArgs, runTail{End: end, PriceNote: remotePriceNoteFunc(ctx, ms)})
+	return runLaunch(cmd, agent, m, cfg, pp, extraArgs, runTail{End: end, PriceNote: remotePriceNoteFunc(ctx, ms), HeaderMode: info.HeaderMode})
 }
 
 // registerRefused reports a register error no retry can heal: the same three

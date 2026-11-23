@@ -41,6 +41,12 @@ func resolveModelRemote(ctx context.Context, ms *modelSession, agent config.Agen
 			return modelapi.Row{}, nil, fmt.Errorf("model %q is not in the eligible list for agent %q", pinned, agent.Name)
 		}
 		if row.Action == modelapi.ActionBlock {
+			// A subscription row an off or older server blocked says why
+			// in decision 2's words, not the row's (an older server's is
+			// "unmapped", #597).
+			if r := subscriptionBlockedReason(ctx, ms, []modelapi.Row{row}); r != "" {
+				return modelapi.Row{}, nil, errors.New(r)
+			}
 			reason := row.BlockReason
 			if reason == "" {
 				reason = fmt.Sprintf("model %q is blocked", row.ID)

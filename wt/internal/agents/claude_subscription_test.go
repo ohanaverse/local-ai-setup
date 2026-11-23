@@ -675,3 +675,74 @@ func TestLaunchInfoReportsHeaderMode(t *testing.T) {
 		t.Errorf("token slot: HeaderMode = %v, err = %v", info.HeaderMode, err)
 	}
 }
+
+// TestBuildSlotsHeaderModeRefusesProviderSwitchAndKeyHelper pins carry-over 2
+// of #597: in header mode a slot profile may not name a CLAUDE_CODE_USE_*
+// switch (env, config_content.env or a top-level config_content key) nor a
+// top-level apiKeyHelper. In the --settings JSON both outrank the process
+// env: a provider switch would send the session (and the token header) to
+// Bedrock, Vertex or Foundry, and a key helper would displace the checked
+// login. The refusal names the key, never the value; token mode is unchanged.
+func TestBuildSlotsHeaderModeRefusesProviderSwitchAndKeyHelper(t *testing.T) {
+	const val = "VALUE-SENTINEL"
+	cases := []struct {
+		name, want string
+		set        func(in *profiles.SlotBuildInput)
+	}{
+		{"use bedrock in env", "env sets CLAUDE_CODE_USE_BEDROCK", func(in *profiles.SlotBuildInput) {
+			in.Env = map[string]string{"CLAUDE_CODE_USE_BEDROCK": val}
+		}},
+		{"use vertex in config_content.env", "config_content.env sets CLAUDE_CODE_USE_VERTEX", func(in *profiles.SlotBuildInput) {
+			in.ConfigContent = map[string]any{"env": map[string]any{"CLAUDE_CODE_USE_VERTEX": val}}
+		}},
+		{"use foundry top-level", "config_content sets CLAUDE_CODE_USE_FOUNDRY", func(in *profiles.SlotBuildInput) {
+			in.ConfigContent = map[string]any{"CLAUDE_CODE_USE_FOUNDRY": val}
+		}},
+		{"apiKeyHelper top-level", "config_content sets apiKeyHelper", func(in *profiles.SlotBuildInput) {
+			in.ConfigContent = map[string]any{"apiKeyHelper": val}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := subSlotInput()
+			tc.set(&in)
+			_, err := claudeDriver{}.BuildSlots(in)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), val) || strings.Contains(err.Error(), subTestToken) {
+				t.Errorf("the refusal echoes a value: %v", err)
+			}
+			tok := slotTestInput(false)
+			tok.Env, tok.ConfigContent = nil, nil
+			tc.set(&tok)
+			if _, err := (claudeDriver{}).BuildSlots(tok); err != nil {
+				t.Errorf("token mode refused it: %v", err)
+			}
+		})
+	}
+}
+
+// TestHeaderModeProfileConflict pins the shared judge the launch-profile
+// appliers call (#597, carry-over 1 and 2): every key a header-mode launch
+// sets or clears itself (ANTHROPIC_CUSTOM_HEADERS, ANTHROPIC_AUTH_TOKEN,
+// CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, any
+// CLAUDE_CODE_USE_*) is refused in a profile env, its config_content env or a
+// top-level config_content key, and so is apiKeyHelper; an ordinary profile
+// passes. The error names the key and where, never a value.
+func TestHeaderModeProfileConflict(t *testing.T) {
+	for _, key := range []string{"ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_SOMETHING"} {
+		if err := HeaderModeProfileConflict(map[string]string{key: "V-SENTINEL"}, nil); err == nil || !strings.Contains(err.Error(), "env sets "+key) || strings.Contains(err.Error(), "V-SENTINEL") {
+			t.Errorf("env %s: err = %v", key, err)
+		}
+		if err := HeaderModeProfileConflict(nil, map[string]any{"env": map[string]any{key: "V-SENTINEL"}}); err == nil || !strings.Contains(err.Error(), "config_content.env sets "+key) {
+			t.Errorf("config_content.env %s: err = %v", key, err)
+		}
+	}
+	if err := HeaderModeProfileConflict(nil, map[string]any{"apiKeyHelper": "/bin/echo V-SENTINEL"}); err == nil || !strings.Contains(err.Error(), "apiKeyHelper") || strings.Contains(err.Error(), "V-SENTINEL") {
+		t.Errorf("apiKeyHelper: err = %v", err)
+	}
+	if err := HeaderModeProfileConflict(map[string]string{"MAX_THINKING_TOKENS": "1"}, map[string]any{"env": map[string]any{"X": "1"}, "model": "opus"}); err != nil {
+		t.Errorf("an ordinary profile: %v", err)
+	}
+}

@@ -51,15 +51,15 @@ func slotRigRows(t *testing.T, rows []modelapi.Row, slots map[string]string) (*r
 	store := profiles.SlotStore{Profiles: []profiles.SlotProfile{{Name: "mix", Agent: "claude", Default: "sonnet", Slots: slots}}}
 	r.a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
 	built := &[]*exec.Cmd{}
-	r.a.hooks.buildSlotGateway = func(sl profiles.SlotLaunch, wt string, yolo bool, gw agents.Gateway, extra []string) (*exec.Cmd, error) {
+	r.a.hooks.buildSlotGateway = func(sl profiles.SlotLaunch, wt string, yolo bool, gw agents.Gateway, extra []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		r.f.mu.Lock()
 		r.f.Reqs = append(r.f.Reqs, "BUILD")
 		r.f.mu.Unlock()
-		cmd, err := agents.BuildSlotLaunchCmdGateway(sl, wt, yolo, gw, extra)
+		cmd, info, err := agents.BuildSlotLaunchCmdGatewayInfo(sl, wt, yolo, gw, extra)
 		if cmd != nil {
 			*built = append(*built, cmd)
 		}
-		return cmd, err
+		return cmd, info, err
 	}
 	return r, built
 }

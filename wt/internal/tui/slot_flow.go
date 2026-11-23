@@ -12,6 +12,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 )
@@ -33,7 +34,10 @@ type slotAbortMsg struct {
 // the launch's one question at the commit point (runRecordAndWaitWith's); a
 // decline runs nothing and records nothing. The client session holds the
 // slot models, and the post-exit tail ends it.
-func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func() (bool, error)) tea.Cmd {
+//
+// headerMode is the slot build's agents.LaunchInfo.HeaderMode, handed to the
+// applier (#597).
+func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func() (bool, error), headerMode bool) tea.Cmd {
 	return func() tea.Msg {
 		if currentProgram != nil {
 			currentProgram.ReleaseTerminal()
@@ -47,7 +51,7 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func()
 		var cleanup func() error
 		err := errors.New("no slot-profile applier")
 		if slotApplier != nil {
-			cleanup, err = slotApplier(cmd, agent, row)
+			cleanup, err = slotApplier(cmd, agent, row, headerMode)
 		}
 		if err != nil {
 			// The terminal is released here, so this reaches the user's
@@ -131,15 +135,17 @@ func (m model) beginRemoteSlotLaunch(it *modelItem) (model, tea.Cmd) {
 	m.launchModel = config.Model{ID: it.model.ID}
 	m.status = ""
 	m.phase = phaseLaunching
-	id, client, hold, agent, extraArgs, check := m.prepRun, m.client, m.hold, m.agent, m.extraArgs, it.profile.Check
+	id, client, hold, agent, extraArgs, check, guard := m.prepRun, m.client, m.hold, m.agent, m.extraArgs, it.profile.Check, m.guard
 	return m, func() tea.Msg {
-		return prepRemoteSlot(ctx, id, client, hold, agent, extraArgs, check)
+		return prepRemoteSlot(ctx, id, client, hold, agent, extraArgs, check, guard)
 	}
 }
 
 // prepRemoteSlot is the slot prep's server work (beginRemoteSlotLaunch). A
-// prep cancelled after its register takes the models back out.
-func prepRemoteSlot(ctx context.Context, id int, client ModelClient, hold *clientHold, agent string, extraArgs []string, check profiles.SlotCheck) tea.Msg {
+// prep cancelled after its register takes the models back out. guard is the
+// pre-launch guard (#597) over the slot models' rows, run after the resolve
+// and before the register; nil passes.
+func prepRemoteSlot(ctx context.Context, id int, client ModelClient, hold *clientHold, agent string, extraArgs []string, check profiles.SlotCheck, guard SubscriptionGuard) tea.Msg {
 	cat, err := client.Catalog(ctx)
 	if err != nil {
 		return remoteSlotPreparedMsg{id: id, err: err}
@@ -154,6 +160,9 @@ func prepRemoteSlot(ctx context.Context, id int, client ModelClient, hold *clien
 	if err := agents.CheckSlotPassthrough(agent, extraArgs); err != nil {
 		return remoteSlotPreparedMsg{id: id, row: row, err: err}
 	}
+	if err := runGuard(ctx, guard, GuardLaunch{Agent: agent, Slot: true}, slotRows(cat.Rows, check)); err != nil {
+		return remoteSlotPreparedMsg{id: id, row: row, err: err}
+	}
 	ids := slotModelIDs(row)
 	note := hold.holdAll(ctx, ids)
 	if ctx.Err() != nil {
@@ -161,6 +170,22 @@ func prepRemoteSlot(ctx context.Context, id int, client ModelClient, hold *clien
 		return remoteSlotPreparedMsg{id: id, row: row, err: ctx.Err()}
 	}
 	return remoteSlotPreparedMsg{id: id, row: row, note: note}
+}
+
+// slotRows is the catalog rows of a slot profile's slot models, each once,
+// in FilledOrder: what the pre-launch guard judges for a slot launch.
+func slotRows(rows []modelapi.Row, c profiles.SlotCheck) []modelapi.Row {
+	byID := catalog.WireByID(rows)
+	var out []modelapi.Row
+	seen := map[string]bool{}
+	for _, s := range c.FilledOrder() {
+		id := c.Profile.Slots[s]
+		if r, ok := byID[id]; ok && !seen[id] {
+			seen[id] = true
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // slotModelIDs is the profile's distinct slot model ids, the default slot's
@@ -265,7 +290,7 @@ func (m model) launchRemoteSlot() (model, tea.Cmd) {
 	m.rslot = nil
 	m.phase = phaseModel
 	row := st.row
-	cmd, err := m.hooks.buildSlotLaunch()(row.Profile.Launch(), m.selectedPath, m.yolo, m.client.Gateway(), m.extraArgs)
+	cmd, info, err := m.hooks.buildSlotLaunch()(row.Profile.Launch(), m.selectedPath, m.yolo, m.client.Gateway(), m.extraArgs)
 	if err != nil {
 		note := m.startNote
 		m.startNote = ""
@@ -283,6 +308,6 @@ func (m model) launchRemoteSlot() (model, tea.Cmd) {
 	// A decline takes every slot model the prep held out of the client
 	// session; rslot was already cleared above.
 	return m.commitAsk(config.Model{}, func(mm model) (model, tea.Cmd) {
-		return mm.commitLaunch(runSlotAndWaitCmd(cmd, agent, row, mm.gateFor()))
+		return mm.commitLaunch(runSlotAndWaitCmd(cmd, agent, row, mm.gateFor(), info.HeaderMode))
 	}, dropAllCmd(h, ids))
 }

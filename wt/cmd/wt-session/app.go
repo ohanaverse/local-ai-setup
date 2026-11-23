@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/claudelogin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -66,8 +67,10 @@ type hooks struct {
 	// buildGateway builds a launch against the gateway; nil is
 	// agents.BuildLaunchCmdGateway.
 	buildGateway func(agent string, m config.Model, worktreePath string, yolo bool, gw agents.Gateway, models []config.Model, extraArgs []string) (*exec.Cmd, agents.LaunchInfo, error)
-	// buildSlotGateway is the slot build; nil is agents.BuildSlotLaunchCmdGateway.
-	buildSlotGateway func(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw agents.Gateway, extraArgs []string) (*exec.Cmd, error)
+	// buildSlotGateway is the slot build; nil is
+	// agents.BuildSlotLaunchCmdGatewayInfo (its LaunchInfo says whether the
+	// command runs in claude's header mode).
+	buildSlotGateway func(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw agents.Gateway, extraArgs []string) (*exec.Cmd, agents.LaunchInfo, error)
 	// newClient builds the client for an endpoint; nil is modelclient.New (in a
 	// test binary, a client that dials loopback only).
 	newClient func(ep modelclient.Endpoint) *modelclient.Client
@@ -80,6 +83,11 @@ type hooks struct {
 	jobSleep func(ctx context.Context, d time.Duration) error
 	// smokeRun replaces the agent run of a smoke row; the zero value runs it.
 	smokeRun smoke.RowOptions
+	// claudeLogin replaces the claude.ai login check of a launch on the
+	// Claude subscription (subscriptionGuard); nil is realClaudeLogin, except
+	// in a test binary, where nil refuses with errLoginNotStubbed and runs
+	// nothing (#597, decision 8).
+	claudeLogin func(ctx context.Context) (claudelogin.Status, error)
 }
 
 // build is the gateway launch builder.
@@ -91,11 +99,11 @@ func (h hooks) build(agent string, m config.Model, worktreePath string, yolo boo
 }
 
 // buildSlot is the slot launch builder.
-func (h hooks) buildSlot(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw agents.Gateway, extraArgs []string) (*exec.Cmd, error) {
+func (h hooks) buildSlot(sl profiles.SlotLaunch, worktreePath string, yolo bool, gw agents.Gateway, extraArgs []string) (*exec.Cmd, agents.LaunchInfo, error) {
 	if h.buildSlotGateway != nil {
 		return h.buildSlotGateway(sl, worktreePath, yolo, gw, extraArgs)
 	}
-	return agents.BuildSlotLaunchCmdGateway(sl, worktreePath, yolo, gw, extraArgs)
+	return agents.BuildSlotLaunchCmdGatewayInfo(sl, worktreePath, yolo, gw, extraArgs)
 }
 
 // client builds the model-server client for ep.

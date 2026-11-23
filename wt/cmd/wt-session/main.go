@@ -155,9 +155,16 @@ func runLaunchPath(
 		Resolve: func(agentName string, m config.Model) (profiles.ResolvedProfile, bool, error) {
 			return resolveLaunchProfile(agentName, m, scfg, a.profileState())
 		},
-		Apply: func(cmd *exec.Cmd, agentName string, m config.Model, rp *profiles.ResolvedProfile, apply bool) (func() error, error) {
-			return applyProfileForLaunchCarried(cmd, agentName, m, scfg, a.profileState(), rp, apply)
+		Apply: func(cmd *exec.Cmd, agentName string, m config.Model, rp *profiles.ResolvedProfile, apply, headerMode bool) (func() error, error) {
+			return applyProfileForLaunchCarried(cmd, agentName, m, scfg, a.profileState(), rp, apply, headerMode)
 		},
+	}
+	// The pre-launch guard of a launch on the user's Claude subscription
+	// (#597): the TUI runs it in a command before it registers a client
+	// session or starts a model, on both its launch paths. Without a model
+	// server there are no subscription rows, and no guard.
+	if merr == nil {
+		profileLayer.Guard = tuiSubscriptionGuard(a, ms, scfg)
 	}
 
 	// removeFuncs gives every picker load's row actions the same removal

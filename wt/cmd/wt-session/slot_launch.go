@@ -96,13 +96,23 @@ func slotContentNotesFor(c profiles.SlotCheck) []string {
 // profile. An ApplyWrapper error is returned and aborts the launch. cleanup is
 // always a non-nil no-op. Its signature is tui.SlotProfileApplier's, so the
 // TUI is handed this same function.
-func applySlotProfile(cmd *exec.Cmd, agent string, row catalog.Row) (cleanup func() error, err error) {
+//
+// headerMode is the slot build's agents.LaunchInfo.HeaderMode
+// (BuildSlotLaunchCmdGatewayInfo): in claude's header mode a profile whose
+// env or config_content would undo it is refused (#597), a backstop for the
+// build's own refusal.
+func applySlotProfile(cmd *exec.Cmd, agent string, row catalog.Row, headerMode bool) (cleanup func() error, err error) {
 	noop := func() error { return nil }
 	if row.Profile == nil {
 		return noop, fmt.Errorf("%s is not a slot profile", row.Model.ID)
 	}
-	selfHealAgentConfigContentTarget(agent, cmd.Dir)
 	sp := row.Profile.Check.Profile
+	if headerMode {
+		if herr := agents.HeaderModeProfileConflict(sp.Env, sp.ConfigContent); herr != nil {
+			return noop, fmt.Errorf("%s: %w", row.Model.ID, herr)
+		}
+	}
+	selfHealAgentConfigContentTarget(agent, cmd.Dir)
 	rp := profiles.ResolvedProfile{ExtraArgs: sp.Args, Wrapper: sp.Wrapper}
 	profiles.ApplyEnvAndArgs(cmd, rp)
 	if rp.Wrapper != nil {
@@ -212,7 +222,9 @@ func slotPrefixHeldReason(holder string) string {
 //
 //  1. one Catalog read; the profile is resolved against its rows
 //     (catalog.ResolveSlotProfileWire), and a blocked row stops here;
-//  2. a passthrough flag that would replace the slot mapping is refused;
+//  2. a passthrough flag that would replace the slot mapping is refused,
+//     and a slot on the user's Claude subscription runs the pre-launch guard
+//     (subscriptionGuard, #597);
 //  3. the client session is registered with every distinct slot model
 //     (Distinct) before any start, so the server's idle scan counts them; a
 //     failed register is one `wt: note:` and the launch goes on;
@@ -220,7 +232,7 @@ func slotPrefixHeldReason(holder string) string {
 //     catalog.NeedsStart says so (an unknown route never starts, R7); its
 //     questions are answered as on any -M pin (--replace, --others, the
 //     terminal); Ctrl-C detaches (exit 2, nothing was launched);
-//  5. the agent's slot build against the gateway (BuildSlotLaunchCmdGateway),
+//  5. the agent's slot build against the gateway (BuildSlotLaunchCmdGatewayInfo),
 //     the fail-closed applier, the launch recorded, the agent run with the
 //     heartbeat going, and the client session ended before any exit.
 //
@@ -250,15 +262,27 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 	if holder := catalog.SlotPrefixHolderWire(cat.Rows); holder != "" {
 		return remoteExit(modelclient.Still(errors.New(slotPrefixHeldReason(holder)), launchStill))
 	}
+	slotRows := slotRowsOf(cat.Rows, row.Profile.Check)
 	row = catalog.ResolveSlotProfileWire(catalog.WireByID(cat.Rows), row.Profile.Check)
 	p := row.Profile
 	if row.Action() == catalog.ActionBlock {
+		if r := subscriptionBlockedReason(ctx, ms, slotRows); r != "" {
+			return remoteExit(modelclient.Still(errors.New(r), launchStill))
+		}
 		return remoteExit(modelclient.Still(errors.New(row.BlockReason()), launchStill))
 	}
 
 	// Step 2: a passthrough flag that would replace the slot mapping.
 	if err := agents.CheckSlotPassthrough(agent, extraArgs); err != nil {
 		return remoteExit(modelclient.Still(err, launchStill))
+	}
+
+	// A slot on the user's Claude subscription: the pre-launch guard, before
+	// the client session and any start (#597). A slot launch applies no
+	// launch profile, so there are no profile keys to judge here; the slot
+	// profile's own env is the build's to refuse.
+	if gerr := subscriptionGuard(ctx, ms, slotRows, nil, a.hooks.login); gerr != nil {
+		return remoteExit(gerr)
 	}
 
 	// Step 3: the client session holds every slot model from before the
@@ -286,7 +310,7 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 	// Step 5: the command against the gateway, the applier, the record, the
 	// run. A failure before the agent runs ends the client session first.
 	gw := agents.Gateway{Origin: ms.ep.Origin(), Token: ms.ep.Token}
-	cmd, err := a.hooks.buildSlot(p.Launch(), worktreePath, yolo, gw, extraArgs)
+	cmd, info, err := a.hooks.buildSlot(p.Launch(), worktreePath, yolo, gw, extraArgs)
 	if err != nil {
 		end()
 		return remoteExit(modelclient.Still(err, launchStill))
@@ -296,7 +320,7 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 			fmt.Fprintln(osStderr, n)
 		}
 	}
-	cleanup, err := applySlotProfile(cmd, agent, row)
+	cleanup, err := applySlotProfile(cmd, agent, row, info.HeaderMode)
 	if err != nil {
 		end()
 		return remoteExit(modelclient.Still(err, launchStill))

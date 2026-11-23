@@ -201,12 +201,14 @@ var claudeHeaderModeClear = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"
 // cloud provider instead of the gateway.
 func claudeHeaderModeClearPrefixes() []string { return []string{"CLAUDE_CODE_USE_"} }
 
-// claudeHeaderModeRefused are the keys a header-mode slot profile may not
-// set in env or config_content.env, with why. All land in the --settings
-// env, which outranks the process env: ANTHROPIC_CUSTOM_HEADERS would
-// replace the merged header (an opaque 401), the tokens and the key would
-// displace the checked login, the base url would redirect the session.
-// ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY are reserved
+// claudeHeaderModeRefused are the keys a header-mode profile may not set in
+// env or config_content.env, with why. A slot profile's land in the
+// --settings env and a launch profile's config_content in a settings file,
+// both of which outrank the process env; a launch profile's env is appended
+// after wt's own and wins. ANTHROPIC_CUSTOM_HEADERS would replace the merged
+// header (an opaque 401), the tokens and the key would displace the checked
+// login, the base url would redirect the session. ANTHROPIC_BASE_URL,
+// ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY are reserved for slot profiles
 // anyway (static validation refuses them); they are asked again for a caller
 // that reached the build another way.
 var claudeHeaderModeRefused = []struct{ key, why string }{
@@ -217,23 +219,79 @@ var claudeHeaderModeRefused = []struct{ key, why string }{
 	{"CLAUDE_CODE_OAUTH_TOKEN", "it would displace your Claude login"},
 }
 
-// claudeHeaderModeErr refuses a header-mode profile whose env or
-// config_content.env names a claudeHeaderModeRefused key, naming the table
-// and the key, never the value.
-func claudeHeaderModeErr(in profiles.SlotBuildInput) error {
-	table, _ := claudeConfigEnv(in.ConfigContent)
+// claudeHeaderModePrefixRefused are the refused variable families:
+// CLAUDE_CODE_USE_* (Bedrock, Vertex, Foundry and any later one) would send
+// the session, and the token header with it, to a cloud provider.
+var claudeHeaderModePrefixRefused = []struct{ prefix, why string }{
+	{"CLAUDE_CODE_USE_", "it would send the session to another provider instead of the gateway"},
+}
+
+// claudeKeyHelper is Claude Code's settings key naming a command that prints
+// an API key: in header mode it would displace the checked login.
+const claudeKeyHelper = "apiKeyHelper"
+
+// headerModeKeyWhy is why a header-mode profile may not set name, "" when it
+// may.
+func headerModeKeyWhy(name string) string {
 	for _, r := range claudeHeaderModeRefused {
-		where := ""
-		if _, ok := in.Env[r.key]; ok {
-			where = "env"
-		} else if _, ok := table[r.key]; ok {
-			where = "config_content.env"
+		if name == r.key {
+			return r.why
 		}
-		if where != "" {
-			return fmt.Errorf("%s sets %s, which a profile using your Claude subscription may not set: %s", where, r.key, r.why)
+	}
+	for _, r := range claudeHeaderModePrefixRefused {
+		if strings.HasPrefix(name, r.prefix) {
+			return r.why
+		}
+	}
+	return ""
+}
+
+// HeaderModeRefusedKey reports whether a profile key (an env name, a
+// config_content env name or a top-level config_content key) is one a claude
+// header-mode launch refuses in a profile (HeaderModeProfileConflict's keys).
+func HeaderModeRefusedKey(name string) bool {
+	return name == claudeKeyHelper || headerModeKeyWhy(name) != ""
+}
+
+// HeaderModeProfileConflict refuses a profile that would undo a claude
+// header-mode launch (#597, decision 7): an env, config_content.env or
+// top-level config_content key that a header-mode launch sets or clears
+// itself (headerModeKeyWhy), or a top-level apiKeyHelper. The error names
+// where and the key, never a value; keys are judged in sorted order so the
+// answer is stable. A config_content.env that is not a table is left to the
+// callers that read it. Both the slot build (BuildSlots) and the
+// launch-profile appliers (cmd/wt-session) ask it.
+func HeaderModeProfileConflict(env map[string]string, configContent map[string]any) error {
+	refuse := func(where, key, why string) error {
+		return fmt.Errorf("%s sets %s, which a profile using your Claude subscription may not set: %s", where, key, why)
+	}
+	for _, k := range slices.Sorted(maps.Keys(env)) {
+		if why := headerModeKeyWhy(k); why != "" {
+			return refuse("env", k, why)
+		}
+	}
+	if table, err := claudeConfigEnv(configContent); err == nil {
+		for _, k := range slices.Sorted(maps.Keys(table)) {
+			if why := headerModeKeyWhy(k); why != "" {
+				return refuse("config_content.env", k, why)
+			}
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(configContent)) {
+		if k == claudeKeyHelper {
+			return refuse("config_content", k, "it would displace your Claude login")
+		}
+		if why := headerModeKeyWhy(k); why != "" {
+			return refuse("config_content", k, why)
 		}
 	}
 	return nil
+}
+
+// claudeHeaderModeErr refuses a header-mode slot profile whose env or
+// config_content would undo header mode (HeaderModeProfileConflict).
+func claudeHeaderModeErr(in profiles.SlotBuildInput) error {
+	return HeaderModeProfileConflict(in.Env, in.ConfigContent)
 }
 
 // BuildSlots builds the command of a slot-profile launch. The slot mapping

@@ -1195,7 +1195,7 @@ env = { WT_TEST_TUI_PROFILE_APPLIED = "1" }
 	if _, matched, err := captured.Resolve("claude", m); err != nil || !matched {
 		t.Fatalf("captured ProfileLayer.Resolve() = (matched %v, %v), want a match", matched, err)
 	}
-	if _, err := captured.Apply(cmd, "claude", m, nil, false); err != nil {
+	if _, err := captured.Apply(cmd, "claude", m, nil, false, false); err != nil {
 		t.Fatalf("captured ProfileLayer.Apply() error = %v", err)
 	}
 	if !slices.Contains(cmd.Env, "WT_TEST_TUI_PROFILE_APPLIED=1") {

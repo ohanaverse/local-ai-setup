@@ -58,9 +58,9 @@ func slotRemoteTable(t *testing.T, slots map[string]string) (model, *fakeModels)
 	f.mu.Lock()
 	f.logCatalog = true
 	f.mu.Unlock()
-	m.hooks.slot = func(profiles.SlotLaunch, string, bool, agents.Gateway, []string) (*exec.Cmd, error) {
+	m.hooks.slot = func(profiles.SlotLaunch, string, bool, agents.Gateway, []string) (*exec.Cmd, agents.LaunchInfo, error) {
 		f.record("BUILD")
-		return exec.Command("true"), nil
+		return exec.Command("true"), agents.LaunchInfo{}, nil
 	}
 	return m, f
 }

@@ -49,9 +49,9 @@ type launchHooks struct {
 // shape); a nil hook means the real agents builder.
 type gatewayBuildFunc func(agent string, mdl config.Model, path string, yolo bool, gw agents.Gateway, models []config.Model, extra []string) (*exec.Cmd, agents.LaunchInfo, error)
 
-// slotBuildFunc is the slot-profile agent build (agents.BuildSlotLaunchCmdGateway's
+// slotBuildFunc is the slot-profile agent build (agents.BuildSlotLaunchCmdGatewayInfo's
 // shape); a nil hook means the real agents builder.
-type slotBuildFunc func(profiles.SlotLaunch, string, bool, agents.Gateway, []string) (*exec.Cmd, error)
+type slotBuildFunc func(profiles.SlotLaunch, string, bool, agents.Gateway, []string) (*exec.Cmd, agents.LaunchInfo, error)
 
 // buildLaunch is the agent build: the hook, or the real one when unset.
 func (h launchHooks) buildLaunch() gatewayBuildFunc {
@@ -66,7 +66,7 @@ func (h launchHooks) buildSlotLaunch() slotBuildFunc {
 	if h.slot != nil {
 		return h.slot
 	}
-	return agents.BuildSlotLaunchCmdGateway
+	return agents.BuildSlotLaunchCmdGatewayInfo
 }
 
 // clientNotes collects what the API path has to say while the alt screen is
@@ -250,7 +250,7 @@ func (m model) beginRemoteStart(it *modelItem, allow bool, others othersPlan) (m
 	m.startRun++
 	id := m.startRun
 	req := modelapi.StartRequest{Model: it.model.ID, AllowReplace: allow, Others: wireOthers(others)}
-	ch, _ := runRemoteStart(ctx, m.client, m.hold, req, id)
+	ch, _ := runRemoteStart(ctx, m.client, m.hold, req, id, m.guardFor(it.model.ID, m.rslot != nil))
 	m.start = &startState{id: id, item: it, allow: allow, others: others, began: time.Now(), cancel: cancel, ch: ch}
 	m.phase = phaseStarting
 	m.status = ""
@@ -264,12 +264,23 @@ func (m model) beginRemoteStart(it *modelItem, allow bool, others othersPlan) (m
 // comes back in the result and the dialog asks it, then starts again with the
 // answer. A start that fails re-registers the session without the model; one
 // whose ctx was cancelled (a detach, a quit) leaves that to its canceller.
-func runRemoteStart(ctx context.Context, c ModelClient, h *clientHold, req modelapi.StartRequest, id int) (<-chan tea.Msg, <-chan struct{}) {
+// guard, when non-nil, is the pre-launch guard (#597): it runs first, in the
+// goroutine, and an error ends the start before the register and the job.
+func runRemoteStart(ctx context.Context, c ModelClient, h *clientHold, req modelapi.StartRequest, id int, guard func(context.Context) error) (<-chan tea.Msg, <-chan struct{}) {
 	ch := make(chan tea.Msg, 16)
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
 		defer close(ch)
+		if guard != nil {
+			if err := guard(ctx); err != nil {
+				select {
+				case ch <- startDoneMsg{id: id, err: err}:
+				case <-ctx.Done():
+				}
+				return
+			}
+		}
 		note := h.hold(ctx, req.Model)
 		prog := func(v modelclient.JobView) {
 			select {
@@ -547,6 +558,8 @@ type remotePreparedMsg struct {
 	modelID string // the model the prep held, for a prep that arrives stale
 	cmd     *exec.Cmd
 	err     error
+	// headerMode is the build's agents.LaunchInfo.HeaderMode (#597).
+	headerMode bool
 }
 
 // launchRemote launches it on the gateway, the non-TUI launchFilteredRemote's
@@ -573,8 +586,23 @@ func (m model) launchRemote(it *modelItem) (model, tea.Cmd) {
 	return m, prepRemoteLaunchCmd(ctx, prepInput{
 		id: m.prepRun, client: m.client, hold: m.hold, agent: m.agent, model: mdl,
 		path: m.selectedPath, yolo: m.yolo, extraArgs: m.extraArgs,
-		build: m.hooks.buildLaunch(),
+		build: m.hooks.buildLaunch(), guard: m.guardFor(mdl.ID, false),
 	})
+}
+
+// guardFor is the pre-launch guard (#597) of a launch of id as a command's
+// step: m.guard over id's catalog row, nil when there is no guard or no row
+// (a nil guard is a no-op). slot marks the local start of a slot-profile
+// launch, whose prep already ran the guard over every slot.
+func (m model) guardFor(id string, slot bool) func(context.Context) error {
+	row, ok := m.wire[id]
+	if m.guard == nil || !ok {
+		return nil
+	}
+	g, agent := m.guard, m.agent
+	return func(ctx context.Context) error {
+		return runGuard(ctx, g, GuardLaunch{Agent: agent, Slot: slot}, []modelapi.Row{row})
+	}
 }
 
 // prepInput is what the prep command reads, copied out of the model.
@@ -588,6 +616,8 @@ type prepInput struct {
 	yolo      bool
 	extraArgs []string
 	build     gatewayBuildFunc
+	// guard is the pre-launch guard (guardFor); nil passes.
+	guard func(context.Context) error
 }
 
 // prepRemoteLaunchCmd does the launch's server work. Holding the model
@@ -598,6 +628,13 @@ type prepInput struct {
 func prepRemoteLaunchCmd(ctx context.Context, in prepInput) tea.Cmd {
 	return func() tea.Msg {
 		bg := context.WithoutCancel(ctx)
+		// The pre-launch guard (#597) comes before the register: a refused
+		// launch holds nothing, so it has nothing to drop (no modelID).
+		if in.guard != nil {
+			if err := in.guard(ctx); err != nil {
+				return remotePreparedMsg{id: in.id, err: err}
+			}
+		}
 		if note := in.hold.hold(ctx, in.model.ID); note != "" && ctx.Err() == nil {
 			fmt.Fprintf(clientNotes, "wt: note: %s\n", note)
 		}
@@ -625,7 +662,7 @@ func prepRemoteLaunchCmd(ctx context.Context, in prepInput) tea.Cmd {
 		if ctx.Err() != nil {
 			return fail(ctx.Err())
 		}
-		cmd, _, err := in.build(in.agent, in.model, in.path, in.yolo, in.client.Gateway(), models, in.extraArgs)
+		cmd, info, err := in.build(in.agent, in.model, in.path, in.yolo, in.client.Gateway(), models, in.extraArgs)
 		if err != nil {
 			return fail(err)
 		}
@@ -634,7 +671,7 @@ func prepRemoteLaunchCmd(ctx context.Context, in prepInput) tea.Cmd {
 				fmt.Fprintln(clientNotes, n)
 			}
 		}
-		return remotePreparedMsg{id: in.id, modelID: in.model.ID, cmd: cmd}
+		return remotePreparedMsg{id: in.id, modelID: in.model.ID, cmd: cmd, headerMode: info.HeaderMode}
 	}
 }
 
@@ -669,7 +706,7 @@ func (m model) handlePrepared(msg remotePreparedMsg) (model, tea.Cmd) {
 	// A decline takes the prep's model out of the client session: nothing
 	// will use it.
 	return m.commitAsk(launchModel, func(mm model) (model, tea.Cmd) {
-		return mm.commitLaunch(runRecordAndWaitWith(msg.cmd, agent, launchModel, record, mm.gateFor(), func() { h.end(os.Stderr) }, mm.profileCarry))
+		return mm.commitLaunch(runRecordAndWaitWith(msg.cmd, agent, launchModel, record, mm.gateFor(), func() { h.end(os.Stderr) }, mm.profileCarry, msg.headerMode))
 	}, dropAllCmd(h, []string{id}))
 }
 

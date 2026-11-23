@@ -574,7 +574,7 @@ func TestDetachedStartGoroutineNeverBlocks(t *testing.T) {
 		return detached("j1")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	ch, finished := runRemoteStart(ctx, f, &clientHold{client: f}, modelapi.StartRequest{Model: "omlx/qwen3.8"}, 1)
+	ch, finished := runRemoteStart(ctx, f, &clientHold{client: f}, modelapi.StartRequest{Model: "omlx/qwen3.8"}, 1, nil)
 	waitStarts(t, f, 1)
 	for deadline := time.Now().Add(5 * time.Second); len(ch) < 16; runtime.Gosched() {
 		if time.Now().After(deadline) {

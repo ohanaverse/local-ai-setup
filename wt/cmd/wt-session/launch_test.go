@@ -535,7 +535,7 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
 	cmd := exec.Command("true")
 
-	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil)
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil, false)
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v, want nil (a confirm-prompt error must degrade to an unprofiled launch, not fail it)", err)
 	}
@@ -572,7 +572,7 @@ func TestApplyProfileForLaunchUsesPrecomputedStoreWithoutReloading(t *testing.T)
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
 	cmd := exec.Command("true")
 
-	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, pp)
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, pp, false)
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v, want nil", err)
 	}
@@ -608,7 +608,7 @@ func TestApplyResolvedProfileRestoresConfigContentWhenWrapperMissing(t *testing.
 	cmd := exec.Command("true")
 	cmd.Dir = worktree
 
-	cleanup, err := applyResolvedProfile(cmd, "claude", rp, nil)
+	cleanup, err := applyResolvedProfile(cmd, "claude", rp, nil, false)
 	if err == nil {
 		t.Fatal("applyResolvedProfile() error = nil, want an error (missing wrapper binary is the one legitimately-fatal case)")
 	}
@@ -646,7 +646,7 @@ func TestApplyResolvedProfileExtraArgsPrecedeCodexProfileFlag(t *testing.T) {
 	}
 	cmd := exec.Command("codex", "--model", "x")
 
-	cleanup, err := applyResolvedProfile(cmd, "codex", rp, nil)
+	cleanup, err := applyResolvedProfile(cmd, "codex", rp, nil, false)
 	if err != nil {
 		t.Fatalf("applyResolvedProfile() error = %v", err)
 	}
@@ -682,7 +682,7 @@ func TestApplyResolvedProfileOneShotArgsAfterProfileFlags(t *testing.T) {
 	cmd := exec.Command("codex", "-c", "model_provider=agent-wt", "--model", "x")
 	oneShotArgs := []string{"exec", "the prompt"}
 
-	cleanup, err := applyResolvedProfile(cmd, "codex", rp, oneShotArgs)
+	cleanup, err := applyResolvedProfile(cmd, "codex", rp, oneShotArgs, false)
 	if err != nil {
 		t.Fatalf("applyResolvedProfile() error = %v", err)
 	}
@@ -718,7 +718,7 @@ func TestApplyResolvedProfileOneShotArgsSplicedIntoWrapper(t *testing.T) {
 	cmd := exec.Command("pi", "--model", "x")
 	oneShotArgs := []string{"-p", "the prompt"}
 
-	cleanup, err := applyResolvedProfile(cmd, "pi", rp, oneShotArgs)
+	cleanup, err := applyResolvedProfile(cmd, "pi", rp, oneShotArgs, false)
 	if err != nil {
 		t.Fatalf("applyResolvedProfile() error = %v", err)
 	}
@@ -772,7 +772,7 @@ func TestApplyResolvedProfileEnvArgsRevertedWhenConfigContentFails(t *testing.T)
 	cmd.Dir = worktree
 	origArgs := append([]string{}, cmd.Args...)
 
-	cleanup, err := applyResolvedProfile(cmd, "claude", rp, nil)
+	cleanup, err := applyResolvedProfile(cmd, "claude", rp, nil, false)
 	if err != nil {
 		t.Fatalf("applyResolvedProfile() error = %v, want nil (a config_content failure must still degrade to an unprofiled launch)", err)
 	}
@@ -824,7 +824,7 @@ func TestApplyProfileForLaunchSelfHealsEvenWhenProfilesDisabled(t *testing.T) {
 	cmd := exec.Command("true")
 	cmd.Dir = worktree
 
-	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil)
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil, false)
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v", err)
 	}
@@ -877,7 +877,7 @@ func TestApplyProfileForLaunchSelfHealsForNativeModelLaunch(t *testing.T) {
 	cmd := exec.Command("true")
 	cmd.Dir = worktree
 
-	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil)
+	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil, false)
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v", err)
 	}
@@ -928,7 +928,7 @@ func TestApplyProfileForLaunchSelfHealPrintsNotice(t *testing.T) {
 	var cleanup func() error
 	var err error
 	out := captureFile(t, &os.Stderr, func() {
-		cleanup, err = applyProfileForLaunch(cmd, "claude", m, cfg, nil)
+		cleanup, err = applyProfileForLaunch(cmd, "claude", m, cfg, nil, false)
 	})
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v", err)
@@ -957,7 +957,7 @@ func TestApplyProfileForLaunchSelfHealSkipsSilentlyOnTargetError(t *testing.T) {
 	var cleanup func() error
 	var err error
 	out := captureFile(t, &os.Stderr, func() {
-		cleanup, err = applyProfileForLaunch(cmd, "codex", m, cfg, nil)
+		cleanup, err = applyProfileForLaunch(cmd, "codex", m, cfg, nil, false)
 	})
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v, want nil (a self-heal ConfigFileTarget error must never fail the launch)", err)
@@ -1555,7 +1555,7 @@ func TestApplyProfileForLaunchCarried(t *testing.T) {
 	}
 
 	cmd := exec.Command("true")
-	cleanup, err := applyProfileForLaunchCarried(cmd, "claude", m, cfg, nil, &rp, true)
+	cleanup, err := applyProfileForLaunchCarried(cmd, "claude", m, cfg, nil, &rp, true, false)
 	if err != nil || !slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
 		t.Errorf("carried yes: err %v env %v; want the profile applied", err, cmd.Env)
 	}
@@ -1563,14 +1563,14 @@ func TestApplyProfileForLaunchCarried(t *testing.T) {
 		_ = cleanup()
 	}
 	cmd = exec.Command("true")
-	if _, err := applyProfileForLaunchCarried(cmd, "claude", m, cfg, nil, &rp, false); err != nil || slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
+	if _, err := applyProfileForLaunchCarried(cmd, "claude", m, cfg, nil, &rp, false, false); err != nil || slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
 		t.Errorf("carried no: err %v env %v; want nothing applied", err, cmd.Env)
 	}
 	if confirmed != 0 {
 		t.Errorf("confirmProfile called %d times on a carried answer; want 0", confirmed)
 	}
 	cmd = exec.Command("true")
-	if _, err := applyProfileForLaunchCarried(cmd, "claude", m, cfg, nil, nil, false); err != nil || confirmed != 1 || !slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
+	if _, err := applyProfileForLaunchCarried(cmd, "claude", m, cfg, nil, nil, false, false); err != nil || confirmed != 1 || !slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
 		t.Errorf("no carry: err %v confirmed %d env %v; want the legacy resolve+confirm", err, confirmed, cmd.Env)
 	}
 }

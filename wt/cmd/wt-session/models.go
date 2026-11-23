@@ -30,6 +30,9 @@ type modelSession struct {
 	// mode is the effective mode the session resolved: local or remote
 	// (native and unset never build a session).
 	mode modelclient.Mode
+	// subscription is this machine's [model-server] subscription opt-in
+	// (#597, decision 12), read with the rest of the table.
+	subscription bool
 }
 
 // agentDriverNames is the agent drivers a session synthesizes an agent for:
@@ -207,7 +210,7 @@ func (a *app) resolveModels() (*modelSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &modelSession{client: a.hooks.client(ep), ep: ep, hooks: &a.hooks, mode: res.Mode}, nil
+	return &modelSession{client: a.hooks.client(ep), ep: ep, hooks: &a.hooks, mode: res.Mode, subscription: ms.Subscription}, nil
 }
 
 // pingHintError is a failed ping with the session mode's way out appended;

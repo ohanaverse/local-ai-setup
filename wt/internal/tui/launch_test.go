@@ -161,7 +161,7 @@ func TestRunAndWaitCmdAppliesProfileApplier(t *testing.T) {
 	var gotAgent string
 	var gotModel config.Model
 	cleanupCalled := false
-	profileApplier = func(cmd *exec.Cmd, agent string, m config.Model, _ *profiles.ResolvedProfile, _ bool) (func() error, error) {
+	profileApplier = func(cmd *exec.Cmd, agent string, m config.Model, _ *profiles.ResolvedProfile, _ bool, _ bool) (func() error, error) {
 		gotAgent, gotModel = agent, m
 		cmd.Env = append(cmd.Env, "WT_TEST_PROFILE_APPLIED=1")
 		return func() error { cleanupCalled = true; return nil }, nil
@@ -199,7 +199,7 @@ func TestRunAndWaitCmdProfileApplierErrorSkipsRun(t *testing.T) {
 	pendingSummary, pendingSurveyState = "", pendingSurvey{}
 	t.Cleanup(func() { pendingSummary, pendingSurveyState = "", pendingSurvey{} })
 
-	profileApplier = func(cmd *exec.Cmd, agent string, m config.Model, _ *profiles.ResolvedProfile, _ bool) (func() error, error) {
+	profileApplier = func(cmd *exec.Cmd, agent string, m config.Model, _ *profiles.ResolvedProfile, _ bool, _ bool) (func() error, error) {
 		return nil, errors.New("wrapper not installed")
 	}
 

@@ -290,14 +290,14 @@ func TestRootLaunchClaimsUntilTheAgentExits(t *testing.T) {
 func TestSlotRootLaunchClaimsUntilTheAgentExits(t *testing.T) {
 	keepPendingPostExit(t)
 	t.Cleanup(releaseRootClaim)
-	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
+	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row, bool) (func() error, error) { return nil, nil })
 	root := rootRepo(t)
 	answerOnStdio(t, "")
 	agent := exec.Command("sh", "-c", "test -f '"+myClaim(root)+"'")
 	agent.Dir = root
 	row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
 	m := model{agent: "claude", selectedPath: root}
-	msg := runSlotAndWaitCmd(agent, "claude", row, m.gateFor())()
+	msg := runSlotAndWaitCmd(agent, "claude", row, m.gateFor(), false)()
 	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
 		t.Fatalf("msg = %#v; the agent did not see the claim while it ran", msg)
 	}
@@ -453,9 +453,9 @@ func TestDeclinedGateKeepsTheStopTail(t *testing.T) {
 // profile tail (stop picker, no survey) just as a real exit does.
 func TestDeclinedSlotGateKeepsTheStopTail(t *testing.T) {
 	keepPendingPostExit(t)
-	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
+	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row, bool) (func() error, error) { return nil, nil })
 	row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
-	msg := runSlotAndWaitCmd(exec.Command("true"), "claude", row, func() (bool, error) { return false, nil })()
+	msg := runSlotAndWaitCmd(exec.Command("true"), "claude", row, func() (bool, error) { return false, nil }, false)()
 	if done, ok := msg.(launchDoneMsg); !ok || done.err != errLaunchDeclined {
 		t.Fatalf("msg = %#v; a decline ends the run with errLaunchDeclined (exit 3)", msg)
 	}

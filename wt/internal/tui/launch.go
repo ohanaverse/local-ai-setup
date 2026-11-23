@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
@@ -117,13 +119,63 @@ var pendingSurveyState pendingSurvey
 // config_content mechanism rewrote. rp and apply are the popup's answer; a
 // nil rp means the popup did not ask, and Apply resolves and confirms for
 // itself (the legacy path: a /dev/tty prompt, or yes with no terminal).
+//
+// Guard is the pre-launch guard of a launch on the user's Claude subscription
+// (#597): run inside a command (it may exec claude, with a 10 s bound), never
+// in Update, before a launch registers its client session or starts a model,
+// on the single-model and the slot-profile paths alike. nil is a no-op.
 type ProfileLayer struct {
 	Resolve func(agent string, m config.Model) (profiles.ResolvedProfile, bool, error)
 	Apply   ProfileApplier
+	Guard   SubscriptionGuard
 }
 
-// ProfileApplier is ProfileLayer.Apply's shape.
-type ProfileApplier func(cmd *exec.Cmd, agent string, m config.Model, rp *profiles.ResolvedProfile, apply bool) (cleanup func() error, err error)
+// ProfileApplier is ProfileLayer.Apply's shape. headerMode is the build's
+// agents.LaunchInfo.HeaderMode: the applier refuses a profile that would undo
+// claude's header mode (#597).
+type ProfileApplier func(cmd *exec.Cmd, agent string, m config.Model, rp *profiles.ResolvedProfile, apply, headerMode bool) (cleanup func() error, err error)
+
+// SubscriptionGuard is ProfileLayer.Guard's shape: rows are the catalog rows
+// the launch uses (the one model, or a slot profile's slot models); an error
+// refuses the launch before anything is registered or started. The context
+// carries GuardLaunch.
+type SubscriptionGuard func(ctx context.Context, rows []modelapi.Row) error
+
+// GuardLaunch is what a guard learns about the launch beyond its rows: the
+// agent, whether it is a slot-profile launch (which applies no launch
+// profile), and where its notes go (the queue printed once the terminal is
+// released; stderr is not the user's while the alt screen is up).
+type GuardLaunch struct {
+	Agent string
+	Slot  bool
+	Notes io.Writer
+}
+
+// guardLaunchKey is GuardLaunch's context key.
+type guardLaunchKey struct{}
+
+// withGuardLaunch puts gl on ctx for the guard.
+func withGuardLaunch(ctx context.Context, gl GuardLaunch) context.Context {
+	return context.WithValue(ctx, guardLaunchKey{}, gl)
+}
+
+// GuardLaunchOf is the GuardLaunch the TUI put on ctx; the zero value when
+// none (a direct call).
+func GuardLaunchOf(ctx context.Context) GuardLaunch {
+	gl, _ := ctx.Value(guardLaunchKey{}).(GuardLaunch)
+	return gl
+}
+
+// runGuard runs g for rows (a nil guard passes), with gl on the context.
+func runGuard(ctx context.Context, g SubscriptionGuard, gl GuardLaunch, rows []modelapi.Row) error {
+	if g == nil {
+		return nil
+	}
+	if gl.Notes == nil {
+		gl.Notes = clientNotes
+	}
+	return g(withGuardLaunch(ctx, gl), rows)
+}
 
 // profileCarry is the profile popup's answer, carried on the model from the
 // commit point to the released-phase applier.
@@ -147,7 +199,8 @@ var (
 // fails closed: an error aborts the launch. cmd/wt-session hands in applySlotProfile.
 // It is a second closure beside ProfileApplier for the same reason that one
 // exists: this package cannot import cmd/wt-session.
-type SlotProfileApplier func(cmd *exec.Cmd, agent string, row catalog.Row) (cleanup func() error, err error)
+// headerMode is the slot build's agents.LaunchInfo.HeaderMode.
+type SlotProfileApplier func(cmd *exec.Cmd, agent string, row catalog.Row, headerMode bool) (cleanup func() error, err error)
 
 // SlotProfiles is what Run needs for slot profiles: the statically validated
 // profiles (the picker builds their rows) and the applier of a profile launch.
@@ -200,7 +253,7 @@ func queueLaunchNotes(agent string, cmd *exec.Cmd, extraArgs []string) {
 // pendingSummary (consumed by Run() after p.Run() returns), and returns a
 // launchDoneMsg. It records nothing: a command launch has no model to record.
 func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() (bool, error)) tea.Cmd {
-	return runRecordAndWaitWith(cmd, agent, m, nil, gate, func() {}, nil)
+	return runRecordAndWaitWith(cmd, agent, m, nil, gate, func() {}, nil, false)
 }
 
 // runRecordAndWaitWith is runAndWaitCmd with the launch's state writes and
@@ -214,7 +267,8 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() (boo
 // call: it asks nothing — the claim is the run's own and is taken either way,
 // once the gate (if any) is past. carry, when non-nil, is the profile popup's
 // answer, handed to the applier so the released phase never asks it again.
-func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error), release func(), carry *profileCarry) tea.Cmd {
+// headerMode is the build's agents.LaunchInfo.HeaderMode, for the applier.
+func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error), release func(), carry *profileCarry, headerMode bool) tea.Cmd {
 	if record == nil {
 		record = func() string { return "" }
 	}
@@ -243,7 +297,7 @@ func runRecordAndWaitWith(cmd *exec.Cmd, agent string, m config.Model, record fu
 			if carry != nil {
 				rp, apply = carry.rp, carry.apply
 			}
-			profileCleanup, perr = profileApplier(cmd, agent, m, rp, apply)
+			profileCleanup, perr = profileApplier(cmd, agent, m, rp, apply, headerMode)
 			if perr != nil {
 				// Mirrors cmd/wt-session's runAgentCmd: a pre-launch profile
 				// application error (e.g. a wrapper profile naming a
