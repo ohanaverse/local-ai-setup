@@ -1507,3 +1507,42 @@ func TestProtectedPathsStillFailClosed(t *testing.T) {
 		})
 	}
 }
+
+// TestCleanupRemoveFuncsRereadNeverFetches pins #579: after an `R` hand-off
+// that fetched, Reread re-reads without fetching again, and its report
+// carries the hand-off's own fetch outcome (a failure included), not the
+// list's open-state "not run".
+func TestCleanupRemoveFuncsRereadNeverFetches(t *testing.T) {
+	a := restoreRootApp(t)
+	dir := cleanupRepo(t)
+	rootOnTopic(t, dir)
+	cgit(t, dir, "remote", "set-url", "origin", filepath.Join(filepath.Dir(dir), "no-such-origin.git"))
+	fetches := 0
+	in := cleanupListInputs(dir, false, nil, "wt-cleanup")
+	in.Fetched = cleanup.FetchResult{NotAttempted: true}
+	in.FetchRemotes = func(string) error { fetches++; return nil }
+	snap, err := cleanupGather(cleanup.Git{Dir: dir}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rm := cleanupRemoveFuncs(a, snap, in, 0, nil)
+	if rm.Reread == nil {
+		t.Fatal("RemoveFuncs.Reread is nil")
+	}
+	// The hand-off declines at its prompt (no terminal) after fetching.
+	herr := rm.RestoreRoot(strings.NewReader(""), io.Discard, io.Discard)
+	var note *tui.HandOffNote
+	if !errors.As(herr, &note) || !note.Fetched {
+		t.Fatalf("hand-off result = %v, want a note with Fetched", herr)
+	}
+	rep, err := rm.Reread()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetches != 0 {
+		t.Errorf("Reread fetched %d times, want none", fetches)
+	}
+	if rep.Fetch.NotAttempted || rep.Fetch.OK || rep.Fetch.Err == "" {
+		t.Errorf("report.Fetch = %+v, want the hand-off's failed fetch", rep.Fetch)
+	}
+}

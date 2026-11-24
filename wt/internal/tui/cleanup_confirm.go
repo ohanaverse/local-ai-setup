@@ -60,6 +60,11 @@ type RemoveFuncs struct {
 	// one line; on a re-entry it ends the session. nil: `F` says it is
 	// unavailable, and a hand-off cannot re-enter the list.
 	Refetch func() (cleanup.Report, error)
+	// Reread is Refetch without the fetch: the re-entry after a hand-off
+	// whose note says Fetched (it already fetched every remote), so one
+	// action does not fetch twice. The fetch's result is in the report's
+	// Fetch field as with Refetch. nil: the re-entry uses Refetch.
+	Reread func() (cleanup.Report, error)
 	// Off, when not "", is why removal is unavailable (the registry did not
 	// load): enter says it and nothing is previewed.
 	Off string

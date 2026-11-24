@@ -2140,6 +2140,66 @@ func TestRunCleanupListReentersAfterRestoreRoot(t *testing.T) {
 	}
 }
 
+// TestRunCleanupListReentryReadsOnceAndKeepsTheRow pins #579: after an `R`
+// hand-off whose note says Fetched the re-entry calls Reread (no second
+// fetch), without it Refetch; and the next pass opens with the cursor on the
+// same row (by key) the user left, or the top row when that row is gone.
+func TestRunCleanupListReentryReadsOnceAndKeepsTheRow(t *testing.T) {
+	mk := func(names ...string) cleanup.Report {
+		var rep cleanup.Report
+		for _, n := range names {
+			rep.Rows = append(rep.Rows, cleanup.Row{Kind: cleanup.KindBranch, Name: n, Branch: n, Status: cleanup.StatusProven})
+		}
+		return rep
+	}
+	cases := []struct {
+		name    string
+		fetched bool
+		fresh   cleanup.Report
+		reread  bool // Reread set on the funcs
+		wantRe  int
+		wantRf  int
+		wantRow string
+	}{
+		{"fetched uses reread", true, mk("a", "b", "c", "d"), true, 1, 0, "c"},
+		{"unfetched uses refetch", false, mk("a", "b", "c", "d"), true, 0, 1, "c"},
+		{"fetched without reread falls back", true, mk("a", "b", "c", "d"), false, 0, 1, "c"},
+		{"row gone falls to the top", true, mk("a", "b", "d"), true, 1, 0, "a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rereads, refetches, runs := 0, 0, 0
+			rm := RemoveFuncs{
+				RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { return &HandOffNote{Text: "x", Fetched: tc.fetched} },
+				Refetch:     func() (cleanup.Report, error) { refetches++; return tc.fresh, nil },
+			}
+			if tc.reread {
+				rm.Reread = func() (cleanup.Report, error) { rereads++; return tc.fresh, nil }
+			}
+			var got string
+			rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+				runs++
+				if runs == 1 {
+					m.cursor = 2 // row "c"
+					m.restoreRoot = true
+					return m, func() {}, nil
+				}
+				got = m.items[m.cursor].row.Name
+				return m, func() {}, nil
+			}
+			if err := RunCleanupList(mk("a", "b", "c", "d"), themes.Theme{}, rm); err != nil {
+				t.Fatal(err)
+			}
+			if rereads != tc.wantRe || refetches != tc.wantRf {
+				t.Errorf("Reread=%d Refetch=%d, want %d and %d", rereads, refetches, tc.wantRe, tc.wantRf)
+			}
+			if got != tc.wantRow {
+				t.Errorf("the second pass opened on %q, want %q", got, tc.wantRow)
+			}
+		})
+	}
+}
+
 // TestRunCleanupListStopsLoopingOnActionError pins the session's independent
 // error paths: an error from the rescue action, from the restore-root action
 // or from the re-entry re-read stops the session right there and surfaces as
