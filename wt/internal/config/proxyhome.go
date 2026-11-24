@@ -54,8 +54,8 @@ type ProxyPair struct {
 // test pins both together.
 const proxyHomeHeader = "# wt-model's configuration. [litellm] is written only by `wt-model litellm set`\n" +
 	"# and `wt litellm set`; the api key is never here — it lives in the 0600 file\n" +
-	"# that key_file names. [gateway] is hand-edited (no command writes it) and\n" +
-	"# wt-model serve reads it once, at start.\n"
+	"# that key_file names. [gateway] subscription_passthrough is written only by\n" +
+	"# `wt-model gateway`; tls_cert and tls_key are hand-edited; serve reads it once, at start.\n"
 
 // defaultProxyKeyFile is the key file's name when key_file is absent.
 const defaultProxyKeyFile = "litellm.key"
@@ -604,7 +604,8 @@ func (e *GatewayKeyError) Error() string { return e.Msg }
 // off is the safe direction. tls_cert and tls_key fail closed instead: one
 // without the other, a wrong type or an empty value is a *GatewayKeyError.
 // A file that does not parse is an error, worded without any value from it.
-// No code writes this table.
+// Only `wt-model gateway` writes it (subscription_passthrough alone,
+// SetGatewayPassthrough); tls_cert and tls_key are hand-edited.
 func GatewaySettings() (GatewayConf, []string, error) {
 	home := ProxyHomePath()
 	if home == "" {

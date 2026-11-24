@@ -413,3 +413,18 @@ func TestObservePassesTheAgentAsTheLocalFallback(t *testing.T) {
 		t.Errorf("Agent.Listen = %q", st.Agent.Listen)
 	}
 }
+
+// TestObserveReadsTheGatewaySwitch pins that Observe fills State.Gateway from
+// the Env seam, and leaves it zero when the seam is nil.
+func TestObserveReadsTheGatewaySwitch(t *testing.T) {
+	f := obsConfigured(t)
+	env := f.Env()
+	env.Gateway = func() GatewayState { return GatewayState{SubscriptionPassthrough: true} }
+	if st := Observe(context.Background(), env, ObserveOptions{}); !st.Gateway.SubscriptionPassthrough {
+		t.Errorf("Gateway = %+v, want the switch on", st.Gateway)
+	}
+	env.Gateway = nil
+	if st := Observe(context.Background(), env, ObserveOptions{}); st.Gateway != (GatewayState{}) {
+		t.Errorf("Gateway = %+v with no seam, want zero", st.Gateway)
+	}
+}

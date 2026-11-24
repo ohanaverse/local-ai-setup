@@ -190,6 +190,19 @@ func litellmLines(st modelsetup.State) []editorkit.Line {
 	return append(lines, editorkit.Line{Label: "", Text: "the salt key and provider keys are not checked", Tone: editorkit.ToneDim})
 }
 
+// gatewayLine is the status row of the home's [gateway] subscription switch
+// (#693): what the next serve start will use, and the command that changes it.
+func gatewayLine(g modelsetup.GatewayState) editorkit.Line {
+	onoff := "off"
+	if g.SubscriptionPassthrough {
+		onoff = "on"
+	}
+	if g.Err != "" {
+		return editorkit.Line{Label: "gateway", Text: "subscription passthrough read as " + onoff + ": " + editorkit.Scrub(g.Err), Tone: editorkit.ToneWarn}
+	}
+	return editorkit.Line{Label: "gateway", Text: "subscription passthrough " + onoff + " in config.toml; change it with `wt-model gateway subscription on|off`, then restart serve", Tone: editorkit.ToneNone}
+}
+
 // setupStatusLines is the status block: the effective mode and where it
 // came from (with remoteElsewhere under it when that is remote), the url,
 // the token file, the pair, the agent, the server check, the LiteLLM checks,
@@ -208,6 +221,7 @@ func setupStatusLines(st modelsetup.State, home string) []editorkit.Line {
 	lines = append(lines, agentLines(st)...)
 	lines = append(lines, modeview.ServerCheckLine(st.State))
 	lines = append(lines, litellmLines(st)...)
+	lines = append(lines, gatewayLine(st.Gateway))
 	lines = append(lines, plistModeLines(st, home)...)
 	if env, ok := modeview.EnvLine(st.State); ok {
 		lines = append(lines, env)
@@ -279,7 +293,7 @@ func (m *model) setupFieldLines() []string {
 
 // statusDropOrder is the order a terminal too short gives up status rows:
 // first entry first. The mode and the server are the last to go.
-var statusDropOrder = []string{"litellm", "agent", "env", "pair", "token", "url", "problems", "server", "mode"}
+var statusDropOrder = []string{"gateway", "litellm", "agent", "env", "pair", "token", "url", "problems", "server", "mode"}
 
 // setupBody is the tab's body under the tab bar, in at most room lines: a
 // status line, the parse error, the status block and the mode choice, styled.

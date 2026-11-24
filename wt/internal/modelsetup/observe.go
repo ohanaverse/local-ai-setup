@@ -169,6 +169,9 @@ type State struct {
 	LiteLLMPlist   LiteLLMPlistState
 	LiteLLMInstall LiteLLMInstallState
 	LiteLLM        LiteLLMState
+	// Gateway is the home's [gateway] subscription switch, for the status
+	// row (`wt-model gateway subscription on|off` writes it).
+	Gateway GatewayState
 	// Serve is what the running serve's runtime record says about TLS.
 	Serve ServeState
 }
@@ -362,6 +365,9 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 				st.Serve = ServeState{Seen: true, PID: r.PID, TLS: r.TLSCert != ""}
 			}
 		}
+	}
+	if env.Gateway != nil {
+		st.Gateway = env.Gateway()
 	}
 	return st
 }

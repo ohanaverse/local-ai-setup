@@ -123,6 +123,9 @@ type Env struct {
 	Net     Net
 	Host    Host
 	LiteLLM LiteLLMFiles
+	// Gateway reads the home's [gateway] subscription switch for the Setup
+	// tab's status row (#693). Nil is not asked.
+	Gateway func() GatewayState
 	// DesiredRoutes lists the model names the LiteLLM config should hold.
 	DesiredRoutes func(ctx context.Context) ([]string, error)
 }
@@ -134,6 +137,7 @@ func DefaultEnv() Env {
 		FS:      realFS{},
 		Launchd: realLaunchd{},
 		Config:  realConfig{},
+		Gateway: realGateway,
 		Net:     realNet{},
 		Host:    realHost{},
 		LiteLLM: realLiteLLM{},

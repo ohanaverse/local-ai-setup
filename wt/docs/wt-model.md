@@ -521,6 +521,41 @@ with one id fail the registry load, the one case where a bad alias does.
 
 The Models tab has no alias screen yet: use `wt-model alias`.
 
+## `wt-model gateway`
+
+```text
+wt-model gateway
+wt-model gateway subscription on|off [--dry-run]
+```
+
+The host's `[gateway]` table in the wt-model home's `config.toml`
+(`~/.config/wt-model/config.toml`), which `wt-model serve` reads once, at
+start (#693). Bare `gateway` shows it and changes nothing: whether the Claude
+subscription header mode is switched on, and which TLS pair serve speaks with
+(paths only). The Setup tab (`wt-model setup`) shows the same switch as its
+`gateway` status row.
+
+`gateway subscription on|off` writes `subscription_passthrough`, the one key
+that has a writer; `tls_cert` and `tls_key` stay hand edits. It changes that
+key and leaves the rest of the file (the `[litellm]` table, the TLS pair) as
+decoded, under the lock the proxy pair's writer uses, keeps the file's mode,
+and writes through a symlink. A `config.toml` that does not parse is refused and
+left as it is. The file it replaces is first copied, byte for byte, to
+`backups/config.toml.bak-<date>-<time>` beside it (a 0700 directory, a 0600
+file), and the command prints that path. Like `litellm set`, a real write drops
+the file's hand comments. Asking for what the file already says prints
+`already on; nothing was changed` and writes nothing, and `--dry-run` says what
+would change and writes nothing.
+
+A change takes effect when serve is restarted (`wt-model setup`, then `R`, or
+`launchctl kickstart -k gui/<uid>/local.wt-model.serve`); the command says so.
+With the mode on, serve checks the proxy for subscription hazards at start and
+then every minute, and keeps the mode off while it finds one
+([What keeps it off](wt-model-server.md#what-keeps-it-off)).
+
+Exit codes: `0` done (also when nothing needed changing), `1` any failure: a word
+other than `on` or `off`, a `config.toml` that cannot be read or written.
+
 ## What stays a hand edit of `registry.toml`
 
 - A `[[providers]]` row wt has no default for (a cloud provider other than
