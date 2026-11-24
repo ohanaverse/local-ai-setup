@@ -1114,8 +1114,6 @@ No record at all (no server running) is silent: there is nothing to ask.
   `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`, while Claude Code's other traffic
   (telemetry, update and auth checks to Anthropic) still used it; it could
   not tell this addition from Claude Code's own loopback handling.
-- **`--location local` is accepted for a `claude-subscription` model** by
-  `wt-model model add|edit`, but such a row never works.
 - **The client uses no environment proxy.** The control and gateway calls ignore `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so the bearer token and the prompts go straight to the `[model-server]` url and never to a third party. A session machine that can reach the server only through a proxy cannot use it.
 - Config is read per request, job and scan, so `wt-model model …` and `wt-model cloud-sync`
   edits show without a restart.

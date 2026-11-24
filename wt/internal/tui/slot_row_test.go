@@ -154,7 +154,7 @@ func TestSlotLine(t *testing.T) {
 		{7, "+4 more"},
 		{6, ""},
 	} {
-		got := slotLine(slotLineRow(), nil, c.width)
+		got := slotLine(slotLineRow(), nil, c.width, "")
 		if got != c.want {
 			t.Errorf("slotLine(width %d) = %q, want %q", c.width, got, c.want)
 		}
@@ -168,19 +168,29 @@ func TestSlotLine(t *testing.T) {
 	two := slotLineRow()
 	two.Check.Profile.Default = "sonnet"
 	two.Check.Profile.Slots = map[string]string{"sonnet": "ollama/glm-5.3-flash:cloud", "opus": "ollama/glm-5.2:cloud"}
-	if got, want := slotLine(two, nil, 76), "sonnet* glm-5.3-flash:cloud · opus glm-5.2:cloud"; got != want {
+	if got, want := slotLine(two, nil, 76, ""), "sonnet* glm-5.3-flash:cloud · opus glm-5.2:cloud"; got != want {
 		t.Errorf("two filled slots: slotLine = %q, want %q", got, want)
 	}
 
 	// A blocked row shows its reason, and says so when it is cut.
 	blocked := &catalog.ProfileRow{Check: two.Check, Verdict: catalog.ActionBlock, Reason: "slot haiku: ollama/gemma4:31b-cloud is not in the registry"}
-	if got := slotLine(blocked, nil, 76); got != blocked.Reason {
+	if got := slotLine(blocked, nil, 76, ""); got != blocked.Reason {
 		t.Errorf("blocked row: slotLine = %q, want the reason", got)
 	}
-	if got, want := slotLine(blocked, nil, 36), "slot haiku: ollama/gemma4:31b-cloud…"; got != want {
+	if got, want := slotLine(blocked, nil, 36, ""), "slot haiku: ollama/gemma4:31b-cloud…"; got != want {
 		t.Errorf("blocked row at 36 columns: slotLine = %q, want %q", got, want)
 	}
-	if got := slotLine(nil, nil, 76); got != "" {
+	// A short form (#699) is said only where the whole reason is too wide:
+	// the whole one wins whenever it fits.
+	const short = "slot haiku: claude-haiku-5-5 uses your Claude subscription; passthrough off"
+	if got := slotLine(blocked, nil, 76, short); got != blocked.Reason {
+		t.Errorf("blocked row with a short form at 76 columns: slotLine = %q, want the whole reason", got)
+	}
+	wide := &catalog.ProfileRow{Check: two.Check, Verdict: catalog.ActionBlock, Reason: strings.Repeat("long ", 30)}
+	if got := slotLine(wide, nil, 76, short); got != short {
+		t.Errorf("blocked row too wide for its reason: slotLine = %q, want the short form", got)
+	}
+	if got := slotLine(nil, nil, 76, ""); got != "" {
 		t.Errorf("slotLine(nil) = %q, want nothing", got)
 	}
 }
@@ -196,10 +206,10 @@ func TestSlotLineOpusplan(t *testing.T) {
 	row.Check.DefaultSlot = "sonnet"
 	row.Check.Alias = profiles.SlotAlias{Requires: []string{"opus", "sonnet"}, Rest: "sonnet", Doc: "doc"}
 	all := "opusplan · sonnet* glm-5.3-flash:cloud · fable kimi-k3:cloud · opus glm-5.2:cloud · haiku qwen3.8"
-	if got := slotLine(row, nil, 0); got != all {
+	if got := slotLine(row, nil, 0, ""); got != all {
 		t.Errorf("slotLine = %q, want %q", got, all)
 	}
-	if got, want := slotLine(row, nil, 50), "opusplan · sonnet* glm-5.3-flash:cloud · +3 more"; got != want {
+	if got, want := slotLine(row, nil, 50, ""), "opusplan · sonnet* glm-5.3-flash:cloud · +3 more"; got != want {
 		t.Errorf("slotLine(width 50) = %q, want %q (the alias kept with the slot it rests on)", got, want)
 	}
 }

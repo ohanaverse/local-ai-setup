@@ -230,6 +230,10 @@ wt-model model add claude-subscription claude-haiku-5-5 --family claude --contex
   for it)`), and `wt-model model edit` refuses to clear it. 1000000 is the
   window of each of the current ids `claude-fable-5-2`, `claude-opus-5-5`,
   `claude-sonnet-5-5` and `claude-haiku-5-5`.
+- **`--location local` is refused**, on `add` and on `edit`
+  (`a claude-subscription model is served over a cloud route, so it cannot be
+  local: leave --location off, or pass cloud`): the provider is cloud and its
+  route the keyless `anthropic/` row, so a local mark could never be served.
 - **`--family` is required as for any model.** Anthropic publishes no
   family for these ids; `claude` is only this page's choice, and any family
   of your own works.

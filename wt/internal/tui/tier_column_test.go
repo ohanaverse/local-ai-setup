@@ -159,7 +159,7 @@ func TestSlotLineTiers(t *testing.T) {
 		{85, "opus* glm-5.2:cloud S44 · fable kimi-k3:cloud · sonnet glm-5.3-flash:cloud · +1 more"},
 		{80, "opus* glm-5.2:cloud · fable kimi-k3:cloud · sonnet glm-5.3-flash:cloud · +1 more"},
 	} {
-		if got := slotLine(slotLineRow(), codes, c.width); got != c.want {
+		if got := slotLine(slotLineRow(), codes, c.width, ""); got != c.want {
 			t.Errorf("width %d: %q, want %q", c.width, got, c.want)
 		}
 	}

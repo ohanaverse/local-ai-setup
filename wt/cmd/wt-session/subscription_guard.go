@@ -164,7 +164,7 @@ func subscriptionGuardTo(ctx context.Context, w io.Writer, ms *modelSession, row
 // subscriptionOffReason is decision 2's one message for a server whose ping
 // lacks subscription_passthrough: off and older look the same.
 func subscriptionOffReason(ms *modelSession) string {
-	return fmt.Sprintf("the model server at %s does not accept a Claude login: its subscription passthrough is off, or it is older than this wt (on the host: make install, set [gateway] subscription_passthrough = true in ~/.config/wt-model/config.toml, restart wt-model serve; or a hazard turned it off while serving, which the wt-model serve log names)", modelping.Addr(ms.ep.URL))
+	return modelping.SubscriptionOffReason(ms.ep.URL)
 }
 
 // subscriptionBlockedReason is what a blocked subscription row (or a slot
