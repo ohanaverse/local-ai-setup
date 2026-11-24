@@ -852,3 +852,41 @@ func TestApplyUseExistingKeyWritesThePlistKeyOverAStalePair(t *testing.T) {
 	}
 	noSecrets(t, f, lines, r, apPlistKey, "sk-STALE-1")
 }
+
+// TestBuildPlanRotateLeavesAHandWrittenLoadedAgentAlone pins #708: a key
+// rotate writes only the LiteLLM plist and the pair, so a loaded agent plist
+// that is not marked "managed by wt" is kept as written and only restarted.
+// A plain local apply, or an agent that is not loaded, still refuses: wt
+// would overwrite or bootstrap a file it does not own.
+func TestBuildPlanRotateLeavesAHandWrittenLoadedAgentAlone(t *testing.T) {
+	rotate := Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}
+
+	st := rotateState()
+	st.Agent.Managed = false
+	st.Agent.Content = []byte("hand written")
+	p := mustPlan(t, st, rotate)
+	if _, ok := stepOf(p, StepPlist); ok {
+		t.Fatalf("the rotate plans a write of the unmanaged agent plist: %v", kinds(p))
+	}
+	for _, k := range []StepKind{StepBootout, StepBootstrap} {
+		if _, ok := stepOf(p, k); ok {
+			t.Errorf("the rotate plans %v for the unmanaged agent: %v", k, kinds(p))
+		}
+	}
+	if _, ok := stepOf(p, StepKickstart); !ok {
+		t.Errorf("the rotate does not restart the agent so it reads the new pair: %v", kinds(p))
+	}
+	if !strings.Contains(strings.Join(p.Notes, "\n"), "not marked \"managed by wt\"") {
+		t.Errorf("the plan does not say the agent plist is left alone: %v", p.Notes)
+	}
+
+	plain := st
+	_, err := BuildPlan(plain, Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}})
+	mustRefuse(t, Plan{}, err, "not marked \"managed by wt\"")
+
+	unloaded := rotateState()
+	unloaded.Agent.Managed = false
+	unloaded.Agent.Job = LaunchdJob{}
+	_, err = BuildPlan(unloaded, rotate)
+	mustRefuse(t, Plan{}, err, "not marked \"managed by wt\"")
+}

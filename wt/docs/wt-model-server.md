@@ -689,6 +689,10 @@ server elsewhere (remote)", the mirror of the Mode tab's local pointer note.
   A key rotation reloads LiteLLM (it unloads the job and bootstraps the edited
   plist; a `kickstart -k` would restart the definition launchd already holds,
   with the old key), so LiteLLM is down for the reload, about 15 seconds.
+  A rotate leaves a wt-model LaunchAgent plist that is not marked `managed by wt`
+  (one written by hand) as written and only restarts it, provided it is
+  loaded; every other plan, and a rotate with that agent not loaded, still
+  refuses to touch it.
   One apply runs at a time on a machine: a second `wt-model setup` or
   `wt config` apply waits for the first to finish, on
   `~/.config/wt-model/setup.lock` (a plain lock file, never removed), and

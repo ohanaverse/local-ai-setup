@@ -291,8 +291,13 @@ func planLocal(st State, want Desired) (Plan, error) {
 		reasons = append(reasons, r)
 	}
 
-	// The plist path must be wt's or free.
-	if st.Agent.Present && !st.Agent.Managed {
+	// The plist path must be wt's or free. A key rotate writes only the
+	// LiteLLM plist and the pair, so it leaves a loaded agent plist that is not
+	// wt's as written and only restarts it (#708); an agent that is not loaded
+	// would have to be bootstrapped from a file wt does not own, so that and
+	// every other plan still refuses.
+	keepUnmanaged := want.LiteLLM == LiteLLMRotateKey && st.Agent.Present && !st.Agent.Managed && st.Agent.Job.Loaded
+	if st.Agent.Present && !st.Agent.Managed && !keepUnmanaged {
 		reasons = append(reasons, reason(st.Agent.PlistPath+" exists and is not marked \"managed by wt\", so wt will not overwrite it",
 			"move it aside or remove it yourself, or choose native or remote"))
 	}
@@ -420,8 +425,10 @@ func planLocal(st State, want Desired) (Plan, error) {
 		p.Notes = append(p.Notes, pairKept)
 	}
 
-	plistChanged := !(st.Agent.Present && st.Agent.Managed && bytes.Equal(st.Agent.Content, RenderAgentPlist(spec)))
-	if plistChanged {
+	plistChanged := !keepUnmanaged && !(st.Agent.Present && st.Agent.Managed && bytes.Equal(st.Agent.Content, RenderAgentPlist(spec)))
+	if keepUnmanaged {
+		p.Notes = append(p.Notes, "keep the LaunchAgent plist "+st.Agent.PlistPath+" as written: it is not marked \"managed by wt\" and a key rotate does not write it")
+	} else if plistChanged {
 		verb := "write"
 		if st.Agent.Present {
 			verb = "overwrite"
