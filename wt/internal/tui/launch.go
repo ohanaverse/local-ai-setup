@@ -468,7 +468,7 @@ func (m model) commitAsk(mdl config.Model, bind func(model) (model, tea.Cmd), dr
 	yes := func(mm model) (model, tea.Cmd) {
 		return mm.afterGate(profile, &t, info)
 	}
-	return m.seedAsk(newAskStateFor(askGate, m.theme, m.width, m.height, "launch here?", body, back, yes, decline))
+	return m.seedAsk(newAskStateFor(m.theme, m.width, m.height, "launch here?", body, back, yes, decline))
 }
 
 // afterGate continues a launch whose gate popup was answered yes: the gate is

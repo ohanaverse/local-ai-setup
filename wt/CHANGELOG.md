@@ -123,9 +123,10 @@
   only two answers were "apply profile" and "go back", so a local model whose
   profile the person did not want could not be launched from the picker at
   all. `n` keeps the meaning it had in the raw `/dev/tty` prompt this popup
-  replaced ("no, do not apply it, launch anyway"); going back is `esc`, `q`,
-  `ctrl+c` or the last item. The carried answer still reaches the applier as
-  `(rp, false)`, so the released phase never asks again.
+  replaced ("no, do not apply it, launch anyway"); going back is `esc` or the
+  last item, and `q`/`ctrl+c` decline and quit wt. The carried answer still
+  reaches the applier as `(rp, false)`, so the released phase never asks
+  again.
 
 ### Added
 

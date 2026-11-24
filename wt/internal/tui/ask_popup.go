@@ -10,7 +10,9 @@ import (
 )
 
 // askPurpose says which question an askState asks. The component is the same
-// for both; the purpose picks the choices' wording.
+// for both; the constructor picks the choices' wording (the gate's two
+// answers in newAskStateFor, the profile's three in newAskProfileState) and
+// purpose only labels the popup for readers and tests.
 type askPurpose int
 
 const (
@@ -50,18 +52,27 @@ type askState struct {
 // newAskState builds a popup. The cursor starts on the yes item, matching the
 // default-yes raw prompts it replaces.
 func newAskState(theme themes.Theme, width, height int, title string, body []string, backPhase phase, bind, decline func(model) (model, tea.Cmd)) *askState {
-	return newAskStateFor(askGate, theme, width, height, title, body, backPhase, bind, decline)
+	return newAskStateFor(theme, width, height, title, body, backPhase, bind, decline)
 }
 
-// newAskStateFor is newAskState with an explicit purpose.
-func newAskStateFor(purpose askPurpose, theme themes.Theme, width, height int, title string, body []string, backPhase phase, bind, decline func(model) (model, tea.Cmd)) *askState {
+// newAskStateFor is newAskState with the gate's two answers. Only askGate is
+// built here; the profile popup's three answers come from newAskProfileState,
+// which labels itself askProfile — a purpose argument would silently hand a
+// caller gate wording for the profile question.
+func newAskStateFor(theme themes.Theme, width, height int, title string, body []string, backPhase phase, bind, decline func(model) (model, tea.Cmd)) *askState {
 	yes := choiceItem{choice: askYes, title: "launch anyway", desc: "Continue with the launch"}
 	no := choiceItem{choice: askNo, title: "go back", desc: "Return to the picker; nothing is created or started"}
-	return &askState{
-		purpose: purpose, title: title, body: body, backPhase: backPhase,
+	s := &askState{
+		purpose: askGate, title: title, body: body, backPhase: backPhase,
 		choices: newReplaceChoices(theme, width, height, []list.Item{yes, no}),
 		bind:    bind, decline: decline,
 	}
+	// No filtering on a two- or three-choice popup: the list's `/` filter is
+	// never wanted here, and its esc/enter bindings would fight updateAsk,
+	// which answers esc as go-back and enter as the highlighted choice before
+	// the list sees either key.
+	s.choices.SetFilteringEnabled(false)
+	return s
 }
 
 // newAskProfileState is the local-model profile question's popup. It offers
@@ -71,7 +82,7 @@ func newAskStateFor(purpose askPurpose, theme themes.Theme, width, height int, t
 // reshapes the launch, it is not the launch — so declining it must not be
 // the same choice as declining the launch.
 func newAskProfileState(theme themes.Theme, width, height int, title string, body []string, backPhase phase, bind, skip, decline func(model) (model, tea.Cmd)) *askState {
-	return &askState{
+	s := &askState{
 		purpose: askProfile, title: title, body: body, backPhase: backPhase,
 		skip: skip,
 		choices: newReplaceChoices(theme, width, height, []list.Item{
@@ -81,6 +92,10 @@ func newAskProfileState(theme themes.Theme, width, height int, title string, bod
 		}),
 		bind: bind, decline: decline,
 	}
+	// No filtering, for the same reason as the gate's popup above: updateAsk
+	// answers esc/y/n/enter before the list's filter bindings ever see them.
+	s.choices.SetFilteringEnabled(false)
+	return s
 }
 
 // seedAsk shows the popup. Like every phase transition it clears the status.
@@ -140,8 +155,8 @@ func (m model) updateAsk(msg tea.Msg) (model, tea.Cmd) {
 }
 
 // answerAsk closes the popup and runs the continuation its answer names. A
-// skip a popup does not offer (the gate's) declines, the only other answer it
-// could mean.
+// skip that a popup does not offer (the gate's) declines — decline is the
+// only other answer it could mean.
 func (m model) answerAsk(a askAnswer) (model, tea.Cmd) {
 	next, s := m.leaveAsk()
 	switch a {
