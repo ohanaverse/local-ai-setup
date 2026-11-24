@@ -22,7 +22,10 @@ import (
 // wt-sessions directory is nothing to prune and no error, and — like the
 // readers — it creates nothing: the missing case is decided before the lock,
 // since withLock would MkdirAll the directory and create its .lock file.
-func Prune(commonDir string) (removed int, err error) {
+func Prune(commonDir string) (removed int, err error) { return Procs{}.Prune(commonDir) }
+
+// Prune is the package-level Prune with pr's process facts.
+func (pr Procs) Prune(commonDir string) (removed int, err error) {
 	dir := filepath.Join(commonDir, "wt-sessions")
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return 0, nil
@@ -32,7 +35,7 @@ func Prune(commonDir string) (removed int, err error) {
 		if err != nil {
 			return err
 		}
-		if _, err := scan(dir, Claim{}, nil, true); err != nil {
+		if _, err := pr.scan(dir, Claim{}, nil, true); err != nil {
 			return err
 		}
 		after, err := readClaims(dir)

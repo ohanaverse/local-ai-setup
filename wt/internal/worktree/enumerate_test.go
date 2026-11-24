@@ -1064,3 +1064,34 @@ func TestListWorktreesMarksOnlyThePrimary(t *testing.T) {
 		}
 	}
 }
+
+// TestResolvePath checks the resolver every claim comparison shares: a symlink
+// alias resolves to its target, a missing leaf resolves through its nearest
+// existing ancestor, and a relative path becomes absolute.
+func TestResolvePath(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct{ in, want string }{
+		"alias":               {alias, real},
+		"alias, missing leaf": {filepath.Join(alias, "gone", "deeper"), filepath.Join(real, "gone", "deeper")},
+		"plain":               {real, real},
+		"unclean":             {filepath.Join(real, "x", ".."), real},
+	} {
+		if got := ResolvePath(tc.in); got != tc.want {
+			t.Errorf("%s: ResolvePath(%q) = %q, want %q", name, tc.in, got, tc.want)
+		}
+	}
+	if got := ResolvePath("rel"); !filepath.IsAbs(got) {
+		t.Errorf("ResolvePath(rel) = %q, want absolute", got)
+	}
+}
