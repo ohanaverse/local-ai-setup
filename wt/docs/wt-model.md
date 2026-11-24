@@ -458,7 +458,9 @@ id, target, order and the 8-character hash `h8`, never the parameters),
 changes nothing and writes no row at all when no proxy pair is set. The rows
 and the targets left without one (a stopped local model, a Claude subscription
 model while its hazard check is blocked) come from the same planner as the
-write, so the preview says what the write does.
+write, so the preview says what the write does. When the database half cannot
+run (the proxy does not answer, `store_model_in_db` is off) the preview says
+so instead of rows, in the write's own words.
 
 `rm` removes the aliases and, through the sync that follows, their rows; the
 models they target are not touched. It asks on the terminal (`--yes` skips;

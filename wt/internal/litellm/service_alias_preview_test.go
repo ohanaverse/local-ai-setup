@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // previewTargets is the "<target>@<order>" of each row a preview would write,
@@ -65,5 +67,89 @@ func TestPreviewAliasAgreesWithTheRealSyncForASubscriptionTarget(t *testing.T) {
 	}
 	if got := fake2.aliasIDs(); len(got) != 0 {
 		t.Errorf("the real write routed %v under a hazard", got)
+	}
+}
+
+// TestPreviewAliasQuotesTheUnroutedModelsReason pins the faulty provider row
+// (a clean gate over an auth.base_url row): the write's skip is the frozen
+// build fault itself, which names the provider row, so the preview's skip
+// carries the write's reason verbatim.
+func TestPreviewAliasQuotesTheUnroutedModelsReason(t *testing.T) {
+	reg := subAliasCfg()
+	reg.Providers[len(reg.Providers)-1].Auth.BaseURL = "https://relay.example"
+	o, _, _, _ := aliasDBOpts(t, "model_list: []\n"+settledSettings, &reg)
+	o = cleanProxy(o)
+	rows, skips, err := PreviewAlias(reg, nil, o, reg.Aliases[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || len(skips) != 1 || skips[0].Target != subID {
+		t.Fatalf("rows %v skips %+v, want the one unrouted target", previewTargets(rows), skips)
+	}
+	if !strings.HasPrefix(skips[0].Reason, `model "claude-haiku-5-5": provider `) || !strings.Contains(skips[0].Reason, "auth.base_url") {
+		t.Errorf("skip reason = %q, want the frozen build fault naming the provider row", skips[0].Reason)
+	}
+}
+
+// TestPreviewAliasSaysWhyThePlanCoversNoAliases pins the unlisted database:
+// with the proxy pair set but the listing failing, the write reports "alias
+// routes unavailable (...)" and writes no rows, so the preview must error
+// with that line, not a bare "no plan entry" that names no cause.
+func TestPreviewAliasSaysWhyThePlanCoversNoAliases(t *testing.T) {
+	reg := subAliasCfg()
+	o, _, _, fake := aliasDBOpts(t, "model_list: []\n"+settledSettings, &reg)
+	o = cleanProxy(o)
+	fake.failList = true
+	rows, skips, err := PreviewAlias(reg, nil, o, reg.Aliases[0])
+	if err == nil {
+		t.Fatalf("rows %v skips %+v, want an error naming the database half", previewTargets(rows), skips)
+	}
+	if !strings.Contains(err.Error(), "alias routes unavailable (") || strings.Contains(err.Error(), "no plan entry") {
+		t.Errorf("err = %v, want the plan's own unavailable line", err)
+	}
+	if n := apiWrites(fake); n != 0 {
+		t.Errorf("the preview made %d API writes", n)
+	}
+}
+
+// TestPreviewAliasAgreesWithTheRealSyncForALocalTarget pins the local halves
+// of the same agreement for a stopped and a running model: with nothing
+// running the preview plans no row and says "not running" (the write's skip
+// for a local target off the route names it leaves), and with the model
+// running both the preview and the write route it.
+func TestPreviewAliasAgreesWithTheRealSyncForALocalTarget(t *testing.T) {
+	const target = "ollama/gemma:9b"
+	reg := testConfig()
+	reg.Aliases = []config.Alias{{ID: "alias/gl", Targets: []config.AliasTarget{{Model: target, Order: 1}}}}
+	o, _, _, fake := aliasDBOpts(t, "model_list: []\n"+settledSettings, &reg)
+	o = cleanProxy(o)
+
+	rows, skips, err := PreviewAlias(reg, nil, o, reg.Aliases[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || len(skips) != 1 || skips[0].Target != target || skips[0].Reason != "not running" {
+		t.Fatalf("stopped: rows %v skips %+v, want one not-running skip", previewTargets(rows), skips)
+	}
+	if _, err := Sync(reg, nil, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.aliasTargets("alias/gl"); len(got) != 0 {
+		t.Fatalf("stopped: the write routed %v, the preview said none", got)
+	}
+
+	local := localFor(reg, target)
+	rows, skips, err = PreviewAlias(reg, local, o, reg.Aliases[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skips) != 0 || !slices.Equal(previewTargets(rows), []string{target + "@1"}) {
+		t.Fatalf("running: rows %v skips %+v, want the target routed", previewTargets(rows), skips)
+	}
+	if _, err := Sync(reg, local, o); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.aliasTargets("alias/gl"); !slices.Equal(got, previewTargets(rows)) {
+		t.Errorf("running: the write routed %v, the preview said %v", got, previewTargets(rows))
 	}
 }
