@@ -414,8 +414,8 @@ func TestWrongFileGatewayKeyPointsAtTheHome(t *testing.T) {
 	if !ok {
 		t.Fatal("no notice for a [gateway] table in agent-wt's config.toml")
 	}
-	if !strings.Contains(msg, "~/.config/wt-model/config.toml") || !strings.Contains(msg, "subscription_passthrough") {
-		t.Errorf("notice = %q, want it to name subscription_passthrough and ~/.config/wt-model/config.toml", msg)
+	if !strings.Contains(msg, ProxyHomeFile()) || !strings.Contains(msg, "subscription_passthrough") {
+		t.Errorf("notice = %q, want it to name subscription_passthrough and %s", msg, ProxyHomeFile())
 	}
 	if strings.Contains(msg, "LiteLLM routing is now controlled by wt") {
 		t.Errorf("notice = %q, want the home pointer, not the legacy wording", msg)
@@ -443,7 +443,7 @@ func TestWrongFileGatewayTLSKeysPointAtTheHome(t *testing.T) {
 		if !ok {
 			t.Fatalf("no notice for %q", body)
 		}
-		if !strings.Contains(msg, "~/.config/wt-model/config.toml") || strings.Contains(msg, "LiteLLM routing is now controlled by wt") {
+		if !strings.Contains(msg, ProxyHomeFile()) || strings.Contains(msg, "LiteLLM routing is now controlled by wt") {
 			t.Errorf("notice = %q, want the home pointer", msg)
 		}
 		for _, k := range []string{"tls_cert", "tls_key", "subscription_passthrough"} {
@@ -454,5 +454,21 @@ func TestWrongFileGatewayTLSKeysPointAtTheHome(t *testing.T) {
 		if strings.Contains(msg, "SECRETPATH") {
 			t.Errorf("notice quotes a value: %q", msg)
 		}
+	}
+}
+
+// TestWrongFileGatewayNoticeNamesTheMovedConfigHome pins #700 for the notice
+// that sends a [gateway] key to the wt-model home: with XDG_CONFIG_HOME moved
+// it names the file under it, never the conventional ~/.config path.
+func TestWrongFileGatewayNoticeNamesTheMovedConfigHome(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	msg, ok := legacyGatewayNotice([]byte("[gateway]\nsubscription_passthrough = true\n"))
+	if !ok {
+		t.Fatal("no notice")
+	}
+	want := filepath.Join(xdg, "wt-model", "config.toml")
+	if !strings.Contains(msg, "under [gateway] in "+want+",") || strings.Contains(msg, "~/.config") {
+		t.Errorf("notice = %q, want it to name %s", msg, want)
 	}
 }

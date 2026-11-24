@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -148,5 +149,35 @@ func TestServerCatalogFollowsSubscriptionPassthrough(t *testing.T) {
 			t.Fatal(err)
 		}
 		check("catalog", rowByID(t, cat, "claude-haiku-5-5"))
+	}
+}
+
+// TestSubscriptionOffReasonNamesTheMovedConfigHome pins #700 for a blocked
+// subscription row: with XDG_CONFIG_HOME moved the reason names the wt-model
+// config.toml the host actually reads, never the conventional ~/.config path.
+func TestSubscriptionOffReasonNamesTheMovedConfigHome(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	cfg := serverCfg()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: config.SubscriptionProvider, Location: config.LocationCloud})
+	cfg.Models = append(cfg.Models, config.Model{ID: "claude-haiku-5-5", Family: "claude", ProviderID: config.SubscriptionProvider, ModelName: "claude-haiku-5-5"})
+	s, err := NewServer(Options{Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour},
+		(&fakeLife{snap: serverSnap()}).deps(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	st, b := call(t, ts, "GET", "/control/v1/resolve?model=claude-haiku-5-5", "")
+	if st != http.StatusOK {
+		t.Fatalf("resolve = %d %s", st, b)
+	}
+	var r modelapi.Row
+	if err := json.Unmarshal(b, &r); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(xdg, "wt-model", "config.toml")
+	if r.Action != modelapi.ActionBlock || !strings.Contains(r.BlockReason, "subscription_passthrough in "+want+")") || strings.Contains(r.BlockReason, "~/.config") {
+		t.Errorf("reason = %q, want it to name %s", r.BlockReason, want)
 	}
 }

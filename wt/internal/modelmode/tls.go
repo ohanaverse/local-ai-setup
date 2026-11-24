@@ -111,12 +111,7 @@ func LocalTLSRefusal(st State) string {
 }
 
 // gatewayHome names the wt-model home's config.toml for a message.
-func gatewayHome() string {
-	if p := config.ProxyHomePath(); p != "" {
-		return p
-	}
-	return "~/.config/wt-model/config.toml"
-}
+func gatewayHome() string { return config.ProxyHomeFile() }
 
 // AddLocalTLSNotes adds a local plan's TLS notes: with TLS on and the
 // session trusting no CA file, the exact line to add (wt never writes it);

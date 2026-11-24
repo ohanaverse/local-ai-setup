@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tlstest"
 )
@@ -132,7 +133,7 @@ func TestUntrustedServerCertGivesTheCAFileHint(t *testing.T) {
 	ep := Endpoint{URL: srv.URL, Token: "wt-SENTINEL-tok"}
 	_, err := Ping(context.Background(), ep)
 	te := trustErr(t, err)
-	if !strings.Contains(te.Error(), "set ca_file under [model-server] in ~/.config/agent-wt/config.toml (or WT_MODEL_CA_FILE) to the server's certificate") {
+	if !strings.Contains(te.Error(), "set ca_file under [model-server] in "+config.ConfigFile()+" (or WT_MODEL_CA_FILE) to the server's certificate") {
 		t.Errorf("hint = %q", te.Error())
 	}
 	if n.Load() != 0 {
@@ -271,5 +272,20 @@ func TestNewHTTPClientForAddsToTheSystemPool(t *testing.T) {
 	got := hc.Transport.(*http.Transport).TLSClientConfig.RootCAs
 	if got == nil || !got.Equal(want) {
 		t.Errorf("RootCAs is not the system pool plus ca_file")
+	}
+}
+
+// TestUntrustedCertHintNamesTheMovedConfigHome pins #700 for decision 14's
+// ca_file hint: with XDG_CONFIG_HOME moved it names the agent-wt config.toml
+// under it (the file a session reads), never the conventional ~/.config path.
+func TestUntrustedCertHintNamesTheMovedConfigHome(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	srv, _ := countingTLSServer(t, "", "")
+	_, err := Ping(context.Background(), Endpoint{URL: srv.URL, Token: "wt-SENTINEL-tok"})
+	got := trustErr(t, err).Error()
+	want := filepath.Join(xdg, "agent-wt", "config.toml")
+	if !strings.Contains(got, "in "+want+" (or WT_MODEL_CA_FILE)") || strings.Contains(got, "~/.config") {
+		t.Errorf("hint = %q, want it to name %s", got, want)
 	}
 }

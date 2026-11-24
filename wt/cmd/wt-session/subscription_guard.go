@@ -104,7 +104,7 @@ func subscriptionGuardTo(ctx context.Context, w io.Writer, ms *modelSession, row
 	}
 	// 1. Opt-in.
 	if !ms.subscription {
-		return refuse("this machine has not opted in to sending its Claude login to a model server: set [model-server] subscription = true in ~/.config/agent-wt/config.toml")
+		return refuse("this machine has not opted in to sending its Claude login to a model server: set [model-server] subscription = true in " + config.ConfigFile())
 	}
 	// 2. Endpoint: decided from the url alone, before any request.
 	if err := subscriptionEndpointOK(ms.ep); err != nil {
