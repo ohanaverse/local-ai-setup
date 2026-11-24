@@ -150,9 +150,18 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 		if r.pinned != "" || slices.ContainsFunc(eligible, catalog.UsesSubscription) {
 			subOff = r.client.SubscriptionOff(ctx)
 		}
+		// shortBlocked is the mode line's one-line form per row id (#699): the
+		// whole message is cut before its fix at 80 columns, so the line names
+		// the condition and Enter sets the whole one as the status.
+		// SubscriptionOffShort is the condition's own text.
+		var shortBlocked map[string]string
 		blockedAsOff := func(row modelapi.Row) modelapi.Row {
 			if subOff != "" && row.Action == modelapi.ActionBlock && catalog.UsesSubscription(row) {
 				row.BlockReason = row.ID + " uses your Claude subscription, but " + subOff
+				if shortBlocked == nil {
+					shortBlocked = map[string]string{}
+				}
+				shortBlocked[row.ID] = row.ID + " uses your Claude subscription; " + modelping.SubscriptionOffShort
 			}
 			return row
 		}
@@ -170,6 +179,23 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 			}
 		}
 		profileRows := wireProfileRows(allRows, r.slots, r.agent.Name, r.tags, r.family)
+		// A profile row's whole reason is its blocked slot's ("slot <slot>:
+		// <reason>"), composed by catalog, so its one-line form comes from the
+		// same resolution over a catalog carrying only the short reasons —
+		// never a second copy of the rule.
+		if len(shortBlocked) > 0 {
+			shortRows := slices.Clone(cat.Rows)
+			for i := range shortRows {
+				if short, ok := shortBlocked[shortRows[i].ID]; ok {
+					shortRows[i].BlockReason = short
+				}
+			}
+			for _, pr := range wireProfileRows(shortRows, r.slots, r.agent.Name, r.tags, r.family) {
+				if pr.Profile != nil && pr.Profile.Verdict == catalog.ActionBlock {
+					shortBlocked[pr.Model.ID] = pr.Profile.Reason
+				}
+			}
+		}
 		pinnedProfile := r.pinned != "" && slices.ContainsFunc(profileRows, func(pr catalog.Row) bool { return pr.Model.ID == r.pinned })
 		if r.pinned != "" && !pinnedProfile && strings.HasPrefix(r.pinned, profiles.SlotIDPrefix) {
 			// A profile the file holds says why it has no row: hidden by -T/-F,
@@ -221,9 +247,12 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 			msg.wire[e.ID] = cleanWireRow(e)
 		}
 		rows := wireTableRows(eligible, at)
+		for i := range rows {
+			rows[i].shortBlock = shortBlocked[rows[i].Model.ID]
+		}
 		byID := catalog.WireByID(cat.Rows)
 		for _, pr := range profileRows {
-			rows = append(rows, tableRow{Row: pr, at: at, slotTiers: wireSlotTiers(pr, byID)})
+			rows = append(rows, tableRow{Row: pr, at: at, slotTiers: wireSlotTiers(pr, byID), shortBlock: shortBlocked[pr.Model.ID]})
 		}
 		if store := newUsageStore(); store != nil {
 			ids := make([]string, len(rows))

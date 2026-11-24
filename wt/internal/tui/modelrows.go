@@ -46,6 +46,11 @@ type tableRow struct {
 	// by slot, for the slots whose model is rated.
 	tier      tiers.Entry
 	slotTiers map[string]string
+	// shortBlock is the mode line's one-line form of a blocked row's reason,
+	// used only when the full reason does not fit there (a blocked Claude
+	// subscription row's decision 2 message is cut before its fix at 80
+	// columns, #699). "" keeps the full reason.
+	shortBlock string
 }
 
 // costModel is the model a row is priced as: its own, or for a slot-profile

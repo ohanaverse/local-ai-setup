@@ -214,7 +214,7 @@ func renderTable(rows []tableRow, agent string, refs map[string]int, lastID stri
 		it := &modelItem{model: r.Model, line: cols.Line(cells), cells: cells, cols: cols, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID], cost: costNote(r), tier: r.tier.Notes()}
 		switch r.Action() {
 		case catalog.ActionBlock:
-			it.blocked = r.BlockReason()
+			it.blocked, it.blockedShort = r.BlockReason(), r.shortBlock
 		case catalog.ActionStart:
 			it.start = true
 		}

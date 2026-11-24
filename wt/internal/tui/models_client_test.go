@@ -17,6 +17,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
@@ -721,6 +722,27 @@ func TestPickerSaysDecisionTwoForABlockedSubscriptionRow(t *testing.T) {
 		}
 	}
 
+	// At 80 columns the whole message is cut before its fix, so the mode line
+	// says the short form (#699) and Enter still sets the whole one.
+	{
+		f := &fakeModels{cat: subscriptionCatalog(), subOff: subscriptionOffMessage}
+		m := remoteModel(t, f, 80, 24)
+		m, cmd := m.enterModelPhaseForAgent()
+		m = settle(t, m, cmd)
+		m.models.Select(indexOfID(m, "claude-haiku-5-5"))
+		v := plain(m)
+		if want := "blocked: claude-haiku-5-5 uses your Claude subscription; " + modelping.SubscriptionOffShort; !strings.Contains(v, want) {
+			t.Errorf("80 columns: the mode line does not say %q:\n%s", want, v)
+		}
+		if strings.Contains(v, subscriptionOffMessage) {
+			t.Errorf("80 columns: the whole message is in the line, not the short form:\n%s", v)
+		}
+		it, _ := m.models.SelectedItem().(*modelItem)
+		if it == nil || !strings.Contains(it.blocked, subscriptionOffMessage) {
+			t.Errorf("Enter's reason = %+v, want the whole message", it)
+		}
+	}
+
 	// A slot-profile row whose slot is the blocked subscription row says it
 	// too, as that launch's guard does.
 	sc := subscriptionCatalog()
@@ -729,14 +751,25 @@ func TestPickerSaysDecisionTwoForABlockedSubscriptionRow(t *testing.T) {
 	pf.subOff = subscriptionOffMessage
 	pm, cmd := pm.enterModelPhaseForAgent()
 	pm = settle(t, pm, cmd)
-	profileReason := ""
+	var profile *modelItem
 	for _, it := range pm.models.Items() {
 		if mi, ok := it.(*modelItem); ok && mi.profile != nil {
-			profileReason = mi.profile.Reason
+			profile = mi
 		}
 	}
-	if !strings.Contains(profileReason, "claude-haiku-5-5 uses your Claude subscription, but "+subscriptionOffMessage) {
-		t.Errorf("profile row reason = %q, want decision 2's message", profileReason)
+	if profile == nil {
+		t.Fatal("no slot-profile row")
+	}
+	if !strings.Contains(profile.profile.Reason, "claude-haiku-5-5 uses your Claude subscription, but "+subscriptionOffMessage) {
+		t.Errorf("profile row reason = %q, want decision 2's message", profile.profile.Reason)
+	}
+	// Its whole reason is the slot's, so its short form is that slot's too,
+	// and Enter keeps the whole one.
+	if want := "slot sonnet: claude-haiku-5-5 uses your Claude subscription; " + modelping.SubscriptionOffShort; profile.blockedShort != want {
+		t.Errorf("profile row short form = %q, want %q", profile.blockedShort, want)
+	}
+	if !strings.Contains(profile.blocked, subscriptionOffMessage) {
+		t.Errorf("profile row Enter reason = %q, want the whole message", profile.blocked)
 	}
 
 	// A pinned subscription model the server blocks says it too.
