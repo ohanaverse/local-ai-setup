@@ -171,6 +171,24 @@ func (m model) answerAsk(a askAnswer) (model, tea.Cmd) {
 	return s.bind(next)
 }
 
+// askHintLine is the popup's key hints: choiceFrame's enter and esc plus the
+// y/n shortcuts updateAsk answers, worded as what each key does on this
+// popup. The n label reads the same predicate updateAsk reads (skip != nil):
+// decline on the gate, launch unprofiled on the profile popup. choiceFrame
+// itself stays untouched — it also lays out the replace and ollama dialogs,
+// which have no y/n — and the list's own help never names y/n, so this line
+// is their only in-UI discovery (style guide T5; TestAskHintsMatchTheHandlers
+// holds it to the handlers).
+func (m *model) askHintLine() string {
+	hints := []string{"[enter] choose", "[y] launch"}
+	if m.ask.skip != nil {
+		hints = append(hints, "[n] launch w/o profile")
+	} else {
+		hints = append(hints, "[n] decline")
+	}
+	return clip(strings.Join(append(hints, "[esc] back"), "   "), m.width)
+}
+
 // askFrames are the popup's layouts: the title and body (wrapped, never
 // clipped mid-word, the way replaceFrames wraps its question) above the
 // choices, with the key hints; a terminal too short for the hints loses them
@@ -188,7 +206,7 @@ func (m *model) askFrames() []listFrame {
 	}
 	header := clip(strings.Join(lines, "\n"), m.width)
 	return []listFrame{
-		func(listView string) string { return header + "\n" + m.choiceFrame()(listView) },
+		func(listView string) string { return header + "\n" + listView + "\n" + m.askHintLine() },
 		func(listView string) string { return header + "\n" + listView },
 	}
 }

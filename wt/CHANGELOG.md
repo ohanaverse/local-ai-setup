@@ -124,9 +124,12 @@
   profile the person did not want could not be launched from the picker at
   all. `n` keeps the meaning it had in the raw `/dev/tty` prompt this popup
   replaced ("no, do not apply it, launch anyway"); going back is `esc` or the
-  last item, and `q`/`ctrl+c` decline and quit wt. The carried answer still
-  reaches the applier as `(rp, false)`, so the released phase never asks
-  again.
+  last item, and `q`/`ctrl+c` decline and quit wt. Both ask popups' footer now
+  names every answer key with what it does: `[enter] choose`, `[y] launch`,
+  `[esc] back`, plus `[n] decline` on the gate and `[n] launch w/o profile` on
+  the profile popup — the `y`/`n` shortcuts are discoverable without the
+  changelog (style guide T5). The carried answer still reaches the applier as
+  `(rp, false)`, so the released phase never asks again.
 
 ### Added
 
