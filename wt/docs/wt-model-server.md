@@ -572,10 +572,24 @@ added), with its own warning, which names the models rather than the mode:
 Claude subscription models (<id>, …) are not routed: <hazard>
 ```
 
-Serve checks only at start. After changing the proxy's environment,
-`config.yaml` or its deployments (in the LiteLLM UI or its database), restart
-`wt-model serve`: a later sync that finds a hazard unroutes wt's rows but
-does not turn the mode off.
+While the mode is on, serve repeats the same check every minute (#697). The
+first time it finds a hazard it turns the mode off for the rest of the run, at
+once and for every reader: the ping stops advertising `subscription_passthrough`,
+a subscription row is blocked in the catalog, and the next header-mode request
+is a 403 `subscription_off`. A request already forwarded finishes. Serve prints
+one line, naming the hazard and never a value:
+
+```text
+wt-model: warning: subscription passthrough turned off while serving: <hazard> (fix it, then restart wt-model serve)
+```
+
+A check that finds nothing, or cannot be made (the proxy restarting or slow),
+changes nothing and prints nothing, as at the start. The mode never turns back
+on by itself: after fixing the proxy's environment, `config.yaml` or its
+deployments (in the LiteLLM UI or its database), restart `wt-model serve`. So
+a hazard that arrives while serve runs is noticed within about a minute; until
+then the gateway would forward a client's login as it did before. A sync that
+finds a hazard still unroutes wt's rows on its own.
 
 The hazards:
 

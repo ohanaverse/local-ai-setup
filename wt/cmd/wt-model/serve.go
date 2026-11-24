@@ -247,6 +247,11 @@ Exit codes:
 			// shutdown's route-settle step waits for, like a job's).
 			var startSync sync.WaitGroup
 			defer startSync.Wait()
+			// While the header mode is on, the start gate's check repeats
+			// (#697), so a hazard that comes after the start turns the mode
+			// off at once for the gateway, the ping and the catalog.
+			var watch sync.WaitGroup
+			defer watch.Wait()
 			return srv.Serve(cmd.Context(), func(addr string) {
 				// The record lands before the announce line, so whoever saw
 				// the line can read the record.
@@ -270,6 +275,18 @@ Exit codes:
 				}
 				for _, l := range subscriptionLines(addr, gw.SubscriptionPassthrough, st.Config != nil, st.Off) {
 					fmt.Fprintln(cmd.ErrOrStderr(), l)
+				}
+				if gw.SubscriptionPassthrough {
+					watch.Add(1)
+					go func() {
+						defer watch.Done()
+						watchSubscription(cmd.Context(), subscriptionRecheckEvery,
+							func(ctx context.Context) ([]string, error) {
+								hazards, _, err := litellm.SubscriptionHazards(ctx, litellm.PairedConfigPath(), h.ProxyEnv(), h.ModelInfo)
+								return hazards, err
+							},
+							srv.DisableSubscriptionPassthrough, cmd.ErrOrStderr())
+					}()
 				}
 				// After the announce line, so it stays the first line a
 				// script reads (S1).
@@ -577,6 +594,42 @@ func loopbackListen(addr string) bool {
 // subscriptionGateBound bounds serve's start-time hazard check: at login the
 // proxy may still be starting, and serve must not wait on it to listen.
 const subscriptionGateBound = 5 * time.Second
+
+// subscriptionRecheckEvery (a variable only so tests can shorten it) is how often serve re-runs the hazard check while
+// the header mode is on (#697): the longest a hazard that arrives after the
+// start leaves the mode on. The check reads config.yaml, the proxy's
+// environment and its /model/info, so a minute is cheap.
+var subscriptionRecheckEvery = time.Minute
+
+// watchSubscription re-runs the start gate's check every `every` until ctx
+// ends. The first tick that finds a hazard calls disable (the server's switch,
+// which the gateway, the ping and the catalog all read) and prints one line
+// naming it and the way back, then the watcher returns: the mode stays off for
+// the run, because a check that clears later is no proof the hazard did not
+// come and go. A check that finds no hazard, or cannot be made (the proxy
+// restarting, slow), changes nothing and says nothing, as the start gate
+// keeps the mode on for an unreadable proxy and leaves the routes to the sync.
+func watchSubscription(ctx context.Context, every time.Duration, check func(context.Context) ([]string, error), disable func() bool, errOut io.Writer) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		cctx, cancel := context.WithTimeout(ctx, subscriptionGateBound)
+		hazards, _ := check(cctx)
+		cancel()
+		if len(hazards) == 0 {
+			continue
+		}
+		if disable() {
+			fmt.Fprintln(errOut, "wt-model: warning: subscription passthrough turned off while serving: "+strings.Join(hazards, "; ")+" (fix it, then restart wt-model serve)")
+		}
+		return
+	}
+}
 
 // subscriptionGate is serve's start-time check of the proxy while the header
 // mode is switched on (decision 5): litellm.SubscriptionHazards over the

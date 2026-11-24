@@ -1007,3 +1007,75 @@ func TestGatewayHeaderModeThroughServer(t *testing.T) {
 		t.Errorf("upstream saw %d requests, want 1 (the on case only)", seen.Load())
 	}
 }
+
+// TestDisableSubscriptionPassthroughTurnsEveryReaderOff pins #697 at the
+// server: the ping, the catalog and the gateway all read the one switch, so
+// DisableSubscriptionPassthrough takes the mode off for each at once and for
+// the rest of the run (it is never turned back on while serving), and it says
+// whether it changed anything.
+func TestDisableSubscriptionPassthroughTurnsEveryReaderOff(t *testing.T) {
+	var seen atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Add(1)
+		_, _ = io.WriteString(w, `{"data":[]}`)
+	}))
+	defer up.Close()
+	u, _ := url.Parse(up.URL)
+	cfg := serverCfg()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: config.SubscriptionProvider, Location: config.LocationCloud})
+	cfg.Models = append(cfg.Models, config.Model{ID: "claude-haiku-5-5", Family: "claude", ProviderID: config.SubscriptionProvider, ModelName: "claude-haiku-5-5"})
+	s, err := NewServer(Options{
+		Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour,
+		Upstream: u, UpstreamKey: "upstream-key", SubscriptionPassthrough: true,
+	}, (&fakeLife{snap: serverSnap()}).deps(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	headerRequest := func() int {
+		req, _ := http.NewRequest("GET", ts.URL+"/v1/models", nil)
+		req.Header.Set("x-wt-model-token", testToken)
+		req.Header.Set("Authorization", "Bearer sk-ant-oat01-test")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	pingOn := func() bool {
+		_, b := call(t, ts, "GET", "/control/v1/ping", "")
+		return bytes.Contains(b, []byte("subscription_passthrough"))
+	}
+	rowAction := func() string {
+		st, b := call(t, ts, "GET", "/control/v1/resolve?model=claude-haiku-5-5", "")
+		if st != http.StatusOK {
+			t.Fatalf("resolve = %d %s", st, b)
+		}
+		var r modelapi.Row
+		if err := json.Unmarshal(b, &r); err != nil {
+			t.Fatal(err)
+		}
+		return r.Action
+	}
+
+	if !s.SubscriptionPassthrough() || !pingOn() || headerRequest() != 200 || rowAction() != modelapi.ActionLaunch {
+		t.Fatal("the mode is not on at the start")
+	}
+	if !s.DisableSubscriptionPassthrough() {
+		t.Error("the first Disable reported no change")
+	}
+	if s.DisableSubscriptionPassthrough() {
+		t.Error("the second Disable reported a change")
+	}
+	if s.SubscriptionPassthrough() || pingOn() {
+		t.Error("the ping still advertises the passthrough")
+	}
+	if got := headerRequest(); got != http.StatusForbidden {
+		t.Errorf("a header request after Disable: status %d, want 403", got)
+	}
+	if got := rowAction(); got != modelapi.ActionBlock {
+		t.Errorf("the subscription row after Disable: action %q, want block", got)
+	}
+}

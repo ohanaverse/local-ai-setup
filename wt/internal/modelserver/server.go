@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -81,6 +82,11 @@ type Server struct {
 	routedMu  sync.Mutex
 	routedAt  time.Time
 	routedSet map[string]bool
+	// subscription is whether the gateway's header mode is on now: Options'
+	// SubscriptionPassthrough at the start, and false for good once
+	// DisableSubscriptionPassthrough has seen a hazard (#697). The ping, the
+	// catalog and the gateway all read it, so they never disagree.
+	subscription atomic.Bool
 }
 
 // serverOption adjusts a Server in NewServer (test seams only).
@@ -102,6 +108,7 @@ func NewServer(o Options, d Deps, opts ...serverOption) (*Server, error) {
 	// the registry expands aliases from the config each read loaded.
 	d = tapConfig(d, sessions)
 	s := &Server{o: o, d: d, sessions: sessions, autoStopEvery: autoStopEvery, routedTTL: routedTTL}
+	s.subscription.Store(o.SubscriptionPassthrough)
 	s.jobs = modeljobs.NewManager(d.Now)
 	s.stopper = &AutoStopper{Deps: d, Sessions: s.sessions, Grace: o.IdleGrace, Jobs: s.jobs}
 	for _, opt := range opts {
@@ -109,6 +116,23 @@ func NewServer(o Options, d Deps, opts ...serverOption) (*Server, error) {
 	}
 	s.handler = s.routes()
 	return s, nil
+}
+
+// SubscriptionPassthrough reports whether the gateway's header mode is on
+// now: it starts as Options.SubscriptionPassthrough and is turned off, never
+// back on, by DisableSubscriptionPassthrough.
+func (s *Server) SubscriptionPassthrough() bool { return s.subscription.Load() }
+
+// DisableSubscriptionPassthrough turns the header mode off for the rest of
+// this run and reports whether it was on. serve calls it when a hazard check
+// made while serving finds what would make a keyless anthropic/ row unsafe
+// (#697): the ping stops advertising the mode, a subscription row is blocked
+// in the catalog and the next header-mode request is a 403. A request
+// already forwarded finishes. Turning the mode back on takes a restart, after
+// the host fixed the proxy: a check that clears is no proof the hazard did not
+// come and go.
+func (s *Server) DisableSubscriptionPassthrough() bool {
+	return s.subscription.CompareAndSwap(true, false)
 }
 
 // Handler returns the full HTTP handler (control API and gateway).
@@ -135,9 +159,9 @@ func (s *Server) routes() http.Handler {
 	// The gateway authenticates itself; it is not wrapped again.
 	root.Handle("/v1/", modelgateway.New(modelgateway.Config{
 		Upstream: s.o.Upstream, UpstreamKey: s.o.UpstreamKey, Token: s.o.Token,
-		AllowPaths:              modelgateway.InferencePaths,
-		SubscriptionPassthrough: s.o.SubscriptionPassthrough,
-		ErrorLog:                s.o.ErrorLog,
+		AllowPaths:         modelgateway.InferencePaths,
+		SubscriptionSwitch: &s.subscription,
+		ErrorLog:           s.o.ErrorLog,
 	}))
 	return root
 }
@@ -171,7 +195,7 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 func (s *Server) ping(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, modelapi.Ping{
 		APIMajor: modelapi.APIMajor, Schema: modelapi.SchemaVersion, Server: "wt-model",
-		SubscriptionPassthrough: s.o.SubscriptionPassthrough,
+		SubscriptionPassthrough: s.subscription.Load(),
 		TLSOff:                  s.o.TLSOff,
 	})
 }
@@ -222,14 +246,14 @@ func (s *Server) invalidatingRouted(run modeljobs.RunFunc) modeljobs.RunFunc {
 func (s *Server) catalog(w http.ResponseWriter, r *http.Request) {
 	cfg := s.d.Config()
 	snap := s.d.Inventory(cfg)
-	writeJSON(w, http.StatusOK, BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now(), CatalogOptions{SubscriptionOn: s.o.SubscriptionPassthrough}))
+	writeJSON(w, http.StatusOK, BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now(), CatalogOptions{SubscriptionOn: s.subscription.Load()}))
 }
 
 func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("model")
 	cfg := s.d.Config()
 	snap := s.d.Inventory(cfg)
-	cat := BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now(), CatalogOptions{SubscriptionOn: s.o.SubscriptionPassthrough})
+	cat := BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.routed(r.Context()), s.d.Now(), CatalogOptions{SubscriptionOn: s.subscription.Load()})
 	for _, row := range cat.Rows {
 		if row.ID == id {
 			writeJSON(w, http.StatusOK, row)

@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
@@ -49,9 +50,23 @@ type Config struct {
 	// TokenHeader forwards the client's claude.ai login. Off (the default),
 	// such a request is a 403 subscription_off.
 	SubscriptionPassthrough bool
+	// SubscriptionSwitch, when set, is read on every request in place of
+	// SubscriptionPassthrough: a server that turns the mode off while it runs
+	// (a hazard seen after start, #697) flips it, and the next header-mode
+	// request is a 403 subscription_off. The wt token alone (the token swap)
+	// never depends on it.
+	SubscriptionSwitch *atomic.Bool
 	// ErrorLog is the ReverseProxy's error logger (a test seam); nil is the
 	// standard logger, as before. The proxy logs only transport errors.
 	ErrorLog *log.Logger
+}
+
+// subscriptionOn is whether the header mode is on now.
+func (c Config) subscriptionOn() bool {
+	if c.SubscriptionSwitch != nil {
+		return c.SubscriptionSwitch.Load()
+	}
+	return c.SubscriptionPassthrough
 }
 
 // TokenHeader is the header-mode credential: the wt token, sent beside the
@@ -173,7 +188,7 @@ func authenticated(c Config, next http.Handler) http.Handler {
 			writeUnauthorized(w)
 			return
 		}
-		if !c.SubscriptionPassthrough {
+		if !c.subscriptionOn() {
 			writeForbidden(w, modelapi.MsgSubscriptionOff, modelapi.CodeSubscriptionOff)
 			return
 		}
