@@ -455,7 +455,12 @@ terminal it refuses: `approval missing: pass --accept-smaller-window (there is
 no terminal to ask); nothing was changed`, exit 3. `--dry-run` prints the
 targets, the window change and each database row the write would plan (row
 id, target, order and the 8-character hash `h8`, never the parameters),
-changes nothing and writes no row at all when no proxy pair is set.
+changes nothing and writes no row at all when no proxy pair is set. The rows
+and the targets left without one (a stopped local model, a Claude subscription
+model while its hazard check is blocked) come from the same planner as the
+write, so the preview says what the write does. When the database half cannot
+run (the proxy does not answer, `store_model_in_db` is off) the preview says
+so instead of rows, in the write's own words.
 
 `rm` removes the aliases and, through the sync that follows, their rows; the
 models they target are not touched. It asks on the terminal (`--yes` skips;
@@ -543,14 +548,16 @@ and writes through a symlink. A `config.toml` that does not parse is refused and
 left as it is. The file it replaces is first copied, byte for byte, to
 `backups/config.toml.bak-<date>-<time>` beside it (a 0700 directory, a 0600
 file), and the command prints that path. Like `litellm set`, a real write drops
-the file's hand comments. Asking for what the file already says prints
+the file's hand comments. Backups are never pruned, so a scripted toggle
+leaves one file per change in `backups/`; delete old ones by hand. Asking for what the file already says prints
 `already on; nothing was changed` and writes nothing, and `--dry-run` says what
 would change and writes nothing.
 
 A change takes effect when serve is restarted (`wt-model setup`, then `R`, or
 `launchctl kickstart -k gui/<uid>/local.wt-model.serve`); the command says so.
 With the mode on, serve checks the proxy for subscription hazards at start and
-then every minute, and keeps the mode off while it finds one
+then every minute, and turns the mode off at the first hazard (it stays off
+until serve is restarted)
 ([What keeps it off](wt-model-server.md#what-keeps-it-off)).
 
 Exit codes: `0` done (also when nothing needed changing), `1` any failure: a word

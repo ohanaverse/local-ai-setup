@@ -127,7 +127,10 @@ names a litellm credential or whose api_base or base_url is not exactly
 https://api.anthropic.com keeps the mode off with one warning naming it; a
 proxy that does not answer is one warning and the mode stays on (the route
 sync keeps the Claude subscription routes that exist and adds none until it
-can check).
+can check). While the mode is on, serve repeats that check every minute: the
+first hazard it finds turns the mode off for the rest of the run (the ping
+stops advertising it, a header-mode request is a 403 subscription_off) with
+one warning naming the hazard; it never turns back on without a restart.
 TLS is off (plain http) unless the same table names a PEM certificate and
 its key, both hand-edited, both or neither:
 
@@ -252,6 +255,12 @@ Exit codes:
 			// off at once for the gateway, the ping and the catalog.
 			var watch sync.WaitGroup
 			defer watch.Wait()
+			// The watcher ends with serve's context, and also when Serve
+			// returns on its own (a listener error leaves cmd.Context()
+			// live): watchCtx is cancelled first (defers run last-in
+			// first-out), so watch.Wait cannot hang.
+			watchCtx, stopWatch := context.WithCancel(cmd.Context())
+			defer stopWatch()
 			return srv.Serve(cmd.Context(), func(addr string) {
 				// The record lands before the announce line, so whoever saw
 				// the line can read the record.
@@ -280,7 +289,7 @@ Exit codes:
 					watch.Add(1)
 					go func() {
 						defer watch.Done()
-						watchSubscription(cmd.Context(), subscriptionRecheckEvery,
+						watchSubscription(watchCtx, subscriptionRecheckEvery,
 							func(ctx context.Context) ([]string, error) {
 								hazards, _, err := litellm.SubscriptionHazards(ctx, litellm.PairedConfigPath(), h.ProxyEnv(), h.ModelInfo)
 								return hazards, err

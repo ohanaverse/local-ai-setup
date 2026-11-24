@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -49,8 +50,8 @@ beside it (0700 directory, 0600 file). Asking for what the file already says
 writes nothing. serve must be restarted for the change to take effect.
 
 With the mode on, serve checks the LiteLLM proxy for what would make a keyless
-anthropic/ row unsafe, at start and then every minute, and keeps the mode off
-while it finds a hazard.
+anthropic/ row unsafe, at start and then every minute. The first hazard turns
+the mode off, and it stays off until serve is restarted.
 
 Flags:
   --dry-run   say what would change and write nothing
@@ -90,8 +91,22 @@ func restartHint() string {
 	return fmt.Sprintf("restart wt-model serve for it to take effect (wt-model setup, then R; or launchctl kickstart -k gui/%d/%s)", os.Getuid(), "local.wt-model.serve")
 }
 
+// readGatewaySwitch is config.GatewaySettings for a command that only needs
+// the switch: a TLS refusal (*config.GatewayKeyError, which keeps serve from
+// starting) does not stop it from showing or changing the switch, so the
+// operator can still turn the mode off. tlsErr is that refusal, "" when there
+// is none; any other error (a config.toml that does not parse) is returned.
+func readGatewaySwitch() (gw config.GatewayConf, warnings []string, tlsErr string, err error) {
+	gw, warnings, err = config.GatewaySettings()
+	var ke *config.GatewayKeyError
+	if errors.As(err, &ke) {
+		return gw, warnings, ke.Msg, nil
+	}
+	return gw, warnings, "", err
+}
+
 func runGatewayShow(out, errOut io.Writer) error {
-	gw, warnings, err := config.GatewaySettings()
+	gw, warnings, tlsErr, err := readGatewaySwitch()
 	if err != nil {
 		return err
 	}
@@ -104,7 +119,9 @@ func runGatewayShow(out, errOut io.Writer) error {
 	}
 	fmt.Fprintf(out, "gateway: %s\n", path)
 	fmt.Fprintf(out, "  subscription passthrough: %s\n", onOff(gw.SubscriptionPassthrough))
-	if gw.TLSCert == "" {
+	if tlsErr != "" {
+		fmt.Fprintf(out, "  tls: serve would refuse to start: %s\n", tlsErr)
+	} else if gw.TLSCert == "" {
 		fmt.Fprintln(out, "  tls: off (plain http)")
 	} else {
 		fmt.Fprintf(out, "  tls: %s (key %s)\n", gw.TLSCert, gw.TLSKey)
@@ -114,9 +131,12 @@ func runGatewayShow(out, errOut io.Writer) error {
 }
 
 func runGatewaySubscription(out, errOut io.Writer, on, dryRun bool) error {
-	cur, warnings, err := config.GatewaySettings()
+	cur, warnings, tlsErr, err := readGatewaySwitch()
 	if err != nil {
 		return err
+	}
+	if tlsErr != "" {
+		fmt.Fprintln(errOut, "wt-model: warning: "+tlsErr+" (serve will not start until it is fixed)")
 	}
 	for _, w := range warnings {
 		fmt.Fprintln(errOut, "wt-model: warning: "+w)
@@ -144,7 +164,7 @@ func runGatewaySubscription(out, errOut io.Writer, on, dryRun bool) error {
 	}
 	fmt.Fprintln(out, restartHint())
 	if on {
-		fmt.Fprintln(out, "serve checks the proxy for subscription hazards at start and then every minute, and keeps the mode off while it finds one.")
+		fmt.Fprintln(out, "serve checks the proxy for subscription hazards at start and then every minute, and turns the mode off at the first hazard; it stays off until serve is restarted.")
 	}
 	return nil
 }

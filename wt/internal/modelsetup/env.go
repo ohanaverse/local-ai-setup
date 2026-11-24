@@ -128,6 +128,11 @@ type Env struct {
 	Gateway func() GatewayState
 	// DesiredRoutes lists the model names the LiteLLM config should hold.
 	DesiredRoutes func(ctx context.Context) ([]string, error)
+	// TLSPair is serve's own check of the [gateway] tls_cert and tls_key pair
+	// at now: "" when serve would load it (or none is configured), else why it
+	// would refuse to start. It reads the private key, so it is an admin-side
+	// seam only. Nil is not asked (a test that does not care).
+	TLSPair func(now time.Time) string
 }
 
 // DefaultEnv is the real machine. Its launchctl, lsof and ps seams refuse in
@@ -141,6 +146,7 @@ func DefaultEnv() Env {
 		Net:     realNet{},
 		Host:    realHost{},
 		LiteLLM: realLiteLLM{},
+		TLSPair: realTLSPair,
 	}
 }
 

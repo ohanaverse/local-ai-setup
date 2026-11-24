@@ -61,9 +61,10 @@ const proxyHomeHeader = "# wt-model's configuration. [litellm] is written only b
 const defaultProxyKeyFile = "litellm.key"
 
 // proxyHomeDoc is the whole document of the home's config.toml: the
-// [litellm] table and the hand-edited [gateway] table, which SetProxy
-// re-encodes in full (a real write drops comments and any key outside this
-// type). The pointer distinguishes a present-but-empty [litellm] table —
+// [litellm] table and the [gateway] table (tls_cert and tls_key hand-edited,
+// subscription_passthrough written by SetGatewayPassthrough), which SetProxy
+// and SetGatewayPassthrough re-encode in full (a real write drops comments and
+// any key outside this type). The pointer distinguishes a present-but-empty [litellm] table —
 // authoritative, an empty pair — from absence, which falls back to the
 // legacy table. Gateway is a plain map so SetProxy round-trips whatever the
 // operator wrote, and a wrong-typed value there never breaks the [litellm]
@@ -603,7 +604,8 @@ func (e *GatewayKeyError) Error() string { return e.Msg }
 // ("true", 1) is off plus one warning naming the key and the type it needs:
 // off is the safe direction. tls_cert and tls_key fail closed instead: one
 // without the other, a wrong type or an empty value is a *GatewayKeyError.
-// A file that does not parse is an error, worded without any value from it.
+// A file that does not parse is an error, worded without any value from it;
+// a TLS refusal returns the switch and its warnings beside the error.
 // Only `wt-model gateway` writes it (subscription_passthrough alone,
 // SetGatewayPassthrough); tls_cert and tls_key are hand-edited.
 func GatewaySettings() (GatewayConf, []string, error) {
@@ -631,7 +633,10 @@ func GatewaySettings() (GatewayConf, []string, error) {
 	gc, warns := gatewayFromDoc(doc)
 	cert, key, err := gatewayTLSFromDoc(doc)
 	if err != nil {
-		return GatewayConf{}, nil, err
+		// The switch and its warnings come back beside a TLS refusal, so a
+		// command that only needs the switch (`wt-model gateway`) can still
+		// show and change it; a caller that needs the pair stops on err.
+		return gc, warns, err
 	}
 	gc.TLSCert, gc.TLSKey = cert, key
 	return gc, warns, nil

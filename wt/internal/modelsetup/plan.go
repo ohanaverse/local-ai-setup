@@ -290,6 +290,14 @@ func planLocal(st State, want Desired) (Plan, error) {
 	if r := modelmode.LocalTLSRefusal(st.State); r != "" {
 		reasons = append(reasons, r)
 	}
+	// A key pair serve itself would refuse (a loose key file, a key that is not
+	// the certificate's): found here, before the plan starts or restarts serve,
+	// and not in the LaunchAgent log after launchd's KeepAlive has looped on it
+	// (#698).
+	if st.TLSPair != "" {
+		reasons = append(reasons, reason("serve would refuse to start with the [gateway] TLS settings: "+st.TLSPair,
+			"fix tls_cert and tls_key under [gateway] in the wt-model home's config.toml, or remove both for plain http"))
+	}
 
 	// The plist path must be wt's or free. A key rotate writes only the
 	// LiteLLM plist and the pair, so it leaves a loaded agent plist that is not
