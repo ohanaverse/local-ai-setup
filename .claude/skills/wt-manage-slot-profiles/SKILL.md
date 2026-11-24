@@ -79,7 +79,7 @@ Present the proposals for one profile as a short table (slot, current model, pro
 wt profile slots set <name> --slot sonnet=<model-id> --slot haiku=<model-id>
 ```
 
-`set` also takes `--default <slot|opusplan>`, `--env K=V` and `--unset-env K`. It cannot change the comment above the entry; if a swap makes that comment wrong, say so and leave the edit to the user.
+`set` also takes `--default <slot|opusplan>`, `--context N` (the profile's own context window in tokens), `--env K=V` and `--unset-env K`. It cannot change the comment above the entry; if a swap makes that comment wrong, say so and leave the edit to the user.
 
 ## 4 Create
 
