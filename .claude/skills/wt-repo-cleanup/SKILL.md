@@ -16,7 +16,7 @@ A thin wrapper over the `wt` CLI. `wt` classifies and removes; this skill reads 
 
 Run from inside the repository (or `cd` there). Every command below is non-interactive.
 
-**1. Preview.** `wt worktrees --json` (fetches every remote first; `--no-fetch` skips that, then no origin row can be proven). Exit 0 means a list was produced; exit 1 means the repo could not be classified. Read `notes` BEFORE `rows`: it carries caveats such as a lowered `--min-age`, or a registry wt could not read (then removal is refused). Show the user the rows grouped by `status` with each row's `evidence`, `reasons[].detail` and `blockers[].detail`:
+**1. Preview.** `wt worktrees --json` (fetches every remote first; `--no-fetch` skips that, then no origin row can be proven). Exit 0 means a list was produced; exit 1 means the repo could not be classified. Read `notes` BEFORE `rows`: it carries caveats such as a lowered `--min-age`, a registry wt could not read (then removal is refused), or rescue records wt could not read (a rescued original may then show as unique work). Show the user the rows grouped by `status` with each row's `evidence`, `reasons[].detail` and `blockers[].detail`:
 
 | `status` | Tell the user |
 |---|---|
