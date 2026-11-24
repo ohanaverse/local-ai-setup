@@ -116,3 +116,29 @@ func TestGatewaySubscriptionRefusesAnUnreadableHome(t *testing.T) {
 		t.Errorf("the refused write changed the file: %q", got)
 	}
 }
+
+// TestGatewaySubscriptionWorksWithAnUnusableTLSPair pins that a TLS pair serve
+// would refuse (a lone tls_cert) does not lock the operator out of the switch:
+// the bare command still shows it and `subscription off` still writes it.
+func TestGatewaySubscriptionWorksWithAnUnusableTLSPair(t *testing.T) {
+	asWTModel(t)
+	seedProxyHome(t, "http://127.0.0.1:4000", "sk-test", 0o600)
+	enablePassthrough(t)
+	home := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "wt-model", "config.toml")
+	f, err := os.OpenFile(home, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("tls_cert = \"/c.pem\"\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	out, _, err := execWTModel(t, testHost(), "gateway")
+	if err != nil || !strings.Contains(out, "subscription passthrough: on") || !strings.Contains(out, "serve would refuse to start") {
+		t.Errorf("show: %v\n%s", err, out)
+	}
+	out, _, err = execWTModel(t, testHost(), "gateway", "subscription", "off")
+	if err != nil || !strings.Contains(out, "subscription passthrough: off (was on)") {
+		t.Errorf("off: %v\n%s", err, out)
+	}
+}
