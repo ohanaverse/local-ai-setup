@@ -199,9 +199,26 @@ func litellmLines(st modelsetup.State) []editorkit.Line {
 	return append(lines, editorkit.Line{Label: "", Text: "the salt key and provider keys are not checked", Tone: editorkit.ToneDim})
 }
 
+// gatewayRestartAfter is the restart advice in the gateway row and prompt:
+// x then s only in local mode, where those keys work.
+func gatewayRestartAfter(mode modelmode.Mode) string {
+	if mode == modelmode.ModeLocal {
+		return "restart serve after (x then s)"
+	}
+	return "restart serve after (launchctl bootout, then bootstrap)"
+}
+
+// gatewayRestartPrompt is the parenthesis of the g prompt.
+func gatewayRestartPrompt(mode modelmode.Mode) string {
+	if mode == modelmode.ModeLocal {
+		return "x then s here: bootout, bootstrap"
+	}
+	return "launchctl bootout, then bootstrap; x and s work only in local mode"
+}
+
 // gatewayLine is the status row of the home's [gateway] subscription switch
 // (#693): what the next serve start will use, and the command that changes it.
-func gatewayLine(g modelsetup.GatewayState) editorkit.Line {
+func gatewayLine(g modelsetup.GatewayState, mode modelmode.Mode) editorkit.Line {
 	onoff := "off"
 	if g.SubscriptionPassthrough {
 		onoff = "on"
@@ -209,7 +226,7 @@ func gatewayLine(g modelsetup.GatewayState) editorkit.Line {
 	if g.Err != "" {
 		return editorkit.Line{Label: "gateway", Text: "subscription passthrough read as " + onoff + ": " + editorkit.Scrub(g.Err), Tone: editorkit.ToneWarn}
 	}
-	return editorkit.Line{Label: "gateway", Text: "subscription passthrough " + onoff + " in config.toml; press g to turn it on or off (or `wt-model gateway subscription on|off`); restart serve after (x then s)", Tone: editorkit.ToneNone}
+	return editorkit.Line{Label: "gateway", Text: "subscription passthrough " + onoff + " in config.toml; press g to turn it on or off (or `wt-model gateway subscription on|off`); " + gatewayRestartAfter(mode), Tone: editorkit.ToneNone}
 }
 
 // setupStatusLines is the status block: the effective mode and where it
@@ -230,7 +247,7 @@ func setupStatusLines(st modelsetup.State, home string) []editorkit.Line {
 	lines = append(lines, agentLines(st)...)
 	lines = append(lines, modeview.ServerCheckLine(st.State))
 	lines = append(lines, litellmLines(st)...)
-	lines = append(lines, gatewayLine(st.Gateway))
+	lines = append(lines, gatewayLine(st.Gateway, st.Resolution.Mode))
 	lines = append(lines, plistModeLines(st, home)...)
 	if env, ok := modeview.EnvLine(st.State); ok {
 		lines = append(lines, env)
@@ -394,7 +411,7 @@ func (m *model) setupPromptView(bar string, dim lipgloss.Style) string {
 		if !st.gatewayOn {
 			word = "off"
 		}
-		text = "this writes [gateway] subscription_passthrough in the wt-model home's config.toml (a backup is made). serve reads it once, at start: restart it afterwards (x then s here: bootout, bootstrap)."
+		text = "this writes [gateway] subscription_passthrough in the wt-model home's config.toml (a backup is made). serve reads it once, at start: restart it afterwards (" + gatewayRestartPrompt(st.want.Mode) + ")."
 		return editorkit.PromptView(bar, text, "Turn subscription passthrough "+word+"? [y/N]", m.setupHints(), m.width, m.height, dim)
 	case promptReplaceRemote:
 		text = fmt.Sprintf("config.toml says remote: applying %s replaces its url and token. next: to use that server again, set remote on `wt config`'s Mode tab.", st.planWant.Mode)

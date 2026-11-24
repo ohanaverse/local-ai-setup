@@ -607,8 +607,15 @@ func (m *model) setupControlCmd(a modelsetup.ControlAction) tea.Cmd {
 
 // gatewayRestartText is what the tab says after the switch is written: serve
 // reads [gateway] once, at start, and a restart that reloads it is a bootout
-// and a bootstrap (x then s here), never a kickstart (#693).
-const gatewayRestartText = "serve must be restarted: press x then s (bootout/bootstrap)"
+// and a bootstrap (x then s here), never a kickstart (#693). s and x are
+// blocked unless the mode is local, so any other mode is told the launchctl
+// route instead of keys that would answer "choose local first".
+func gatewayRestartText(mode modelmode.Mode) string {
+	if mode == modelmode.ModeLocal {
+		return "serve must be restarted: press x then s (bootout/bootstrap)"
+	}
+	return "serve must be restarted (bootout, then bootstrap with launchctl; x and s work only in local mode)"
+}
 
 // startGateway is g: ask whether to turn the subscription switch the other
 // way. A blocked write says why, like a, s, x and R.
@@ -659,7 +666,7 @@ func (m *model) applySetupGateway(msg setupGatewayMsg) tea.Cmd {
 		if msg.res.Backup != "" {
 			st.status += "; backup " + msg.res.Backup
 		}
-		st.status += "; " + gatewayRestartText
+		st.status += "; " + gatewayRestartText(st.want.Mode)
 	}
 	return m.finishSetupWrite(msg.err == nil)
 }
