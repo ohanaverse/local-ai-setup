@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -31,13 +32,10 @@ type rmRepo struct {
 	dir string
 }
 
+// rmGit delegates to the shared runner (gittest.Git).
 func rmGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	b, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, b)
-	}
-	return strings.TrimSpace(string(b))
+	return gittest.Git(t, dir, args...)
 }
 
 // newRmRepo builds the repository with the developer's git config kept out
@@ -51,30 +49,8 @@ func newRmRepo(t *testing.T) *rmRepo {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
 	t.Cleanup(cleanup.StubPRBaseListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
-	root := t.TempDir()
-	origin, dir := filepath.Join(root, "origin.git"), filepath.Join(root, "repo")
-	if b, err := exec.Command("git", "init", "--bare", "-b", "main", origin).CombinedOutput(); err != nil {
-		t.Fatalf("init: %v\n%s", err, b)
-	}
-	if b, err := exec.Command("git", "clone", origin, dir).CombinedOutput(); err != nil {
-		t.Fatalf("clone: %v\n%s", err, b)
-	}
-	r := &rmRepo{t: t, dir: dir}
-	r.git("config", "user.email", "t@example.com")
-	r.git("config", "user.name", "T")
-	r.git("config", "commit.gpgsign", "false")
-	r.git("checkout", "-B", "main")
-	ex := r.git("rev-parse", "--path-format=absolute", "--git-path", "info/exclude")
-	if err := os.MkdirAll(filepath.Dir(ex), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(ex, []byte(".worktrees/\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	r.commit(dir, "README", "init")
-	r.git("push", "-u", "origin", "main")
-	r.git("remote", "set-head", "origin", "main")
-	return r
+	_, dir := gittest.NewRepo(t, true)
+	return &rmRepo{t: t, dir: dir}
 }
 
 func (r *rmRepo) git(args ...string) string { r.t.Helper(); return rmGit(r.t, r.dir, args...) }

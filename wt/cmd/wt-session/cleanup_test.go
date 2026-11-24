@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
 	"io"
 	"os"
 	"os/exec"
@@ -24,13 +25,10 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
+// cgit delegates to the shared runner (gittest.Git).
 func cgit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	b, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, b)
-	}
-	return strings.TrimSpace(string(b))
+	return gittest.Git(t, dir, args...)
 }
 
 func cleanupCommit(t *testing.T, dir, file, msg string) {
@@ -46,21 +44,8 @@ func cleanupCommit(t *testing.T, dir, file, msg string) {
 // pushed and origin/HEAD set. Each test gets its own.
 func cleanupRepo(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
-	origin, dir := filepath.Join(root, "origin.git"), filepath.Join(root, "repo")
-	if b, err := exec.Command("git", "init", "--bare", "-b", "main", origin).CombinedOutput(); err != nil {
-		t.Fatalf("init bare: %v\n%s", err, b)
-	}
-	if b, err := exec.Command("git", "clone", origin, dir).CombinedOutput(); err != nil {
-		t.Fatalf("clone: %v\n%s", err, b)
-	}
-	cgit(t, dir, "config", "user.email", "t@example.com")
-	cgit(t, dir, "config", "user.name", "T")
-	cgit(t, dir, "config", "commit.gpgsign", "false")
-	cgit(t, dir, "checkout", "-B", "main")
-	cleanupCommit(t, dir, "README", "init")
-	cgit(t, dir, "push", "-u", "origin", "main")
-	cgit(t, dir, "remote", "set-head", "origin", "main")
+	// No .worktrees exclusion: restore_root calls excludeWorktrees itself.
+	_, dir := gittest.NewRepo(t, false)
 	return dir
 }
 
