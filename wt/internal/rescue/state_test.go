@@ -89,4 +89,19 @@ func TestPreflightIgnoresAnEditBehindATrackedDirectoryReplacedByASymlink(t *test
 	if got := plan.fp.files["x/y.txt"]; got != "absent" {
 		t.Fatalf("fingerprint of x/y.txt = %q, want absent", got)
 	}
+
+	// The verify side: a destination with the same tracked file replaced by a
+	// symlink to the same outside directory (whose file was edited after the
+	// fingerprint) must match, because DestinationMatches uses the same hashPath.
+	dest := f.Worktree("dest")
+	f.Commit(dest, "x/y.txt", "tracked", "add x/y.txt")
+	if err := os.RemoveAll(filepath.Join(dest, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(out, filepath.Join(dest, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := plan.DestinationMatches(dest); err != nil || d != "" {
+		t.Fatalf("DestinationMatches = %q, %v; want a match despite the outside edit", d, err)
+	}
 }
