@@ -16,6 +16,22 @@ import (
 // config.yaml lock, which lifecycle writers wait for only briefly.
 const dbTimeout = 15 * time.Second
 
+// syncDBTimeout is the same bound for a Sync, which may move every wt row in
+// one write (the first sync after #694 moved 50 cloud rows in 13.9 s of the
+// 15 s above). A sync is a command or the serve start, not a start or stop
+// job a person waits on, and a hung proxy costs the lock holder this long at
+// most before the write falls back to the file.
+const syncDBTimeout = 60 * time.Second
+
+// syncDBBound is o with Sync's longer database deadline, unless a caller (a
+// test) already set one.
+func syncDBBound(o Options) Options {
+	if o.dbTimeout <= 0 {
+		o.dbTimeout = syncDBTimeout
+	}
+	return o
+}
+
 // dbRoutes is the database half of one route write (Options.Admin set). The
 // plan callback lists the database before planning, hands the local rows of
 // its plan to route, and returns to applyPlanned only what config.yaml must

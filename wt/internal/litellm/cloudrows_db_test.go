@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
@@ -451,5 +452,20 @@ func TestSaltKeyRefusalNamesTheKeyAndDeletesNothingUnlisted(t *testing.T) {
 	}
 	if n := fake.requests("POST /model/delete"); n != 0 {
 		t.Fatalf("%d deletes sent for rows the listing does not show", n)
+	}
+}
+
+// TestSyncGetsALongerDatabaseDeadlineThanAStart: a sync may move every wt row
+// in one write (50 rows took 13.9 s of the old 15 s on the live proxy), so its
+// bound is longer; a start's stays short, and a bound a caller set is kept.
+func TestSyncGetsALongerDatabaseDeadlineThanAStart(t *testing.T) {
+	if got := newDBRoutes(syncDBBound(Options{Admin: &AdminClient{}})).timeout; got != syncDBTimeout || got <= dbTimeout {
+		t.Fatalf("sync deadline %v, want %v (longer than %v)", got, syncDBTimeout, dbTimeout)
+	}
+	if got := newDBRoutes(Options{Admin: &AdminClient{}}).timeout; got != dbTimeout {
+		t.Fatalf("start deadline %v, want %v", got, dbTimeout)
+	}
+	if got := newDBRoutes(syncDBBound(Options{Admin: &AdminClient{}, dbTimeout: time.Second})).timeout; got != time.Second {
+		t.Fatalf("a caller's deadline was replaced: %v", got)
 	}
 }

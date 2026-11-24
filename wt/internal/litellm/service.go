@@ -118,7 +118,7 @@ type Options struct {
 	// path and Result.Warnings says why. nil is the file path for every
 	// row, exactly as before #598. The API calls run under the config.yaml
 	// lock this write already holds (no lock of their own) and share one
-	// deadline (15 s from Ctx, or from now when Ctx is nil). A database delete
+	// deadline (15 s from Ctx, or from now when Ctx is nil; 60 s for a Sync, which may move every row). A database delete
 	// that fails is an "unrouted" Outcome with Err, never a file fallback
 	// (config.yaml cannot remove a database row); a database row whose route
 	// config.yaml serves after the write is deleted (the file wins).
@@ -1237,6 +1237,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	// The one caller that reports the rows LiteLLM starts its own `ollama serve`
 	// for, so the one caller that pays for the scan (Options.reportOllamaServe).
 	o.reportOllamaServe = true
+	o = syncDBBound(o)
 	// aliasNote is decision 4's line when there is no database half at all
 	// (Options.Admin nil) and the registry has aliases.
 	var aliasNote string
