@@ -721,11 +721,29 @@ func TestPickerSaysDecisionTwoForABlockedSubscriptionRow(t *testing.T) {
 		}
 	}
 
+	// A slot-profile row whose slot is the blocked subscription row says it
+	// too, as that launch's guard does.
+	sc := subscriptionCatalog()
+	sub := sc.Rows[len(sc.Rows)-1]
+	pm, pf := slotRemoteTable(t, map[string]string{"sonnet": "claude-haiku-5-5"}, sub)
+	pf.subOff = subscriptionOffMessage
+	pm, cmd := pm.enterModelPhaseForAgent()
+	pm = settle(t, pm, cmd)
+	profileReason := ""
+	for _, it := range pm.models.Items() {
+		if mi, ok := it.(*modelItem); ok && mi.profile != nil {
+			profileReason = mi.profile.Reason
+		}
+	}
+	if !strings.Contains(profileReason, "claude-haiku-5-5 uses your Claude subscription, but "+subscriptionOffMessage) {
+		t.Errorf("profile row reason = %q, want decision 2's message", profileReason)
+	}
+
 	// A pinned subscription model the server blocks says it too.
 	f := &fakeModels{cat: subscriptionCatalog(), subOff: subscriptionOffMessage}
 	m := remoteModel(t, f, 160, 30)
 	m.pinnedModel = "claude-haiku-5-5"
-	m, cmd := m.enterModelPhaseForAgent()
+	m, cmd = m.enterModelPhaseForAgent()
 	m = settle(t, m, cmd)
 	if !strings.Contains(m.status, "uses your Claude subscription, but "+subscriptionOffMessage) {
 		t.Errorf("pin: phase %v status %q, want decision 2's message", m.phase, m.status)

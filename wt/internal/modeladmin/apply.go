@@ -174,9 +174,10 @@ const subscriptionLocationRefusal = "a claude-subscription model is served over 
 
 // checkSubscriptionAdd refuses a claude-subscription model whose name is not
 // a bare Claude id (a "/" would make its row anthropic/<prefix>/<name>; a
-// space, a control character or a "[" suffix such as "[1m]" is no API id) or
-// that has no context window: without one, claudeWindow withdraws the window
-// declaration of every profile the model is in.
+// space, a control character or a "[" suffix such as "[1m]" is no API id),
+// whose location is local (subscriptionLocationRefusal: its route is a cloud
+// one), or that has no context window: without one, claudeWindow withdraws
+// the window declaration of every profile the model is in.
 func checkSubscriptionAdd(req AddRequest) error {
 	if strings.ContainsFunc(req.ModelName, func(r rune) bool {
 		return r == '/' || r == '[' || r == ']' || unicode.IsSpace(r) || unicode.IsControl(r)

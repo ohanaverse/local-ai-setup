@@ -159,7 +159,17 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 		for i := range eligible {
 			eligible[i] = blockedAsOff(eligible[i])
 		}
-		profileRows := wireProfileRows(cat.Rows, r.slots, r.agent.Name, r.tags, r.family)
+		// The same rewrite over the whole catalog, so a slot-profile row whose
+		// slot is that blocked subscription row says it too (a profile is
+		// built from cat.Rows, and its launch's guard says decision 2).
+		allRows := cat.Rows
+		if subOff != "" {
+			allRows = slices.Clone(cat.Rows)
+			for i := range allRows {
+				allRows[i] = blockedAsOff(allRows[i])
+			}
+		}
+		profileRows := wireProfileRows(allRows, r.slots, r.agent.Name, r.tags, r.family)
 		pinnedProfile := r.pinned != "" && slices.ContainsFunc(profileRows, func(pr catalog.Row) bool { return pr.Model.ID == r.pinned })
 		if r.pinned != "" && !pinnedProfile && strings.HasPrefix(r.pinned, profiles.SlotIDPrefix) {
 			// A profile the file holds says why it has no row: hidden by -T/-F,
