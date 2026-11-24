@@ -423,7 +423,9 @@ lower `order` is tried first). Aliases live in a top-level `[[aliases]]`
 array of `registry.toml`, never in `[[models]]`: `id` and
 `targets = [{ model = "<registry id>", order = N }, ...]`, and nothing else
 (a `notes` key, or any unknown key, marks the alias malformed, and wt freezes
-it: reserved words are not accepted yet). `order` left out is the target's
+it: reserved words are not accepted yet). The one other key is `redirect_to =
+"alias/<new>"`, which `alias rename` writes in place of `targets` (an alias
+holds one or the other, never both); see **Renaming** below. `order` left out is the target's
 position, from 1. A target names exactly one registry model; no alias or native
 model is a target; at most one target is local. An alias id never equals a
 model id, and provider id `alias` and model ids under `alias/` are refused.
@@ -431,7 +433,8 @@ model id, and provider id `alias` and model ids under `alias/` are refused.
 ```bash
 wt-model alias list [--json]
 wt-model alias set <alias/name> --target ID[:ORDER]... [--accept-smaller-window] [--dry-run]
-wt-model alias rm <alias/name>... [--yes] [--force-in-use]
+wt-model alias rename <alias/old> <alias/new> [--dry-run]
+wt-model alias rm <alias/name>... | --finished [--yes] [--force-in-use]
 ```
 
 `list` needs neither a model server nor the proxy: ALIAS, TARGETS
@@ -444,9 +447,12 @@ command goes on with no counts, so `rm` then needs no `--force-in-use`; a
 server that is running but cannot be asked is one note ending `it is running
 (pid N), so an alias is not removed without --force-in-use`, and `rm` then
 needs `--force-in-use`, exit 3 without it) and ROUTED (`yes`, `no`, or `?` when the proxy
-pair is not set or the database cannot be read). `--json` prints one
+pair is not set or the database cannot be read). A **REDIRECT** column
+(`-> alias/new`) appears only while some alias is a redirect; a redirect's
+TARGETS are its target alias's. `--json` prints one
 document, [alias-list.sample.json](../../docs/contracts/alias-list.sample.json),
-with `null` for an unknown `context`, `sessions` or `routed`. An alias the
+with `null` for an unknown `context`, `sessions` or `routed`, and for
+`redirect_to` on an ordinary alias. An alias the
 registry cannot use is listed with a warning. No output carries a route's
 parameters.
 
@@ -473,7 +479,7 @@ models they target are not touched. It asks on the terminal (`--yes` skips;
 without either it refuses, exit 3). An alias that client sessions use also
 needs `--force-in-use`. When one id is not an alias none is removed.
 
-Exit codes of `set` and `rm`: 0 done (also when the routes could not be
+Exit codes of `set`, `rename` and `rm`: 0 done (also when the routes could not be
 written: a warning says so), 1 a plain error (a bad target, a refused alias,
 a failed registry write), 3 approval missing, nothing changed.
 
@@ -506,11 +512,34 @@ target is servable but any target can start; else `block`. The one
 exception to the warning: with no `config.yaml` at all (no LiteLLM set up on
 this machine) the write runs no sync and prints nothing.
 
-**Renaming** is not a command. The sequence: `wt-model alias set alias/new
---target ...` with the same targets, then `wt profile slots set` on each
-session machine to name the new id, and later `wt-model alias rm alias/old`
-once `alias list` shows no SESSIONS on it (rm refuses an alias in use without
-`--force-in-use`).
+**Renaming** (#687). `wt-model alias rename alias/old alias/new` makes one
+locked registry write: `alias/new` gets `alias/old`'s current targets, and
+`alias/old` becomes a **redirect**, `redirect_to = "alias/new"` with no
+`targets` of its own. A redirect routes to whatever its target alias targets,
+resolved at read time (`Config.AliasTargets`), so a later `alias set
+alias/new` moves both ids and the two cannot drift. The one route sync that
+follows leaves both ids with a row per live target (add first, so there is no
+gap and no proxy restart), and the catalog keeps `alias/old` launchable (its
+row carries `redirect_to`), so running sessions and unchanged slot profiles
+keep working. A rename never changes the window, so it asks nothing. The rules:
+one hop only (the target is a real alias that is not a redirect, and no other
+redirect points at the old id: remove those with `alias rm --finished`
+first), the new id must not exist, and an alias that a redirect points at is
+not removed until the redirect is (`alias rm alias/new` names the redirects;
+one `rm` of both works in either order). `--dry-run` prints the plan and the
+rows the sync would write. The output ends with the line for the session
+machines, `next, on each machine that launches slot profiles: wt profile slots
+repoint alias/old alias/new`: `wt-model` cannot reach another machine's
+`slot-profiles.toml`, so [repointing](wt-agents/slot-profiles.md#repointing-a-renamed-alias)
+is explicit. A slot launch on a redirect prints `wt: note: alias/old is
+renamed to alias/new; run 'wt profile slots repoint alias/old alias/new'` and
+goes on. Once no profile uses the old id, `wt-model alias rm --finished`
+removes every redirect no client session uses (it keeps and names the ones in
+use; with the running server's sessions unreadable it refuses, exit 3,
+unless `--force-in-use`, which also removes redirects in use); a plain
+`alias rm alias/old` works too, under the same in-use guard. An older
+`wt-model` reads a redirect as a malformed alias and freezes its rows
+(they keep routing, unchanged), which is safe: update the server first.
 
 **Upgrade order.** An older `wt-model` refuses every registry write once
 `[[aliases]]` exists, and ignores alias rows (its start, stop and sync neither

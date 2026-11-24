@@ -160,9 +160,10 @@ runs the alias's start (which also adds the alias's routes). An alias counts
 as local only when its lowest-order targets include its local target (the
 server sends any other alias as a cloud row, so a cloud-first group with a local
 fallback is not the profile's local model). A group is eligible for an agent only
-when every target's provider is one that agent can run. To rename an alias,
-add the new one, `wt profile slots set` each profile on each session machine,
-then `wt-model alias rm` the old one.
+when every target's provider is one that agent can run. To rename an alias, run
+`wt-model alias rename alias/old alias/new` on the model-server host (the old id
+stays as a redirect, so nothing breaks), then
+[`wt profile slots repoint`](#repointing-a-renamed-alias) on each session machine.
 
 ## When a profile is blocked
 
@@ -546,7 +547,7 @@ session.
 
 ## Managing the file
 
-Five subcommands of `wt profile slots` manage the file. Editing it by hand
+Six subcommands of `wt profile slots` manage the file. Editing it by hand
 stays valid; use the commands when you want a validated, backed-up edit, or
 let the `wt-manage-slot-profiles` skill (`.claude/skills/wt-manage-slot-profiles/`)
 drive them. Every write leaves a `.bak-<stamp>` backup beside the file; old
@@ -555,6 +556,7 @@ backups are not pruned, so delete them by hand.
 ```bash
 wt profile slots add <name> --slot <slot>=<model-id> [--slot …] [--default <slot>] [--env KEY=VALUE] [--comment "<text>"]
 wt profile slots set <name> [--slot <slot>=<model-id>] [--default <slot>] [--env KEY=VALUE] [--unset-env KEY]
+wt profile slots repoint <alias/old> <alias/new> [--dry-run]
 wt profile slots rm <name>
 wt profile slots usage [--json]
 wt profile slots candidates [--json] [--open-only] [--provider <id>[,<id>]] [--near <model-id>] [--per-provider N]
@@ -566,6 +568,7 @@ wt profile slots candidates [--json] [--open-only] [--provider <id>[,<id>]] [--n
   removes one. At least one of the four must be given. `rm` removes the
   entry and the comment block directly above it. Each prints the backup path
   (or `created <path>`), then the `wt profile list` slot section.
+- `repoint` is the client half of `wt-model alias rename` (#687), see below.
 - `usage` lists each profile in the file with its launches in the last 1, 7
   and 30 days, its last launch and its leading comment. Usage history is
   pruned at 30 days, so zero in the 30-day column means "not launched in 30
@@ -575,6 +578,33 @@ wt profile slots candidates [--json] [--open-only] [--provider <id>[,<id>]] [--n
   `--near <model-id>` it lists, per provider, the models scoring nearest to
   that one. Advisory only: nothing routes on a rank. `--json` also reports
   `tiers_generated_at` and `stale_sources`.
+
+### Repointing a renamed alias
+
+`wt-model alias rename alias/old alias/new` keeps `alias/old` routed as a
+redirect, so a profile that names it keeps launching, with one note per launch:
+`wt: note: alias/old is renamed to alias/new; run 'wt profile slots repoint
+alias/old alias/new'` (the picker shows the same line among its launch notes).
+Run that command on each machine that launches slot profiles; `wt-model` cannot
+reach another machine's file, so it is never automatic.
+
+```bash
+wt profile slots repoint alias/old alias/new --dry-run   # the profiles that would change
+wt profile slots repoint alias/old alias/new
+```
+
+It rewrites every slot value, and every `[profile.env]` value (`REMEMBER_MODEL`
+names a model), that equals `alias/old` to `alias/new`, in one locked,
+backed-up write with the same `.lock` and `.bak-<stamp>` as `slots set`, and
+prints the profiles it changed. `default` names a slot, not a model, so it is
+never touched; a profile that writes its slots as an inline table or dotted
+keys and names the old id is refused, like `set` (edit it by hand). With no
+profile on the old id it prints `no change: no slot profile uses alias/old` and
+writes nothing, so running it again, or on a machine that never used the id, is
+safe. It checks the new id against the server's catalog as `set` does (it must
+be a row, and not itself a redirect), but only when something would change.
+When no session uses the old id any more, `wt-model alias rm --finished` on
+the model-server host removes it.
 
 What a write guarantees:
 
@@ -682,6 +712,7 @@ the client's own config home.
 | `wt profile slots candidates` | yes: the ranking runs on the model-server host, which holds the registry and `tiers.toml`. Same `--json` document (`tiers_generated_at`, `stale_sources`, `candidates`) |
 | `wt profile slots add`, `set` | yes: a slot id must be a row of the server's catalog, a model or an alias (otherwise `profile "<name>" slot <slot> names "<id>", which is not a model or alias on the model server`). A server that does not answer fails the command (exit 1, `…; nothing was changed`) and the file is not touched |
 | `wt profile show -A <agent> -M profile/<name>` | yes: the verdict is resolved against the catalog. The preview shows the gateway origin and the client token masked (`***` plus its last four characters); the `[litellm]` url and key are never read |
+| `wt profile slots repoint` | only when a profile uses the old id (otherwise it says `no change` offline): the new id must be a row of the server's catalog and not itself a redirect |
 | `wt profile slots rm`, `usage` | no: both work offline, with no server and no registry |
 | `wt profile list` | no: it reports the static check only |
 
