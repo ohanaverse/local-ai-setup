@@ -8,7 +8,8 @@ LiteLLM** (the installed 1.109.1, port 14000) with its own scratch database `wt_
 Postgres 16 (dropped afterwards), its own master key and salt key, and two stand-in upstreams on ports 14101 and
 14102 (`upstream.py`). The restart and salt-key checks would have cut the live proxy's sessions, and the
 earlier spike used a scratch proxy for the same reason. Nothing of the real proxy, its database, its plist or
-any real key was read or changed. Every key below is the labelled sentinel `sk-spike-upstream-SENTINEL`.
+any real key was read or changed. Every key below is a labelled sentinel (`sk-spike-upstream-SENTINEL` for the
+upstream, `sk-spike-master` for the master key) or a `<placeholder>`.
 The scratch proxy was started as
 `env LITELLM_MASTER_KEY=sk-spike-master LITELLM_SALT_KEY=<salt> DATABASE_URL=postgresql://<user>@localhost:5432/wt_spike_694 WT_SPIKE_KEY=<sentinel> litellm --config config.yaml --port 14000`
 (the database URL needs the user; without it Prisma answers P1010). Its log shows one warning at start,

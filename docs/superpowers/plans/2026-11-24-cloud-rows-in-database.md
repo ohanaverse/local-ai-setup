@@ -20,7 +20,7 @@ Known from the code and the earlier phases (each is something a task builds on, 
 - A cloud row that `wt` writes to `config.yaml` carries the resolved secret value: `prepareModel`/`BuildEntry` resolves `provider.Auth.SecretRef` via `config.ResolveSecret` (`providerAPIKey`), even when that ref is `os.environ/<NAME>`. An `os.environ/<NAME>` reference survives only in a hand-written row (`DBModelFromRow` copies it verbatim). Phase 2's ruling for alias rows still applies: "cloud keys allowed in alias rows", compared by an HMAC stamp keyed with the proxy key, never by the params themselves (LiteLLM 1.109.1 strips `api_key` from what it lists, adds default params and answers a duplicate `/model/new` with HTTP 500). Decision 1 is therefore about what a migrated database row stores, not about restoring a ref that a wt-written file row already had.
 - The subscription hazard check (`SubscriptionHazards`) already reads the proxy's own listing (`/model/info`), which includes database rows, so a keyless `anthropic/` row in the database is seen by it as it is in the file.
 
-Not known; Task 0 measures each on the real proxy with a scratch row and records the result in `docs/superpowers/specs/` beside the earlier spikes:
+Measured by Task 0 (done 2026-11-24, on a scratch LiteLLM instead of the real proxy, as the Task 0 result below records); the answers are in `docs/superpowers/specs/2026-11-24-cloud-rows-in-database-spike/` beside the earlier spikes. The five questions, for the record:
 
 1. Does LiteLLM resolve an `os.environ/<NAME>` value in a database row's `api_key` at request time, from the proxy's own environment? If it does not, a database cloud row must carry the resolved key, which changes questions 2 and 3 and Decision 1.
 2. Where and how is a database row's key kept? LiteLLM encrypts stored credentials with `LITELLM_SALT_KEY`; what does `/model/info` and the spend log show for it? (The plan's Constraint: no secret in a log line, an error string or a test fixture other than a labelled sentinel.)
@@ -70,15 +70,15 @@ Each has a recommendation; none is made.
 
 ### Task 0: The live spike (before any code) — done 2026-11-24
 
-> **Result:** `docs/superpowers/specs/2026-11-24-cloud-rows-in-database-spike/README.md`. It ran on a scratch LiteLLM and database, not the real proxy (the restart and salt-key checks would have cut live sessions). All five questions are answered; a reference resolves in a database row, a different salt key hides every row and makes re-adding an id answer 500, and the migration order below is confirmed. **Decision 1's recommendation changes**, see below.
+> **Result:** `docs/superpowers/specs/2026-11-24-cloud-rows-in-database-spike/README.md`. It ran on a scratch LiteLLM and database, not the real proxy (the restart and salt-key checks would have cut live sessions). All five questions are answered; a reference resolves in a database row, a different salt key hides every row and makes re-adding an id answer 500, and the migration order is confirmed. **Decision 1's recommendation changes** (see Decision 1, above), and Tasks 3 and 4 gain the salt-key refusal this answer requires.
 
-Run on the real proxy with one scratch model name and a labelled sentinel key, removing everything after, and record the answers to the five open questions above in a new file under `docs/superpowers/specs/2026-11-24-cloud-rows-in-database-spike/`. Nothing else in this plan starts before it, because Decision 1 depends on question 1 and the migration's order on question 5.
+Ran with one scratch model name and a labelled sentinel key on a scratch LiteLLM (the deviation the result above names), with everything removed afterwards, recording the answers to the five questions above in `docs/superpowers/specs/2026-11-24-cloud-rows-in-database-spike/`. Nothing else in this plan starts before it, because Decision 1 depends on question 1 and the migration's order on question 5.
 
-- [ ] **Step 1:** Add a database row whose `api_key` is `os.environ/<NAME>` for a variable the proxy does and does not have; send one request each; record what LiteLLM does.
-- [ ] **Step 2:** List the rows and read one spend-log entry; record whether the key, the reference or neither appears.
-- [ ] **Step 3:** Restart the proxy through `bootout` and `bootstrap` (never `kickstart -k`, which keeps the old definition); record whether the row survives and answers.
-- [ ] **Step 4:** Add a `config.yaml` row and a database row under one `model_name`; record the grouping and which answers.
-- [ ] **Step 5:** `PATCH` a row's `api_base`; record the time to take effect and whether a stream already running finishes.
+- [x] **Step 1:** Add a database row whose `api_key` is `os.environ/<NAME>` for a variable the proxy does and does not have; send one request each; record what LiteLLM does.
+- [x] **Step 2:** List the rows and read one spend-log entry; record whether the key, the reference or neither appears.
+- [x] **Step 3:** Restart the proxy through `bootout` and `bootstrap` (never `kickstart -k`, which keeps the old definition); record whether the row survives and answers.
+- [x] **Step 4:** Add a `config.yaml` row and a database row under one `model_name`; record the grouping and which answers.
+- [x] **Step 5:** `PATCH` a row's `api_base`; record the time to take effect and whether a stream already running finishes (time recorded; a stream running through this spike's `PATCH` was not re-measured — the earlier spike answered it for an alias, and the result's "Not measured" list carries the rest).
 
 ### Task 1: Cloud rows join the database half's desired set
 
@@ -102,6 +102,8 @@ Run on the real proxy with one scratch model name and a labelled sentinel key, r
 ### Task 3: Migration of the wt-written cloud rows out of `config.yaml`
 
 > Migration note: today's migration predicate (`RowFamily(cfg, id) != ""`) excludes every cloud id, because `RowFamily` is `""` for cloud rows, so the pending add is left in `config.yaml` and any stray database row is deleted as a twin. This task must change that gate (and the standalone `ApplyChange`/`touchesLocal` notion that cloud rows never call the database) so a cloud row whose `config.yaml` entry is wt-written is migratable on the same add-first/confirm-then-remove ordering. Name the widened predicate in the plan and test a cloud id end to end.
+>
+> Salt-key note (Task 0 question 3b): under a changed `LITELLM_SALT_KEY` the listing is empty while the rows are still in the table, so the confirming add of a managed id answers HTTP 500. Treat "the listing is empty but adding a managed id answers 500" as a refusal that names the salt key as the likely cause, and never delete a row the listing does not show; deleting the stale id by its id is the repair (spike README, "What this changes in the plan", point 2).
 
 **Files:** `wt/internal/litellm/service.go`, `service_db.go`, tests.
 
@@ -114,7 +116,7 @@ Run on the real proxy with one scratch model name and a labelled sentinel key, r
 
 **Files:** `wt/internal/litellm/service.go`, `report.go`, tests.
 
-- [ ] **Step 1: Write failing tests:** with database models off, the proxy not answering, or no proxy pair, a cloud change takes today's file-plus-restart path and prints one warning naming the reason, and a model is never left unrouted; a database that comes back later migrates the rows on the next sync.
+- [ ] **Step 1: Write failing tests:** with database models off, the proxy not answering, or no proxy pair, a cloud change takes today's file-plus-restart path and prints one warning naming the reason, and a model is never left unrouted; a database that comes back later migrates the rows on the next sync. With a listing that is empty while adding a managed id answers HTTP 500 (the changed-salt case, Task 0 question 3b), the warning names the salt key as the likely cause and no row is deleted.
 - [ ] **Step 2:** Run them; expect FAIL. **Step 3:** Implement. **Step 4:** Run; expect PASS. **Step 5:** Commit.
 
 ### Task 5: The subscription gate over database rows
