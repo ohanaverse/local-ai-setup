@@ -221,8 +221,42 @@ func TestFetchTimeoutIsNamed(t *testing.T) {
 	// An upload-pack that sleeps holds the fetch past the timeout.
 	f.git("config", "remote.origin.uploadpack", "sleep 5; git-upload-pack")
 	r := Fetch(Git{Dir: f.Dir, Timeout: 200 * time.Millisecond})
-	if r.OK || !strings.Contains(r.Err, "timed out after 200ms") {
+	if r.OK || r.Err != "git fetch --prune origin timed out after 200ms" {
 		t.Fatalf("got %+v, want a failure naming the timeout", r)
+	}
+	// The remote listing has its own floor: the 200ms must not bind it.
+	if len(r.Remotes) == 0 {
+		t.Fatalf("got %+v, want the remotes listed despite the short timeout", r)
+	}
+}
+
+// TestFetchListingNotBoundByFetchTimeout gives a healthy repo a 1ns timeout.
+// Why: the one timeout is meant for the fetch; a tiny value must not make
+// `git remote` fail, so the failure names the fetch and the remotes are
+// still listed.
+func TestFetchListingNotBoundByFetchTimeout(t *testing.T) {
+	f := newFixture(t)
+	r := Fetch(Git{Dir: f.Dir, Timeout: time.Nanosecond})
+	if len(r.Remotes) == 0 || r.Remotes[0].Name != "origin" {
+		t.Fatalf("got %+v, want origin listed", r)
+	}
+	if strings.Contains(r.Err, "git remote") || !strings.Contains(r.Err, "git fetch --prune origin") {
+		t.Fatalf("got Err %q, want the failure to name the fetch", r.Err)
+	}
+}
+
+func TestTimedOutText(t *testing.T) {
+	for _, c := range []struct {
+		args string
+		d    time.Duration
+		want string
+	}{
+		{"remote", 30 * time.Second, "git remote timed out after 30s"},
+		{"fetch --prune origin", 200 * time.Millisecond, "git fetch --prune origin timed out after 200ms"},
+	} {
+		if got := timedOutText(c.args, c.d); got != c.want {
+			t.Errorf("timedOutText(%q, %s) = %q, want %q", c.args, c.d, got, c.want)
+		}
 	}
 }
 
