@@ -347,7 +347,7 @@ func detailBlock(rep cleanup.Report, row cleanup.Row, d *rowDetail, th themes.Th
 		add("sessions", strconv.Itoa(row.Sessions))
 	}
 	for _, tag := range cleanup.RowTags(row) {
-		if strings.HasPrefix(tag.Text, "held by session") {
+		if cleanup.IsHeldTag(tag) {
 			add("holder", cleanup.OneLine(tag.Text))
 		}
 	}
@@ -452,8 +452,14 @@ func detailWhy(rep cleanup.Report, row cleanup.Row) string {
 		parts = append(parts, text)
 	}
 	add := func(code, detail string) { say(cleanup.ReasonText(code, detail)) }
+	// The held reason (BlockHeld is the same code) is not repeated here: the
+	// labelled holder line above the Verdict names the session, so the hold is
+	// stated once (#581). cleanup.RowText keeps its wording for the picker's
+	// detail line and --plain, which show no tag.
 	for _, b := range row.Blockers {
 		switch b.Code {
+		case cleanup.ReasonHeld:
+			continue
 		case cleanup.BlockNested:
 			continue // the paths are on the list's detail line, not one per blocker
 		case cleanup.BlockCurrent:
@@ -469,6 +475,9 @@ func detailWhy(rep cleanup.Report, row cleanup.Row) string {
 		add(b.Code, b.Detail)
 	}
 	for _, r := range row.Reasons {
+		if r.Code == cleanup.ReasonHeld {
+			continue // the holder line above states it
+		}
 		add(r.Code, r.Detail)
 	}
 	return strings.Join(parts, "; ")

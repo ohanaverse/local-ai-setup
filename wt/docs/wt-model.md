@@ -574,7 +574,10 @@ The host's `[gateway]` table in the wt-model home's `config.toml`
 start (#693). Bare `gateway` shows it and changes nothing: whether the Claude
 subscription header mode is switched on, and which TLS pair serve speaks with
 (paths only). The Setup tab (`wt-model setup`) shows the same switch as its
-`gateway` status row.
+`gateway` status row, and its `g` key turns it on or off (the same writer,
+`Turn subscription passthrough on? [y/N]`, default No; the status line names the
+backup and the restart). `g` acts when the other write keys do: not while the tab
+is still reading, busy, or holding a `config.toml` that does not parse.
 
 `gateway subscription on|off` writes `subscription_passthrough`, the one key
 that has a writer; `tls_cert` and `tls_key` stay hand edits. It changes that
@@ -589,8 +592,12 @@ leaves one file per change in `backups/`; delete old ones by hand. Asking for wh
 `already on; nothing was changed` and writes nothing, and `--dry-run` says what
 would change and writes nothing.
 
-A change takes effect when serve is restarted (`wt-model setup`, then `R`, or
-`launchctl kickstart -k gui/<uid>/local.wt-model.serve`); the command says so.
+A change takes effect when serve is started afresh: a bootout then a bootstrap
+(in `wt-model setup` press `x` then `s`; or `launchctl bootout
+gui/<uid>/local.wt-model.serve`, then `launchctl bootstrap gui/<uid>
+~/Library/LaunchAgents/local.wt-model.serve.plist`); the command says so. A
+`kickstart` is not offered: it restarts the definition launchd already holds,
+and `R` is that restart.
 With the mode on, serve checks the proxy for subscription hazards at start and
 then every minute, and turns the mode off at the first hazard (it stays off
 until serve is restarted)

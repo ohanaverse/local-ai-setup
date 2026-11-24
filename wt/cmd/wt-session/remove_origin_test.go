@@ -6,15 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 )
 
 // originRepo is a repository whose origin (a local bare repo that git reaches
 // through url.insteadOf, so wt reads a GitHub-shaped URL and knows the own
 // repo) has a merged branch "topic" at main's tip with a merged PR at that
-// tip. It returns the clone and the bare origin's path.
-func originRepo(t *testing.T) (dir, bare string) {
+// tip, answered through a's gh hooks. It returns the clone and the bare
+// origin's path.
+func originRepo(t *testing.T, a *app) (dir, bare string) {
 	t.Helper()
 	dir = cleanupRepo(t)
 	bare = filepath.Join(filepath.Dir(dir), "origin.git")
@@ -24,13 +23,12 @@ func originRepo(t *testing.T) (dir, bare string) {
 	cgit(t, dir, "remote", "set-url", "origin", "https://github.com/o/r.git")
 	tip := cgit(t, dir, "rev-parse", "main")
 	merged := fmt.Sprintf(`[{"number":8,"state":"MERGED","headRefOid":%q,"baseRefName":"main","mergeCommit":{"oid":%q},"isCrossRepository":false,"headRepository":{"name":"r","nameWithOwner":"o/r"}}]`, tip, tip)
-	t.Cleanup(cleanup.StubPRListForTest(func(_, b string) ([]byte, error) {
+	a.hooks = ghHooks(a.hooks, func(_, b string) ([]byte, error) {
 		if b == "topic" {
 			return []byte(merged), nil
 		}
 		return []byte("[]"), nil
-	}))
-	t.Cleanup(cleanup.StubPRBaseListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
+	}, noPRs)
 	return dir, bare
 }
 
@@ -53,7 +51,7 @@ func originTip(t *testing.T, bare, branch string) string {
 func TestRemoveCmdOriginBranch(t *testing.T) {
 	t.Run("dry run", func(t *testing.T) {
 		a, _ := removeApp(t)
-		dir, bare := originRepo(t)
+		dir, bare := originRepo(t, a)
 		tip := originTip(t, bare, "topic")
 		stdout, _, err := runRemove(t, a, dir, "", "origin/topic", "--remote", "--dry-run", "--json")
 		env := decodeOne(t, stdout)
@@ -66,7 +64,7 @@ func TestRemoveCmdOriginBranch(t *testing.T) {
 	})
 	t.Run("--remote --yes deletes", func(t *testing.T) {
 		a, _ := removeApp(t)
-		dir, bare := originRepo(t)
+		dir, bare := originRepo(t, a)
 		tip := originTip(t, bare, "topic")
 		stdout, _, err := runRemove(t, a, dir, "", "origin/topic", "--remote", "--yes", "--json")
 		env := decodeOne(t, stdout)
@@ -79,7 +77,7 @@ func TestRemoveCmdOriginBranch(t *testing.T) {
 	})
 	t.Run("no --remote refuses whatever else is approved", func(t *testing.T) {
 		a, _ := removeApp(t)
-		dir, bare := originRepo(t)
+		dir, bare := originRepo(t, a)
 		tip := originTip(t, bare, "topic")
 		stdout, _, err := runRemove(t, a, dir, "", "origin/topic", "--yes", "--accept-loss", "--force", "-D", "--json")
 		env := decodeOne(t, stdout)
@@ -92,7 +90,7 @@ func TestRemoveCmdOriginBranch(t *testing.T) {
 	})
 	t.Run("--no-fetch refuses", func(t *testing.T) {
 		a, _ := removeApp(t)
-		dir, bare := originRepo(t)
+		dir, bare := originRepo(t, a)
 		tip := originTip(t, bare, "topic")
 		stdout, _, err := runRemove(t, a, dir, "", "origin/topic", "--remote", "--yes", "--no-fetch", "--json")
 		env := decodeOne(t, stdout)
@@ -105,7 +103,7 @@ func TestRemoveCmdOriginBranch(t *testing.T) {
 	})
 	t.Run("no terminal and no --yes", func(t *testing.T) {
 		a, _ := removeApp(t)
-		dir, bare := originRepo(t)
+		dir, bare := originRepo(t, a)
 		_, _, err := runRemove(t, a, dir, "", "origin/topic", "--remote")
 		if exitOf(err) != 3 || originTip(t, bare, "topic") == "" {
 			t.Fatalf("exit %d", exitOf(err))
@@ -115,10 +113,10 @@ func TestRemoveCmdOriginBranch(t *testing.T) {
 
 // lessSureOriginRepo is originRepo with no PR for the branch: its content is in
 // the base but nothing merged it, so after the fetch the row is known less_sure.
-func lessSureOriginRepo(t *testing.T) (dir, bare string) {
+func lessSureOriginRepo(t *testing.T, a *app) (dir, bare string) {
 	t.Helper()
-	dir, bare = originRepo(t)
-	t.Cleanup(cleanup.StubPRListForTest(func(_, _ string) ([]byte, error) { return []byte("[]"), nil }))
+	dir, bare = originRepo(t, a)
+	a.hooks.prList = noPRs
 	return dir, bare
 }
 
@@ -132,7 +130,7 @@ func lessSureOriginRepo(t *testing.T) (dir, bare string) {
 func TestRemoveCmdLessSureOriginBranch(t *testing.T) {
 	t.Run("--remote alone is refused", func(t *testing.T) {
 		a, _ := removeApp(t)
-		dir, bare := lessSureOriginRepo(t)
+		dir, bare := lessSureOriginRepo(t, a)
 		tip := originTip(t, bare, "topic")
 		stdout, _, err := runRemove(t, a, dir, "", "origin/topic", "--remote", "--yes", "--json")
 		env := decodeOne(t, stdout)
@@ -142,7 +140,7 @@ func TestRemoveCmdLessSureOriginBranch(t *testing.T) {
 	})
 	t.Run("--accept-loss alone is refused", func(t *testing.T) {
 		a, _ := removeApp(t)
-		dir, bare := lessSureOriginRepo(t)
+		dir, bare := lessSureOriginRepo(t, a)
 		tip := originTip(t, bare, "topic")
 		stdout, _, err := runRemove(t, a, dir, "", "origin/topic", "--accept-loss", "--yes", "--json")
 		env := decodeOne(t, stdout)
@@ -152,7 +150,7 @@ func TestRemoveCmdLessSureOriginBranch(t *testing.T) {
 	})
 	t.Run("both flags delete", func(t *testing.T) {
 		a, _ := removeApp(t)
-		dir, bare := lessSureOriginRepo(t)
+		dir, bare := lessSureOriginRepo(t, a)
 		tip := originTip(t, bare, "topic")
 		stdout, _, err := runRemove(t, a, dir, "", "origin/topic", "--remote", "--accept-loss", "--yes", "--json")
 		env := decodeOne(t, stdout)
@@ -162,7 +160,7 @@ func TestRemoveCmdLessSureOriginBranch(t *testing.T) {
 	})
 	t.Run("mixed batch refuses only the origin item", func(t *testing.T) {
 		a, _ := removeApp(t)
-		dir, bare := lessSureOriginRepo(t)
+		dir, bare := lessSureOriginRepo(t, a)
 		tip := originTip(t, bare, "topic")
 		p := mergedWorktree(t, dir, "other")
 		stdout, _, err := runRemove(t, a, dir, "", p, "origin/topic", "--remote", "--yes", "--json")
@@ -179,7 +177,7 @@ func TestRemoveCmdLessSureOriginBranch(t *testing.T) {
 // argument decides what is deleted on a server; guessing is not allowed.
 func TestRemoveCmdOriginArgumentMatching(t *testing.T) {
 	a, _ := removeApp(t)
-	dir, bare := originRepo(t)
+	dir, bare := originRepo(t, a)
 	cgit(t, dir, "branch", "origin/topic")
 	stdout, _, err := runRemove(t, a, dir, "", "origin/topic", "--remote", "--yes", "--json")
 	env := decodeOne(t, stdout)
@@ -193,7 +191,7 @@ func TestRemoveCmdOriginArgumentMatching(t *testing.T) {
 // batch is the normal use, and --remote must not leak to or from the others.
 func TestRemoveCmdOriginWithAWorktree(t *testing.T) {
 	a, _ := removeApp(t)
-	dir, bare := originRepo(t)
+	dir, bare := originRepo(t, a)
 	p := mergedWorktree(t, dir, "other")
 	stdout, _, err := runRemove(t, a, dir, "", p, "origin/topic", "--remote", "--yes", "--json")
 	env := decodeOne(t, stdout)
@@ -210,7 +208,7 @@ func TestRemoveCmdOriginWithAWorktree(t *testing.T) {
 func TestRemoveCmdOriginPromptNamesTheAudience(t *testing.T) {
 	a, _ := removeApp(t)
 	onTTY(t)
-	dir, bare := originRepo(t)
+	dir, bare := originRepo(t, a)
 	_, errOut, err := runRemove(t, a, dir, "n\n", "origin/topic", "--remote")
 	if exitOf(err) != 3 || originTip(t, bare, "topic") == "" {
 		t.Fatalf("exit %d after n", exitOf(err))
@@ -224,7 +222,7 @@ func TestRemoveCmdOriginPromptNamesTheAudience(t *testing.T) {
 		t.Fatalf("exit %d after y", exitOf(err))
 	}
 	// y alone, without --remote, deletes nothing.
-	dir2, bare2 := originRepo(t)
+	dir2, bare2 := originRepo(t, a)
 	_, _, err = runRemove(t, a, dir2, "y\n", "origin/topic")
 	if exitOf(err) != 2 || originTip(t, bare2, "topic") == "" {
 		t.Fatalf("exit %d without --remote", exitOf(err))

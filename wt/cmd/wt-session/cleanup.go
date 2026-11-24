@@ -74,10 +74,12 @@ func worktreesCmd(a *app) *cobra.Command {
 			"not be classified at all (not a repository, no default branch). With --json\n" +
 			"the one JSON document is printed on failure too.\n\n" +
 			"On a terminal the list is interactive and does not fetch when it opens (every\n" +
-			"remote's branches are listed from the refs already there; --fetch runs one\n" +
-			"`git fetch --all --prune`, capped at 5s, at the repository's root first, and\n" +
-			"the header says how it went); --plain, --json and a pipe fetch first (the\n" +
-			"per-remote way above) and print text.\n" +
+			"remote's branches are listed from the refs already there; --fetch\n" +
+			"fetches every remote, each with `git fetch --prune <remote>` as above, first,\n" +
+			"and the header says how it went; origin gets 120s and the others 30s); --plain,\n" +
+			"--json and a pipe fetch first the same way and print text. Every run that\n" +
+			"fetches first (and the list's F) also drops the claims of dead sessions;\n" +
+			"--no-fetch and a plain terminal open drop nothing.\n" +
 			"A branch younger than --min-age (default 10m, at least 1m) that sits at or\n" +
 			"behind the base is never proven merged: a brand-new branch looks merged. A\n" +
 			"value below 10m is named in the header, as is a registry wt could not read\n" +
@@ -98,7 +100,7 @@ func worktreesCmd(a *app) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "print the report as one JSON document (docs/contracts/cleanup-list.schema.json)")
-	c.Flags().BoolVar(&fetch, "fetch", false, "fetch every remote once before a terminal list (one git fetch --all --prune at the repository's root, capped at 5s; --json and --plain fetch first their own way, per remote, and --fetch adds nothing there)")
+	c.Flags().BoolVar(&fetch, "fetch", false, "fetch every remote once before a terminal list (git fetch --prune per remote, origin first; --json and --plain already fetch first the same way, so --fetch adds nothing there)")
 	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune on every remote first (the fetch --json and --plain run; together with --fetch it is a usage error)")
 	c.Flags().BoolVar(&plain, "plain", false, "print text even on a terminal")
 	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
@@ -124,21 +126,23 @@ func checkMinAge(cmd *cobra.Command, minAge time.Duration) error {
 // with from cwd: this process's session claim (so its own root launch does
 // not look like another's), the registered artifacts and four gh calls at a
 // time. label names the command in the claim ("wt-cleanup", "wt-remove").
-func cleanupInputs(cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
+// h supplies the per-call gh hooks (nil fields are the real gh), so a caller's
+// tests never swap the cleanup package's legacy seam globals (#565).
+func cleanupInputs(h hooks, cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
 	claim, err := sessionclaim.Self(cwd, "", label)
 	if err != nil {
 		// Never joined, only used to tell this process from the others: a
 		// claim that could not be timed at worst makes the root look held.
 		claim = sessionclaim.Claim{PID: os.Getpid(), Agent: label}
 	}
-	return cleanup.GatherInputs{CWD: cwd, Fetch: fetch, ProtectedPaths: protected, Claim: claim, Parallel: 4}
+	return cleanup.GatherInputs{CWD: cwd, Fetch: fetch, ProtectedPaths: protected, Claim: claim, Parallel: 4, PRList: h.prList, PRBaseList: h.prBaseList}
 }
 
 // cleanupListInputs is cleanupInputs for a caller that shows or acts on origin
 // rows (the list, `wt remove origin/...`): it also makes the per-branch
 // `gh pr list --base` query.
-func cleanupListInputs(cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
-	in := cleanupInputs(cwd, fetch, protected, label)
+func cleanupListInputs(h hooks, cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
+	in := cleanupInputs(h, cwd, fetch, protected, label)
 	in.OriginRows = true
 	return in
 }
@@ -158,7 +162,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 	// it: the header says protection is off (and a removal refuses).
 	protected, protErr := protectedPaths(a)
 	interactive := !f.json && !f.plain && isTerminalWriter(out)
-	in := cleanupListInputs(cwd, !f.noFetch, protected, "wt-cleanup")
+	in := cleanupListInputs(a.hooks, cwd, !f.noFetch, protected, "wt-cleanup")
 	if interactive {
 		// The list never fetches on open and shows every remote's branches.
 		in.Fetch, in.AllRemotes = false, true
@@ -185,6 +189,8 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 			}
 			return cleanupFail(out, f.json, repo, err)
 		}
+		// --fetch is the terminal run's fetch-first mode: the same gate.
+		pruneAfterFetch(snap.CommonDir, f.fetch)
 		report := cleanupReport(a, snap, f.minAge, protErr)
 		rm := cleanupRemoveFuncs(a, snap, in, f.minAge, protErr)
 		rm.Fill = func() (cleanup.Report, tui.RemoveFuncs, error) {
@@ -192,7 +198,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 			if err != nil {
 				return cleanup.Report{}, tui.RemoveFuncs{}, err
 			}
-			return cleanupReport(a, filled, f.minAge, protErr),
+			return withRecordNote(cleanupReport(a, filled, f.minAge, protErr)),
 				cleanupRemoveFuncs(a, filled, in, f.minAge, protErr), nil
 		}
 		return runCleanupList(report, a.theme, rm)
@@ -207,18 +213,12 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 	}
 	report := cleanupReport(a, snap, f.minAge, protErr)
 
+	// Every fetch-first run is a refresh and drops dead sessions' claims
+	// through the one gate (pruneAfterFetch); --no-fetch drops nothing.
+	pruneAfterFetch(snap.CommonDir, !f.noFetch)
+
 	switch {
 	case f.json:
-		if !f.noFetch {
-			// The fetch-first JSON run is one of the two paths that drop
-			// stale session claims (sessionclaim.Prune): an agent asking
-			// for a fresh report is its refresh, as the list's `F` is the
-			// user's (internal/tui's pruneStaleFirst holds the other call).
-			// A run told to fetch nothing (--no-fetch) drops nothing, and
-			// the plain text runs — which fetch first too — are not on the
-			// contract's two paths: they never prune.
-			_, _ = sessionclaim.Prune(snap.CommonDir)
-		}
 		b, err := cleanup.Encode(report)
 		if err != nil {
 			return cleanupFail(out, true, report.Repo, err)
@@ -227,6 +227,19 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		return err
 	}
 	return printCleanupPlain(out, report, time.Now())
+}
+
+// pruneAfterFetch is the one gate through which a fetch-first run drops stale
+// session claims (sessionclaim.Prune: only claims whose process is dead go).
+// Any run that asked for fresh state is a refresh: --json, --plain and a pipe
+// (unless --no-fetch), and a terminal run's --fetch. The list's `F` is the
+// interactive half of the same gate (internal/tui's pruneStaleFirst). Nothing
+// prunes on --no-fetch or when the terminal list simply opens. Best effort: a
+// prune failure never fails the listing.
+func pruneAfterFetch(commonDir string, fetched bool) {
+	if fetched && commonDir != "" {
+		_, _ = sessionclaim.Prune(commonDir)
+	}
 }
 
 // cleanupReport classifies snap now, with the registry's header note.
@@ -239,6 +252,21 @@ func cleanupReport(a *app, snap cleanup.Snapshot, minAge time.Duration, protErr 
 		report.Notes = append(report.Notes, "registry: none at "+cleanup.OneLine(config.RegistryPath())+"; no model artifacts are registered")
 	}
 	return report
+}
+
+// withRecordNote adds the tick list's one pointer to the rescue records, which
+// the list does not show as rows (they are a section of their own): a header
+// note naming where to read and prune them. Only the interactive list gets it;
+// --plain prints the block itself and --json carries the records.
+func withRecordNote(r cleanup.Report) cleanup.Report {
+	if n := len(r.Records); n > 0 {
+		word := "records"
+		if n == 1 {
+			word = "record"
+		}
+		r.Notes = append(r.Notes, fmt.Sprintf("%d rescue %s, see wt worktrees --plain / wt remove --record", n, word))
+	}
+	return r
 }
 
 // listRoot is the root the report is built from — the primary worktree's
@@ -291,8 +319,14 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	// terminal the streams name, exactly as `wt restore-root` does.
 	restoreRootFn := func(answer io.Reader, out, errOut io.Writer) error {
 		var got *rootmove.Outcome
-		err := restoreRootRunReport(answer, out, errOut, restoreRootFlags{}, in.CWD, func(o rootmove.Outcome) { got = &o })
-		return restoreRootHandOffResult(err, got)
+		var sig os.Signal
+		// restore-root fetched every remote before it asked anything, so
+		// the re-entry only re-reads (HandOffNote.Fetched, Reread) and its
+		// report shows this fetch's outcome, a failure included (#579).
+		fetched := false
+		err := restoreRootRunReport(hooks{prList: in.PRList, prBaseList: in.PRBaseList}, answer, out, errOut, restoreRootFlags{}, in.CWD, func(o rootmove.Outcome) { got = &o }, func(s os.Signal) { sig = s },
+			func(r cleanup.FetchResult) { in.Fetched, fetched = r, true })
+		return restoreRootHandOffResult(err, got, sig, fetched)
 	}
 	// reGather re-reads the repository (never fetching) and stands the list
 	// — and the engine, when there is one — on the fresh snapshot.
@@ -325,8 +359,17 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	detail := func(row cleanup.Row) cleanup.RowDetail {
 		return cleanup.ReadRowDetail(cleanup.Git{Dir: in.CWD}, row)
 	}
+	// reread is the re-entry after a hand-off that already fetched: the
+	// re-read alone, its report carrying in.Fetched (that hand-off's fetch).
+	reread := func() (cleanup.Report, error) {
+		fresh, err := reGather()
+		if err != nil {
+			return cleanup.Report{}, err
+		}
+		return cleanupReport(a, fresh, minAge, protErr), nil
+	}
 	if protErr != nil {
-		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Rescue: rescueRowFn, RestoreRoot: restoreRootFn, Detail: detail}
+		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Reread: reread, Rescue: rescueRowFn, RestoreRoot: restoreRootFn, Detail: detail}
 	}
 	eng = &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
 		Opts: removal.Options{Now: removeNow, Procs: removeProcs()}}
@@ -352,6 +395,7 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 			return cleanupReport(a, fresh, minAge, nil), nil
 		},
 		Refetch: refetch,
+		Reread:  reread,
 	}
 }
 
@@ -386,8 +430,24 @@ func rescueHandOffResult(err error, o *rescue.Outcome) error {
 
 // restoreRootHandOffResult is rescueHandOffResult for `R`: a root already on
 // the default (exit 0, refused outcome) and a finished move re-enter with a
-// status line too.
-func restoreRootHandOffResult(err error, o *rootmove.Outcome) error {
+// status line too. sig is the signal the move held through (nil when none):
+// it rides on a note's text in the words of the line already printed, so the
+// re-entry status carries the fact (#580). A plain error ends the session
+// with that line on the terminal already; the picker has no re-entry, and
+// drops the note, so its printed line is the record.
+func restoreRootHandOffResult(err error, o *rootmove.Outcome, sig os.Signal, fetched bool) error {
+	err = restoreRootHandOffNote(err, o)
+	var n *tui.HandOffNote
+	if errors.As(err, &n) {
+		n.Fetched = fetched
+		if sig != nil {
+			n.Text += fmt.Sprintf("; interrupted (signal %v): the move was not stopped", sig)
+		}
+	}
+	return err
+}
+
+func restoreRootHandOffNote(err error, o *rootmove.Outcome) error {
 	switch {
 	case err == nil && o != nil && o.Status == rescue.StatusMoved:
 		return &tui.HandOffNote{Text: "root restored to " + cleanup.OneLine(o.Plan.Default)}
@@ -562,6 +622,9 @@ func printCleanupPlain(w io.Writer, r cleanup.Report, now time.Time) error {
 			}
 			b.WriteString(strings.TrimRight(line, " ") + "\n")
 		}
+	}
+	if lines := cleanup.RecordLines(r); len(lines) > 0 {
+		b.WriteString("\n" + strings.Join(lines, "\n") + "\n")
 	}
 	_, err := io.WriteString(w, b.String())
 	return err

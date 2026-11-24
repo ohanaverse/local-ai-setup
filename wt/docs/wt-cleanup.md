@@ -48,9 +48,10 @@ JSON row also carries the `upstream` field), but they list only `origin`'s
 branches and those of remotes a local branch tracks; the terminal list shows
 every remote's. On a terminal the list does not fetch when it opens (`--fetch` fetches every remote first and the list's `F` fetches while
 it is open; `--json`/`--plain` fetch first unless
-`--no-fetch`). Stale session claims are dropped on the list's `F` refresh and on
-a fetch-first `--json` run only (`sessionclaim.Prune`; `--plain` fetches but
-never prunes, `--no-fetch` drops nothing, and the list's open drops nothing).
+`--no-fetch`). Stale session claims are dropped by every run that fetches first
+(`sessionclaim.Prune` through one gate): `--json`, `--plain` and a pipe unless
+`--no-fetch`, a terminal run's `--fetch`, and the list's `F`. `--no-fetch`
+drops nothing, and neither does opening the list.
 A row's line carries only what warns, so a row read as safe stays quiet: the
 `dirty`, `unpushed` and `upstream gone` badges (on a row that is not proven)
 and the root's drift badge below. The PR reads in the `PR#` column: `#N <state>`
@@ -95,7 +96,7 @@ stops at the ends).
 A **hard stop** is a state no flag overrides (the primary checkout, the
 directory you are in, a locked or nested worktree, a rebase or merge in
 progress, a registered model artifact, or an open PR on an `origin` branch
-or one that targets it); the row's `hard_stop` JSON field names it. A worktree whose directory is gone is refused too, but the JSON names it by reason `gates_unavailable`, not `hard_stop`. In the terminal list the hard stops, any `in_use` row, a worktree whose directory is gone and any remote row that is not a proven `origin` branch **lock** the row (`[-]`: it cannot be ticked, and `enter`, `x` and `d` refuse it with the reason; `o` is the exception — it deletes the row's `origin` ref, so it judges the lock of that ref, not of the local row it sits on; `r` and `R` never consult the lock — they copy or move work instead of removing). A local
+or one that targets it); the row's `hard_stop` JSON field names it. The `current` stop (the directory you are standing in) is never overridden and wt never removes the directory it runs in; its refusal reads `hard blocker: current (<path>); you are standing in it; run `wt remove <path>` from the repository root (<root>) or any directory outside it`, and the `wt-repo-cleanup` skill reports such a proven row as deferred and, only if you say yes, removes it last from the repository root. A worktree whose directory is gone is refused too, but the JSON names it by reason `gates_unavailable`, not `hard_stop`. In the terminal list the hard stops, any `in_use` row, a worktree whose directory is gone and any remote row that is not a proven `origin` branch **lock** the row (`[-]`: it cannot be ticked, and `enter`, `x` and `d` refuse it with the reason; `o` is the exception — it deletes the row's `origin` ref, so it judges the lock of that ref, not of the local row it sits on; `r` and `R` never consult the lock — they copy or move work instead of removing). A local
 branch or worktree with an open PR is not a hard stop: it reads unique work and
 needs `--accept-loss` and `-D`. A **floor** is a verdict ceiling the user can accept: a held
 session claim (`held`), the default branch (`default_branch`), an unknown
@@ -135,7 +136,8 @@ less sure, never proven.
 
 Apart from the fetch, which updates and prunes every remote's remote-tracking
 refs (`--no-fetch` skips it), listing writes no ref, index or working file.
-It reads the `wt rescue` records under `refs/wt/rescued/` (one `for-each-ref`).
+It reads the `wt rescue` records under `refs/wt/rescued/` (one `for-each-ref`)
+and lists them in a section of their own (see [Rescue records](#rescue-records)).
 The per-remote fetch (`--json`, `--plain` and a pipe) takes `origin` first
 and on its own (it alone drives classification, 120s), then every other
 remote concurrently with a shorter limit (30s); the header and
@@ -145,8 +147,9 @@ terminal and credential-manager prompts are off, and ssh runs with
 `-o BatchMode=yes` unless you set `GIT_SSH_COMMAND` or `core.sshCommand`
 yourself, in which case your ssh command is used as it is and any question it
 asks is yours. The terminal list's explicit fetches (`--fetch`, the list's
-`F`) are one `git fetch --all --prune`, capped at 5s, at the repository's
-root: one result for every remote at once, not one per remote.
+`F`) are the same per-remote fetch, run at the repository's root: the header
+names each remote's result, and a repository with no remote reads
+`fetch: skipped (no remotes)`.
 The merge-adds-nothing proof
 (`git merge-tree --write-tree`) may leave unreachable tree objects in the
 object store, which `git gc` collects. The `changes-in-base` proof creates
@@ -158,7 +161,7 @@ repository.
 
 | Flag | Effect |
 |---|---|
-| `--json` | Machine-readable report: [cleanup-list.schema.json](../../docs/contracts/cleanup-list.schema.json), sample [cleanup-list.sample.json](../../docs/contracts/cleanup-list.sample.json). Its `notes` array holds the caveats the text header prints (a lowered `--min-age`, artifact protection off, no registry); read it before acting on `rows`. |
+| `--json` | Machine-readable report: [cleanup-list.schema.json](../../docs/contracts/cleanup-list.schema.json), sample [cleanup-list.sample.json](../../docs/contracts/cleanup-list.sample.json). Its `notes` array holds the caveats the text header prints (a lowered `--min-age`, artifact protection off, no registry, unreadable rescue records: rescued originals then read as unique work); read it before acting on `rows`. |
 | `--no-fetch` | Skip the fetch (every remote, never prompting). A repository with no remote skips it anyway; the header says how it went, remote by remote. With the fetch skipped or failed no `origin` row can be proven. |
 | `--min-age <duration>` | A branch younger than this that sits at or behind the base is never proven merged (a brand-new branch looks merged). At least `1m` (less is a usage error, exit 1); a value below the default `10m` is named in the header. |
 | `--plain` | Text output on a terminal. |
@@ -257,14 +260,14 @@ On a terminal `wt worktrees` shows every row, locked or not, and acts only on a 
 | `enter` | remove the **ticked** rows (the confirm says "ticked") |
 | `i` | open the highlighted row's [detail screen](#the-detail-screen): everything known about it, and the actions that apply to it |
 | `x`, `d`, `o`, `r`, `R` | open that same screen on the highlighted row, unarmed; press the key again there to act |
-| `F` | `git fetch --all --prune` at the repository root, capped at 5s, then re-read; stale session claims are dropped |
+| `F` | `git fetch --prune <remote>` for every remote at the repository root (origin 120s, the others 30s), then re-read; stale session claims are dropped |
 | `q`, `esc` | quit (on the detail screen, `esc` goes back to the list) |
 
 The action on the second press is the one the screen lists. `x` removes the **selected** row alone (the confirm says "selected"; ticks are ignored), `d` as `x` with the worktree's unmerged branch also deleted (the confirm's `[ ] also delete unmerged branch` is seeded on), `o` deletes only the row's `origin` ref — never its worktree or local branch — as the remote-only item `wt remove origin/<name> --remote` builds, under the typed `delete origin`, `r` rescues the row and `R` restores the root (`rootmove.Offered`, below). A key the screen does not list still answers, with the refusal on its status line: a locked row refuses `x` and `d` with `cannot be removed: <its reason>`. `o` is the exception: it deletes the row's `origin` ref, so it judges that ref's lock instead of the local row's — a locked origin target answers `its origin ref cannot be removed: <the origin row's reason>`, and a row with no `origin` ref answers `o` on the status line with `o deletes the highlighted row's origin ref; this row has none` (a locked row with none answers `cannot be removed: <its reason>`). `r`, `R` and `F` ignore the lock entirely: they copy or move work and re-read, never remove. Confirmation (`cleanup_confirm.go`): `y` is accepted only when every entry is proven; anything else needs the typed word `delete`, an `origin` entry `delete origin`, and a held entry's line names `held by session <id>`. A confirmation for one row (one `x`, `d` or `o`) shows that row's [detail block](#the-detail-screen) above the prompt — the same lines `i` showed, plus the toggle and the approvals — and `esc` goes back to the detail screen, not to the list; a batch confirmation (`enter`) keeps the compact per-entry layout and `esc` goes back to the list.
 
 **`R` is offered only from the row.** `rootmove.Offered` (it reads the row, never git) refuses, each with its line on the status line: a row that is not the root ("only the root can be restored"), a bare repository, a root with no commit, a detached root, a root with no default branch ("no default branch to restore to"), a root already on the default ("root is already on <branch>"), a root with a merge, cherry-pick or revert in progress and a root whose state could not be read. The list's `R` runs the same interactive restore-root as `wt restore-root` run by hand (fetches every remote, asks `Move? [y/N]` and prints the `root_held` warning in that prompt when another session holds the root; it never passes `--yes`, so a held root is moved only after you answer `y`).
 
-**The session loop** (`RunCleanupList`). After `r` or `R` completes, the list is **re-entered** from a re-read report (`RemoveFuncs.Refetch`, which fetches), so one session can do several actions. A hand-off that changed nothing (declined at its `y/N`, or refused before anything was created) or finished also re-enters, with a one-line status naming what happened; a hand-off that failed midway, could not start, or a failed re-read ends the session and is returned, so its recovery text is the last thing printed. The removal log (every outcome of every pass, with each deleted branch's commit) prints each outcome exactly once: the ones not yet printed are flushed before each `r`/`R` hand-off (ctrl+c at its prompt ends wt) and the rest when the session ends. Re-entry is only for `r` and `R`: after a removal run, any key but `q` or ctrl+c on the results screen returns to the list re-read in the same program, and leaving it ends the session. `F` failing to re-read keeps the old rows and says why in one line; a failed *fetch* is not an error: the header reads `fetch: FAILED (...)` and the rows stay listed, judged as of the last fetch.
+**The session loop** (`RunCleanupList`). After `r` or `R` completes, the list is **re-entered** from a re-read report, so one session can do several actions. The re-read fetches (`RemoveFuncs.Refetch`) unless the hand-off already did: `R` fetches every remote itself, so after it the re-entry only re-reads (`RemoveFuncs.Reread`, chosen by the note's `Fetched`) and the header shows that fetch's result, a failure included; `r` does not fetch, so its re-entry does. The re-entered list opens with the cursor on the row you acted from (the top row when that row is gone). A hand-off that changed nothing (declined at its `y/N`, or refused before anything was created) or finished also re-enters, with a one-line status naming what happened (in `wt worktrees`, a signal that arrived during an `R` move shows on that status line too, as `interrupted (signal ...): the move was not stopped`); a hand-off that failed midway, could not start, or a failed re-read ends the session and is returned, so its recovery text is the last thing printed. The removal log (every outcome of every pass, with each deleted branch's commit) prints each outcome exactly once: the ones not yet printed are flushed before each `r`/`R` hand-off (ctrl+c at its prompt ends wt) and the rest when the session ends. Re-entry is only for `r` and `R`: after a removal run, any key but `q` or ctrl+c on the results screen returns to the list re-read in the same program, and leaving it ends the session. `F` failing to re-read keeps the old rows and says why in one line; a failed *fetch* is not an error: the header reads `fetch: FAILED (...)` and the rows stay listed, judged as of the last fetch.
 
 **The launch selector** (the picker `wt` shows at launch; `internal/tui/picker_rows.go`) is the same row list in launch mode. It opens the same detail screen on `i`, `x`, `d`, `o`, `r` and `R` and acts on the second press through the same `RemoveFuncs`; `enter` still launches the row and `n` makes a new worktree. While the `/` filter box is open it takes every printable key, so action keys act only with it closed. `r` and `R` end the picker (there is no re-entry loop there; their action runs after the screen closes, after the removal log so far has printed). Its ctrl+c cancels a confirmation and waits while a removal runs (only a list at rest quits); termination and hangup signals wait a removal run out too — remembered, with wt quitting once the run's outcomes have printed — and quit a list at rest, the same rule the manage list runs under. A PR lookup landing while a flow is open never swaps the removal functions under it: the swap waits for the list's return to rest. The picker's gather sets `OriginRows`, so `o` works there. Both screens end in a footer that lists the keys that work on the highlighted row, and only those (`i` on every row, `x d` on a row that is not locked, `o` when its origin ref can be removed, `r` and `R` where a rescue or a restore is offered, none of them on the `+ New worktree…` item); with the `/` input open it lists the input's own keys, and, with a query kept and the box closed, `esc clear filter`. Wide terminals get the full wording on one line; a narrower one wraps the hints onto two balanced lines, then shortens them; the footer is the last thing a short terminal gives up. The detail screen's own footer is built from its action list, so it can only offer what the screen does.
 
@@ -373,6 +376,28 @@ instead, fetching first. While removal runs, keys
 and ctrl+c wait until it ends, and so do termination and hangup signals in both screens — the picker's program forwards them to its list the way the manage program always has, so a signal mid-run is remembered and wt quits once the run's outcomes have printed. A confirmation's ctrl+c cancels it. The results screen shows
 every outcome and the same outcomes print again when wt exits.
 
+### Rescue records
+
+`wt worktrees --plain` and the terminal text end with a `Rescue records`
+block, and `--json` carries the same records as an additive `records` array
+([cleanup-list.schema.json](../../docs/contracts/cleanup-list.schema.json);
+absent when there are none). Records are not rows: the row kinds are
+unchanged and the tick list does not show them (its header carries one note,
+`N rescue records, see wt worktrees --plain / wt remove --record`; a records
+tab is a follow-up). One line per record:
+
+```
+  3f9c2a1b7d4e5f60  unused  30d old  from /path/to/.worktrees/spike  to rescued/spike  [no worktree matches it]
+```
+
+| Column | Meaning |
+|---|---|
+| id | the first 16 hex digits of the record commit (the ref is `refs/wt/rescued/<id>`); what `wt remove --record` takes |
+| status | `in_use`: a worktree still has the recorded path, branch (or detached HEAD) and head, or reads as rescued through this record. `recent`: younger than 7 days, or of unknown age. `unused`: neither |
+| age | days since the record commit was made |
+| from / to | the source worktree and the copy's branch; `(branch gone)` when the copy's branch no longer exists |
+
+
 ### `wt remove` arguments, output and exit codes
 
 An argument is a worktree path (relative to the current directory) or a local
@@ -395,6 +420,45 @@ and `--min-age` behave as for `wt worktrees`.
 | 1 | could not start: an argument matched no target or more than one, no default branch, a registry that did not load, a `--min-age` below `1m` |
 | 2 | some item was refused, skipped or failed, or a branch was kept because it moved or its state could not be read |
 | 3 | approval missing: no `--yes` and no terminal, or the prompt was declined; nothing was removed |
+
+### Pruning rescue records: `wt remove --record`
+
+```bash
+wt remove --record 3f9c2a1b7d4e5f60 --dry-run   # what would happen; changes nothing
+wt remove --record 3f9c2a1b7d4e5f60 --yes       # prune it
+wt remove --record <id> --yes --accept-loss     # a record younger than 7 days
+```
+
+Every argument is a record id or the full `refs/wt/rescued/<id>` ref (a
+worktree or branch target cannot be mixed in, and `--force`, `-D` and
+`--remote` are refused: they name other things). It deletes only the record's
+ref; the rescued commits stay in the repository until git's gc, and the result
+prints the commit and the command that puts the ref back
+(`git update-ref <ref> <commit>`). Rules, checked again immediately before the
+delete:
+
+- **In use is never prunable.** If a worktree still matches the record (same
+  path, branch or detached HEAD, and head), the record is `refused_in_use` and
+  no flag overrides it: it is the only copy of that worktree's rescued state.
+  A record whose source is gone, or has moved on, is unused.
+- **A record younger than 7 days (or of unknown age) needs `--accept-loss`**;
+  without it the outcome is `retained_recent`. The floor is a decision: a
+  fresh record is usually the only copy of just-rescued work. An old record
+  needs only `--yes` (or the y/N prompt, which names the source, the copy's
+  branch and the age).
+- A destination branch that no longer exists does not block the prune (the
+  record still pins commits, which is the point of pruning it); the prompt says so.
+- The delete is `update-ref -d` on the commit that was listed, so a record that
+  moved since is `skipped_changed`; the ref is then read back, and one that
+  exists again is not reported pruned.
+
+`--json` prints [remove-result.schema.json](../../docs/contracts/remove-result.schema.json)
+with `items: []` and a `records` array (`outcome`: `pruned`, `refused_in_use`,
+`skipped_changed`, `retained_recent` or `failed`; `commit` when the run issued
+the delete). Exit 0: every record pruned (a dry run: would be); 1: could not
+start (an argument that is no record, a forbidden flag); 2: some record was
+refused, retained, skipped or failed; 3: approval missing (no `--yes` and no
+terminal, or declined).
 
 The tick list exits 0 after a removal run, whatever the outcomes: they were
 on screen and are printed at exit, unless the repository could not be
@@ -507,12 +571,11 @@ match the record exactly: on a case-insensitive volume, a worktree whose HEAD
 spells the branch in a different case from the ref's spelling does not read
 removable (it fails closed; `--accept-loss` still works). Only the source of a
 rescue is ever preserved, never the copy. A record pins its objects until you
-remove it, and wt does not prune records yet (#543). To drop one after you have
-checked the copy:
-
-```bash
-git update-ref -d refs/wt/rescued/<id>
-```
+prune it: [`wt remove --record`](#pruning-rescue-records-wt-remove---record)
+does that after you have checked the copy, and `wt worktrees --plain` lists
+the records. The manual form, which skips every check below, is
+`git update-ref -d refs/wt/rescued/<id> <commit>` (the commit is the compare-and-swap value;
+keep it, because it is what restores the ref).
 
 Refused, with nothing created (JSON `code` in brackets): nothing to keep
 (`nothing_to_keep`); the primary checkout (`primary`; [`wt restore-root`](#wt-restore-root-move-the-roots-branch-into-a-worktree) moves its branch and work into a worktree); a rebase, merge
@@ -631,8 +694,10 @@ these steps; a `post-checkout` hook gets the same warning as in `wt rescue`.
 nothing uncommitted skips the copy and the record; it needs an unchanged
 fingerprint and a clean status to be released. Copying untracked files is the
 slow part: measured at about 17 ms per file (2000 untracked files took about
-34 s), with no progress output while it runs; this is an observed cost, not a
-promise.
+34 s). A copy of 100 or more files prints `copying untracked files: N of M`
+lines on stderr as it goes (in `wt rescue` and `wt restore-root` alike; not
+under `--json` or `--dry-run`, and never on stdout); this is an observed cost,
+not a promise.
 
 Refused, with nothing created (JSON `code` in brackets): a detached HEAD
 (`detached_root`; run `git switch -c <name>` first); a root already on the
@@ -703,8 +768,8 @@ instant between the last claim and record checks and the reset is lost, the
 same window as `wt remove` of a dirty rescued original (a carried untracked
 file edited then is kept). After the move the record names the root as its
 source, so `wt worktrees` does not list the new worktree as preserved by it.
-`wt rescue` still truncates its messages at 200 characters; `wt restore-root`
-prints reasons, warnings and steps in full.
+`wt rescue` and `wt restore-root` both print reasons, warnings and steps in
+full (one line, control characters stripped, no length cap).
 
 When the root is on a non-default branch, the launch warnings' hint is one
 line pointing here, printed by `cmd/wt-session`'s `confirmLaunch` and the picker's

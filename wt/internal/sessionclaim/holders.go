@@ -28,6 +28,11 @@ import (
 // run, and a reader that tidied up could delete a claim a concurrent Hold just
 // wrote. No wt-sessions directory means no holders.
 func Holders(commonDir string, self Claim) (map[string][]Claim, error) {
+	return Procs{}.Holders(commonDir, self)
+}
+
+// Holders is the package-level Holders with pr's process facts.
+func (pr Procs) Holders(commonDir string, self Claim) (map[string][]Claim, error) {
 	files, err := readClaims(filepath.Join(commonDir, "wt-sessions"))
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -42,12 +47,12 @@ func Holders(commonDir string, self Claim) (map[string][]Claim, error) {
 			continue
 		}
 		if mine == nil {
-			mine = ancestors()
+			mine = pr.ancestors()
 		}
 		if mine[f.c.PID] {
 			continue
 		}
-		if alive, _ := live(f.c); !alive {
+		if alive, _ := pr.live(f.c); !alive {
 			continue
 		}
 		holders[f.c.Path] = append(holders[f.c.Path], f.c)

@@ -112,7 +112,7 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 		case cur.newWorktree:
 			next.cursor = 0
 		default:
-			next.selectWhere(func(r cleanup.Row) bool { return keyOf(r) == keyOf(cur.row) })
+			next.seekRow(keyOf(cur.row))
 		}
 	}
 	next.settleCursor()
@@ -120,6 +120,14 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 	// fill or PR lookup lands under it), or closes when the row is gone.
 	next.settleDetail()
 	return next
+}
+
+// seekRow puts the cursor on the row with key, when the list has it, and
+// settles it off a filtered-out row; a missing row leaves the cursor alone.
+func (m *cleanupListModel) seekRow(key rowKey) bool {
+	found := m.selectWhere(func(r cleanup.Row) bool { return keyOf(r) == key })
+	m.settleCursor()
+	return found
 }
 
 // selectWhere moves the cursor to the first row pred accepts and reports

@@ -13,8 +13,13 @@ import (
 
 // Flow lays units out on lines of at most width runes, sep between two units
 // on a line. A line is broken only between units — never inside one, and so
-// never at a hyphen inside an id or a path — except that a unit longer than a
-// whole line is cut at the line's end.
+// never at a hyphen inside an id or a path.
+//
+// An oversized unit (longer than a whole line) is cut at the width, on
+// purpose: an unbroken word has no break point, and a cut at the line's end
+// is the only way to keep every line within the width; WrapText callers
+// (paths, ids) rely on that. A unit that has spaces is the caller's to wrap
+// first (WrapText, at its spaces) before it reaches Flow (#581).
 func Flow(units []string, sep string, width int) []string {
 	width = max(width, 1)
 	var lines []string

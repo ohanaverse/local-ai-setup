@@ -39,6 +39,12 @@ var serialIslands = map[string]string{
 // and is not counted, because its callers are (the `traceGit(` rule).
 // TestMain is skipped: it owns the process environment by design (it runs
 // before and after every test).
+//
+// Known blind spots, left unwidened on purpose: a wrapper helper that calls
+// t.Setenv on a *testing.T it was handed, or a *testing.T renamed away from
+// `t`, maps to no test; and a t.Setenv reached only through an alias
+// (`set := t.Setenv`) or a wrapper is invisible. Name such a test in
+// serialIslands by hand.
 func envOwningTests(file *ast.File) map[string]bool {
 	out := map[string]bool{}
 	for _, d := range file.Decls {

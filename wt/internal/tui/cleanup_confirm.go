@@ -53,13 +53,18 @@ type RemoveFuncs struct {
 	// Refetch fetches the remotes and re-reads the repository on the list's
 	// `F` and on the session's re-entry after an `r` or `R` hand-off,
 	// returning the fresh report the list is rebuilt from. Fetch at the
-	// report's repository root (worktree.FetchRemotes), so the header's
+	// report's repository root (cleanup.RecordFetch), so the header's
 	// refresh note advances; a fetch failure is not this error — it travels
 	// in the report's Fetch field, which the header renders. This error is
 	// the re-read's own failure: on `F` the list keeps its rows and says why,
 	// one line; on a re-entry it ends the session. nil: `F` says it is
 	// unavailable, and a hand-off cannot re-enter the list.
 	Refetch func() (cleanup.Report, error)
+	// Reread is Refetch without the fetch: the re-entry after a hand-off
+	// whose note says Fetched (it already fetched every remote), so one
+	// action does not fetch twice. The fetch's result is in the report's
+	// Fetch field as with Refetch. nil: the re-entry uses Refetch.
+	Reread func() (cleanup.Report, error)
 	// Off, when not "", is why removal is unavailable (the registry did not
 	// load): enter says it and nothing is previewed.
 	Off string
@@ -909,12 +914,13 @@ func refetchCmd(refetch func() (cleanup.Report, error), root string) tea.Cmd {
 // pruneStaleFirst wraps a `F` refresh's command (never nil) so the user's
 // refresh first drops the stale session claims in root's wt-sessions —
 // sessionclaim.Prune: the file of a dead or reused pid, or a malformed one —
-// then runs next (the fetch and the re-read) unchanged. This is the list
-// half of wt's prune contract and this package's single sessionclaim.Prune
-// call site: the list's refresh (this one key path, the picker's rows reload
-// and the manage list's re-read alike) and cmd/wt-session's fetch-first `--json` run
-// are the only two paths that prune — opening the list, the post-run re-read
-// and `--no-fetch` never drop a claim. All of it is best-effort: no readable
+// then runs next (the fetch and the re-read) unchanged. This is the
+// interactive half of the one prune gate (cmd/wt-session's pruneAfterFetch is
+// the other: every fetch-first run, --json, --plain, a pipe or --fetch) and
+// this package's single sessionclaim.Prune call site: the list's refresh
+// (this one key path, the picker's rows reload and the manage list's re-read
+// alike). Any run that asked for fresh state is a refresh; opening the list,
+// the post-run re-read and `--no-fetch` never drop a claim. All of it is best-effort: no readable
 // common directory, or a prune that fails, leaves the claims as they were
 // and the refresh runs anyway (the readers ignore a stale claim in display,
 // so nothing hangs on the drop).
@@ -1176,13 +1182,13 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []stri
 	out = append(out, m.decisionLines(e, "      ")...)
 	// The held naming (the design's "the remove confirmation names the
 	// holder"): a live wt session holding this worktree is named here in the
-	// list tag's own spelling — cleanup.RowTags' `held by session <id>`,
+	// list tag's own spelling — cleanup.RowTags' held tag (cleanup.HeldTagPrefix + the <id>),
 	// whose <id> is the held reason's claim description
 	// (sessionclaim.Describe's rendering, echoed and never re-rendered in
 	// this package). It is part of what the user decides on, so it sits in
 	// the decision part (keyN) that a tall entry keeps on screen.
 	for _, tg := range cleanup.RowTags(e.pv.Fresh) {
-		if strings.HasPrefix(tg.Text, "held by session") {
+		if cleanup.IsHeldTag(tg) {
 			out = append(out, wrapIndented(cleanup.OneLine(tg.Text), "      ", m.width)...)
 		}
 	}
