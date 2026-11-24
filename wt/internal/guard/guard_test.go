@@ -269,3 +269,185 @@ func TestUninstallNoHook(t *testing.T) {
 		t.Fatalf("Uninstall() error = %v", err)
 	}
 }
+
+// hookGit runs git in dir with extra environment and returns the combined
+// output and the error.
+func hookGit(t *testing.T, dir string, env []string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func mustGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if out, err := hookGit(t, dir, nil, args...); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// primaryWithCommit makes a repository with one commit (made before the hook
+// exists) and leaves the primary checkout on a branch named "work".
+func primaryWithCommit(t *testing.T) string {
+	t.Helper()
+	dir := inRepo(t)
+	mustGit(t, dir, "commit", "--allow-empty", "-m", "base")
+	mustGit(t, dir, "checkout", "-b", "work")
+	return dir
+}
+
+// v1 of the hook, as wt shipped it before the primary-checkout rule.
+const v1Hook = `#!/usr/bin/env bash
+# block-main-commit v1
+# Installed by wt. Blocks commits to main/master unless explicitly bypassed.
+set -euo pipefail
+branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+case "$branch" in
+    main|master)
+        if [ "${WT_SKIP_MAIN_BLOCK:-0}" = "1" ]; then
+            exit 0
+        fi
+        echo "block-main-commit: commits to '$branch' are blocked."
+        exit 1
+        ;;
+esac
+exit 0
+`
+
+// A commit on a named branch in the primary checkout is blocked, and the
+// message names the two commands that fix it (#560).
+func TestHookBlocksNamedBranchInPrimary(t *testing.T) {
+	dir := primaryWithCommit(t)
+	if _, err := Install(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := hookGit(t, dir, nil, "commit", "--allow-empty", "-m", "x")
+	if err == nil {
+		t.Fatalf("commit on a named branch in the primary checkout succeeded:\n%s", out)
+	}
+	for _, want := range []string{"wt restore-root", "wt -W <name>"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("message lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// The bypasses still work for the primary-checkout rule.
+func TestHookPrimaryRuleBypass(t *testing.T) {
+	dir := primaryWithCommit(t)
+	if _, err := Install(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := hookGit(t, dir, []string{"WT_SKIP_MAIN_BLOCK=1"}, "commit", "--allow-empty", "-m", "x"); err != nil {
+		t.Fatalf("WT_SKIP_MAIN_BLOCK=1 did not bypass: %v\n%s", err, out)
+	}
+	if out, err := hookGit(t, dir, nil, "commit", "--no-verify", "--allow-empty", "-m", "y"); err != nil {
+		t.Fatalf("--no-verify did not bypass: %v\n%s", err, out)
+	}
+}
+
+// A detached HEAD in the primary checkout is allowed.
+func TestHookAllowsDetachedInPrimary(t *testing.T) {
+	dir := primaryWithCommit(t)
+	mustGit(t, dir, "checkout", "--detach")
+	if _, err := Install(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := hookGit(t, dir, nil, "commit", "--allow-empty", "-m", "x"); err != nil {
+		t.Fatalf("detached commit blocked: %v\n%s", err, out)
+	}
+}
+
+// A linked worktree on a named branch is where work belongs: allowed. The
+// same hook (in the common dir) still blocks the primary checkout.
+func TestHookAllowsLinkedWorktree(t *testing.T) {
+	dir := primaryWithCommit(t)
+	if _, err := Install(); err != nil {
+		t.Fatal(err)
+	}
+	wtDir := filepath.Join(t.TempDir(), "linked")
+	mustGit(t, dir, "worktree", "add", "-b", "feature", wtDir)
+	if out, err := hookGit(t, wtDir, nil, "commit", "--allow-empty", "-m", "x"); err != nil {
+		t.Fatalf("commit in a linked worktree blocked: %v\n%s", err, out)
+	}
+	if _, err := hookGit(t, dir, nil, "commit", "--allow-empty", "-m", "y"); err == nil {
+		t.Fatal("primary checkout commit allowed beside a linked worktree")
+	}
+}
+
+// The main/master rule is unchanged, in a linked worktree too.
+func TestHookStillBlocksMainInLinkedWorktree(t *testing.T) {
+	dir := primaryWithCommit(t)
+	if _, err := Install(); err != nil {
+		t.Fatal(err)
+	}
+	wtDir := filepath.Join(t.TempDir(), "linked")
+	mustGit(t, dir, "worktree", "add", "-B", "main", wtDir) // -B: "main" may exist
+	out, err := hookGit(t, wtDir, nil, "commit", "--allow-empty", "-m", "x")
+	if err == nil || !strings.Contains(out, "commits to 'main' are blocked") {
+		t.Fatalf("main in a linked worktree not blocked: %v\n%s", err, out)
+	}
+}
+
+// A v1 hook still blocks main, so Check calls it Installed; Install upgrades
+// it in place (changed true), keeping a preserved original hook.
+func TestInstallUpgradesV1(t *testing.T) {
+	dir := inRepo(t)
+	hookPath := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	v1 := v1Hook + "\n# (preserved original pre-commit hook)\n#!/bin/sh\necho 'original hook'\n"
+	if err := os.WriteFile(hookPath, []byte(v1), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if Check() != Installed {
+		t.Fatal("Check() on a v1 hook is not Installed")
+	}
+	changed, err := Install()
+	if err != nil || !changed {
+		t.Fatalf("Install() = %v, %v; want true, nil", changed, err)
+	}
+	data, _ := os.ReadFile(hookPath)
+	s := string(data)
+	if !strings.Contains(s, marker) || strings.Contains(s, "block-main-commit v1") {
+		t.Fatalf("hook not upgraded to v2:\n%s", s)
+	}
+	if !strings.Contains(s, "echo 'original hook'") || strings.Count(s, "preserved original pre-commit hook") != 1 {
+		t.Fatalf("preserved tail lost or duplicated:\n%s", s)
+	}
+	if again, _ := Install(); again {
+		t.Fatal("second Install() changed the v2 hook")
+	}
+}
+
+// A v1 hook with no preserved tail upgrades to exactly the v2 hook.
+func TestInstallUpgradesBareV1(t *testing.T) {
+	dir := inRepo(t)
+	hookPath := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	if err := os.WriteFile(hookPath, []byte(v1Hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := Install(); err != nil || !changed {
+		t.Fatalf("Install() = %v, %v", changed, err)
+	}
+	data, _ := os.ReadFile(hookPath)
+	if string(data) != hookSrc {
+		t.Fatalf("bare v1 not replaced by the v2 hook:\n%s", data)
+	}
+}
+
+// Uninstall finds a v1 marker and restores its preserved tail.
+func TestUninstallV1(t *testing.T) {
+	dir := inRepo(t)
+	hookPath := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	foreign := "#!/bin/sh\necho 'original hook'\n"
+	if err := os.WriteFile(hookPath, []byte(v1Hook+"\n# (preserved original pre-commit hook)\n"+foreign), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(hookPath)
+	if string(data) != foreign {
+		t.Fatalf("restored = %q", data)
+	}
+}

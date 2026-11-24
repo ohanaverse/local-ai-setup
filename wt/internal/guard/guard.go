@@ -11,7 +11,15 @@ import (
 //go:embed hook.sh
 var hookSrc string
 
-const marker = "block-main-commit v1"
+const marker = "block-main-commit v2"
+
+// markerPrefix matches every version of the hook. A v1 hook (main/master
+// only) still blocks main, so Check reports it Installed; Install upgrades
+// it, and Uninstall removes it.
+const markerPrefix = "block-main-commit v"
+
+// preservedMark starts the tail that holds a user's original hook.
+const preservedMark = "\n# (preserved original pre-commit hook)\n"
 
 // Status describes the guard's installation state.
 type Status int
@@ -44,7 +52,7 @@ func Check() Status {
 	if err != nil {
 		return Err
 	}
-	if strings.Contains(string(data), marker) {
+	if strings.Contains(string(data), markerPrefix) {
 		return Installed
 	}
 	return NotInstalled
@@ -71,13 +79,19 @@ func Install() (bool, error) {
 	}
 
 	if strings.Contains(existing, marker) {
-		return false, nil // already installed
+		return false, nil // already installed, current version
 	}
 
-	// Prepend our hook and re-append the user's original hook, if any.
+	// Prepend our hook and re-append the user's original hook, if any. An
+	// older version of our hook is replaced in place: the leading guard
+	// block goes, the preserved tail (if any) stays.
 	content := hookSrc
-	if strings.TrimSpace(existing) != "" {
-		content += "\n# (preserved original pre-commit hook)\n" + existing
+	if strings.Contains(existing, markerPrefix) {
+		if idx := strings.Index(existing, preservedMark); idx >= 0 {
+			content += existing[idx:]
+		}
+	} else if strings.TrimSpace(existing) != "" {
+		content += preservedMark + existing
 	}
 	if err := os.WriteFile(hookPath, []byte(content), 0o755); err != nil {
 		return false, err
@@ -99,16 +113,16 @@ func Uninstall() error {
 	if err != nil {
 		return err
 	}
-	if !strings.Contains(string(data), marker) {
+	if !strings.Contains(string(data), markerPrefix) {
 		return nil // not ours, leave it alone
 	}
 
 	// Reconstruct: everything after our guard block was the preserved hook.
-	idx := strings.Index(string(data), "\n# (preserved original pre-commit hook)\n")
+	idx := strings.Index(string(data), preservedMark)
 	if idx < 0 {
 		return os.Remove(hookPath)
 	}
-	preserved := string(data)[idx+len("\n# (preserved original pre-commit hook)\n"):]
+	preserved := string(data)[idx+len(preservedMark):]
 	if strings.TrimSpace(preserved) == "" {
 		return os.Remove(hookPath)
 	}
