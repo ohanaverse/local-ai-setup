@@ -166,6 +166,15 @@ accepts it as `x-api-key: TOKEN`; when an `Authorization: Bearer` header is
 present it is the only credential checked, so a wrong one is refused even
 beside a correct `x-api-key`.
 
+Upstream, the gateway also drops every other credential header the client sent
+that LiteLLM would take a key from: `x-litellm-api-key` (which LiteLLM prefers
+to `Authorization`, so a client that kept it could authenticate with a key of
+its own choosing), `api-key`, `x-api-key`, `x-goog-api-key` and
+`ocp-apim-subscription-key`. The only credential LiteLLM sees is the host's key
+(#692). A host that names its own key header with LiteLLM's
+`general_settings.litellm_key_header_name`, which wt never writes, has one
+more the gateway does not know; leave it unset.
+
 ## Proxy url and key
 
 The pair the gateway forwards to LiteLLM with lives in the `wt-model` config
@@ -460,7 +469,8 @@ header. Its `Authorization` (the client's own claude.ai login,
 `Bearer sk-ant-oat…`) is forwarded to LiteLLM, which forwards it to the
 keyless `anthropic/` rows of the `claude-subscription` provider
 ([wt-model.md](wt-model.md#claude-subscription-models)). A request without
-the header is the token swap, exactly as before.
+the header is the token swap (which, since #692, also drops every client-sent LiteLLM
+credential header).
 
 **The owner's own login only.** The subscription is for the person whose
 claude.ai login it is. Do not share it or pool it: a host that served other
@@ -537,9 +547,9 @@ table). In short:
 4. `Authorization` must not be the wt token (401) and, when present, must be
    one `Bearer sk-ant-oat…` value, else 403 `subscription_no_login`.
 
-Upstream, the request loses `x-wt-model-token` and `x-api-key`, keeps the
-login and the `anthropic-*` headers as sent, and gets `x-litellm-api-key`
-set to the host's LiteLLM key. `wt-model` never logs a request, a header
+Upstream, the request loses `x-wt-model-token` and every client-sent LiteLLM
+credential header (the list above), keeps the login and the `anthropic-*`
+headers as sent, and gets `x-litellm-api-key` set to the host's LiteLLM key. `wt-model` never logs a request, a header
 or a body.
 
 ### What keeps it off
@@ -875,7 +885,7 @@ agents parse it: `{"error": {"message": "...", "type": "...", "code":
 "..."}}`. Whatever LiteLLM answers passes through untouched. The three 403s
 answer only a request that carries the `x-wt-model-token` header (the header
 mode, which forwards the client's own claude.ai login; a request without the
-header is served by the token swap exactly as before). Each message is fixed
+header is served by the token swap). Each message is fixed
 text and never carries a header value.
 
 | Status | Code | Type | Message | When |

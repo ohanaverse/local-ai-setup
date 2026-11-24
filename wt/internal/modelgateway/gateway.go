@@ -13,8 +13,9 @@
 // LiteLLM, which is authenticated by x-litellm-api-key. It needs
 // Config.SubscriptionPassthrough and a trusted peer (peerTrusted), and
 // forwards only a `Bearer sk-ant-oat…` Authorization. A request without the
-// header is served exactly as before. Nothing in this package logs a
-// request, a header or a body.
+// header is the token swap. On both branches every LiteLLM credential header
+// the client sent (upstreamAuthHeaders) is dropped before the gateway sets
+// its own. Nothing in this package logs a request, a header or a body.
 package modelgateway
 
 import (
@@ -78,6 +79,26 @@ func kindOf(ctx context.Context) authKind {
 	return k
 }
 
+// upstreamAuthHeaders are the headers LiteLLM takes a key from
+// (user_api_key_auth.get_api_key in 1.109.1), highest precedence first:
+// x-litellm-api-key supersedes Authorization, so a client that kept it could
+// authenticate with a key of its own choosing beside the wt token (#692); the
+// others rank below Authorization today, but are the same kind of credential
+// and would win if LiteLLM changed its order. Both branches drop all of them
+// and set their own. A host that names its own key header with
+// general_settings.litellm_key_header_name (wt never writes it) has one more
+// the gateway does not know.
+var upstreamAuthHeaders = []string{
+	"x-litellm-api-key", "api-key", "x-api-key", "x-goog-api-key", "ocp-apim-subscription-key",
+}
+
+// dropUpstreamAuth removes every client-sent LiteLLM credential from h.
+func dropUpstreamAuth(h http.Header) {
+	for _, name := range upstreamAuthHeaders {
+		h.Del(name)
+	}
+}
+
 // InferencePaths is what an agent needs from LiteLLM: the Anthropic and
 // OpenAI inference endpoints and the model list, plus the paths below
 // /v1/responses/ and /v1/models/ (one response, one model). LiteLLM's other
@@ -99,13 +120,12 @@ func New(c Config) http.Handler {
 				// authenticated checked Authorization: absent, or exactly one
 				// `Bearer sk-ant-oat…` value, forwarded as sent.
 				pr.Out.Header.Del(TokenHeader)
-				pr.Out.Header.Del("x-api-key")
-				pr.Out.Header.Del("x-litellm-api-key")
+				dropUpstreamAuth(pr.Out.Header)
 				pr.Out.Header.Set("x-litellm-api-key", c.UpstreamKey)
 				return
 			}
 			pr.Out.Header.Del("Authorization")
-			pr.Out.Header.Del("x-api-key")
+			dropUpstreamAuth(pr.Out.Header)
 			pr.Out.Header.Set("Authorization", "Bearer "+c.UpstreamKey)
 		},
 		// Flush every write: agent streams are server-sent events.

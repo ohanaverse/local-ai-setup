@@ -393,10 +393,10 @@ func TestLegacyRequestFromNonLoopbackUnaffected(t *testing.T) {
 }
 
 // TestLegacyUpstreamHeadersUnchanged pins that a request without the header
-// reaches LiteLLM with today's exact header map whether the mode is on or
-// off: Authorization swapped for the host key, x-api-key dropped, a client
-// x-litellm-api-key passed through as today, the forwarding headers removed
-// by ReverseProxy, everything else untouched.
+// reaches LiteLLM with today's header map whether the mode is on or off:
+// Authorization swapped for the host key, x-api-key dropped, a client
+// x-litellm-api-key dropped too (#692: LiteLLM prefers it to Authorization),
+// the forwarding headers removed by ReverseProxy, everything else untouched.
 func TestLegacyUpstreamHeadersUnchanged(t *testing.T) {
 	send := hdrs(
 		"Authorization", "Bearer "+tokenSentinel,
@@ -406,6 +406,7 @@ func TestLegacyUpstreamHeadersUnchanged(t *testing.T) {
 		"content-type", "application/json",
 		"x-custom", "kept",
 		"x-litellm-api-key", "client",
+		"api-key", "client",
 		"X-Forwarded-For", "192.0.2.7",
 	)
 	want := hdrs(
@@ -414,7 +415,6 @@ func TestLegacyUpstreamHeadersUnchanged(t *testing.T) {
 		"Anthropic-Version", "2023-06-01",
 		"Content-Type", "application/json",
 		"X-Custom", "kept",
-		"X-Litellm-Api-Key", "client",
 		"Accept-Encoding", "gzip", // added by http.Transport, as today
 		"Content-Length", "2", // the "{}" body
 	)
@@ -627,5 +627,72 @@ func TestSubscriptionStreams(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("first chunk not delivered while upstream still open")
+	}
+}
+
+// litellmAuthHeaders are the headers LiteLLM 1.109.1 takes a key from
+// (user_api_key_auth.get_api_key), highest precedence first: x-litellm-api-key
+// supersedes Authorization, which is the bypass #692 closes; the rest rank
+// below Authorization today but are the same kind of credential.
+var litellmAuthHeaders = []string{"x-litellm-api-key", "api-key", "x-api-key", "x-goog-api-key", "ocp-apim-subscription-key"}
+
+// TestTokenSwapDropsEveryClientLiteLLMAuthHeader pins #692: a caller holding
+// the wt token cannot authenticate to LiteLLM with a key of its own choosing.
+// Whatever LiteLLM auth header a client sends beside its token, upstream sees
+// only the host key, as the bearer, and none of those headers.
+func TestTokenSwapDropsEveryClientLiteLLMAuthHeader(t *testing.T) {
+	for _, mode := range []bool{false, true} {
+		for _, via := range []string{"Authorization", "x-api-key"} {
+			up := newHeaderUpstream(t)
+			kv := []string{}
+			if via == "Authorization" {
+				kv = append(kv, "Authorization", "Bearer "+tokenSentinel)
+			} else {
+				kv = append(kv, "x-api-key", tokenSentinel)
+			}
+			for _, h := range litellmAuthHeaders {
+				if h == "x-api-key" && via == "x-api-key" {
+					continue // that one is the token itself
+				}
+				kv = append(kv, h, "evil-"+h, h, "evil2-"+h)
+			}
+			cfg := subConfig(t, up.srv, mode)
+			rec := serveDirect(New(cfg), "/v1/messages", loopbackPeer, hdrs(kv...), false)
+			if rec.Code != 200 {
+				t.Fatalf("subscription=%v via %s: status %d", mode, via, rec.Code)
+			}
+			got := up.last()
+			if v := got.Values("Authorization"); len(v) != 1 || v[0] != "Bearer "+testKey {
+				t.Errorf("subscription=%v via %s: upstream Authorization %q, want only the host key", mode, via, v)
+			}
+			for _, h := range litellmAuthHeaders {
+				if v := got.Values(h); len(v) != 0 {
+					t.Errorf("subscription=%v via %s: upstream still carries %s %q", mode, via, h, v)
+				}
+			}
+		}
+	}
+}
+
+// TestHeaderModeDropsTheOtherLiteLLMAuthHeaders pins the same on the header
+// branch: only x-litellm-api-key, set to the host key, authenticates there.
+func TestHeaderModeDropsTheOtherLiteLLMAuthHeaders(t *testing.T) {
+	up := newHeaderUpstream(t)
+	kv := []string{TokenHeader, tokenSentinel, "Authorization", "Bearer " + loginSentinel}
+	for _, h := range litellmAuthHeaders {
+		kv = append(kv, h, "evil-"+h)
+	}
+	rec := serveDirect(New(subConfig(t, up.srv, true)), "/v1/messages", loopbackPeer, hdrs(kv...), false)
+	if rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	got := up.last()
+	if v := got.Values("x-litellm-api-key"); len(v) != 1 || v[0] != testKey {
+		t.Errorf("upstream x-litellm-api-key %q, want only the host key", v)
+	}
+	for _, h := range litellmAuthHeaders[1:] {
+		if v := got.Values(h); len(v) != 0 {
+			t.Errorf("upstream still carries %s %q", h, v)
+		}
 	}
 }
