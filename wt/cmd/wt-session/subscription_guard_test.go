@@ -164,8 +164,8 @@ func TestSubscriptionWithoutOptInRefuses(t *testing.T) {
 			r, calls := subRig(t, false, true, &st, subRow("claude-haiku-5-5"), alias)
 			err := r.launch(t, context.Background(), pin, "", false)
 			if err == nil || exitCodeOf(err) != 1 || !strings.Contains(err.Error(), "has not opted in") ||
-				!strings.Contains(err.Error(), "[model-server] subscription = true") {
-				t.Fatalf("err = %v, want the opt-in refusal", err)
+				!strings.Contains(err.Error(), "[model-server] subscription = true in "+config.ConfigFile()) {
+				t.Fatalf("err = %v, want the opt-in refusal naming %s", err, config.ConfigFile())
 			}
 			if *calls != 0 {
 				t.Errorf("the login check ran %d times, want 0", *calls)

@@ -9,7 +9,7 @@ import "fmt"
 // (internal/tui) both say it, so a Claude subscription row reads the same
 // everywhere.
 func SubscriptionOffReason(rawURL string) string {
-	return fmt.Sprintf("the model server at %s does not accept a Claude login: its subscription passthrough is off, or it is older than this wt (on the host: make install, set [gateway] subscription_passthrough = true in ~/.config/wt-model/config.toml, restart wt-model serve; or a hazard turned it off while serving, which the wt-model serve log names)", Addr(rawURL))
+	return fmt.Sprintf("the model server at %s does not accept a Claude login: its subscription passthrough is off, or it is older than this wt (on the host: make install, set [gateway] subscription_passthrough = true in the host's wt-model config.toml (by default ~/.config/wt-model/config.toml), restart wt-model serve; or a hazard turned it off while serving, which the wt-model serve log names)", Addr(rawURL))
 }
 
 // SubscriptionOffShort is the one-line form of SubscriptionOffReason for a

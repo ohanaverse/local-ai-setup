@@ -536,6 +536,9 @@ follows:
 wt-model: warning: remote subscription requests need TLS (set tls_cert and tls_key under [gateway] in ~/.config/wt-model/config.toml) or a tunnel arriving from loopback; other remote traffic is unaffected
 ```
 
+The path in a message like this is the config file the host actually reads:
+with `XDG_CONFIG_HOME` moved it is the resolved path, not `~/.config/...`.
+
 When TLS is configured but off on its dates, the info line ends instead
 `…; TLS is off: the certificate expired on <date>, so header mode is
 refused from every non-loopback peer)`. The ping carries the mode as

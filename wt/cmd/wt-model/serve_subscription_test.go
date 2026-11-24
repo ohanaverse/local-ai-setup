@@ -11,13 +11,21 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // subInfo and subWarn are subscriptionLines' two fixed lines.
 const (
 	subInfo = "wt-model: subscription passthrough is on (x-wt-model-token; refused from non-loopback peers over plain http; owner's own login only)"
-	subWarn = "wt-model: warning: remote subscription requests need TLS (set tls_cert and tls_key under [gateway] in ~/.config/wt-model/config.toml) or a tunnel arriving from loopback; other remote traffic is unaffected"
 )
+
+// subWarn is subscriptionLines' warning: it names the wt-model home's
+// config.toml as resolved (#700), so a test says it through the same helper
+// and one that moves XDG_CONFIG_HOME checks the path follows.
+func subWarn() string {
+	return "wt-model: warning: remote subscription requests need TLS (set tls_cert and tls_key under [gateway] in " + config.ProxyHomeFile() + ") or a tunnel arriving from loopback; other remote traffic is unaffected"
+}
 
 // TestSubscriptionLines pins serve's report of the mode (decision 2) as one
 // pure function: off prints nothing; on prints the info line, plus one
@@ -39,7 +47,7 @@ func TestSubscriptionLines(t *testing.T) {
 	var cases []tc
 	for _, addr := range []string{"0.0.0.0:8787", "[::]:8787", "192.0.2.7:8787"} {
 		cases = append(cases,
-			tc{addr, true, false, "", []string{subInfo, subWarn}},
+			tc{addr, true, false, "", []string{subInfo, subWarn()}},
 			tc{addr, true, true, "", []string{subInfo}},
 			tc{addr, true, false, reason, []string{tlsOffInfo}},
 		)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -214,5 +215,21 @@ func TestServeWithTheModeOffStartsNoWatcher(t *testing.T) {
 	}
 	if n := calls.Load(); n != 0 {
 		t.Errorf("the proxy was read %d times with the mode off", n)
+	}
+}
+
+// TestSubscriptionWarningNamesTheMovedConfigHome pins #700 for serve's
+// remote-subscription warning: with XDG_CONFIG_HOME moved it names the
+// config.toml serve actually reads, never the conventional ~/.config path.
+func TestSubscriptionWarningNamesTheMovedConfigHome(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	got := subscriptionLines("0.0.0.0:8787", true, false, "")
+	if len(got) != 2 {
+		t.Fatalf("lines = %q, want the info line and the warning", got)
+	}
+	want := filepath.Join(xdg, "wt-model", "config.toml")
+	if !strings.Contains(got[1], "under [gateway] in "+want+")") || strings.Contains(got[1], "~/.config") {
+		t.Errorf("warning = %q, want it to name %s", got[1], want)
 	}
 }

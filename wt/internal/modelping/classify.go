@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
@@ -82,11 +83,17 @@ func Checked(ctx context.Context, ep Endpoint) (modelapi.Ping, Kind, string, err
 	return p, o.Kind, o.Message, err
 }
 
+// hintUnknownAuthority tells a session whose certificate check failed which
+// key trusts the server's certificate, and in which file: the agent-wt
+// config.toml as resolved (#700), so it follows XDG_CONFIG_HOME.
+func hintUnknownAuthority() string {
+	return "the model server's certificate is not trusted: set ca_file under [model-server] in " + config.ConfigFile() + " (or WT_MODEL_CA_FILE) to the server's certificate"
+}
+
 // Fixed hint texts (decision 14). They name config keys and the address,
 // never a token.
 const (
-	hintUnknownAuthority = "the model server's certificate is not trusted: set ca_file under [model-server] in ~/.config/agent-wt/config.toml (or WT_MODEL_CA_FILE) to the server's certificate"
-	hintPlainServer      = "the model server speaks plain http, not https: the handshake failed before anything was sent; use http:// in [model-server] url only for a loopback server (if the server's TLS certificate expired, wt-model serve falls back to plain http: renew it on the host and restart serve)"
+	hintPlainServer = "the model server speaks plain http, not https: the handshake failed before anything was sent; use http:// in [model-server] url only for a loopback server (if the server's TLS certificate expired, wt-model serve falls back to plain http: renew it on the host and restart serve)"
 	// httpsServerBody is how Go's TLS server answers a plain-http request.
 	httpsServerBody = "Client sent an HTTP request to an HTTPS server"
 )
@@ -117,9 +124,9 @@ func tlsTrustError(ep Endpoint, err error) *TLSTrustError {
 		}
 		hint += ": check both machines' clocks, or renew it on the host (replace tls_cert and tls_key, restart serve)"
 	case errors.As(err, &ua):
-		hint = hintUnknownAuthority
+		hint = hintUnknownAuthority()
 		if ep.CAFile != "" {
-			hint = "the model server's certificate is not trusted by ca_file " + shownPath(ep.CAFile) + ": set ca_file under [model-server] in ~/.config/agent-wt/config.toml (or WT_MODEL_CA_FILE) to the server's certificate"
+			hint = "the model server's certificate is not trusted by ca_file " + shownPath(ep.CAFile) + ": set ca_file under [model-server] in " + config.ConfigFile() + " (or WT_MODEL_CA_FILE) to the server's certificate"
 		}
 	case errors.As(err, &rh) || strings.Contains(err.Error(), "server gave HTTP response to HTTPS client"):
 		hint = hintPlainServer
@@ -128,7 +135,7 @@ func tlsTrustError(ep Endpoint, err error) *TLSTrustError {
 		if !errors.As(err, &cv) {
 			return nil
 		}
-		hint = hintUnknownAuthority
+		hint = hintUnknownAuthority()
 	}
 	return &TLSTrustError{Addr: addr, Hint: hint, Err: err}
 }

@@ -96,7 +96,11 @@ type CatalogOptions struct {
 
 // subscriptionOffReason is a subscription row's block reason while the
 // host's passthrough is off: it names the key that turns it on (decision 6).
-const subscriptionOffReason = "subscription passthrough is off on the model server ([gateway] subscription_passthrough in ~/.config/wt-model/config.toml)"
+// It goes over the wire to remote clients, so it names the conventional path,
+// not the host's resolved one (which would show the host's home directory).
+func subscriptionOffReason() string {
+	return "subscription passthrough is off on the model server ([gateway] subscription_passthrough in ~/.config/wt-model/config.toml)"
+}
 
 // wireRow converts one catalog row. A subscription row is blocked while
 // opts.SubscriptionOn is false, after every other rule, so an unmapped or
@@ -123,7 +127,7 @@ func wireRow(cfg *config.Config, r catalog.Row, ix tiers.Index, sessions int, no
 	case row.Action == modelapi.ActionBlock:
 		row.BlockReason = r.BlockReason()
 	case config.IsSubscriptionProvider(m.ProviderID) && !opts.SubscriptionOn:
-		row.State, row.Action, row.BlockReason = modelapi.StateBlocked, modelapi.ActionBlock, subscriptionOffReason
+		row.State, row.Action, row.BlockReason = modelapi.StateBlocked, modelapi.ActionBlock, subscriptionOffReason()
 	}
 	if p := cfg.ProviderByID(m.ProviderID); p != nil {
 		for _, proto := range p.EffectiveProtocols() {

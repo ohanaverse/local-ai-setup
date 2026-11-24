@@ -150,3 +150,33 @@ func TestServerCatalogFollowsSubscriptionPassthrough(t *testing.T) {
 		check("catalog", rowByID(t, cat, "claude-haiku-5-5"))
 	}
 }
+
+// TestSubscriptionOffReasonKeepsTheHostPathOffTheWire pins that a blocked
+// subscription row's reason goes to remote clients with the conventional
+// ~/.config path even when XDG_CONFIG_HOME moves the host's config home: the
+// host's resolved path would show its home directory to every client.
+func TestSubscriptionOffReasonKeepsTheHostPathOffTheWire(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	cfg := serverCfg()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: config.SubscriptionProvider, Location: config.LocationCloud})
+	cfg.Models = append(cfg.Models, config.Model{ID: "claude-haiku-5-5", Family: "claude", ProviderID: config.SubscriptionProvider, ModelName: "claude-haiku-5-5"})
+	s, err := NewServer(Options{Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour},
+		(&fakeLife{snap: serverSnap()}).deps(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	st, b := call(t, ts, "GET", "/control/v1/resolve?model=claude-haiku-5-5", "")
+	if st != http.StatusOK {
+		t.Fatalf("resolve = %d %s", st, b)
+	}
+	var r modelapi.Row
+	if err := json.Unmarshal(b, &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Action != modelapi.ActionBlock || !strings.Contains(r.BlockReason, "subscription_passthrough in ~/.config/wt-model/config.toml)") || strings.Contains(r.BlockReason, xdg) {
+		t.Errorf("reason = %q, want the conventional path and not %s", r.BlockReason, xdg)
+	}
+}

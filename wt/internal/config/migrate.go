@@ -427,7 +427,7 @@ func legacyGatewayNotice(raw []byte) (string, bool) {
 			named += " and "
 		}
 		named += keys[len(keys)-1]
-		return BinaryName + ": config.toml: [gateway] " + named + " " + verb + " not read here — " + pron + " under [gateway] in ~/.config/wt-model/config.toml, which wt-model serve reads; this block will be dropped on next save", true
+		return BinaryName + ": config.toml: [gateway] " + named + " " + verb + " not read here — " + pron + " under [gateway] in " + ProxyHomeFile() + ", which wt-model serve reads; this block will be dropped on next save", true
 	}
 	return BinaryName + ": found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by wt (see 'wt litellm status'); this block will be dropped on next save", true
 }

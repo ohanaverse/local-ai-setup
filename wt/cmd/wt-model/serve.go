@@ -548,8 +548,11 @@ const subscriptionInfo = "wt-model: subscription passthrough is on (x-wt-model-t
 
 // subscriptionWarn is the one warning when the mode is on, the listen
 // address is not loopback and TLS is off: remote header-mode requests are
-// refused, so the operator learns how to make them work.
-const subscriptionWarn = "wt-model: warning: remote subscription requests need TLS (set tls_cert and tls_key under [gateway] in ~/.config/wt-model/config.toml) or a tunnel arriving from loopback; other remote traffic is unaffected"
+// refused, so the operator learns how to make them work. It names the
+// config.toml serve actually reads (#700).
+func subscriptionWarn() string {
+	return "wt-model: warning: remote subscription requests need TLS (set tls_cert and tls_key under [gateway] in " + config.ProxyHomeFile() + ") or a tunnel arriving from loopback; other remote traffic is unaffected"
+}
 
 // subscriptionLines is serve's whole report of the header mode, the lines
 // printed after the announce line (decision 2 of the phase 3 plan): nothing
@@ -566,7 +569,7 @@ func subscriptionLines(listenAddr string, on, tlsOn bool, tlsOff string) []strin
 	}
 	lines := []string{fmt.Sprintf(subscriptionInfo, "")}
 	if !tlsOn && !loopbackListen(listenAddr) {
-		lines = append(lines, subscriptionWarn)
+		lines = append(lines, subscriptionWarn())
 	}
 	return lines
 }

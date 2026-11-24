@@ -185,6 +185,8 @@ Each TLS failure is one hint, exit 1:
 | `https://` to a plain-HTTP server | `the model server speaks plain http, not https: …`, which also says that serve falls back to plain HTTP when its certificate expired |
 | `http://` to a TLS server | `the model server speaks https: use https://<addr> in [model-server] url; this request already sent the token unencrypted to <addr>`, plus `; rotate the token on the host (wt-model setup)` when the host is not loopback |
 
+A hint that names a config file shows the resolved path: with `XDG_CONFIG_HOME` moved it replaces the `~/.config/agent-wt/config.toml` quoted above.
+
 The `http://`-to-TLS case is the one where something was sent: the whole
 request, the token included, crossed the network before the server's
 answer. Rotate the token when the server is on another machine.
