@@ -332,7 +332,7 @@ Save as `~/Library/LaunchAgents/local.wt-model.serve.plist`:
 
 `PATH` must include wherever `ollama`, `omlx`, `mtplx`, `rec` and `sushi` live, or wt-model cannot start local models. Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.wt-model.serve.plist`. After `wt-model litellm set` or a token change, `launchctl kickstart -k gui/$(id -u)/local.wt-model.serve` restarts it. Do not run a second, hand-started `wt-model` on the same port: `KeepAlive` would loop on the bind failure.
 
-This plist carries no "managed by wt" marker, so wt's local-mode setup treats it as hand-written: it refuses to overwrite it and offers the native or remote mode instead — remove it yourself (after `launchctl bootout gui/$(id -u)/local.wt-model.serve`) if you want wt to write and manage one.
+This plist carries no "managed by wt" marker, so wt's local-mode setup treats it as hand-written: it never overwrites it and offers the native or remote mode instead — remove it yourself (after `launchctl bootout gui/$(id -u)/local.wt-model.serve`) if you want wt to write and manage one. The LiteLLM key rotate is the one plan that can go on with the file as written: it leaves the wt-model serve plist untouched and restarts the server with `launchctl kickstart -k` (the rotate still reloads LiteLLM and re-pairs wt-model with the new key), provided the server is loaded and the plist's `--listen` and `--token-file` match what the rotate would store; an unloaded server, or a plist wt cannot read back as arguments or that names another listen or token file, still refuses ([wt-model-server.md](../../wt/docs/wt-model-server.md)).
 
 ## Gotchas
 

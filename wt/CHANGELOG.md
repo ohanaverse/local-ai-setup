@@ -124,6 +124,16 @@
 
 ### Fixed
 
+- A LiteLLM key rotate on the Setup tab of `wt-model setup` no longer refuses
+  a loaded `local.wt-model.serve` LaunchAgent just because its plist is not
+  marked `managed by wt` (#708): the plan leaves that hand-written plist as
+  written and restarts it with `launchctl kickstart -k`, provided the
+  `--listen` and `--token-file` it runs match what the plan would store as the
+  url and token file (the listen by port) — a plist wt cannot read back as
+  those arguments, one that names another listen or token file, and an
+  unloaded agent all still refuse, and every other plan still refuses to touch
+  a hand-written plist. A kept agent is reloaded only through the kickstart,
+  never a bootout plus bootstrap of the file wt does not write.
 - The local-model profile popup offers a third answer, **launch without
   profile** (the middle item, or `n`): a profile is optional, but the popup's
   only two answers were "apply profile" and "go back", so a local model whose

@@ -291,8 +291,13 @@ func planLocal(st State, want Desired) (Plan, error) {
 		reasons = append(reasons, r)
 	}
 
-	// The plist path must be wt's or free.
-	if st.Agent.Present && !st.Agent.Managed {
+	// The plist path must be wt's or free. A key rotate writes only the
+	// LiteLLM plist and the pair, so it leaves a loaded agent plist that is not
+	// wt's as written and only restarts it (#708); an agent that is not loaded
+	// would have to be bootstrapped from a file wt does not own, so that and
+	// every other plan still refuses.
+	keepUnmanaged := want.LiteLLM == LiteLLMRotateKey && st.Agent.Present && !st.Agent.Managed && st.Agent.Job.Loaded
+	if st.Agent.Present && !st.Agent.Managed && !keepUnmanaged {
 		reasons = append(reasons, reason(st.Agent.PlistPath+" exists and is not marked \"managed by wt\", so wt will not overwrite it",
 			"move it aside or remove it yourself, or choose native or remote"))
 	}
@@ -306,6 +311,27 @@ func planLocal(st State, want Desired) (Plan, error) {
 		tokPath = DefaultLocalTokenPath(st.Host.ConfigHome)
 	}
 	tokPath = modelmode.ExpandIn(tokPath, st.Host.Home)
+	// A kept hand-written plist is never rewritten, so the url and token file
+	// the plan stores for [model-server] must be the ones the kept server
+	// runs: wt-model serve requires --listen and --token-file, so they are in
+	// the plist wt leaves as written, and the restart the plan makes changes
+	// neither. A plist wt cannot read as arguments stays refused (#708).
+	if keepUnmanaged {
+		switch {
+		case st.Agent.Err != "":
+			reasons = append(reasons, reason("the LaunchAgent plist "+st.Agent.PlistPath+" cannot be read as an XML plist ("+st.Agent.Err+"), so wt cannot tell what --listen and --token-file the server it would restart runs, and wt will not store [model-server] for it",
+				"fix the plist, or move it aside or remove it yourself, or choose native or remote"))
+		case st.Agent.Listen == "" || st.Agent.TokenFile == "":
+			reasons = append(reasons, reason("the LaunchAgent plist "+st.Agent.PlistPath+" does not give wt-model serve both --listen and --token-file, so wt cannot tell what the server it would restart runs, and wt will not store [model-server] for it",
+				"fix the plist, or move it aside or remove it yourself, or choose native or remote"))
+		case portOf(st.Agent.Listen) != port:
+			reasons = append(reasons, reason("the LaunchAgent plist "+st.Agent.PlistPath+" runs wt-model --listen "+st.Agent.Listen+", while the plan would store url "+modelmode.LocalURL(listen, st.LocalTLS.On)+"; wt leaves that plist as written, so the restart does not change its listen",
+				"enter "+st.Agent.Listen+" in the listen field, or move the plist aside or remove it yourself, or choose native or remote"))
+		case modelmode.ExpandIn(st.Agent.TokenFile, st.Host.Home) != tokPath:
+			reasons = append(reasons, reason("the LaunchAgent plist "+st.Agent.PlistPath+" runs wt-model --token-file "+st.Agent.TokenFile+", while the plan would store token file "+tokPath+"; wt leaves that plist as written, so the restart does not make the server read the one it stores",
+				"enter "+st.Agent.TokenFile+" in the token field, or move the plist aside or remove it yourself, or choose native or remote"))
+		}
+	}
 	var tokenStep *Step
 	tokenChanged := false
 	var tokenKept string
@@ -420,8 +446,10 @@ func planLocal(st State, want Desired) (Plan, error) {
 		p.Notes = append(p.Notes, pairKept)
 	}
 
-	plistChanged := !(st.Agent.Present && st.Agent.Managed && bytes.Equal(st.Agent.Content, RenderAgentPlist(spec)))
-	if plistChanged {
+	plistChanged := !keepUnmanaged && !(st.Agent.Present && st.Agent.Managed && bytes.Equal(st.Agent.Content, RenderAgentPlist(spec)))
+	if keepUnmanaged {
+		p.Notes = append(p.Notes, "keep the LaunchAgent plist "+st.Agent.PlistPath+" as written: it is not marked \"managed by wt\" and a key rotate does not write it")
+	} else if plistChanged {
 		verb := "write"
 		if st.Agent.Present {
 			verb = "overwrite"
@@ -438,11 +466,14 @@ func planLocal(st State, want Desired) (Plan, error) {
 	// serve reads [gateway] only at start: when the url written changes
 	// scheme from the stored local one, or the running serve (its record,
 	// when it names the running agent's pid) speaks the other scheme, a
-	// loaded agent is reloaded so the url and the server converge.
+	// loaded agent is reloaded so the url and the server converge. A kept
+	// hand-written agent converges through the kickstart instead: a
+	// bootout plus bootstrap reads the same file, and kickstart -k restarts
+	// it just as finally.
 	schemeChanged := schemeChanges(st, want.URL)
 	started := false
 	switch {
-	case (plistChanged || schemeChanged) && loaded:
+	case !keepUnmanaged && (plistChanged || schemeChanged) && loaded:
 		p.Steps = append(p.Steps,
 			Step{Kind: StepBootout, Path: st.Agent.PlistPath, Detail: "unload the running LaunchAgent: launchctl bootout " + domain + "/" + AgentLabel},
 			Step{Kind: StepBootstrap, Path: st.Agent.PlistPath, Detail: "load the LaunchAgent: launchctl bootstrap " + domain + " " + st.Agent.PlistPath})
