@@ -157,6 +157,10 @@ type setupTab struct {
 	// first); settled is the status the action left, kept through them.
 	settle  int
 	settled string
+	// waiting is true while a settle tick is out: the tick of the last try
+	// arrives with settle at 0 and must still do the final read, while a tick
+	// that r or c outlived must do nothing.
+	waiting bool
 }
 
 // setupSettleTries and setupSettleDelay bound the wait after a start or a
@@ -353,12 +357,12 @@ func (m *model) applySetupObserved(msg setupObservedMsg) tea.Cmd {
 		// Keep the last state on screen and read again shortly, so the
 		// server line never shows the gap between launchd and serve (#710).
 		st.settle--
-		st.busy = true
+		st.busy, st.waiting = true, true
 		st.status = st.settled + "; waiting for wt-model to answer…"
 		return tea.Tick(setupSettleDelay, func(time.Time) tea.Msg { return setupSettleMsg{} })
 	}
 	if st.settle > 0 || st.settled != "" {
-		st.settle = 0
+		st.settle, st.waiting = 0, false
 		st.status, st.settled = st.settled, ""
 	}
 	st.state, st.loaded, st.busy, st.probeSkipped, st.probeRead = msg.st, true, false, msg.skippedProbe, false
@@ -752,11 +756,13 @@ func (m *model) updateSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Observe runs every check, the ping of the entered url included,
 		// and writes nothing.
 		st.status, st.pending = m.cancelSetupPlan()+"checking the model server", true
+		st.settle, st.settled, st.waiting = 0, "", false // its read replaces the wait after a start or restart
 		return m, m.observeSetupCmd()
 	case "r":
 		// The same read; the one before it, if still out, is dropped. This is
 		// how a config.toml repaired by hand is read again.
 		st.status, st.pending = m.cancelSetupPlan()+"re-reading the model server's state", true
+		st.settle, st.settled, st.waiting = 0, "", false // its read replaces the wait after a start or restart
 		return m, m.observeSetupCmd()
 	case "left", "right", " ", "down", "enter":
 		// The form is inert while anything is out (busy): a read, a plan,

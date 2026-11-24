@@ -1637,3 +1637,47 @@ func TestSetupTabOnlyAConnectionFailureIsWaitedOn(t *testing.T) {
 	}
 	_ = m
 }
+
+// TestSetupTabRAndCEndTheWaitAndAStrayTickIsIgnored pins the review's three
+// findings about r or c pressed during the wait after a restart: the key's
+// read replaces the wait (one chain of reads, not two sharing the tries),
+// the status is not left to the pending clear to blank twice over, and the
+// tick that was already out when the key came does nothing.
+func TestSetupTabRAndCEndTheWaitAndAStrayTickIsIgnored(t *testing.T) {
+	for _, key := range []string{"r", "c"} {
+		up, down := settleStates()
+		sm := &setupMachine{states: []modelsetup.State{up, down, up}}
+		m := setupEditor(t, sm, 120, 50)
+
+		// R succeeded; the read after it finds the server not listening yet.
+		next, cmd := m.Update(setupControlledMsg{action: modelsetup.ControlRestart})
+		m = next.(*model)
+		next, tick := m.Update(cmd())
+		m = next.(*model)
+		if tick == nil || m.setup.settle == 0 || !m.setup.busy {
+			t.Fatalf("%s: the tab is not waiting (tick nil = %v, settle = %d, busy = %v)", key, tick == nil, m.setup.settle, m.setup.busy)
+		}
+		if !strings.Contains(m.setup.status, "waiting for wt-model to answer") {
+			t.Errorf("%s: status = %q while waiting", key, m.setup.status)
+		}
+
+		// The key's read answers; it ends the wait.
+		next, cmd = m.Update(keyMsg(key))
+		m = next.(*model)
+		if m.setup.settle != 0 || m.setup.settled != "" {
+			t.Errorf("%s: the key did not end the wait (settle = %d, settled = %q)", key, m.setup.settle, m.setup.settled)
+		}
+		m = runCmd(t, m, cmd)
+		if m.setup.busy || strings.Contains(plain(m), "problem: unreachable") {
+			t.Errorf("%s: busy = %v after the read:\n%s", key, m.setup.busy, plain(m))
+		}
+		observed := sm.observes
+
+		// The tick that was out when the key came fires now: it does nothing.
+		next, cmd = m.Update(setupSettleMsg{})
+		m = next.(*model)
+		if cmd != nil || sm.observes != observed || m.setup.busy {
+			t.Errorf("%s: a stray tick started a read (cmd nil = %v, observes %d -> %d, busy = %v)", key, cmd == nil, observed, sm.observes, m.setup.busy)
+		}
+	}
+}

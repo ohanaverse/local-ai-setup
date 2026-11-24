@@ -683,7 +683,7 @@ server elsewhere (remote)", the mirror of the Mode tab's local pointer note.
   little before serve listens), so the server line never shows that gap as a
   problem; it shows what answered, or the failure itself if nothing did in
   about ten seconds. A refused token or another server on the port is shown at
-  once. `tab` switches tabs and `q` quits. Two keys act on the
+  once, and `r` or `c` pressed during the wait ends it with their own read. `tab` switches tabs and `q` quits. Two keys act on the
   LiteLLM LaunchAgent, each as a plan you
   confirm: `k` opens the master-key menu (use the key the plist already has,
   generate a new one, which rotates `LITELLM_MASTER_KEY` with a backup under
