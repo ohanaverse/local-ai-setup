@@ -167,6 +167,11 @@ func checkID(providerID, modelName, id string) error {
 // without a context window (decision 5).
 const subscriptionWindowRefusal = "a claude-subscription model needs --context-window (Claude Code's window for it)"
 
+// subscriptionLocationRefusal is the refusal of --location local on a
+// claude-subscription model (#699): the provider is cloud, its LiteLLM row the
+// keyless anthropic/ one, so a local mark could never be served.
+const subscriptionLocationRefusal = "a claude-subscription model is served over a cloud route, so it cannot be local: leave --location off, or pass cloud"
+
 // checkSubscriptionAdd refuses a claude-subscription model whose name is not
 // a bare Claude id (a "/" would make its row anthropic/<prefix>/<name>; a
 // space, a control character or a "[" suffix such as "[1m]" is no API id) or
@@ -177,6 +182,9 @@ func checkSubscriptionAdd(req AddRequest) error {
 		return r == '/' || r == '[' || r == ']' || unicode.IsSpace(r) || unicode.IsControl(r)
 	}) {
 		return fieldErr(FieldName, "a %s model name is a bare Claude id such as claude-haiku-5-5, got %q", req.ProviderID, req.ModelName)
+	}
+	if req.Fields.Location != nil && strings.TrimSpace(*req.Fields.Location) == string(config.LocationLocal) {
+		return fieldErr(FieldLocation, "%s", subscriptionLocationRefusal)
 	}
 	if req.Fields.ContextWindow == nil || *req.Fields.ContextWindow <= 0 {
 		return fieldErr(FieldContextWindow, subscriptionWindowRefusal)
@@ -442,6 +450,10 @@ func Edit(id string, f Fields) (changed bool, err error) {
 		// the add's refusal.
 		if config.IsSubscriptionProvider(providerID) && slices.Contains(unset, "context_window") {
 			return fieldErr(FieldContextWindow, subscriptionWindowRefusal)
+		}
+		// And it stays a cloud model (#699), as the add requires.
+		if loc, given := set["location"].(string); given && config.IsSubscriptionProvider(providerID) && loc == string(config.LocationLocal) {
+			return fieldErr(FieldLocation, "%s", subscriptionLocationRefusal)
 		}
 		if args, ok := set["serve_args"].([]string); ok {
 			if err := checkServeArgs(providerID, args); err != nil {

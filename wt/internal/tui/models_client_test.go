@@ -33,6 +33,10 @@ type fakeModels struct {
 	resolveErr error
 	resolved   []string
 
+	// subOff is what SubscriptionOff answers: decision 2's message while the
+	// server's ping lacks the passthrough, "" otherwise.
+	subOff string
+
 	// startFn scripts RunStart: n is the 1-based call number. nil fails the
 	// start.
 	startFn func(ctx context.Context, n int, req modelapi.StartRequest, prog modelclient.Progress) (modelapi.JobStatus, error)
@@ -178,8 +182,9 @@ func (f *fakeModels) CancelJob(_ context.Context, id string) error {
 func (f *fakeModels) NewSession(models []string, _ modelclient.SessionOptions) ClientSession {
 	return &fakeSession{f: f, models: slices.Clone(models)}
 }
-func (f *fakeModels) Gateway() agents.Gateway { return f.gw }
-func (f *fakeModels) Now() time.Time          { return time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC) }
+func (f *fakeModels) SubscriptionOff(context.Context) string { return f.subOff }
+func (f *fakeModels) Gateway() agents.Gateway                { return f.gw }
+func (f *fakeModels) Now() time.Time                         { return time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC) }
 
 func (f *fakeModels) calls() int {
 	f.mu.Lock()
@@ -659,5 +664,70 @@ func TestModelClientGatewayCarriesCAFile(t *testing.T) {
 	gw := NewModelClient(modelclient.New(ep), ep).Gateway()
 	if gw.CAFile != "/etc/wt/server.crt" || gw.Origin != "https://192.0.2.7:8787" || gw.Token != "wt-SENTINEL-tok" {
 		t.Errorf("Gateway() = %+v", gw)
+	}
+}
+
+// subscriptionOffMessage is what a real client says for a server whose ping
+// lacks the passthrough (modelping.SubscriptionOffReason, shortened so the
+// picker's one line holds it).
+const subscriptionOffMessage = "the model server at 127.0.0.1:8787 does not accept a Claude login: off, or older"
+
+// subscriptionCatalog is smallCatalog plus a blocked Claude subscription row,
+// as an older server marks it (it has no mapping for the provider).
+func subscriptionCatalog() modelapi.Catalog {
+	cat := smallCatalog()
+	cat.Rows = append(cat.Rows, wireRow("claude-haiku-5-5", "claude", func(r *modelapi.Row) {
+		r.ProviderID, r.ModelName, r.Order = "claude-subscription", "claude-haiku-5-5", 3
+		r.State, r.Action = modelapi.StateBlocked, modelapi.ActionBlock
+		r.BlockReason = `provider "claude-subscription" has no LiteLLM mapping, so the gateway cannot route claude-haiku-5-5`
+	}))
+	return cat
+}
+
+// TestPickerSaysDecisionTwoForABlockedSubscriptionRow pins #699: on a server
+// whose ping lacks the passthrough (off, or older than this wt) a blocked
+// subscription row says decision 2's message, as a launch does, and not the
+// server's own reason ("no LiteLLM mapping" from an older server). A server
+// that accepts the login keeps its row's reason, and a subscription row that
+// is not blocked is left alone.
+func TestPickerSaysDecisionTwoForABlockedSubscriptionRow(t *testing.T) {
+	view := func(f *fakeModels) string {
+		m := remoteModel(t, f, 160, 30)
+		m, cmd := m.enterModelPhaseForAgent()
+		m = settle(t, m, cmd)
+		m.models.Select(indexOfID(m, "claude-haiku-5-5"))
+		return plain(m)
+	}
+	v := view(&fakeModels{cat: subscriptionCatalog(), subOff: subscriptionOffMessage})
+	if !strings.Contains(v, "claude-haiku-5-5 uses your Claude subscription, but "+subscriptionOffMessage) {
+		t.Errorf("an older server's row does not say decision 2's message:\n%s", v)
+	}
+	if strings.Contains(v, "no LiteLLM mapping") {
+		t.Errorf("the server's own reason is still shown:\n%s", v)
+	}
+	if v := view(&fakeModels{cat: subscriptionCatalog()}); !strings.Contains(v, "no LiteLLM mapping") {
+		t.Errorf("a server that accepts the login lost its own reason:\n%s", v)
+	}
+	open := subscriptionCatalog()
+	open.Rows[len(open.Rows)-1].State, open.Rows[len(open.Rows)-1].Action, open.Rows[len(open.Rows)-1].BlockReason =
+		modelapi.StateRunning, modelapi.ActionLaunch, ""
+	{
+		f := &fakeModels{cat: open, subOff: subscriptionOffMessage}
+		m := remoteModel(t, f, 160, 30)
+		m, cmd := m.enterModelPhaseForAgent()
+		m = settle(t, m, cmd)
+		if got := m.wire["claude-haiku-5-5"].BlockReason; got != "" {
+			t.Errorf("a row that is not blocked was given the block reason %q", got)
+		}
+	}
+
+	// A pinned subscription model the server blocks says it too.
+	f := &fakeModels{cat: subscriptionCatalog(), subOff: subscriptionOffMessage}
+	m := remoteModel(t, f, 160, 30)
+	m.pinnedModel = "claude-haiku-5-5"
+	m, cmd := m.enterModelPhaseForAgent()
+	m = settle(t, m, cmd)
+	if !strings.Contains(m.status, "uses your Claude subscription, but "+subscriptionOffMessage) {
+		t.Errorf("pin: phase %v status %q, want decision 2's message", m.phase, m.status)
 	}
 }

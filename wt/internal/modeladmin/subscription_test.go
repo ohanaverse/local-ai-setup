@@ -137,3 +137,47 @@ func TestEditSubscriptionModelKeepsItsWindow(t *testing.T) {
 		t.Errorf("clearing another provider's window was refused: %v", err)
 	}
 }
+
+// TestSubscriptionModelRefusesLocationLocal pins #699: a claude-subscription
+// row is served over LiteLLM's keyless anthropic/ route, a cloud route, so a
+// model of that provider marked local could never work. The add and the edit
+// refuse it, naming --location, and write nothing; cloud, or no location at
+// all, stay accepted.
+func TestSubscriptionModelRefusesLocationLocal(t *testing.T) {
+	path := scratchRegistry(t, baseRegistry)
+	before := read(t, path)
+	_, err := Add(AddRequest{ProviderID: "claude-subscription", ModelName: "claude-haiku-5-5",
+		Fields: Fields{Family: ptr("claude"), ContextWindow: intp(1000000), Location: ptr("local")}}, config.SeedEnv{})
+	var fe *FieldError
+	if !errors.As(err, &fe) || fe.Field != FieldLocation || !strings.Contains(err.Error(), "a claude-subscription model is served over a cloud route") {
+		t.Fatalf("add --location local: err = %v, want the location refusal", err)
+	}
+	if read(t, path) != before {
+		t.Fatal("a refused add changed the registry")
+	}
+	for _, loc := range []*string{nil, ptr("cloud")} {
+		if err := CheckAdd(AddRequest{ProviderID: "claude-subscription", ModelName: "claude-haiku-5-5",
+			Fields: Fields{Family: ptr("claude"), ContextWindow: intp(1000000), Location: loc}}); err != nil {
+			t.Errorf("location %v was refused: %v", loc, err)
+		}
+	}
+
+	if _, err := Add(AddRequest{ProviderID: "claude-subscription", ModelName: "claude-haiku-5-5",
+		Fields: Fields{Family: ptr("claude"), ContextWindow: intp(1000000)}}, config.SeedEnv{}); err != nil {
+		t.Fatal(err)
+	}
+	before = read(t, path)
+	_, err = Edit("claude-haiku-5-5", Fields{Location: ptr("local")})
+	if !errors.As(err, &fe) || fe.Field != FieldLocation || !strings.Contains(err.Error(), "a claude-subscription model is served over a cloud route") {
+		t.Fatalf("edit --location local: err = %v, want the location refusal", err)
+	}
+	if read(t, path) != before {
+		t.Fatal("a refused edit changed the registry")
+	}
+	if _, err := Edit("claude-haiku-5-5", Fields{Location: ptr("cloud")}); err != nil {
+		t.Errorf("edit --location cloud was refused: %v", err)
+	}
+	if _, err := Edit("ollama/gemma4:9b", Fields{Location: ptr("local")}); err != nil {
+		t.Errorf("another provider's local model was refused: %v", err)
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -37,6 +38,11 @@ type ModelClient interface {
 	NewSession(models []string, o modelclient.SessionOptions) ClientSession
 	Gateway() agents.Gateway
 	Now() time.Time
+	// SubscriptionOff is decision 2's message when the server's ping lacks
+	// the subscription passthrough (off, or older than this wt), "" when the
+	// server accepts a Claude login or cannot be asked: the picker then keeps
+	// each row's own block reason (#699).
+	SubscriptionOff(ctx context.Context) string
 }
 
 // ClientSession is a client session as the picker holds it: what
@@ -52,6 +58,17 @@ type ClientSession interface {
 type clientAdapter struct {
 	*modelclient.Client
 	ep modelclient.Endpoint
+}
+
+// SubscriptionOff asks the server's ping (the same one the launch guards
+// ask) and answers modelping.SubscriptionOffReason while it lacks the
+// passthrough.
+func (a clientAdapter) SubscriptionOff(ctx context.Context) string {
+	p, err := a.Client.Ping(ctx)
+	if err != nil || p.SubscriptionPassthrough {
+		return ""
+	}
+	return modelping.SubscriptionOffReason(a.ep.URL)
 }
 
 // NewModelClient adapts c, built for ep, to ModelClient.
@@ -126,6 +143,22 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 		if len(eligible) == 0 {
 			return msg
 		}
+		// A blocked subscription row on a server that does not accept a Claude
+		// login says decision 2's message, as a launch does, and not the
+		// server's own reason (an older server calls the row unmapped).
+		subOff := ""
+		if r.pinned != "" || slices.ContainsFunc(eligible, catalog.UsesSubscription) {
+			subOff = r.client.SubscriptionOff(ctx)
+		}
+		blockedAsOff := func(row modelapi.Row) modelapi.Row {
+			if subOff != "" && row.Action == modelapi.ActionBlock && catalog.UsesSubscription(row) {
+				row.BlockReason = row.ID + " uses your Claude subscription, but " + subOff
+			}
+			return row
+		}
+		for i := range eligible {
+			eligible[i] = blockedAsOff(eligible[i])
+		}
 		profileRows := wireProfileRows(cat.Rows, r.slots, r.agent.Name, r.tags, r.family)
 		pinnedProfile := r.pinned != "" && slices.ContainsFunc(profileRows, func(pr catalog.Row) bool { return pr.Model.ID == r.pinned })
 		if r.pinned != "" && !pinnedProfile && strings.HasPrefix(r.pinned, profiles.SlotIDPrefix) {
@@ -146,6 +179,7 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 		}
 		if r.pinned != "" && !pinnedProfile {
 			row, err := r.client.Resolve(ctx, r.pinned)
+			row = blockedAsOff(row)
 			var unknown *modelclient.UnknownModelError
 			switch {
 			case errors.As(err, &unknown):
