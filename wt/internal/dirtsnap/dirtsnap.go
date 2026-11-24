@@ -24,6 +24,8 @@ type Runner func(stdin []byte, args ...string) ([]byte, error)
 
 // Limits bounds a build. Zero means unlimited.
 type Limits struct {
+	// MaxFiles counts status entries (the changed paths), not all files in
+	// the tree.
 	MaxFiles int
 	MaxBytes int64
 }
