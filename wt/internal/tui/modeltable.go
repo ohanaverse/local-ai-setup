@@ -7,6 +7,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/windows"
 )
 
 // modelTable is the rendered selector: a header line (shown as the list's
@@ -27,6 +28,7 @@ const (
 	colStatus
 	colRunning
 	colCost
+	colCtx
 	col1D
 	col7D
 	col30D
@@ -40,13 +42,16 @@ const (
 // highlighted row's price and tier when their columns are gone.
 // MODEL, STATUS and RUNNING are not in it: they say what a row is and whether
 // Enter launches or starts it, so they are never dropped.
-var colDropOrder = []int{col30D, col7D, col1D, colCost, colTier, colLoc, colFamily}
+//
+// CTX, the context window (#689), is given up just before COST: it is one
+// short cell, and the mode line still names the highlighted row's window.
+var colDropOrder = []int{col30D, col7D, col1D, colCtx, colCost, colTier, colLoc, colFamily}
 
 // unratedDropOrder is colDropOrder for a table in which no row has a tier or
 // a score (no tiers.toml, or none of its models in it): TIER is a column of
 // dashes there, so it goes first and never costs a column that says
 // something.
-var unratedDropOrder = []int{colTier, col30D, col7D, col1D, colCost, colLoc, colFamily}
+var unratedDropOrder = []int{colTier, col30D, col7D, col1D, colCtx, colCost, colLoc, colFamily}
 
 const rowPrefixWidth = 4 // ref column (2) + rotation marker (2), composed by modelItem.Title()
 
@@ -105,6 +110,25 @@ func costCell(r tableRow) string {
 	return text
 }
 
+// windowOf is a row's context window in tokens, 0 when unknown: a model's
+// HostContext, and for a slot-profile row the smallest over its slot models
+// (ProfileRow.Window, "-" when any slot's is unknown).
+func windowOf(r tableRow) int {
+	if r.Profile != nil {
+		return r.Profile.Window()
+	}
+	return r.Model.HostContext
+}
+
+// windowNote is the mode line's name of a row's window ("ctx 262k"), "" when
+// it is unknown.
+func windowNote(r tableRow) string {
+	if w := windowOf(r); w > 0 {
+		return "ctx " + windows.Short(w)
+	}
+	return ""
+}
+
 func padRunes(s string, w int) string { return tuilayout.PadRunes(s, w) }
 
 func maxRunes(min int, ss ...string) int { return tuilayout.MaxRunes(min, ss...) }
@@ -137,8 +161,10 @@ func buildTable(in tableInput, lastID string) modelTable {
 // in-use column).
 func renderTable(rows []tableRow, agent string, refs map[string]int, lastID string) modelTable {
 	cost := make([]string, len(rows))
+	ctx := make([]string, len(rows))
 	fam := make([]string, len(rows))
 	c1, c7, c30 := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
+	ctxW := len("CTX")
 	famW, idW, costW, w1, w7, w30 := len("FAMILY"), len("MODEL"), len("COST"), len("1D"), len("7D"), len("30D")
 	wS, wT := len("STATUS"), len("TIER")
 	tier := make([]string, len(rows))
@@ -167,6 +193,8 @@ func renderTable(rows []tableRow, agent string, refs map[string]int, lastID stri
 		tier[i] = r.tier.Cell(digits)
 		rated = rated || tier[i] != "-"
 		wT = maxRunes(wT, tier[i])
+		ctx[i] = windows.Short(windowOf(r))
+		ctxW = maxRunes(ctxW, ctx[i])
 		c1[i], c7[i], c30[i] = fmt.Sprint(r.counts.OneDay), fmt.Sprint(r.counts.SevenDay), fmt.Sprint(r.counts.ThirtyDay)
 		famW = maxRunes(famW, fam[i])
 		idW = maxRunes(idW, r.Model.ID)
@@ -187,10 +215,10 @@ func renderTable(rows []tableRow, agent string, refs map[string]int, lastID stri
 	cols := tuilayout.NewColumns(
 		[]string{
 			padRunes("FAMILY", famW), padRunes("MODEL", idW), padRunes("TIER", wT), padRunes("LOC", 5), padRunes("STATUS", wS),
-			padRunes("RUNNING", 7), padRunes(costHead, costW),
+			padRunes("RUNNING", 7), padRunes(costHead, costW), padRunes("CTX", ctxW),
 			padRunes("1D", w1), padRunes("7D", w7), padRunes("30D", w30),
 		},
-		[]int{famW, idW, wT, 5, wS, 7, costW, w1, w7, w30},
+		[]int{famW, idW, wT, 5, wS, 7, costW, ctxW, w1, w7, w30},
 		rowPrefixWidth, dropOrder,
 	)
 	header := cols.Header()
@@ -208,10 +236,10 @@ func renderTable(rows []tableRow, agent string, refs map[string]int, lastID stri
 		// trims them.
 		cells := []string{
 			padRunes(fam[i], famW), padRunes(r.Model.ID, idW), padRunes(tier[i], wT), padRunes(loc, 5), padRunes(string(r.Status), wS),
-			padRunes(runningText(r.Row), 7), padRunes(cost[i], costW),
+			padRunes(runningText(r.Row), 7), padRunes(cost[i], costW), padRunes(ctx[i], ctxW),
 			padRunes(c1[i], w1), padRunes(c7[i], w7), padRunes(c30[i], w30),
 		}
-		it := &modelItem{model: r.Model, line: cols.Line(cells), cells: cells, cols: cols, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID], cost: costNote(r), tier: r.tier.Notes()}
+		it := &modelItem{model: r.Model, line: cols.Line(cells), cells: cells, cols: cols, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID], cost: costNote(r), window: windowNote(r), tier: r.tier.Notes()}
 		switch r.Action() {
 		case catalog.ActionBlock:
 			it.blocked, it.blockedShort = r.BlockReason(), r.shortBlock
@@ -222,7 +250,7 @@ func renderTable(rows []tableRow, agent string, refs map[string]int, lastID stri
 			// The slot line takes the mode line's place for this row
 			// (slotLine), so the item carries the profile and its slots'
 			// tiers, and no price or tier note.
-			it.profile, it.cost, it.tier, it.slotTiers = r.Profile, "", nil, r.slotTiers
+			it.profile, it.cost, it.window, it.tier, it.slotTiers = r.Profile, "", "", nil, r.slotTiers
 		}
 		items = append(items, it)
 	}

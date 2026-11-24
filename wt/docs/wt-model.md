@@ -465,7 +465,15 @@ that makes the alias's window smaller, or unknown where it was known, asks
 y/N (default No) and names the client sessions using the alias (they keep the
 window they launched with); `--accept-smaller-window` answers yes. Without a
 terminal it refuses: `approval missing: pass --accept-smaller-window (there is
-no terminal to ask); nothing was changed`, exit 3. `--dry-run` prints the
+no terminal to ask); nothing was changed`, exit 3. The window decision is
+checked again inside the registry write (#689): the write recomputes the old
+and new windows over the document under its lock, and a shrink that is not
+exactly the pair you approved (another program changed a model's window since,
+or nothing was approved because the first check saw no shrink) is refused with
+`<id>'s context window would now go from X to Y tokens (...); the window
+changed since the check; nothing was changed, rerun` (a plain error, exit 1).
+It refuses rather than asks again, so no prompt runs under the lock;
+`--accept-smaller-window` accepts any shrink. `--dry-run` prints the
 targets, the window change and each database row the write would plan (row
 id, target, order and the 8-character hash `h8`, never the parameters),
 changes nothing and writes no row at all when no proxy pair is set. The rows

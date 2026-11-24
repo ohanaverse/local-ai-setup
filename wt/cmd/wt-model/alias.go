@@ -22,6 +22,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/spf13/cobra"
 )
 
@@ -337,6 +338,7 @@ func (h *host) runAliasSet(ctx context.Context, out, errOut io.Writer, rec serve
 			return cli.Declined("nothing was changed")
 		}
 	}
+	req.Guard = aliasShrinkGuard(h.tiersIndex(), req, acceptSmaller, shrinks, oldW, newW)
 	changed, err := modeladmin.SetAlias(req)
 	if err != nil {
 		return err
@@ -347,6 +349,32 @@ func (h *host) runAliasSet(ctx context.Context, out, errOut io.Writer, rec serve
 	}
 	fmt.Fprintf(out, "set alias: %s\n", req.ID)
 	return h.syncAndWarn(out, errOut, nil)
+}
+
+// aliasShrinkGuard is the shrink check run again inside the registry write
+// (#689): the window decision above read the registry before the lock, so a
+// concurrent `model edit --context-window` could turn an approved (or
+// harmless) set into an unapproved shrink. Under the lock it recomputes the
+// windows over the document and refuses a shrink unless it is exactly the
+// (old, new) pair that was approved, or --accept-smaller-window was given.
+// Refusing, not re-asking, keeps a prompt out of the lock. It is pure (the
+// apply may run up to three times) and ix is the index the first check used.
+func aliasShrinkGuard(ix tiers.Index, req modeladmin.AliasRequest, acceptSmaller, approvedShrink bool, approvedOld, approvedNew int) func(*config.Config) error {
+	return func(c *config.Config) error {
+		if acceptSmaller {
+			return nil
+		}
+		wc := modeladmin.AliasWindowChange(c, ix, req)
+		if !wc.Shrinks || approvedShrink && wc.Old == approvedOld && wc.New == approvedNew {
+			return nil
+		}
+		approved := "nothing was approved"
+		if approvedShrink {
+			approved = fmt.Sprintf("you approved %s to %s", modeladmin.WindowText(approvedOld), modeladmin.WindowText(approvedNew))
+		}
+		return fmt.Errorf("%s's context window would now go from %s to %s tokens (%s); the window changed since the check; nothing was changed, rerun",
+			req.ID, modeladmin.WindowText(wc.Old), modeladmin.WindowText(wc.New), approved)
+	}
 }
 
 // printAliasDryRun is `alias set --dry-run`: the targets, the window change

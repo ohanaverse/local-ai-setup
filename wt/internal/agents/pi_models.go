@@ -80,12 +80,27 @@ const (
 	piLitellmProviderID = "litellm"
 )
 
+// piDefaultWindow is the contextWindow wt writes for a launch entry whose
+// window the catalog does not know (the value wt always wrote before #689).
+const piDefaultWindow = 262144
+
+// piTarget is one gateway id wt syncs into pi's litellm block with the window
+// the catalog reports for it (0 when unknown).
+type piTarget struct {
+	ID     string
+	Window int
+}
+
 // launchEntry is the models.json entry wt writes for a model it launches
-// under id.
-func launchEntry(id string) piModel {
+// under id. window is the catalog's context window for it; a window that is
+// not positive (unknown) falls back to piDefaultWindow.
+func launchEntry(id string, window int) piModel {
+	if window <= 0 {
+		window = piDefaultWindow
+	}
 	return piModel{
 		Launch:        true,
-		ContextWindow: 262144,
+		ContextWindow: window,
 		ID:            id,
 		Input:         []string{"text", "image"},
 		Reasoning:     true,
@@ -94,9 +109,13 @@ func launchEntry(id string) piModel {
 
 // syncLitellmBlock is the gateway sync's block builder: provider "litellm" gets baseURL+"/v1" and apiKey (and the
 // openai-completions api when it has none) plus a _launch entry for every id
-// it lacks. Existing entries are never removed or reordered. Returns whether
-// the block changed.
-func syncLitellmBlock(f piModelsFile, baseURL, apiKey string, ids []string) bool {
+// it lacks. Existing entries are never removed or reordered. The catalog is
+// the source of truth for a window: an existing entry wt launches
+// (_launch: true) has its contextWindow updated when the catalog's is known
+// (> 0) and differs; no other field changes, and an entry with an unknown
+// catalog window keeps the value it has (#689). Returns whether the block
+// changed.
+func syncLitellmBlock(f piModelsFile, baseURL, apiKey string, targets []piTarget) bool {
 	p := f.Providers[piLitellmProviderID]
 	mutated := false
 	if p.BaseURL != baseURL+"/v1" || p.APIKey != apiKey {
@@ -107,16 +126,23 @@ func syncLitellmBlock(f piModelsFile, baseURL, apiKey string, ids []string) bool
 		}
 		mutated = true
 	}
-	existing := make(map[string]bool, len(p.Models))
-	for _, m := range p.Models {
-		existing[m.ID] = true
+	// p.Models is shared with the caller's copy of the block; clone it before
+	// an in-place window update so a no-op sync never writes through it.
+	p.Models = slices.Clone(p.Models)
+	index := make(map[string]int, len(p.Models))
+	for i, m := range p.Models {
+		index[m.ID] = i
 	}
-	for _, id := range ids {
-		if existing[id] {
+	for _, t := range targets {
+		if i, ok := index[t.ID]; ok {
+			if m := &p.Models[i]; m.Launch && t.Window > 0 && m.ContextWindow != t.Window {
+				m.ContextWindow = t.Window
+				mutated = true
+			}
 			continue
 		}
-		p.Models = append(p.Models, launchEntry(id))
-		existing[id] = true
+		p.Models = append(p.Models, launchEntry(t.ID, t.Window))
+		index[t.ID] = len(p.Models) - 1
 		mutated = true
 	}
 	if mutated {
@@ -175,14 +201,14 @@ func syncGateway(gw Gateway, path string, models []config.Model, target config.M
 	if f.Providers == nil {
 		f.Providers = make(map[string]piProvider, 1)
 	}
-	var ids []string
+	var targets []piTarget
 	for _, m := range append(slices.Clone(models), target) {
 		if m.Native || gatewayID(m) == "" {
 			continue
 		}
-		ids = append(ids, gatewayID(m))
+		targets = append(targets, piTarget{ID: gatewayID(m), Window: m.HostContext})
 	}
-	mutated := syncLitellmBlock(f, gw.origin(), gw.Token, ids)
+	mutated := syncLitellmBlock(f, gw.origin(), gw.Token, targets)
 	for id, p := range f.Providers {
 		if id != piLitellmProviderID && p.WTOwned {
 			delete(f.Providers, id)

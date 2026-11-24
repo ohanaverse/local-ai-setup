@@ -59,11 +59,11 @@ func TestModelItemLineFormat(t *testing.T) {
 				{ID: "m1", Family: "fam-a", ProviderID: "p1", Location: "local", Tags: []string{"t1", "t2"}},
 			},
 			// No model is native, running or scored, so all sort by id: m1, m2,
-			// m3. No cost data renders "-"; usage is per model.
+			// m3. No cost or window data renders "-"; usage is per model.
 			expected: []string{
-				"fam-a m1 - local ok - - 1 2 3",
-				"fam-a m2 - local ok - - 10 20 30",
-				"fam-b m3 - cloud ok - - 100 200 300",
+				"fam-a m1 - local ok - - - 1 2 3",
+				"fam-a m2 - local ok - - - 10 20 30",
+				"fam-b m3 - cloud ok - - - 100 200 300",
 			},
 		},
 		{
@@ -73,7 +73,7 @@ func TestModelItemLineFormat(t *testing.T) {
 			},
 			// An empty family renders as "-".
 			expected: []string{
-				"- m1 - local ok - - 1 2 3",
+				"- m1 - local ok - - - 1 2 3",
 			},
 		},
 	}
@@ -81,7 +81,7 @@ func TestModelItemLineFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tbl := buildTable(tableInput{models: tt.models, usage: store}, "")
-			if got, want := strings.Join(strings.Fields(tbl.header), " "), "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"; got != want {
+			if got, want := strings.Join(strings.Fields(tbl.header), " "), "FAMILY MODEL TIER LOC STATUS RUNNING COST CTX 1D 7D 30D"; got != want {
 				t.Errorf("header = %q, want %q", got, want)
 			}
 			if len(tbl.items) != len(tt.expected) {

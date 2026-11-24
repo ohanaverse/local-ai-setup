@@ -145,6 +145,7 @@ func applySlotEdit(w io.Writer, a *app, edit func([]byte) ([]byte, error), o slo
 func slotsAddCmd(a *app) *cobra.Command {
 	var slotFlags, envFlags []string
 	var def, comment string
+	var ctxTokens int
 	c := &cobra.Command{
 		Use: "add <name>", Short: "Add a slot profile for claude", Args: cobra.ExactArgs(1), SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -164,7 +165,10 @@ func slotsAddCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p := profiles.SlotProfile{Name: name, Agent: slotAgent, Default: def, Slots: slots}
+			if ctxTokens < 0 {
+				return fmt.Errorf("--context %d: use a token count, or leave it out to derive the window", ctxTokens)
+			}
+			p := profiles.SlotProfile{Name: name, Agent: slotAgent, Default: def, Slots: slots, Context: ctxTokens}
 			if len(env) > 0 {
 				p.Env = env
 			}
@@ -177,12 +181,14 @@ func slotsAddCmd(a *app) *cobra.Command {
 	c.Flags().StringVar(&def, "default", "sonnet", "the default slot")
 	c.Flags().StringArrayVar(&envFlags, "env", nil, "KEY=VALUE env entry (repeatable)")
 	c.Flags().StringVar(&comment, "comment", "", "comment written above the entry")
+	c.Flags().IntVar(&ctxTokens, "context", 0, "context window in tokens the session declares (default: derived from the slot models)")
 	return c
 }
 
 func slotsSetCmd(a *app) *cobra.Command {
 	var slotFlags, envFlags, unsetFlags []string
 	var def string
+	var ctxTokens int
 	c := &cobra.Command{
 		Use: "set <name>", Short: "Change slots, default or env of a slot profile", Args: cobra.ExactArgs(1), SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -195,8 +201,8 @@ func slotsSetCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(slots) == 0 && len(env) == 0 && len(unsetFlags) == 0 && !cmd.Flags().Changed("default") {
-				return fmt.Errorf("nothing to change: give at least one of --slot, --default, --env, --unset-env")
+			if len(slots) == 0 && len(env) == 0 && len(unsetFlags) == 0 && !cmd.Flags().Changed("default") && !cmd.Flags().Changed("context") {
+				return fmt.Errorf("nothing to change: give at least one of --slot, --default, --env, --unset-env, --context")
 			}
 			patch := slotedit.Patch{UnsetEnv: unsetFlags}
 			if len(slots) > 0 {
@@ -207,6 +213,12 @@ func slotsSetCmd(a *app) *cobra.Command {
 			}
 			if cmd.Flags().Changed("default") {
 				patch.Default = &def
+			}
+			if cmd.Flags().Changed("context") {
+				if ctxTokens < 0 {
+					return fmt.Errorf("--context %d: use a token count, or 0 to derive the window again", ctxTokens)
+				}
+				patch.Context = &ctxTokens
 			}
 			o, err := slotEditOptions(cmd.Context(), a, name)
 			if err != nil {
@@ -221,6 +233,7 @@ func slotsSetCmd(a *app) *cobra.Command {
 	c.Flags().StringVar(&def, "default", "", "new default slot")
 	c.Flags().StringArrayVar(&envFlags, "env", nil, "KEY=VALUE env entry to set (repeatable)")
 	c.Flags().StringArrayVar(&unsetFlags, "unset-env", nil, "env KEY to remove (repeatable)")
+	c.Flags().IntVar(&ctxTokens, "context", 0, "context window in tokens the session declares; 0 derives it from the slot models again")
 	return c
 }
 

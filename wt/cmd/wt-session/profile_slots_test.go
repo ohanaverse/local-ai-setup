@@ -567,3 +567,54 @@ func TestProfileShowMasksTheHeaderToken(t *testing.T) {
 		}
 	}
 }
+
+// TestProfileShowSlotProfileContext pins #689 for `wt profile show` and the
+// list: the context line gives the smallest window over the slot models ("-"
+// when one is unknown), the declared value and where it comes from (the
+// profile's own key, else the slots), and the list names a declared key.
+func TestProfileShowSlotProfileContext(t *testing.T) {
+	f := newFakeModelServer(t,
+		modelapi.Row{ID: "openrouter/a", GatewayID: "openrouter/a", ProviderID: "openrouter", ModelName: "a", Location: "cloud", Context: 262144,
+			Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 1},
+		modelapi.Row{ID: "openrouter/b", GatewayID: "openrouter/b", ProviderID: "openrouter", ModelName: "b", Location: "cloud", Context: 131072,
+			Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 2},
+		modelapi.Row{ID: "openrouter/c", GatewayID: "openrouter/c", ProviderID: "openrouter", ModelName: "c", Location: "cloud",
+			Tags: []string{"code"}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Order: 3})
+	f.Token = "sk-test-1234"
+	mk := func(name string, ctx int, slots map[string]string) profiles.SlotCheck {
+		c := slotFixtureCheck(0, name, "sonnet", slots)
+		c.Profile.Context = ctx
+		return c
+	}
+	for _, tc := range []struct {
+		name  string
+		ctx   int
+		slots map[string]string
+		want  string
+	}{
+		{"derived", 0, map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"}, "context: 131k (declared 131k, from the slots)\n"},
+		{"key wins", 90000, map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"}, "context: 131k (declared 90k, from the profile context key)\n"},
+		{"unknown", 0, map[string]string{"sonnet": "openrouter/c"}, "context: - (nothing declared: window unknown)\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := pointAtFake(t, f, "")
+			a.profiles = profiles.Store{Enabled: true}
+			a.slotChecks = []profiles.SlotCheck{mk(tc.name, tc.ctx, tc.slots)}
+			out, err := runProfileCmd(t, a, "show", "-A", "claude", "-M", "profile/"+tc.name)
+			if err != nil || !strings.Contains(out, tc.want) {
+				t.Errorf("err = %v; stdout lacks %q:\n%s", err, tc.want, out)
+			}
+			var sb strings.Builder
+			if err := writeSlotProfileList(&sb, a); err != nil {
+				t.Fatal(err)
+			}
+			wantList := "ok\n"
+			if tc.ctx > 0 {
+				wantList = "ok, context 90k\n"
+			}
+			if !strings.Contains(sb.String(), wantList) {
+				t.Errorf("list = %q, want %q", sb.String(), wantList)
+			}
+		})
+	}
+}

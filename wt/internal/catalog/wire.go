@@ -38,6 +38,14 @@ func ToModel(r modelapi.Row) config.Model {
 	// targets (0 when one is unknown). The server decides; claude's window
 	// rules read it (#626).
 	m.HostContext = r.Context
+	if r.Context <= 0 && r.Kind == modelapi.KindAlias {
+		for _, t := range r.Targets {
+			if t.Context <= 0 {
+				m.WindowLimiter = t.ID
+				break
+			}
+		}
+	}
 	return m
 }
 

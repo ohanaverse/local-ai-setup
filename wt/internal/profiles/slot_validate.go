@@ -171,6 +171,11 @@ func slotBodyErr(p SlotProfile, declared []string, d SlotDrivers) error {
 	if len(p.Slots) == 0 {
 		return errors.New("slots is empty: assign at least one slot")
 	}
+	// context is accepted for any slot agent but only claude declares it; 0 or
+	// absent means derived from the slot models (#689).
+	if p.Context < 0 {
+		return fmt.Errorf("context %d is negative: use a token count, or leave it out to derive the window", p.Context)
+	}
 	slotNames := slices.Sorted(maps.Keys(p.Slots))
 	for _, slot := range slotNames {
 		if !slices.Contains(declared, slot) {

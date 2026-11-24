@@ -42,6 +42,9 @@ type Patch struct {
 	Default  *string           // the new default
 	SetEnv   map[string]string // env key → value; set or added
 	UnsetEnv []string          // env keys to remove; each must be set
+	// Context sets the entry's `context` key (a window in tokens); 0 removes
+	// the key, which means the window is derived. nil changes nothing.
+	Context *int
 }
 
 // slotOrder is the order Add writes, and Set inserts, Claude Code's slots;
@@ -393,6 +396,9 @@ func Add(src []byte, p profiles.SlotProfile, comment string) ([]byte, error) {
 	b.WriteString(keyLine("name", p.Name, 7))
 	b.WriteString(keyLine("agent", p.Agent, 7))
 	b.WriteString(keyLine("default", p.Default, 7))
+	if p.Context > 0 {
+		b.WriteString(fmt.Sprintf("%-7s = %d\n", "context", p.Context))
+	}
 	b.WriteString("\n[profile.slots]\n")
 	slots := orderedSlots(p.Slots)
 	width := 0
@@ -531,6 +537,21 @@ func Set(src []byte, name string, patch Patch) ([]byte, error) {
 	if patch.Default != nil {
 		if _, err := put("", "default", *patch.Default); err != nil {
 			return nil, err
+		}
+	}
+	if patch.Context != nil {
+		if *patch.Context < 0 {
+			return nil, fmt.Errorf("slotedit: context %d is negative", *patch.Context)
+		}
+		own := secs[""]
+		i, has := own.keys["context"]
+		switch {
+		case has && *patch.Context == 0:
+			drop[i] = true
+		case has:
+			replace[i] = intLine(lines[i], *patch.Context)
+		case *patch.Context > 0:
+			insert[own.last] = append(insert[own.last], fmt.Sprintf("%-*s = %d\n", own.width(), "context", *patch.Context))
 		}
 	}
 	var rows []string
@@ -702,4 +723,17 @@ func mentions(lines []line, s string) bool {
 // that merely starts with s (alias/main-2 for alias/main) does not count.
 func holdsWhole(l line, s string) bool {
 	return strings.Contains(string(l), `"`+s+`"`) || strings.Contains(string(l), `'`+s+`'`)
+}
+
+// intLine rewrites the value of the one-line `key = value` line l to n,
+// keeping its key, padding and a trailing comment as they were.
+func intLine(l line, n int) string {
+	i := strings.Index(l, "=")
+	rest := strings.TrimLeft(l[i+1:], " \t")
+	start := len(l) - len(rest)
+	end := strings.IndexAny(l[start:], " \t#\n")
+	if end < 0 {
+		return l[:start] + fmt.Sprint(n)
+	}
+	return l[:start] + fmt.Sprint(n) + l[start+end:]
 }

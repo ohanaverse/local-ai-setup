@@ -543,3 +543,31 @@ func TestSlotProfileHeaderValueRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateSlotsContext pins #689: a negative `context` blocks the
+// profile, 0 (derived) and a positive value pass for any slot agent.
+func TestValidateSlotsContext(t *testing.T) {
+	for _, tc := range []struct {
+		context int
+		ok      bool
+	}{{0, true}, {131072, true}, {-1, false}} {
+		for _, p := range []SlotProfile{validClaudeSlot(), validLenientSlot()} {
+			p.Context = tc.context
+			c := ValidateSlots(SlotStore{Profiles: []SlotProfile{p}}, slotTestDrivers())[0]
+			if (c.Err == nil) != tc.ok {
+				t.Errorf("%s context %d: err = %v, want ok=%v", p.Agent, tc.context, c.Err, tc.ok)
+			}
+			if !tc.ok && c.Err != nil && !strings.Contains(c.Err.Error(), "context") {
+				t.Errorf("error does not name the key: %v", c.Err)
+			}
+		}
+	}
+}
+
+// TestParseSlotsReadsContext checks the key reaches the store.
+func TestParseSlotsReadsContext(t *testing.T) {
+	s, err := ParseSlots([]byte("[[profile]]\nname = \"a\"\nagent = \"claude\"\ndefault = \"sonnet\"\ncontext = 99000\n[profile.slots]\nsonnet = \"x/y\"\n"))
+	if err != nil || len(s.Profiles) != 1 || s.Profiles[0].Context != 99000 || len(s.Unknown) != 0 {
+		t.Fatalf("store = %+v, err = %v", s, err)
+	}
+}

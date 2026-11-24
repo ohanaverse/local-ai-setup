@@ -403,6 +403,9 @@ func remoteModeLine(it *modelItem, width int) string {
 			break
 		}
 	}
+	if cand := join(line, it.window); lipgloss.Width(cand) <= width {
+		line = cand
+	}
 	for _, n := range it.tier {
 		if cand := join(line, n); lipgloss.Width(cand) <= width {
 			return cand

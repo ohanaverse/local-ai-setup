@@ -17,6 +17,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/windows"
 )
 
 // writeSlotProfileList prints the slot-profile section of `wt profile list`:
@@ -51,7 +52,7 @@ func writeSlotProfileList(w io.Writer, a *app) error {
 		case c.Err != nil:
 			fmt.Fprintf(w, "  %s: %s error: %v\n", c.Profile.Agent, c.Label(), c.Err)
 		default:
-			fmt.Fprintf(w, "  %s: %s ok\n", c.Profile.Agent, c.Label())
+			fmt.Fprintf(w, "  %s: %s ok%s\n", c.Profile.Agent, c.Label(), slotContextSuffix(c.Profile))
 		}
 	}
 	for _, key := range a.slotUnknown {
@@ -61,6 +62,17 @@ func writeSlotProfileList(w io.Writer, a *app) error {
 		fmt.Fprintf(w, "  warning: %s\n", note)
 	}
 	return nil
+}
+
+// slotContextSuffix is the window a profile declares by its own `context`
+// key, as ", context 131k" ("" when the key is absent: the window is then
+// derived from the slot models, which this list cannot read; `wt profile show`
+// says it, #689).
+func slotContextSuffix(p profiles.SlotProfile) string {
+	if p.Context <= 0 {
+		return ""
+	}
+	return ", context " + windows.Short(p.Context)
 }
 
 // writeSlotProfileShow prints `wt profile show -M profile/<name>` for row, on
@@ -85,6 +97,19 @@ func writeSlotProfileShow(w io.Writer, agent, id string, row catalog.Row, origin
 	sp := p.Check.Profile
 	if p.Check.Alias.Rest != "" {
 		fmt.Fprintf(w, "default: %s — %s\n", sp.Default, p.Check.Alias.Doc)
+	}
+	// The window: what the slot models allow (the smallest, "-" when one is
+	// unknown) and what the session declares, with where that comes from.
+	if declared, source := agents.SlotWindow(p.Launch()); source != "" {
+		line := fmt.Sprintf("context: %s", windows.Short(p.Window()))
+		if declared > 0 {
+			line += fmt.Sprintf(" (declared %s, from the %s)", windows.Short(declared), source)
+		} else {
+			line += " (nothing declared: window " + source + ")"
+		}
+		fmt.Fprintln(w, line)
+	} else {
+		fmt.Fprintf(w, "context: %s\n", windows.Short(p.Window()))
 	}
 	for _, slot := range p.Check.Declared {
 		m := p.Models[slot]

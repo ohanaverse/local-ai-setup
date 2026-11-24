@@ -107,7 +107,7 @@ func TestSyncLitellmBlockKeepsWhatIsThere(t *testing.T) {
 			{ID: "ollama/a", Launch: true},
 		}},
 	}}
-	if !syncLitellmBlock(f, "http://gw", "tok", []string{"ollama/b", "ollama/a", "ollama/c"}) {
+	if !syncLitellmBlock(f, "http://gw", "tok", []piTarget{{ID: "ollama/b"}, {ID: "ollama/a"}, {ID: "ollama/c"}}) {
 		t.Fatal("sync reported no change for a new origin and two new ids")
 	}
 	p := f.Providers[piLitellmProviderID]
@@ -124,7 +124,7 @@ func TestSyncLitellmBlockKeepsWhatIsThere(t *testing.T) {
 	if p.API != "openai-responses" || p.BaseURL != "http://gw/v1" || p.APIKey != "tok" {
 		t.Errorf("block = api %q base %q key %q, want the user's api kept and the gateway's origin and token", p.API, p.BaseURL, p.APIKey)
 	}
-	if syncLitellmBlock(f, "http://gw", "tok", []string{"ollama/a"}) {
+	if syncLitellmBlock(f, "http://gw", "tok", []piTarget{{ID: "ollama/a"}}) {
 		t.Error("a second sync with nothing new reported a change")
 	}
 }
@@ -165,5 +165,45 @@ func TestPiGatewayKeepsAnExternalGatewayBlockByteForByte(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("user block changed:\n got  %s\n want %s", raw.Providers["ext"], block)
+	}
+}
+
+// TestSyncLitellmBlockWindows pins #689: a new entry takes the catalog window
+// (piDefaultWindow when unknown), an existing _launch entry follows a changed
+// catalog window, an unknown window and a _launch:false entry keep theirs, and
+// a repeat sync is a no-op.
+func TestSyncLitellmBlockWindows(t *testing.T) {
+	f := piModelsFile{Providers: map[string]piProvider{
+		piLitellmProviderID: {API: "openai-completions", BaseURL: "http://gw/v1", APIKey: "tok", Models: []piModel{
+			{ID: "m/changed", Launch: true, ContextWindow: 262144, Reasoning: true},
+			{ID: "m/unknown", Launch: true, ContextWindow: 12345},
+			{ID: "m/off", Launch: false, ContextWindow: 1000},
+		}},
+	}}
+	targets := []piTarget{
+		{ID: "m/changed", Window: 1000000},
+		{ID: "m/unknown"},
+		{ID: "m/off", Window: 500000},
+		{ID: "m/new", Window: 128000},
+		{ID: "m/new-unknown"},
+	}
+	if !syncLitellmBlock(f, "http://gw", "tok", targets) {
+		t.Fatal("no change reported")
+	}
+	got := map[string]int{}
+	for _, m := range f.Providers[piLitellmProviderID].Models {
+		got[m.ID] = m.ContextWindow
+	}
+	want := map[string]int{"m/changed": 1000000, "m/unknown": 12345, "m/off": 1000, "m/new": 128000, "m/new-unknown": piDefaultWindow}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("%s window = %d, want %d", id, got[id], w)
+		}
+	}
+	if !f.Providers[piLitellmProviderID].Models[0].Reasoning {
+		t.Error("a window update changed another field")
+	}
+	if syncLitellmBlock(f, "http://gw", "tok", targets) {
+		t.Error("a repeat sync reported a change")
 	}
 }

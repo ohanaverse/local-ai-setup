@@ -80,6 +80,14 @@ func runLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, 
 			fmt.Fprintln(osStderr, note)
 		}
 	}
+	// A gateway model whose window nobody knows: a note, never a warning (a
+	// smoke run treats LaunchCmd.Warn as a failure), and none when claude's
+	// environment already declares a window (#689).
+	if agent != "claude" || !agents.EnvDeclaresWindow(cmd.Env) && !agents.EnvDeclaresWindow(os.Environ()) {
+		if note := agents.WindowNote(agent, m); note != "" {
+			fmt.Fprintf(osStderr, "wt: note: %s\n", note)
+		}
+	}
 	return runAgentCmd(cmd, agent, m, cfg, pp, tail)
 }
 

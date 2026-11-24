@@ -244,3 +244,32 @@ func TestClaudeSlotWithTwoAliasesDeclaresTheMinimum(t *testing.T) {
 		t.Errorf("ANTHROPIC_DEFAULT_HAIKU_MODEL = %v, want alias/haiku-local", got)
 	}
 }
+
+// TestWindowNote pins #689's launch-time note: only claude and pi, only a
+// non-native gateway model with no window, naming the fix; an alias names the
+// target that has none.
+func TestWindowNote(t *testing.T) {
+	known := config.Model{ID: "ollama/a:cloud", HostContext: 1000}
+	unknown := config.Model{ID: "omlx/b", GatewayID: "omlx/b"}
+	alias := config.Model{ID: "alias/x", GatewayID: "alias/x", WindowLimiter: "omlx/b"}
+	native := config.Model{ID: "claude/opus", Native: true}
+	if got := WindowNote("claude", known, native); got != "" {
+		t.Errorf("known + native = %q, want none", got)
+	}
+	if got := WindowNote("codex", unknown); got != "" {
+		t.Errorf("codex = %q, want none", got)
+	}
+	got := WindowNote("claude", known, unknown)
+	for _, want := range []string{"omlx/b", "claude assumes 200K", "wt-model model edit omlx/b --context-window N"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("claude note %q lacks %q", got, want)
+		}
+	}
+	if got := WindowNote("pi", unknown); !strings.Contains(got, "pi assumes 262144") {
+		t.Errorf("pi note = %q", got)
+	}
+	got = WindowNote("claude", alias)
+	if !strings.Contains(got, "alias/x") || !strings.Contains(got, "wt-model model edit omlx/b --context-window N") {
+		t.Errorf("alias note = %q", got)
+	}
+}

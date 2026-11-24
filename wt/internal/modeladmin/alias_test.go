@@ -369,3 +369,28 @@ func TestAliasWindowChange(t *testing.T) {
 		t.Errorf("unread sessions should add nothing: %q", got)
 	}
 }
+
+// TestSetAliasGuardRunsInsideTheWrite pins #689: Guard is handed the
+// document's rows with each model's window (RefConfig), and its error refuses
+// the write with the file unchanged.
+func TestSetAliasGuardRunsInsideTheWrite(t *testing.T) {
+	path := scratchRegistry(t, aliasRegistry)
+	before := read(t, path)
+	r := AliasRequest{ID: "alias/g", Targets: targets("openrouter/big", 1)}
+	var seen int
+	r.Guard = func(cfg *config.Config) error {
+		wc := AliasWindowChange(cfg, tiers.Index{}, r)
+		seen = wc.New
+		return errors.New("guard says no")
+	}
+	if _, err := SetAlias(r); err == nil || err.Error() != "guard says no" || read(t, path) != before {
+		t.Fatalf("SetAlias = %v; want the guard's refusal and the file unchanged", err)
+	}
+	if seen != 262144 {
+		t.Errorf("the guard read window %d from the document, want 262144", seen)
+	}
+	r.Guard = func(*config.Config) error { return nil }
+	if changed, err := SetAlias(r); err != nil || !changed {
+		t.Fatalf("SetAlias with a passing guard = %v, %v", changed, err)
+	}
+}
