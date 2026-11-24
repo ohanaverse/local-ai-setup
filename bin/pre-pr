@@ -1,10 +1,17 @@
 #!/bin/bash
 # pre-pr — the whole of what CI used to check, run locally in a CI-like environment.
 #
-# GitHub CI is disabled; this is the gate to run before pushing a PR. It runs
-# `make test-all` (root lint, llmbench, modeltiers, wt build/vet/tests and the
-# GOMAXPROCS=1 pass), `wt`'s own `make check` (format and shell lint), and then
-# bin/check-config-dirs-untouched.
+# GitHub CI is disabled; this is the gate to run before pushing a PR. It checks
+# what `make test-all` checks (root lint, llmbench, modeltiers, wt build/vet/tests
+# and the GOMAXPROCS=1 pass), then `wt`'s own `make check` (format and shell
+# lint), then bin/check-config-dirs-untouched.
+#
+# By default the work is laid out for wall time (4m42s instead of 15m39s, measured
+# 2026-11-24): the Python half (lint, llmbench, modeltiers) and the Go half (build, vet,
+# then the tests through bin/go-test-sharded, which splits the slow packages
+# into shards and runs the multi-P and one-P passes together) run at the same
+# time. `--serial` runs plain `make test-all` instead, one stage after another
+# and unsharded: use it to compare, or when a sharded failure needs ruling out.
 #
 # The last check only means something on a machine that never ran wt or
 # llmbench, which a developer machine is not. So everything runs with HOME
@@ -15,22 +22,26 @@
 # HOME first, so the scratch HOME costs nothing but the first-use setup.
 #
 # Usage:
-#   pre-pr            # everything
+#   pre-pr            # everything, the two halves at once, Go tests sharded
+#   pre-pr --serial   # everything, one stage after another (plain make test-all)
 #   pre-pr --keep     # keep the scratch HOME afterwards (printed at the end)
 #
 # Exit 0 all green, 1 a step failed (its name is printed), 2 a needed tool is missing.
 
 keep=0
-case "${1:-}" in
-    "") ;;
-    --keep) keep=1 ;;
-    *) echo "usage: pre-pr [--keep]" >&2; exit 2 ;;
-esac
+serial=0
+for arg in "$@"; do
+    case "$arg" in
+        --keep) keep=1 ;;
+        --serial) serial=1 ;;
+        *) echo "usage: pre-pr [--keep] [--serial]" >&2; exit 2 ;;
+    esac
+done
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 
 # Resolve everything that lives under the real HOME before swapping it.
-for tool in go uv make git; do
+for tool in go uv make git python3; do
     command -v "$tool" > /dev/null 2>&1 || { echo "pre-pr: $tool not on PATH" >&2; exit 2; }
 done
 real_path=$PATH
@@ -82,7 +93,68 @@ step() {
     fi
 }
 
-step "make test-all (lint, llmbench, modeltiers, wt build+vet+test, single-P)" make test-all
+# Run "$@" in the background with its output in the file $1 and SIGINT and
+# SIGQUIT back at their defaults: a script has no job control, so bash starts an
+# asynchronous command with both ignored, an ignored signal is inherited by
+# every child, and tests that signal a child of their own then see no effect.
+# The pid is left in $async_pid.
+async() {
+    local log=$1
+    shift
+    python3 -c 'import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])' "$@" > "$log" 2>&1 &
+    async_pid=$!
+}
+
+kill_tree() {
+    local p
+    [ -n "$1" ] || return 0
+    for p in $(pgrep -P "$1" 2> /dev/null); do
+        kill_tree "$p"
+    done
+    kill "$1" 2> /dev/null
+}
+
+# The two halves of `make test-all` that do not depend on each other, at once.
+# Each half's output is kept and printed whole once both have finished, so a
+# failure in one never hides the other's result.
+fast_gate() {
+    local logs="$scratch/pre-pr-logs" t0=$SECONDS py_rc=0 go_rc=0
+    mkdir -p "$logs"
+    echo "==> pre-pr: Python half and Go half, at once (pre-pr --serial runs them one after another)"
+    # The trap goes in before either half starts, so a signal between the two
+    # launches cannot leave a half running with its scratch HOME deleted.
+    py_pid="" go_pid=""
+    trap 'kill_tree "$py_pid"; kill_tree "$go_pid"; exit 130' INT TERM
+    async "$logs/python.log" bash -c 'make lint && make test-install-skills && make test-go-sharded && make test-python'
+    py_pid=$async_pid
+    async "$logs/go.log" bash -c 'make test-wt-static && bin/go-test-sharded'
+    go_pid=$async_pid
+    wait "$py_pid" || py_rc=$?
+    wait "$go_pid" || go_rc=$?
+    trap - INT TERM
+    echo "--- Python half (lint, install-skills, go-test-sharded tests, llmbench, modeltiers): exit $py_rc"
+    cat "$logs/python.log"
+    echo "--- Go half (wt build and vet, sharded tests, multi-P and one-P passes): exit $go_rc"
+    cat "$logs/go.log"
+    echo "pre-pr: both halves took $((SECONDS - t0))s"
+    if [ "$py_rc" != 0 ]; then
+        echo "pre-pr: FAILED at: Python half (lint, install-skills, go-test-sharded tests, llmbench, modeltiers)" >&2
+        exit 1
+    fi
+    if [ "$go_rc" != 0 ]; then
+        echo "pre-pr: FAILED at: Go half (wt build and vet, sharded tests)" >&2
+        exit 1
+    fi
+}
+
+if [ "$serial" = 1 ]; then
+    step "make test-all (lint, llmbench, modeltiers, wt build+vet+test, single-P)" make test-all
+else
+    fast_gate
+fi
 step "wt make check (format and shell lint)" make -C wt check
 step "tests left the real config directories alone" bin/check-config-dirs-untouched
 echo "pre-pr: all green"

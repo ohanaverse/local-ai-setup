@@ -1,4 +1,4 @@
-.PHONY: help lint lint-shell lint-skills check-links test-all pre-pr install install-all install-skills test-install-skills update-tools install-skill-claude install-skill-pi install-skill-codex uninstall-skill-claude uninstall-skill-pi uninstall-skill-codex
+.PHONY: help lint lint-shell lint-skills check-links test-all test-python test-wt-static test-go-sharded pre-pr install install-all install-skills test-install-skills update-tools install-skill-claude install-skill-pi install-skill-codex uninstall-skill-claude uninstall-skill-pi uninstall-skill-codex
 
 .DEFAULT_GOAL := help
 
@@ -56,15 +56,29 @@ check-links: ## Validate repo-relative links in tracked *.md
 # Aggregate local verification across all monorepo components (mirrors CI).
 test-all: lint ## CI-equivalent: lint + llmbench + modeltiers + wt
 	@$(MAKE) --no-print-directory test-install-skills
+	@$(MAKE) --no-print-directory test-go-sharded
+	@$(MAKE) --no-print-directory test-python
+	@$(MAKE) --no-print-directory test-wt-static
+	cd wt && go test -timeout 30m -count=1 ./... && make single-p
+
+# The stages of test-all, each with one home: `bin/pre-pr` runs the Python half and the Go half
+# at the same time, with the Go tests sharded (bin/go-test-sharded), and `bin/pre-pr --serial` and
+# test-all run them one after another.
+test-python: ## llmbench and modeltiers: uv sync, check, tests
 	cd llmbench && uv sync && make check && make test
 	cd modeltiers && uv sync && make check && make test
-	cd wt && go build ./... && go vet ./... && go test -timeout 30m -count=1 ./... && make single-p
+
+test-wt-static: ## wt: go build and go vet
+	cd wt && go build ./... && go vet ./...
+
+test-go-sharded: ## Tests of bin/go-test-sharded (a fixture Go module; needs go)
+	@bin/test-go-test-sharded
 
 test-install-skills: ## Check install-skills installs only for agents on PATH (scratch HOME)
 	@bin/test-install-skills
 
-pre-pr: ## Run before a PR: test-all in a clean scratch HOME + wt check + config-dir check (CI is off)
-	@bin/pre-pr
+pre-pr: ## Run before a PR: lint, Python and sharded Go tests at once in a clean scratch HOME + wt check + config-dir check (CI is off; ARGS=--serial for the old order)
+	@bin/pre-pr $(ARGS)
 
 install: ## Install all monorepo components (wt, wt-session and wt-model + llmbench + modeltiers)
 	cd wt && make install
