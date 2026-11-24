@@ -39,7 +39,9 @@ func bareFixture(t *testing.T) *fixture {
 	tmp := t.TempDir()
 	dir := filepath.Join(tmp, "repo.git")
 	gitIn(t, tmp, "clone", "-q", "--bare", tpl.Origin, dir)
-	gittest.Lineage(t, dir)
+	// No gittest.Lineage here: a bare clone is not a gittest.Clone pair (no
+	// HEAD-on-main work tree, no origin/* refs), so the pristine-pair gate
+	// does not apply; the clone only reads the template's origin.
 	return &fixture{t: t, Origin: tpl.Origin, Dir: dir}
 }
 
