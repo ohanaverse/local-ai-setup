@@ -17,7 +17,7 @@
 Known from the code and the earlier phases (each is something a task builds on, not something to assume afresh):
 
 - `DBModelFromRow` turns a prepared `config.yaml` model row into the API's shape, and a cloud row is prepared by the same function that prepares a local one (`prepareModel`), so the row's content is already built; only its destination changes.
-- A cloud row's `litellm_params.api_key` is, in `config.yaml`, an `os.environ/<NAME>` reference when the provider's `secret_ref` names an environment variable, or a resolved value otherwise. Phase 2's ruling for alias rows: "cloud keys allowed in alias rows", compared by an HMAC stamp keyed with the proxy key, never by the params themselves (LiteLLM 1.109.1 strips `api_key` from what it lists, adds default params and answers a duplicate `/model/new` with HTTP 500).
+- A cloud row that `wt` writes to `config.yaml` carries the resolved secret value: `prepareModel`/`BuildEntry` resolves `provider.Auth.SecretRef` via `config.ResolveSecret` (`providerAPIKey`), even when that ref is `os.environ/<NAME>`. An `os.environ/<NAME>` reference survives only in a hand-written row (`DBModelFromRow` copies it verbatim). Phase 2's ruling for alias rows still applies: "cloud keys allowed in alias rows", compared by an HMAC stamp keyed with the proxy key, never by the params themselves (LiteLLM 1.109.1 strips `api_key` from what it lists, adds default params and answers a duplicate `/model/new` with HTTP 500). Decision 1 is therefore about what a migrated database row stores, not about restoring a ref that a wt-written file row already had.
 - The subscription hazard check (`SubscriptionHazards`) already reads the proxy's own listing (`/model/info`), which includes database rows, so a keyless `anthropic/` row in the database is seen by it as it is in the file.
 
 Not known; Task 0 measures each on the real proxy with a scratch row and records the result in `docs/superpowers/specs/` beside the earlier spikes:
@@ -45,7 +45,7 @@ Not known; Task 0 measures each on the real proxy with a scratch row and records
 Each has a recommendation; none is made.
 
 1. **What a database row's `api_key` holds.** *Recommend the `os.environ/<NAME>` reference, if Task 0 shows LiteLLM resolves it for database rows.* Then the secret never enters the database or the stamp's input, and rotating a provider key is still an edit of the proxy's environment plus one restart. The alternative, a resolved key in the row, is simpler to reason about for rows that have no env var but puts a provider key in LiteLLM's database; if Task 0 shows the reference does not resolve, this decision is forced and the plan must say how a keyless `secret_ref` is handled.
-2. **Which cloud rows move.** *Recommend all wt-written cloud rows, including the keyless `anthropic/` rows of `claude-subscription`.* Moving only some keeps a restart path alive for the rest, and the subscription row is the one a user adds most often. The risk is the hazard gate: a subscription row must still go unrouted, in the database as in the file, while the gate is blocked (the alias half already does this through `aliasState`).
+2. **Which cloud rows move.** *Recommend all wt-written cloud rows, including the keyless `anthropic/` rows of `claude-subscription`.* Moving only some keeps a restart path alive for the rest, and the subscription row is the one a user adds most often. The risk is the hazard gate: while it is blocked, a subscription row is not routed and not added in either store, and an existing database row is deleted (`off`, as `subscriptionUnrouted` does for model rows and `aliasSubBlocked` does for alias targets); while the gate could not look, the row is kept untouched and none is added (`hold` / `aliasSubHold`). No frozen-but-present row is left behind.
 3. **The fallback when the database half cannot run.** *Recommend a per-write fallback to today's file path with one warning* (Global Constraints), not a mode switch: a proxy with `store_model_in_db` off, or one that is briefly down, must still get its cloud models routed.
 4. **The migration's trigger.** *Recommend the same first-sync migration as phase 1* (database wins during a sync, file wins outside one), not a separate command: an owner who upgrades wt should find the rows moved after the next `wt-model litellm sync` or serve start, with the restart that removes them from the file counted once.
 5. **Whether `wt-model litellm list` keeps showing cloud rows as `STORE file`.** *Recommend it shows `db` for a migrated row and `file` for a hand-written one,* so the column keeps answering "what would a restart touch".
@@ -99,6 +99,8 @@ Run on the real proxy with one scratch model name and a labelled sentinel key, r
 
 ### Task 3: Migration of the wt-written cloud rows out of `config.yaml`
 
+> Migration note: today's migration predicate (`RowFamily(cfg, id) != ""`) excludes every cloud id, because `RowFamily` is `""` for cloud rows, so the pending add is left in `config.yaml` and any stray database row is deleted as a twin. This task must change that gate (and the standalone `ApplyChange`/`touchesLocal` notion that cloud rows never call the database) so a cloud row whose `config.yaml` entry is wt-written is migratable on the same add-first/confirm-then-remove ordering. Name the widened predicate in the plan and test a cloud id end to end.
+
 **Files:** `wt/internal/litellm/service.go`, `service_db.go`, tests.
 
 - [ ] **Step 1: Write failing tests (Review Focus 1):** a `config.yaml` holding a wt-written cloud row and a hand-written one, with the database empty: the first sync adds the database row, confirms it by listing, then removes only the wt-written file row, and calls the restart exactly once; the model answers at every step (the fake records the order); a second sync does nothing.
@@ -118,7 +120,7 @@ Run on the real proxy with one scratch model name and a labelled sentinel key, r
 **Files:** `wt/internal/litellm/subscription_hazards.go`, `service_db.go`, tests.
 
 - [ ] **Step 1: Write failing tests (Review Focus 3):** under a seen hazard the subscription database row is deleted and none is added; under a gate that could not look the row is kept and none is added; a clean gate adds it. The hazard check's own tests stay green with the row in the database.
-- [ ] **Step 2:** Run them; expect FAIL. **Step 3:** Route the subscription rows through `aliasState`'s three-way rule. **Step 4:** Run; expect PASS. **Step 5:** Commit.
+- [ ] **Step 2:** Run them; expect FAIL. **Step 3:** Route the subscription rows through the same three-way outcome the rest of wt uses (`subscriptionUnrouted` for model rows; `aliasState` for alias targets only): `off` deletes and adds none, `hold` keeps and adds none, clean adds it. **Step 4:** Run; expect PASS. **Step 5:** Commit.
 
 ### Task 6: Secrets stay out of every output
 
