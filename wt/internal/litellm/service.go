@@ -107,10 +107,11 @@ type Options struct {
 	// work, and no other caller reports what it finds — a start, stop or launch
 	// is not the place to hear about a row it never named.
 	reportOllamaServe bool
-	// Admin, when set, sends local routes (rows whose RowFamily is a local
-	// family) through LiteLLM's model API as database rows (id wt:<id>,
-	// wt_managed) instead of config.yaml rows, so a start or stop costs no
-	// restart. Cloud rows, removals of rows still in config.yaml and every
+	// Admin, when set, sends the routes the database can carry (dbEligible:
+	// rows whose RowFamily is a local family, and registry cloud models since
+	// #694) through LiteLLM's model API as database rows (id wt:<id>,
+	// wt_managed) instead of config.yaml rows, so a start, a stop or a cloud
+	// change costs no restart. Removals of rows still in config.yaml and every
 	// setting keep the locked file write and its restart. When the API is
 	// unusable (database models off, the proxy unreachable, an add that is not
 	// listed afterwards, any other API error) the local adds take the file
@@ -415,6 +416,12 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 			if ch.AddMissingOnly && f.row(m.ID) != nil {
 				continue
 			}
+			// A cloud row sync moved to the database has no file row, but it
+			// is there all the same: the launch ensure must not write a file
+			// twin of it (and restart the proxy for it).
+			if ch.AddMissingOnly && RowFamily(cfg, m.ID) == "" && db.holds(f, m.ID) {
+				continue
+			}
 			// The row is missing and building it can run the provider's exec:
 			// secret_ref helper synchronously. A caller that cannot afford that
 			// wait (the picker's update goroutine, #253) defers the build and
@@ -496,6 +503,7 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 						names = append(names, fam+"/*")
 					}
 				}
+				add = db.holdCloud(cfg, f, add)
 				db.unlisted(cfg, add, names)
 			}
 			if aliasing {
@@ -532,13 +540,13 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 	return res, nil
 }
 
-// touchesLocal reports whether a change names a local route — an add or a
-// removal whose RowFamily is a local family, or a family clear — and so owes
-// the database a look. A change of cloud rows alone never calls the API.
+// touchesLocal reports whether a change names a route the database carries
+// (dbEligible: a local route or a registry cloud one) or a family clear, and
+// so owes the database a look.
 func touchesLocal(cfg *config.Config, ch Change, add []plannedAdd, rm []plannedRemove) bool {
 	return slices.ContainsFunc(ch.RemoveFamilies, func(f string) bool { return f != "" }) ||
-		slices.ContainsFunc(add, func(a plannedAdd) bool { return RowFamily(cfg, a.id) != "" }) ||
-		slices.ContainsFunc(rm, func(r plannedRemove) bool { return RowFamily(cfg, r.id) != "" })
+		slices.ContainsFunc(add, func(a plannedAdd) bool { return dbEligible(cfg, a.id) }) ||
+		slices.ContainsFunc(rm, func(r plannedRemove) bool { return dbEligible(cfg, r.id) })
 }
 
 // applyPlanned is the one locked read-modify-write every route change goes
@@ -1274,6 +1282,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 				db.aliasHalf(o, f, add, remove, nil, nil, true)
 			}
 		default:
+			add = db.holdCloud(cfg, f, add)
 			db.unlisted(cfg, add, plan.Remove)
 			if len(cfg.Aliases) > 0 || o.AliasesRemoved {
 				db.aliasWarnings = append(db.aliasWarnings, aliasUnavailable(db.reason))

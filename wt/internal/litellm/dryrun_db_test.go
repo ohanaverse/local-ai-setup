@@ -50,7 +50,7 @@ func TestPlanSyncSeesDatabaseRoutes(t *testing.T) {
 }
 
 // TestPlanSyncPreviewsTheMigration pins the dry run's preview of the one-time
-// move (#598): wt's marked local rows are listed as "would move to the
+// move (#598, #694): wt's marked rows, the cloud row too, are listed as "would move to the
 // database", not as routes to add, and the plan says the file would change
 // (one proxy restart). Nothing is written anywhere.
 func TestPlanSyncPreviewsTheMigration(t *testing.T) {
@@ -61,7 +61,7 @@ func TestPlanSyncPreviewsTheMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"mtplx/Youssofal--Q", "ollama/gemma:9b"}; !slices.Equal(plan.Move, want) {
+	if want := []string{"mtplx/Youssofal--Q", "ollama/gemma:9b", "openrouter/x/y"}; !slices.Equal(plan.Move, want) {
 		t.Fatalf("plan.Move = %v, want %v", plan.Move, want)
 	}
 	if len(plan.Add) != 0 || !plan.Restart || plan.EnableDB {

@@ -405,8 +405,10 @@ func TestLaunchEnsureNeverReachesTheAliasHalf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fake.calls != 0 || loads != 0 {
-		t.Fatalf("API calls %d (%v), registry loads %d, want none", fake.calls, fake.log, loads)
+	// The ensure's own model row is the model half's (#694); the alias half
+	// would read the registry and write alias rows.
+	if loads != 0 || len(fake.aliasIDs()) != 0 || fake.requests("POST /model/new") != 1 {
+		t.Fatalf("API calls %d (%v), registry loads %d, want one model add and nothing of the alias half", fake.calls, fake.log, loads)
 	}
 	if len(res.Warnings) != 0 {
 		t.Fatalf("warnings %v", res.Warnings)

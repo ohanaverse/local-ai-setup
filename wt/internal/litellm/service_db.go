@@ -36,6 +36,9 @@ type dbRoutes struct {
 	// listed.
 	current []DBModel
 	listed  bool
+	// listTried is set by the first list(), so a write that looks early (the
+	// launch ensure, holds) and again later lists once and keeps one answer.
+	listTried bool
 	// deployments is every deployment the same listing showed (any
 	// owner's), for the write's subscription check (gateSubscription), so
 	// one write lists /model/info once.
@@ -50,6 +53,10 @@ type dbRoutes struct {
 	// could not be looked at (a failed listing).
 	addsToFile bool
 	unchecked  []string
+	// held holds the cloud adds a failed listing kept out of both stores
+	// (holdCloud): not written to config.yaml, because the database may
+	// already hold them.
+	held []string
 	// routed holds the local adds the API carried, in plan order.
 	routed []dbRouted
 	// unrouted holds the route names whose database rows were deleted.
@@ -144,6 +151,10 @@ func (d *dbRoutes) gate(f *File) bool {
 // list reads the database; a failure gives up the database path (the caller
 // then reports what it cost through unlisted).
 func (d *dbRoutes) list() bool {
+	if d.listTried {
+		return d.listed
+	}
+	d.listTried = true
 	rows, err := d.admin.listRows(d.context())
 	if err != nil {
 		d.reason = oneLine(err)
@@ -153,15 +164,78 @@ func (d *dbRoutes) list() bool {
 	return true
 }
 
+// holds reports whether the database already serves id as a wt row, looking
+// (gate, then one listing) when this write has not yet. It is the launch
+// ensure's question (AddMissingOnly): a cloud model whose row is in the
+// database is sync's and is neither built nor compared, as a file row is. A
+// closed gate or a failed listing answers false, and the write goes on to
+// report them exactly as it would have. nil-safe.
+func (d *dbRoutes) holds(f *File, id string) bool {
+	if d == nil || !d.gate(f) || !d.list() {
+		return false
+	}
+	return slices.ContainsFunc(d.owned(), func(m DBModel) bool { return m.ID == DBID(id) })
+}
+
+// holdCloud takes out of add the cloud routes that live in neither store as
+// far as this write can see: eligible for the database (dbEligible, not
+// local), with no wt row in config.yaml. Called when the listing failed. The
+// database may well hold them (that is where a migrated cloud row lives), and
+// a file row beside one would be a twin LiteLLM load-balances, written with a
+// proxy restart and moved back by the next healthy sync with another. An
+// unanswering proxy routes nothing until it is back, and the sync after that
+// adds what is missing, so nothing is lost by waiting. A cloud row that has a
+// file row stays a file add (the file wins there); a local add is unchanged
+// (unlisted).
+func (d *dbRoutes) holdCloud(cfg *config.Config, f *File, add []plannedAdd) []plannedAdd {
+	var keep []plannedAdd
+	for _, a := range add {
+		if a.err == nil && a.row != nil && RowFamily(cfg, a.id) == "" && dbEligible(cfg, a.id) && f.row(a.id) == nil && !f.hasUnmarkedRow(a.id) {
+			d.held = append(d.held, a.id)
+			continue
+		}
+		keep = append(keep, a)
+	}
+	return keep
+}
+
 // unlisted records what a failed listing cost this write: whether local adds
 // go to config.yaml, and which local removals' database rows went unchecked.
 func (d *dbRoutes) unlisted(cfg *config.Config, add []plannedAdd, removeNames []string) {
-	d.addsToFile = slices.ContainsFunc(add, func(a plannedAdd) bool { return a.err == nil && RowFamily(cfg, a.id) != "" })
+	d.addsToFile = slices.ContainsFunc(add, func(a plannedAdd) bool { return a.err == nil && dbEligible(cfg, a.id) })
 	for _, n := range removeNames {
-		if RowFamily(cfg, n) != "" && !slices.Contains(d.unchecked, n) {
+		if dbEligible(cfg, n) && !slices.Contains(d.unchecked, n) {
 			d.unchecked = append(d.unchecked, n)
 		}
 	}
+}
+
+// dbEligible says whether the wt row of id lives in the database when that
+// half can run (#694): a local row (RowFamily names a family) or the row of a
+// registry cloud model, a keyless Claude subscription row included. Anything
+// else stays a file row: an id the registry does not know, a native model, a
+// provider LiteLLM has no mapping for.
+func dbEligible(cfg *config.Config, id string) bool {
+	if RowFamily(cfg, id) != "" {
+		return true
+	}
+	i := config.IndexModelByID(cfg.Models, id)
+	if i < 0 {
+		return false
+	}
+	m := cfg.Models[i]
+	if m.Native {
+		return false
+	}
+	p := cfg.ProviderByID(m.ProviderID)
+	if p == nil || p.Auth.Type == "native" {
+		return false
+	}
+	if loc, err := cfg.ResolveLocation(m); err != nil || loc != config.LocationCloud {
+		return false
+	}
+	_, ok := PolicyFor(m.ProviderID)
+	return ok
 }
 
 func oneLine(err error) string {
@@ -242,8 +316,8 @@ func (d *dbRoutes) familyRoutes(cfg *config.Config, fam string, adding map[strin
 // well (a route still in the file goes from there; one that is not costs
 // nothing), so only the adds are split.
 //
-// An add stays with config.yaml when its row is not local (RowFamily ""), was
-// not built, or replaces a wt row config.yaml still holds (the move of such
+// An add stays with config.yaml when its row is neither local nor a registry
+// cloud model (dbEligible), was not built, or replaces a wt row config.yaml still holds (the move of such
 // rows is the migration's job). A local add whose id has a hand-written
 // config.yaml row is skipped with a warning: a database row beside it would
 // make LiteLLM load-balance the two (Review Focus 2).
@@ -277,7 +351,7 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 	migrating := map[string]bool{}
 	pending := map[string]plannedAdd{} // adds whose id has a wt row in config.yaml
 	for _, a := range add {
-		if a.err != nil || a.row == nil || RowFamily(cfg, a.id) == "" {
+		if a.err != nil || a.row == nil || !dbEligible(cfg, a.id) {
 			fileAdd = append(fileAdd, a)
 			continue
 		}
@@ -326,7 +400,7 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 			// Only a local id whose config.yaml rows are all wt's moves: a
 			// hand-written row keeps the id in the file (warned above for an
 			// add; an unchanged hand-written row is left as it is).
-			if RowFamily(cfg, id) == "" || f.row(id) == nil || f.hasUnmarkedRow(id) {
+			if !dbEligible(cfg, id) || f.row(id) == nil || f.hasUnmarkedRow(id) {
 				stay(id)
 				continue
 			}
@@ -409,7 +483,7 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 			failed = d.confirm(append(slices.Clone(p.Add), p.Update...))
 		}
 		if failed != nil {
-			d.dropMigratingTwins(migrating, byName, p, &transport)
+			d.dropTwins(migrating, byName, p, &transport)
 			return d.fallBack(failed, add, currentIDs(desired, migrating, p))
 		}
 	}
@@ -456,24 +530,27 @@ func (d *dbRoutes) deleteAll(ids []string, transport *error) error {
 	return nil
 }
 
-// dropMigratingTwins runs when a migration's database half failed: the rows
-// being moved stay in config.yaml, which then wins again, so any database row
-// of theirs — one an interrupted migration left, or one this write added or
-// replaced before the failure — is deleted, lest LiteLLM load-balance it with
-// the file's row. Best effort: a delete that fails is one warning per id, and
-// after a transport error none is attempted (deleteAll reports it per id).
-// The next sync migrates again.
-func (d *dbRoutes) dropMigratingTwins(migrating map[string]bool, byName map[string][]string, p DBPlan, transport *error) {
-	if len(migrating) == 0 {
-		return
-	}
+// dropTwins runs when the database half of a write failed: every row the
+// batch carried goes back to config.yaml, which then serves it, so a database
+// copy of it is deleted lest LiteLLM load-balance it with the file's row. Two
+// kinds of copy exist: one a migration being moved left (an interrupted one,
+// or one this write added or replaced before the failure) and one this write's
+// own add left when a sibling in the same batch failed (ApplyDB attempts every
+// item, so a cloud row can be stored while a local one is refused). Best
+// effort: a delete that fails is one warning per id, and after a transport
+// error none is attempted (deleteAll reports it per id). The next sync
+// migrates again.
+func (d *dbRoutes) dropTwins(migrating map[string]bool, byName map[string][]string, p DBPlan, transport *error) {
 	touched := map[string]bool{}
 	for _, m := range append(slices.Clone(p.Add), p.Update...) {
 		touched[m.ModelName] = true
 	}
-	names := make([]string, 0, len(migrating))
+	names := make([]string, 0, len(touched)+len(migrating))
+	for n := range touched {
+		names = append(names, n)
+	}
 	for n := range migrating {
-		if touched[n] || len(byName[n]) > 0 {
+		if !touched[n] && len(byName[n]) > 0 {
 			names = append(names, n)
 		}
 	}
@@ -577,8 +654,8 @@ func (d *dbRoutes) preview(cfg *config.Config, f *File, plan *SyncPlan, built ma
 	drop := map[string]bool{}
 	for _, id := range plan.Add {
 		row := built[id]
-		if row == nil || RowFamily(cfg, id) == "" || f.row(id) != nil && !f.hasUnmarkedRow(id) {
-			continue // the file's: a cloud row, or a wt row the migration decides
+		if row == nil || !dbEligible(cfg, id) || f.row(id) != nil && !f.hasUnmarkedRow(id) {
+			continue // the file's: a row the database cannot carry, or a wt row the migration decides
 		}
 		if f.hasUnmarkedRow(id) {
 			plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s: config.yaml has a hand-written row for this id; no database route was added beside it", id))
@@ -609,7 +686,7 @@ func (d *dbRoutes) preview(cfg *config.Config, f *File, plan *SyncPlan, built ma
 	}
 	slices.Sort(ids)
 	for _, id := range ids {
-		if RowFamily(cfg, id) == "" || f.row(id) == nil || f.hasUnmarkedRow(id) {
+		if !dbEligible(cfg, id) || f.row(id) == nil || f.hasUnmarkedRow(id) {
 			continue
 		}
 		row := cloneNode(plan.fresh[id])
@@ -682,9 +759,14 @@ func (d *dbRoutes) finish(res *Result, sync bool) {
 		if len(d.unchecked) > 0 {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("database routes unavailable (%s); not checked for %s, whose database route may still be live", d.reason, strings.Join(d.unchecked, ", ")))
 		}
+		if len(d.held) > 0 {
+			held := slices.Clone(d.held)
+			slices.Sort(held)
+			res.Warnings = append(res.Warnings, fmt.Sprintf("database routes unavailable (%s); not routed until the database answers: %s", d.reason, strings.Join(held, ", ")))
+		}
 		// Sync always looks, so a listing it could not make is said even when
 		// nothing local was pending — once, and only when no line above says it.
-		if sync && !d.listed && !d.addsToFile && len(d.unchecked) == 0 {
+		if sync && !d.listed && !d.addsToFile && len(d.unchecked) == 0 && len(d.held) == 0 {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("database routes unavailable (%s); database routes not checked", d.reason))
 		}
 	}

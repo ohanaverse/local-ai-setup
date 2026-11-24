@@ -417,7 +417,7 @@ One line per LiteLLM `model_list` entry, each `<line>:  - model_name: <model-id>
 19:  - model_name: openrouter/qwen/qwen3.8-27b
 ```
 
-(A running local model, e.g. an omlx one, adds its wt-written row while it runs; `wt-model litellm list` lists a row without wt's marker — including one a pre-#179 wt wrote, see [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* — with OWNER `hand-written`; a local model's row may be in LiteLLM's database instead (STORE `db`), see [04-litellm-config](04-litellm-config.md) §2 *Database routes*. Never `cat` this file into chat/docs — its `api_key:` values may hold literal keys.)
+(A running local model, e.g. an omlx one, adds its wt-written row while it runs; `wt-model litellm list` lists a row without wt's marker — including one a pre-#179 wt wrote, see [04-litellm-config](04-litellm-config.md) §2 *Upgrading from a pre-#179 wt* — with OWNER `hand-written`; a model's row (a cloud model's too) may be in LiteLLM's database instead (STORE `db`), see [04-litellm-config](04-litellm-config.md) §2 *Database routes*. Never `cat` this file into chat/docs — its `api_key:` values may hold literal keys.)
 
 There is no second place to check. Routing is derived: `wt-model litellm list` is the only answer to 'is it routed?', and `wt-model model list` shows whether a local model is on disk and running. A local model with no line in `wt-model litellm list` is stopped, or was started outside wt and no sync has run since (`wt-model litellm sync`).
 

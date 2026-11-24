@@ -159,21 +159,21 @@ func TestStopDeletesThroughAPI(t *testing.T) {
 // TestCloudRowStillWritesFileAndRestarts checks the split: in one change, the
 // cloud row goes to config.yaml with exactly one restart (as before #598)
 // while the local row goes to the database only.
-func TestCloudRowStillWritesFileAndRestarts(t *testing.T) {
+func TestCloudRowGoesToTheDatabaseWithoutRestart(t *testing.T) {
 	o, restarts, p, fake := dbOpts(t, "model_list: []\n"+settledSettings)
 	cfg := testConfig()
 	res, err := ApplyChange(cfg, Change{Add: localFor(cfg, "ollama/gemma:9b", "openrouter/x/y")}, o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *restarts != 1 || !res.Changed || res.Via != "db" {
-		t.Fatalf("restarts=%d changed=%v via=%q, want 1/true/db", *restarts, res.Changed, res.Via)
+	if *restarts != 0 || res.Changed || res.Via != "db" {
+		t.Fatalf("restarts=%d changed=%v via=%q, want 0/false/db", *restarts, res.Changed, res.Via)
 	}
 	f, _ := Open(p)
-	if ids := f.RoutedIDs(); !slices.Equal(ids, []string{"openrouter/x/y"}) {
-		t.Fatalf("config.yaml rows %v, want only the cloud row", ids)
+	if ids := f.RoutedIDs(); len(ids) != 0 {
+		t.Fatalf("config.yaml rows %v, want none: both rows are the database's", ids)
 	}
-	if got := fake.ids(); !slices.Equal(got, []string{"wt:ollama/gemma:9b"}) {
+	if got := fake.ids(); !slices.Equal(got, []string{"wt:ollama/gemma:9b", "wt:openrouter/x/y"}) {
 		t.Fatalf("database rows %v", got)
 	}
 	for _, id := range []string{"ollama/gemma:9b", "openrouter/x/y"} {
@@ -246,7 +246,7 @@ func TestUnmarkedYamlRowBlocksDBTwin(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if fake.requests("POST /model/new") != 0 {
+		if slices.Contains(fake.ids(), DBID("ollama/gemma:9b")) {
 			t.Fatalf("%s: a database twin was added", name)
 		}
 		if !hasWarning(res, "ollama/gemma:9b") {
@@ -256,7 +256,7 @@ func TestUnmarkedYamlRowBlocksDBTwin(t *testing.T) {
 			t.Fatalf("%s: outcomes %+v, want none for the skipped id", name, res.Outcomes)
 		}
 	}
-	// The sync routes the cloud model in the file; the hand-written row stays.
+	// The sync routes the cloud model in the database; the hand-written row stays.
 	f, _ := Open(p)
 	if r := f.row("ollama/gemma:9b"); r == nil || IsManaged(r) {
 		t.Fatal("the hand-written row was replaced")
@@ -300,14 +300,14 @@ func TestSyncReconcilesDatabaseRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fake.ids(); !slices.Equal(got, []string{"ui-made", "wt:mtplx/frozen", "wt:ollama/gemma:9b"}) {
+	if got := fake.ids(); !slices.Equal(got, []string{"ui-made", "wt:mtplx/frozen", "wt:ollama/gemma:9b", "wt:openrouter/x/y"}) {
 		t.Fatalf("database rows %v", got)
 	}
-	if *restarts != 1 || res.Via != "db" {
-		t.Fatalf("restarts=%d via=%q, want 1/db", *restarts, res.Via)
+	if *restarts != 0 || res.Via != "db" {
+		t.Fatalf("restarts=%d via=%q, want 0/db", *restarts, res.Via)
 	}
 	f, _ := Open(p)
-	if ids := f.RoutedIDs(); !slices.Equal(ids, []string{"openrouter/x/y"}) {
+	if ids := f.RoutedIDs(); len(ids) != 0 {
 		t.Fatalf("config.yaml rows %v", ids)
 	}
 	if got := actionIDs(res.Outcomes, "unrouted"); !slices.Equal(got, []string{"ollama/old:1b"}) {
@@ -331,7 +331,7 @@ func TestSyncReconcilesDatabaseRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again := fake.requests("POST /model/new") + fake.requests("POST /model/delete"); again != writes || *restarts != 1 || res.Changed || len(res.Outcomes) != 0 {
+	if again := fake.requests("POST /model/new") + fake.requests("POST /model/delete"); again != writes || *restarts != 0 || res.Changed || len(res.Outcomes) != 0 {
 		t.Fatalf("second sync: db writes %d→%d restarts=%d changed=%v outcomes=%+v, want a no-op", writes, again, *restarts, res.Changed, res.Outcomes)
 	}
 }
@@ -390,8 +390,8 @@ func TestFallbackThenHealthySyncLeavesNoTwin(t *testing.T) {
 	if _, err := Sync(cfg, localFor(cfg, "ollama/gemma:9b"), o); err != nil {
 		t.Fatal(err)
 	}
-	if got := fake.ids(); !slices.Equal(got, []string{"wt:ollama/gemma:9b"}) || fake.requests("POST /model/delete") != 0 {
-		t.Fatalf("database rows %v deletes %d, want the one route kept", got, fake.requests("POST /model/delete"))
+	if got := fake.ids(); !slices.Equal(got, []string{"wt:ollama/gemma:9b", "wt:openrouter/x/y"}) || fake.requests("POST /model/delete") != 0 {
+		t.Fatalf("database rows %v deletes %d, want both routes kept", got, fake.requests("POST /model/delete"))
 	}
 	f, _ := Open(p)
 	if r := f.row("ollama/gemma:9b"); r != nil {
@@ -405,7 +405,11 @@ func TestFallbackThenHealthySyncLeavesNoTwin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := PlanDB([]DBModel{m}, cur, testMasterKey); !p.Empty() {
+	c, err := DBModelFromRow(mustRow(t, cfg, "openrouter/x/y"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := PlanDB([]DBModel{m, c}, cur, testMasterKey); !p.Empty() {
 		t.Fatalf("the database route is not the current one: %+v", p)
 	}
 }
