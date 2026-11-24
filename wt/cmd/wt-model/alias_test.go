@@ -406,3 +406,66 @@ func TestAliasSetDryRunWithoutAProxyPair(t *testing.T) {
 		t.Fatalf("err %v stdout:\n%s", err, out)
 	}
 }
+
+// aliasSubRegistry is aliasRegistry plus a Claude subscription model.
+const aliasSubRegistry = aliasRegistry + `
+[[providers]]
+id = "claude-subscription"
+name = "Claude subscription"
+location = "cloud"
+protocols = ["anthropic"]
+[providers.auth]
+type = "client-login"
+
+[[models]]
+id = "claude-haiku-5-5"
+family = "claude"
+provider_id = "claude-subscription"
+model_name = "claude-haiku-5-5"
+context_window = 1000000
+tags = []
+`
+
+// TestAliasSetDryRunAgreesWithTheRealRunForASubscriptionTarget pins #703: the
+// preview said "not routed" for a Claude subscription target on its own
+// liveness rule, while the real run applies the subscription check. In this
+// scratch machine the proxy's environment cannot be read (the restart command
+// is the test's), which the check treats as a hazard, so the real run routes
+// the other target alone and the preview must say the same, naming the
+// hazard and not a bare "not routed".
+func TestAliasSetDryRunAgreesWithTheRealRunForASubscriptionTarget(t *testing.T) {
+	h, fake, _ := aliasEnv(t, aliasSubRegistry)
+	args := []string{"alias", "set", "alias/s", "--target", "claude-haiku-5-5", "--target", "openrouter/big:2"}
+	dry, dryErr, err := execAlias(t, h, append(args, "--dry-run")...)
+	if err != nil {
+		t.Fatalf("dry run: %v\n%s%s", err, dry, dryErr)
+	}
+	for _, want := range []string{
+		"  row wta:alias/s/", " target openrouter/big order 2 h8 ",
+		"  no row for claude-haiku-5-5: not routed: the proxy has a Claude subscription hazard\n",
+	} {
+		if !strings.Contains(dry, want) {
+			t.Errorf("dry run lacks %q:\n%s", want, dry)
+		}
+	}
+	for _, line := range strings.Split(dry, "\n") {
+		if strings.HasPrefix(line, "  row ") && strings.Contains(line, "target claude-haiku-5-5 ") {
+			t.Errorf("the dry run plans a row for the subscription target: %s", line)
+		}
+	}
+	if len(fake.ids()) != 0 {
+		t.Fatalf("the dry run wrote rows: %v", fake.ids())
+	}
+	if _, setErr, err := execAlias(t, h, args...); err != nil || !strings.Contains(setErr, "Claude subscription models (claude-haiku-5-5) are not routed") {
+		t.Fatalf("set: %v\n%s", err, setErr)
+	}
+	var rows []string
+	for _, id := range fake.ids() {
+		if strings.HasPrefix(id, "wta:alias/s/") {
+			rows = append(rows, id)
+		}
+	}
+	if len(rows) != 1 || !strings.HasSuffix(rows[0], "/openrouter/big") {
+		t.Errorf("the real run wrote alias rows %v, want the one for openrouter/big the dry run named", rows)
+	}
+}
