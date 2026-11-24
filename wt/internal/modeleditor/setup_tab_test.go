@@ -1681,3 +1681,39 @@ func TestSetupTabRAndCEndTheWaitAndAStrayTickIsIgnored(t *testing.T) {
 		}
 	}
 }
+
+// TestSetupTabShowsTheGatewaySwitch pins #693's status row: the Setup tab
+// says whether the home's [gateway] subscription switch is on, names the
+// command that changes it, and says when the table could not be read cleanly.
+func TestSetupTabShowsTheGatewaySwitch(t *testing.T) {
+	for name, tc := range map[string]struct {
+		g    modelsetup.GatewayState
+		want []string
+	}{
+		"off":     {modelsetup.GatewayState{}, []string{"subscription passthrough off", "wt-model gateway subscription on|off"}},
+		"on":      {modelsetup.GatewayState{SubscriptionPassthrough: true}, []string{"subscription passthrough on", "wt-model gateway subscription on|off"}},
+		"warning": {modelsetup.GatewayState{Err: "[gateway] subscription_passthrough is a string, not a boolean"}, []string{"read as off", "is a string"}},
+	} {
+		st := fullState()
+		st.Gateway = tc.g
+		m := setupEditor(t, &setupMachine{states: []modelsetup.State{st}}, 140, 60)
+		v := flat(plain(m))
+		for _, want := range tc.want {
+			if !strings.Contains(v, flat(want)) {
+				t.Errorf("%s: the tab lacks %q:\n%s", name, want, plain(m))
+			}
+		}
+	}
+}
+
+// TestSetupTabDropsTheGatewayRowFirst pins that on a short terminal the
+// gateway row is the first status row given up, before the LiteLLM checks.
+func TestSetupTabDropsTheGatewayRowFirst(t *testing.T) {
+	for h := 12; h <= 60; h++ {
+		m := setupEditor(t, &setupMachine{states: []modelsetup.State{fullState()}}, 100, h)
+		v := plain(m)
+		if strings.Contains(v, "subscription passthrough") && !strings.Contains(v, "litellm") {
+			t.Errorf("height %d keeps the gateway row after dropping the litellm rows:\n%s", h, v)
+		}
+	}
+}

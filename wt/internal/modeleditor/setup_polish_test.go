@@ -138,12 +138,12 @@ func TestSetupTabClippedViewKeepsRadiosHintsAndWholeRows(t *testing.T) {
 }
 
 // TestSetupTabDropsLowestPriorityRowsFirstAndMarksTheEnd pins the order in
-// which a short terminal gives up status rows (litellm, agent, env, pair,
-// token, url, problems, server, mode last), that the marker names how many
+// which a short terminal gives up status rows (gateway, litellm, agent, env,
+// pair, token, url, problems, server, mode last), that the marker names how many
 // rows went and stands after the last row kept, and that the rows kept are
 // always whole.
 func TestSetupTabDropsLowestPriorityRowsFirstAndMarksTheEnd(t *testing.T) {
-	order := []string{"litellm", "agent", "env", "pair", "token", "url", "problems", "server", "mode"}
+	order := []string{"gateway", "litellm", "agent", "env", "pair", "token", "url", "problems", "server", "mode"}
 	marker := regexp.MustCompile(`\.\.\. (\d+) status rows? not shown \.\.\.`)
 	sawDrop := false
 	for h := 10; h <= 40; h++ {

@@ -200,12 +200,14 @@ reader resolves it — the key is never printed, only masked.
   Only what uses the pair refuses on it: `wt-model serve` at startup,
   `litellm status|set`, and `wt-model litellm restart` and the slot-profile proxy
   checks. Every other command, and every session, runs as usual.
-- The same `config.toml` may hold a hand-edited `[gateway]` table, which
-  `serve` reads once at start: `subscription_passthrough = true` turns on the
-  gateway's header mode (off when absent or `false`; any other type is off
-  with one `wt-model: warning:` line), and `tls_cert`/`tls_key` turn on
-  [Native TLS](#native-tls). No command writes it, and `litellm set` keeps it
-  as written; an older `wt-model litellm set` or `wt litellm set` drops the
+- The same `config.toml` may hold a `[gateway]` table, which `serve` reads
+  once at start: `subscription_passthrough = true` turns on the gateway's
+  header mode (off when absent or `false`; any other type is off with one
+  `wt-model: warning:` line), and `tls_cert`/`tls_key` turn on
+  [Native TLS](#native-tls). `wt-model gateway subscription on|off` writes the
+  switch (and `wt-model gateway` shows the table, the Setup tab's `gateway` row
+  too); the TLS pair is hand-edited, and `litellm set` keeps the table as
+  written; an older `wt-model litellm set` or `wt litellm set` drops the
   table, which turns the
   mode off at the next `serve` restart (the safe direction) and brings serve
   back on plain HTTP (sessions configured with `https://` then fail at the
@@ -266,7 +268,7 @@ set: pass --url and/or --api-key`.
 
 `wt-model serve` speaks TLS itself when the wt-model home's `config.toml`
 (`~/.config/wt-model/config.toml`) names a PEM certificate and its key under
-the same hand-edited `[gateway]` table, read once at start (there is no
+the same `[gateway]` table (the TLS pair hand-edited), read once at start (there is no
 `serve` flag: `wt-model setup` re-renders the LaunchAgent's arguments, so the
 table survives a re-render). Absent means plain HTTP, exactly as before.
 
