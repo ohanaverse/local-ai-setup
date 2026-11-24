@@ -1,6 +1,7 @@
 package modelsetup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -853,17 +854,27 @@ func TestApplyUseExistingKeyWritesThePlistKeyOverAStalePair(t *testing.T) {
 	noSecrets(t, f, lines, r, apPlistKey, "sk-STALE-1")
 }
 
+// unmanagedAgentContent is a hand-written copy of what wt renders: wt's plist
+// without its "managed by wt" marker comment.
+func unmanagedAgentContent() []byte {
+	return bytes.Replace(RenderAgentPlist(plSpec()), []byte("<!-- "+agentMarker+" -->\n"), nil, 1)
+}
+
 // TestBuildPlanRotateLeavesAHandWrittenLoadedAgentAlone pins #708: a key
 // rotate writes only the LiteLLM plist and the pair, so a loaded agent plist
-// that is not marked "managed by wt" is kept as written and only restarted.
-// A plain local apply, or an agent that is not loaded, still refuses: wt
-// would overwrite or bootstrap a file it does not own.
+// that is not marked "managed by wt" is kept as written and only restarted,
+// restarted through a kickstart (never a bootout or bootstrap of the file it
+// does not write), and only when the plan's listen and token file match the
+// plist's own --listen and --token-file: they are what the kept server keeps
+// running, and the restart wt makes changes neither. A plain local apply, an
+// agent that is not loaded, a plist wt cannot read, and one whose arguments
+// name another listen or token file, still refuse.
 func TestBuildPlanRotateLeavesAHandWrittenLoadedAgentAlone(t *testing.T) {
 	rotate := Desired{Desired: modelmode.Desired{Mode: modelclient.ModeLocal}, AdminWant: AdminWant{LiteLLM: LiteLLMRotateKey}}
 
 	st := rotateState()
 	st.Agent.Managed = false
-	st.Agent.Content = []byte("hand written")
+	st.Agent.Content = unmanagedAgentContent()
 	p := mustPlan(t, st, rotate)
 	if _, ok := stepOf(p, StepPlist); ok {
 		t.Fatalf("the rotate plans a write of the unmanaged agent plist: %v", kinds(p))
@@ -886,7 +897,32 @@ func TestBuildPlanRotateLeavesAHandWrittenLoadedAgentAlone(t *testing.T) {
 
 	unloaded := rotateState()
 	unloaded.Agent.Managed = false
+	unloaded.Agent.Content = unmanagedAgentContent()
 	unloaded.Agent.Job = LaunchdJob{}
 	_, err = BuildPlan(unloaded, rotate)
 	mustRefuse(t, Plan{}, err, "not marked \"managed by wt\"")
+
+	// A keep never rewrites the plist, so a url or token wt cannot tell the
+	// kept server runs refuses: the [model-server] it would store must be the
+	// server the kept plist itself names.
+	unparsed := rotateState()
+	unparsed.Agent.Managed = false
+	unparsed.Agent.Content = []byte("hand written")
+	unparsed.Agent.Err = "plist has no top-level dict"
+	_, err = BuildPlan(unparsed, rotate)
+	mustRefuse(t, Plan{}, err, "cannot tell", "nothing was changed")
+
+	st = rotateState()
+	st.Agent.Managed = false
+	st.Agent.Content = unmanagedAgentContent()
+	st.Agent.TokenFile = plHome + "/keys/token"
+	_, err = BuildPlan(st, rotate)
+	mustRefuse(t, Plan{}, err, "runs wt-model --token-file "+plHome+"/keys/token", plLocalTok)
+
+	st = rotateState()
+	st.Agent.Managed = false
+	st.Agent.Content = unmanagedAgentContent()
+	st.Agent.Listen = "127.0.0.1:9000"
+	_, err = BuildPlan(st, rotate)
+	mustRefuse(t, Plan{}, err, "runs wt-model --listen 127.0.0.1:9000")
 }
