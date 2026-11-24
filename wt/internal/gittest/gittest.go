@@ -10,8 +10,8 @@
 // (TestDeletionStringsOnlyInRemovalPackage, TestHardResetExistsNowhereOutsideRemoval)
 // stay green and a shape git treats as corrupt cannot hide behind a fixture
 // author's guess of git's on-disk format. The one deletion call the kit holds
-// is os.RemoveAll of its own MkdirTemp template directories in
-// CleanupTemplates (the allow-list entry names it); a test's clones live in
+// is os.RemoveAll of its own MkdirTemp template directories, in
+// CleanupTemplates and in a failed build (the allow-list entry counts both); a test's clones live in
 // t.TempDir and die with the test.
 package gittest
 
