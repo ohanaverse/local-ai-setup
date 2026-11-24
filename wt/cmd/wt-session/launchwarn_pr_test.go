@@ -35,17 +35,27 @@ func TestFlagLaunchWarnsOfAMergedPR(t *testing.T) {
 	for name, where := range map[string]func(root, linked string) (dir string, args []string){
 		"cwd": func(_, linked string) (string, []string) { return linked, []string{"--cwd"} },
 		"-W":  func(root, _ string) (string, []string) { return root, []string{"-W", "topic"} },
+		// --root launches in the primary checkout, so the PR is the root
+		// branch's: put the root on a non-default branch with its own commit.
+		"--root": func(root, _ string) (string, []string) { return root, []string{"--root"} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			root, linked, tip := prLaunchRepo(t)
+			wantDir := linked
+			if name == "--root" {
+				cgit(t, root, "switch", "-c", "rootwork")
+				cleanupCommit(t, root, "r.txt", "rootwork")
+				tip = strings.TrimSpace(cgit(t, root, "rev-parse", "HEAD"))
+				wantDir = root
+			}
 			stubStdinTTY(t, false)
 			notes := captureNotes(t)
 			h := testHooks()
 			h.prList = mergedPRList(42, tip)
 			dir, args := where(root, linked)
 			res := runPinnedLaunchWith(t, h, dir, args)
-			if res.err != nil || res.agentDir != linked {
-				t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, linked)
+			if res.err != nil || res.agentDir != wantDir {
+				t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, wantDir)
 			}
 			if n := strings.Count(notes.String(), "PR #42 is merged"); n != 1 {
 				t.Errorf("output %q names the merged PR %d times, want once", notes.String(), n)
@@ -69,5 +79,45 @@ func TestFlagLaunchIgnoresAFailingGh(t *testing.T) {
 	}
 	if strings.Contains(notes.String(), "PR #") || strings.Contains(notes.String(), "gh") {
 		t.Errorf("output %q carries a PR line for a failed lookup", notes.String())
+	}
+}
+
+// TestFlagLaunchOfANewBranchSkipsThePRLookup checks that -W naming a branch
+// that does not exist yet never calls gh. Why: a brand-new branch has no PR,
+// so the lookup would only cost a gh process (#585).
+func TestFlagLaunchOfANewBranchSkipsThePRLookup(t *testing.T) {
+	root, _, tip := prLaunchRepo(t)
+	stubStdinTTY(t, false)
+	notes := captureNotes(t)
+	h := testHooks()
+	calls := 0
+	inner := mergedPRList(42, tip)
+	h.prList = func(d, b string) ([]byte, error) { calls++; return inner(d, b) }
+	res := runPinnedLaunchWith(t, h, root, []string{"-W", "brand-new"})
+	if res.err != nil {
+		t.Fatalf("err=%v", res.err)
+	}
+	if calls != 0 || strings.Contains(notes.String(), "PR #") {
+		t.Errorf("gh called %d times, output %q; want no lookup for a new branch", calls, notes.String())
+	}
+}
+
+// TestSmokeCwdWarnsOfAMergedPR checks `wt smoke --cwd` runs the merged-PR
+// lookup in its prelude, so the one confirm line names the PR (#585).
+func TestSmokeCwdWarnsOfAMergedPR(t *testing.T) {
+	_, linked, tip := prLaunchRepo(t)
+	stubStdinTTY(t, false)
+	r := smokeRig(t, nil)
+	t.Chdir(linked)
+	notes := captureNotes(t)
+	cmd, _, _ := smokeRootCmd(t, r, strings.NewReader(""), "--cwd")
+	if err := cmd.Flags().Set("cwd", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := smokePrelude(cmd, mergedPRList(42, tip)); err != nil {
+		t.Fatalf("smokePrelude: %v", err)
+	}
+	if n := strings.Count(notes.String(), "PR #42 is merged"); n != 1 {
+		t.Errorf("output %q names the merged PR %d times, want once", notes.String(), n)
 	}
 }
