@@ -587,6 +587,30 @@ func TestTUISubscriptionLaunchAfterPickerPing(t *testing.T) {
 	}
 }
 
+// TestPickerSubscriptionOffMessage pins the adapter the picker's blocked-row
+// reasons come from (#699): SubscriptionOff answers decision 2's message while
+// the server's ping lacks the passthrough, and "" when it has it, so the
+// picker then keeps each row's own block reason.
+func TestPickerSubscriptionOffMessage(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		r, _ := subRig(t, true, passthrough, nil)
+		ms, err := r.a.buildModels(launchStill)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := tui.NewModelClient(ms.client, ms.ep).SubscriptionOff(context.Background())
+		if passthrough {
+			if got != "" {
+				t.Errorf("passthrough on: SubscriptionOff = %q, want empty", got)
+			}
+			continue
+		}
+		if !strings.Contains(got, "does not accept a Claude login") {
+			t.Errorf("passthrough off: SubscriptionOff = %q, want decision 2's message", got)
+		}
+	}
+}
+
 // TestLoginExpiringSoonNotes proves a login expiring within 24 h is one
 // note (decision 8) and one further off says nothing.
 func TestLoginExpiringSoonNotes(t *testing.T) {

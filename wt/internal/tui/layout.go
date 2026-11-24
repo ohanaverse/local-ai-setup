@@ -25,7 +25,9 @@ func clip(s string, width int) string { return tuilayout.Clip(s, width) }
 
 // slotLine is the line under the model table while a slot-profile row is
 // highlighted; it takes the mode line's place and adds no line to the frame.
-// A blocked row shows its reason, cut with an ellipsis when it is too wide.
+// A blocked row shows its reason, or short (its one-line form,
+// modelItem.blockedShort) when the reason is too wide, cut with an ellipsis
+// when even that is.
 // Any other row lists the slots the profile fills, the slot the session works
 // on first and marked "*" (a default that is an alias, such as claude's
 // opusplan, leads the line by name, as an entry of its own), the rest in the
@@ -37,12 +39,17 @@ func clip(s string, width int) string { return tuilayout.Clip(s, width) }
 // For each run the entries are tried with their tiers first and then without,
 // so the tiers go before a slot does. It is "" when not even the count fits.
 // A width that is not positive cuts nothing.
-func slotLine(p *catalog.ProfileRow, tiers map[string]string, width int) string {
+func slotLine(p *catalog.ProfileRow, tiers map[string]string, width int, short string) string {
 	if p == nil {
 		return ""
 	}
 	if p.Verdict == catalog.ActionBlock {
-		return cutLines(p.Reason, width)
+		// As remoteModeLine: the whole reason while it fits, else its
+		// one-line form (#699).
+		if short == "" || width <= 0 || lipgloss.Width(p.Reason) <= width {
+			return cutLines(p.Reason, width)
+		}
+		return cutLines(short, width)
 	}
 	const sep = " · "
 	def := p.Check.RestSlot()
@@ -151,7 +158,7 @@ func (m *model) modelFrames() []listFrame {
 			mode := ""
 			if it, ok := m.models.SelectedItem().(*modelItem); ok {
 				if it.profile != nil {
-					mode = slotLine(it.profile, it.slotTiers, inner)
+					mode = slotLine(it.profile, it.slotTiers, inner, it.blockedShort)
 				} else {
 					mode = remoteModeLine(it, inner)
 				}
@@ -368,7 +375,13 @@ func (m *model) fitTo(l *list.Model, frames ...listFrame) {
 // (the server routes), and every part is shown whole or not at all.
 func remoteModeLine(it *modelItem, width int) string {
 	if it.blocked != "" {
-		return cutLines("blocked: "+it.blocked, width)
+		// The whole reason while it fits; else its one-line form, which says
+		// the condition where the whole one would be cut before it (a blocked
+		// subscription row at 80 columns, #699). Enter sets the whole one.
+		if full := "blocked: " + it.blocked; it.blockedShort == "" || width <= 0 || lipgloss.Width(full) <= width {
+			return cutLines(full, width)
+		}
+		return cutLines("blocked: "+it.blockedShort, width)
 	}
 	join := func(parts ...string) string {
 		var out []string

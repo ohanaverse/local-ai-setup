@@ -48,7 +48,11 @@ type modelItem struct {
 	marked  bool
 	ref     int
 	blocked string // non-empty: the agent flow's Enter shows this instead of launching or starting
-	start   bool   // Enter starts the model through the lifecycle engine
+	// blockedShort is blocked's one-line form for the mode line, for a reason
+	// too long to fit there whole (a blocked Claude subscription row, #699);
+	// Enter still sets the whole one as the status.
+	blockedShort string
+	start        bool // Enter starts the model through the lifecycle engine
 	// cost is the row's price in force as the launcher's mode line names it
 	// for the highlighted row (costNote); "" for a row with no per-token
 	// price.
