@@ -48,6 +48,7 @@
     "gh": {"type": "string", "enum": ["ok", "unavailable", "partial"]},
     "notes": {"type": "array", "items": {"type": "string"}},
     "rows": {"type": "array", "items": {"$ref": "#/$defs/row"}},
+    "records": {"type": "array", "items": {"$ref": "#/$defs/record"}, "description": "ADDITIVE and optional: the rescue records (refs/wt/rescued/<id>, written by `wt rescue`), one entry each, absent when the repository has none. A section of its own: records are not rows and the row `kind` set is unchanged. Prune one with `wt remove --record <id>`; an `in_use` record is never prunable and a `recent` one needs --accept-loss."},
     "error": {
       "type": "object",
       "required": ["message"],
@@ -56,6 +57,28 @@
     }
   },
   "$defs": {
+    "record": {
+      "type": "object",
+      "required": ["ref", "id", "commit", "source_path", "source_ref", "source_head", "dest_branch", "dest_path", "source_exists", "source_matches", "dest_exists", "status", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": {"type": "string", "description": "The full record ref, refs/wt/rescued/<id>."},
+        "id": {"type": "string", "description": "The first 16 hex digits of the record commit, which the ref ends with; what `wt remove --record` takes."},
+        "commit": {"type": "string", "description": "Full 40-hex id of the record commit."},
+        "source_path": {"type": "string", "description": "The worktree the rescue was taken from."},
+        "source_ref": {"type": "string", "description": "That worktree's branch (refs/heads/<name>), or `detached`."},
+        "source_head": {"type": "string", "description": "That worktree's HEAD when it was rescued."},
+        "dest_branch": {"type": "string", "description": "The branch of the copy the rescue made."},
+        "dest_path": {"type": "string", "description": "The copy's worktree path."},
+        "age_days": {"type": "integer", "description": "Whole days (0 or more) since the record commit was made; absent when unknown."},
+        "source_exists": {"type": "boolean", "description": "A worktree exists at source_path."},
+        "source_matches": {"type": "boolean", "description": "It also has source_ref and source_head, so the record still covers it."},
+        "dest_exists": {"type": "boolean", "description": "dest_branch is still a local branch."},
+        "in_use_by": {"type": "string", "description": "The worktree path that keeps the record in use; present only when status is in_use."},
+        "status": {"type": "string", "enum": ["unused", "in_use", "recent"], "description": "`in_use`: a worktree still matches the record (or reads as rescued through it); never prunable. `recent`: younger than 7 days or of unknown age; pruning it needs --accept-loss. `unused`: neither."},
+        "reason": {"type": "string"}
+      }
+    },
     "status": {"type": "string", "enum": ["proven", "less_sure", "unique_work", "in_use"]},
     "evidence": {
       "type": "string",

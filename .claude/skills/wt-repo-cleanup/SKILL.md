@@ -38,6 +38,8 @@ Run from inside the repository (or `cd` there). Every command below is non-inter
 1. `wt remove <targets...> [flags] --dry-run --json`. Show each item's `saw`, `reason` and `losses`. Add the flags its reason asks for ("needs --accept-loss", "needs --force, --accept-loss"). A dry run exits 2 if anything would be refused.
 2. The same command with `--yes` instead of `--dry-run`.
 
+**4c. Rescue records (optional).** `wt worktrees --json` lists the `wt rescue` records in an optional `records` array (`id`, `status`, `age_days`, `source_path`, `dest_branch`, `reason`). A record pins the rescued commits until it is pruned. Offer to prune one only when its `status` is `unused` (`recent` needs `--accept-loss`, which the user must approve knowing it may be the only copy of just-rescued work; `in_use` is never prunable). Preview with `wt remove --record <id> --dry-run --json`, then the same with `--yes`; the result's `records[].commit` and its `restore with:` warning is how to get the ref back until git gc. Never type `git update-ref -d` yourself.
+
 If the preview used `--min-age`, pass the same `--min-age` to `wt remove` and `wt rescue`: each re-classifies with its own default (10m), so a row previewed `proven` otherwise reads `less_sure` and asks for `--accept-loss` the user never needed to give.
 
 | Flag | Only when the user approved |

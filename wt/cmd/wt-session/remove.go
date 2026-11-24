@@ -33,14 +33,14 @@ var (
 )
 
 type removeFlags struct {
-	yes, force, deleteBranch, acceptLoss, dryRun, json, noFetch, remote bool
-	minAge                                                              time.Duration
+	yes, force, deleteBranch, acceptLoss, dryRun, json, noFetch, remote, record bool
+	minAge                                                                      time.Duration
 }
 
 func removeCmd(a *app) *cobra.Command {
 	var f removeFlags
 	c := &cobra.Command{
-		Use:   "remove <worktree-path-or-branch>...",
+		Use:   "remove <worktree-path-or-branch>... | --record <id-or-ref>...",
 		Short: "Remove the named worktrees, local branches and origin branches, re-checking each first",
 		Long: "Remove each named worktree (by its path), local branch (by its exact name) or\n" +
 			"origin branch (origin/<name>), and a removed worktree's branch when it is\n" +
@@ -69,16 +69,24 @@ func removeCmd(a *app) *cobra.Command {
 			"worktree, an operation in progress, a registered model artifact, an open PR\n" +
 			"on an origin branch or one that targets it). A held item and the default\n" +
 			"branch need --accept-loss (and -D when the branch is not proven merged).\n\n" +
+			"--record  every argument names a rescue record instead (the id `wt worktrees\n" +
+			"--plain` lists under \"Rescue records\", or the full refs/wt/rescued/<id> ref), and\n" +
+			"the record's ref is pruned: the rescue's commits stay until git gc, and the\n" +
+			"result prints the command that restores the ref. A record a worktree still\n" +
+			"matches is refused (no flag overrides it); one younger than 7 days needs\n" +
+			"--accept-loss. It cannot be combined with worktree or branch targets or with\n" +
+			"--force, -D or --remote.\n\n" +
 			"Without --yes it asks y/N on a terminal (default No) after printing every\n" +
 			"item's losses and running processes; with no terminal it removes nothing.\n\n" +
 			"Exit 0: everything named was removed (a worktree's unmerged branch kept is\n" +
 			"not a failure). 1: could not start (an argument matching no target or more\n" +
 			"than one, no default branch, a registry that did not load). 2: some item was\n" +
 			"refused, skipped or failed. 3: approval missing (no --yes and no terminal, or\n" +
-			"the prompt was declined). With --json the one result document\n" +
+			"the prompt was declined). With --record, exit 2 also covers a record that is\n" +
+			"in use or too young. With --json the one result document\n" +
 			"(docs/contracts/remove-result.schema.json) is printed first, on failure too\n" +
 			"(a usage error as well, when --json comes before the bad flag).",
-		Example: "  wt remove ../repo-wt/topic\n  wt remove topic --dry-run\n  wt remove topic old-spike --yes --accept-loss -D\n  wt remove origin/merged-topic --remote --yes",
+		Example: "  wt remove ../repo-wt/topic\n  wt remove topic --dry-run\n  wt remove topic old-spike --yes --accept-loss -D\n  wt remove origin/merged-topic --remote --yes\n  wt remove --record 0123456789abcdef --dry-run",
 		// Both usage failures below go through removeFail, so --json gets its
 		// error document (exit 1) as the help promises.
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -93,6 +101,9 @@ func removeCmd(a *app) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := checkMinAge(cmd, f.minAge); err != nil {
 				return removeFail(cmd.OutOrStdout(), f, "", 1, err)
+			}
+			if f.record {
+				return executeRemoveRecords(cmd, f, args)
 			}
 			return executeRemove(cmd, a, f, args)
 		},
@@ -110,6 +121,7 @@ func removeCmd(a *app) *cobra.Command {
 	c.Flags().BoolVar(&f.json, "json", false, "print the result as one JSON document (docs/contracts/remove-result.schema.json)")
 	c.Flags().BoolVar(&f.remote, "remote", false, "also approve deleting the origin branches named (origin/<name>); no other flag does")
 	c.Flags().BoolVar(&f.noFetch, "no-fetch", false, "do not run git fetch --prune on every remote first (origin branches are then not removable)")
+	c.Flags().BoolVar(&f.record, "record", false, "the arguments name rescue records (ids from wt worktrees --plain) to prune, not worktrees or branches")
 	c.Flags().DurationVar(&f.minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
 	return c
 }

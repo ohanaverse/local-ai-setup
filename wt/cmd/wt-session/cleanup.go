@@ -196,7 +196,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 			if err != nil {
 				return cleanup.Report{}, tui.RemoveFuncs{}, err
 			}
-			return cleanupReport(a, filled, f.minAge, protErr),
+			return withRecordNote(cleanupReport(a, filled, f.minAge, protErr)),
 				cleanupRemoveFuncs(a, filled, in, f.minAge, protErr), nil
 		}
 		return runCleanupList(report, a.theme, rm)
@@ -250,6 +250,21 @@ func cleanupReport(a *app, snap cleanup.Snapshot, minAge time.Duration, protErr 
 		report.Notes = append(report.Notes, "registry: none at "+cleanup.OneLine(config.RegistryPath())+"; no model artifacts are registered")
 	}
 	return report
+}
+
+// withRecordNote adds the tick list's one pointer to the rescue records, which
+// the list does not show as rows (they are a section of their own): a header
+// note naming where to read and prune them. Only the interactive list gets it;
+// --plain prints the block itself and --json carries the records.
+func withRecordNote(r cleanup.Report) cleanup.Report {
+	if n := len(r.Records); n > 0 {
+		word := "records"
+		if n == 1 {
+			word = "record"
+		}
+		r.Notes = append(r.Notes, fmt.Sprintf("%d rescue %s, see wt worktrees --plain / wt remove --record", n, word))
+	}
+	return r
 }
 
 // listRoot is the root the report is built from — the primary worktree's
@@ -605,6 +620,9 @@ func printCleanupPlain(w io.Writer, r cleanup.Report, now time.Time) error {
 			}
 			b.WriteString(strings.TrimRight(line, " ") + "\n")
 		}
+	}
+	if lines := cleanup.RecordLines(r); len(lines) > 0 {
+		b.WriteString("\n" + strings.Join(lines, "\n") + "\n")
 	}
 	_, err := io.WriteString(w, b.String())
 	return err

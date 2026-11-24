@@ -22,9 +22,32 @@ type Envelope struct {
 	GH      string     `json:"gh,omitempty"`
 	// Notes are the caveats the text view prints under its header (a lowered
 	// min-age, artifact protection off, no registry); absent when there are none.
-	Notes []string   `json:"notes,omitempty"`
-	Rows  []RowJSON  `json:"rows"`
-	Error *ErrorJSON `json:"error,omitempty"`
+	Notes []string  `json:"notes,omitempty"`
+	Rows  []RowJSON `json:"rows"`
+	// Records are the rescue records (additive, optional): absent when the
+	// repository has none. A section of its own, not a row kind.
+	Records []RecordJSON `json:"records,omitempty"`
+	Error   *ErrorJSON   `json:"error,omitempty"`
+}
+
+// RecordJSON is a RecordRow. AgeDays is absent when the age is unknown;
+// InUseBy is absent unless in_use. Status is unused, in_use or recent.
+type RecordJSON struct {
+	Ref           string `json:"ref"`
+	ID            string `json:"id"`
+	Commit        string `json:"commit"`
+	SourcePath    string `json:"source_path"`
+	SourceRef     string `json:"source_ref"`
+	SourceHead    string `json:"source_head"`
+	DestBranch    string `json:"dest_branch"`
+	DestPath      string `json:"dest_path"`
+	AgeDays       *int   `json:"age_days,omitempty"`
+	SourceExists  bool   `json:"source_exists"`
+	SourceMatches bool   `json:"source_matches"`
+	DestExists    bool   `json:"dest_exists"`
+	InUseBy       string `json:"in_use_by,omitempty"`
+	Status        string `json:"status"`
+	Reason        string `json:"reason"`
 }
 
 // BaseJSON is Base. FetchedAt is RFC 3339 UTC, absent when no fetch ran or
@@ -208,6 +231,19 @@ func Encode(r Report) ([]byte, error) {
 			rj.PR = &PRJSON{Number: row.PR.Number, State: row.PR.State}
 		}
 		e.Rows = append(e.Rows, rj)
+	}
+	for _, rr := range r.Records {
+		rj := RecordJSON{
+			Ref: rr.Ref, ID: rr.ID, Commit: rr.Commit, SourcePath: flat(rr.SourcePath), SourceRef: flat(rr.SourceRef),
+			SourceHead: rr.SourceHead, DestBranch: flat(rr.DestBranch), DestPath: flat(rr.DestPath),
+			SourceExists: rr.SourceExists, SourceMatches: rr.SourceMatches, DestExists: rr.DestExists,
+			InUseBy: flat(rr.InUseBy), Status: rr.Status, Reason: flat(rr.Reason),
+		}
+		if rr.AgeDays >= 0 {
+			days := rr.AgeDays
+			rj.AgeDays = &days
+		}
+		e.Records = append(e.Records, rj)
 	}
 	return marshal(e)
 }

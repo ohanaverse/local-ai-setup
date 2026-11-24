@@ -250,6 +250,30 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 			}
 		}
 	}
+	// The additive records section: every status, an unknown age, in_use_by.
+	var recs struct {
+		Records []map[string]any `json:"records"`
+	}
+	if err := json.Unmarshal(raw, &recs); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs.Records {
+		seen["record:"+r["status"].(string)] = true
+		if _, has := r["age_days"]; !has {
+			seen["record:no-age"] = true
+		}
+		if _, has := r["in_use_by"]; has {
+			seen["record:in_use_by"] = true
+		}
+		if r["dest_exists"] == false {
+			seen["record:dest-gone"] = true
+		}
+	}
+	for _, want := range []string{"record:unused", "record:in_use", "record:recent", "record:no-age", "record:in_use_by", "record:dest-gone"} {
+		if !seen[want] {
+			t.Errorf("the fixture has no record for %q", want)
+		}
+	}
 	for _, want := range []string{"rescued", "preserved", "status:proven", "status:less_sure", "status:unique_work", "status:in_use",
 		"kind:worktree", "kind:branch", "kind:remote", "unknown", "blockers", "no-evidence", "hard_stop", "upstream"} {
 		if !seen[want] {

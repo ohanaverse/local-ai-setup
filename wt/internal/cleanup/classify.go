@@ -273,6 +273,10 @@ type Report struct {
 	// RecordsErr is Snapshot.RecordsErr: why the rescue records could not be
 	// read (NoteLines turns it into a note). Not part of the JSON contract.
 	RecordsErr string
+	// Records is one row per rescue record (RecordRows), a section of its
+	// own beside Rows: the row Kind set is frozen. In the JSON document as
+	// `records`, omitted when there are none.
+	Records []RecordRow
 }
 
 // judge collects one row's findings; status applies the precedence. info
@@ -351,6 +355,9 @@ func Classify(s Snapshot, o Options) Report {
 		c.ghNote = "gh answered for no branch"
 	}
 	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh, PRNotApplicable: s.PRNotApplicable, MinAge: o.MinAge, RecordsErr: s.RecordsErr}
+	if !s.FactsOnly {
+		r.Records = RecordRows(s, o.Now)
+	}
 	// Every remote ref is classified first, so a local row that folds one in
 	// can carry its verdict.
 	f := folder{remotes: make([]Row, len(s.Remotes)), byRef: map[string]int{}, folded: make([]bool, len(s.Remotes))}

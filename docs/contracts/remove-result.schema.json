@@ -11,6 +11,7 @@
     "repo": {"type": "string"},
     "dry_run": {"type": "boolean"},
     "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+    "records": {"type": "array", "items": {"$ref": "#/$defs/record"}, "description": "ADDITIVE and optional: present only for `wt remove --record`, which prunes rescue records (the refs/wt/rescued/<id> refs `wt rescue` writes) instead of worktrees and branches; `items` is then `[]`. One entry per record named, in the order named."},
     "error": {
       "type": "object",
       "required": ["message"],
@@ -19,6 +20,19 @@
     }
   },
   "$defs": {
+    "record": {
+      "type": "object",
+      "required": ["ref", "id", "outcome", "reason", "warnings"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": {"type": "string", "description": "The full record ref, refs/wt/rescued/<id>, carried verbatim; escape before printing to a terminal."},
+        "id": {"type": "string", "description": "The record's short id: the first 16 hex digits of its commit, which the ref ends with."},
+        "outcome": {"type": "string", "enum": ["pruned", "refused_in_use", "skipped_changed", "retained_recent", "failed", "invalid"], "description": "`pruned`: the ref is gone (a fresh read proved it; in a dry run, it would be). `refused_in_use`: a worktree still matches the record (same path, ref and head), so it may be the only copy of that worktree's rescued state; no flag overrides this. `skipped_changed`: the record moved to another commit or vanished since it was listed, or git deleted it and it was re-created at another commit. `retained_recent`: younger than 7 days (or of unknown age) and --accept-loss was not given. `failed`: git failed, the state could not be read, or the ref is not a record ref. `invalid` only in a partial report."},
+        "reason": {"type": "string"},
+        "warnings": {"type": "array", "items": {"type": "string"}, "description": "A pruned record carries `restore with: git update-ref <ref> <commit> (until git gc)`."},
+        "commit": {"type": "string", "description": "Full 40-hex commit id of the record; present when this run issued (or may have issued) the delete, so the ref MAY be gone whatever `outcome` says. `git update-ref <ref> <commit>` brings it back while git keeps the commit. Absent in a dry run and for every record the run did not touch."}
+      }
+    },
     "item": {
       "type": "object",
       "required": ["kind", "name", "saw", "worktree", "branch", "reason", "warnings", "losses"],
