@@ -18,7 +18,7 @@ import (
 // fullest first. Only keys that act are named (T5), read from the same
 // predicates the handlers use: the mode keys once an observation is in and
 // nothing is out (the form is inert while busy), down where the chosen mode
-// has fields, a while a write may run
+// has fields, a and g while a write may run
 // (setupWriteBlocked), s/x/R for local (setupControlBlocked). c and r both
 // read the machine again, c to check after a change elsewhere, r to read a
 // config.toml repaired by hand.
@@ -32,6 +32,9 @@ func (m *model) setupHints() []string {
 	case setupMenu:
 		return m.setupMenuHints()
 	case setupConfirm:
+		if st.prompt == promptGateway {
+			return []string{"y write · n/esc cancel · ctrl+c quit", "y · n/esc · ctrl+c quit"}
+		}
 		if st.prompt == promptRunUnused {
 			return []string{"y run · n/esc cancel · ctrl+c quit", "y · n/esc · ctrl+c quit"}
 		}
@@ -44,7 +47,10 @@ func (m *model) setupHints() []string {
 		return []string{"y apply · n/esc cancel · ctrl+c quit", "y · n/esc · ctrl+c quit"}
 	}
 	type hint struct{ key, label string }
-	var mode, keys []hint
+	var mode, keys, least []hint
+	// add names a key in every tier; g is appended to keys alone, so the
+	// narrowest tier (a 40-column terminal) leaves it out.
+	add := func(h hint) { keys, least = append(keys, h), append(least, h) }
 	if st.loaded && !st.busy {
 		mode = append(mode, hint{"left/right", "mode"})
 		if len(st.visibleFields()) > 0 {
@@ -52,19 +58,22 @@ func (m *model) setupHints() []string {
 		}
 	}
 	if m.setupWriteBlocked() == "" {
-		keys = append(keys, hint{"a", "apply"})
+		add(hint{"a", "apply"})
+		// g, the subscription switch (#693), is a write like a.
+		keys = append(keys, hint{"g", "gateway"})
 	}
 	if m.setupLiteLLMBlocked() == "" {
-		keys = append(keys, hint{"k", "key"})
+		add(hint{"k", "key"})
 	}
 	if m.setupTightenBlocked() == "" {
-		keys = append(keys, hint{"t", "tighten"})
+		add(hint{"t", "tighten"})
 	}
-	keys = append(keys, hint{"c", "check"}, hint{"r", "re-read"})
+	add(hint{"c", "check"})
+	add(hint{"r", "re-read"})
 	if m.setupControlBlocked() == "" {
-		keys = append(keys, hint{"s/x/R", "start/stop/restart"})
+		add(hint{"s/x/R", "server"})
 	}
-	keys = append(keys, hint{"tab", "next"})
+	add(hint{"tab", "next"})
 	join := func(hs []hint, labels bool) []string {
 		var out []string
 		for _, h := range hs {
@@ -78,11 +87,11 @@ func (m *model) setupHints() []string {
 	}
 	full := append(join(mode, true), join(keys, true)...)
 	short := append(join(mode, false), join(keys, false)...)
-	least := join(keys, false)
+	leastJ := join(least, false)
 	return []string{
 		strings.Join(append(full, "q quit"), " · "),
 		strings.Join(append(short, "q quit"), " · "),
-		strings.Join(append(least, "q quit"), " · "),
+		strings.Join(append(leastJ, "q quit"), " · "),
 	}
 }
 
@@ -200,7 +209,7 @@ func gatewayLine(g modelsetup.GatewayState) editorkit.Line {
 	if g.Err != "" {
 		return editorkit.Line{Label: "gateway", Text: "subscription passthrough read as " + onoff + ": " + editorkit.Scrub(g.Err), Tone: editorkit.ToneWarn}
 	}
-	return editorkit.Line{Label: "gateway", Text: "subscription passthrough " + onoff + " in config.toml; change it with `wt-model gateway subscription on|off`, then restart serve", Tone: editorkit.ToneNone}
+	return editorkit.Line{Label: "gateway", Text: "subscription passthrough " + onoff + " in config.toml; press g to turn it on or off (or `wt-model gateway subscription on|off`); restart serve after (x then s)", Tone: editorkit.ToneNone}
 }
 
 // setupStatusLines is the status block: the effective mode and where it
@@ -380,6 +389,13 @@ func (m *model) setupPromptView(bar string, dim lipgloss.Style) string {
 		}
 		text = fmt.Sprintf("the mode is %s: no session uses the local server. next: stop it with x when done, or make the mode local on `wt config`'s Mode tab.", modelmode.ConfigMode(st.state.State))
 		return editorkit.PromptView(bar, text, q, m.setupHints(), m.width, m.height, dim)
+	case promptGateway:
+		word := "on"
+		if !st.gatewayOn {
+			word = "off"
+		}
+		text = "this writes [gateway] subscription_passthrough in the wt-model home's config.toml (a backup is made). serve reads it once, at start: restart it afterwards (x then s here: bootout, bootstrap)."
+		return editorkit.PromptView(bar, text, "Turn subscription passthrough "+word+"? [y/N]", m.setupHints(), m.width, m.height, dim)
 	case promptReplaceRemote:
 		text = fmt.Sprintf("config.toml says remote: applying %s replaces its url and token. next: to use that server again, set remote on `wt config`'s Mode tab.", st.planWant.Mode)
 		question = "Continue? [y/N]"

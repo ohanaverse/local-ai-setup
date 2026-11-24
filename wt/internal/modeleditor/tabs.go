@@ -2,6 +2,7 @@ package modeleditor
 
 import (
 	"context"
+	"errors"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
@@ -91,6 +92,8 @@ type SetupDeps struct {
 	Apply func(ctx context.Context, p modelsetup.Plan, progress func(string)) modelsetup.Result
 	// Control starts, stops or restarts a service.
 	Control func(ctx context.Context, a modelsetup.ControlAction) error
+	// SetGateway writes the [gateway] subscription switch (g, #693).
+	SetGateway func(on bool) (config.GatewayWrite, error)
 }
 
 // SetupDepsFromEnv builds the four functions over env, so a caller can
@@ -106,6 +109,12 @@ func SetupDepsFromEnv(env modelsetup.Env) SetupDeps {
 		},
 		Control: func(ctx context.Context, a modelsetup.ControlAction) error {
 			return modelsetup.Control(ctx, env, a)
+		},
+		SetGateway: func(on bool) (config.GatewayWrite, error) {
+			if env.SetGateway == nil {
+				return config.GatewayWrite{}, errors.New("this build cannot write the gateway switch")
+			}
+			return env.SetGateway(on)
 		},
 	}
 }
@@ -123,6 +132,9 @@ func (d SetupDeps) withDefaults() SetupDeps {
 	}
 	if d.Control == nil {
 		d.Control = def.Control
+	}
+	if d.SetGateway == nil {
+		d.SetGateway = def.SetGateway
 	}
 	return d
 }

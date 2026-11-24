@@ -119,6 +119,8 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case setupAppliedMsg:
 		return m, m.applySetupApplied(msg)
+	case setupGatewayMsg:
+		return m, m.applySetupGateway(msg)
 	case setupControlledMsg:
 		return m, m.applySetupControlled(msg)
 	case setupSettleMsg:
