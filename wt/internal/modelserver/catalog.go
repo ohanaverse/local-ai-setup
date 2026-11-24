@@ -96,8 +96,10 @@ type CatalogOptions struct {
 
 // subscriptionOffReason is a subscription row's block reason while the
 // host's passthrough is off: it names the key that turns it on (decision 6).
+// It goes over the wire to remote clients, so it names the conventional path,
+// not the host's resolved one (which would show the host's home directory).
 func subscriptionOffReason() string {
-	return "subscription passthrough is off on the model server ([gateway] subscription_passthrough in " + config.ProxyHomeFile() + ")"
+	return "subscription passthrough is off on the model server ([gateway] subscription_passthrough in ~/.config/wt-model/config.toml)"
 }
 
 // wireRow converts one catalog row. A subscription row is blocked while

@@ -1,7 +1,5 @@
 package config
 
-import "path/filepath"
-
 // The files a refusal or a hint tells the user to edit (#700): the resolved
 // path, so the message names the file that is actually read when
 // XDG_CONFIG_HOME moves the config home, and the conventional ~/.config path
@@ -30,5 +28,5 @@ func ConfigFile() string {
 	if baseConfigHome() == "" {
 		return conventionalAgentConfig
 	}
-	return filepath.Join(Dir(), "config.toml")
+	return Path()
 }

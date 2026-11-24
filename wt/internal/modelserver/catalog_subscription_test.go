@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -152,10 +151,11 @@ func TestServerCatalogFollowsSubscriptionPassthrough(t *testing.T) {
 	}
 }
 
-// TestSubscriptionOffReasonNamesTheMovedConfigHome pins #700 for a blocked
-// subscription row: with XDG_CONFIG_HOME moved the reason names the wt-model
-// config.toml the host actually reads, never the conventional ~/.config path.
-func TestSubscriptionOffReasonNamesTheMovedConfigHome(t *testing.T) {
+// TestSubscriptionOffReasonKeepsTheHostPathOffTheWire pins that a blocked
+// subscription row's reason goes to remote clients with the conventional
+// ~/.config path even when XDG_CONFIG_HOME moves the host's config home: the
+// host's resolved path would show its home directory to every client.
+func TestSubscriptionOffReasonKeepsTheHostPathOffTheWire(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	cfg := serverCfg()
@@ -176,8 +176,7 @@ func TestSubscriptionOffReasonNamesTheMovedConfigHome(t *testing.T) {
 	if err := json.Unmarshal(b, &r); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(xdg, "wt-model", "config.toml")
-	if r.Action != modelapi.ActionBlock || !strings.Contains(r.BlockReason, "subscription_passthrough in "+want+")") || strings.Contains(r.BlockReason, "~/.config") {
-		t.Errorf("reason = %q, want it to name %s", r.BlockReason, want)
+	if r.Action != modelapi.ActionBlock || !strings.Contains(r.BlockReason, "subscription_passthrough in ~/.config/wt-model/config.toml)") || strings.Contains(r.BlockReason, xdg) {
+		t.Errorf("reason = %q, want the conventional path and not %s", r.BlockReason, xdg)
 	}
 }
