@@ -271,7 +271,7 @@ func (e Engine) worktreeGate(it Item) gated {
 	// Floors (held, default_branch) are not here: they read less_sure and
 	// need --accept-loss through needsOf.
 	if fresh.HardStop != "" {
-		return stop(refuse(it, blockerReason(fresh.Blockers, fresh.Kind)))
+		return stop(refuse(it, blockerReason(fresh.Blockers, fresh.Kind, e.Prior.Repo)))
 	}
 
 	// 6. An unknown is never approved, Force or not.
@@ -509,7 +509,7 @@ func (e Engine) branchGate(it Item) gated {
 
 	// 4. Hard blockers.
 	if fresh.HardStop != "" {
-		return refuseB(blockerReason(fresh.Blockers, fresh.Kind))
+		return refuseB(blockerReason(fresh.Blockers, fresh.Kind, e.Prior.Repo))
 	}
 
 	// 5. Changed since the user saw it.
@@ -656,8 +656,11 @@ func (e Engine) invalidPath(p string) string {
 
 // blockerReason names every hard stop's code (floors such as held and
 // default_branch are left out: they need --accept-loss, they do not refuse),
-// the first one's detail.
-func blockerReason(bs []cleanup.Reason, k cleanup.Kind) string {
+// the first one's detail. A current-directory blocker adds where to run
+// from: wt never removes a directory it is standing in, so the way out is to
+// run the same command from root (the repository root) or any directory
+// outside the worktree (#569).
+func blockerReason(bs []cleanup.Reason, k cleanup.Kind, root string) string {
 	var hard []cleanup.Reason
 	for _, b := range bs {
 		if cleanup.IsHardStop(b.Code, k) {
@@ -674,6 +677,12 @@ func blockerReason(bs []cleanup.Reason, k cleanup.Kind) string {
 	s := "hard blocker: " + strings.Join(codes, ", ")
 	if hard[0].Detail != "" {
 		s += " (" + hard[0].Detail + ")"
+	}
+	for _, b := range hard {
+		if b.Code == cleanup.BlockCurrent {
+			s += "; you are standing in it; run `wt remove " + b.Detail + "` from the repository root (" + root + ") or any directory outside it"
+			break
+		}
 	}
 	return s
 }

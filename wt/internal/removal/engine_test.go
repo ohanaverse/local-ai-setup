@@ -841,3 +841,29 @@ func TestHeldWorktreeNeedsConfirmNotRefused(t *testing.T) {
 		})
 	}
 }
+
+// TestBlockerReasonCurrentNamesWhereToRun: a current-directory blocker keeps
+// the "hard blocker: current (<path>)" prefix and adds where to run from
+// (#569); other blockers add nothing, and a locked one alongside still shows.
+func TestBlockerReasonCurrentNamesWhereToRun(t *testing.T) {
+	root, wtPath := t.TempDir(), t.TempDir()
+	cur := cleanup.Reason{Code: cleanup.BlockCurrent, Detail: wtPath}
+	locked := cleanup.Reason{Code: cleanup.BlockLocked, Detail: "locked"}
+
+	got := blockerReason([]cleanup.Reason{cur}, cleanup.KindWorktree, root)
+	prefix := "hard blocker: current (" + wtPath + ")"
+	hint := "you are standing in it; run `wt remove " + wtPath + "` from the repository root (" + root + ") or any directory outside it"
+	if !strings.HasPrefix(got, prefix) || !strings.Contains(got, hint) {
+		t.Errorf("reason %q, want prefix %q and %q", got, prefix, hint)
+	}
+
+	got = blockerReason([]cleanup.Reason{cur, locked}, cleanup.KindWorktree, root)
+	if !strings.HasPrefix(got, "hard blocker: current, locked (") || !strings.Contains(got, hint) {
+		t.Errorf("current+locked reason %q, want both codes and %q", got, hint)
+	}
+
+	got = blockerReason([]cleanup.Reason{locked}, cleanup.KindWorktree, root)
+	if strings.Contains(got, "wt remove") {
+		t.Errorf("locked-only reason %q must not carry the run-from-root hint", got)
+	}
+}

@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Refusing to remove the worktree you are standing in (hard blocker `current`) now says where to run it from: `wt remove <path>` from the repository root or any directory outside it (#569). The `wt-repo-cleanup` skill reports such a proven row as deferred and, only with the user's yes, removes it as a last step from the repository root. wt still never removes its own working directory; offering removal when an agent session exits is not built.
 - `wt worktree` is now an alias of `wt worktrees` (the singular used to fall through to the launch picker, which has no tick boxes). `wt cleanup`, the old alias, is removed and refused with a pointer to `wt worktrees`.
 - An origin branch whose PR merged but that moved on afterwards (a stacked PR merged into it) is **proven** when its tree is identical to the base's, so `wt worktrees` lists it `safe` and `wt remove origin/<name> --remote` removes it.
 - An origin branch wt could read in full but not prove merged (verdict `check`) is now removable: `wt remove origin/<name> --remote --accept-loss`, or the list's typed `delete origin`. Unique work, an Unknown row (origin not fetched, gh down) and any blocker stay refused. The refusal for any other status now reads "only a proven or less-sure origin branch can be removed".
