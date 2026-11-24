@@ -544,3 +544,65 @@ func TestAddRefusesConfigContentAndWrapper(t *testing.T) {
 		t.Error("expected an error for wrapper")
 	}
 }
+
+// TestRepointRewritesOnlyTheMatchingValues pins #687's text half: every slot
+// value (and env value) equal to the old id becomes the new one, padding,
+// comments and every other byte stay, a value that merely contains the old id
+// is left alone, the changed profiles are named in file order, and a second
+// run changes nothing (idempotent, so every session machine can run it).
+func TestRepointRewritesOnlyTheMatchingValues(t *testing.T) {
+	src := strings.NewReplacer(
+		`opus   = "ollama/b:cloud"
+sonnet = "ollama/c:cloud"
+
+# Send`, `opus   = "alias/old"
+sonnet = "alias/old-extra"
+
+# Send`,
+		`fable  = "ollama/a:cloud"`, `fable  = "alias/old"   # keep this comment`,
+		`REMEMBER_MODEL = "ollama/c:cloud"`, `REMEMBER_MODEL = "alias/old"`,
+	).Replace(fixture)
+	out, changed, err := Repoint([]byte(src), "alias/old", "alias/new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.NewReplacer(
+		`fable  = "alias/old"   # keep this comment`, `fable  = "alias/new"   # keep this comment`,
+		`opus   = "alias/old"`, `opus   = "alias/new"`,
+		`REMEMBER_MODEL = "alias/old"`, `REMEMBER_MODEL = "alias/new"`,
+	).Replace(src)
+	if string(out) != want {
+		t.Errorf("Repoint =\n%s\nwant\n%s", out, want)
+	}
+	if strings.Join(changed, ",") != "alpha,beta" {
+		t.Errorf("changed = %v, want alpha,beta in file order", changed)
+	}
+	if !strings.Contains(string(out), `"alias/old-extra"`) {
+		t.Error("a value that only contains the old id was rewritten")
+	}
+	mustParse(t, out)
+	again, changed2, err := Repoint(out, "alias/old", "alias/new")
+	if err != nil || changed2 != nil || string(again) != string(out) {
+		t.Errorf("second Repoint = %v, %v; want no change", changed2, err)
+	}
+	none, changed3, err := Repoint([]byte(fixture), "alias/old", "alias/new")
+	if err != nil || changed3 != nil || string(none) != fixture {
+		t.Errorf("no profile uses the id: %v %v", changed3, err)
+	}
+	if _, _, err := Repoint(nil, "", "x"); err == nil {
+		t.Error("an empty id was accepted")
+	}
+}
+
+// TestRepointRefusesAnInlineSlotsTable pins that a profile whose slots are an
+// inline table and mention the old id is refused (as Set refuses it), not
+// skipped: skipping would leave it on the id the redirect sweep removes.
+func TestRepointRefusesAnInlineSlotsTable(t *testing.T) {
+	src := "[[profile]]\nname = \"p\"\nagent = \"claude\"\ndefault = \"opus\"\nslots = { opus = \"alias/old\" }\n"
+	if _, _, err := Repoint([]byte(src), "alias/old", "alias/new"); err == nil || !strings.Contains(err.Error(), "inline table") {
+		t.Errorf("err = %v, want an inline-table refusal", err)
+	}
+	if out, changed, err := Repoint([]byte(src), "alias/other", "alias/new"); err != nil || changed != nil || string(out) != src {
+		t.Errorf("an inline table without the id: %v %v", changed, err)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -168,6 +169,14 @@ func prepRemoteSlot(ctx context.Context, id int, client ModelClient, hold *clien
 	if ctx.Err() != nil {
 		dropAll(hold, ids)
 		return remoteSlotPreparedMsg{id: id, row: row, err: ctx.Err()}
+	}
+	// A slot on a renamed alias (#687): the same notes the plain launch
+	// prints, joined as the picker's one launch note.
+	if redirects := catalog.SlotRedirectNotes(cat.Rows, check); len(redirects) > 0 {
+		if note != "" {
+			redirects = append(redirects, note)
+		}
+		note = strings.Join(redirects, "\nwt: note: ")
 	}
 	return remoteSlotPreparedMsg{id: id, row: row, note: note}
 }

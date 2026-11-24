@@ -16,6 +16,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cli"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -34,7 +35,7 @@ func slotsCmd(a *app) *cobra.Command {
 		Use:   "slots",
 		Short: "Add, change and remove slot profiles in slot-profiles.toml",
 	}
-	c.AddCommand(slotsAddCmd(a), slotsSetCmd(a), slotsRmCmd(a), slotsUsageCmd(a), slotsCandidatesCmd(a))
+	c.AddCommand(slotsAddCmd(a), slotsSetCmd(a), slotsRepointCmd(a), slotsRmCmd(a), slotsUsageCmd(a), slotsCandidatesCmd(a))
 	return c
 }
 
@@ -221,6 +222,95 @@ func slotsSetCmd(a *app) *cobra.Command {
 	c.Flags().StringArrayVar(&envFlags, "env", nil, "KEY=VALUE env entry to set (repeatable)")
 	c.Flags().StringArrayVar(&unsetFlags, "unset-env", nil, "env KEY to remove (repeatable)")
 	return c
+}
+
+// slotsRepointCmd is `wt profile slots repoint <alias/old> <alias/new>`
+// (#687): after `wt-model alias rename`, move every slot profile on this
+// machine from the old alias id to the new one. wt-model cannot reach this
+// file, so the move is explicit and runs on each session machine; it is
+// idempotent, so running it again, or on a machine that never used the old
+// id, is safe.
+func slotsRepointCmd(a *app) *cobra.Command {
+	var dryRun bool
+	c := &cobra.Command{
+		Use:   "repoint <alias/old> <alias/new>",
+		Short: "Move every slot profile from a renamed alias to its new id",
+		Long: "Rewrite every slot value (and env value that names a model, as\n" +
+			"REMEMBER_MODEL does) that equals <alias/old> to <alias/new>, in every profile,\n" +
+			"in one locked, backed-up write: the same lock and .bak as `slots set`. Run it\n" +
+			"on each machine that launches slot profiles after `wt-model alias rename`\n" +
+			"prints it; the old id keeps working as a redirect until `wt-model alias rm\n" +
+			"--finished` removes it. It prints the profiles it changed, and `no change`\n" +
+			"when none use <alias/old>, so a second run is harmless.\n\n" +
+			"<alias/new> must be on the model server and not itself a redirect.\n\n" +
+			"Flags:\n" +
+			"  --dry-run   name the profiles that would change and write nothing",
+		Example: "  wt profile slots repoint alias/sonnet-main alias/main --dry-run\n" +
+			"  wt profile slots repoint alias/sonnet-main alias/main",
+		Args: cobra.ExactArgs(2), SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSlotsRepoint(cmd.Context(), cmd.OutOrStdout(), a, args[0], args[1], dryRun)
+		},
+	}
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "name the profiles that would change and write nothing")
+	return c
+}
+
+// runSlotsRepoint is `wt profile slots repoint`.
+func runSlotsRepoint(ctx context.Context, w io.Writer, a *app, from, to string, dryRun bool) error {
+	for _, id := range []string{from, to} {
+		if !strings.HasPrefix(id, config.AliasIDPrefix) {
+			return fmt.Errorf("%q is not an alias id (alias/<name>); repoint moves a renamed alias, `wt profile slots set` changes a slot to any other model", id)
+		}
+	}
+	if from == to {
+		return fmt.Errorf("%q is both the old and the new id; nothing to repoint", from)
+	}
+	// A file with no profile on the old id needs no server: say so first.
+	src, rerr := os.ReadFile(profiles.SlotPath())
+	if rerr != nil && !os.IsNotExist(rerr) {
+		return rerr
+	}
+	_, changed, err := slotedit.Repoint(src, from, to)
+	if err != nil {
+		return err
+	}
+	if len(changed) == 0 {
+		fmt.Fprintf(w, "no change: no slot profile uses %s\n", cli.VisibleID(from))
+		return nil
+	}
+	// The new id is checked against what the server serves, as `slots set`
+	// checks a slot: a typo here would break every profile it moves.
+	ms, err := a.openModels(ctx, slotEditStill)
+	if err != nil {
+		return remoteExit(err)
+	}
+	cat, err := ms.client.Catalog(ctx)
+	if err != nil {
+		return remoteExit(modelclient.Still(err, slotEditStill))
+	}
+	i := slices.IndexFunc(cat.Rows, func(r modelapi.Row) bool { return r.ID == to })
+	switch {
+	case i < 0:
+		return fmt.Errorf("%s is not a model or alias on the model server; nothing was changed", cli.VisibleID(to))
+	case cat.Rows[i].RedirectTo != "":
+		return fmt.Errorf("%s is itself a redirect to %s; repoint to %s. Nothing was changed", cli.VisibleID(to), cli.VisibleID(cat.Rows[i].RedirectTo), cli.VisibleID(cat.Rows[i].RedirectTo))
+	}
+	if dryRun {
+		fmt.Fprintf(w, "would repoint %s -> %s in: %s\ndry run: nothing was changed\n", cli.VisibleID(from), cli.VisibleID(to), strings.Join(changed, ", "))
+		return nil
+	}
+	var done []string
+	o := slotedit.Options{Drivers: agents.SlotDrivers()}
+	if err := applySlotEdit(w, a, func(b []byte) ([]byte, error) {
+		out, names, err := slotedit.Repoint(b, from, to)
+		done = names
+		return out, err
+	}, o); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "repointed %s -> %s in: %s\n", cli.VisibleID(from), cli.VisibleID(to), strings.Join(done, ", "))
+	return nil
 }
 
 func slotsRmCmd(a *app) *cobra.Command {

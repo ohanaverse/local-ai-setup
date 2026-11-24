@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -454,5 +455,38 @@ func TestSlotLaunchRemotePrintsSlotNotes(t *testing.T) {
 	}
 	if len(*r.built) != 1 {
 		t.Errorf("agents built = %d, want 1", len(*r.built))
+	}
+}
+
+// TestSlotLaunchRemoteNotesARenamedAlias pins #687's visibility rule on a
+// client session's slot launch: a slot on an alias the server reports as a
+// redirect prints one `wt: note:` with the repoint command, once, and the
+// launch goes on (the old id is still routed); a profile on the new id prints
+// no such note.
+func TestSlotLaunchRemoteNotesARenamedAlias(t *testing.T) {
+	rows := append(slotWireRows(),
+		modelapi.Row{ID: "alias/new", GatewayID: "alias/new", ProviderID: "alias", Family: "alias", ModelName: "new", Location: "cloud",
+			Tags: []string{}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Kind: modelapi.KindAlias, Order: 10,
+			Targets: []modelapi.AliasTarget{{ID: "openrouter/a", Order: 1, ProviderID: "openrouter", Location: "cloud", State: modelapi.StateRunning}}},
+		modelapi.Row{ID: "alias/old", GatewayID: "alias/old", ProviderID: "alias", Family: "alias", ModelName: "old", Location: "cloud",
+			Tags: []string{}, Registered: true, State: modelapi.StateRunning, Action: modelapi.ActionLaunch, Kind: modelapi.KindAlias, Order: 11,
+			RedirectTo: "alias/new",
+			Targets:    []modelapi.AliasTarget{{ID: "openrouter/a", Order: 1, ProviderID: "openrouter", Location: "cloud", State: modelapi.StateRunning}}})
+	const note = "wt: note: alias/old is renamed to alias/new; run 'wt profile slots repoint alias/old alias/new'"
+	for slot, want := range map[string]int{"alias/old": 1, "alias/new": 0} {
+		r, built := slotRigRows(t, rows, map[string]string{"sonnet": slot, "haiku": slot})
+		// osStderr is the launch's notes seam (launch.go); restored below.
+		var notes bytes.Buffer
+		oldErr := osStderr
+		osStderr = &notes
+		err := r.launch(t, context.Background(), "profile/mix", "", false)
+		osStderr = oldErr
+		stderr := notes.String()
+		if err != nil || len(*built) != 1 {
+			t.Fatalf("%s: launch err %v, built %d", slot, err, len(*built))
+		}
+		if n := strings.Count(stderr, note); n != want {
+			t.Errorf("%s: the note was printed %d times, want %d:\n%s", slot, n, want, stderr)
+		}
 	}
 }

@@ -263,6 +263,12 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 		return remoteExit(modelclient.Still(errors.New(slotPrefixHeldReason(holder)), launchStill))
 	}
 	slotRows := slotRowsOf(cat.Rows, row.Profile.Check)
+	// A slot on an alias `wt-model alias rename` left as a redirect (#687):
+	// the launch goes on (the old id is still routed); the note says how to
+	// move the profile.
+	for _, n := range catalog.SlotRedirectNotes(cat.Rows, row.Profile.Check) {
+		fmt.Fprintf(osStderr, "wt: note: %s\n", n)
+	}
 	row = catalog.ResolveSlotProfileWire(catalog.WireByID(cat.Rows), row.Profile.Check)
 	p := row.Profile
 	if row.Action() == catalog.ActionBlock {
