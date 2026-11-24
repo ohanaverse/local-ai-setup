@@ -270,6 +270,9 @@ type Report struct {
 	// Notes are extra header lines the caller adds (HeaderLines appends
 	// them, one sanitised line each). Not part of the JSON contract.
 	Notes []string
+	// RecordsErr is Snapshot.RecordsErr: why the rescue records could not be
+	// read (NoteLines turns it into a note). Not part of the JSON contract.
+	RecordsErr string
 }
 
 // judge collects one row's findings; status applies the precedence. info
@@ -347,7 +350,7 @@ func Classify(s Snapshot, o Options) Report {
 	if c.gh == GHUnavailable {
 		c.ghNote = "gh answered for no branch"
 	}
-	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh, PRNotApplicable: s.PRNotApplicable, MinAge: o.MinAge}
+	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh, PRNotApplicable: s.PRNotApplicable, MinAge: o.MinAge, RecordsErr: s.RecordsErr}
 	// Every remote ref is classified first, so a local row that folds one in
 	// can carry its verdict.
 	f := folder{remotes: make([]Row, len(s.Remotes)), byRef: map[string]int{}, folded: make([]bool, len(s.Remotes))}

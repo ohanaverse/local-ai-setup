@@ -158,7 +158,7 @@ repository.
 
 | Flag | Effect |
 |---|---|
-| `--json` | Machine-readable report: [cleanup-list.schema.json](../../docs/contracts/cleanup-list.schema.json), sample [cleanup-list.sample.json](../../docs/contracts/cleanup-list.sample.json). Its `notes` array holds the caveats the text header prints (a lowered `--min-age`, artifact protection off, no registry); read it before acting on `rows`. |
+| `--json` | Machine-readable report: [cleanup-list.schema.json](../../docs/contracts/cleanup-list.schema.json), sample [cleanup-list.sample.json](../../docs/contracts/cleanup-list.sample.json). Its `notes` array holds the caveats the text header prints (a lowered `--min-age`, artifact protection off, no registry, unreadable rescue records: rescued originals then read as unique work); read it before acting on `rows`. |
 | `--no-fetch` | Skip the fetch (every remote, never prompting). A repository with no remote skips it anyway; the header says how it went, remote by remote. With the fetch skipped or failed no `origin` row can be proven. |
 | `--min-age <duration>` | A branch younger than this that sits at or behind the base is never proven merged (a brand-new branch looks merged). At least `1m` (less is a usage error, exit 1); a value below the default `10m` is named in the header. |
 | `--plain` | Text output on a terminal. |
