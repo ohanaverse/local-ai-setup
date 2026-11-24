@@ -1566,3 +1566,39 @@ func TestCleanupRemoveFuncsRereadNeverFetches(t *testing.T) {
 		t.Errorf("report.Fetch = %+v, want the hand-off's failed fetch", rep.Fetch)
 	}
 }
+
+// TestCleanupTerminalFetchPrunesStaleClaims: a terminal `--fetch` run prunes
+// stale claims through the one gate (#586), the header names the second
+// remote's result, and a plain terminal open (no --fetch) leaves the claim.
+func TestCleanupTerminalFetchPrunesStaleClaims(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	up := filepath.Join(t.TempDir(), "up.git")
+	if b, err := exec.Command("git", "init", "--bare", "-b", "main", up).CombinedOutput(); err != nil {
+		t.Fatalf("init up: %v\n%s", err, b)
+	}
+	cgit(t, dir, "remote", "add", "up", up)
+	file := staleClaimFile(t, dir)
+	oldTTY, oldList := isTerminalWriter, runCleanupList
+	isTerminalWriter = func(io.Writer) bool { return true }
+	var got cleanup.Report
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, _ tui.RemoveFuncs) error { got = r; return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
+
+	if _, _, err := runCleanup(t, a, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(file); statErr != nil {
+		t.Fatalf("a terminal open without --fetch dropped the stale claim %s: %v", file, statErr)
+	}
+	if _, _, err := runCleanup(t, a, dir, "--fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(file); !os.IsNotExist(statErr) {
+		t.Fatalf("the terminal --fetch run left the stale claim %s behind (stat error %v)", file, statErr)
+	}
+	if hdr := strings.Join(cleanup.HeaderLines(got, time.Now()), "\n"); !strings.Contains(hdr, "also fetched up") {
+		t.Errorf("the terminal --fetch header does not name the remote %q:\n%s", "up", hdr)
+	}
+}
