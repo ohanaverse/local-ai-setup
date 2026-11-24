@@ -44,7 +44,7 @@ Not known; Task 0 measures each on the real proxy with a scratch row and records
 
 Each has a recommendation; none is made.
 
-1. **What a database row's `api_key` holds.** *Recommend the `os.environ/<NAME>` reference, if Task 0 shows LiteLLM resolves it for database rows.* Then the secret never enters the database or the stamp's input, and rotating a provider key is still an edit of the proxy's environment plus one restart. The alternative, a resolved key in the row, is simpler to reason about for rows that have no env var but puts a provider key in LiteLLM's database; if Task 0 shows the reference does not resolve, this decision is forced and the plan must say how a keyless `secret_ref` is handled.
+1. **What a database row's `api_key` holds.** *Recommend the resolved key.* Task 0 shows both choices work and both end as ciphertext in the table, absent from the listing and the spend log. The `os.environ/<NAME>` reference resolves in a database row (an unset variable fails closed at request time), but `wt` resolves `secret_ref` from its own environment today and writes the value, so a reference would make every provider key a variable that the **proxy's** environment (its LaunchAgent plist) must hold, changed by a `bootout` and `bootstrap`: a new operator duty and a restart per key change. A resolved key keeps today's semantics, asks nothing new of the plist, and is a strict improvement on the plaintext key in `config.yaml`. Not measured: whether a `PATCH` of `api_key` takes effect without a restart. Revisit if the owner wants provider keys kept out of LiteLLM's database altogether, in which case the references and the plist duty are the price.
 2. **Which cloud rows move.** *Recommend all wt-written cloud rows, including the keyless `anthropic/` rows of `claude-subscription`.* Moving only some keeps a restart path alive for the rest, and the subscription row is the one a user adds most often. The risk is the hazard gate: while it is blocked, a subscription row is not routed and not added in either store, and an existing database row is deleted (`off`, as `subscriptionUnrouted` does for model rows and `aliasSubBlocked` does for alias targets); while the gate could not look, the row is kept untouched and none is added (`hold` / `aliasSubHold`). No frozen-but-present row is left behind.
 3. **The fallback when the database half cannot run.** *Recommend a per-write fallback to today's file path with one warning* (Global Constraints), not a mode switch: a proxy with `store_model_in_db` off, or one that is briefly down, must still get its cloud models routed.
 4. **The migration's trigger.** *Recommend the same first-sync migration as phase 1* (database wins during a sync, file wins outside one), not a separate command: an owner who upgrades wt should find the rows moved after the next `wt-model litellm sync` or serve start, with the restart that removes them from the file counted once.
@@ -68,7 +68,9 @@ Each has a recommendation; none is made.
 
 ---
 
-### Task 0: The live spike (before any code)
+### Task 0: The live spike (before any code) — done 2026-11-24
+
+> **Result:** `docs/superpowers/specs/2026-11-24-cloud-rows-in-database-spike/README.md`. It ran on a scratch LiteLLM and database, not the real proxy (the restart and salt-key checks would have cut live sessions). All five questions are answered; a reference resolves in a database row, a different salt key hides every row and makes re-adding an id answer 500, and the migration order below is confirmed. **Decision 1's recommendation changes**, see below.
 
 Run on the real proxy with one scratch model name and a labelled sentinel key, removing everything after, and record the answers to the five open questions above in a new file under `docs/superpowers/specs/2026-11-24-cloud-rows-in-database-spike/`. Nothing else in this plan starts before it, because Decision 1 depends on question 1 and the migration's order on question 5.
 
