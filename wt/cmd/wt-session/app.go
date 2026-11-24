@@ -89,6 +89,11 @@ type hooks struct {
 	// in a test binary, where nil refuses with errLoginNotStubbed and runs
 	// nothing (#597, decision 8).
 	claudeLogin func(ctx context.Context) (claudelogin.Status, error)
+	// prList replaces the `gh pr list --head <branch>` call of the flag
+	// launches' merged-PR lookup (launchwarn.StartPRLookup, #585); nil is the
+	// real gh (which a test binary refuses, so a test that does not set it
+	// sees an unknown PR and no warning).
+	prList func(dir, branch string) ([]byte, error)
 }
 
 // build is the gateway launch builder.

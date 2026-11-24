@@ -507,9 +507,10 @@ func rootCmdWith(h hooks) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("no primary checkout: %w", err)
 				}
+				pr := launchwarn.StartPRLookup(root, worktree.CurrentBranchAt(root), a.hooks.prList)
 				t, terr := launchwarn.ForDir(root)
 				t.RootChosen = true
-				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
+				if err := confirmLaunch(t, terr, pr, os.Stdin, osStderr, stdinTTY()); err != nil {
 					return err
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, root, root)
@@ -533,6 +534,12 @@ func rootCmdWith(h hooks) *cobra.Command {
 				}
 				// The target is read before the plan runs, so a creation is
 				// described while it is still only planned.
+				// The merged-PR lookup overlaps the reads below; a name the plan
+				// creates as a brand-new branch has no PR to ask about.
+				var pr *launchwarn.PRLookup
+				if !plan.Creates() {
+					pr = launchwarn.StartPRLookup(root, plan.Branch(), a.hooks.prList)
+				}
 				var t launchwarn.Target
 				var terr error
 				if _, serr := os.Stat(plan.Path()); plan.Creates() || plan.Tracks() != "" || serr != nil {
@@ -540,7 +547,7 @@ func rootCmdWith(h hooks) *cobra.Command {
 				} else {
 					t, terr = launchwarn.ForDir(plan.Path())
 				}
-				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
+				if err := confirmLaunch(t, terr, pr, os.Stdin, osStderr, stdinTTY()); err != nil {
 					return err
 				}
 				path, err := plan.Ensure()
@@ -580,8 +587,9 @@ func rootCmdWith(h hooks) *cobra.Command {
 				}
 				// Standing in the repository root is a warning and a
 				// proceed — the directory choice is already the person's.
+				pr := launchwarn.StartPRLookup(wd, worktree.CurrentBranchAt(wd), a.hooks.prList)
 				t, terr := launchwarn.ForDir(wd)
-				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
+				if err := confirmLaunch(t, terr, pr, os.Stdin, osStderr, stdinTTY()); err != nil {
 					return err
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, wd, root)

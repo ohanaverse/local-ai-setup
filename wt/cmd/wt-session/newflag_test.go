@@ -330,7 +330,7 @@ func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
 	}
 	tg, readErr := launchwarn.ForNew(root, plan)
 	notes := captureNotes(t)
-	if err := confirmLaunch(tg, readErr, strings.NewReader(""), osStderr, false); err != nil {
+	if err := confirmLaunch(tg, readErr, nil, strings.NewReader(""), osStderr, false); err != nil {
 		t.Fatal(err)
 	}
 	got := notes.String()

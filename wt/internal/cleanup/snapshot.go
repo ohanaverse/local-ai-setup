@@ -890,6 +890,14 @@ func originURL(g Git) string {
 	return strings.TrimSpace(o.Stdout)
 }
 
+// OwnRepoOf is the owner/repo of dir's origin remote when it is on github.com
+// (the form LookupPRs filters head repositories by), through the package's git
+// runner; "" means not applicable: no origin, a non-GitHub host, or a git that
+// cannot answer. It is read-only.
+func OwnRepoOf(dir string) string {
+	return ownRepoFromURL(originURL(Git{Dir: dir, Timeout: 5 * time.Second}))
+}
+
 var githubURL = regexp.MustCompile(`^(?:https?://(?:[^@/]+@)?github\.com/|ssh://git@github\.com(?::\d+)?/|git@github\.com:)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$`)
 
 // ownRepoFromURL parses a github.com remote URL (https, ssh:// or scp form)
