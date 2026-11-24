@@ -56,19 +56,35 @@ func TestGitWriteRunsInItsOwnProcessGroup(t *testing.T) {
 	if err := syscall.Setpgid(0, 0); err != nil {
 		t.Skipf("could not detach the test into its own process group: %v", err)
 	}
-	shimGit(t, "sleep 2\n")
+	// The shim creates a marker before it sleeps, so the test sends the
+	// Ctrl-C only once the child is running: a fixed sleep missed the child on
+	// a loaded machine (the sharded pre-pr gate runs many test processes at
+	// once), and the signal then reached only this binary. The marker is made
+	// by the shell's own redirection, not by a `touch` child: a shell that is
+	// waiting on a child which exits normally carries on after a SIGINT, so a
+	// Ctrl-C that landed during `touch` would not stop the shim.
+	marker := filepath.Join(t.TempDir(), "started")
+	shimGit(t, ": > '"+marker+"'\nsleep 2\n")
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT)
 	t.Cleanup(func() { signal.Stop(sig) })
 
 	run := func(newGroup bool) error {
+		_ = os.Remove(marker)
 		g := cleanup.Git{Dir: t.TempDir(), Timeout: 10 * time.Second}
 		g.NewProcessGroup = newGroup
 		done := make(chan error, 1)
 		go func() { done <- gitWrite(g, "status") }()
 		// Let the child spawn, then send the terminal's Ctrl-C: wt's whole
 		// foreground group receives it.
-		time.Sleep(400 * time.Millisecond)
+		for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			if _, err := os.Stat(marker); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the git shim never started")
+			}
+		}
 		if err := syscall.Kill(-syscall.Getpgrp(), syscall.SIGINT); err != nil {
 			t.Fatalf("kill: %v", err)
 		}

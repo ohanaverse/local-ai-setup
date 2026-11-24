@@ -77,12 +77,12 @@ go-format-check:        # Fail if any Go file is not gofmt-clean
 		exit 1; \
 	fi
 
+# The goroutine-sensitive packages, for the one-P pass wt-ci's single-p job
+# runs. This variable is the list's one home — CI's single-p job, `make
+# single-p`, test-all and bin/go-test-sharded (through print-single-p-pkgs)
+# all read it: add a package here whenever a test in it waits on a goroutine.
 SINGLE_P_PKGS := ./cmd/wt-session ./internal/tui ./internal/removal ./internal/lifecycle ./internal/sessioneditor ./internal/modeleditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./internal/modelsetup ./internal/modelmode ./cmd/wt-model
 
-# The goroutine-sensitive packages, for the one-P pass wt-ci's single-p job
-# runs. This target is the list's one home — CI's single-p job, `make
-# single-p` and test-all all run it: add a package here whenever a test in
-# it waits on a goroutine.
 # -count=1 is load-bearing: `go test`'s cache does not account for
 # GOMAXPROCS (verified — a single-core run after a parallel one reports
 # "(cached)"), and setup-go restores that cache across jobs and runs, so

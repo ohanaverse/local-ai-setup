@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -163,6 +164,67 @@ class RunnerTests(unittest.TestCase):
             p.wait()
             p.stdout.close()
         self.assertEqual(r.returncode, 0, r.stdout)
+
+    def run_env(self, tmpdir):
+        env = dict(os.environ)
+        env["GOTOOLCHAIN"] = "local"
+        env["GOFLAGS"] = "-mod=mod"
+        env["TMPDIR"] = tmpdir
+        return env
+
+    def test_a_checkout_path_with_a_space_still_shards(self):
+        spaced = os.path.join(self.tmp, "with space", "fx")
+        shutil.copytree(self.mod, spaced)
+        r = self.run_runner("--shards", "3", "--no-single-p", mod=spaced)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertNotIn("not in the module", r.stdout)
+        self.assertIn("8 sharded tests", r.stdout)
+
+    def test_a_build_failure_leaves_no_temp_dir_behind(self):
+        broken = os.path.join(self.tmp, "broken")
+        shutil.copytree(self.mod, broken)
+        write(os.path.join(broken, "a", "broken_test.go"), "package a\n\nfunc this is not go\n")
+        scratch = tempfile.mkdtemp(prefix="tmpdir-", dir=self.tmp)
+        r = subprocess.run(
+            [sys.executable, "-I", SCRIPT, "--dir", broken, "--heavy", "a", "--no-single-p"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True, timeout=120, env=self.run_env(scratch),
+        )
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertEqual(os.listdir(scratch), [], "the runner left its temp dir behind: %s" % os.listdir(scratch))
+
+    def test_sigterm_stops_every_child_and_exits_143(self):
+        slow = os.path.join(self.tmp, "slow")
+        write(os.path.join(slow, "go.mod"), GO_MOD)
+        write(os.path.join(slow, "s", "s_test.go"),
+              'package s\n\nimport (\n\t"testing"\n\t"time"\n)\n\nfunc TestSleep(t *testing.T) { time.Sleep(120 * time.Second) }\n')
+        scratch = tempfile.mkdtemp(prefix="tmpdir-", dir=self.tmp)
+        p = subprocess.Popen(
+            [sys.executable, "-I", SCRIPT, "--dir", slow, "--heavy", "s", "--shards", "1", "--no-single-p"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True, env=self.run_env(scratch),
+        )
+        try:
+            deadline = time.time() + 60
+            started = False
+            while time.time() < deadline and not started:  # the test binary exists once the shard runs
+                time.sleep(0.5)
+                out = subprocess.run(["pgrep", "-f", scratch], stdout=subprocess.PIPE, universal_newlines=True).stdout
+                started = bool(out.split()) and any(os.path.exists(os.path.join(d, f)) for d, _, fs in os.walk(scratch) for f in fs if f.endswith(".test"))
+            self.assertTrue(started, "the shard never started")
+            p.send_signal(signal.SIGTERM)
+            output, _ = p.communicate(timeout=30)
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.communicate()
+        self.assertEqual(p.returncode, 143, output)
+        for _ in range(20):
+            left = subprocess.run(["pgrep", "-f", scratch], stdout=subprocess.PIPE, universal_newlines=True).stdout.split()
+            if not left:
+                break
+            time.sleep(0.25)
+        self.assertEqual(left, [], "test binaries survived the SIGTERM: %s" % left)
 
     def test_bad_arguments_exit_2(self):
         self.assertEqual(self.run_runner("--shards", "0").returncode, 2)
