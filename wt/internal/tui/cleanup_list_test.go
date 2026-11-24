@@ -2620,7 +2620,7 @@ func TestCleanupListEnterRefusesARowLockedInTheCurrentReport(t *testing.T) {
 }
 
 // TestListRowWithALongHeldTagWrapsAtASpace pins the oversized-unit wrap at the
-// layout level (flowUnits has its own unit test): a row whose held tag —
+// layout level (WrapText has its own unit test): a row whose held tag —
 // "held by session <agent> (pid N, running T, started on <host>)", the claim's
 // description — is longer than the terminal's text width is drawn at 80x24 in
 // both list modes with no line wider than 80 display columns, and the tag

@@ -1176,13 +1176,13 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []stri
 	out = append(out, m.decisionLines(e, "      ")...)
 	// The held naming (the design's "the remove confirmation names the
 	// holder"): a live wt session holding this worktree is named here in the
-	// list tag's own spelling — cleanup.RowTags' `held by session <id>`,
+	// list tag's own spelling — cleanup.RowTags' held tag (cleanup.HeldTagPrefix + the <id>),
 	// whose <id> is the held reason's claim description
 	// (sessionclaim.Describe's rendering, echoed and never re-rendered in
 	// this package). It is part of what the user decides on, so it sits in
 	// the decision part (keyN) that a tall entry keeps on screen.
 	for _, tg := range cleanup.RowTags(e.pv.Fresh) {
-		if strings.HasPrefix(tg.Text, "held by session") {
+		if cleanup.IsHeldTag(tg) {
 			out = append(out, wrapIndented(cleanup.OneLine(tg.Text), "      ", m.width)...)
 		}
 	}
