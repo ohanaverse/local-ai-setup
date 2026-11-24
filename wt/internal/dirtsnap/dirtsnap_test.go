@@ -356,12 +356,68 @@ func TestBuildOfAVeryLargeTreeMatchesTheOracle(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		writeFile(t, filepath.Join(dir, "bulk", fmt.Sprintf("%s-%05d", long, i)), "b\n", 0o644)
 	}
-	got, err := Build(dir, runIn(dir), true, Limits{})
+	var calls []string
+	got, err := Build(dir, recordingRunner(dir, &calls), true, Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The chunking is what this test is about: one ls-tree call would mean
+	// the path list went on a single command line.
+	lsTrees := 0
+	for _, c := range calls {
+		if c == "ls-tree" {
+			lsTrees++
+		}
+	}
+	if lsTrees < 2 {
+		t.Fatalf("ls-tree ran %d time(s), want at least 2 chunks (calls: %d)", lsTrees, len(calls))
+	}
 	if want := oracleTree(t, dir); got != want {
 		t.Fatalf("Build = %s, oracle = %s", got, want)
+	}
+}
+
+// TestBuildFindsAGitlinkInALaterLsTreeChunk commits a gitlink, then deletes
+// it among a thousand long-named changed paths, so the path sorts into the
+// second ls-tree chunk. A check that looked at the first chunk only would
+// miss it. The bulk files are tracked and modified, so status lists them in
+// path order with the gitlink (an untracked path would be listed after every
+// tracked change).
+func TestBuildFindsAGitlinkInALaterLsTreeChunk(t *testing.T) {
+	dir := newRepo(t)
+	addGitlink(t, dir) // commits sub/ as a gitlink in HEAD
+	long := strings.Repeat("n", 100)
+	for i := 0; i < 1000; i++ {
+		writeFile(t, filepath.Join(dir, "bulk", fmt.Sprintf("%s-%05d", long, i)), "b\n", 0o644)
+	}
+	gitT(t, dir, nil, "add", "bulk")
+	gitT(t, dir, nil, "commit", "-q", "-m", "bulk")
+	for i := 0; i < 1000; i++ {
+		writeFile(t, filepath.Join(dir, "bulk", fmt.Sprintf("%s-%05d", long, i)), "changed\n", 0o644)
+	}
+	rm(t, filepath.Join(dir, "sub")) // "sub" sorts after "bulk/"
+	var calls []string
+	_, err := Build(dir, recordingRunner(dir, &calls), false, Limits{})
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("err = %v, want ErrUnsupported", err)
+	}
+	if n := len(calls); n != 2 {
+		t.Fatalf("%d ls-tree call(s), want 2: the gitlink was meant to land in the second chunk", n)
+	}
+}
+
+// TestBuildRefusesOverMaxBytesBeforeAnyGitWork is the MaxBytes twin of the
+// MaxFiles test: after status, a refusal makes no ls-tree or hash-object call.
+func TestBuildRefusesOverMaxBytesBeforeAnyGitWork(t *testing.T) {
+	dir := newRepo(t)
+	writeFile(t, filepath.Join(dir, "big"), "0123456789", 0o644)
+	var calls []string
+	_, err := Build(dir, recordingRunner(dir, &calls), true, Limits{MaxBytes: 5})
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("git calls before the limit check: %v", calls)
 	}
 }
 
