@@ -678,7 +678,7 @@ the refusals are on [wt-session.md](wt-session.md#claude-subscription-header-mod
 ## `wt-model setup`
 
 `wt-model setup` opens the Setup tab, the same TUI as `wt-model model` on its
-other tab (`tab` switches; a Models edit made there still gets its one route
+Setup tab (`tab` cycles Models, Aliases, Setup; a Models edit made there still gets its one route
 sync when the screen closes). It sets up and controls wt-model on this
 machine and offers two modes, `local` and `native`; `remote` is not offered
 here, since a session's remote server is set on the Mode tab of `wt config`.
