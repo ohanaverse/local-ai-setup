@@ -696,3 +696,31 @@ func TestHeaderModeDropsTheOtherLiteLLMAuthHeaders(t *testing.T) {
 		}
 	}
 }
+
+// TestSubscriptionSwitchIsReadOnEveryRequest pins #697 at the gateway: with
+// Config.SubscriptionSwitch set it, and not the static field, decides each
+// request, so a server that turns the mode off while it runs (a hazard seen
+// after start) refuses the next header-mode request with 403 subscription_off.
+func TestSubscriptionSwitchIsReadOnEveryRequest(t *testing.T) {
+	up := newHeaderUpstream(t)
+	cfg := subConfig(t, up.srv, false) // the static field says off ...
+	var sw atomic.Bool
+	sw.Store(true) // ... the switch says on, and wins
+	cfg.SubscriptionSwitch = &sw
+	h := New(cfg)
+	send := func() *httptest.ResponseRecorder {
+		return serveDirect(h, "/v1/messages", loopbackPeer, hdrs(TokenHeader, tokenSentinel, "Authorization", "Bearer "+loginSentinel), false)
+	}
+	if rec := send(); rec.Code != 200 {
+		t.Fatalf("switch on: status %d (%s)", rec.Code, rec.Body.String())
+	}
+	sw.Store(false)
+	wantGatewayError(t, "switch off", send(), 403, errSubOff)
+	if n := up.calls.Load(); n != 1 {
+		t.Errorf("upstream calls %d, want 1 (only the request made while the switch was on)", n)
+	}
+	// The wt token alone is the token swap and never depends on the switch.
+	if rec := serveDirect(h, "/v1/messages", loopbackPeer, hdrs("Authorization", "Bearer "+tokenSentinel), false); rec.Code != 200 {
+		t.Errorf("token swap with the switch off: status %d", rec.Code)
+	}
+}

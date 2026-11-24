@@ -537,3 +537,57 @@ func (d *dbRoutes) hasAliasRow(id string) bool {
 		return ok && a == id && IsAliasDB(m)
 	})
 }
+
+// PreviewAlias is the alias half of `wt-model alias set --dry-run`: the rows
+// alias a would have after the write, and the targets that get none with the
+// write's own reason. The liveness and the Claude subscription check come from
+// PlanSync, the planner the write itself uses, so a preview cannot disagree
+// with it (#703: a local-only liveness said "not routed" for a subscription
+// target the write routed). cfg is the registry as the write would leave it
+// and o the options the write builds (SyncInputs, with Admin set); a nil
+// Admin has no row plan, and the caller says so before it asks. A plan that
+// covers no aliases (the database half cannot run: the proxy does not
+// answer, store_model_in_db is off) is the error, quoted from the plan's own
+// warnings, which is what the write itself reports.
+func PreviewAlias(cfg *config.Config, local []config.Model, o Options, a config.Alias) ([]DBModel, []AliasSkip, error) {
+	if o.Admin == nil {
+		return nil, nil, errors.New("no LiteLLM proxy pair: no rows would be written")
+	}
+	plan, err := PlanSync(cfg, local, o)
+	if err != nil {
+		return nil, nil, err
+	}
+	i := slices.IndexFunc(plan.Aliases, func(p AliasPlan) bool { return p.ID == a.ID })
+	if i < 0 {
+		// The plan has no alias entries exactly when the database half cannot
+		// run (the proxy does not answer, store_model_in_db is off): PlanSync
+		// then says so in its warnings and the write reports the same line.
+		// Say that, not "no plan entry".
+		if w := planAliasUnavailableWarning(plan.Warnings); w != "" {
+			return nil, nil, errors.New(w)
+		}
+		return nil, nil, fmt.Errorf("the sync plan has no entry for %s", a.ID)
+	}
+	routed := map[string]bool{}
+	for _, l := range plan.Aliases[i].Live {
+		routed[l.Target] = true
+	}
+	rows, _ := dbModelsFromAlias(cfg, a, func(id string) bool { return routed[id] }, o.Admin.Key, aliasSubClean)
+	rows = slices.DeleteFunc(rows, func(m DBModel) bool {
+		target, _ := m.Info[AliasTargetKey].(string)
+		return !routed[target]
+	})
+	return rows, plan.Aliases[i].Skipped, nil
+}
+
+// planAliasUnavailableWarning is the plan's own line for a sync whose alias
+// half cannot run ("alias routes unavailable (...); this plan does not cover
+// aliases", PlanSync), or "" when its warnings name none.
+func planAliasUnavailableWarning(warnings []string) string {
+	for _, w := range warnings {
+		if strings.HasPrefix(w, aliasUnavailablePrefix) {
+			return w
+		}
+	}
+	return ""
+}
