@@ -12,8 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +22,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/windows"
 	"github.com/spf13/cobra"
 )
 
@@ -44,7 +41,8 @@ func aliasCmd(h *host, rec servestate.Store) *cobra.Command {
 			"Its routes live in LiteLLM's database and follow its targets: a cloud target always, a local\n" +
 			"one while it runs. `wt-model alias set` re-points an alias with no gap and no\n" +
 			"restart. `wt-model alias rename` gives an alias a new id and keeps the old id\n" +
-			"working as a redirect until its sessions end.",
+			"working as a redirect until its sessions end. `wt-model model` has an Aliases\n" +
+			"tab that does the same on a terminal.",
 	}
 	c.AddCommand(aliasListCmd(h, rec), aliasSetCmd(h, rec), aliasRenameCmd(h), aliasRmCmd(h, rec))
 	return c
@@ -300,53 +298,13 @@ func aliasSetCmd(h *host, rec servestate.Store) *cobra.Command {
 	return c
 }
 
-// orderSuffixRE is an order written after a target's last colon.
-var orderSuffixRE = regexp.MustCompile(`^-?[0-9]+$`)
-
-// parseAliasTargets reads the --target values: ID or ID:ORDER. A value that
-// names a registry model whole is that model (an ollama tag holds a colon:
-// ollama/qwen3:8b), else an all-digit suffix after the last colon is the
-// order, which must be from 1. A target given twice is refused.
-func parseAliasTargets(cfg *config.Config, specs []string) ([]config.AliasTarget, error) {
-	var out []config.AliasTarget
-	for _, spec := range specs {
-		spec = strings.TrimSpace(spec)
-		if spec == "" {
-			return nil, errors.New("--target is empty: pass a registry model id")
-		}
-		t := config.AliasTarget{Model: spec}
-		if config.IndexModelByID(cfg.Models, spec) < 0 {
-			if i := strings.LastIndex(spec, ":"); i > 0 && orderSuffixRE.MatchString(spec[i+1:]) {
-				n, err := strconv.Atoi(spec[i+1:])
-				if err != nil || n < 1 {
-					return nil, fmt.Errorf("--target %s: the order must be a whole number from 1", spec)
-				}
-				t = config.AliasTarget{Model: spec[:i], Order: n}
-			}
-		}
-		if slices.ContainsFunc(out, func(o config.AliasTarget) bool { return o.Model == t.Model }) {
-			return nil, fmt.Errorf("--target %s: target %s is given more than once", spec, t.Model)
-		}
-		out = append(out, t)
-	}
-	return out, nil
-}
-
-// windowText is a window for a line: its tokens, or - when unknown.
-func windowText(w int) string {
-	if w <= 0 {
-		return "-"
-	}
-	return strconv.Itoa(w)
-}
-
 // runAliasSet is `wt-model alias set`.
 func (h *host) runAliasSet(ctx context.Context, out, errOut io.Writer, rec servestate.Store, id string, specs []string, acceptSmaller, dryRun bool) error {
 	cfg, loadErr := h.hostConfig()
 	if loadErr != nil {
 		return config.ConfigError(loadErr)
 	}
-	targets, err := parseAliasTargets(cfg, specs)
+	targets, err := modeladmin.ParseAliasTargets(cfg, specs)
 	if err != nil {
 		return err
 	}
@@ -355,24 +313,19 @@ func (h *host) runAliasSet(ctx context.Context, out, errOut io.Writer, rec serve
 		return err
 	}
 	// The shrink guard (decision 7) reads the same cfg the check did; the
-	// write checks the request again against the file under its lock.
-	ix := h.tiersIndex()
-	after, alias := modeladmin.ConfigWithAlias(cfg, req)
-	newW, _ := windows.Alias(after, alias, ix)
-	oldW, had := 0, false
-	if old, ok := cfg.AliasByID(req.ID); ok {
-		had = true
-		oldW, _ = windows.Alias(cfg, old, ix)
-	}
-	shrinks := had && oldW > 0 && (newW <= 0 || newW < oldW)
+	// write checks the request again against the file under its lock. The rule
+	// itself is modeladmin.AliasWindowChange's, shared with the Aliases tab.
+	wc := modeladmin.AliasWindowChange(cfg, h.tiersIndex(), req)
+	after, alias, oldW, newW, had, shrinks := wc.After, wc.Alias, wc.Old, wc.New, wc.Had, wc.Shrinks
 	if dryRun {
 		return h.printAliasDryRun(out, after, alias, oldW, newW, had, shrinks)
 	}
 	if shrinks && !acceptSmaller {
-		sentence := fmt.Sprintf("%s's context window would go from %s to %s tokens", req.ID, windowText(oldW), windowText(newW))
+		count := -1
 		if sessions := h.clientSessions(ctx, errOut, rec, nil)(); sessions != nil {
-			sentence += fmt.Sprintf("; %d client session(s) use it and keep the window they launched with", sessions[req.ID])
+			count = sessions[req.ID]
 		}
+		sentence := wc.ShrinkSentence(req.ID, count)
 		ok, err := h.confirmRemove(sentence + ". Set it anyway?")
 		if errors.Is(err, cli.ErrNoTerminal) {
 			fmt.Fprintf(errOut, "wt-model: note: %s\n", sentence)
@@ -410,9 +363,9 @@ func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alia
 	}
 	old := "-"
 	if had {
-		old = windowText(oldW)
+		old = modeladmin.WindowText(oldW)
 	}
-	line := fmt.Sprintf("context: %s -> %s", old, windowText(newW))
+	line := fmt.Sprintf("context: %s -> %s", old, modeladmin.WindowText(newW))
 	if shrinks {
 		line += " (smaller: the real run asks, or needs --accept-smaller-window)"
 	}

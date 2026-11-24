@@ -421,7 +421,7 @@ func TestModelsProbeRunsOnceUntilR(t *testing.T) {
 	if tm.probes != 1 || !strings.Contains(m.View(), "omlx/Gone-4bit") {
 		t.Fatalf("after Init's commands: probes = %d, view:\n%s", tm.probes, m.View())
 	}
-	for _, k := range []string{"tab", "down", "up", "esc", "tab"} {
+	for _, k := range []string{"tab", "down", "up", "esc", "tab", "tab"} {
 		next, cmd := m.Update(keyMsg(k))
 		m = next.(*model)
 		if cmd != nil {

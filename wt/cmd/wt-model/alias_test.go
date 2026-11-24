@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
 )
 
@@ -260,7 +261,7 @@ func TestAliasSetTargetParsing(t *testing.T) {
 		"openrouter/nope:12": {{Model: "openrouter/nope", Order: 12}},
 	}
 	for spec, want := range ok {
-		got, err := parseAliasTargets(cfg, []string{spec})
+		got, err := modeladmin.ParseAliasTargets(cfg, []string{spec})
 		if err != nil || !slices.Equal(got, want) {
 			t.Errorf("parse %q = %v, %v; want %v", spec, got, err, want)
 		}
@@ -270,11 +271,11 @@ func TestAliasSetTargetParsing(t *testing.T) {
 		"openrouter/big:-1": "order must be a whole number from 1",
 		"":                  "empty",
 	} {
-		if _, err := parseAliasTargets(cfg, []string{spec}); err == nil || !strings.Contains(err.Error(), wantErr) {
+		if _, err := modeladmin.ParseAliasTargets(cfg, []string{spec}); err == nil || !strings.Contains(err.Error(), wantErr) {
 			t.Errorf("parse %q = %v, want %q", spec, err, wantErr)
 		}
 	}
-	if _, err := parseAliasTargets(cfg, []string{"openrouter/big", "openrouter/big:2"}); err == nil || !strings.Contains(err.Error(), "more than once") {
+	if _, err := modeladmin.ParseAliasTargets(cfg, []string{"openrouter/big", "openrouter/big:2"}); err == nil || !strings.Contains(err.Error(), "more than once") {
 		t.Errorf("duplicate: %v", err)
 	}
 }

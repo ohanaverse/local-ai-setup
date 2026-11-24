@@ -8,6 +8,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeleditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
 	"github.com/spf13/cobra"
 )
 
@@ -15,7 +16,7 @@ import (
 // (this machine's LaunchAgent, token file and LiteLLM key), which needs a
 // terminal. It runs the same runModelEditor as `wt-model model`, so a Models
 // edit made after switching tabs still gets its one route sync.
-func setupCmd(h *host) *cobra.Command {
+func setupCmd(h *host, rec servestate.Store) *cobra.Command {
 	return &cobra.Command{
 		Use:          "setup",
 		Short:        "Set up wt-model on this machine (LaunchAgent, token file, LiteLLM key)",
@@ -25,7 +26,7 @@ func setupCmd(h *host) *cobra.Command {
 			if !h.stdinTTY() {
 				return errors.New("wt-model setup needs a terminal to open the Setup tab")
 			}
-			return runModelEditor(cmd.OutOrStdout(), cmd.ErrOrStderr(), h, modeleditor.TabSetup)
+			return runModelEditor(cmd.OutOrStdout(), cmd.ErrOrStderr(), h, rec, modeleditor.TabSetup)
 		},
 	}
 }
