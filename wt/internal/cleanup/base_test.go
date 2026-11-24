@@ -1,7 +1,9 @@
 package cleanup
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -242,6 +244,20 @@ func TestFetchListingNotBoundByFetchTimeout(t *testing.T) {
 	}
 	if strings.Contains(r.Err, "git remote") || !strings.Contains(r.Err, "git fetch --prune origin") {
 		t.Fatalf("got Err %q, want the failure to name the fetch", r.Err)
+	}
+}
+
+// TestRemoteListErrTextNamesTimeout feeds the listing's deadline error to
+// the formatter Fetch uses. Why: the 30s floor cannot be lowered in a test,
+// so the branch is reached here; dropping it would print a bare
+// "context deadline exceeded".
+func TestRemoteListErrTextNamesTimeout(t *testing.T) {
+	got := remoteListErrText(fmt.Errorf("run: %w", context.DeadlineExceeded), remoteListTimeout)
+	if got != "git remote timed out after 30s" {
+		t.Fatalf("got %q, want the timeout named", got)
+	}
+	if got := remoteListErrText(errors.New("boom"), remoteListTimeout); strings.Contains(got, "timed out") {
+		t.Fatalf("got %q, a non-timeout error must not claim a timeout", got)
 	}
 }
 

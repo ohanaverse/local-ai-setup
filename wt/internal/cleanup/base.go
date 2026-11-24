@@ -204,6 +204,17 @@ func timedOutText(args string, d time.Duration) string {
 	return fmt.Sprintf("git %s timed out after %s", args, d)
 }
 
+// remoteListErrText is the FAILED text for a `git remote` listing that
+// errored: a timeout is named (with the floor it hit), anything else is the
+// error itself. Split out so a test can reach the timeout branch without a
+// 30s wait.
+func remoteListErrText(err error, d time.Duration) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return timedOutText("remote", d)
+	}
+	return fetchErrText(err.Error())
+}
+
 // otherFetchTimeout bounds each non-origin remote's fetch (they run
 // concurrently, after origin): the classification does not depend on them, so
 // a slow one must not hold the command for origin's full window. A seam for
@@ -227,11 +238,8 @@ func Fetch(g Git) FetchResult {
 	lg := g
 	lg.Timeout = max(g.Timeout, remoteListTimeout)
 	o, err := lg.Run("remote")
-	if errors.Is(err, context.DeadlineExceeded) {
-		return FetchResult{Err: timedOutText("remote", lg.Timeout), At: time.Now()}
-	}
 	if err != nil {
-		return FetchResult{Err: fetchErrText(err.Error()), At: time.Now()}
+		return FetchResult{Err: remoteListErrText(err, lg.Timeout), At: time.Now()}
 	}
 	if o.Code != 0 {
 		return FetchResult{Err: fetchErrText(gitFailure(o, "remote").Error()), At: time.Now()}
