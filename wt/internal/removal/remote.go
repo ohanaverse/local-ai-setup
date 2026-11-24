@@ -60,7 +60,7 @@ func safeRefName(name string) bool {
 
 // invalidRemoteItem says why a remote item cannot be acted on before anything
 // is read, or "": the ref must be an origin tracking ref with a safe name, the
-// item has no path, only a proven row is removable, and SawTip is a full id.
+// item has no path, only a proven or less-sure row is removable, and SawTip is a full id.
 func invalidRemoteItem(it Item) string {
 	switch {
 	case !strings.HasPrefix(it.Ref, "refs/remotes/origin/"):
@@ -86,9 +86,12 @@ func invalidRemoteItem(it Item) string {
 //  5. hard blockers (an open PR on it, a PR targeting it...);
 //  6. an unverifiable row (gh, the fetch, the merge check) is refused;
 //  7. a worse status or a moved tip is skipped_changed;
-//  8. the PR proof, re-checked here rather than trusted from the classifier:
-//     a MERGED PR into the default branch whose head is exactly this tip and
-//     whose merge commit git says is an ancestor of the base right now;
+//  8. a proven row's PR proof, re-checked here rather than trusted from the
+//     classifier: a MERGED PR into the default branch whose head is exactly
+//     this tip (or any merged PR when the proof is a whole-tree match with the
+//     base) and whose merge commit git says is an ancestor of the base right
+//     now; a less-sure row has no proof to re-check and needs the loss
+//     approval instead;
 //  9. the Remote approval.
 func (e Engine) remoteGate(it Item) gated {
 	if why := invalidRemoteItem(it); why != "" {
@@ -137,7 +140,7 @@ func (e Engine) remoteGate(it Item) gated {
 		// that can be known was read above (no hard stop, not Unknown, status
 		// and tip as listed); the lease push below guards the rest.
 		if !it.Approved.Confirm {
-			return refuseR("needs --accept-loss: wt is less sure this branch is merged (" + lessSureWhy(fresh) + ")")
+			return refuseR("needs --accept-loss: wt is less sure this branch is merged (" + LessSureWhy(fresh) + ")")
 		}
 	} else {
 		// The merged PR's head must be exactly this tip, unless the fresh
@@ -162,9 +165,9 @@ func (e Engine) remoteGate(it Item) gated {
 	return g
 }
 
-// lessSureWhy is the first reason detail of a less-sure row, so a refusal and
-// the confirm screen say what wt could not prove.
-func lessSureWhy(fresh cleanup.Row) string {
+// LessSureWhy is the first reason detail of a less-sure row, so a refusal, the
+// CLI prompt and the confirm screen say what wt could not prove.
+func LessSureWhy(fresh cleanup.Row) string {
 	for _, r := range fresh.Reasons {
 		if r.Detail != "" {
 			return cleanup.OneLine(r.Detail)

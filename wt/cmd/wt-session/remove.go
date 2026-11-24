@@ -372,7 +372,11 @@ func promptRemove(ask io.Writer, answer io.Reader, items []plannedItem, runnable
 			if pv.Fresh.PR != nil {
 				fmt.Fprintf(&b, " (merged PR #%d)", pv.Fresh.PR.Number)
 			}
-			b.WriteString("\n      visible to everyone with access to the repository; restore: git push origin " + cleanup.OneLine(pv.Fresh.Tip) + ":refs/heads/" + cleanup.OneLine(pv.Item.Name) + "\n")
+			b.WriteString("\n")
+			if pv.Fresh.Status != cleanup.StatusProven {
+				b.WriteString("      not proven merged (--accept-loss): " + removal.LessSureWhy(pv.Fresh) + "\n")
+			}
+			b.WriteString("      visible to everyone with access to the repository; restore: git push origin " + cleanup.OneLine(pv.Fresh.Tip) + ":refs/heads/" + cleanup.OneLine(pv.Item.Name) + "\n")
 			continue
 		}
 		fmt.Fprintf(&b, "  remove %s %s", pv.Item.Kind, cleanup.OneLine(pv.Item.Name))

@@ -357,7 +357,11 @@ func detailBlock(rep cleanup.Report, row cleanup.Row, d *rowDetail, th themes.Th
 	}
 	add("Verdict", verdict)
 	if row.Kind == cleanup.KindRemote {
-		say("note: deleting an origin branch is visible to everyone with access to the repository; GitHub can restore it from its merged PR.")
+		note := "note: deleting an origin branch is visible to everyone with access to the repository; it is restored by pushing its commit back (git push origin <sha>:refs/heads/<name>)"
+		if row.PR != nil {
+			note += ", or from its merged PR on GitHub"
+		}
+		say(note + ".")
 	}
 
 	// The listings: what the row holds that nothing else has.

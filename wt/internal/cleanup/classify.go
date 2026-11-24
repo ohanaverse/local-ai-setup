@@ -1061,7 +1061,8 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	}
 	if j.ev != "" {
 		// Proven needs a MERGED PR into the default branch whose head is this
-		// tip and whose merge commit is in the base (the removal engine
+		// tip (or, when the tip's whole tree equals the base's, whose head
+		// moved on) and whose merge commit is in the base (the removal engine
 		// re-verifies exactly that before it pushes); an unknown lookup is
 		// already unsure above, so the soft reasons are only for an answered
 		// lookup.
