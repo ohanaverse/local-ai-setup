@@ -354,7 +354,12 @@ tls_key  = "~/.config/wt-model/tls/server.key"
   `ca_file = "<tls_cert path>"` under `[model-server]` in
   `~/.config/agent-wt/config.toml`. With an expired certificate the plans
   write `http://`, the url serve will speak, and note the date and the
-  renewal. TLS settings that cannot be read refuse a local plan. Serve reads
+  renewal. TLS settings that cannot be read refuse a local plan, and so does a
+  key pair serve itself would refuse to start with (a loose key file, a key
+  that is not the certificate's, one file named twice): setup runs serve's own
+  check (`tlsfile.Load`) when it reads the machine, so the refusal names serve's
+  reason and the way out and no plan restarts serve into a launchd loop. An
+  expired certificate is not one of these (see above). Serve reads
   `[gateway]` only at start, so when setup's local plan changes the url's
   scheme (or the running serve's record says it speaks the other one) and
   the LaunchAgent is loaded, the plan reloads it (bootout, then bootstrap)
@@ -1093,9 +1098,6 @@ No record at all (no server running) is silent: there is nothing to ask.
   `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`, while Claude Code's other traffic
   (telemetry, update and auth checks to Anthropic) still used it; it could
   not tell this addition from Claude Code's own loopback handling.
-- **Setup checks only the certificate's dates.** A loose key or a key that
-  does not match the certificate shows up only as serve refusing to start
-  (the line is in the LaunchAgent's log).
 - **`--location local` is accepted for a `claude-subscription` model** by
   `wt-model model add|edit`, but such a row never works.
 - **The client uses no environment proxy.** The control and gateway calls ignore `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so the bearer token and the prompts go straight to the `[model-server]` url and never to a third party. A session machine that can reach the server only through a proxy cannot use it.

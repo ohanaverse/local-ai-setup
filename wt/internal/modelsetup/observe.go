@@ -171,6 +171,10 @@ type State struct {
 	LiteLLM        LiteLLMState
 	// Serve is what the running serve's runtime record says about TLS.
 	Serve ServeState
+	// TLSPair is why serve would refuse to start with the [gateway] key pair
+	// ("" when it would load it, or none is configured): serve's own check,
+	// read only when the settings name a certificate they can use (#698).
+	TLSPair string
 }
 
 // ServeState is serve.json in the wt-model home as a plan needs it: whether
@@ -343,6 +347,14 @@ func Observe(ctx context.Context, env Env, opts ObserveOptions) State {
 			st.Listener.PID = pid
 			st.Listener.Ours = st.Agent.Job.Running && st.Agent.Job.PID == pid
 		}
+	}
+
+	// The key pair, as serve would load it: only where the settings name a
+	// certificate they can use (an unusable [gateway] is LocalTLS.Err's to
+	// report, and no tls_cert is plain http). This reads the private key, so
+	// it is here on the admin side and never in the session's observation.
+	if env.TLSPair != nil && st.LocalTLS.Cert != "" && st.LocalTLS.Err == "" {
+		st.TLSPair = env.TLSPair(env.Host.Now())
 	}
 
 	// LiteLLM checks: only where the local model server is in use.
