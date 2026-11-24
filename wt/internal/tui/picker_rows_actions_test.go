@@ -554,3 +554,25 @@ func TestPickerFillUnderDetailScreenSwapsAndRereads(t *testing.T) {
 		t.Errorf("the screen did not re-read its row after the swap (cmd %v, detail %+v)", cmd != nil, m.rows.rowDetail)
 	}
 }
+
+// TestLaunchSelectorQuitWindowDropsF pins #580 item 2: an `F` landing in the
+// quit window (after `R` or `r` made the list done) starts no fetch. The
+// reload's result would be discarded by the done guard, so the fetch would
+// only run git fetch for nothing while the picker quits for the hand-off.
+func TestLaunchSelectorQuitWindowDropsF(t *testing.T) {
+	builder := RemoveFuncsBuilder(func(snap cleanup.Snapshot, _ cleanup.GatherInputs) RemoveFuncs {
+		return (&actionRecorder{snap: snap}).funcs()
+	})
+	m := pickerCursorTo(t, pickerActionsReady(t, pickerActionsFixture(), builder), "drift")
+	m = pickerRowAction(t, m, "R")
+	if !m.rows.done {
+		t.Fatal("R did not finish the list")
+	}
+	next, cmd := updateMsg(m, refreshRowsChosenMsg{})
+	if cmd != nil {
+		t.Error("F in the quit window returned a command: a fetch was started")
+	}
+	if next.rowsRefreshing || next.rows.fetching {
+		t.Errorf("F in the quit window set rowsRefreshing %v, fetching %v", next.rowsRefreshing, next.rows.fetching)
+	}
+}

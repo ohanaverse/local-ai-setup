@@ -27,7 +27,7 @@ func removeApp(t *testing.T) (*app, string) {
 	a, tmp := newTestApp(t)
 	t.Setenv("WT_REGISTRY", filepath.Join(tmp, "local-ai", "registry.toml"))
 	t.Setenv("WT_LITELLM_CONFIG", filepath.Join(tmp, "config.yaml"))
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	oldNow, oldTTY, oldProcs := removeNow, removeTTY, removeProcs
 	removeNow = func() time.Time { return time.Now().Add(time.Hour) }
 	removeTTY = func(io.Reader, io.Writer) bool { return false }
@@ -378,7 +378,7 @@ func TestRemoveDefaultProcFinderIsLsof(t *testing.T) {
 func TestCleanupInputsLabelsTheCommand(t *testing.T) {
 	dir := t.TempDir()
 	for _, label := range []string{"wt-remove", "wt-cleanup"} {
-		if got := cleanupInputs(dir, false, nil, label).Claim.Agent; got != label {
+		if got := cleanupInputs(hooks{}, dir, false, nil, label).Claim.Agent; got != label {
 			t.Errorf("label %s: claim agent %q", label, got)
 		}
 	}

@@ -165,7 +165,16 @@ type Engine struct {
 	In       cleanup.GatherInputs
 	Classify cleanup.Options
 	ForRoot  bool
+	// Progress, when non-nil, is called from the untracked-file copy after
+	// every progressEvery files and once at the end (done == total), only for
+	// a plan of at least progressEvery untracked files. Nil is silent. It is a
+	// per-call seam, not a package variable.
+	Progress func(done, total int)
 }
+
+// progressEvery is the untracked-file count at which Progress starts and the
+// step between its calls (about 1.7 s at 17 ms a file).
+const progressEvery = 100
 
 // SkipStartRecheck tells Execute that nothing happened between Preflight and
 // it that gave the source time to change (no prompt was shown), so the

@@ -72,9 +72,9 @@ func pickerInputs(cwd string, protectedPaths []string) cleanup.GatherInputs {
 // cleanup.GatherFacts (worktree list, refs, base, claims; no gates, no
 // proof ladder, no gh) and Classify, whose rows are Pending. With fetch set
 // (the picker's `F`, refreshRowsChosenMsg) it fetches the remotes first —
-// in.FetchRemotes when the call carries one, else worktree.FetchRemotes, at
-// most five seconds; ok or failure recorded in in.Fetched for the header to
-// render, a failure shown there, never swallowed. Without it (every open)
+// in.FetchRemotes when the call carries one, else cleanup.Fetch (every remote,
+// origin first, never prompting); the outcome is recorded in in.Fetched for
+// the header to render, a failure shown there, never swallowed. Without it (every open)
 // nothing fetches. A repository with no default branch still lists; the
 // fill (loadRowFillCmd) completes what this stage left out.
 func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bool) tea.Cmd {
@@ -83,8 +83,9 @@ func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bo
 			return rowsLoadedMsg{err: lookupErr}
 		}
 		if fetch {
-			// The header says how the fetch went: ok, or failed with git's
-			// line (never "skipped", which would hide a dead remote).
+			// The header says how the fetch went: ok, failed with git's line
+			// (a dead remote is never hidden), or skipped with its cause (a
+			// repository with no remotes: "no remotes", the user did ask).
 			in.Fetched = cleanup.RecordFetch(in.FetchRemotes, root)
 		}
 		in.Fetch = false

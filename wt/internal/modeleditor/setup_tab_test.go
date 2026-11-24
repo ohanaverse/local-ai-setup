@@ -86,6 +86,11 @@ type setupMachine struct {
 	result     modelsetup.Result
 	progress   []string
 	controlErr error
+	// gateways is every SetGateway call's argument; gatewayWrite and
+	// gatewayErr what it returns.
+	gateways     []bool
+	gatewayWrite config.GatewayWrite
+	gatewayErr   error
 }
 
 func (sm *setupMachine) deps() SetupDeps {
@@ -131,6 +136,11 @@ func (sm *setupMachine) deps() SetupDeps {
 			sm.seq = append(sm.seq, "control")
 			sm.actions = append(sm.actions, a)
 			return sm.controlErr
+		},
+		SetGateway: func(on bool) (config.GatewayWrite, error) {
+			sm.seq = append(sm.seq, "gateway")
+			sm.gateways = append(sm.gateways, on)
+			return sm.gatewayWrite, sm.gatewayErr
 		},
 	}
 }
@@ -428,7 +438,7 @@ func TestSetupTabQuitKeysUseTheExistingQuit(t *testing.T) {
 func TestSetupDepsWithDefaultsFillsOnlyNilFuncs(t *testing.T) {
 	sm := &setupMachine{}
 	d := SetupDeps{Observe: sm.deps().Observe}.withDefaults()
-	if d.Plan == nil || d.Apply == nil || d.Control == nil {
+	if d.Plan == nil || d.Apply == nil || d.Control == nil || d.SetGateway == nil {
 		t.Fatalf("withDefaults left a nil func: %+v", d)
 	}
 	d.Observe(context.Background(), modelsetup.ObserveOptions{})
@@ -1690,8 +1700,8 @@ func TestSetupTabShowsTheGatewaySwitch(t *testing.T) {
 		g    modelsetup.GatewayState
 		want []string
 	}{
-		"off":     {modelsetup.GatewayState{}, []string{"subscription passthrough off", "wt-model gateway subscription on|off"}},
-		"on":      {modelsetup.GatewayState{SubscriptionPassthrough: true}, []string{"subscription passthrough on", "wt-model gateway subscription on|off"}},
+		"off":     {modelsetup.GatewayState{}, []string{"subscription passthrough off", "wt-model gateway subscription on|off", "press g"}},
+		"on":      {modelsetup.GatewayState{SubscriptionPassthrough: true}, []string{"subscription passthrough on", "wt-model gateway subscription on|off", "press g"}},
 		"warning": {modelsetup.GatewayState{Err: "[gateway] subscription_passthrough is a string, not a boolean"}, []string{"read as off", "is a string"}},
 	} {
 		st := fullState()
@@ -1715,5 +1725,106 @@ func TestSetupTabDropsTheGatewayRowFirst(t *testing.T) {
 		if strings.Contains(v, "subscription passthrough") && !strings.Contains(v, "litellm") {
 			t.Errorf("height %d keeps the gateway row after dropping the litellm rows:\n%s", h, v)
 		}
+	}
+}
+
+// TestSetupTabGatewayKeyTogglesTheSwitch pins #693's Setup-tab switch: g asks
+// "Turn subscription passthrough on/off? [y/N]" (default No, naming the
+// restart), n and esc write nothing, y writes the opposite of what the row
+// shows through SetGateway, says the backup and the bootout/bootstrap restart
+// (never kickstart), and reads the machine again so the row refreshes.
+func TestSetupTabGatewayKeyTogglesTheSwitch(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		st := fullState()
+		st.Gateway = modelsetup.GatewayState{SubscriptionPassthrough: on}
+		word, was := onOffWord(!on), onOffWord(on)
+		sm := &setupMachine{states: []modelsetup.State{st}, gatewayWrite: config.GatewayWrite{Changed: true, Path: "/h/config.toml", Backup: "/h/backups/b1"}}
+		m := setupEditor(t, sm, 80, 24)
+		m = keys(t, m, "g")
+		v := flat(plain(m))
+		if m.setup.phase != setupConfirm || !strings.Contains(v, flat("Turn subscription passthrough "+word+"? [y/N]")) || !strings.Contains(v, "restart") {
+			t.Fatalf("on=%v: g did not ask the question:\n%s", on, plain(m))
+		}
+		if h := hintLine(m); !strings.Contains(h, "y") || !strings.Contains(h, "n/esc") {
+			t.Errorf("prompt hints %q", h)
+		}
+		for _, k := range []string{"n", "esc"} {
+			m2 := keys(t, m, k)
+			if m2.setup.phase != setupView || len(sm.gateways) != 0 || !strings.Contains(m2.setup.status, "nothing was changed") {
+				t.Errorf("%s: phase %v writes %v status %q", k, m2.setup.phase, sm.gateways, m2.setup.status)
+			}
+			m = keys(t, m2, "g")
+		}
+		m = keys(t, m, "y")
+		if len(sm.gateways) != 1 || sm.gateways[0] != !on {
+			t.Fatalf("on=%v: SetGateway calls = %v, want one for %v", on, sm.gateways, !on)
+		}
+		if sm.seq[len(sm.seq)-1] != "observe" {
+			t.Errorf("no re-read after the write: %v", sm.seq)
+		}
+		s := m.setup.status
+		for _, w := range []string{"subscription passthrough " + word, "was " + was, "/h/backups/b1", "bootout", "bootstrap"} {
+			if !strings.Contains(s, w) {
+				t.Errorf("on=%v: status %q lacks %q", on, s, w)
+			}
+		}
+		if strings.Contains(s, "kickstart") {
+			t.Errorf("status %q recommends kickstart", s)
+		}
+		// 80x24: nothing wider than the terminal.
+		for _, line := range strings.Split(plain(m), "\n") {
+			if w := ansi.StringWidth(line); w > 80 {
+				t.Errorf("line of %d columns on an 80 column terminal: %q", w, line)
+			}
+		}
+	}
+}
+
+func onOffWord(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
+}
+
+// TestSetupTabGatewayKeyShowsAFailure pins that a failed write says why and
+// reads the machine again, and an unchanged write says nothing changed.
+func TestSetupTabGatewayKeyShowsAFailure(t *testing.T) {
+	sm := &setupMachine{states: []modelsetup.State{fullState()}, gatewayErr: errors.New("config.toml is locked")}
+	m := keys(t, setupEditor(t, sm, 120, 30), "g", "y")
+	if !strings.Contains(m.setup.status, "locked") || !strings.Contains(m.setup.status, "failed") || m.setup.busy {
+		t.Errorf("a failed write: status %q busy %v", m.setup.status, m.setup.busy)
+	}
+	sm = &setupMachine{states: []modelsetup.State{fullState()}}
+	m = keys(t, setupEditor(t, sm, 120, 30), "g", "y")
+	if !strings.Contains(m.setup.status, "nothing was changed") {
+		t.Errorf("an unchanged write: status %q", m.setup.status)
+	}
+}
+
+// TestSetupTabGatewayKeyIsBlockedLikeEveryWrite pins that g does nothing, and
+// its hint is absent, on a parse error and while the tab is busy.
+func TestSetupTabGatewayKeyIsBlockedLikeEveryWrite(t *testing.T) {
+	sm := &setupMachine{states: []modelsetup.State{parseErrState()}}
+	m := setupEditor(t, sm, 120, 30)
+	if h := hintLine(m); strings.Contains(h, "g ") {
+		t.Errorf("parse error hints name g: %q", h)
+	}
+	m = keys(t, m, "g")
+	if m.setup.phase != setupView || !strings.Contains(m.setup.status, "does not parse") || len(sm.gateways) != 0 {
+		t.Errorf("parse error: phase %v status %q", m.setup.phase, m.setup.status)
+	}
+	sm = &setupMachine{states: []modelsetup.State{fullState()}}
+	m = setupEditor(t, sm, 120, 30)
+	if h := hintLine(m); !strings.Contains(h, "g gateway") {
+		t.Errorf("hints lack g: %q", h)
+	}
+	m.setup.busy = true
+	if h := hintLine(m); strings.Contains(h, "g gateway") {
+		t.Errorf("busy hints name g: %q", h)
+	}
+	m = keys(t, m, "g")
+	if m.setup.phase != setupView || !strings.Contains(m.setup.status, "wait") {
+		t.Errorf("busy: phase %v status %q", m.setup.phase, m.setup.status)
 	}
 }

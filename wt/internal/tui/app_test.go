@@ -1031,8 +1031,8 @@ func TestPickerHeaderShowsLastRefreshed(t *testing.T) {
 	if note := m.rows.headerBlock(); !strings.Contains(note, "not refreshed here") {
 		t.Errorf("a fresh clone's header lacks the note:\n%s", note)
 	}
-	if err := worktree.FetchRemotes(r.dir); err != nil {
-		t.Fatal(err)
+	if fr := cleanup.RecordFetch(nil, r.dir); !fr.OK {
+		t.Fatalf("fetch: %+v", fr)
 	}
 	stamp := r.git("rev-parse", "--git-path", "FETCH_HEAD")
 	if !filepath.IsAbs(stamp) {

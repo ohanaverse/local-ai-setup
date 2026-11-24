@@ -445,3 +445,27 @@ func TestRowTextDropsRepeatedReasonWording(t *testing.T) {
 		t.Errorf("%q says needs gh %d times, want once", got, n)
 	}
 }
+
+// TestRowTagsHeldTagSatisfiesIsHeldTag pins that the held tag RowTags builds
+// is the one IsHeldTag recognises, with and without the holder's description
+// (#581: the prefix is one constant, not a literal in each reader).
+func TestRowTagsHeldTagSatisfiesIsHeldTag(t *testing.T) {
+	for _, detail := range []string{"", "s-42"} {
+		row := Row{Reasons: []Reason{{Code: ReasonHeld, Detail: detail}}}
+		var held []Tag
+		for _, tg := range RowTags(row) {
+			if IsHeldTag(tg) {
+				held = append(held, tg)
+			}
+		}
+		if len(held) != 1 {
+			t.Fatalf("detail %q: %d held tags in %v, want 1", detail, len(held), RowTags(row))
+		}
+		if want := strings.TrimSpace(HeldTagPrefix + " " + detail); held[0].Text != want {
+			t.Errorf("detail %q: held tag %q, want %q", detail, held[0].Text, want)
+		}
+	}
+	if IsHeldTag(Tag{Text: "locked"}) {
+		t.Error("a locked tag counts as held")
+	}
+}

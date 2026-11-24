@@ -206,7 +206,7 @@ reader resolves it — the key is never printed, only masked.
   `wt-model: warning:` line), and `tls_cert`/`tls_key` turn on
   [Native TLS](#native-tls). `wt-model gateway subscription on|off` writes the
   switch (and `wt-model gateway` shows the table, the Setup tab's `gateway` row
-  too); the TLS pair is hand-edited, and `litellm set` keeps the table as
+  too, whose `g` key writes the same switch); the TLS pair is hand-edited, and `litellm set` keeps the table as
   written; an older `wt-model litellm set` or `wt litellm set` drops the
   table, which turns the
   mode off at the next `serve` restart (the safe direction) and brings serve

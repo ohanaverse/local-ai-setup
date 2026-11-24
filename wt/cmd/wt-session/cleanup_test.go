@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
 	"io"
 	"os"
 	"os/exec"
@@ -24,13 +25,10 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
+// cgit delegates to the shared runner (gittest.Git).
 func cgit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	b, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, b)
-	}
-	return strings.TrimSpace(string(b))
+	return gittest.Git(t, dir, args...)
 }
 
 func cleanupCommit(t *testing.T, dir, file, msg string) {
@@ -46,29 +44,26 @@ func cleanupCommit(t *testing.T, dir, file, msg string) {
 // pushed and origin/HEAD set. Each test gets its own.
 func cleanupRepo(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
-	origin, dir := filepath.Join(root, "origin.git"), filepath.Join(root, "repo")
-	if b, err := exec.Command("git", "init", "--bare", "-b", "main", origin).CombinedOutput(); err != nil {
-		t.Fatalf("init bare: %v\n%s", err, b)
-	}
-	if b, err := exec.Command("git", "clone", origin, dir).CombinedOutput(); err != nil {
-		t.Fatalf("clone: %v\n%s", err, b)
-	}
-	cgit(t, dir, "config", "user.email", "t@example.com")
-	cgit(t, dir, "config", "user.name", "T")
-	cgit(t, dir, "config", "commit.gpgsign", "false")
-	cgit(t, dir, "checkout", "-B", "main")
-	cleanupCommit(t, dir, "README", "init")
-	cgit(t, dir, "push", "-u", "origin", "main")
-	cgit(t, dir, "remote", "set-head", "origin", "main")
+	// No .worktrees exclusion: restore_root calls excludeWorktrees itself.
+	_, dir := gittest.NewRepo(t, false)
 	return dir
 }
 
-// stubCleanupGH makes every PR lookup answer "no PRs", so gh counts as ok.
-func stubCleanupGH(t *testing.T) {
+// noPRs answers every `gh pr list` with an empty list: no PRs, so gh counts as
+// ok.
+func noPRs(string, string) ([]byte, error) { return []byte("[]"), nil }
+
+// ghHooks is h with both PR lookups replaced (the per-call hooks, never the
+// cleanup package's legacy seam globals: #565).
+func ghHooks(h hooks, list, base func(string, string) ([]byte, error)) hooks {
+	h.prList, h.prBaseList = list, base
+	return h
+}
+
+// stubCleanupGH makes every PR lookup of a's cleanup gathers answer "no PRs".
+func stubCleanupGH(t *testing.T, a *app) {
 	t.Helper()
-	t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
-	t.Cleanup(cleanup.StubPRBaseListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
+	a.hooks = ghHooks(a.hooks, noPRs, noPRs)
 }
 
 // runCleanup runs `wt cleanup args...` from dir and returns both streams and
@@ -90,7 +85,7 @@ func runCleanup(t *testing.T, a *app, dir string, args ...string) (stdout, stder
 // parses stdout whole; a stray header line or a second document breaks it.
 func TestCleanupCmdJSONIsOneDocument(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	cgit(t, dir, "branch", "topic")
 	stdout, stderr, err := runCleanup(t, a, dir, "--json")
@@ -126,7 +121,7 @@ func TestCleanupCmdJSONIsOneDocument(t *testing.T) {
 // upstream field.
 func TestCleanupCmdJSONIncludesRootDefaultAndHeldRows(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	cgit(t, dir, "checkout", "-b", "feature")
 	cleanupCommit(t, dir, "f", "feature work")
@@ -168,7 +163,7 @@ func TestCleanupCmdJSONIncludesRootDefaultAndHeldRows(t *testing.T) {
 // to blocked.
 func TestCleanupCmdPlainGroupsInOrder(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	// proven: merged with a merge commit, so its tip is an ancestor of main.
 	cgit(t, dir, "checkout", "-b", "merged")
@@ -234,7 +229,7 @@ func TestCleanupCmdPlainGroupsInOrder(t *testing.T) {
 // "safe".
 func TestCleanupCmdExit1WithoutDefaultBranch(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	mk := func() string {
 		dir := t.TempDir()
 		cgit(t, dir, "init", "-b", "trunk")
@@ -275,7 +270,7 @@ func TestCleanupCmdExit1WithoutDefaultBranch(t *testing.T) {
 // and the header warns the base may be stale.
 func TestCleanupCmdFetchFailureExits0(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	cgit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "nowhere.git"))
 
@@ -307,7 +302,7 @@ func TestCleanupCmdFetchFailureExits0(t *testing.T) {
 // multi-line JSON fetch.error; both must be one line.
 func TestCleanupCmdFetchFailureIsOneLine(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	cgit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "nowhere.git"))
 
@@ -350,9 +345,7 @@ func TestCleanupCmdGhFailureKeepsRowsOneLine(t *testing.T) {
 	a, _ := newTestApp(t)
 	speech := "To get started with GitHub CLI, please run:  gh auth login\n" +
 		"Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n"
-	t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) {
-		return nil, errors.New(speech)
-	}))
+	a.hooks.prList = func(string, string) ([]byte, error) { return nil, errors.New(speech) }
 	dir := cleanupRepo(t)
 	cgit(t, dir, "checkout", "-b", "topic")
 	cleanupCommit(t, dir, "t", "topic work")
@@ -420,7 +413,7 @@ func TestCleanupCmdGhFailureKeepsRowsOneLine(t *testing.T) {
 // header says skipped.
 func TestCleanupCmdNoFetchOmitsFetch(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	stdout, _, err := runCleanup(t, a, dir, "--json", "--no-fetch")
 	if err != nil {
@@ -444,7 +437,7 @@ func TestCleanupCmdNoFetchOmitsFetch(t *testing.T) {
 // merged), and a valid duration is what Classify is given.
 func TestCleanupCmdMinAge(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	for _, bad := range []string{"0", "0s", "-5m", "soon"} {
 		stdout, _, err := runCleanup(t, a, dir, "--json", "--no-fetch", "--min-age", bad)
@@ -483,7 +476,7 @@ func TestCleanupCmdProtectedArtifactIsInUse(t *testing.T) {
 	a, tmp := newTestApp(t)
 	t.Setenv("WT_REGISTRY", filepath.Join(tmp, "local-ai", "registry.toml"))
 	t.Setenv("WT_LITELLM_CONFIG", filepath.Join(tmp, "config.yaml"))
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	wtDir := filepath.Join(filepath.Dir(dir), "wt-topic")
 	cgit(t, dir, "worktree", "add", "-b", "topic", wtDir)
@@ -522,7 +515,7 @@ func TestCleanupCmdProtectedArtifactIsInUse(t *testing.T) {
 // plain printer, and that --plain and --json each keep the plain path.
 func TestCleanupCmdTTYHandsOffToList(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	oldTTY, oldList := isTerminalWriter, runCleanupList
 	isTerminalWriter = func(io.Writer) bool { return true }
@@ -625,8 +618,8 @@ func TestWorktreesCmdRegisteredWithWorktreeAlias(t *testing.T) {
 // TestWorktreesCmdTTYHandsOffToManageList is the interactive hand-off: one
 // call with the report on a terminal; --json and --plain never call it.
 func TestWorktreesCmdTTYHandsOffToManageList(t *testing.T) {
-	newTestApp(t)
-	stubCleanupGH(t)
+	a, _ := newTestApp(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	oldTTY, oldList := isTerminalWriter, runCleanupList
 	isTerminalWriter = func(io.Writer) bool { return true }
@@ -651,7 +644,7 @@ func TestWorktreesCmdTTYHandsOffToManageList(t *testing.T) {
 // without fetching and with every remote's branches, while --json fetches.
 func TestWorktreesCmdTTYDoesNotFetchOnOpen(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	oldTTY, oldList, oldGather, oldFacts := isTerminalWriter, runCleanupList, cleanupGather, cleanupGatherFacts
 	var ins []cleanup.GatherInputs
@@ -689,8 +682,8 @@ func TestWorktreesCmdTTYDoesNotFetchOnOpen(t *testing.T) {
 // TestWorktreesCmdJSONSameUnderBothNames verifies both names print the same
 // bytes and accept the same flags.
 func TestWorktreesCmdJSONSameUnderBothNames(t *testing.T) {
-	newTestApp(t)
-	stubCleanupGH(t)
+	a, _ := newTestApp(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	// No extra branch: a fresh branch's reason text carries its age in seconds,
 	// which the comparison below normalizes.
@@ -765,7 +758,7 @@ func TestCleanupCmdContainsNoDeletion(t *testing.T) {
 // flag's plain skip.
 func TestWorktreesCmdTTYMarksFetchNotAttempted(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	oldTTY, oldList := isTerminalWriter, runCleanupList
 	var got []cleanup.FetchResult
@@ -794,7 +787,7 @@ func TestWorktreesCmdTTYMarksFetchNotAttempted(t *testing.T) {
 // this task); written as a pin so `--fetch` cannot regress it — no RED.
 func TestCleanupCmdTerminalDoesNotFetchOnOpen(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	before, hadBefore := worktree.LastFetched(dir)
 	oldTTY, oldList, oldGather, oldFacts := isTerminalWriter, runCleanupList, cleanupGather, cleanupGatherFacts
@@ -847,7 +840,7 @@ func TestCleanupCmdTerminalDoesNotFetchOnOpen(t *testing.T) {
 // altogether — this runs from a linked worktree so the two are told apart.
 func TestCleanupCmdTerminalFetchFlagFetches(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	// "late" and "uplate" exist only on the remotes: a second clone puts
 	// them there, so only a fetch can bring their remote-tracking refs into
@@ -940,11 +933,13 @@ func TestCleanupCmdTerminalFetchFlagFetches(t *testing.T) {
 // repository that could not be classified at all).
 func TestCleanupCmdTerminalFetchFailureStillOpensTheList(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
-	// A remote whose URL cannot be reached: the one `git fetch --all --prune`
-	// fails on it (fast — a missing local path, not a network).
-	cgit(t, dir, "remote", "add", "dead", filepath.Join(t.TempDir(), "no-such.git"))
+	// Origin's URL cannot be reached: the per-remote fetch fails on it (fast
+	// — a missing local path, not a network). Origin's failure is the
+	// fetch's top-level one (the base is origin's); another remote's alone
+	// reads "<name> FAILED" in the header's remote list (#586).
+	cgit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such.git"))
 	oldTTY, oldList := isTerminalWriter, runCleanupList
 	isTerminalWriter = func(io.Writer) bool { return true }
 	var got cleanup.Report
@@ -976,7 +971,7 @@ func TestCleanupCmdTerminalFetchFailureStillOpensTheList(t *testing.T) {
 // no RED.
 func TestCleanupCmdJSONStillFetchesByDefault(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	oldGather := cleanupGather
 	var ins []cleanup.GatherInputs
@@ -1023,7 +1018,7 @@ func TestCleanupCmdJSONStillFetchesByDefault(t *testing.T) {
 // written as a pin, not RED.
 func TestCleanupCmdPlainStillFetchesByDefault(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	oldGather := cleanupGather
 	var ins []cleanup.GatherInputs
@@ -1062,7 +1057,7 @@ func TestCleanupCmdPlainStillFetchesByDefault(t *testing.T) {
 // any output mode, before anything runs.
 func TestCleanupCmdFetchAndNoFetchConflict(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	oldGather := cleanupGather
 	gathers := 0
@@ -1100,10 +1095,10 @@ func TestCleanupCmdFetchAndNoFetchConflict(t *testing.T) {
 // own and the header reads "fetch: FAILED (...)".
 func TestCleanupRemoveFuncsRefetchFetches(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	var roots []string
-	in := cleanupListInputs(dir, false, nil, "wt-cleanup")
+	in := cleanupListInputs(a.hooks, dir, false, nil, "wt-cleanup")
 	in.Fetched = cleanup.FetchResult{NotAttempted: true} // the list's open state
 	// The hook stands in for worktree.FetchRemotes (cleanupRemoveFuncs takes
 	// its inputs by value, so it is set once): the first F fetches clean, the
@@ -1166,7 +1161,7 @@ func TestCleanupRemoveFuncsRefetchFetches(t *testing.T) {
 // rung — which, unlike same-commit and ancestor, the fresh-branch floor does
 // not gate. It also answers gh: topic's one PR is merged (#8, head the topic
 // tip, merged by the squash commit) and nothing is based on topic.
-func squashMergedOriginRepo(t *testing.T) string {
+func squashMergedOriginRepo(t *testing.T, a *app) string {
 	t.Helper()
 	dir := cleanupRepo(t)
 	bare := filepath.Join(filepath.Dir(dir), "origin.git")
@@ -1184,13 +1179,12 @@ func squashMergedOriginRepo(t *testing.T) string {
 	cgit(t, dir, "config", "url."+bare+".insteadOf", "https://github.com/o/r.git")
 	cgit(t, dir, "remote", "set-url", "origin", "https://github.com/o/r.git")
 	merged := `[{"number":8,"state":"MERGED","headRefOid":"` + tip + `","baseRefName":"main","mergeCommit":{"oid":"` + squash + `"},"isCrossRepository":false,"headRepository":{"name":"r","nameWithOwner":"o/r"}}]`
-	t.Cleanup(cleanup.StubPRListForTest(func(_, b string) ([]byte, error) {
+	a.hooks = ghHooks(a.hooks, func(_, b string) ([]byte, error) {
 		if b == "topic" {
 			return []byte(merged), nil
 		}
 		return []byte("[]"), nil
-	}))
-	t.Cleanup(cleanup.StubPRBaseListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
+	}, noPRs)
 	return dir
 }
 
@@ -1207,8 +1201,8 @@ func squashMergedOriginRepo(t *testing.T) string {
 // act on and the fetch looks useless.
 func TestCleanupRemoveFuncsRefetchRepointsTheRemovalEngine(t *testing.T) {
 	a, _ := removeApp(t)
-	dir := squashMergedOriginRepo(t)
-	in := cleanupListInputs(dir, false, nil, "wt-cleanup")
+	dir := squashMergedOriginRepo(t, a)
+	in := cleanupListInputs(a.hooks, dir, false, nil, "wt-cleanup")
 	in.Fetched = cleanup.FetchResult{NotAttempted: true} // the list's open state
 	in.FetchRemotes = func(string) error { return nil }  // the fetch itself is not under test here
 	snap, err := cleanupGather(cleanup.Git{Dir: dir}, in)
@@ -1269,13 +1263,13 @@ func staleClaimFile(t *testing.T, repo string) string {
 
 // TestCleanupJSONFetchPrunesStaleClaims: a fetch-first `wt worktrees --json`
 // run drops the stale session claims. Why: the fetch-first JSON report is the
-// refresh the agent path gets (the TUI list's `F` is the other of the two
-// paths that prune), so a session that died without releasing its claim is
+// refresh the agent path gets (every fetch-first run prunes through one gate,
+// pruneAfterFetch; the TUI list's `F` is its interactive half), so a session that died without releasing its claim is
 // tidied when fresh state is next asked for instead of piling up. The stale
 // claim is a real dead process, never a manufactured one.
 func TestCleanupJSONFetchPrunesStaleClaims(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	file := staleClaimFile(t, dir)
 	stdout, _, err := runCleanup(t, a, dir, "--json")
@@ -1289,12 +1283,12 @@ func TestCleanupJSONFetchPrunesStaleClaims(t *testing.T) {
 
 // TestCleanupJSONNoFetchLeavesClaims: `--no-fetch` means the run fetched
 // nothing — no refresh happened — so it drops no claim, stale ones included.
-// Why: the prune rides the fetch-first JSON run only (sessionclaim.Prune's
-// two paths); a listing told not to touch the network must not delete
-// anything under the user either.
+// Why: the prune rides every fetch-first run (pruneAfterFetch) and nothing
+// else; a listing told not to touch the network must not delete anything
+// under the user either.
 func TestCleanupJSONNoFetchLeavesClaims(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	file := staleClaimFile(t, dir)
 	if _, _, err := runCleanup(t, a, dir, "--json", "--no-fetch"); err != nil {
@@ -1305,6 +1299,39 @@ func TestCleanupJSONNoFetchLeavesClaims(t *testing.T) {
 	}
 }
 
+// TestCleanupPlainFetchPrunesStaleClaims: a fetch-first `--plain` run prunes
+// stale claims exactly as --json does. Why: any run that asked for fresh state
+// is a refresh (#586); before, only --json pruned, so the same fetch pruned or
+// not by output format.
+func TestCleanupPlainFetchPrunesStaleClaims(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t, a)
+	dir := cleanupRepo(t)
+	file := staleClaimFile(t, dir)
+	stdout, _, err := runCleanup(t, a, dir, "--plain")
+	if err != nil {
+		t.Fatalf("--plain: %v\n%s", err, stdout)
+	}
+	if _, statErr := os.Stat(file); !os.IsNotExist(statErr) {
+		t.Fatalf("the fetch-first --plain run left the stale claim %s behind (stat error %v)", file, statErr)
+	}
+}
+
+// TestCleanupPlainNoFetchLeavesClaims: --plain --no-fetch is no refresh, so
+// the stale claim stays.
+func TestCleanupPlainNoFetchLeavesClaims(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t, a)
+	dir := cleanupRepo(t)
+	file := staleClaimFile(t, dir)
+	if _, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(file); statErr != nil {
+		t.Fatalf("the --no-fetch --plain run dropped the stale claim %s: %v", file, statErr)
+	}
+}
+
 // TestExecuteCleanupJSONAndPlainStaySynchronous pins the split: the
 // --json and --plain paths keep the one synchronous cleanupGather and never
 // call the facts stage (cleanupGatherFacts). Why: a scripted consumer wants
@@ -1312,7 +1339,7 @@ func TestCleanupJSONNoFetchLeavesClaims(t *testing.T) {
 // paint facts and fill behind them.
 func TestExecuteCleanupJSONAndPlainStaySynchronous(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	factsCalls, gatherCalls := 0, 0
 	oldFacts, oldGather := cleanupGatherFacts, cleanupGather
@@ -1367,7 +1394,6 @@ func writeDefaultRegistry(t *testing.T, def, body string) {
 // flag, leaving the artifact in place. wt never deletes a quantized model;
 // the session split must not cost that protection.
 func TestWorktreesStillProtectRegistryArtifacts(t *testing.T) {
-	stubCleanupGH(t)
 	dir := cleanupRepo(t)
 	p := mergedWorktree(t, dir, "topic")
 	art := filepath.Join(p, "models", "q4")
@@ -1375,6 +1401,7 @@ func TestWorktreesStillProtectRegistryArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := registryApp(t, func(_, def string) { writeDefaultRegistry(t, def, protectRegistry(strconv.Quote(art))) })
+	stubCleanupGH(t, a)
 	if a.hostSet {
 		t.Fatal("newApp read the registry: it is hostConfig's to read")
 	}
@@ -1428,7 +1455,7 @@ func TestProtectedPathsToleratesNoRegistry(t *testing.T) {
 	if !a.hostSet {
 		t.Error("protectedPaths did not read the registry through hostConfig")
 	}
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	plain, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch")
 	if err != nil {
@@ -1485,7 +1512,7 @@ func TestProtectedPathsStillFailClosed(t *testing.T) {
 				t.Error("protectedPaths did not read the registry through hostConfig")
 			}
 
-			stubCleanupGH(t)
+			stubCleanupGH(t, a)
 			dir := cleanupRepo(t)
 			plain, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch")
 			if err != nil {
@@ -1505,5 +1532,80 @@ func TestProtectedPathsStillFailClosed(t *testing.T) {
 				t.Errorf("the refusal does not say removal was refused:\n%s", stdout)
 			}
 		})
+	}
+}
+
+// TestCleanupRemoveFuncsRereadNeverFetches pins #579: after an `R` hand-off
+// that fetched, Reread re-reads without fetching again, and its report
+// carries the hand-off's own fetch outcome (a failure included), not the
+// list's open-state "not run".
+func TestCleanupRemoveFuncsRereadNeverFetches(t *testing.T) {
+	a := restoreRootApp(t)
+	dir := cleanupRepo(t)
+	rootOnTopic(t, dir)
+	cgit(t, dir, "remote", "set-url", "origin", filepath.Join(filepath.Dir(dir), "no-such-origin.git"))
+	fetches := 0
+	in := cleanupListInputs(a.hooks, dir, false, nil, "wt-cleanup")
+	in.Fetched = cleanup.FetchResult{NotAttempted: true}
+	in.FetchRemotes = func(string) error { fetches++; return nil }
+	snap, err := cleanupGather(cleanup.Git{Dir: dir}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rm := cleanupRemoveFuncs(a, snap, in, 0, nil)
+	if rm.Reread == nil {
+		t.Fatal("RemoveFuncs.Reread is nil")
+	}
+	// The hand-off declines at its prompt (no terminal) after fetching.
+	herr := rm.RestoreRoot(strings.NewReader(""), io.Discard, io.Discard)
+	var note *tui.HandOffNote
+	if !errors.As(herr, &note) || !note.Fetched {
+		t.Fatalf("hand-off result = %v, want a note with Fetched", herr)
+	}
+	rep, err := rm.Reread()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetches != 0 {
+		t.Errorf("Reread fetched %d times, want none", fetches)
+	}
+	if rep.Fetch.NotAttempted || rep.Fetch.OK || rep.Fetch.Err == "" {
+		t.Errorf("report.Fetch = %+v, want the hand-off's failed fetch", rep.Fetch)
+	}
+}
+
+// TestCleanupTerminalFetchPrunesStaleClaims: a terminal `--fetch` run prunes
+// stale claims through the one gate (#586), the header names the second
+// remote's result, and a plain terminal open (no --fetch) leaves the claim.
+func TestCleanupTerminalFetchPrunesStaleClaims(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t, a)
+	dir := cleanupRepo(t)
+	up := filepath.Join(t.TempDir(), "up.git")
+	if b, err := exec.Command("git", "init", "--bare", "-b", "main", up).CombinedOutput(); err != nil {
+		t.Fatalf("init up: %v\n%s", err, b)
+	}
+	cgit(t, dir, "remote", "add", "up", up)
+	file := staleClaimFile(t, dir)
+	oldTTY, oldList := isTerminalWriter, runCleanupList
+	isTerminalWriter = func(io.Writer) bool { return true }
+	var got cleanup.Report
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, _ tui.RemoveFuncs) error { got = r; return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
+
+	if _, _, err := runCleanup(t, a, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(file); statErr != nil {
+		t.Fatalf("a terminal open without --fetch dropped the stale claim %s: %v", file, statErr)
+	}
+	if _, _, err := runCleanup(t, a, dir, "--fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(file); !os.IsNotExist(statErr) {
+		t.Fatalf("the terminal --fetch run left the stale claim %s behind (stat error %v)", file, statErr)
+	}
+	if hdr := strings.Join(cleanup.HeaderLines(got, time.Now()), "\n"); !strings.Contains(hdr, "also fetched up") {
+		t.Errorf("the terminal --fetch header does not name the remote %q:\n%s", "up", hdr)
 	}
 }

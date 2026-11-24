@@ -35,6 +35,6 @@ func wantApproval(t *testing.T, err error, want string) {
 func TestLaunchQuestionDeclinedExits3(t *testing.T) {
 	// A "no" at the launch warning is a decline like any other.
 	tg := launchwarn.Target{Dir: "/r", IsRoot: true}
-	err := confirmLaunch(tg, nil, strings.NewReader("n\n"), &bytes.Buffer{}, true)
+	err := confirmLaunch(tg, nil, nil, strings.NewReader("n\n"), &bytes.Buffer{}, true)
 	wantApproval(t, err, "approval missing: declined; nothing was launched")
 }

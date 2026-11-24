@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -330,7 +329,7 @@ func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
 	}
 	tg, readErr := launchwarn.ForNew(root, plan)
 	notes := captureNotes(t)
-	if err := confirmLaunch(tg, readErr, strings.NewReader(""), osStderr, false); err != nil {
+	if err := confirmLaunch(tg, readErr, nil, strings.NewReader(""), osStderr, false); err != nil {
 		t.Fatal(err)
 	}
 	got := notes.String()
@@ -367,12 +366,10 @@ func TestTailsEndTheSessionThenSummary(t *testing.T) {
 	oldTTY := stdinTTY
 	stdinTTY = func() bool { return true }
 	t.Cleanup(func() { stdinTTY = oldTTY })
-	// No gh at exit: the exit-prompt `gh pr list` gather is gone. Fail if any
-	// runs in the tail (the record-having re-add — the verified mutation — makes exactly this call).
-	t.Cleanup(cleanup.StubPRListForTest(func(dir, branch string) ([]byte, error) {
-		t.Errorf("gh pr list ran in the run's tail (%s in %s)", branch, dir)
-		return []byte("[]"), nil
-	}))
+	// No gh at exit: the exit-prompt `gh pr list` gather is gone. The tail
+	// takes no app, so there is no hook to stub; a gh call from it would reach
+	// the real call, which a test binary refuses (errGhUnderTest), and the
+	// re-added offer shows in the wording assertions below.
 	truePath, err := exec.LookPath("true")
 	if err != nil {
 		t.Skip("`true` not available")

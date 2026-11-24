@@ -427,21 +427,23 @@ func TestPRHooksArePerCall(t *testing.T) {
 }
 
 // TestPRHookFallbackStillPoisoned checks a zero GatherInputs resolves to the
-// legacy seam, whose real call refuses in a test binary (errGhUnderTest): a
-// test that forgets both the stub and the hooks errors instead of asking the
-// developer's GitHub account. Why: the forgetting-to-stub guarantee must
-// survive the per-call hooks (Ruling 1).
+// legacy seam, which TestMain poisons ("test forgot to stub"), and that the
+// real calls refuse in a test binary (errGhUnderTest): a test that forgets both
+// the stub and the hooks errors instead of asking the developer's GitHub
+// account. Why: the forgetting-to-stub guarantee must survive the per-call
+// hooks (Ruling 1). It swaps no seam global, so it is safe to parallelize.
 func TestPRHookFallbackStillPoisoned(t *testing.T) {
-	// Put the seams back at their production default (TestMain replaces them
-	// with its own poison): the real call is what an unstubbed, unhooked
-	// lookup gets.
-	t.Cleanup(StubPRListForTest(realGhPRList))
-	t.Cleanup(StubPRBaseListForTest(realGhPRBaseList))
-	if _, err := prListFn(GatherInputs{})("", "topic"); !errors.Is(err, errGhUnderTest) {
-		t.Fatalf("prListFn(zero Inputs) err = %v, want %v", err, errGhUnderTest)
+	if _, err := realGhPRList("", "topic"); !errors.Is(err, errGhUnderTest) {
+		t.Fatalf("realGhPRList err = %v, want %v", err, errGhUnderTest)
 	}
-	if _, err := prBaseListFn(GatherInputs{})("", "topic"); !errors.Is(err, errGhUnderTest) {
-		t.Fatalf("prBaseListFn(zero Inputs) err = %v, want %v", err, errGhUnderTest)
+	if _, err := realGhPRBaseList("", "topic"); !errors.Is(err, errGhUnderTest) {
+		t.Fatalf("realGhPRBaseList err = %v, want %v", err, errGhUnderTest)
+	}
+	if _, err := prListFn(GatherInputs{})("", "topic"); err == nil {
+		t.Fatal("prListFn(zero Inputs) returned no error; an unstubbed, unhooked lookup must be poisoned")
+	}
+	if _, err := prBaseListFn(GatherInputs{})("", "topic"); err == nil {
+		t.Fatal("prBaseListFn(zero Inputs) returned no error; an unstubbed, unhooked lookup must be poisoned")
 	}
 }
 

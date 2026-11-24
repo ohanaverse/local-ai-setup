@@ -35,17 +35,51 @@ type Claim struct {
 // `ps -o etime=` reading, so the two can differ by up to 2 s from rounding alone.
 const startTolerance = 5
 
-// pidAlive reports whether pid is a running process (EPERM means alive).
-// Package-level var so tests can inject liveness without real processes.
-var pidAlive = func(pid int) bool {
+// Procs is the per-call seam for process facts: whether a pid runs, when it
+// started, and who its parent is. A nil field means the real implementation, so
+// the zero value Procs{} is production and the package-level functions (Self,
+// Join, Hold, Others, AncestorHolds, Holders, Prune) are one-line wrappers over
+// it. A test builds a Procs with fakes instead of swapping package state, so
+// tests run in parallel and leak nothing.
+type Procs struct {
+	// Alive reports whether pid is a running process.
+	Alive func(pid int) bool
+	// StartTime returns pid's start time in epoch seconds.
+	StartTime func(pid int) (int64, error)
+	// ParentPID returns pid's parent pid.
+	ParentPID func(pid int) (int, error)
+}
+
+func (p Procs) pidAlive(pid int) bool {
+	if p.Alive != nil {
+		return p.Alive(pid)
+	}
+	return realPidAlive(pid)
+}
+
+func (p Procs) startTime(pid int) (int64, error) {
+	if p.StartTime != nil {
+		return p.StartTime(pid)
+	}
+	return realStartTime(pid)
+}
+
+func (p Procs) parentPID(pid int) (int, error) {
+	if p.ParentPID != nil {
+		return p.ParentPID(pid)
+	}
+	return realParentPID(pid)
+}
+
+// realPidAlive reports whether pid is a running process (EPERM means alive).
+func realPidAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || err == syscall.EPERM
 }
 
-// startTime returns pid's start time in epoch seconds: now minus the elapsed
-// time `ps -o etime=` reports, the same method the retired repo-cleanup bash reader used. Package-level
-// var so tests can inject start times.
-var startTime = func(pid int) (int64, error) {
+// realStartTime returns pid's start time in epoch seconds: now minus the elapsed
+// time `ps -o etime=` reports, the same method the retired repo-cleanup bash reader used.
+func realStartTime(pid int) (int64, error) {
 	out, err := exec.Command("ps", "-o", "etime=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return 0, err
@@ -57,9 +91,8 @@ var startTime = func(pid int) (int64, error) {
 	return time.Now().Unix() - secs, nil
 }
 
-// parentPID returns pid's parent pid from `ps -o ppid=`. Package-level var so
-// tests can inject a process tree.
-var parentPID = func(pid int) (int, error) {
+// realParentPID returns pid's parent pid from `ps -o ppid=`.
+func realParentPID(pid int) (int, error) {
 	out, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return 0, err
@@ -73,7 +106,7 @@ const maxAncestors = 64
 // ancestors returns this process and its parents up to pid 1, the same set
 // the retired repo-cleanup's pid_is_ancestor walked: a wt launched from inside a root
 // session must not count that session as another one.
-func ancestors() map[int]bool {
+func (pr Procs) ancestors() map[int]bool {
 	set := map[int]bool{}
 	p := os.Getpid()
 	for i := 0; i < maxAncestors && p > 0; i++ {
@@ -81,7 +114,7 @@ func ancestors() map[int]bool {
 		if p <= 1 {
 			break
 		}
-		next, err := parentPID(p)
+		next, err := pr.parentPID(p)
 		if err != nil {
 			break
 		}
@@ -117,9 +150,12 @@ func parseEtime(s string) (int64, error) {
 }
 
 // Self returns a claim for this process at path.
-func Self(path, branch, agent string) (Claim, error) {
+func Self(path, branch, agent string) (Claim, error) { return Procs{}.Self(path, branch, agent) }
+
+// Self returns a claim for this process at path.
+func (pr Procs) Self(path, branch, agent string) (Claim, error) {
 	pid := os.Getpid()
-	started, err := startTime(pid)
+	started, err := pr.startTime(pid)
 	if err != nil {
 		return Claim{}, err
 	}
@@ -168,11 +204,11 @@ func parse(data []byte) (c Claim, ok bool) {
 // live reports whether c's process runs and started when the claim says.
 // known is false when the pid runs but its start time cannot be read: such a
 // claim is neither live nor stale.
-func live(c Claim) (alive, known bool) {
-	if !pidAlive(c.PID) {
+func (pr Procs) live(c Claim) (alive, known bool) {
+	if !pr.pidAlive(c.PID) {
 		return false, true
 	}
-	real, err := startTime(c.PID)
+	real, err := pr.startTime(c.PID)
 	if err != nil {
 		return false, false
 	}
@@ -207,6 +243,11 @@ func withLock(dir string, fn func() error) error {
 // writes, without asking again. c is written atomically and release removes
 // it. release is never nil, so a caller may defer it even when err is set.
 func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release func(), others []Claim, err error) {
+	return Procs{}.Join(commonDir, c, ask)
+}
+
+// Join is the package-level Join with pr's process facts.
+func (pr Procs) Join(commonDir string, c Claim, ask func(others []Claim) bool) (release func(), others []Claim, err error) {
 	release = func() {}
 	dir := filepath.Join(commonDir, "wt-sessions")
 	mine := filepath.Join(dir, strconv.Itoa(c.PID))
@@ -221,11 +262,11 @@ func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release fun
 	// lock, not under it, and only when there is a claim file to compare with.
 	var parents map[int]bool
 	if hasClaims(dir) {
-		parents = ancestors()
+		parents = pr.ancestors()
 	}
 	err = withLock(dir, func() error {
 		var err error
-		if others, err = scan(dir, c, parents, true); err != nil || len(others) > 0 {
+		if others, err = pr.scan(dir, c, parents, true); err != nil || len(others) > 0 {
 			return err
 		}
 		return write()
@@ -249,6 +290,11 @@ func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release fun
 // release removes only that file; calling release twice is safe. release is
 // never nil, so a caller may defer it even when err is set.
 func Hold(commonDir string, c Claim) (release func(), err error) {
+	return Procs{}.Hold(commonDir, c)
+}
+
+// Hold is the package-level Hold with pr's process facts.
+func (pr Procs) Hold(commonDir string, c Claim) (release func(), err error) {
 	release = func() {}
 	dir := filepath.Join(commonDir, "wt-sessions")
 	mine := filepath.Join(dir, strconv.Itoa(c.PID))
@@ -257,10 +303,10 @@ func Hold(commonDir string, c Claim) (release func(), err error) {
 	// a claim by this process or one of its parents is kept, never pruned.
 	var parents map[int]bool
 	if hasClaims(dir) {
-		parents = ancestors()
+		parents = pr.ancestors()
 	}
 	err = withLock(dir, func() error {
-		if _, err := scan(dir, c, parents, true); err != nil {
+		if _, err := pr.scan(dir, c, parents, true); err != nil {
 			return err
 		}
 		if err := config.WriteFileAtomic(mine, c.encode(), 0o644); err != nil {
@@ -276,8 +322,11 @@ func Hold(commonDir string, c Claim) (release func(), err error) {
 // c's own, without taking the lock or changing anything: a caller that must
 // ask before it claims (the picker's screen) reads first and joins after.
 // No wt-sessions directory means no others.
-func Others(commonDir string, c Claim) ([]Claim, error) {
-	others, err := scan(filepath.Join(commonDir, "wt-sessions"), c, nil, false)
+func Others(commonDir string, c Claim) ([]Claim, error) { return Procs{}.Others(commonDir, c) }
+
+// Others is the package-level Others with pr's process facts.
+func (pr Procs) Others(commonDir string, c Claim) ([]Claim, error) {
+	others, err := pr.scan(filepath.Join(commonDir, "wt-sessions"), c, nil, false)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -294,6 +343,11 @@ func Others(commonDir string, c Claim) ([]Claim, error) {
 // asks. It takes no lock and changes nothing; no wt-sessions directory means
 // false.
 func AncestorHolds(commonDir string, c Claim) (bool, error) {
+	return Procs{}.AncestorHolds(commonDir, c)
+}
+
+// AncestorHolds is the package-level AncestorHolds with pr's process facts.
+func (pr Procs) AncestorHolds(commonDir string, c Claim) (bool, error) {
 	dir := filepath.Join(commonDir, "wt-sessions")
 	files, err := readClaims(dir)
 	if os.IsNotExist(err) {
@@ -308,7 +362,7 @@ func AncestorHolds(commonDir string, c Claim) (bool, error) {
 			continue
 		}
 		if mine == nil {
-			mine = ancestors()
+			mine = pr.ancestors()
 		}
 		if !mine[f.c.PID] {
 			continue
@@ -317,7 +371,7 @@ func AncestorHolds(commonDir string, c Claim) (bool, error) {
 		// trust a SIGKILLed wt's leftover file once the system recycles
 		// that pid into an ancestor of a new launch — the stale file would
 		// silently waive the root warning the launch warnings owe.
-		if alive, _ := live(f.c); !alive {
+		if alive, _ := pr.live(f.c); !alive {
 			continue
 		}
 		return true, nil
@@ -378,7 +432,7 @@ func hasClaims(dir string) bool {
 // process or one of its parents, or one whose start time cannot be read, is
 // neither returned nor deleted. mine is this process and its parents
 // (ancestors); nil means scan walks the chain itself, when it first needs it.
-func scan(dir string, c Claim, mine map[int]bool, prune bool) (others []Claim, err error) {
+func (pr Procs) scan(dir string, c Claim, mine map[int]bool, prune bool) (others []Claim, err error) {
 	files, err := readClaims(dir)
 	if err != nil {
 		return nil, err
@@ -387,7 +441,7 @@ func scan(dir string, c Claim, mine map[int]bool, prune bool) (others []Claim, e
 		other, ok := f.c, f.ok
 		if ok {
 			if mine == nil {
-				mine = ancestors()
+				mine = pr.ancestors()
 			}
 			if mine[other.PID] {
 				continue
@@ -395,7 +449,7 @@ func scan(dir string, c Claim, mine map[int]bool, prune bool) (others []Claim, e
 		}
 		var alive, known bool
 		if ok {
-			if alive, known = live(other); !known {
+			if alive, known = pr.live(other); !known {
 				continue
 			}
 		}
