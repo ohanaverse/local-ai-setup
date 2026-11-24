@@ -4,6 +4,9 @@
 
 ### Changed
 
+- `wt rescue` prints a failure or refusal reason, its done lines and warnings whole on one line (it cut them at 200 characters, which could drop the remedy), as `wt restore-root` does; paths and branch names in the plan stay capped (Refs #558).
+- A copy of 100 or more untracked files by `wt rescue` or `wt restore-root` writes `copying untracked files: N of M` to stderr every 100 files and at the end (never to stdout, and not under `--json` or `--dry-run`; one plain line per tick, no terminal control codes) (Refs #558).
+- The refusal for an assume-unchanged or skip-worktree entry in the root (`wt remove` of the root's work) now names the remedy per case, as `wt restore-root` does: `git update-index --no-assume-unchanged <path>`, `git sparse-checkout disable`, or `git update-index --no-skip-worktree <path>` (Refs #558).
 - Refusing to remove the worktree you are standing in (hard blocker `current`) now says where to run it from: `wt remove <path>` from the repository root or any directory outside it (#569). The `wt-repo-cleanup` skill reports such a proven row as deferred and, only with the user's yes, removes it as a last step from the repository root. wt still never removes its own working directory; offering removal when an agent session exits is not built.
 - `wt worktree` is now an alias of `wt worktrees` (the singular used to fall through to the launch picker, which has no tick boxes). `wt cleanup`, the old alias, is removed and refused with a pointer to `wt worktrees`.
 - An origin branch whose PR merged but that moved on afterwards (a stacked PR merged into it) is **proven** when its tree is identical to the base's, so `wt worktrees` lists it `safe` and `wt remove origin/<name> --remote` removes it.
