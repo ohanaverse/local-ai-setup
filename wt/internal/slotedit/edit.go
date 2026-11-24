@@ -649,7 +649,7 @@ func Repoint(src []byte, from, to string) (out []byte, changed []string, err err
 			}
 			continue
 		}
-		if i, ok := secs[""].keys["slots"]; ok && strings.Contains(lines[i], from) {
+		if i, ok := secs[""].keys["slots"]; ok && holdsWhole(lines[i], from) {
 			return nil, nil, fmt.Errorf("slotedit: profile %q writes slots as an inline table; edit the file by hand", name)
 		}
 		hit := false
@@ -693,7 +693,13 @@ func Repoint(src []byte, from, to string) (out []byte, changed []string, err err
 	return []byte(b.String()), changed, nil
 }
 
-// mentions reports whether any of lines holds s.
+// mentions reports whether any of lines holds s as a whole quoted string.
 func mentions(lines []line, s string) bool {
-	return slices.ContainsFunc(lines, func(l line) bool { return strings.Contains(l, s) })
+	return slices.ContainsFunc(lines, func(l line) bool { return holdsWhole(l, s) })
+}
+
+// holdsWhole reports whether l holds s as a whole quoted TOML string, so an id
+// that merely starts with s (alias/main-2 for alias/main) does not count.
+func holdsWhole(l line, s string) bool {
+	return strings.Contains(string(l), `"`+s+`"`) || strings.Contains(string(l), `'`+s+`'`)
 }

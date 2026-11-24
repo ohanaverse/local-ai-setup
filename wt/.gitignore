@@ -22,3 +22,5 @@ bin/wt-model
 # This repo intentionally tracks `.claude/skills/` — a local negation pattern
 # here can't override the global ignore, so new files under `.claude/` need
 # `git add -f`.
+# A stray `go build ./cmd/wt-session` run inside wt/ once got committed.
+/wt-session

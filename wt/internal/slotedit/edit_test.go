@@ -606,3 +606,17 @@ func TestRepointRefusesAnInlineSlotsTable(t *testing.T) {
 		t.Errorf("an inline table without the id: %v %v", changed, err)
 	}
 }
+
+// TestRepointWholeIdOnlyWhenRefusing pins that the inline-table and dotted-key
+// refusals match the old id whole: a longer id sharing it as a prefix must
+// not block the repoint.
+func TestRepointWholeIdOnlyWhenRefusing(t *testing.T) {
+	inline := "[[profile]]\nname = \"p\"\nagent = \"claude\"\ndefault = \"opus\"\nslots = { opus = \"alias/main-2\" }\n"
+	if out, changed, err := Repoint([]byte(inline), "alias/main", "alias/primary"); err != nil || changed != nil || string(out) != inline {
+		t.Errorf("inline table naming a longer id: %v %v", changed, err)
+	}
+	dotted := "[[profile]]\nname = \"p\"\nagent = \"claude\"\ndefault = \"opus\"\nslots.opus = \"alias/main-fast\"\n"
+	if _, _, err := Repoint([]byte(dotted), "alias/main", "alias/primary"); err != nil {
+		t.Errorf("dotted keys naming a longer id: %v", err)
+	}
+}
