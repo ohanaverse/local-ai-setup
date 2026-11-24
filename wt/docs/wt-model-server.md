@@ -677,7 +677,13 @@ server elsewhere (remote)", the mirror of the Mode tab's local pointer note.
   Start it anyway? [y/N]`` — `x` never asks, and while the local server runs
   unused the choice carries the note "the local server runs but remote is in
   effect: nothing uses it. next: press x to stop it (choose local first), or
-  apply native here to remove it". `tab` switches tabs and `q` quits. Two keys act on the
+  apply native here to remove it". After `s` or `R` succeeds the tab keeps its
+  last state and reads again every half second, up to 20 times, while the agent
+  is loaded and the server still refuses the connection (launchd returns a
+  little before serve listens), so the server line never shows that gap as a
+  problem; it shows what answered, or the failure itself if nothing did in
+  about ten seconds. A refused token or another server on the port is shown at
+  once. `tab` switches tabs and `q` quits. Two keys act on the
   LiteLLM LaunchAgent, each as a plan you
   confirm: `k` opens the master-key menu (use the key the plist already has,
   generate a new one, which rotates `LITELLM_MASTER_KEY` with a backup under

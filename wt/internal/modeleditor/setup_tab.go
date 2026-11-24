@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -151,6 +152,30 @@ type setupTab struct {
 	// LiteLLM probe, is out. Only that read lets the mode keys through, so
 	// moving on from local is not held up by it.
 	probeRead bool
+	// settle is how many more reads the tab makes after a start or restart
+	// while the server it started is not answering yet (setupSettleTries at
+	// first); settled is the status the action left, kept through them.
+	settle  int
+	settled string
+}
+
+// setupSettleTries and setupSettleDelay bound the wait after a start or a
+// restart: launchd returns when the job is started, a little before serve
+// listens, and a read in that gap would show a failure that is gone a
+// moment later. About ten seconds in all, the apply path's own wait.
+const setupSettleTries = 20
+
+var setupSettleDelay = 500 * time.Millisecond
+
+// setupSettleMsg asks for the next read of the wait after a start or restart.
+type setupSettleMsg struct{}
+
+// stillStarting is whether an observation is of a loaded agent whose server
+// refused the connection: the one failure a start or restart that just
+// succeeded is expected to show for a moment. A refused token or another
+// server on the port is an answer, and is shown at once.
+func stillStarting(st modelsetup.State) bool {
+	return st.Server.Checked && !st.Server.OK && st.Server.Kind == modelsetup.KindUnreachable && st.Agent.Job.Loaded
 }
 
 // setupObservedMsg carries one observation.
@@ -323,6 +348,18 @@ func (m *model) applySetupObserved(msg setupObservedMsg) tea.Cmd {
 	st := &m.setup
 	if msg.gen != st.gen {
 		return nil // a later observation is on its way
+	}
+	if st.settle > 0 && stillStarting(msg.st) {
+		// Keep the last state on screen and read again shortly, so the
+		// server line never shows the gap between launchd and serve (#710).
+		st.settle--
+		st.busy = true
+		st.status = st.settled + "; waiting for wt-model to answer…"
+		return tea.Tick(setupSettleDelay, func(time.Time) tea.Msg { return setupSettleMsg{} })
+	}
+	if st.settle > 0 || st.settled != "" {
+		st.settle = 0
+		st.status, st.settled = st.settled, ""
 	}
 	st.state, st.loaded, st.busy, st.probeSkipped, st.probeRead = msg.st, true, false, msg.skippedProbe, false
 	if st.pending {
@@ -556,6 +593,9 @@ func (m *model) applySetupControlled(msg setupControlledMsg) tea.Cmd {
 		st.status = msg.action.String() + " failed: " + editorkit.Scrub(msg.err.Error())
 	} else {
 		st.status = modelsetup.AgentLabel + " " + controlWords[msg.action][1]
+		if msg.action == modelsetup.ControlStart || msg.action == modelsetup.ControlRestart {
+			st.settle, st.settled = setupSettleTries, st.status
+		}
 	}
 	return m.finishSetupWrite(msg.err == nil)
 }
