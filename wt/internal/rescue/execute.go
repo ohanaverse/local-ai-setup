@@ -18,8 +18,9 @@ import (
 // source is compared and the destination verified.
 var afterCarry = func(*Plan) {}
 
-// afterVerify is a test seam, called once the copy is verified and before the
-// source is compared a last time and the record written.
+// afterVerify is a test seam, called once the copy is verified, before the
+// record's objects are built (buildRecord), the source is compared a last
+// time, and the ref created.
 var afterVerify = func(*Plan) {}
 
 // beforeRecordRef is a test seam, called once the record's objects are built
