@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
@@ -33,14 +34,14 @@ func TestHandOffResultSeparatesWhatChangedNothing(t *testing.T) {
 		return nil
 	}
 	declined := exit(3, "approval missing: declined; nothing was changed")
-	if n := asNote(restoreRootHandOffResult(declined, nil)); n == nil || n.Err != declined || n.Text != "restore root: approval missing: declined; nothing was changed" {
+	if n := asNote(restoreRootHandOffResult(declined, nil, nil)); n == nil || n.Err != declined || n.Text != "restore root: approval missing: declined; nothing was changed" {
 		t.Errorf("a declined R: %+v", n)
 	}
 	if n := asNote(rescueHandOffResult(exit(3, "approval missing: declined; nothing was created"), nil)); n == nil || n.Text != "rescue: approval missing: declined; nothing was created" {
 		t.Errorf("a declined r: %+v", n)
 	}
 	refusedRR := &rootmove.Outcome{Status: rescue.StatusRefused, Code: "default_in_worktree", Reason: "main is checked out in /x"}
-	if n := asNote(restoreRootHandOffResult(exit(2, "the branch was not moved"), refusedRR)); n == nil || n.Text != "restore root refused: main is checked out in /x" || n.Err == nil {
+	if n := asNote(restoreRootHandOffResult(exit(2, "the branch was not moved"), refusedRR, nil)); n == nil || n.Text != "restore root refused: main is checked out in /x" || n.Err == nil {
 		t.Errorf("a refused R: %+v", n)
 	}
 	refusedR := &rescue.Outcome{Status: rescue.StatusRefused, Code: "nested", Reason: "it has a nested repository; nothing was created"}
@@ -49,10 +50,10 @@ func TestHandOffResultSeparatesWhatChangedNothing(t *testing.T) {
 	}
 	// Failures and real errors end the session.
 	for name, err := range map[string]error{
-		"R failed":     restoreRootHandOffResult(exit(2, "the branch was not moved"), &rootmove.Outcome{Status: rescue.StatusFailed, Code: "carry", Reason: "x"}),
-		"R created":    restoreRootHandOffResult(exit(2, "x"), &rootmove.Outcome{Status: rescue.StatusRefused, Created: true}),
-		"R no outcome": restoreRootHandOffResult(exit(2, "x"), nil),
-		"R exit 1":     restoreRootHandOffResult(exit(1, "could not start"), nil),
+		"R failed":     restoreRootHandOffResult(exit(2, "the branch was not moved"), &rootmove.Outcome{Status: rescue.StatusFailed, Code: "carry", Reason: "x"}, nil),
+		"R created":    restoreRootHandOffResult(exit(2, "x"), &rootmove.Outcome{Status: rescue.StatusRefused, Created: true}, nil),
+		"R no outcome": restoreRootHandOffResult(exit(2, "x"), nil, nil),
+		"R exit 1":     restoreRootHandOffResult(exit(1, "could not start"), nil, nil),
 		"r failed":     rescueHandOffResult(exit(2, "x"), &rescue.Outcome{Status: rescue.StatusFailed}),
 		"r kept":       rescueHandOffResult(exit(2, "x"), &rescue.Outcome{Status: rescue.StatusRefused, BranchKept: true}),
 		"r exit 1":     rescueHandOffResult(exit(1, "x"), nil),
@@ -62,8 +63,21 @@ func TestHandOffResultSeparatesWhatChangedNothing(t *testing.T) {
 			t.Errorf("%s: %v, want a plain error that ends the session", name, err)
 		}
 	}
+	// #580: a signal during the move rides on the note, in the printed
+	// line's own words (moved and refused-after-the-hold alike); no signal
+	// leaves the text alone.
+	moved := &rootmove.Outcome{Status: rescue.StatusMoved, Plan: rootmove.Plan{Default: "main"}}
+	if n := asNote(restoreRootHandOffResult(nil, moved, syscall.SIGINT)); n == nil || !strings.HasSuffix(n.Text, "; interrupted (signal interrupt): the move was not stopped") {
+		t.Errorf("a moved R with a signal: %+v", n)
+	}
+	if n := asNote(restoreRootHandOffResult(nil, moved, nil)); n == nil || strings.Contains(n.Text, "interrupted") {
+		t.Errorf("a moved R without a signal: %+v", n)
+	}
+	if n := asNote(restoreRootHandOffResult(exit(2, "x"), refusedRR, syscall.SIGINT)); n == nil || n.Err == nil || !strings.Contains(n.Text, "interrupted (signal interrupt)") {
+		t.Errorf("a refused R with a signal: %+v", n)
+	}
 	// A root already on the default is a finished hand-off with a status.
-	if n := asNote(restoreRootHandOffResult(nil, &rootmove.Outcome{Status: rescue.StatusRefused, Code: rootmove.CodeAlreadyDefault, Reason: "the root is already on main"})); n == nil || n.Err != nil || !strings.Contains(n.Text, "already on main") {
+	if n := asNote(restoreRootHandOffResult(nil, &rootmove.Outcome{Status: rescue.StatusRefused, Code: rootmove.CodeAlreadyDefault, Reason: "the root is already on main"}, nil)); n == nil || n.Err != nil || !strings.Contains(n.Text, "already on main") {
 		t.Errorf("already on the default: %+v", n)
 	}
 }

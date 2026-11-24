@@ -366,7 +366,10 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// Launch mode's `F`: fetch the remotes and re-gather the rows, the
 		// picker's only fetch. A refresh already in flight owns the key:
 		// the message is dropped, never a second fetch stacked on the first.
-		if !m.ready || m.phase != phaseList || m.rowsRefreshing {
+		// A done list is quitting for a hand-off (`r`/`R`): it must not
+		// start a fetch whose result the done guard would discard, the same
+		// as the PR fill landing in that window (#580).
+		if !m.ready || m.phase != phaseList || m.rowsRefreshing || m.rows.done {
 			return m, nil
 		}
 		m.rowsRefreshing, m.reloadGen = true, m.rowsGen
