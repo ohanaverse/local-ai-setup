@@ -61,6 +61,8 @@ The owner took every recommendation on 2026-11-24:
 4. **The migration runs on the first sync**, as in phase 1: the database wins during a sync, the file outside one; add the row, confirm by listing, remove the file row, one restart.
 5. **`STORE` is `db` for a migrated row and `file` for a hand-written one.** No code was needed: `litellm list` already labelled every `wt:` database row `db`.
 
+The salt-key refusal the spike asked for (question 3b) is in: a failed add with no wt row listed says `LITELLM_SALT_KEY` is the likely cause (`saltHint`), and `dropTwins` deletes only what a fresh listing shows.
+
 Found while building it: the launch-time ensure (`AddMissingOnly`) would write a **file twin** of a migrated cloud row (it checks only `config.yaml`) and restart the proxy for it, so it asks the database first (`dbRoutes.holds`); and a batch whose one add fails left the database copy of a sibling add that fell back to the file (`dropMigratingTwins`, now `dropTwins`, deletes every such copy).
 
 ## Review Focus

@@ -432,3 +432,24 @@ func TestNoSecretReachesAnOutput(t *testing.T) {
 		t.Fatalf("the listing holds the key: %s", b)
 	}
 }
+
+// TestSaltKeyRefusalNamesTheKeyAndDeletesNothingUnlisted (spike question 3b,
+// Review Focus: never delete a row the listing does not show): LiteLLM lists
+// none of wt's rows (stored under another salt key) and answers the add of an
+// existing id with HTTP 500. The sync falls back with one warning that names
+// LITELLM_SALT_KEY, and no delete is sent for a row the listing does not show.
+func TestSaltKeyRefusalNamesTheKeyAndDeletesNothingUnlisted(t *testing.T) {
+	body := "model_list: []\n" + settledSettings
+	o, _, _, fake := dbOpts(t, body)
+	fake.addFailBody = realDuplicateBody
+	res, err := Sync(sentinelConfig(), nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasWarning(res, "LITELLM_SALT_KEY") {
+		t.Fatalf("warnings %q, want one naming the salt key", res.Warnings)
+	}
+	if n := fake.requests("POST /model/delete"); n != 0 {
+		t.Fatalf("%d deletes sent for rows the listing does not show", n)
+	}
+}

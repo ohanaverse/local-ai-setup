@@ -483,6 +483,7 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 			failed = d.confirm(append(slices.Clone(p.Add), p.Update...))
 		}
 		if failed != nil {
+			failed = d.saltHint(failed)
 			d.dropTwins(migrating, byName, p, &transport)
 			return d.fallBack(failed, add, currentIDs(desired, migrating, p))
 		}
@@ -541,6 +542,21 @@ func (d *dbRoutes) deleteAll(ids []string, transport *error) error {
 // error none is attempted (deleteAll reports it per id). The next sync
 // migrates again.
 func (d *dbRoutes) dropTwins(migrating map[string]bool, byName map[string][]string, p DBPlan, transport *error) {
+	// Only a row a fresh listing shows is deleted. LiteLLM lists none of the
+	// rows stored under another LITELLM_SALT_KEY, and they come back with the
+	// old key; a delete by id would destroy them (saltHint).
+	var visible map[string]bool
+	if *transport == nil {
+		rows, err := d.admin.List(d.context())
+		if err != nil {
+			d.delWarnings = append(d.delWarnings, fmt.Sprintf("database routes could not be re-listed (%s); no database copy was removed, and both stores may serve the routes that fell back to config.yaml", oneLine(err)))
+			return
+		}
+		visible = map[string]bool{}
+		for _, r := range rows {
+			visible[r.ID] = true
+		}
+	}
 	touched := map[string]bool{}
 	for _, m := range append(slices.Clone(p.Add), p.Update...) {
 		touched[m.ModelName] = true
@@ -560,10 +576,25 @@ func (d *dbRoutes) dropTwins(migrating map[string]bool, byName map[string][]stri
 		if !slices.Contains(ids, DBID(n)) {
 			ids = append(ids, DBID(n))
 		}
+		ids = slices.DeleteFunc(ids, func(id string) bool { return visible != nil && !visible[id] })
 		if err := d.deleteAll(ids, transport); err != nil {
 			d.delWarnings = append(d.delWarnings, fmt.Sprintf("%s: config.yaml routes it, but its database route could not be removed (%s); both may be live", n, oneLine(err)))
 		}
 	}
+}
+
+// saltHint adds to a failed add the likely cause when the listing shows none of
+// wt's rows and LiteLLM still answers "Failed to add model to db" (the spike's
+// question 3b): LiteLLM encrypts each row with LITELLM_SALT_KEY and lists only
+// the rows it can decrypt, so under a changed key every wt row is hidden while
+// still in the table, and adding an id that exists answers HTTP 500. Nothing
+// is deleted on that account (dropTwins deletes only what a listing shows);
+// restoring the old key brings the rows back.
+func (d *dbRoutes) saltHint(err error) error {
+	if len(d.owned()) > 0 || !strings.Contains(err.Error(), "Failed to add model to db") {
+		return err
+	}
+	return fmt.Errorf("%w; LiteLLM lists none of wt's database rows, so check that LITELLM_SALT_KEY is the key they were stored under (rows under another key are hidden, not lost, and no row was deleted)", err)
 }
 
 // fallBack hands the add batch back to config.yaml, minus the routes the
