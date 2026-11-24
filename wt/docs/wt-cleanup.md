@@ -48,9 +48,10 @@ JSON row also carries the `upstream` field), but they list only `origin`'s
 branches and those of remotes a local branch tracks; the terminal list shows
 every remote's. On a terminal the list does not fetch when it opens (`--fetch` fetches every remote first and the list's `F` fetches while
 it is open; `--json`/`--plain` fetch first unless
-`--no-fetch`). Stale session claims are dropped on the list's `F` refresh and on
-a fetch-first `--json` run only (`sessionclaim.Prune`; `--plain` fetches but
-never prunes, `--no-fetch` drops nothing, and the list's open drops nothing).
+`--no-fetch`). Stale session claims are dropped by every run that fetches first
+(`sessionclaim.Prune` through one gate): `--json`, `--plain` and a pipe unless
+`--no-fetch`, a terminal run's `--fetch`, and the list's `F`. `--no-fetch`
+drops nothing, and neither does opening the list.
 A row's line carries only what warns, so a row read as safe stays quiet: the
 `dirty`, `unpushed` and `upstream gone` badges (on a row that is not proven)
 and the root's drift badge below. The PR reads in the `PR#` column: `#N <state>`
@@ -145,8 +146,9 @@ terminal and credential-manager prompts are off, and ssh runs with
 `-o BatchMode=yes` unless you set `GIT_SSH_COMMAND` or `core.sshCommand`
 yourself, in which case your ssh command is used as it is and any question it
 asks is yours. The terminal list's explicit fetches (`--fetch`, the list's
-`F`) are one `git fetch --all --prune`, capped at 5s, at the repository's
-root: one result for every remote at once, not one per remote.
+`F`) are the same per-remote fetch, run at the repository's root: the header
+names each remote's result, and a repository with no remote reads
+`fetch: skipped (no remotes)`.
 The merge-adds-nothing proof
 (`git merge-tree --write-tree`) may leave unreachable tree objects in the
 object store, which `git gc` collects. The `changes-in-base` proof creates
@@ -257,7 +259,7 @@ On a terminal `wt worktrees` shows every row, locked or not, and acts only on a 
 | `enter` | remove the **ticked** rows (the confirm says "ticked") |
 | `i` | open the highlighted row's [detail screen](#the-detail-screen): everything known about it, and the actions that apply to it |
 | `x`, `d`, `o`, `r`, `R` | open that same screen on the highlighted row, unarmed; press the key again there to act |
-| `F` | `git fetch --all --prune` at the repository root, capped at 5s, then re-read; stale session claims are dropped |
+| `F` | `git fetch --prune <remote>` for every remote at the repository root (origin 120s, the others 30s), then re-read; stale session claims are dropped |
 | `q`, `esc` | quit (on the detail screen, `esc` goes back to the list) |
 
 The action on the second press is the one the screen lists. `x` removes the **selected** row alone (the confirm says "selected"; ticks are ignored), `d` as `x` with the worktree's unmerged branch also deleted (the confirm's `[ ] also delete unmerged branch` is seeded on), `o` deletes only the row's `origin` ref — never its worktree or local branch — as the remote-only item `wt remove origin/<name> --remote` builds, under the typed `delete origin`, `r` rescues the row and `R` restores the root (`rootmove.Offered`, below). A key the screen does not list still answers, with the refusal on its status line: a locked row refuses `x` and `d` with `cannot be removed: <its reason>`. `o` is the exception: it deletes the row's `origin` ref, so it judges that ref's lock instead of the local row's — a locked origin target answers `its origin ref cannot be removed: <the origin row's reason>`, and a row with no `origin` ref answers `o` on the status line with `o deletes the highlighted row's origin ref; this row has none` (a locked row with none answers `cannot be removed: <its reason>`). `r`, `R` and `F` ignore the lock entirely: they copy or move work and re-read, never remove. Confirmation (`cleanup_confirm.go`): `y` is accepted only when every entry is proven; anything else needs the typed word `delete`, an `origin` entry `delete origin`, and a held entry's line names `held by session <id>`. A confirmation for one row (one `x`, `d` or `o`) shows that row's [detail block](#the-detail-screen) above the prompt — the same lines `i` showed, plus the toggle and the approvals — and `esc` goes back to the detail screen, not to the list; a batch confirmation (`enter`) keeps the compact per-entry layout and `esc` goes back to the list.

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // TestResolveBaseUsesOriginHEAD checks that origin/HEAD, not the local main,
@@ -443,5 +445,104 @@ func TestFetchOtherRemotesRunConcurrentlyWithAShorterTimeout(t *testing.T) {
 	}
 	if r.Remotes[1].Name != "slow1" || r.Remotes[2].Name != "slow2" {
 		t.Fatalf("order %+v", r.Remotes)
+	}
+}
+
+// TestRecordFetchNilHookFetchesPerRemote runs RecordFetch with no hook against
+// the fixture's real origin. What: ok, At stamped, origin in Remotes, and
+// worktree.LastFetched at the root moves. Why: the one fetch mechanism is
+// Fetch; the nil hook must not be a second, weaker one (#586).
+func TestRecordFetchNilHookFetchesPerRemote(t *testing.T) {
+	f := newFixture(t)
+	r := RecordFetch(nil, f.Dir)
+	if !r.OK || r.Err != "" || r.At.IsZero() || len(r.Remotes) != 1 || r.Remotes[0].Name != "origin" || !r.Remotes[0].OK {
+		t.Fatalf("got %+v, want ok with origin's per-remote result", r)
+	}
+	got, ok := worktree.LastFetched(f.Dir)
+	if !ok || time.Since(got) > time.Minute {
+		t.Fatalf("LastFetched = %v, %v; want a stamp from the fetch that just ran", got, ok)
+	}
+}
+
+// TestRecordFetchNilHookDeadRemote: a dead origin is a value (Err, At set),
+// never a panic or an error return.
+func TestRecordFetchNilHookDeadRemote(t *testing.T) {
+	f := newFixture(t)
+	f.git("remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+	r := RecordFetch(nil, f.Dir)
+	if r.OK || r.Err == "" || r.At.IsZero() || strings.Contains(r.Err, "\n") {
+		t.Fatalf("got %+v, want a one-line Err and a time", r)
+	}
+}
+
+// TestRecordFetchNilHookNoRemotes: an explicit fetch with no remotes is
+// Skipped "no remotes", At is stamped (the user did ask), never ok or Err.
+func TestRecordFetchNilHookNoRemotes(t *testing.T) {
+	f := newFixture(t)
+	f.git("remote", "remove", "origin")
+	r := RecordFetch(nil, f.Dir)
+	if r.OK || r.Err != "" || r.Skipped != "no remotes" || r.At.IsZero() {
+		t.Fatalf("got %+v, want skipped (no remotes) with a time", r)
+	}
+	if hdr := strings.Join(HeaderLines(Report{Repo: f.Dir, Fetch: r}, time.Now()), "\n"); !strings.Contains(hdr, "fetch: skipped (no remotes)") {
+		t.Fatalf("the header does not say the fetch was skipped:\n%s", hdr)
+	}
+}
+
+// TestRecordFetchHookKeepsItsWording: a non-nil hook is what runs, with the
+// ok/Err wording it always had.
+func TestRecordFetchHookKeepsItsWording(t *testing.T) {
+	if r := RecordFetch(func(string) error { return nil }, "x"); !r.OK || r.At.IsZero() {
+		t.Fatalf("ok hook: %+v", r)
+	}
+	if r := RecordFetch(func(string) error { return errors.New("boom") }, "x"); r.OK || r.Err != "boom" {
+		t.Fatalf("failing hook: %+v", r)
+	}
+}
+
+// TestFetchNewAndPrunedBranches pins Fetch's ref refresh against a real
+// remote: a branch a teammate pushed becomes a remote-tracking ref, and one
+// deleted upstream is pruned instead of lingering as a stale row.
+func TestFetchNewAndPrunedBranches(t *testing.T) {
+	f := newFixture(t)
+	f.git("checkout", "-b", "gone-soon")
+	f.git("push", "origin", "gone-soon")
+	f.git("checkout", "main")
+	f.git("branch", "-D", "gone-soon")
+	gitIn(t, f.Origin, "branch", "-D", "gone-soon")
+	c := filepath.Join(t.TempDir(), "mate")
+	gitIn(t, filepath.Dir(c), "clone", f.Origin, c)
+	gitIn(t, c, "checkout", "-b", "teammate-feature")
+	gitIn(t, c, "push", "origin", "teammate-feature")
+
+	if f.git("for-each-ref", "refs/remotes/origin/gone-soon") == "" {
+		t.Fatal("origin/gone-soon missing before the fetch; setup drifted, nothing to prune")
+	}
+	if r := Fetch(Git{Dir: f.Dir}); !r.OK {
+		t.Fatalf("fetch: %+v", r)
+	}
+	if f.git("for-each-ref", "refs/remotes/origin/teammate-feature") == "" {
+		t.Fatal("origin/teammate-feature missing after the fetch")
+	}
+	if got := f.git("for-each-ref", "refs/remotes/origin/gone-soon"); got != "" {
+		t.Fatalf("origin/gone-soon should have been pruned: %s", got)
+	}
+}
+
+// TestLastFetchedPerRoot: a fetch at a root advances that root's stamp only;
+// a fresh linked worktree has none until it fetches (LastFetched is per
+// worktree, FETCH_HEAD being one per worktree).
+func TestLastFetchedPerRoot(t *testing.T) {
+	f := newFixture(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	f.git("worktree", "add", "-b", "linked-stamp", linked)
+	if got, ok := worktree.LastFetched(linked); ok {
+		t.Fatalf("LastFetched at a fresh linked root = %v, true; want false", got)
+	}
+	if r := RecordFetch(nil, linked); !r.OK {
+		t.Fatalf("fetch at linked: %+v", r)
+	}
+	if _, ok := worktree.LastFetched(linked); !ok {
+		t.Fatal("LastFetched after a fetch at the linked root = false; want true")
 	}
 }

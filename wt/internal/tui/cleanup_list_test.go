@@ -1792,8 +1792,8 @@ func TestRefreshPrunesStaleClaims(t *testing.T) {
 
 // TestOpeningTheListPrunesNothing: opening the list — building it, sizing it,
 // rendering it, moving in it — drops no claim, not even a stale one. Why
-// (the anti-goal): the prune belongs to the user's refresh and the
-// fetch-first `--json` run alone ("opening the list does not fetch or
+// (the anti-goal): the prune belongs to a refresh (the user's `F`, or a
+// fetch-first run through pruneAfterFetch) alone ("opening the list does not fetch or
 // prune", the user-driven cleanup design) — a list someone opens to look
 // must never delete anything under them.
 func TestOpeningTheListPrunesNothing(t *testing.T) {

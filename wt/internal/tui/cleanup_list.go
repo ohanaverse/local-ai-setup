@@ -73,7 +73,7 @@ type rowListOpts struct {
 	Theme themes.Theme
 	Now   time.Time // the header's clock
 	// Root is the repository root the header's refresh note reads: a fetch
-	// at this root is what "refreshed" means (worktree.FetchRemotes, and
+	// at this root is what "refreshed" means (cleanup.RecordFetch, and
 	// RemoveFuncs.Refetch, run there). Empty falls back to the report's Repo.
 	Root string
 	// Stamp is the fetch stamp the header's refresh note shows, read by the
@@ -815,8 +815,9 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// in-flight guard — and the manage list re-reads through
 			// RemoveFuncs.Refetch. Either way the refresh drops the stale
 			// session claims first (pruneStaleFirst, the key path's one
-			// prune): refresh is one of the two paths that prune, and
-			// opening the list never is. An F pressed while a refresh is
+			// prune): refresh is the interactive half of the one gate
+			// (cmd/wt-session's pruneAfterFetch is the other), and
+			// opening the list never prunes. An F pressed while a refresh is
 			// already in flight still prunes — idempotent, and the reload
 			// the app drops does not undo it — which is intended.
 			if m.launch() {
@@ -1211,7 +1212,7 @@ func (m *cleanupListModel) headerBlock() string {
 		}
 	}
 	if m.fetching {
-		lines = append(lines, "fetching every remote… (up to 5s)")
+		lines = append(lines, "fetching every remote…")
 	}
 	if note := refreshedNote(m.stamp, m.now, m.report.Fetch); note != "" {
 		lines = append(lines, note)

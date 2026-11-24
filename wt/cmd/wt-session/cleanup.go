@@ -74,10 +74,12 @@ func worktreesCmd(a *app) *cobra.Command {
 			"not be classified at all (not a repository, no default branch). With --json\n" +
 			"the one JSON document is printed on failure too.\n\n" +
 			"On a terminal the list is interactive and does not fetch when it opens (every\n" +
-			"remote's branches are listed from the refs already there; --fetch runs one\n" +
-			"`git fetch --all --prune`, capped at 5s, at the repository's root first, and\n" +
-			"the header says how it went); --plain, --json and a pipe fetch first (the\n" +
-			"per-remote way above) and print text.\n" +
+			"remote's branches are listed from the refs already there; --fetch\n" +
+			"fetches every remote, each with `git fetch --prune <remote>` as above, first,\n" +
+			"and the header says how it went; origin gets 120s and the others 30s); --plain,\n" +
+			"--json and a pipe fetch first the same way and print text. Every run that\n" +
+			"fetches first (and the list's F) also drops the claims of dead sessions;\n" +
+			"--no-fetch and a plain terminal open drop nothing.\n" +
 			"A branch younger than --min-age (default 10m, at least 1m) that sits at or\n" +
 			"behind the base is never proven merged: a brand-new branch looks merged. A\n" +
 			"value below 10m is named in the header, as is a registry wt could not read\n" +
@@ -98,7 +100,7 @@ func worktreesCmd(a *app) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "print the report as one JSON document (docs/contracts/cleanup-list.schema.json)")
-	c.Flags().BoolVar(&fetch, "fetch", false, "fetch every remote once before a terminal list (one git fetch --all --prune at the repository's root, capped at 5s; --json and --plain fetch first their own way, per remote, and --fetch adds nothing there)")
+	c.Flags().BoolVar(&fetch, "fetch", false, "fetch every remote once before a terminal list (git fetch --prune per remote, origin first; --json and --plain already fetch first the same way, so --fetch adds nothing there)")
 	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune on every remote first (the fetch --json and --plain run; together with --fetch it is a usage error)")
 	c.Flags().BoolVar(&plain, "plain", false, "print text even on a terminal")
 	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
@@ -185,6 +187,8 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 			}
 			return cleanupFail(out, f.json, repo, err)
 		}
+		// --fetch is the terminal run's fetch-first mode: the same gate.
+		pruneAfterFetch(snap.CommonDir, f.fetch)
 		report := cleanupReport(a, snap, f.minAge, protErr)
 		rm := cleanupRemoveFuncs(a, snap, in, f.minAge, protErr)
 		rm.Fill = func() (cleanup.Report, tui.RemoveFuncs, error) {
@@ -207,18 +211,12 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 	}
 	report := cleanupReport(a, snap, f.minAge, protErr)
 
+	// Every fetch-first run is a refresh and drops dead sessions' claims
+	// through the one gate (pruneAfterFetch); --no-fetch drops nothing.
+	pruneAfterFetch(snap.CommonDir, !f.noFetch)
+
 	switch {
 	case f.json:
-		if !f.noFetch {
-			// The fetch-first JSON run is one of the two paths that drop
-			// stale session claims (sessionclaim.Prune): an agent asking
-			// for a fresh report is its refresh, as the list's `F` is the
-			// user's (internal/tui's pruneStaleFirst holds the other call).
-			// A run told to fetch nothing (--no-fetch) drops nothing, and
-			// the plain text runs — which fetch first too — are not on the
-			// contract's two paths: they never prune.
-			_, _ = sessionclaim.Prune(snap.CommonDir)
-		}
 		b, err := cleanup.Encode(report)
 		if err != nil {
 			return cleanupFail(out, true, report.Repo, err)
@@ -227,6 +225,19 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		return err
 	}
 	return printCleanupPlain(out, report, time.Now())
+}
+
+// pruneAfterFetch is the one gate through which a fetch-first run drops stale
+// session claims (sessionclaim.Prune: only claims whose process is dead go).
+// Any run that asked for fresh state is a refresh: --json, --plain and a pipe
+// (unless --no-fetch), and a terminal run's --fetch. The list's `F` is the
+// interactive half of the same gate (internal/tui's pruneStaleFirst). Nothing
+// prunes on --no-fetch or when the terminal list simply opens. Best effort: a
+// prune failure never fails the listing.
+func pruneAfterFetch(commonDir string, fetched bool) {
+	if fetched && commonDir != "" {
+		_, _ = sessionclaim.Prune(commonDir)
+	}
 }
 
 // cleanupReport classifies snap now, with the registry's header note.
