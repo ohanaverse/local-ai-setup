@@ -271,7 +271,11 @@ func (e Engine) worktreeGate(it Item) gated {
 	// Floors (held, default_branch) are not here: they read less_sure and
 	// need --accept-loss through needsOf.
 	if fresh.HardStop != "" {
-		return stop(refuse(it, blockerReason(fresh.Blockers, fresh.Kind, e.Prior.Repo)))
+		// Flattened, not capped: wt composed this text and the run-from-root
+		// hint at its end is the part the user acts on (#569).
+		o := refuse(it, "")
+		o.Reason = cleanup.Flatten(blockerReason(fresh.Blockers, fresh.Kind, e.Prior.Repo))
+		return stop(o)
 	}
 
 	// 6. An unknown is never approved, Force or not.
@@ -678,13 +682,33 @@ func blockerReason(bs []cleanup.Reason, k cleanup.Kind, root string) string {
 	if hard[0].Detail != "" {
 		s += " (" + hard[0].Detail + ")"
 	}
+	// Primary can never be removed, from anywhere, and a branch target has no
+	// worktree path to run it on: the hint would send the user nowhere.
+	primary := false
 	for _, b := range hard {
-		if b.Code == cleanup.BlockCurrent {
-			s += "; you are standing in it; run `wt remove " + b.Detail + "` from the repository root (" + root + ") or any directory outside it"
+		primary = primary || b.Code == cleanup.BlockPrimary
+	}
+	for _, b := range hard {
+		if b.Code == cleanup.BlockCurrent && !primary && k == cleanup.KindWorktree {
+			s += "; you are standing in it; run `wt remove " + shellArg(b.Detail) + "` from the repository root (" + root + ") or any directory outside it"
 			break
 		}
 	}
 	return s
+}
+
+// shellArg single-quotes s unless it is made of plainly safe characters.
+func shellArg(s string) string {
+	plain := s != ""
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("/._-+=:@,", c)) {
+			plain = false
+		}
+	}
+	if plain {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // maxProcNames is how many command names a live-process warning names.

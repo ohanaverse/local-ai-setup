@@ -867,3 +867,47 @@ func TestBlockerReasonCurrentNamesWhereToRun(t *testing.T) {
 		t.Errorf("locked-only reason %q must not carry the run-from-root hint", got)
 	}
 }
+
+// TestEngineRefusalCarriesRunFromRootHint runs a current-directory worktree
+// through the engine: the refusal text names the repository root (the gate
+// passes Prior.Repo, #569). The primary checkout stood in is refused as
+// primary alone: running from the root cannot help it.
+func TestEngineRefusalCarriesRunFromRootHint(t *testing.T) {
+	noGh(t)
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	in := f.inputs()
+	in.CWD = p
+	s, r := f.reportWith(in)
+	it := itemOf(f.row(r, cleanup.KindWorktree, "topic"))
+	it.Saw = cleanup.StatusProven
+	o := one(t, f.engine(s, in, Options{}), seal(it))
+	if o.Worktree != WtRefused || !strings.Contains(o.Reason, "from the repository root ("+s.Repo+")") {
+		t.Fatalf("reason %q, want root %q", o.Reason, s.Repo)
+	}
+
+	f2 := newFixture(t)
+	in2 := f2.inputs()
+	in2.CWD = f2.Dir
+	s2, r2 := f2.reportWith(in2)
+	it2 := itemOf(f2.row(r2, cleanup.KindWorktree, "main"))
+	it2.Saw = cleanup.StatusProven
+	o2 := one(t, f2.engine(s2, in2, Options{}), seal(it2))
+	if o2.Worktree != WtRefused || !strings.Contains(o2.Reason, cleanup.BlockPrimary) || strings.Contains(o2.Reason, "wt remove") {
+		t.Fatalf("primary+current outcome %+v, want primary refusal without a run-from-root hint", o2)
+	}
+}
+
+func TestBlockerReasonHintScope(t *testing.T) {
+	cur := cleanup.Reason{Code: cleanup.BlockCurrent, Detail: "/a b/wt"}
+	prim := cleanup.Reason{Code: cleanup.BlockPrimary, Detail: "/a b/wt"}
+	if got := blockerReason([]cleanup.Reason{prim, cur}, cleanup.KindWorktree, "/r"); strings.Contains(got, "wt remove") {
+		t.Errorf("primary+current %q must not carry the hint", got)
+	}
+	if got := blockerReason([]cleanup.Reason{cur}, cleanup.KindBranch, "/r"); strings.Contains(got, "wt remove") {
+		t.Errorf("branch target %q must not carry a worktree-path hint", got)
+	}
+	if got := blockerReason([]cleanup.Reason{cur}, cleanup.KindWorktree, "/r"); !strings.Contains(got, "`wt remove '/a b/wt'`") {
+		t.Errorf("path with a space %q must be shell-quoted", got)
+	}
+}
