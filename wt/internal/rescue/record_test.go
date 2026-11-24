@@ -50,6 +50,18 @@ func copyIndexTree(t *testing.T, dir string) string {
 	return strings.TrimSpace(string(b))
 }
 
+// writeRecord builds the record (buildRecord) and creates its ref
+// (createRecordRef) in one step. It is a test helper only: it skips the
+// last fingerprint comparison Execute makes between the two, on purpose, so
+// production code cannot call it.
+func writeRecord(src sgit, p *Plan) (Record, error) {
+	rec, err := buildRecord(src, p)
+	if err != nil {
+		return Record{}, err
+	}
+	return rec, createRecordRef(src, rec)
+}
+
 // recPlan builds the Plan a real Preflight would for the worktree at p.
 func recPlan(t *testing.T, f *fixture, p string) *Plan {
 	t.Helper()
@@ -90,15 +102,17 @@ func TestWriteRecordBuildsTheChain(t *testing.T) {
 			t.Fatal(err)
 		}
 		if want := RecordRefPrefix + rec.Commit[:16]; rec.Ref != want {
-			t.Errorf("Ref = %q, want %q", rec.Ref, want)
+			t.Fatalf("Ref = %q, want %q", rec.Ref, want)
 		}
 		if got := gitIn(t, p, "rev-parse", rec.Ref); got != rec.Commit {
-			t.Errorf("ref points at %s, want %s", got, rec.Commit)
+			t.Fatalf("ref points at %s, want %s", got, rec.Commit)
 		}
+		// rec.Commit is W; "Commit^" is W's first parent, I. I is the commit
+		// whose parent is the source's HEAD, which is asserted next.
 		i := gitIn(t, p, "rev-parse", rec.Commit+"^")
 		head := gitIn(t, p, "rev-parse", "HEAD")
 		if got := gitIn(t, p, "rev-parse", i+"^"); got != head {
-			t.Errorf("I's parent = %s, want HEAD %s", got, head)
+			t.Fatalf("I's parent = %s, want HEAD %s", got, head)
 		}
 		if got, want := gitIn(t, p, "rev-parse", i+"^{tree}"), copyIndexTree(t, p); got != want {
 			t.Errorf("I tree = %s, want index tree %s", got, want)
@@ -150,23 +164,35 @@ func TestWriteRecordUsesItsOwnIdentity(t *testing.T) {
 }
 
 // TestWriteRecordRefusesAControlCharacter proves a value that cannot be a
-// trailer writes nothing at all: no ref and no new commit reachable.
+// trailer writes nothing at all: no ref and no new commit reachable. Each
+// field that becomes a trailer gets a newline plus a forged trailer.
 func TestWriteRecordRefusesAControlCharacter(t *testing.T) {
-	f := newFixture(t)
-	p := f.Worktree("topic")
-	f.write(p, "x.txt", "x")
-	plan := recPlan(t, f, p)
-	before := gitIn(t, p, "rev-list", "--all", "--count")
-	plan.DestPath += "\nWt-Source-Path: /elsewhere"
+	const forged = "\nWt-Source-Path: /elsewhere"
+	fields := map[string]func(*Plan) *string{
+		"DestPath":    func(p *Plan) *string { return &p.DestPath },
+		"Source.Ref":  func(p *Plan) *string { return &p.Source.Ref },
+		"Branch":      func(p *Plan) *string { return &p.Branch },
+		"Source.Path": func(p *Plan) *string { return &p.Source.Path },
+	}
+	for name, field := range fields {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			p := f.Worktree("topic")
+			f.write(p, "x.txt", "x")
+			plan := recPlan(t, f, p)
+			before := gitIn(t, p, "rev-list", "--all", "--count")
+			*field(plan) += forged
 
-	if _, err := writeRecord(sgit{dir: p}, plan); err == nil {
-		t.Fatal("want an error")
-	}
-	if got := gitIn(t, p, "for-each-ref", "refs/wt"); got != "" {
-		t.Errorf("refs written: %q", got)
-	}
-	if got := gitIn(t, p, "rev-list", "--all", "--count"); got != before {
-		t.Errorf("reachable commits %s, was %s", got, before)
+			if _, err := writeRecord(sgit{dir: p}, plan); err == nil {
+				t.Fatal("want an error")
+			}
+			if got := gitIn(t, p, "for-each-ref", "refs/wt"); got != "" {
+				t.Errorf("refs written: %q", got)
+			}
+			if got := gitIn(t, p, "rev-list", "--all", "--count"); got != before {
+				t.Errorf("reachable commits %s, was %s", got, before)
+			}
+		})
 	}
 }
 
