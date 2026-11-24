@@ -1096,8 +1096,6 @@ No record at all (no server running) is silent: there is nothing to ask.
 - **Setup checks only the certificate's dates.** A loose key or a key that
   does not match the certificate shows up only as serve refusing to start
   (the line is in the LaunchAgent's log).
-- **`--location local` is accepted for a `claude-subscription` model** by
-  `wt-model model add|edit`, but such a row never works.
 - **The client uses no environment proxy.** The control and gateway calls ignore `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so the bearer token and the prompts go straight to the `[model-server]` url and never to a third party. A session machine that can reach the server only through a proxy cannot use it.
 - Config is read per request, job and scan, so `wt-model model …` and `wt-model cloud-sync`
   edits show without a restart.
