@@ -1257,3 +1257,34 @@ func TestRestoreRootRunReportTellsTheCallerAboutASignal(t *testing.T) {
 		}
 	}
 }
+
+// TestRestoreRootCmdProgressGoesToStderr runs restore-root over a root with
+// 120 untracked files: stderr carries the copy progress, stdout does not, and
+// --json carries none. Why: deleting the Progress wiring would otherwise pass
+// every test and make restore-root silent again.
+func TestRestoreRootCmdProgressGoesToStderr(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		a := restoreRootApp(t)
+		dir := cleanupRepo(t)
+		rootOnTopic(t, dir)
+		for i := 0; i < 120; i++ {
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("bulk%03d.txt", i)), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		args := []string{"--yes", "--no-fetch"}
+		if asJSON {
+			args = append(args, "--json")
+		}
+		stdout, stderr, err := runRestoreRoot(t, a, dir, "", args...)
+		if exitOf(err) != 0 {
+			t.Fatalf("exit %d\n%s\n%s", exitOf(err), stdout, stderr)
+		}
+		if strings.Contains(stdout, "copying untracked") {
+			t.Errorf("json=%v: progress on stdout: %s", asJSON, stdout)
+		}
+		if got := strings.Contains(stderr, "copying untracked files: 121 of 121"); got == asJSON {
+			t.Errorf("json=%v: stderr progress present = %v:\n%s", asJSON, got, stderr)
+		}
+	}
+}

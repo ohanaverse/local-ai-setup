@@ -631,8 +631,10 @@ these steps; a `post-checkout` hook gets the same warning as in `wt rescue`.
 nothing uncommitted skips the copy and the record; it needs an unchanged
 fingerprint and a clean status to be released. Copying untracked files is the
 slow part: measured at about 17 ms per file (2000 untracked files took about
-34 s), with no progress output while it runs; this is an observed cost, not a
-promise.
+34 s). A copy of 100 or more files prints `copying untracked files: N of M`
+lines on stderr as it goes (in `wt rescue` and `wt restore-root` alike; not
+under `--json` or `--dry-run`, and never on stdout); this is an observed cost,
+not a promise.
 
 Refused, with nothing created (JSON `code` in brackets): a detached HEAD
 (`detached_root`; run `git switch -c <name>` first); a root already on the
@@ -703,8 +705,8 @@ instant between the last claim and record checks and the reset is lost, the
 same window as `wt remove` of a dirty rescued original (a carried untracked
 file edited then is kept). After the move the record names the root as its
 source, so `wt worktrees` does not list the new worktree as preserved by it.
-`wt rescue` still truncates its messages at 200 characters; `wt restore-root`
-prints reasons, warnings and steps in full.
+`wt rescue` and `wt restore-root` both print reasons, warnings and steps in
+full (one line, control characters stripped, no length cap).
 
 When the root is on a non-default branch, the launch warnings' hint is one
 line pointing here, printed by `cmd/wt-session`'s `confirmLaunch` and the picker's
