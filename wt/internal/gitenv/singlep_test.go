@@ -97,7 +97,7 @@ func isTimeSel(fun ast.Expr, name string) bool {
 	return ok && id.Name == "time"
 }
 
-// TestEveryGoroutineWaitingPackageIsInTheSingleP list fails for a package
+// TestEveryGoroutineWaitingPackageIsInTheSingleP fails for a package
 // whose tests start a goroutine, call time.Sleep or receive from time.After
 // and that is not in SINGLE_P_PKGS (wt/Makefile), the list `make single-p`
 // and bin/go-test-sharded run on GOMAXPROCS=1. A test that waits on a

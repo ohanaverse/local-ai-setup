@@ -80,7 +80,7 @@ go-format-check:        # Fail if any Go file is not gofmt-clean
 # The goroutine-sensitive packages, for the one-P pass. This variable is the
 # list's one home: `make single-p`, test-all and bin/go-test-sharded (through
 # print-single-p-pkgs) all read it. TestEveryGoroutineWaitingPackageIsInTheSingleP
-# list in internal/gitenv enforces it: a package whose tests start a goroutine,
+# in internal/gitenv enforces it: a package whose tests start a goroutine,
 # call time.Sleep or receive from time.After must be here, or the test fails.
 SINGLE_P_PKGS := ./cmd/wt-session ./internal/tui ./internal/removal ./internal/lifecycle ./internal/sessioneditor ./internal/modeleditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./internal/modelsetup ./internal/modelmode ./cmd/wt-model ./internal/agents ./internal/claudelogin ./internal/cli ./internal/modelping ./internal/servestate
 
