@@ -455,7 +455,10 @@ terminal it refuses: `approval missing: pass --accept-smaller-window (there is
 no terminal to ask); nothing was changed`, exit 3. `--dry-run` prints the
 targets, the window change and each database row the write would plan (row
 id, target, order and the 8-character hash `h8`, never the parameters),
-changes nothing and writes no row at all when no proxy pair is set.
+changes nothing and writes no row at all when no proxy pair is set. The rows
+and the targets left without one (a stopped local model, a Claude subscription
+model while its hazard check is blocked) come from the same planner as the
+write, so the preview says what the write does.
 
 `rm` removes the aliases and, through the sync that follows, their rows; the
 models they target are not touched. It asks on the terminal (`--yes` skips;

@@ -375,7 +375,9 @@ func (h *host) runAliasSet(ctx context.Context, out, errOut io.Writer, rec serve
 // and each database row the write's sync would plan for the alias, as id,
 // target, order and h8 — never its params (a cloud target's row holds its
 // resolved key). A local target is live only while it runs (the inventory
-// probe says), so a stopped one plans no row and says so.
+// probe says), so a stopped one plans no row and says so; a Claude
+// subscription target is live only while the write's subscription check is
+// clean, and is skipped with the check's own reason otherwise.
 func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alias, oldW, newW int, had, shrinks bool) error {
 	fmt.Fprintf(out, "would set alias: %s\n", a.ID)
 	for _, t := range a.Targets {
@@ -398,11 +400,18 @@ func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alia
 		fmt.Fprintln(out, "dry run: nothing was changed")
 		return nil
 	}
-	local, _, _ := litellm.SyncInputs(cfg, h.probeInventory)
-	live := func(id string) bool {
-		return slices.ContainsFunc(local, func(m config.Model) bool { return m.ID == id })
+	// The rows come from the planner the real write uses (PlanSync), so the
+	// liveness and the Claude subscription check are the write's own: a local
+	// target is live while it runs, a subscription target while its check is
+	// clean (#703).
+	desired, o, _ := litellm.SyncInputs(cfg, h.probeInventory)
+	o.Admin = admin
+	rows, skips, err := litellm.PreviewAlias(cfg, desired, o, a)
+	if err != nil {
+		fmt.Fprintf(out, "cannot preview the rows: %s\n", oneLineText(err.Error()))
+		fmt.Fprintln(out, "dry run: nothing was changed")
+		return nil
 	}
-	rows, skips := litellm.DBModelsFromAlias(cfg, a, live, admin.Key)
 	name := strings.TrimPrefix(a.ID, config.AliasIDPrefix)
 	for _, m := range rows {
 		target, _ := m.Info[litellm.AliasTargetKey].(string)

@@ -537,3 +537,35 @@ func (d *dbRoutes) hasAliasRow(id string) bool {
 		return ok && a == id && IsAliasDB(m)
 	})
 }
+
+// PreviewAlias is the alias half of `wt-model alias set --dry-run`: the rows
+// alias a would have after the write, and the targets that get none with the
+// write's own reason. The liveness and the Claude subscription check come from
+// PlanSync, the planner the write itself uses, so a preview cannot disagree
+// with it (#703: a local-only liveness said "not routed" for a subscription
+// target the write routed). cfg is the registry as the write would leave it
+// and o the options the write builds (SyncInputs, with Admin set); a nil
+// Admin has no row plan, and the caller says so before it asks.
+func PreviewAlias(cfg *config.Config, local []config.Model, o Options, a config.Alias) ([]DBModel, []AliasSkip, error) {
+	if o.Admin == nil {
+		return nil, nil, errors.New("no LiteLLM proxy pair: no rows would be written")
+	}
+	plan, err := PlanSync(cfg, local, o)
+	if err != nil {
+		return nil, nil, err
+	}
+	i := slices.IndexFunc(plan.Aliases, func(p AliasPlan) bool { return p.ID == a.ID })
+	if i < 0 {
+		return nil, nil, fmt.Errorf("the sync plan has no entry for %s", a.ID)
+	}
+	routed := map[string]bool{}
+	for _, l := range plan.Aliases[i].Live {
+		routed[l.Target] = true
+	}
+	rows, _ := dbModelsFromAlias(cfg, a, func(id string) bool { return routed[id] }, o.Admin.Key, aliasSubClean)
+	rows = slices.DeleteFunc(rows, func(m DBModel) bool {
+		target, _ := m.Info[AliasTargetKey].(string)
+		return !routed[target]
+	})
+	return rows, plan.Aliases[i].Skipped, nil
+}
