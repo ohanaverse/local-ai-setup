@@ -468,7 +468,7 @@ func (m model) commitAsk(mdl config.Model, bind func(model) (model, tea.Cmd), dr
 	yes := func(mm model) (model, tea.Cmd) {
 		return mm.afterGate(profile, &t, info)
 	}
-	return m.seedAsk(newAskStateFor(askGate, m.theme, m.width, m.height, "launch here?", body, back, yes, decline))
+	return m.seedAsk(newAskStateFor(m.theme, m.width, m.height, "launch here?", body, back, yes, decline))
 }
 
 // afterGate continues a launch whose gate popup was answered yes: the gate is
@@ -494,7 +494,9 @@ func (m model) afterGate(next func(model) (model, tea.Cmd), t *launchwarn.Target
 // profileCarry nil, so the released-phase applier resolves for itself (its
 // legacy path reports a profiles.toml error once and still starts the agent;
 // with no terminal it defaults to yes, as today). The popup's yes carries the
-// answer to the applier; its no is the launch's decline, like the gate's.
+// answer to the applier; its skip (n, and the middle item) carries (rp,
+// false), the raw prompt's no: this launch runs unprofiled; its no is the
+// launch's decline, like the gate's.
 func (m model) profileStep(mdl config.Model, back phase, final, decline func(model) (model, tea.Cmd)) (model, tea.Cmd) {
 	if profileResolver == nil || mdl.ID == "" || !stdinTTY() {
 		return final(m)
@@ -508,6 +510,13 @@ func (m model) profileStep(mdl config.Model, back phase, final, decline func(mod
 		mm.profileCarry = &profileCarry{rp: &rp, apply: true}
 		return final(mm)
 	}
+	// skip carries the profile answered no. rp non-nil is what stops the
+	// released-phase applier asking on /dev/tty: it applies nothing (apply
+	// false) and never reaches confirmProfile.
+	skip := func(mm model) (model, tea.Cmd) {
+		mm.profileCarry = &profileCarry{rp: &rp, apply: false}
+		return final(mm)
+	}
 	m.committed = true
-	return m.seedAsk(newAskStateFor(askProfile, m.theme, m.width, m.height, "apply local-model profile?", body, back, yes, decline))
+	return m.seedAsk(newAskProfileState(m.theme, m.width, m.height, "apply local-model profile?", body, back, yes, skip, decline))
 }
