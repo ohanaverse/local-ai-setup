@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Tests for bin/go-test-sharded, on a small fixture Go module in a scratch directory.
+
+Each case below pins a way the runner failed while it was being built, or a
+promise it makes: a failing test is reported by name and exits 1, a shard that
+did not report a test fails the run, stdin is /dev/null, no regexp reaches a
+test as a positional argument, and an ignored SIGINT in the parent does not
+reach the tests. Needs `go` on PATH; takes about half a minute.
+"""
+
+import importlib.machinery
+import importlib.util
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCRIPT = os.path.join(HERE, "go-test-sharded")
+
+GO_MOD = "module example.com/fx\n\ngo 1.21\n"
+
+A_TEST = '''package a
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+)
+
+func TestOne(t *testing.T)   {}
+func TestTwo(t *testing.T)   {}
+func TestThree(t *testing.T) {}
+func TestFour(t *testing.T)  {}
+
+// A test that reads stdin hangs unless stdin is /dev/null, as under go test.
+func TestReadsStdin(t *testing.T) {
+	if _, err := io.ReadAll(os.Stdin); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Command tests that call cobra's SetArgs(nil) read os.Args[1:]: a regexp in
+// its own token would become a positional argument.
+func TestNoPositionalArgs(t *testing.T) {
+	for _, a := range os.Args[1:] {
+		if !strings.HasPrefix(a, "-") {
+			t.Fatalf("positional argument %q", a)
+		}
+	}
+}
+
+// Needs SIGINT not ignored: an ignored signal is inherited from the parent.
+func TestSignalDeathIsNamed(t *testing.T) {
+	err := exec.Command("sh", "-c", "kill -INT $$").Run()
+	if err == nil || !strings.Contains(err.Error(), "interrupt") {
+		t.Fatalf("err = %v, want a signal death naming the interrupt", err)
+	}
+}
+
+func Example() {
+	fmt.Println("hi")
+	// Output: hi
+}
+'''
+
+B_TEST = '''package b
+
+import "testing"
+
+func TestB(t *testing.T) {}
+'''
+
+BROKEN_TEST = '''package a
+
+import "testing"
+
+func TestBroken(t *testing.T) { t.Fatal("deliberate failure") }
+'''
+
+
+def load_runner():
+    loader = importlib.machinery.SourceFileLoader("go_test_sharded", SCRIPT)
+    spec = importlib.util.spec_from_loader("go_test_sharded", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+@unittest.skipUnless(shutil.which("go"), "go is not on PATH")
+class RunnerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="test-go-test-sharded-")
+        cls.mod = os.path.join(cls.tmp, "fx")
+        write(os.path.join(cls.mod, "go.mod"), GO_MOD)
+        write(os.path.join(cls.mod, "a", "a_test.go"), A_TEST)
+        write(os.path.join(cls.mod, "b", "b_test.go"), B_TEST)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def run_runner(self, *args, ignore_sigint=False, stdin=subprocess.DEVNULL, mod=None, timeout=240):
+        def pre():
+            if ignore_sigint:
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+
+        env = dict(os.environ)
+        env["GOTOOLCHAIN"] = "local"
+        env["GOFLAGS"] = "-mod=mod"
+        return subprocess.run(
+            [sys.executable, "-I", SCRIPT, "--dir", mod or self.mod, "--heavy", "a"] + list(args),
+            stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True, timeout=timeout, env=env, preexec_fn=pre,
+        )
+
+    def test_passes_and_reports_every_sharded_test(self):
+        r = self.run_runner("--shards", "3", "--no-single-p")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("go-test-sharded: ok", r.stdout)
+        # TestOne..TestFour, TestReadsStdin, TestNoPositionalArgs, TestSignalDeathIsNamed, Example
+        self.assertIn("8 sharded tests", r.stdout)
+
+    def test_the_one_p_pass_runs_too(self):
+        r = self.run_runner("--shards", "2", "--single-p", "a,b")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("go-test-sharded: ok", r.stdout)
+        self.assertIn("one-P a", r.stdout)
+
+    def test_a_failing_test_is_named_and_exits_1(self):
+        bad = os.path.join(self.tmp, "bad")
+        shutil.copytree(self.mod, bad)
+        write(os.path.join(bad, "a", "broken_test.go"), BROKEN_TEST)
+        r = self.run_runner("--shards", "3", "--no-single-p", mod=bad)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("TestBroken", r.stdout)
+        self.assertIn("FAILED", r.stdout)
+
+    def test_an_ignored_sigint_in_the_parent_does_not_reach_the_tests(self):
+        r = self.run_runner("--shards", "3", "--no-single-p", ignore_sigint=True)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_an_open_stdin_does_not_hang_the_tests(self):
+        p = subprocess.Popen(["sleep", "300"], stdout=subprocess.PIPE)
+        try:
+            r = self.run_runner("--shards", "3", "--no-single-p", stdin=p.stdout, timeout=90)
+        finally:
+            p.kill()
+            p.wait()
+            p.stdout.close()
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_bad_arguments_exit_2(self):
+        self.assertEqual(self.run_runner("--shards", "0").returncode, 2)
+        self.assertEqual(self.run_runner("--single-p", "nope").returncode, 2)
+
+
+class UnitTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.m = load_runner()
+
+    def test_partition_keeps_every_name_exactly_once(self):
+        names = ["T%d" % i for i in range(23)]
+        for k in (1, 2, 6, 23, 40):
+            shards = self.m.partition(names, k)
+            self.assertEqual(sorted(n for s in shards for n in s), sorted(names))
+            self.assertTrue(all(shards))
+            self.assertLessEqual(len(shards), min(k, len(names)))
+
+    def test_regexp_matches_whole_top_level_names_only(self):
+        import re
+        rx = re.compile(self.m.shard_regexp(["TestA", "TestAB"]))
+        self.assertTrue(rx.match("TestA"))
+        self.assertTrue(rx.match("TestAB"))
+        self.assertFalse(rx.match("TestABC"))
+        self.assertFalse(rx.match("XTestA"))
+
+    def job(self, expect, log_text, rc=0):
+        d = tempfile.mkdtemp(prefix="job-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        log = os.path.join(d, "log")
+        write(log, log_text)
+        j = self.m.Job("x", ["true"], d, {}, log, expect=expect)
+        j.rc, j.start, j.end = rc, 0.0, 1.0
+        j.check()
+        return j
+
+    def test_a_shard_that_reports_every_test_passes(self):
+        j = self.job(["TestA", "TestB"], "--- PASS: TestA (0.00s)\n    --- PASS: TestA/sub (0.00s)\n--- SKIP: TestB (0.00s)\nPASS\n")
+        self.assertTrue(j.ok, j.problem)
+
+    def test_a_result_after_unterminated_output_still_counts(self):
+        # A test that prints a prompt without a newline puts "--- PASS:" after it.
+        j = self.job(["TestA"], "=== RUN   TestA\nwt: continue? [Y/n]: --- PASS: TestA (0.36s)\nPASS\n")
+        self.assertTrue(j.ok, j.problem)
+
+    def test_a_subtest_result_does_not_stand_in_for_its_parent(self):
+        j = self.job(["TestA"], "    --- PASS: TestA/sub (0.00s)\nPASS\n")
+        self.assertFalse(j.ok)
+
+    def test_a_shard_that_ran_nothing_fails_despite_exit_0(self):
+        # `-test.run` with a regexp that matches nothing prints "no tests to run" and exits 0.
+        j = self.job(["TestA", "TestB"], "testing: warning: no tests to run\nPASS\n")
+        self.assertFalse(j.ok)
+        self.assertIn("0 of 2", j.problem)
+
+    def test_a_missing_test_is_named(self):
+        j = self.job(["TestA", "TestB"], "--- PASS: TestA (0.00s)\nPASS\n")
+        self.assertFalse(j.ok)
+        self.assertIn("TestB", j.problem)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)

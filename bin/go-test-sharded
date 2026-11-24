@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""Run wt's Go tests the way `make test-all` does, in a fraction of the wall time.
+
+`make test-all` runs `go test ./...` and then `make single-p` (a GOMAXPROCS=1
+pass over the goroutine-sensitive packages), one after the other. A handful of
+packages hold almost all the time, and each of their tests runs serially, one
+`git` process after another, on about one core of an 18-core machine. This
+script keeps every test and both passes, and changes only how the work is laid
+out:
+
+  * each HEAVY package's test binary is built once, its test list is split into
+    shards, and the shards run as separate processes, all at once;
+  * every other package runs as one plain `go test` per pass;
+  * the multi-P pass and the one-P pass run at the same time.
+
+Nothing is skipped silently: a shard that did not report a result for each
+test it was given fails the run (a `-test.run` regexp that matches nothing
+exits 0 and would otherwise read as a pass). `bin/pre-pr --serial` and
+`make test-all` still run the plain commands.
+
+Why the details below matter (each was a real failure while building this):
+
+  * stdin is /dev/null, as `go test` gives it: a test that reads the terminal
+    otherwise hangs the whole run.
+  * `-test.run` goes in one `-test.run=REGEXP` token, like `go test`'s own
+    flags. Several command tests call cobra's `SetArgs(nil)`, which then reads
+    `os.Args[1:]`; a regexp in its own token became a positional "model id".
+  * SIGINT and SIGQUIT are reset to their defaults in every child. A parent
+    started with `&` from a non-interactive shell ignores them, an ignored
+    signal is inherited, and `kill -INT $$` in a test's git shim then does
+    nothing.
+
+Add a package to HEAVY when its tests alone take more than about a minute.
+
+Usage (run from anywhere; --dir defaults to the repository's wt/):
+  go-test-sharded [--dir DIR] [--shards N] [--heavy PKG,PKG] [--single-p PKG,PKG]
+                  [--no-single-p] [--keep-logs]
+
+Exit 0 all tests passed, 1 a test or shard failed, 2 could not run.
+"""
+
+import argparse
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+HEAVY = [
+    "internal/removal",
+    "internal/rescue",
+    "internal/cleanup",
+    "cmd/wt-session",
+    "internal/tui",
+]
+DEFAULT_SHARDS = 6
+MULTI_TIMEOUT = "30m"  # what `make test-all` gives `go test ./...`
+SINGLE_TIMEOUT = "20m"  # what `make single-p` gives its pass
+
+# A top-level result line. Not anchored to the start of a line: a test that
+# prints a prompt without a newline puts its "--- PASS:" after that text. A
+# subtest's name holds a "/", so it never matches.
+RESULT_RE = re.compile(r"--- (PASS|FAIL|SKIP): ([^\s/]+) \(\d")
+
+
+def die(msg, code=2):
+    print("go-test-sharded: " + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def _child_signals():
+    # The parent may have been started with `&` from a non-interactive shell,
+    # which leaves SIGINT and SIGQUIT ignored, and ignored signals are inherited.
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+
+
+def run_capture(argv, cwd):
+    r = subprocess.run(
+        argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, universal_newlines=True, preexec_fn=_child_signals,
+    )
+    return r.returncode, r.stdout, r.stderr
+
+
+def normalize(pkg):
+    pkg = pkg.strip()
+    if pkg.startswith("./"):
+        pkg = pkg[2:]
+    return pkg or "."
+
+
+def list_packages(wt):
+    rc, out, err = run_capture(["go", "list", "-f", "{{.Dir}}", "./..."], wt)
+    if rc != 0:
+        die("go list ./... failed:\n" + err.strip())
+    # `go list` prints resolved paths; wt may sit behind a symlink (/var -> /private/var).
+    base = os.path.realpath(wt)
+    return [os.path.relpath(os.path.realpath(d), base) for d in out.split()]
+
+
+def single_p_from_make(wt):
+    rc, out, err = run_capture(["make", "-s", "print-single-p-pkgs"], wt)
+    if rc != 0 or not out.strip():
+        die("could not read the one-P package list from `make print-single-p-pkgs` in %s:\n%s" % (wt, err.strip()))
+    return [normalize(p) for p in out.split()]
+
+
+def partition(names, k):
+    """Split names into at most k non-empty shards that together hold every name once."""
+    k = max(1, min(k, len(names)))
+    shards = [names[i::k] for i in range(k)]
+    shards = [s for s in shards if s]
+    flat = sorted(n for s in shards for n in s)
+    assert flat == sorted(names), "sharding lost or duplicated a test"
+    return shards
+
+
+def shard_regexp(names):
+    return "^(" + "|".join(re.escape(n) for n in names) + ")$"
+
+
+class Job:
+    def __init__(self, label, argv, cwd, env, log, expect=None, kind="shard"):
+        self.label, self.argv, self.cwd, self.env, self.log = label, argv, cwd, env, log
+        self.expect = expect  # names a shard must report on, or None for a plain `go test`
+        self.kind = kind
+        self.proc = None
+        self.start = self.end = None
+        self.rc = None
+        self.problem = None  # why a job with exit 0 still failed (parity)
+
+    def launch(self):
+        self.fh = open(self.log, "w")
+        self.start = time.time()
+        self.proc = subprocess.Popen(
+            self.argv, cwd=self.cwd, env=self.env, stdin=subprocess.DEVNULL,
+            stdout=self.fh, stderr=subprocess.STDOUT, preexec_fn=_child_signals,
+        )
+
+    def poll(self):
+        if self.rc is not None:
+            return True
+        rc = self.proc.poll()
+        if rc is None:
+            return False
+        self.rc, self.end = rc, time.time()
+        self.fh.close()
+        self.check()
+        return True
+
+    def text(self):
+        with open(self.log, errors="replace") as f:
+            return f.read()
+
+    def check(self):
+        if self.rc != 0 or self.expect is None:
+            return
+        got = {}
+        for status, name in RESULT_RE.findall(self.text()):
+            got[name] = status
+        missing = sorted(set(self.expect) - set(got))
+        extra = sorted(set(got) - set(self.expect))
+        if missing or extra:
+            self.problem = "reported %d of %d tests (missing: %s%s)" % (
+                len(set(got) & set(self.expect)), len(self.expect),
+                ", ".join(missing[:5]) or "none", " ..." if len(missing) > 5 else "")
+            if extra:
+                self.problem += "; ran unexpected: " + ", ".join(extra[:5])
+
+    @property
+    def ok(self):
+        return self.rc == 0 and self.problem is None
+
+    def seconds(self):
+        return (self.end or time.time()) - self.start
+
+
+def build_shard_jobs(wt, tmp, pkgs, shards, extra_env, timeout, tag):
+    """Build each package's test binary once, return (jobs, sharded_pkgs)."""
+    jobs, sharded = [], []
+    for pkg in pkgs:
+        exe = os.path.join(tmp, pkg.replace("/", "_") + ".test")
+        if not os.path.exists(exe):
+            rc, out, err = run_capture(["go", "test", "-c", "-o", exe, "./" + pkg], wt)
+            if rc != 0:
+                die("go test -c %s failed:\n%s%s" % (pkg, out, err))
+            if not os.path.exists(exe):
+                continue  # no test files: nothing to shard, the plain go test run covers it
+        pkgdir = os.path.join(wt, pkg)
+        rc, out, err = run_capture([exe, "-test.list", "."], pkgdir)
+        if rc != 0:
+            die("%s -test.list failed:\n%s" % (pkg, err.strip()))
+        names = [n for n in out.split() if not n.startswith("Benchmark")]
+        if not names:
+            continue
+        sharded.append(pkg)
+        env = dict(os.environ)
+        env.update(extra_env)
+        parts = partition(names, shards)
+        for i, shard in enumerate(parts, 1):
+            label = "%s %s %d/%d" % (tag, pkg, i, len(parts))
+            argv = [exe, "-test.count=1", "-test.timeout=" + timeout, "-test.paniconexit0",
+                    "-test.v=true", "-test.run=" + shard_regexp(shard)]
+            log = os.path.join(tmp, "%s-%s-%d.log" % (tag, pkg.replace("/", "_"), i))
+            jobs.append(Job(label, argv, pkgdir, env, log, expect=shard))
+    return jobs, sharded
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ap.add_argument("--dir", default=os.path.join(root, "wt"), help="the Go module directory (default: wt/)")
+    ap.add_argument("--shards", type=int, default=DEFAULT_SHARDS, help="shards per heavy package (default %d)" % DEFAULT_SHARDS)
+    ap.add_argument("--heavy", default=",".join(HEAVY), help="comma-separated packages to shard")
+    ap.add_argument("--single-p", default=None, help="comma-separated one-P packages (default: `make print-single-p-pkgs` in --dir)")
+    ap.add_argument("--no-single-p", action="store_true", help="skip the one-P pass")
+    ap.add_argument("--keep-logs", action="store_true", help="keep the per-job logs even when everything passes")
+    a = ap.parse_args()
+    if a.shards < 1:
+        die("--shards must be at least 1")
+    wt = os.path.abspath(a.dir)
+    if not os.path.isfile(os.path.join(wt, "go.mod")):
+        die("%s has no go.mod" % wt)
+
+    all_pkgs = [normalize(p) for p in list_packages(wt)]
+    heavy = [normalize(p) for p in a.heavy.split(",") if p.strip()]
+    unknown = [p for p in heavy if p not in all_pkgs]
+    if unknown:
+        print("go-test-sharded: note: heavy package not in the module, ignored: " + ", ".join(unknown))
+        heavy = [p for p in heavy if p in all_pkgs]
+
+    if a.no_single_p:
+        single = []
+    elif a.single_p is not None:
+        single = [normalize(p) for p in a.single_p.split(",") if p.strip()]
+    else:
+        single = single_p_from_make(wt)
+    bad = [p for p in single if p not in all_pkgs]
+    if bad:
+        die("one-P package(s) not in the module: " + ", ".join(bad))
+
+    tmp = tempfile.mkdtemp(prefix="go-test-sharded-")
+    t0 = time.time()
+    jobs = []
+    try:
+        multi_jobs, sharded_multi = build_shard_jobs(wt, tmp, heavy, a.shards, {}, MULTI_TIMEOUT, "multi")
+        jobs += multi_jobs
+        rest_multi = ["./" + p for p in all_pkgs if p not in sharded_multi]
+        env = dict(os.environ)
+        if rest_multi:
+            jobs.append(Job("multi rest (%d packages)" % len(rest_multi),
+                            ["go", "test", "-timeout", MULTI_TIMEOUT, "-count=1"] + rest_multi,
+                            wt, env, os.path.join(tmp, "multi-rest.log"), kind="go test"))
+        if single:
+            one_p = {"GOMAXPROCS": "1"}
+            single_heavy = [p for p in sharded_multi if p in single]
+            sj, sharded_single = build_shard_jobs(wt, tmp, single_heavy, a.shards, one_p, SINGLE_TIMEOUT, "one-P")
+            jobs += sj
+            rest_single = ["./" + p for p in single if p not in sharded_single]
+            if rest_single:
+                env1 = dict(os.environ)
+                env1.update(one_p)
+                jobs.append(Job("one-P rest (%d packages)" % len(rest_single),
+                                ["go", "test", "-timeout", SINGLE_TIMEOUT, "-p", "3", "-count=1"] + rest_single,
+                                wt, env1, os.path.join(tmp, "one-p-rest.log"), kind="go test"))
+        print("go-test-sharded: build and list took %.0fs; starting %d jobs (%d packages sharded x %d, %d one-P)" % (
+            time.time() - t0, len(jobs), len(sharded_multi), a.shards, len(single)), flush=True)
+
+        t1 = time.time()
+        pending = list(jobs)
+        try:
+            for j in jobs:
+                j.launch()
+            while pending:
+                pending = [j for j in pending if not j.poll()]
+                if pending:
+                    time.sleep(0.25)
+        except BaseException:
+            for j in jobs:
+                if j.proc is not None and j.proc.poll() is None:
+                    j.proc.terminate()
+            raise
+        wall = time.time() - t1
+
+        failed = [j for j in jobs if not j.ok]
+        shard_tests = sum(len(j.expect) for j in jobs if j.expect is not None)
+        for j in sorted(jobs, key=lambda j: -j.seconds())[:8]:
+            print("  %-34s %6.1fs  %s" % (j.label, j.seconds(), "ok" if j.ok else "FAILED"))
+        for j in failed:
+            print("\nFAILED: %s (exit %s)%s" % (j.label, j.rc, (" - " + j.problem) if j.problem else ""))
+            lines = [l for l in j.text().splitlines()
+                     if l.startswith(("--- FAIL", "    --- FAIL", "panic:", "FAIL", "# ")) or re.search(r"_test\.go:\d+", l)]
+            print("\n".join(lines[-40:]) or "\n".join(j.text().splitlines()[-30:]))
+            print("full log: " + j.log)
+        if failed:
+            print("\ngo-test-sharded: FAILED - %d of %d jobs failed after %.0fs; logs kept in %s" % (len(failed), len(jobs), wall, tmp))
+            return 1
+        print("go-test-sharded: ok - %d jobs, %d sharded tests (each reported), wall %.0fs" % (len(jobs), shard_tests, wall))
+        if a.keep_logs:
+            print("go-test-sharded: logs kept in " + tmp)
+        else:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return 0
+    except KeyboardInterrupt:
+        print("go-test-sharded: interrupted; logs kept in " + tmp)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

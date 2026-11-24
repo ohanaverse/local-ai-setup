@@ -1,4 +1,4 @@
-.PHONY: help build install uninstall check lint format format-check go-format-check single-p test test-agents clean
+.PHONY: help build install uninstall check lint format format-check go-format-check single-p print-single-p-pkgs test test-agents clean
 
 help:                   # Show available targets
 	@echo "Available targets:"
@@ -10,6 +10,7 @@ help:                   # Show available targets
 	@echo "  format-check - Check shfmt formatting on bin/*-wt and scripts/agents-smoke.sh"
 	@echo "  go-format-check - Check gofmt formatting of the Go tree"
 	@echo "  single-p      - One-P pass over the goroutine-sensitive packages (wt-ci's single-p job and test-all run this)"
+	@echo "  print-single-p-pkgs - Print the one-P package list (bin/go-test-sharded reads it)"
 	@echo "  check     - Run lint + format-check + go-format-check"
 	@echo "  test      - Run smoke tests"
 	@echo "  test-agents - Live agent smoke tests, gateway mode only (needs WT_MODEL_URL and WT_MODEL_TOKEN_FILE)"
@@ -76,6 +77,8 @@ go-format-check:        # Fail if any Go file is not gofmt-clean
 		exit 1; \
 	fi
 
+SINGLE_P_PKGS := ./cmd/wt-session ./internal/tui ./internal/removal ./internal/lifecycle ./internal/sessioneditor ./internal/modeleditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./internal/modelsetup ./internal/modelmode ./cmd/wt-model
+
 # The goroutine-sensitive packages, for the one-P pass wt-ci's single-p job
 # runs. This target is the list's one home — CI's single-p job, `make
 # single-p` and test-all all run it: add a package here whenever a test in
@@ -86,7 +89,10 @@ go-format-check:        # Fail if any Go file is not gofmt-clean
 # without it wt-ci's single-p job replays the multi-P run from cache and
 # guards nothing.
 single-p:               # Run the goroutine-sensitive packages on one P
-	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 ./cmd/wt-session ./internal/tui ./internal/removal ./internal/lifecycle ./internal/sessioneditor ./internal/modeleditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./internal/modelsetup ./internal/modelmode ./cmd/wt-model
+	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 $(SINGLE_P_PKGS)
+
+print-single-p-pkgs:    # Print the one-P package list (read by bin/go-test-sharded)
+	@echo $(SINGLE_P_PKGS)
 
 test-agents:            # Run live agent smoke tests (gateway mode)
 	@command -v wt >/dev/null 2>&1 || { echo "wt not on PATH; ensure ~/.local/bin is in PATH or run: make install"; exit 1; }
