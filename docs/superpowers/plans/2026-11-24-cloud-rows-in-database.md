@@ -1,6 +1,6 @@
 # Cloud rows as LiteLLM database rows Implementation Plan
 
-> **Status: a proposal for the owner to settle, not yet a plan to execute.** It lists what is known from the code and the earlier phases, what is not known and must be measured on the live proxy before any code is written (Task 0), and the decisions that change the design. Tasks 1 onward are written to be executed once Task 0 and the decisions are in.
+> **Status: decisions taken 2026-11-24 (see *Decisions taken* below); Tasks 1 to 7 implemented in one PR, Task 8's live check owed.** It lists what is known from the code and the earlier phases, what was measured on the live proxy (Task 0) and the decisions that changed the design.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -49,6 +49,21 @@ Each has a recommendation; none is made.
 3. **The fallback when the database half cannot run.** *Recommend a per-write fallback to today's file path with one warning* (Global Constraints), not a mode switch: a proxy with `store_model_in_db` off, or one that is briefly down, must still get its cloud models routed.
 4. **The migration's trigger.** *Recommend the same first-sync migration as phase 1* (database wins during a sync, file wins outside one), not a separate command: an owner who upgrades wt should find the rows moved after the next `wt-model litellm sync` or serve start, with the restart that removes them from the file counted once.
 5. **Whether `wt-model litellm list` keeps showing cloud rows as `STORE file`.** *Recommend it shows `db` for a migrated row and `file` for a hand-written one,* so the column keeps answering "what would a restart touch".
+
+## Decisions taken
+
+The owner took every recommendation on 2026-11-24:
+
+1. **A database row's `api_key` holds the resolved key**, not an `os.environ/` reference. The spike showed a reference resolves in a database row but needs each provider key in the proxy's own environment and a restart per change; the resolved key keeps today's semantics, is stored encrypted by LiteLLM (`LITELLM_SALT_KEY`) and enters the stamp only as an HMAC.
+2. **All wt-written cloud rows move**, the keyless `anthropic/` subscription rows included.
+3. **Per-write fallback to the file path**, with one warning naming the reason, when the database half cannot carry a row: `store_model_in_db` off, no proxy pair, an add that is refused or not listed afterwards.
+   - *Refinement made while building it:* a **listing that fails** is not that case. A migrated cloud row has no file row, so the fallback would write every cloud row to `config.yaml` beside database rows that may exist, with a restart, and the next healthy sync would move them back with another. `holdCloud` therefore writes nothing for a cloud add whose store is unknown and says `not routed until the database answers: <ids>`; the sync after the proxy answers adds what is missing. Local rows keep the file fallback (a started model must route).
+4. **The migration runs on the first sync**, as in phase 1: the database wins during a sync, the file outside one; add the row, confirm by listing, remove the file row, one restart.
+5. **`STORE` is `db` for a migrated row and `file` for a hand-written one.** No code was needed: `litellm list` already labelled every `wt:` database row `db`.
+
+The salt-key refusal the spike asked for (question 3b) is in: a failed add with no wt row listed says `LITELLM_SALT_KEY` is the likely cause (`saltHint`), and `dropTwins` deletes only what a fresh listing shows.
+
+Found while building it: the launch-time ensure (`AddMissingOnly`) would write a **file twin** of a migrated cloud row (it checks only `config.yaml`) and restart the proxy for it, so it asks the database first (`dbRoutes.holds`); and a batch whose one add fails left the database copy of a sibling add that fell back to the file (`dropMigratingTwins`, now `dropTwins`, deletes every such copy).
 
 ## Review Focus
 

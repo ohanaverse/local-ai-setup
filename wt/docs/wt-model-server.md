@@ -37,7 +37,7 @@ Bare `wt-model` prints its help and exits 0.
 | `wt-model model` | Bare: the Models tab (a TUI) over this host's `registry.toml` | [below](#wt-model-model), [wt-model.md](wt-model.md) |
 | `wt-model model init\|list\|add\|edit\|rm` | The registry commands, no terminal needed | [wt-model.md](wt-model.md) |
 | `wt-model cloud-sync` | Refresh OpenRouter prices and mirror the ollama cloud catalog | [wt-cloud-sync.md](wt-cloud-sync.md) |
-| `wt-model litellm sync\|list\|providers\|status\|set\|restart` | The LiteLLM routes (cloud routes in `config.yaml`, local routes in LiteLLM's database when the pair is set), the proxy pair, the proxy restart | [wt-agents/README.md](wt-agents/README.md#litellm-routes-are-wt-owned), [Proxy url and key](#proxy-url-and-key) |
+| `wt-model litellm sync\|list\|providers\|status\|set\|restart` | The LiteLLM routes (routes in LiteLLM's database when the pair is set and `store_model_in_db` is on, else in `config.yaml`), the proxy pair, the proxy restart | [wt-agents/README.md](wt-agents/README.md#litellm-routes-are-wt-owned), [Proxy url and key](#proxy-url-and-key) |
 | `wt-model served <provider>` | The model ids a local provider's server is serving now | [wt-start-stop.md](wt-start-stop.md#wt-model-served-provider) |
 | `wt-model warm <provider> <model>` | Load a model into a running omlx server with one short request | [wt-start-stop.md](wt-start-stop.md#wt-model-warm-provider-model) |
 | `wt-model stop <provider>\|--all` | Stop every running model of a provider, or every local model, asking first about a model client sessions use | [wt-start-stop.md](wt-start-stop.md) |
@@ -1026,7 +1026,7 @@ sync that fails is one `wt-model: warning: LiteLLM routes not synced at
 start: …` line. None of them stops the server, and no `config.yaml` at all
 (LiteLLM not set up on this host) is silent. The sync never restarts the proxy
 itself: when it changed `config.yaml` (the first `store_model_in_db`, the
-move of local rows to the database, a cloud route) it hands the one restart it
+move of wt's rows to the database, a route the database could not carry) it hands the one restart it
 owes to the same queue the start and stop jobs' restarts use, so two restarts
 never run at once.
 

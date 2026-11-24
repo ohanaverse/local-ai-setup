@@ -245,9 +245,11 @@ wt-model model add claude-subscription claude-haiku-5-5 --family claude --contex
   (the route's zero cost is not honoured by LiteLLM 1.109.1; seen on a live
   check), and Claude Code shows list price too; neither is what your plan
   charges.
-- The route is a keyless `anthropic/<id>` row in `config.yaml` (a cloud
-  row, so adding or removing one restarts the proxy), routed only while the
-  proxy shows none of the hazards the host checks. An alias over one is a
+- The route is a keyless `anthropic/<id>` row, a LiteLLM database row
+  (`STORE db`; in `config.yaml` only where database routes are off), routed
+  only while the proxy shows none of the hazards the host checks: a seen
+  hazard deletes the row, a check that could not look keeps it and adds
+  none. Adding or removing one restarts nothing. An alias over one is a
   database row, like any alias.
 - The rows are offered only to `claude`, and an alias with a subscription
   target is claude-only. The subscription is the user's own login only.

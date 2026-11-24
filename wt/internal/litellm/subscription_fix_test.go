@@ -206,8 +206,8 @@ func TestUnreadableProxyKeepsExistingSubscriptionRows(t *testing.T) {
 	if _, err := Sync(reg, nil, o); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(routedIDs(t, p), subID) || len(fake.aliasIDs()) != 1 {
-		t.Fatalf("clean sync: rows %v alias rows %v", routedIDs(t, p), fake.aliasIDs())
+	if !slices.Contains(fake.ids(), DBID(subID)) || len(fake.aliasIDs()) != 1 {
+		t.Fatalf("clean sync: rows %v alias rows %v", fake.ids(), fake.aliasIDs())
 	}
 	before, bounces := readFile(t, p), *restarts
 	fake.mu.Lock()

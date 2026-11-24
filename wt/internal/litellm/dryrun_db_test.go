@@ -50,7 +50,7 @@ func TestPlanSyncSeesDatabaseRoutes(t *testing.T) {
 }
 
 // TestPlanSyncPreviewsTheMigration pins the dry run's preview of the one-time
-// move (#598): wt's marked local rows are listed as "would move to the
+// move (#598, #694): wt's marked rows, the cloud row too, are listed as "would move to the
 // database", not as routes to add, and the plan says the file would change
 // (one proxy restart). Nothing is written anywhere.
 func TestPlanSyncPreviewsTheMigration(t *testing.T) {
@@ -61,7 +61,7 @@ func TestPlanSyncPreviewsTheMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"mtplx/Youssofal--Q", "ollama/gemma:9b"}; !slices.Equal(plan.Move, want) {
+	if want := []string{"mtplx/Youssofal--Q", "ollama/gemma:9b", "openrouter/x/y"}; !slices.Equal(plan.Move, want) {
 		t.Fatalf("plan.Move = %v, want %v", plan.Move, want)
 	}
 	if len(plan.Add) != 0 || !plan.Restart || plan.EnableDB {
@@ -126,5 +126,26 @@ func TestPlanSyncSaysWhenTheDatabaseCannotBeListed(t *testing.T) {
 	}
 	if n != 1 || apiWrites(fake) != 0 {
 		t.Fatalf("warnings %q (writes %d), want one unavailable line and no write", plan.Warnings, apiWrites(fake))
+	}
+}
+
+// TestPlanSyncHoldsCloudAddsWhenTheDatabaseCannotBeListed pins that a dry run
+// whose listing fails does not plan a file write for a cloud add: the real
+// sync holds it (holdCloud), because the database may already serve it.
+func TestPlanSyncHoldsCloudAddsWhenTheDatabaseCannotBeListed(t *testing.T) {
+	o, _, _, fake := dbOpts(t, "model_list: []\n"+settledSettings)
+	fake.failList = true
+	cfg := testConfig()
+	plan, err := PlanSync(cfg, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(plan.Add, "openrouter/x/y") {
+		t.Fatalf("plan adds %v, want the cloud row held", plan.Add)
+	}
+	if !slices.ContainsFunc(plan.Warnings, func(w string) bool {
+		return strings.Contains(w, "not routed until the database answers: openrouter/x/y")
+	}) {
+		t.Fatalf("warnings %q, want the held line", plan.Warnings)
 	}
 }

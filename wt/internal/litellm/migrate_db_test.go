@@ -200,10 +200,10 @@ func TestFirstSyncEnablesStoreModelInDBAndDefersMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 			f, _ = Open(p)
-			if ids := f.RoutedIDs(); !slices.Equal(ids, []string{"openrouter/x/y"}) || *restarts != 2 || res.Via != "db" {
-				t.Fatalf("next sync: rows %v restarts=%d via=%q, want the local rows moved", ids, *restarts, res.Via)
+			if ids := f.RoutedIDs(); len(ids) != 0 || *restarts != 2 || res.Via != "db" {
+				t.Fatalf("next sync: rows %v restarts=%d via=%q, want the wt rows moved", ids, *restarts, res.Via)
 			}
-			if got := fake.ids(); !slices.Equal(got, []string{"wt:mtplx/Youssofal--Q", "wt:ollama/gemma:9b"}) {
+			if got := fake.ids(); !slices.Equal(got, []string{"wt:mtplx/Youssofal--Q", "wt:ollama/gemma:9b", "wt:openrouter/x/y"}) {
 				t.Fatalf("database rows %v", got)
 			}
 		})
@@ -238,8 +238,8 @@ func TestMigrationAddsToDBBeforeRemovingFromFile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Equal(atSave, []string{"wt:mtplx/Youssofal--Q", "wt:ollama/gemma:9b"}) {
-			t.Fatalf("database rows when config.yaml was saved: %v, want both", atSave)
+		if !slices.Equal(atSave, []string{"wt:mtplx/Youssofal--Q", "wt:ollama/gemma:9b", "wt:openrouter/x/y"}) {
+			t.Fatalf("database rows when config.yaml was saved: %v, want all three", atSave)
 		}
 		lastAdd := slices.Index(logAtSave, "POST /model/new")
 		for i, l := range logAtSave {
@@ -251,13 +251,13 @@ func TestMigrationAddsToDBBeforeRemovingFromFile(t *testing.T) {
 			t.Fatalf("requests before the save %v, want the adds confirmed by a listing", logAtSave)
 		}
 		f, _ := Open(p)
-		if got := f.RoutedIDs(); !slices.Equal(got, []string{"openrouter/x/y"}) {
-			t.Fatalf("config.yaml rows %v, want only the cloud row", got)
+		if got := f.RoutedIDs(); len(got) != 0 {
+			t.Fatalf("config.yaml rows %v, want none: every wt row moved", got)
 		}
 		if *restarts != 1 || !res.Changed || res.Via != "db" {
 			t.Fatalf("restarts=%d changed=%v via=%q, want 1/true/db", *restarts, res.Changed, res.Via)
 		}
-		for _, id := range ids {
+		for _, id := range append(slices.Clone(ids), "openrouter/x/y") {
 			if oc, ok := outcomeFor(res, id); !ok || oc.Action != "rewritten" || !oc.Written || oc.Err != nil {
 				t.Fatalf("outcomes %+v, want %s rewritten", res.Outcomes, id)
 			}
@@ -389,8 +389,8 @@ func TestInterruptedMigrationConverges(t *testing.T) {
 			if _, err := Sync(cfg, localFor(cfg, ids...), kill); !errors.Is(err, killed) {
 				t.Fatalf("err=%v, want the simulated kill", err)
 			}
-			if got := fake.ids(); len(got) != 2 || readFile(t, p) != body || *restarts != 0 {
-				t.Fatalf("after the kill: database %v restarts=%d, want both rows in both places", got, *restarts)
+			if got := fake.ids(); len(got) != 3 || readFile(t, p) != body || *restarts != 0 {
+				t.Fatalf("after the kill: database %v restarts=%d, want every row in both places", got, *restarts)
 			}
 			if startBetween {
 				if _, err := ApplyChange(cfg, Change{Add: localFor(cfg, "ollama/gemma:9b")}, o); err != nil {
@@ -406,7 +406,7 @@ func TestInterruptedMigrationConverges(t *testing.T) {
 			}
 			wantAdds := adds
 			if startBetween {
-				wantAdds += 2 // the twins went with the start; the sync adds each again, once
+				wantAdds += 3 // the twins went with the start; the sync adds each again, once
 			}
 			if fake.requests("POST /model/new") != wantAdds || fake.requests("POST /model/delete") != dels {
 				t.Fatalf("converging sync: adds %d→%d deletes %d→%d, want %d adds and no delete",
@@ -420,11 +420,11 @@ func TestInterruptedMigrationConverges(t *testing.T) {
 				t.Fatalf("third sync: changed=%v outcomes=%+v, want a no-op", res.Changed, res.Outcomes)
 			}
 			f, _ := Open(p)
-			if got := f.RoutedIDs(); !slices.Equal(got, []string{"openrouter/x/y"}) {
-				t.Fatalf("config.yaml rows %v, want no local row", got)
+			if got := f.RoutedIDs(); len(got) != 0 {
+				t.Fatalf("config.yaml rows %v, want no wt row", got)
 			}
-			if got := fake.ids(); !slices.Equal(got, []string{"wt:mtplx/Youssofal--Q", "wt:ollama/gemma:9b"}) {
-				t.Fatalf("database rows %v, want both", got)
+			if got := fake.ids(); !slices.Equal(got, []string{"wt:mtplx/Youssofal--Q", "wt:ollama/gemma:9b", "wt:openrouter/x/y"}) {
+				t.Fatalf("database rows %v, want all three", got)
 			}
 		})
 	}
@@ -484,14 +484,14 @@ func TestMigrationKeepsARowWithUserParamsInTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, _ := Open(p)
-	if got := f.RoutedIDs(); !slices.Equal(got, []string{"openrouter/x/y", "ollama/gemma:9b"}) {
-		t.Fatalf("config.yaml rows %v, want gemma kept beside the cloud row", got)
+	if got := f.RoutedIDs(); !slices.Equal(got, []string{"ollama/gemma:9b"}) {
+		t.Fatalf("config.yaml rows %v, want only gemma kept", got)
 	}
 	if !strings.Contains(readFile(t, p), "timeout: 600") {
 		t.Fatal("the user's param was lost")
 	}
-	if got := fake.ids(); !slices.Equal(got, []string{"wt:mtplx/Youssofal--Q"}) {
-		t.Fatalf("database rows %v, want only mtplx moved", got)
+	if got := fake.ids(); !slices.Equal(got, []string{"wt:mtplx/Youssofal--Q", "wt:openrouter/x/y"}) {
+		t.Fatalf("database rows %v, want mtplx and the cloud row moved", got)
 	}
 	if !hasWarning(res, "ollama/gemma:9b: its config.yaml row has params wt does not set (timeout)") {
 		t.Fatalf("warnings %q", res.Warnings)
@@ -529,7 +529,7 @@ func TestFailedMigrationDropsTheTwinsItWouldHaveKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, _ := Open(p)
-	if got := f.RoutedIDs(); !slices.Equal(got, []string{"openrouter/x/y"}) || len(fake.ids()) != 2 {
+	if got := f.RoutedIDs(); len(got) != 0 || len(fake.ids()) != 3 {
 		t.Fatalf("after the healthy sync: config.yaml %v database %v, want both moved", got, fake.ids())
 	}
 }

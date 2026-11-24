@@ -59,6 +59,7 @@ func TestFailedAddFallsBackOnlyForRowsNotCurrent(t *testing.T) {
 			if f.row("mtplx/Youssofal--Q") == nil {
 				t.Fatalf("config.yaml rows %v, want the failed route there", f.RoutedIDs())
 			}
+			// The cloud row the failed batch also carried falls back with it.
 			if got := fake.ids(); len(got) != 1 || got[0] != DBID("ollama/gemma:9b") {
 				t.Fatalf("database rows %v, want the current one kept", got)
 			}

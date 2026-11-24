@@ -130,7 +130,7 @@ wt-model litellm status                        # url + api_key_set (key never pr
 Its `enabled` key is retired: kept on save, read by nothing, and a true
 value prints one note per run. `wt litellm on` / `wt litellm off` are hidden
 stubs that exit 1. Route management is separate and also wt-owned:
-`wt-model litellm sync` writes `config.yaml` (every configured cloud model, plus
+`wt-model litellm sync` writes the routes (every configured cloud model, plus
 the running local models — an ollama model while it is pulled; `--dry-run`
 previews it), `wt-model litellm list` reads it back, and the model server's start
 and stop jobs add and remove local-model routes automatically (see
@@ -142,7 +142,7 @@ and stop jobs add and remove local-model routes automatically (see
   disk or running on the model server's host, registered or not. A registry
   local model that is not on disk, and a stopped `mlx_lm_server` pairing,
   have no row. What decides whether a model is reachable through LiteLLM is
-  its `config.yaml` route — `wt-model litellm list` shows the set; a cloud model is
+  its route (a LiteLLM database row, or a `config.yaml` row where database routes are off) — `wt-model litellm list` shows the set; a cloud model is
   routed by `wt-model litellm sync` as soon as it is in the registry, and a local
   model when the model server starts it.
 

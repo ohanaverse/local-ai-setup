@@ -146,6 +146,25 @@ func TestListShowsStoreColumn(t *testing.T) {
 	}
 }
 
+// TestListShowsAMigratedCloudRowAsDB pins decision 5 of #694: a cloud model wt
+// moved to LiteLLM's database reads STORE db and OWNER wt, and a hand-written
+// config.yaml row under a cloud name keeps reading file and hand-written, so
+// the column still answers "what would a restart touch".
+func TestListShowsAMigratedCloudRowAsDB(t *testing.T) {
+	litellmEnv(t, "model_list:\n  - model_name: hand/cloud\n    litellm_params: {model: openrouter/hand}\n")
+	_, srv := newFakeModelAPI(t, "openrouter/x/y")
+	var out, errOut bytes.Buffer
+	if err := runLitellmList(t.Context(), &out, &errOut, false, adminFromPair(srv.URL, "sk-test"), nil); err != nil {
+		t.Fatal(err)
+	}
+	const want = "ID              STORE  OWNER\n" +
+		"hand/cloud      file   hand-written\n" +
+		"openrouter/x/y  db     wt\n"
+	if out.String() != want || errOut.Len() != 0 {
+		t.Fatalf("list =\n%s\nwant\n%s\nstderr %q", out.String(), want, errOut.String())
+	}
+}
+
 // seedAliasRow stores one alias row (wt_alias_managed, under wta:alias/) of
 // alias for target at order, as ApplyAliasDB would leave it.
 func (f *fakeModelAPI) seedAliasRow(alias, target string, order int) {
