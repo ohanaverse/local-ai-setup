@@ -250,3 +250,41 @@ func TestSlotRedirectNotesNameEachRenamedSlotOnce(t *testing.T) {
 		t.Errorf("an ordinary alias got notes %q", got)
 	}
 }
+
+// TestSlotProfileAliasWithSeveralLocalTargetsIsOneLocalGroup pins #690: an
+// alias that starts two local models counts as one local group keyed by the
+// whole set, so two slots on it, or two aliases with the same set (in any
+// order), are one local model and one start; the alias beside one of its own
+// targets, or beside an alias with a different set, is two local models and
+// the block message names the set.
+func TestSlotProfileAliasWithSeveralLocalTargetsIsOneLocalGroup(t *testing.T) {
+	byID := aliasWireRows()
+	local := func(id, state string, order int) modelapi.AliasTarget {
+		return modelapi.AliasTarget{ID: id, Order: order, ProviderID: "omlx", Location: "local", State: state}
+	}
+	alias := func(id string, targets ...modelapi.AliasTarget) {
+		byID[id] = modelapi.Row{ID: id, GatewayID: id, ProviderID: "alias", Family: "alias", ModelName: id[len("alias/"):],
+			Kind: modelapi.KindAlias, Location: "local", State: modelapi.StateStopped, Action: modelapi.ActionStart, Registered: true, Targets: targets}
+	}
+	alias("alias/pair", local("omlx/run", modelapi.StateRunning, 1), local("omlx/idle", modelapi.StateStopped, 2))
+	alias("alias/pair-rev", local("omlx/idle", modelapi.StateStopped, 1), local("omlx/run", modelapi.StateRunning, 2))
+	for _, slots := range []map[string]string{
+		{"sonnet": "alias/pair", "haiku": "alias/pair"},
+		{"sonnet": "alias/pair", "haiku": "alias/pair-rev"},
+	} {
+		row := ResolveSlotProfileWire(byID, slotCheck(0, "p", "sonnet", slots))
+		if row.Action() != ActionStart {
+			t.Errorf("%v: verdict %v (%q), want start (one local group)", slots, row.Action(), row.BlockReason())
+		}
+	}
+	for _, slots := range []map[string]string{
+		{"sonnet": "alias/pair", "haiku": "omlx/idle"},
+		{"sonnet": "alias/pair", "haiku": "alias/idle"},
+	} {
+		row := ResolveSlotProfileWire(byID, slotCheck(0, "p", "sonnet", slots))
+		if row.Action() != ActionBlock || !strings.Contains(row.BlockReason(), "alias/pair (omlx/idle + omlx/run)") ||
+			!strings.Contains(row.BlockReason(), "slots name two local models") {
+			t.Errorf("%v: %v %q, want the two-local-models block naming the set", slots, row.Action(), row.BlockReason())
+		}
+	}
+}

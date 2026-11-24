@@ -117,6 +117,11 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 			{Model: "pinned-cloud/contract-fixture:inherit", Order: 1},
 			{Model: "ollama/contract-fixture:local", Order: 2},
 		}},
+		// Two local targets of a Shared family (#690).
+		{ID: "alias/fixture-locals", Targets: []AliasTarget{
+			{Model: "ollama/contract-fixture:local", Order: 1},
+			{Model: "ollama/contract-fixture:absent", Order: 2},
+		}},
 		// A redirect (#687): no targets of its own, the target alias's.
 		{ID: "alias/fixture-old", RedirectTo: "alias/fixture-cloud"},
 	}
@@ -132,6 +137,9 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 	}
 	if m, ok := cfg.AliasLocalTarget(cfg.Aliases[1]); !ok || m.ID != "ollama/contract-fixture:local" {
 		t.Errorf("the group's local target = %q, %v", m.ID, ok)
+	}
+	if got := cfg.AliasLocalTargets(cfg.Aliases[2]); len(got) != 2 || got[0].ID != "ollama/contract-fixture:local" || got[1].ID != "ollama/contract-fixture:absent" {
+		t.Errorf("alias/fixture-locals local targets = %v, want both ollama models in order", got)
 	}
 }
 

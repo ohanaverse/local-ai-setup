@@ -92,8 +92,8 @@ func ConfigWithAlias(cfg *config.Config, r AliasRequest) (*config.Config, config
 // before anything is asked or written: its shape (an id alias/<name>, at
 // least one target, none twice, orders from 1) and the cross-table rules
 // over cfg with the request in place (config.AliasFault: every target names
-// exactly one model that is neither an alias nor native, at most one local
-// target, an id no model has).
+// exactly one model that is neither an alias nor native, no two local targets
+// of one Exclusive-tenancy family (#690), an id no model has).
 func CheckAlias(cfg *config.Config, r AliasRequest) error {
 	if cur, ok := cfg.AliasByID(r.ID); ok && cur.RedirectTo != "" {
 		return fmt.Errorf("alias %q is a redirect to %q (#687); set %s's targets instead", r.ID, cur.RedirectTo, cur.RedirectTo)

@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -96,9 +97,11 @@ func ResolveSlotProfileWire(byID map[string]modelapi.Row, c profiles.SlotCheck) 
 		}
 	}
 
-	// Local models are counted by the model each one loads (localTarget): an
-	// alias and its own local target, or two aliases on one target, are one
-	// local model and one start.
+	// Local models are counted by the set of models each one loads
+	// (localTarget): an alias and its own local target, or two aliases on one
+	// target set, are one local model and one start. An alias with several
+	// local targets (#690) is one group keyed by its whole set, so it counts
+	// as one local model; a set that differs from another row's is a second.
 	var groups [][]modelapi.Row
 	group := map[string]int{}
 	for _, m := range p.Distinct() {
@@ -116,7 +119,8 @@ func ResolveSlotProfileWire(byID map[string]modelapi.Row, c profiles.SlotCheck) 
 		groups[i] = append(groups[i], r)
 	}
 	if len(groups) > 1 {
-		return block(fmt.Sprintf("slots name two local models (%s and %s); a slot profile may name one", groups[0][0].ID, groups[1][0].ID))
+		return block(fmt.Sprintf("slots name two local models (%s and %s); a slot profile may name one",
+			localLabel(groups[0][0]), localLabel(groups[1][0])))
 	}
 	if len(groups) == 0 {
 		return row
@@ -140,20 +144,42 @@ func ResolveSlotProfileWire(byID map[string]modelapi.Row, c profiles.SlotCheck) 
 	return row
 }
 
-// localTarget is the local model a catalog row loads: its own id for a local
-// model row, an alias row's local target for a local alias (one whose
-// lowest-order level holds its local target; the server sends any other
-// alias as a cloud row), and "" for a cloud row. A local alias row whose
-// targets name no local model (an older server) counts as itself.
+// localTarget is the key of the local models a catalog row loads: its own id
+// for a local model row, for a local alias row (one whose lowest-order level
+// holds a local target; the server sends any other alias as a cloud row) the
+// ids of all its local targets, sorted and joined with ",", and "" for a
+// cloud row. A local alias row whose targets name no local model (an older
+// server) counts as itself.
 func localTarget(r modelapi.Row) string {
 	if r.Location != string(config.LocationLocal) {
 		return ""
 	}
 	if r.Kind == modelapi.KindAlias {
-		for _, t := range r.Targets {
-			if t.Location == string(config.LocationLocal) {
-				return t.ID
-			}
+		if ids := aliasLocalIDs(r); len(ids) > 0 {
+			return strings.Join(ids, ",")
+		}
+	}
+	return r.ID
+}
+
+// aliasLocalIDs is the sorted ids of an alias row's local targets.
+func aliasLocalIDs(r modelapi.Row) []string {
+	var ids []string
+	for _, t := range r.Targets {
+		if t.Location == string(config.LocationLocal) && !slices.Contains(ids, t.ID) {
+			ids = append(ids, t.ID)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// localLabel names a row in a message: its id, and for an alias with several
+// local targets the set it starts.
+func localLabel(r modelapi.Row) string {
+	if r.Kind == modelapi.KindAlias {
+		if ids := aliasLocalIDs(r); len(ids) > 1 {
+			return r.ID + " (" + strings.Join(ids, " + ") + ")"
 		}
 	}
 	return r.ID

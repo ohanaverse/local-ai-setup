@@ -69,6 +69,50 @@ provider_id = "agy"
 model_name = "n"
 `
 
+// aliasExclusiveRegistry adds an mtplx provider (Exclusive tenancy: one model
+// per process) with two models, and an omlx pool provider with two models.
+const aliasExclusiveRegistry = aliasRegistry + `
+[[providers]]
+id = "mtplx"
+name = "MTPLX"
+location = "local"
+
+[providers.auth]
+type = "none"
+
+[[providers]]
+id = "omlx"
+name = "oMLX"
+location = "local"
+
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "mtplx/m1"
+family = "f"
+provider_id = "mtplx"
+model_name = "m1"
+
+[[models]]
+id = "mtplx/m2"
+family = "f"
+provider_id = "mtplx"
+model_name = "m2"
+
+[[models]]
+id = "omlx/o1"
+family = "f"
+provider_id = "omlx"
+model_name = "o1"
+
+[[models]]
+id = "omlx/o2"
+family = "f"
+provider_id = "omlx"
+model_name = "o2"
+`
+
 // aliasRow builds an alias table as a writer would hand it to AddAlias.
 func aliasRow(t *testing.T, id string, targets ...map[string]any) *tomlw.Table {
 	t.Helper()
@@ -186,7 +230,7 @@ targets = [
 // through would leave a registry whose alias the route path freezes, or a
 // model id or provider that collides with an alias id at the gateway.
 func TestAliasValidationRules(t *testing.T) {
-	const withAlias = aliasRegistry + `
+	const withAlias = aliasExclusiveRegistry + `
 [[aliases]]
 id = "alias/other"
 targets = [
@@ -213,9 +257,9 @@ targets = [
 		{"native target", aliasRegistry, func(t *testing.T, d *RegistryDoc) error {
 			return d.AddAlias(aliasRow(t, "alias/a", tgt("agy/n", 1)))
 		}, "native"},
-		{"two local targets", aliasRegistry, func(t *testing.T, d *RegistryDoc) error {
-			return d.AddAlias(aliasRow(t, "alias/a", tgt("ollama/local-a", 1), tgt("ollama/local-b", 2)))
-		}, "at most one local target"},
+		{"two local targets of one exclusive family", aliasExclusiveRegistry, func(t *testing.T, d *RegistryDoc) error {
+			return d.AddAlias(aliasRow(t, "alias/a", tgt("mtplx/m1", 1), tgt("mtplx/m2", 2)))
+		}, "mtplx/m1 and mtplx/m2 are both served by the mtplx family"},
 		{"id without prefix", aliasRegistry, func(t *testing.T, d *RegistryDoc) error {
 			return d.AddAlias(aliasRow(t, "main", tgt("openrouter/x", 1)))
 		}, `"alias/<name>"`},
@@ -230,8 +274,8 @@ targets = [
 				return d.AddAlias(aliasRow(t, "alias/a", tgt("openrouter/x", 1)))
 			}, "is also a model id"},
 		{"targets replaced by a bad list", withAlias, func(t *testing.T, d *RegistryDoc) error {
-			return d.SetAliasTargets("alias/other", []map[string]any{tgt("ollama/local-a", 1), tgt("ollama/local-b", 2)})
-		}, "at most one local target"},
+			return d.SetAliasTargets("alias/other", []map[string]any{tgt("mtplx/m1", 1), tgt("mtplx/m2", 2)})
+		}, "mtplx/m1 and mtplx/m2"},
 		{"provider id alias", aliasRegistry, func(t *testing.T, d *RegistryDoc) error {
 			return d.AddProvider(map[string]any{"id": "alias", "name": "A", "auth": map[string]any{"type": "none"}})
 		}, "reserved"},
@@ -319,11 +363,11 @@ targets = [{ model = "openrouter/x" }]
 // are refused the same way.
 func TestAliasFaultIsARegistryEntryError(t *testing.T) {
 	cases := map[string]string{
-		"two local targets": aliasRegistry + "\n[[aliases]]\nid = \"alias/a\"\ntargets = [{ model = \"ollama/local-a\" }, { model = \"ollama/local-b\" }]\n",
-		"unknown target":    aliasRegistry + "\n[[aliases]]\nid = \"alias/a\"\ntargets = [{ model = \"ghost/m\" }]\n",
-		"model id alias/x":  aliasRegistry + "\n[[models]]\nid = \"alias/x\"\nfamily = \"f\"\nprovider_id = \"openrouter\"\nmodel_name = \"x\"\n",
-		"provider alias":    aliasRegistry + "\n[[providers]]\nid = \"alias\"\nname = \"A\"\nlocation = \"cloud\"\n[providers.auth]\ntype = \"none\"\n",
-		"duplicate alias":   aliasRegistry + "\n[[aliases]]\nid = \"alias/a\"\ntargets = [{ model = \"openrouter/x\" }]\n\n[[aliases]]\nid = \"alias/a\"\ntargets = [{ model = \"openrouter/x\" }]\n",
+		"two exclusive local targets": aliasExclusiveRegistry + "\n[[aliases]]\nid = \"alias/a\"\ntargets = [{ model = \"mtplx/m1\" }, { model = \"mtplx/m2\" }]\n",
+		"unknown target":              aliasRegistry + "\n[[aliases]]\nid = \"alias/a\"\ntargets = [{ model = \"ghost/m\" }]\n",
+		"model id alias/x":            aliasRegistry + "\n[[models]]\nid = \"alias/x\"\nfamily = \"f\"\nprovider_id = \"openrouter\"\nmodel_name = \"x\"\n",
+		"provider alias":              aliasRegistry + "\n[[providers]]\nid = \"alias\"\nname = \"A\"\nlocation = \"cloud\"\n[providers.auth]\ntype = \"none\"\n",
+		"duplicate alias":             aliasRegistry + "\n[[aliases]]\nid = \"alias/a\"\ntargets = [{ model = \"openrouter/x\" }]\n\n[[aliases]]\nid = \"alias/a\"\ntargets = [{ model = \"openrouter/x\" }]\n",
 	}
 	for name, reg := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -379,13 +423,14 @@ func TestRemoveModelRefusedWhileAnAliasTargetsIt(t *testing.T) {
 // override so the model inherits its local provider's location, cannot give
 // an alias a second local target. The file is left as it was.
 func TestModelEditRefusedWhenItGivesAnAliasTwoLocalTargets(t *testing.T) {
-	reg := aliasRegistry + "\n[[aliases]]\nid = \"alias/g\"\ntargets = [{ model = \"ollama/cloud-c\" }, { model = \"ollama/local-a\" }]\n"
+	reg := aliasExclusiveRegistry + "\n[[models]]\nid = \"mtplx/c\"\nfamily = \"f\"\nprovider_id = \"mtplx\"\nmodel_name = \"c\"\nlocation = \"cloud\"\n" +
+		"\n[[aliases]]\nid = \"alias/g\"\ntargets = [{ model = \"mtplx/c\" }, { model = \"mtplx/m1\" }]\n"
 	edits := map[string]func(d *RegistryDoc) error{
 		"own location": func(d *RegistryDoc) error {
-			return d.PatchModel("ollama/cloud-c", map[string]any{"location": "local"}, nil)
+			return d.PatchModel("mtplx/c", map[string]any{"location": "local"}, nil)
 		},
 		"inherited from the provider": func(d *RegistryDoc) error {
-			return d.PatchModel("ollama/cloud-c", nil, []string{"location"})
+			return d.PatchModel("mtplx/c", nil, []string{"location"})
 		},
 	}
 	for name, edit := range edits {
@@ -402,7 +447,7 @@ func TestModelEditRefusedWhenItGivesAnAliasTwoLocalTargets(t *testing.T) {
 	}
 	// An edit that leaves the alias valid still goes through.
 	scratchRegistry(t, reg)
-	if _, err := UpdateRegistry(setFamily("ollama/cloud-c", "g")); err != nil {
+	if _, err := UpdateRegistry(setFamily("mtplx/c", "g")); err != nil {
 		t.Errorf("a harmless edit of a target was refused: %v", err)
 	}
 }
@@ -422,5 +467,52 @@ func TestAliasLocalTarget(t *testing.T) {
 	c, _ := cfg.AliasByID("alias/c")
 	if _, ok := cfg.AliasLocalTarget(c); ok {
 		t.Error("a cloud-only alias has no local target")
+	}
+}
+
+// TestAliasAllowsSeveralLocalTargetsOfAPoolOrSharedFamily pins #690: two local
+// targets of ollama (Shared) or omlx (Pool) are sound, and AliasLocalTargets
+// lists every one in (order, file position) order while AliasLocalTarget
+// stays the first. A cloud target between them is skipped.
+func TestAliasAllowsSeveralLocalTargetsOfAPoolOrSharedFamily(t *testing.T) {
+	scratchRegistry(t, aliasExclusiveRegistry+`
+[[aliases]]
+id = "alias/shared"
+targets = [{ model = "ollama/local-b", order = 2 }, { model = "openrouter/x", order = 1 }, { model = "ollama/local-a", order = 2 }]
+
+[[aliases]]
+id = "alias/pool"
+targets = [{ model = "omlx/o1" }, { model = "omlx/o2" }]
+
+[[aliases]]
+id = "alias/mixed"
+targets = [{ model = "mtplx/m1" }, { model = "omlx/o1" }, { model = "ollama/local-a" }]
+`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range cfg.Aliases {
+		if err := AliasFault(cfg, a); err != nil {
+			t.Errorf("AliasFault(%s) = %v, want nil", a.ID, err)
+		}
+	}
+	ids := func(ms []Model) []string {
+		var out []string
+		for _, m := range ms {
+			out = append(out, m.ID)
+		}
+		return out
+	}
+	shared, _ := cfg.AliasByID("alias/shared")
+	if got := ids(cfg.AliasLocalTargets(shared)); !slices.Equal(got, []string{"ollama/local-b", "ollama/local-a"}) {
+		t.Errorf("AliasLocalTargets(shared) = %v, want [local-b local-a] (order 2 ties keep file position)", got)
+	}
+	if m, ok := cfg.AliasLocalTarget(shared); !ok || m.ID != "ollama/local-b" {
+		t.Errorf("AliasLocalTarget(shared) = %q, %v, want the first of AliasLocalTargets", m.ID, ok)
+	}
+	pool, _ := cfg.AliasByID("alias/pool")
+	if got := ids(cfg.AliasLocalTargets(pool)); !slices.Equal(got, []string{"omlx/o1", "omlx/o2"}) {
+		t.Errorf("AliasLocalTargets(pool) = %v", got)
 	}
 }

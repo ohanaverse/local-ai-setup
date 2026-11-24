@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // An alias is a registry `[[aliases]]` table (#596): a gateway id that names
@@ -249,20 +251,43 @@ func (c *Config) AliasesTargeting(modelID string) []string {
 	return out
 }
 
-// AliasLocalTarget is the alias's local target: the first target that names
-// exactly one model whose location resolves to local. AliasFault allows at
-// most one.
-func (c *Config) AliasLocalTarget(a Alias) (Model, bool) {
-	for _, t := range c.AliasTargets(a) {
+// AliasLocalTargets is every target of the alias that names exactly one model
+// whose location resolves to local, in (order, file position) order: the set a
+// start of the alias starts, one after another (#690). nil when it has none.
+func (c *Config) AliasLocalTargets(a Alias) []Model {
+	targets := slices.Clone(c.AliasTargets(a))
+	sort.SliceStable(targets, func(i, j int) bool { return targets[i].Order < targets[j].Order })
+	var out []Model
+	for _, t := range targets {
 		m, ok := c.oneModel(t.Model)
 		if !ok {
 			continue
 		}
-		if loc, err := c.ResolveLocation(m); err == nil && loc == LocationLocal {
-			return m, true
+		if loc, err := c.ResolveLocation(m); err == nil && loc == LocationLocal && !slices.ContainsFunc(out, func(o Model) bool { return o.ID == m.ID }) {
+			out = append(out, m)
 		}
 	}
+	return out
+}
+
+// AliasLocalTarget is the first of AliasLocalTargets: the one local target a
+// single-target caller (a profile, a document) wants.
+func (c *Config) AliasLocalTarget(a Alias) (Model, bool) {
+	if all := c.AliasLocalTargets(a); len(all) > 0 {
+		return all[0], true
+	}
 	return Model{}, false
+}
+
+// exclusiveFamily is the family of a provider whose server holds one model per
+// process (provider.Exclusive), "" for any other provider. Two local targets of
+// one such family cannot both run: the second start evicts the first (#690).
+func exclusiveFamily(providerID string) string {
+	fam := provider.FamilyOr(providerID)
+	if f, ok := provider.FamilyByName(fam); ok && f.Tenancy == provider.Exclusive {
+		return fam
+	}
+	return ""
 }
 
 // oneModel is the model row id names when exactly one row has it.
@@ -281,8 +306,9 @@ func (c *Config) oneModel(id string) (Model, bool) {
 
 // AliasFault is the one home of the alias rules that need the rest of the
 // registry: the id is no model's id; every target names exactly one model
-// row, is not an alias and is not native; and at most one target is local
-// (a start then starts one model, as for a slot profile). A malformed alias
+// row, is not an alias and is not native; and no two local targets share an
+// Exclusive-tenancy family (#690: a start starts every local target, so two
+// that evict each other can never both run). A malformed alias
 // is a fault too, naming its Malformed. nil when the alias is sound. Used by
 // Config.validate, the registry writer and the route path.
 func AliasFault(cfg *Config, a Alias) error {
@@ -295,7 +321,8 @@ func AliasFault(cfg *Config, a Alias) error {
 	if a.RedirectTo != "" {
 		return redirectFault(cfg, a)
 	}
-	var local []string
+	// localFamily maps an exclusive family to the local target that holds it.
+	localFamily := map[string]string{}
 	for _, t := range a.Targets {
 		if strings.HasPrefix(t.Model, AliasIDPrefix) || slices.ContainsFunc(cfg.Aliases, func(o Alias) bool { return o.ID == t.Model }) {
 			return fmt.Errorf("alias %q: target %q is an alias; an alias cannot target an alias", a.ID, t.Model)
@@ -319,12 +346,18 @@ func AliasFault(cfg *Config, a Alias) error {
 			return fmt.Errorf("alias %q: target %q is a native model, which no gateway serves", a.ID, t.Model)
 		}
 		if loc, err := cfg.ResolveLocation(m); err == nil && loc == LocationLocal {
-			local = append(local, t.Model)
+			// #690: an alias may name several local targets (a start starts
+			// them one after another), but two of one Exclusive family (one
+			// process, one model) cannot both run: refuse the pair. Pool
+			// (omlx) and Shared (ollama) families may hold several.
+			if fam := exclusiveFamily(m.ProviderID); fam != "" {
+				if other, taken := localFamily[fam]; taken {
+					return fmt.Errorf("alias %q: local targets %s and %s are both served by the %s family, which runs one model at a time; an alias may hold several local targets only when no two share such a family",
+						a.ID, other, t.Model, fam)
+				}
+				localFamily[fam] = t.Model
+			}
 		}
-	}
-	if len(local) > 1 {
-		return fmt.Errorf("alias %q has %d local targets (%s); an alias has at most one local target",
-			a.ID, len(local), strings.Join(local, ", "))
 	}
 	return nil
 }

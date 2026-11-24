@@ -43,6 +43,28 @@ family = "qwen3"
 provider_id = "ollama"
 model_name = "qwen3:8b"
 tags = []
+
+[[providers]]
+id = "mtplx"
+name = "MTPLX"
+location = "local"
+
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "mtplx/m1"
+family = "f"
+provider_id = "mtplx"
+model_name = "m1"
+tags = []
+
+[[models]]
+id = "mtplx/m2"
+family = "f"
+provider_id = "mtplx"
+model_name = "m2"
+tags = []
 `
 
 func targets(pairs ...any) []config.AliasTarget {
@@ -65,7 +87,8 @@ func loadCfg(t *testing.T) *config.Config {
 // TestCheckAliasRefusals pins what `wt-model alias set` refuses before any
 // write: an id that is not alias/<name>, no target, a target given twice, an
 // order below 1, a target that names no model or names an alias, and two
-// local targets (decision 1). Each would be written as an alias every route
+// two local targets of one Exclusive family (#690; two of a Shared or Pool
+// family are sound, pinned below). Each would be written as an alias every route
 // path freezes.
 func TestCheckAliasRefusals(t *testing.T) {
 	scratchRegistry(t, aliasRegistry)
@@ -81,7 +104,7 @@ func TestCheckAliasRefusals(t *testing.T) {
 		"bad order":    {AliasRequest{ID: "alias/main", Targets: []config.AliasTarget{{Model: "openrouter/big", Order: -1}}}, "whole number from 1"},
 		"unknown":      {AliasRequest{ID: "alias/main", Targets: targets("openrouter/nope", 1)}, "names no model"},
 		"alias target": {AliasRequest{ID: "alias/main", Targets: targets("alias/other", 1)}, "cannot target an alias"},
-		"two local":    {AliasRequest{ID: "alias/main", Targets: targets("ollama/gemma4:9b", 1, "ollama/qwen3:8b", 2)}, "at most one local target"},
+		"two local":    {AliasRequest{ID: "alias/main", Targets: targets("mtplx/m1", 1, "mtplx/m2", 2)}, "both served by the mtplx family"},
 	} {
 		if err := CheckAlias(cfg, tc.r); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: CheckAlias = %v, want %q", name, err, tc.want)
@@ -89,6 +112,10 @@ func TestCheckAliasRefusals(t *testing.T) {
 	}
 	if err := CheckAlias(cfg, AliasRequest{ID: "alias/main", Targets: targets("openrouter/big", 1, "ollama/qwen3:8b", 2)}); err != nil {
 		t.Errorf("a sound alias: %v", err)
+	}
+	// #690: two local targets of a Shared family (ollama) are allowed.
+	if err := CheckAlias(cfg, AliasRequest{ID: "alias/main", Targets: targets("ollama/gemma4:9b", 1, "ollama/qwen3:8b", 2)}); err != nil {
+		t.Errorf("two ollama local targets: %v", err)
 	}
 }
 

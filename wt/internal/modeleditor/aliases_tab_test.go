@@ -24,6 +24,28 @@ location = "cloud"
 [providers.auth]
 type = "native"
 
+[[providers]]
+id = "mtplx"
+name = "MTPLX"
+location = "local"
+
+[providers.auth]
+type = "none"
+
+[[models]]
+id = "mtplx/m1"
+family = "f"
+provider_id = "mtplx"
+model_name = "m1"
+tags = []
+
+[[models]]
+id = "mtplx/m2"
+family = "f"
+provider_id = "mtplx"
+model_name = "m2"
+tags = []
+
 [[models]]
 id = "claude/native-one"
 family = "sonnet"
@@ -316,7 +338,7 @@ func TestAliasesTabRefusesWhatTheCommandRefuses(t *testing.T) {
 	for name, tc := range map[string]struct{ targets, want string }{
 		"an alias":       {"alias/main", "an alias cannot target an alias"},
 		"a native model": {"claude/native-one", "is a native model"},
-		"two local":      {"omlx/Qwen3.8-27B-Instruct-MLX-6bit, omlx/Gone-4bit", "at most one local target"},
+		"two exclusive":  {"mtplx/m1, mtplx/m2", "both served by the mtplx family"},
 		"an unknown":     {"openrouter/nope", "names no model"},
 		"a bad order":    {"openrouter/big:0", "order must be a whole number from 1"},
 		"twice":          {"openrouter/big, openrouter/big:2", "more than once"},

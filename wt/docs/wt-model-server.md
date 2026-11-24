@@ -831,16 +831,18 @@ Every row carries `id`, `family`, `provider_id`, `model_name`, `location`,
 the lowest-order target's (the lowest tier among targets that share that
 order). `context` is the smallest window over all targets, absent when any
 target's window is unknown. `location` is `local` only when the lowest-order
-targets include the alias's local target, else `cloud`. The action: `start`
-when that local target must start, or runs while the alias id is not routed
+targets include a local target, else `cloud`. An alias may have several local
+targets (#690); the action then reads all of them. The action: `start`
+when any local target must start, or runs while the alias id is not routed
 (the start re-runs its route write, which adds the alias's rows); `launch`
 when a target is servable and the alias is routed; `block` when a target is
 servable but the alias is not routed (`run 'wt-model litellm sync'`); `start`
 when any target can start; else `block`, naming each target's reason. The
 state follows the action, as on every model row: `launch` is `running`,
 `block` is `blocked` (with `block_reason`), and `start` is `stopped`, or the
-local target's own state (`stopped`, `loading`, `unknown`) when the start is
-that target's start. So a servable alias that is not routed reads `blocked`,
+local target's own state (`stopped`, `loading`, `unknown`) when exactly one
+target needs the start, else `loading` if any target is loading, else
+`stopped`. So a servable alias that is not routed reads `blocked`,
 a local target running while the alias is not routed reads `stopped` with
 `start`, and a `local` alias whose local target is blocked but whose routed
 cloud target is servable reads `running` with `launch`. A malformed alias is a
@@ -937,12 +939,26 @@ prompt becomes a typed error the client answers by posting again.
 
 - **One start per model.** A start of a model whose start is already queued
   or running joins that job: the answer is its id, and it runs once. A start
-  of an alias is keyed by its local target, so it joins a start of that model
-  (and the reverse); the job's `model` is the target id. It waits for the
+  of an alias with one local target is keyed by that target, so it joins a start
+  of that model (and the reverse); the job's `model` is the target id. An alias
+  with several local targets (#690) is keyed by its own id, and auto-stop treats
+  every target of a running start as pending, so none is forgotten or stopped
+  under it. It waits for the
   target to answer through the gateway, then checks that LiteLLM lists the
   alias's row for it: a missing row fails the job only when the gateway does
   not list the alias id at all, otherwise it is one `warning:` step. An alias
-  with no local target answers `failed` (nothing to start). The
+  with no local target answers `failed` (nothing to start). A start of an alias
+  with several local targets starts them one after another, in (order, file
+  position) order, each through the same per-model path (catalog row, the
+  engine's own memory and occupancy checks, settle, wait for the gateway), and
+  reports `starting <id> (i of n)`. A target already running and routed is
+  skipped, so re-posting after answering an `occupied` or `others` problem
+  resumes instead of restarting. After the last start the job re-reads the
+  inventory and fails, naming the model, if a later start displaced an
+  earlier one (a Pool eviction). There is no rollback on a partial failure:
+  the message names the targets that started, the one that failed and why,
+  and says to run the start again. Cancelling stops between targets. A stop of
+  an alias id stops nothing and names every local target ("stop A and B"). The
   joining request's own `allow_replace` and `others` are ignored; the job keeps
   the answers of the request that created it, so a replace another client
   agreed to goes ahead for both. A start that has already been cancelled is

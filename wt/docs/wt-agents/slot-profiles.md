@@ -155,8 +155,11 @@ may fill several slots.
 `wt-model alias list` on the model-server host shows them). An alias is a
 catalog row like a model, so `wt profile slots add|set` accepts its id and the
 launch needs no other change. For the one-local-model rule an alias counts as
-the local model it loads: an alias and its own local target are ONE local model,
-as are two aliases that share a local target, and a start through the profile
+the local models it loads: an alias and its own local target are ONE local model,
+as are two aliases that share a local target (an alias with several local
+targets counts as one group keyed by its whole set, so two aliases with the
+same set are one model, while an alias beside one of its own targets alone is
+two), and a start through the profile
 runs the alias's start (which also adds the alias's routes). An alias counts
 as local only when its lowest-order targets include its local target (the
 server sends any other alias as a cloud row, so a cloud-first group with a local
@@ -199,7 +202,7 @@ Resolved reasons (against the model server's catalog):
 | `slot haiku: <id> is not in the model server's catalog` | The id is not a model the server lists. This is what a profile shows after `wt-model cloud-sync` or `wt-model model rm` removed a model it names |
 | `slot opus: <id> is a native model, which has no gateway route` | A slot cannot use the native Anthropic subscription (the gateway's origin and token never reach a native model) |
 | `slot opus: ` and the server's own block reason | The server blocks that model (no LiteLLM mapping, not on disk, no engine to start it, …) |
-| `slots name two local models (<id> and <id>); a slot profile may name one` | More than one distinct local model; an alias counts as its local target, so an alias and its own target are one |
+| `slots name two local models (<id> and <id>); a slot profile may name one` | More than one distinct local model; an alias counts as the set of local models it starts (a block names the set), so an alias and its own single target are one |
 
 Three problems produce no usable row, and a fourth loses part of the file:
 
