@@ -27,7 +27,7 @@ func rescueApp(t *testing.T) *app {
 	a, tmp := newTestApp(t)
 	t.Setenv("WT_REGISTRY", filepath.Join(tmp, "local-ai", "registry.toml"))
 	t.Setenv("WT_LITELLM_CONFIG", filepath.Join(tmp, "config.yaml"))
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	oldNow, oldTTY := removeNow, rescueTTY
 	removeNow = func() time.Time { return time.Now().Add(time.Hour) }
 	rescueTTY = func(io.Reader, io.Writer) bool { return false }

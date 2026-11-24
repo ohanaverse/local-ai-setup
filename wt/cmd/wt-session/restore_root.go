@@ -89,7 +89,7 @@ func restoreRootCmd(a *app) *cobra.Command {
 			if err != nil {
 				return restoreRootFail(cmd.OutOrStdout(), f, "", 1, err)
 			}
-			return restoreRootRun(cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f, cwd)
+			return restoreRootRun(a.hooks, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f, cwd)
 		},
 	}
 	c.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
@@ -144,8 +144,8 @@ func restoreRootFail(out io.Writer, f restoreRootFlags, repo string, code int, e
 // from cwd. The command passes its own working directory and the cleanup
 // list's `R` hand-off the directory the list was built from: one run path
 // (rescueRow's shape — the command and the list's key both end here).
-func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string) error {
-	return restoreRootRunReport(answer, out, errOut, f, cwd, nil, nil, nil)
+func restoreRootRun(h hooks, answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string) error {
+	return restoreRootRunReport(h, answer, out, errOut, f, cwd, nil, nil, nil)
 }
 
 // restoreRootRunReport is restoreRootRun that also hands the outcome it
@@ -158,7 +158,7 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags,
 // fetched (when non-nil) is called right after the gather, with its fetch
 // result, and only when the run really fetched (not --no-fetch, not a dry
 // run): the `R` hand-off uses it to skip the re-entry's second fetch (#579).
-func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string, report func(rootmove.Outcome), interrupted func(os.Signal), fetched func(cleanup.FetchResult)) error {
+func restoreRootRunReport(h hooks, answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string, report func(rootmove.Outcome), interrupted func(os.Signal), fetched func(cleanup.FetchResult)) error {
 	signal.Ignore(syscall.SIGPIPE)
 	write := func(meta rootmove.Meta, o rootmove.Outcome) error {
 		if report != nil {
@@ -172,7 +172,7 @@ func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRoot
 	}
 	// A dry run promises to write no ref: `git fetch` rewrites
 	// remote-tracking refs, so it reads the last fetch instead.
-	in := cleanupInputs(cwd, !f.noFetch && !f.dryRun, nil, "wt-restore-root")
+	in := cleanupInputs(h, cwd, !f.noFetch && !f.dryRun, nil, "wt-restore-root")
 	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, in)
 	if in.Fetch && fetched != nil {
 		fetched(snap.Fetch)

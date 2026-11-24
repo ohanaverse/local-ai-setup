@@ -18,3 +18,16 @@ func TestDirtLimitsMatchRescue(t *testing.T) {
 		t.Errorf("DirtMaxBytes = %d, rescue MaxUntrackedBytes = %d", cleanup.DirtMaxBytes, MaxUntrackedBytes)
 	}
 }
+
+// TestRecordRefPrefixMatchesRescue pins that cleanup's RecordRefPrefix (the ref
+// namespace its ListRecords reads) equals rescue's (the namespace rescue
+// writes). Why: both name one namespace but cleanup may not import rescue, so
+// a drift would make every record read as absent. It lives here because rescue
+// already imports cleanup. Note rootmove's RoundTrip of
+// `for-each-ref --format=%(refname) <prefix>` pins only the pattern git
+// accepts, not ListRecords' full --format string.
+func TestRecordRefPrefixMatchesRescue(t *testing.T) {
+	if cleanup.RecordRefPrefix != RecordRefPrefix {
+		t.Errorf("cleanup.RecordRefPrefix = %q, rescue RecordRefPrefix = %q", cleanup.RecordRefPrefix, RecordRefPrefix)
+	}
+}

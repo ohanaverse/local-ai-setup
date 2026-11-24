@@ -119,7 +119,7 @@ func executeRescue(cmd *cobra.Command, a *app, f rescueFlags, target string) err
 	}
 	// A dry run promises to write no ref: `git fetch` rewrites remote-tracking
 	// refs, so it classifies against the last fetch instead.
-	in := cleanupInputs(cwd, !f.noFetch && !f.dryRun, nil, "wt-rescue")
+	in := cleanupInputs(a.hooks, cwd, !f.noFetch && !f.dryRun, nil, "wt-rescue")
 	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, in)
 	if err != nil {
 		repo := snap.Repo

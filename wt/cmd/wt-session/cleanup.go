@@ -126,21 +126,23 @@ func checkMinAge(cmd *cobra.Command, minAge time.Duration) error {
 // with from cwd: this process's session claim (so its own root launch does
 // not look like another's), the registered artifacts and four gh calls at a
 // time. label names the command in the claim ("wt-cleanup", "wt-remove").
-func cleanupInputs(cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
+// h supplies the per-call gh hooks (nil fields are the real gh), so a caller's
+// tests never swap the cleanup package's legacy seam globals (#565).
+func cleanupInputs(h hooks, cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
 	claim, err := sessionclaim.Self(cwd, "", label)
 	if err != nil {
 		// Never joined, only used to tell this process from the others: a
 		// claim that could not be timed at worst makes the root look held.
 		claim = sessionclaim.Claim{PID: os.Getpid(), Agent: label}
 	}
-	return cleanup.GatherInputs{CWD: cwd, Fetch: fetch, ProtectedPaths: protected, Claim: claim, Parallel: 4}
+	return cleanup.GatherInputs{CWD: cwd, Fetch: fetch, ProtectedPaths: protected, Claim: claim, Parallel: 4, PRList: h.prList, PRBaseList: h.prBaseList}
 }
 
 // cleanupListInputs is cleanupInputs for a caller that shows or acts on origin
 // rows (the list, `wt remove origin/...`): it also makes the per-branch
 // `gh pr list --base` query.
-func cleanupListInputs(cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
-	in := cleanupInputs(cwd, fetch, protected, label)
+func cleanupListInputs(h hooks, cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
+	in := cleanupInputs(h, cwd, fetch, protected, label)
 	in.OriginRows = true
 	return in
 }
@@ -160,7 +162,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 	// it: the header says protection is off (and a removal refuses).
 	protected, protErr := protectedPaths(a)
 	interactive := !f.json && !f.plain && isTerminalWriter(out)
-	in := cleanupListInputs(cwd, !f.noFetch, protected, "wt-cleanup")
+	in := cleanupListInputs(a.hooks, cwd, !f.noFetch, protected, "wt-cleanup")
 	if interactive {
 		// The list never fetches on open and shows every remote's branches.
 		in.Fetch, in.AllRemotes = false, true
@@ -322,7 +324,7 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 		// the re-entry only re-reads (HandOffNote.Fetched, Reread) and its
 		// report shows this fetch's outcome, a failure included (#579).
 		fetched := false
-		err := restoreRootRunReport(answer, out, errOut, restoreRootFlags{}, in.CWD, func(o rootmove.Outcome) { got = &o }, func(s os.Signal) { sig = s },
+		err := restoreRootRunReport(hooks{prList: in.PRList, prBaseList: in.PRBaseList}, answer, out, errOut, restoreRootFlags{}, in.CWD, func(o rootmove.Outcome) { got = &o }, func(s os.Signal) { sig = s },
 			func(r cleanup.FetchResult) { in.Fetched, fetched = r, true })
 		return restoreRootHandOffResult(err, got, sig, fetched)
 	}

@@ -358,7 +358,6 @@ func TestRemovePartialSampleIsEncodeOutput(t *testing.T) {
 // document must carry the deleted branch's full tip as branch_tip. Why: the
 // samples are hand-written; this is what wt really prints.
 func TestRemoveLiveEncodeValidatesAgainstSchema(t *testing.T) {
-	stubCleanupGH(t)
 	dir := cleanupRepo(t)
 	wtAt := func(name string, args ...string) string {
 		p := filepath.Join(dir, ".worktrees", name)
@@ -382,7 +381,7 @@ func TestRemoveLiveEncodeValidatesAgainstSchema(t *testing.T) {
 	cgit(t, dir, "branch", "loose")
 
 	later := time.Now().Add(time.Hour)
-	in := cleanup.GatherInputs{CWD: dir, OwnRepo: "o/r", Parallel: 2}
+	in := cleanup.GatherInputs{CWD: dir, OwnRepo: "o/r", Parallel: 2, PRList: noPRs, PRBaseList: noPRs}
 	g := cleanup.Git{Dir: dir}
 	s, err := cleanup.Gather(g, in)
 	if err != nil {

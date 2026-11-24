@@ -31,6 +31,18 @@ func combined(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
+// lineageOf is lineageErr as Lineage calls it: judged against the pair Clone
+// registered for repo.
+func lineageOf(repo string) error {
+	pairsMu.Lock()
+	p, ok := pairs[repo]
+	pairsMu.Unlock()
+	if !ok {
+		return fmt.Errorf("not a gittest.Clone pair")
+	}
+	return lineageErr(repo, p.origin, p.opts)
+}
+
 // TestSeedCloneIsolatesOrigins checks two Clone pairs of one Seed never share
 // state: a commit pushed to pair A's own origin must be absent from pair B and
 // from the shared template, and each repo's origin remote must name its own
@@ -66,6 +78,10 @@ func TestSeedCloneIsolatesOrigins(t *testing.T) {
 		t.Errorf("the shared template origin holds pair A's commit %s; a clone mutated the template:\n%s", sha, got)
 	}
 
+	if originA == originB {
+		t.Errorf("two pairs share origin %q", originA)
+	}
+
 	// Each repo's origin remote must name its own origin's absolute path.
 	for repo, origin := range map[string]string{repoA: originA, repoB: originB} {
 		if got := runGit(t, repo, "remote", "get-url", "origin"); got != origin {
@@ -90,7 +106,7 @@ func TestLineageGateNamesThePoison(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, ".worktrees", "stray"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := lineageErr(repo)
+	err := lineageOf(repo)
 	if err == nil {
 		t.Fatal("lineageErr accepted a repo holding .worktrees/stray")
 	}
@@ -139,6 +155,16 @@ func TestLineageGateNamesEachPoison(t *testing.T) {
 			appendExclude(t, repo, ".worktrees/")
 			appendExclude(t, repo, ".worktrees/")
 		}},
+		{"origin of another pair", "not this pair's own", func(t *testing.T, repo string) {
+			other, _ := Seed(t, SeedOpts{}).Clone(t)
+			runGit(t, repo, "remote", "set-url", "origin", other)
+		}},
+		{"extra ref", "refs/heads/feature", func(t *testing.T, repo string) {
+			runGit(t, repo, "update-ref", "refs/heads/feature", "HEAD")
+		}},
+		{"deleted origin/HEAD", "refs/remotes/origin/HEAD is missing", func(t *testing.T, repo string) {
+			runGit(t, repo, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+		}},
 		{"head moved", "not refs/heads/main", func(t *testing.T, repo string) {
 			runGit(t, repo, "switch", "-q", "-c", "other")
 		}},
@@ -149,7 +175,7 @@ func TestLineageGateNamesEachPoison(t *testing.T) {
 			_, repo := tpl.Clone(t)
 			Lineage(t, repo)
 			c.setup(t, repo)
-			err := lineageErr(repo)
+			err := lineageOf(repo)
 			if err == nil {
 				t.Fatalf("lineageErr accepted a repo holding %s", c.name)
 			}
@@ -157,6 +183,106 @@ func TestLineageGateNamesEachPoison(t *testing.T) {
 				t.Errorf("lineageErr said %q; the message must name the poison (%s)", err, c.want)
 			}
 		})
+	}
+}
+
+// TestLineageGateIsLineageAware checks the exclude verdict follows the pair's
+// own lineage: the ExcludeWorktrees lineage must carry exactly one .worktrees/
+// line and the plain lineage none, on the repo and on its origin.
+func TestLineageGateIsLineageAware(t *testing.T) {
+	truncate := func(t *testing.T, dir string) {
+		t.Helper()
+		ex := runGit(t, dir, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude")
+		if err := os.WriteFile(ex, []byte("# none\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendLine := func(t *testing.T, dir string) {
+		t.Helper()
+		ex := runGit(t, dir, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude")
+		f, err := os.OpenFile(ex, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(".worktrees/\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("missing line on the exclude lineage", func(t *testing.T) {
+		_, repo := Seed(t, SeedOpts{ExcludeWorktrees: true}).Clone(t)
+		Lineage(t, repo)
+		truncate(t, repo)
+		if err := lineageOf(repo); err == nil || !strings.Contains(err.Error(), "lacks the .worktrees/ line") {
+			t.Errorf("lineageErr said %v, want the missing .worktrees/ line named", err)
+		}
+	})
+	t.Run("stray line on the plain lineage", func(t *testing.T) {
+		_, repo := Seed(t, SeedOpts{}).Clone(t)
+		Lineage(t, repo)
+		appendLine(t, repo)
+		if err := lineageOf(repo); err == nil || !strings.Contains(err.Error(), "must not have") {
+			t.Errorf("lineageErr said %v, want the stray .worktrees/ line named", err)
+		}
+	})
+	t.Run("origin exclude is checked too", func(t *testing.T) {
+		origin, repo := Seed(t, SeedOpts{}).Clone(t)
+		Lineage(t, repo)
+		appendLine(t, origin)
+		if err := lineageOf(repo); err == nil || !strings.Contains(err.Error(), origin) {
+			t.Errorf("lineageErr said %v, want the origin's exclude named", err)
+		}
+	})
+}
+
+// TestLineageRefusesAStrangerRepo checks Lineage fails loud on a repo Clone did
+// not make, naming why.
+func TestLineageRefusesAStrangerRepo(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q", "-b", "main")
+	msg := recordFatal(t, func(tb testing.TB) { Lineage(tb, dir) })
+	if !strings.Contains(msg, "not a gittest.Clone pair") {
+		t.Errorf("Lineage said %q, want it to refuse a repo Clone did not make", msg)
+	}
+}
+
+// TestSeedRetriesAFailedBuild checks a failed build is neither memoized nor
+// leaked: the next Seed for the same opts builds again and succeeds. Why: a
+// memoized error would fail every later test in the process for one transient
+// failure.
+func TestSeedRetriesAFailedBuild(t *testing.T) {
+	// The memo entry is saved and restored so other tests keep their template.
+	opts := SeedOpts{ExcludeWorktrees: true}
+	seedMu.Lock()
+	saved, had := seeds[opts]
+	delete(seeds, opts)
+	seedMu.Unlock()
+	t.Cleanup(func() {
+		seedMu.Lock()
+		defer seedMu.Unlock()
+		if had {
+			seeds[opts] = saved
+		} else {
+			delete(seeds, opts)
+		}
+	})
+	calls := 0
+	build := func(o SeedOpts) (*Template, error) {
+		calls++
+		if calls == 1 {
+			return nil, fmt.Errorf("boom")
+		}
+		return buildTemplate(o)
+	}
+	if msg := recordFatal(t, func(tb testing.TB) { seedWith(tb, opts, build) }); !strings.Contains(msg, "boom") {
+		t.Fatalf("first seed said %q, want the build error", msg)
+	}
+	tpl := seedWith(t, opts, build)
+	if tpl == nil || calls != 2 {
+		t.Fatalf("retry: tpl=%v after %d builds, want a template after exactly 2", tpl, calls)
+	}
+	if again := seedWith(t, opts, build); again != tpl || calls != 2 {
+		t.Errorf("a successful build must be memoized: got %p after %d builds", again, calls)
 	}
 }
 

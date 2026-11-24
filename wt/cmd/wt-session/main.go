@@ -184,6 +184,8 @@ func runLaunchPath(
 	removeFuncs := func(snap cleanup.Snapshot, in cleanup.GatherInputs) tui.RemoveFuncs {
 		in.ProtectedPaths = protPaths
 		in.SkipPRs = false
+		// The engine's re-checks use this app's gh hooks (nil is the real gh).
+		in.PRList, in.PRBaseList = a.hooks.prList, a.hooks.prBaseList
 		return cleanupRemoveFuncs(a, snap, in, 0, protErr)
 	}
 

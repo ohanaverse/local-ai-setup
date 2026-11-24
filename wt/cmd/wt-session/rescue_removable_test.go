@@ -242,8 +242,8 @@ func TestRescuedOriginalStopsReadingRemovableAndRefuses(t *testing.T) {
 		src := cleanWorktree(t, dir)
 		githubOrigin(t, dir)
 		rescueClean(t, a, dir)
-		t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) { return nil, errors.New("gh: not installed") }))
-		t.Cleanup(cleanup.StubPRBaseListForTest(func(string, string) ([]byte, error) { return nil, errors.New("gh: not installed") }))
+		notInstalled := func(string, string) ([]byte, error) { return nil, errors.New("gh: not installed") }
+		a.hooks = ghHooks(a.hooks, notInstalled, notInstalled)
 		r := rowFor(t, listRows(t, a, dir), "spike")
 		if r.Status != "less_sure" || !slices.Contains(reasonCodes(r), "pr_unknown") {
 			t.Fatalf("status = %q evidence %q reasons %v, want less_sure with pr_unknown", r.Status, r.Evidence, reasonCodes(r))
