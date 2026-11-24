@@ -3,6 +3,7 @@ package litellm
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -16,20 +17,25 @@ import (
 // config.yaml lock, which lifecycle writers wait for only briefly.
 const dbTimeout = 15 * time.Second
 
-// syncDBTimeout is the same bound for a Sync, which may move every wt row in
-// one write (the first sync after #694 moved 50 cloud rows in 13.9 s of the
-// 15 s above). A sync is a command or the serve start, not a start or stop
-// job a person waits on, and a hung proxy costs the lock holder this long at
-// most before the write falls back to the file.
+// syncDBTimeout is the bound for a write that moves wt rows from config.yaml
+// to the database (the migration): it may move every wt row in one write (the
+// first sync after #694 moved 50 cloud rows in 13.9 s of the 15 s above). Only
+// that write gets it, because it holds the config.yaml lock lifecycle writers
+// wait for; every other write, a sync included, keeps dbTimeout.
 const syncDBTimeout = 60 * time.Second
 
-// syncDBBound is o with Sync's longer database deadline, unless a caller (a
-// test) already set one.
-func syncDBBound(o Options) Options {
-	if o.dbTimeout <= 0 {
-		o.dbTimeout = syncDBTimeout
+// allowMigration lengthens the deadline once a write is known to migrate rows,
+// unless a caller (a test) set its own. The listing has already spent part of
+// the short deadline; the migration gets a fresh long one.
+func (d *dbRoutes) allowMigration() {
+	if d.fixedTimeout || d.timeout >= syncDBTimeout {
+		return
 	}
-	return o
+	if d.cancel != nil {
+		d.cancel()
+	}
+	d.timeout = syncDBTimeout
+	d.ctx, d.cancel = context.WithTimeout(d.base, d.timeout)
 }
 
 // dbRoutes is the database half of one route write (Options.Admin set). The
@@ -46,8 +52,10 @@ type dbRoutes struct {
 	admin   *AdminClient
 	base    context.Context
 	timeout time.Duration
-	ctx     context.Context // set by the first call; bounded by timeout
-	cancel  context.CancelFunc
+	// fixedTimeout is set when a caller chose the deadline (Options.dbTimeout).
+	fixedTimeout bool
+	ctx          context.Context // set by the first call; bounded by timeout
+	cancel       context.CancelFunc
 	// current is the database as listed before planning; valid only when
 	// listed.
 	current []DBModel
@@ -128,7 +136,7 @@ func newDBRoutes(o Options) *dbRoutes {
 	if t <= 0 {
 		t = dbTimeout
 	}
-	return &dbRoutes{admin: o.Admin, base: base, timeout: t}
+	return &dbRoutes{admin: o.Admin, base: base, timeout: t, fixedTimeout: o.dbTimeout > 0}
 }
 
 // context is the one deadline every API call of this write shares, started
@@ -220,7 +228,9 @@ func (d *dbRoutes) holdCloud(cfg *config.Config, f *File, add []plannedAdd) []pl
 func (d *dbRoutes) unlisted(cfg *config.Config, add []plannedAdd, removeNames []string) {
 	d.addsToFile = slices.ContainsFunc(add, func(a plannedAdd) bool { return a.err == nil && dbEligible(cfg, a.id) })
 	for _, n := range removeNames {
-		if dbEligible(cfg, n) && !slices.Contains(d.unchecked, n) {
+		// A model the registry no longer has is not dbEligible, yet its wt
+		// database row (a cloud row sync moved there) may still be live.
+		if (dbEligible(cfg, n) || !isRegistryID(cfg, n)) && !slices.Contains(d.unchecked, n) {
 			d.unchecked = append(d.unchecked, n)
 		}
 	}
@@ -438,6 +448,9 @@ func (d *dbRoutes) route(cfg *config.Config, f *File, add []plannedAdd, removeNa
 			migrating[id] = true
 			desired = append(desired, m)
 		}
+	}
+	if len(migrating) > 0 {
+		d.allowMigration()
 	}
 	byName := map[string][]string{}
 	var names []string
@@ -694,8 +707,24 @@ func (d *dbRoutes) preview(cfg *config.Config, f *File, plan *SyncPlan, built ma
 		return nil
 	}
 	if !d.listed {
-		plan.Warnings = append(plan.Warnings, fmt.Sprintf("database routes unavailable (%s); this plan covers config.yaml only", d.reason))
-		return nil
+		warn := fmt.Sprintf("database routes unavailable (%s); this plan covers config.yaml only", d.reason)
+		// The real sync holds the cloud adds a failed listing leaves unplaced
+		// (holdCloud: same rule), so the plan must not promise a file write
+		// for them. Returned like viaDB so the caller leaves them out of the
+		// file carry-out as well.
+		held := map[string]bool{}
+		for _, id := range plan.Add {
+			if built[id] != nil && RowFamily(cfg, id) == "" && dbEligible(cfg, id) && f.row(id) == nil && !f.hasUnmarkedRow(id) {
+				held[id] = true
+			}
+		}
+		if len(held) > 0 {
+			ids := slices.Sorted(maps.Keys(held))
+			warn += "; not routed until the database answers: " + strings.Join(ids, ", ")
+			plan.Add = slices.DeleteFunc(plan.Add, func(id string) bool { return held[id] })
+		}
+		plan.Warnings = append(plan.Warnings, warn)
+		return held
 	}
 	viaDB := map[string]bool{}
 	drop := map[string]bool{}

@@ -304,7 +304,7 @@ This is expected
 such update is applied like any other price update: the registry price is
 rewritten (the row is stamped in `pricing_updated_at`, as every matched
 model's is on every sync), and where LiteLLM is set up the model's route is
-rewritten, which restarts the proxy. The plan line reads the same as for a
+rewritten (a database row costs no restart; a `config.yaml` row, where database routes are off, restarts the proxy). The plan line reads the same as for a
 price a provider did change, so the line alone does not say which it is.
 `--dry-run` shows the moves without applying them.
 

@@ -455,17 +455,37 @@ func TestSaltKeyRefusalNamesTheKeyAndDeletesNothingUnlisted(t *testing.T) {
 	}
 }
 
-// TestSyncGetsALongerDatabaseDeadlineThanAStart: a sync may move every wt row
-// in one write (50 rows took 13.9 s of the old 15 s on the live proxy), so its
-// bound is longer; a start's stays short, and a bound a caller set is kept.
-func TestSyncGetsALongerDatabaseDeadlineThanAStart(t *testing.T) {
-	if got := newDBRoutes(syncDBBound(Options{Admin: &AdminClient{}})).timeout; got != syncDBTimeout || got <= dbTimeout {
-		t.Fatalf("sync deadline %v, want %v (longer than %v)", got, syncDBTimeout, dbTimeout)
+// TestOnlyAMigrationGetsALongerDatabaseDeadline: a migration may move every
+// wt row in one write (50 rows took 13.9 s of 15 s on the live proxy), so it
+// alone gets the long bound; every other write keeps the short one, and a
+// bound a caller set is kept.
+func TestOnlyAMigrationGetsALongerDatabaseDeadline(t *testing.T) {
+	d := newDBRoutes(Options{Admin: &AdminClient{}})
+	defer d.close()
+	if d.timeout != dbTimeout {
+		t.Fatalf("start deadline %v, want %v", d.timeout, dbTimeout)
 	}
-	if got := newDBRoutes(Options{Admin: &AdminClient{}}).timeout; got != dbTimeout {
-		t.Fatalf("start deadline %v, want %v", got, dbTimeout)
+	d.allowMigration()
+	if d.timeout != syncDBTimeout || d.timeout <= dbTimeout {
+		t.Fatalf("migration deadline %v, want %v", d.timeout, syncDBTimeout)
 	}
-	if got := newDBRoutes(syncDBBound(Options{Admin: &AdminClient{}, dbTimeout: time.Second})).timeout; got != time.Second {
-		t.Fatalf("a caller's deadline was replaced: %v", got)
+	c := newDBRoutes(Options{Admin: &AdminClient{}, dbTimeout: time.Second})
+	defer c.close()
+	c.allowMigration()
+	if c.timeout != time.Second {
+		t.Fatalf("a caller's deadline was replaced: %v", c.timeout)
+	}
+}
+
+// TestUnlistedFlagsARemovedModelTheRegistryNoLongerHas: a cloud model taken out
+// of the registry is not dbEligible, but its wt database row may still be
+// live when the listing failed, so the sync says it was not checked.
+func TestUnlistedFlagsARemovedModelTheRegistryNoLongerHas(t *testing.T) {
+	cfg := testConfig()
+	d := newDBRoutes(Options{Admin: &AdminClient{}})
+	defer d.close()
+	d.unlisted(cfg, nil, []string{"openrouter/gone/model"})
+	if len(d.unchecked) != 1 || d.unchecked[0] != "openrouter/gone/model" {
+		t.Fatalf("unchecked %v, want the removed cloud id", d.unchecked)
 	}
 }

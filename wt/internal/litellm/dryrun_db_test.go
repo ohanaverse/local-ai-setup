@@ -128,3 +128,24 @@ func TestPlanSyncSaysWhenTheDatabaseCannotBeListed(t *testing.T) {
 		t.Fatalf("warnings %q (writes %d), want one unavailable line and no write", plan.Warnings, apiWrites(fake))
 	}
 }
+
+// TestPlanSyncHoldsCloudAddsWhenTheDatabaseCannotBeListed pins that a dry run
+// whose listing fails does not plan a file write for a cloud add: the real
+// sync holds it (holdCloud), because the database may already serve it.
+func TestPlanSyncHoldsCloudAddsWhenTheDatabaseCannotBeListed(t *testing.T) {
+	o, _, _, fake := dbOpts(t, "model_list: []\n"+settledSettings)
+	fake.failList = true
+	cfg := testConfig()
+	plan, err := PlanSync(cfg, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(plan.Add, "openrouter/x/y") {
+		t.Fatalf("plan adds %v, want the cloud row held", plan.Add)
+	}
+	if !slices.ContainsFunc(plan.Warnings, func(w string) bool {
+		return strings.Contains(w, "not routed until the database answers: openrouter/x/y")
+	}) {
+		t.Fatalf("warnings %q, want the held line", plan.Warnings)
+	}
+}

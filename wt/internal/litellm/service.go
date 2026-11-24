@@ -416,18 +416,21 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 			if ch.AddMissingOnly && f.row(m.ID) != nil {
 				continue
 			}
-			// A cloud row sync moved to the database has no file row, but it
-			// is there all the same: the launch ensure must not write a file
-			// twin of it (and restart the proxy for it).
-			if ch.AddMissingOnly && RowFamily(cfg, m.ID) == "" && db.holds(f, m.ID) {
-				continue
-			}
 			// The row is missing and building it can run the provider's exec:
 			// secret_ref helper synchronously. A caller that cannot afford that
 			// wait (the picker's update goroutine, #253) defers the build and
 			// makes it again through this same call where waiting is possible.
 			if ch.AddMissingOnly && o.DeferMissingAdd {
 				missing = append(missing, m.ID)
+				continue
+			}
+			// A cloud row sync moved to the database has no file row, but it
+			// is there all the same: the launch ensure must not write a file
+			// twin of it (and restart the proxy for it). The lookup is a
+			// network call, so it comes after the deferral above: the picker's
+			// update goroutine never makes it, and the retry that does skips
+			// the row.
+			if ch.AddMissingOnly && RowFamily(cfg, m.ID) == "" && db.holds(f, m.ID) {
 				continue
 			}
 			row, err := prepareModel(cfg, m)
@@ -1237,7 +1240,6 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 	// The one caller that reports the rows LiteLLM starts its own `ollama serve`
 	// for, so the one caller that pays for the scan (Options.reportOllamaServe).
 	o.reportOllamaServe = true
-	o = syncDBBound(o)
 	// aliasNote is decision 4's line when there is no database half at all
 	// (Options.Admin nil) and the registry has aliases.
 	var aliasNote string
