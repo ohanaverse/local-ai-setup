@@ -125,6 +125,22 @@ func TestRemovedSubcommand_Rejected(t *testing.T) {
 	}
 }
 
+// TestCleanupIsARemovedSubcommand verifies `wt cleanup` (the old name of
+// `wt worktrees`) is refused with a pointer instead of being handed to the
+// launcher as a stray word, and that after a `--` it is still a passthrough
+// command.
+func TestCleanupIsARemovedSubcommand(t *testing.T) {
+	for _, args := range [][]string{{"cleanup"}, {"cleanup", "-A", "claude"}, {"-A", "shell", "cleanup"}} {
+		_, err := runWT(t, args...)
+		if err == nil || !strings.Contains(err.Error(), "wt cleanup is removed") || !strings.Contains(err.Error(), "wt worktrees") {
+			t.Errorf("wt %v: error %v, want \"wt cleanup is removed\" naming wt worktrees", args, err)
+		}
+	}
+	if _, err := runWT(t, "-A", "shell", "--", "cleanup"); err != nil && strings.Contains(err.Error(), "is removed") {
+		t.Errorf("shell -- cleanup: %v, want the word passed through", err)
+	}
+}
+
 // TestRemovedSubcommandNameAfterDashIsPassedThrough pins the other half of
 // the removed-subcommand guard: a first positional that came after `--` is a
 // passthrough command whatever its name, so `shell-wt -- models` and

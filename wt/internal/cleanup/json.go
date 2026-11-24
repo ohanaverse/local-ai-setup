@@ -11,7 +11,7 @@ import (
 // docs/contracts/cleanup-list.schema.json and the sample fixture move with it.
 const EnvelopeVersion = 1
 
-// Envelope is the one JSON document `wt cleanup --json` prints, on success
+// Envelope is the one JSON document `wt worktrees --json` prints, on success
 // and on failure. Rows is always present. On failure Error is set, Rows is
 // empty and Base, Fetch and GH are absent.
 type Envelope struct {

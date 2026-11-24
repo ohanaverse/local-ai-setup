@@ -2,7 +2,7 @@
 // checkout — the root or a linked worktree — so a second launch there can warn
 // the person first. A claim
 // is one key=value file per wt process in <git-common-dir>/wt-sessions/<pid>;
-// `wt cleanup` reads the same files (the retired repo-cleanup bash script did
+// `wt worktrees` reads the same files (the retired repo-cleanup bash script did
 // too). The format is a documented contract: docs/contracts/session-claims.md at the monorepo root.
 package sessionclaim
 

@@ -31,7 +31,7 @@ import (
 // section lines.
 //
 // One component, two modes (rowListOpts.Mode):
-//   - manage (`wt cleanup`): a checkbox column; space ticks, `a` ticks every
+//   - manage (`wt worktrees`): a checkbox column; space ticks, `a` ticks every
 //     proven row, enter removes the ticked rows.
 //   - launch (the picker): a first item "+ New worktree…" (enter or `n`
 //     emits newWorktreeChosenMsg), enter on any row emits rowChosenMsg —
@@ -47,7 +47,7 @@ import (
 // phrase, the engine's remote-only item). `r` hands the highlighted row to
 // rescue and `R` hands off `wt restore-root` for the root; both quit the
 // program and the hand-off runs on the real terminal once the screen is gone
-// — RunCleanupList then re-enters `wt cleanup`'s list with a fresh report,
+// — RunCleanupList then re-enters `wt worktrees`'s list with a fresh report,
 // while the picker (finishRowSession) ends its session there and wt exits.
 //
 // A row's text is never cut: when it does not fit beside the name it wraps
@@ -63,7 +63,7 @@ import (
 type listMode int
 
 const (
-	modeManage listMode = iota // `wt cleanup`: tick and remove
+	modeManage listMode = iota // `wt worktrees`: tick and remove
 	modeLaunch                 // the picker: choose a row to launch in
 )
 
@@ -129,8 +129,9 @@ type cleanupItem struct {
 // row with any hard blocker, a worktree whose state could not be read (the
 // engine refuses it whatever is approved; a missing directory is the typical
 // case, any unreadable state counts), and a
-// remote row unless it is a proven origin branch (the engine removes nothing
-// else on a remote: only origin, only proven). Every other row may be ticked
+// remote row unless it is an origin branch the engine can delete
+// (Row.OriginRemovable: proven, or less sure and fully read, no blocker; the
+// engine removes nothing else on a remote). Every other row may be ticked
 // by the user; only Tickable local rows are ticked for them (by default and
 // by `a`): an origin row is never ticked for the user, who must space each
 // one, because deleting it is
@@ -139,7 +140,7 @@ type cleanupItem struct {
 // (cleanup_confirm.go) before anything is removed; an origin row through its
 // own phrase.
 func cleanupLocked(r cleanup.Row) bool {
-	if r.Kind == cleanup.KindRemote && (!r.Tickable() || r.Remote != "origin") {
+	if r.Kind == cleanup.KindRemote && !r.OriginRemovable() {
 		return true
 	}
 	if r.Status == cleanup.StatusInUse || r.HardStop != "" {
@@ -337,7 +338,7 @@ type cleanupListModel struct {
 	filtering bool
 }
 
-// newCleanupList builds the manage-mode list `wt cleanup` shows, standing on
+// newCleanupList builds the manage-mode list `wt worktrees` shows, standing on
 // rm. rm goes into the opts as well as the model's own field:
 // opts.RemoveFuncs is what every rebuild (withReport, gotRefresh) seeds `rm`
 // from, so seeding only one of the two leaves them divergent for the rest of
@@ -1297,7 +1298,9 @@ func (m *cleanupListModel) detail() string {
 	case it.locked && it.row.Kind == cleanup.KindRemote && it.row.Remote != "origin":
 		text = "cannot be ticked (wt removes only origin branches): " + text
 	case it.locked && it.row.Kind == cleanup.KindRemote:
-		text = "cannot be ticked (only a proven origin branch can be removed): " + text
+		text = "cannot be ticked (only a proven or fully read less-sure origin branch can be removed): " + text
+	case it.row.Kind == cleanup.KindRemote && it.row.Status != cleanup.StatusProven:
+		text = "less-sure origin branch, public to delete: needs delete origin (grants --accept-loss); space ticks it: " + text
 	case it.row.Kind == cleanup.KindRemote:
 		text = "origin branch: deleting it is visible to everyone with access to the repository and needs the phrase delete origin; space ticks it: " + text
 	case it.locked:

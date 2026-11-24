@@ -114,8 +114,8 @@ func TestItemFromRowRemoteIsConvertedAndRefused(t *testing.T) {
 	e := f.engine(s, f.inputs(), Options{})
 	p := previewOne(t, e, it)
 	o := one(t, e, granted(it, allNeeds))
-	if p.Approval != ApprovalRefused || o.Worktree != WtRefused || p.Reason != o.Reason || !strings.Contains(o.Reason, "only a proven origin branch") {
-		t.Fatalf("preview %s %q, run %s %q; want both refused: only a proven origin branch", p.Approval, p.Reason, o.Worktree, o.Reason)
+	if p.Approval != ApprovalRefused || o.Worktree != WtRefused || p.Reason != o.Reason || !strings.Contains(o.Reason, "only a proven or less-sure origin branch") {
+		t.Fatalf("preview %s %q, run %s %q; want both refused: only a proven or less-sure origin branch", p.Approval, p.Reason, o.Worktree, o.Reason)
 	}
 }
 

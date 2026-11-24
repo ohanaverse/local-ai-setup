@@ -1,6 +1,6 @@
 # `wt worktrees`, `wt remove`, `wt rescue` and `wt restore-root`
 
-`wt worktrees` (`wt cleanup` is an alias that does the same) lists the
+`wt worktrees` (`wt worktree` is an alias that does the same) lists the
 repository's worktrees, local branches and remote branches. On a terminal the
 list is one table with no headings: the root first, then the local worktrees
 and branches together, by name, then the remote branches. Each row ends in a
@@ -25,7 +25,7 @@ wt worktrees --plain        # text list, also used when output is a pipe (remove
 wt worktrees --json         # one JSON document (printed on failure too; removes nothing)
 wt worktrees --no-fetch     # skip `git fetch --prune <remote>` for every remote
 wt worktrees --min-age 30m  # raise the fresh-branch threshold (default 10m)
-wt cleanup ...              # the same command under its old name
+wt worktree ...               # the same command under its alias
 
 wt remove <worktree-path-or-branch>... --dry-run   # what would happen; changes nothing
 wt remove ../repo-wt/topic                         # asks y/N on a terminal
@@ -441,12 +441,12 @@ refs, other worktrees' commits and a background fetch do not fail the run. Its c
 are counted against remote-tracking refs only and its files were copied, not
 moved. What happens to it afterwards depends on the record (next paragraph):
 while it is clean (no staged, unstaged or untracked changes) and the record
-keeps its commits, `wt cleanup` lists it as proven and `wt remove <path> --yes`
+keeps its commits, `wt worktrees` lists it as proven and `wt remove <path> --yes`
 removes it and its own branch. An original with uncommitted changes is
 covered only while it is exactly what the record captured: its index and
 working tree (staged, unstaged and untracked files that are not ignored) must
 equal the record's, and its HEAD and branch tip must still be the commit the
-record names. Then `wt cleanup` lists it as less sure (reason `preserved`,
+record names. Then `wt worktrees` lists it as less sure (reason `preserved`,
 evidence unchanged) and `wt remove <path> --accept-loss` removes it; it never
 needs `--force`, and it is not ticked by default in the list. Any change that
 leaves it different (a change of file modes other than the executable bit is
@@ -482,7 +482,7 @@ git log --stat <ref>
 
 If the record cannot be written (the source changed after the verification,
 a SHA-256 repository, or a git step failed), the rescue stays `moved` and the
-report carries a warning starting `record_not_written:`; the copy is unaffected. `wt cleanup` and
+report carries a warning starting `record_not_written:`; the copy is unaffected. `wt worktrees` and
 `wt remove` read the records (`for-each-ref refs/wt/rescued/`, afresh on every
 classification, including the re-check before a removal). A record counts for a
 branch or detached worktree only when everything below holds; otherwise it is
@@ -581,7 +581,7 @@ made but the comparison with the source found a difference).
 `--json` prints one document,
 [rescue-result.schema.json](../../docs/contracts/rescue-result.schema.json)
 (samples beside it), on failure too. `--no-fetch` and `--min-age` behave as
-for `wt cleanup`. `--dry-run` writes no ref, index or working file (like
+for `wt worktrees`. `--dry-run` writes no ref, index or working file (like
 listing, the merge proof may leave unreachable tree objects): it does not
 fetch, so what counts as unpushed or merged is as of the last fetch, and the
 report says so in `warnings`.
@@ -613,7 +613,7 @@ wt restore-root --to spike --yes   # no prompt; --to names only the directory un
 | `--no-fetch` | do not fetch before the fast-forward check |
 
 A real run first fetches every remote (it updates remote-tracking refs,
-nothing else), exactly as `wt cleanup` does (one `git fetch --prune` per
+nothing else), exactly as `wt worktrees` does (one `git fetch --prune` per
 remote). Uncommitted work is carried by the rescue engine:
 a new worktree is added detached at the branch's tip, staged, unstaged and
 untracked non-ignored files are copied into it and verified against the root
@@ -702,7 +702,7 @@ modes beyond the executable bit are not kept. A change made to the root in the
 instant between the last claim and record checks and the reset is lost, the
 same window as `wt remove` of a dirty rescued original (a carried untracked
 file edited then is kept). After the move the record names the root as its
-source, so `wt cleanup` does not list the new worktree as preserved by it.
+source, so `wt worktrees` does not list the new worktree as preserved by it.
 `wt rescue` still truncates its messages at 200 characters; `wt restore-root`
 prints reasons, warnings and steps in full.
 
@@ -724,14 +724,23 @@ the rules are narrower than for a local branch:
 
 - Only a **proven** row on **`origin`**: a MERGED pull request into the default
   branch whose head is exactly the branch's tip, whose merge commit is in the
-  base; no open PR with the branch as head; no open PR (from this repository or
+  base (a branch that took more commits after its PR merged, such as a stacked
+  PR merged into it, counts too when its tree is identical to the base's:
+  evidence `trees-match`, and the gate checks that again just before
+  pushing); no open PR with the branch as head; no open PR (from this repository or
   a fork) with it as base; content in the base; and `origin` fetched cleanly
   **this run**. `--no-fetch`, a terminal list that fetched nothing (it does
   not fetch when it opens; `--fetch` and the list's `F` fetch), a failed fetch,
   a missing `gh` or a failed query each make the row
-  unproven. There is no `--accept-loss` or `-D` path.
+  unproven *and unreadable*: no approval deletes it.
+- A **less-sure** row on `origin` that wt could read in full (its verdict is
+  `check`, not unknown: for example the content is in the base but no merged PR
+  backs the branch) is removable too, with `--accept-loss` as well as
+  `--remote` (in the list, the same `delete origin` phrase, which approves each
+  item only what it needs). A row with unique work, an open PR, a dependent PR
+  or any other hard stop is never removable, and `-D` and `--force` never apply.
 - The approval is its own: `--remote` on the CLI (`delete origin` in the list's
-  confirmation, once the list can prove an origin row).
+  confirmation, once the list can read an origin row).
   `--yes`, `y`, `--accept-loss`, `-D`, `--force` and the plain `delete` never
   grant it, and `--remote` grants nothing else.
 - Right before the push the engine re-asks `gh` about this one branch (so a PR

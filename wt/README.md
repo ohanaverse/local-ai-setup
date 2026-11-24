@@ -97,7 +97,7 @@ Beyond launching, `wt` has subcommands; `wt --help` lists them. Each has a refer
 
 | Command | What it does | Reference |
 |---|---|---|
-| `wt cleanup` | Lists worktrees, local branches and `origin` branches that can go, grouped by kind (worktrees, local branches, remote branches) with a verdict and the proof for each (`--plain` groups by verdict); on a terminal removes the ones you tick | [docs/wt-cleanup.md](docs/wt-cleanup.md), [guide 08 §9](../docs/guides/08-maintenance-and-troubleshooting.md) |
+| `wt worktrees` | Lists worktrees, local branches and `origin` branches that can go, grouped by kind (worktrees, local branches, remote branches) with a verdict and the proof for each (`--plain` groups by verdict); on a terminal removes the ones you tick | [docs/wt-cleanup.md](docs/wt-cleanup.md), [guide 08 §9](../docs/guides/08-maintenance-and-troubleshooting.md) |
 | `wt remove <worktree-path-or-branch>...` | Removes named worktrees and branches through the same engine, re-checking each; `--dry-run` first | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-remove-arguments-output-and-exit-codes) |
 | `wt rescue <worktree-path-or-branch>` | Copies a worktree's local-only work into a new branch and worktree before you remove it | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-rescue-keep-work-before-it-is-lost) |
 | `wt restore-root` | Moves the root's branch and uncommitted work into a worktree and puts the root back on the default branch | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-restore-root-move-the-roots-branch-into-a-worktree) |
@@ -192,7 +192,7 @@ claude's `--continue` means the most recent conversation in the current director
 
 ## Exit prompt for an untouched worktree
 
-There is no exit prompt: when the agent exits, `wt` asks nothing about the worktree, and cleanup is user-driven — `wt cleanup` / `wt worktrees` ([docs/wt-cleanup.md](docs/wt-cleanup.md)) lists what can go and `wt remove` removes named targets. The `[launch] exit_prompt` key in `~/.config/agent-wt/config.toml` (the old prompt's off-switch) is tolerated and ignored: any value parses and survives wt's saves, nothing validates or consults it, and a non-empty value prints one note per process — `wt: note: config.toml: [launch] exit_prompt is no longer used and is ignored`. The tail never changes the agent's exit status. See [docs/wt-agents/README.md](docs/wt-agents/README.md#post-exit-order).
+There is no exit prompt: when the agent exits, `wt` asks nothing about the worktree, and cleanup is user-driven — `wt worktrees` ([docs/wt-cleanup.md](docs/wt-cleanup.md)) lists what can go and `wt remove` removes named targets. The `[launch] exit_prompt` key in `~/.config/agent-wt/config.toml` (the old prompt's off-switch) is tolerated and ignored: any value parses and survives wt's saves, nothing validates or consults it, and a non-empty value prints one note per process — `wt: note: config.toml: [launch] exit_prompt is no longer used and is ignored`. The tail never changes the agent's exit status. See [docs/wt-agents/README.md](docs/wt-agents/README.md#post-exit-order).
 
 ## Post-run summary line
 

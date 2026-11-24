@@ -112,7 +112,7 @@ func IsHardStop(code string, k Kind) bool {
 // minute ago looks merged.
 const DefaultMinAge = 10 * time.Minute
 
-// MinAgeFloor is the smallest MinAge `wt cleanup --min-age` accepts. Any
+// MinAgeFloor is the smallest MinAge `wt worktrees --min-age` accepts. Any
 // positive value used to be taken, and 1ns turns the fresh-branch rule off:
 // a branch made a second ago reads as proven merged. Classify itself does not
 // enforce it (a test may pass any Options); the command refuses a lower value.
@@ -1047,7 +1047,11 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 			j.unsure(ReasonCannotVerify, why)
 		}
 	}
-	candidate := j.ev != ""
+	// A row the engine may delete needs the "who targets this branch" answer:
+	// one with a proof, or (since a less-sure origin branch is removable with
+	// approval) one with only a weak signal. Deleting closes every PR that
+	// targets the branch, a fork's included.
+	candidate := j.ev != "" || (ok && p.Verdict == NotMerged && len(p.Weak) > 0)
 	deps, baseErr := c.dependants(rf.Name, candidate, prLookups)
 	if baseErr != "" {
 		j.unsure(ReasonCannotVerify, baseErr)
@@ -1057,7 +1061,8 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	}
 	if j.ev != "" {
 		// Proven needs a MERGED PR into the default branch whose head is this
-		// tip and whose merge commit is in the base (the removal engine
+		// tip (or, when the tip's whole tree equals the base's, whose head
+		// moved on) and whose merge commit is in the base (the removal engine
 		// re-verifies exactly that before it pushes); an unknown lookup is
 		// already unsure above, so the soft reasons are only for an answered
 		// lookup.
@@ -1153,6 +1158,16 @@ func (c *classifier) remotePRRung(j *judge, rf RefFact, res PRResult) {
 		return
 	}
 	if moved := c.movedPR(res, rf.Tip); moved != nil {
+		// A merged PR plus a tip whose whole tree equals the base's leaves
+		// nothing to lose however the branch moved afterwards (a stacked PR
+		// merged into it): that is the PR proof. Any other evidence says only
+		// that some content is in the base, so the moved head stays a doubt.
+		if j.ev == EvTreesMatch && c.s.Merges[moved.MergeCommit] == TriYes {
+			if j.pr == nil {
+				j.pr = moved
+			}
+			return
+		}
 		j.weak(ReasonPRHeadMoved, fmt.Sprintf("content is in the base, but PR #%d merged a different head; the branch moved after the merge", moved.Number))
 		return
 	}

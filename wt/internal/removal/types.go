@@ -1,4 +1,4 @@
-// Package removal carries out what `wt cleanup` lists: it removes worktrees
+// Package removal carries out what `wt worktrees` lists: it removes worktrees
 // and deletes local branches the user ticked, re-checking each one first. It
 // is the only package in wt allowed to hold deletion code
 // (TestDeletionStringsOnlyInRemovalPackage); internal/cleanup, which decides

@@ -74,7 +74,7 @@ type GatherInputs struct {
 	SkipPRs bool
 	// AllRemotes keeps every remote's branches in Remotes. Without it only
 	// origin's and those of remotes a local head's upstream names are kept
-	// (what `wt cleanup --json` and --plain list). The interactive lists set
+	// (what `wt worktrees --json` and --plain list). The interactive lists set
 	// it, so a branch of a remote nothing tracks is still shown.
 	AllRemotes bool
 }
@@ -376,8 +376,9 @@ func FillPRs(g Git, s *Snapshot, in GatherInputs) {
 }
 
 // baseCandidates are the names of the origin branches that could be offered
-// for deletion: content already in the base, or a merged PR into the default
-// branch whose head is the tip. Only these need the live "who targets this
+// for deletion: content already in the base, a merged PR into the default
+// branch whose head is the tip, or a weak signal (a less-sure row is
+// removable with approval). Only these need the live "who targets this
 // branch" query (one gh call each).
 func (s *Snapshot) baseCandidates() []string {
 	var out []string
@@ -385,7 +386,7 @@ func (s *Snapshot) baseCandidates() []string {
 		if r.Remote != "origin" || slices.Contains(out, r.Name) {
 			continue
 		}
-		if p, ok := s.Proofs[r.Tip]; ok && p.Verdict == Merged {
+		if p, ok := s.Proofs[r.Tip]; ok && (p.Verdict == Merged || (p.Verdict == NotMerged && len(p.Weak) > 0)) {
 			out = append(out, r.Name)
 			continue
 		}
@@ -834,9 +835,18 @@ func (s *Snapshot) checkMerges(g Git) {
 			tips[r.Tip] = true
 		}
 	}
-	for _, res := range s.PRs {
+	// An origin branch's PR lookup is keyed by its name: a PR it merged from
+	// an older head (the branch moved on afterwards) is judged by the moved-PR
+	// rung, which needs the same answer.
+	originNames := map[string]bool{}
+	for _, r := range s.Remotes {
+		if r.Remote == "origin" {
+			originNames[r.Name] = true
+		}
+	}
+	for name, res := range s.PRs {
 		for _, pr := range res.PRs {
-			if pr.State != "MERGED" || pr.BaseRef != s.Base.Default || !tips[pr.HeadRefOid] {
+			if pr.State != "MERGED" || pr.BaseRef != s.Base.Default || (!tips[pr.HeadRefOid] && !originNames[name]) {
 				continue
 			}
 			if _, done := s.Merges[pr.MergeCommit]; done || !fullCommitID.MatchString(pr.MergeCommit) {

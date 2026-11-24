@@ -602,21 +602,23 @@ func TestCleanupListRemovalOffWithoutRegistry(t *testing.T) {
 	}
 }
 
-// TestWorktreesCmdRegisteredWithCleanupAlias verifies `wt worktrees` is the
-// root subcommand and `wt cleanup` the same command object under an alias.
-func TestWorktreesCmdRegisteredWithCleanupAlias(t *testing.T) {
+// TestWorktreesCmdRegisteredWithWorktreeAlias verifies `wt worktrees` is the
+// root subcommand and `wt worktree` the same command object under an alias, and
+// that the old `cleanup` name is no longer one: without the alias the singular
+// opens the launch picker (no tick boxes) through the root's stray positional.
+func TestWorktreesCmdRegisteredWithWorktreeAlias(t *testing.T) {
 	newTestApp(t)
 	root := rootCmdWith(testHooks())
 	w, _, err := root.Find([]string{"worktrees"})
 	if err != nil || w == nil || w.Name() != "worktrees" {
 		t.Fatalf("Find(worktrees) = %v, %v", w, err)
 	}
-	c, _, err := root.Find([]string{"cleanup"})
+	c, _, err := root.Find([]string{"worktree"})
 	if err != nil || c != w {
-		t.Errorf("Find(cleanup) = %v, %v; want the worktrees command", c, err)
+		t.Errorf("Find(worktree) = %v, %v; want the worktrees command", c, err)
 	}
-	if !slices.Contains(w.Aliases, "cleanup") {
-		t.Errorf("Aliases = %v, want cleanup", w.Aliases)
+	if !slices.Contains(w.Aliases, "worktree") || slices.Contains(w.Aliases, "cleanup") {
+		t.Errorf("Aliases = %v, want worktree and not cleanup", w.Aliases)
 	}
 }
 
@@ -631,7 +633,7 @@ func TestWorktreesCmdTTYHandsOffToManageList(t *testing.T) {
 	calls := 0
 	runCleanupList = func(cleanup.Report, themes.Theme, tui.RemoveFuncs) error { calls++; return nil }
 	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
-	for _, name := range []string{"worktrees", "cleanup"} {
+	for _, name := range []string{"worktrees", "worktree"} {
 		calls = 0
 		root := rootCmdWith(testHooks())
 		var out bytes.Buffer
@@ -707,9 +709,9 @@ func TestWorktreesCmdJSONSameUnderBothNames(t *testing.T) {
 	// A row's reason names its age in seconds, which can tick between the runs.
 	age := regexp.MustCompile(`only \d+[smh]\d* old`)
 	norm := func(s string) string { return age.ReplaceAllString(s, "only N old") }
-	w, c := norm(run("worktrees")), norm(run("cleanup"))
+	w, c := norm(run("worktrees")), norm(run("worktree"))
 	if w == "" || w != c {
-		t.Errorf("worktrees and cleanup --json differ:\n%s\n---\n%s", w, c)
+		t.Errorf("worktrees and worktree --json differ:\n%s\n---\n%s", w, c)
 	}
 }
 

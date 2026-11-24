@@ -68,7 +68,7 @@ One standard for how every wt tool talks, prompts, exits, prints machine output 
 
 | ID | Rule |
 |---|---|
-| C1 | `Use` is `name <required> [optional]`, `...` for repeatable. `Short` is one imperative sentence fragment, sentence case, no trailing period, naming the thing acted on; an alias is named in it (`(alias: cleanup)`). `Args` is always set explicitly (`cobra.NoArgs` when there are none). |
+| C1 | `Use` is `name <required> [optional]`, `...` for repeatable. `Short` is one imperative sentence fragment, sentence case, no trailing period, naming the thing acted on; an alias is named in it (`(alias: worktree)`). `Args` is always set explicitly (`cobra.NoArgs` when there are none). |
 | C2 | A command with approvals, exit codes or JSON has `Long` (what it does, what each flag means, an exit-code paragraph, the schema path under `--json`) and `Example` (two-space indent, one invocation per line, a `--dry-run` first, then the `--yes` form). The `Long` exit paragraph and the doc page's exit table must say the same thing in the same words (today they drift: see the migration table). |
 | C3 | Flags are lower-case kebab-case long flags. Short flags exist only for the launcher's core selectors (`-W -A -M -T -F`) and `-D`. Flag help is a lower-case fragment with no period; the `--json` help is `print one JSON document` plus the schema path when the shape is a contract. **[decided]** |
 | C4 | Test "was this flag given" with `cmd.Flags().Changed(name)`, never by comparing to a zero value that has meaning. Reject contradictory combinations as plain errors naming both flags (`--fetch` with `--no-fetch`). Required flags use `MarkFlagRequired`. |

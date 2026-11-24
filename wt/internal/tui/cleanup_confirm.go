@@ -20,7 +20,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
-// The `wt cleanup` list's removal: enter on the ticked rows opens a confirm
+// The `wt worktrees` list's removal: enter on the ticked rows opens a confirm
 // screen, then a progress screen while the engine works, then the results.
 // Nothing here removes anything or builds a removal.Item: the engine
 // previews the ticked rows (RemoveFuncs.Preview), the confirm screen turns
@@ -1127,6 +1127,9 @@ func (m *cleanupListModel) decisionLines(e confirmEntry, indent string) []string
 		if pv.Fresh.PR != nil {
 			add(fmt.Sprintf("merged PR #%d; no open PR uses this branch as of the re-check", pv.Fresh.PR.Number))
 		}
+		if pv.Fresh.Status != cleanup.StatusProven {
+			add("not proven merged: " + removal.LessSureWhy(pv.Fresh))
+		}
 		add("restore: git push origin " + cleanup.OneLine(pv.Fresh.Tip) + ":refs/heads/" + cleanup.OneLine(pv.Item.Name))
 	}
 	return out
@@ -1291,7 +1294,7 @@ func (m *cleanupListModel) confirmTop() (title, summary []string) {
 		if k == 1 {
 			noun = "branch"
 		}
-		sum += fmt.Sprintf(" · %d %s on origin, visible to everyone with access to the repository; no open PR uses them as of the re-check, and GitHub can restore a deleted branch from its merged PR", k, noun)
+		sum += fmt.Sprintf(" · %d %s on origin, visible to everyone with access to the repository; no open PR uses them as of the re-check, and each entry prints the git push that restores it", k, noun)
 	}
 	return []string{accent.Render(clip(m.screenName()+" · confirm", m.width))}, wrapIndented(sum, "", m.width)
 }

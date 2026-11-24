@@ -13,7 +13,7 @@
   make -C ~/github/ohanaverse/local-ai-setup/wt install
   ```
 
-  **Check the binary:** if `wt --help` lacks a flag or command this guide names (`--root`, `--new`, `wt cleanup`, `wt rescue`), the `wt` on PATH is older than the guide. The rebuild command above is the fix: `make -C wt install` builds `wt-session`, `wt` (the same binary under two names) and `wt-model`, re-seals each and installs them and the shims over the PATH copies in `~/.local/bin/` (a bare `go build` would refresh only one of them); a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4).
+  **Check the binary:** if `wt --help` lacks a flag or command this guide names (`--root`, `--new`, `wt worktrees`, `wt rescue`), the `wt` on PATH is older than the guide. The rebuild command above is the fix: `make -C wt install` builds `wt-session`, `wt` (the same binary under two names) and `wt-model`, re-seals each and installs them and the shims over the PATH copies in `~/.local/bin/` (a bare `go build` would refresh only one of them); a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4).
 - **Shims on PATH** (`claude-wt` … `shell-wt` in `~/.local/bin/`). Missing? `make install` from `~/github/ohanaverse/local-ai-setup/wt` — verified real (copies `bin/*-wt` to `~/.local/bin/` and re-signs on macOS to dodge AMFI `SIGKILL`/exit 137). All 7 shims present here:
 
   ```
