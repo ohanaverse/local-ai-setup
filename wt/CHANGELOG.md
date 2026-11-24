@@ -116,6 +116,17 @@
   value `rescued` and the reason code `preserved` (additive, version 1
   unchanged); `remove-result` is unchanged. See `docs/wt-cleanup.md`.
 
+### Fixed
+
+- The local-model profile popup offers a third answer, **launch without
+  profile** (the middle item, or `n`): a profile is optional, but the popup's
+  only two answers were "apply profile" and "go back", so a local model whose
+  profile the person did not want could not be launched from the picker at
+  all. `n` keeps the meaning it had in the raw `/dev/tty` prompt this popup
+  replaced ("no, do not apply it, launch anyway"); going back is `esc`, `q`,
+  `ctrl+c` or the last item. The carried answer still reaches the applier as
+  `(rp, false)`, so the released phase never asks again.
+
 ### Added
 
 - `wt job [ID] [--cancel]` lists the model server's queued and running

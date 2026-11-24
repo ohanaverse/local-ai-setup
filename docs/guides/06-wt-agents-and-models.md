@@ -269,7 +269,7 @@ wt profile status                     # on/off
 wt profile on / wt profile off        # global kill switch
 ```
 
-An interactive launch that resolves a non-empty profile **asks before applying** (default yes on Enter); non-interactive launches apply automatically. `wt smoke` applies profiles too (`cmd/wt-session/smoke.go` resolves per agent × model and uses the same `applyResolvedProfile` as a real launch) — so with this profile on, `wt smoke -A pi -M <local-id>` runs `little-coder`, and the row fails if `little-coder` isn't on PATH.
+An interactive launch that resolves a non-empty profile **asks before applying** (default yes on Enter; in the picker's popup `n` launches this once without the profile and `esc` goes back); non-interactive launches apply automatically. `wt smoke` applies profiles too (`cmd/wt-session/smoke.go` resolves per agent × model and uses the same `applyResolvedProfile` as a real launch) — so with this profile on, `wt smoke -A pi -M <local-id>` runs `little-coder`, and the row fails if `little-coder` isn't on PATH.
 
 Full reference — all four agents' mechanisms, file-safety/self-heal rules, claude/codex/opencode working entries: `wt/docs/wt-agents/profiles.md`.
 

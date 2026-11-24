@@ -63,7 +63,7 @@ func TestCommitAskProfilePopupDecline(t *testing.T) {
 	m := model{agent: "claude", selectedPath: linked, launchModel: config.Model{ID: "ollama/x"}, phase: phaseModel}
 	built, dropped := false, false
 	next, _ := m.commitAsk(m.launchModel, func(mm model) (model, tea.Cmd) { built = true; return mm, nil }, func() tea.Msg { dropped = true; return nil })
-	after, cmd := updateMsg(next, askKey("n"))
+	after, cmd := updateMsg(next, askKey("esc"))
 	if built || after.phase != phaseModel || after.committed || after.profileCarry != nil {
 		t.Errorf("decline: built %v phase %v committed %v carry %v", built, after.phase, after.committed, after.profileCarry)
 	}
@@ -183,8 +183,81 @@ func TestDeclineAfterGateYesQueuesNoRouteNotes(t *testing.T) {
 	if next.ask == nil || next.ask.purpose != askProfile {
 		t.Fatalf("want the profile popup, got %+v", next.ask)
 	}
-	updateMsg(next, askKey("n")) // profile no -> decline
+	updateMsg(next, askKey("esc")) // profile go back -> decline
 	if pendingRouteNotes != "" {
 		t.Errorf("route notes after a decline = %q; want none", pendingRouteNotes)
+	}
+}
+
+// TestCommitAskProfilePopupLaunchWithoutProfile: the popup offers a third
+// answer beside "apply profile" and "go back" — launch this once without the
+// profile, the raw /dev/tty prompt's "n" — and it launches. It matters
+// because "go back" was the only way out of the popup, so a local model whose
+// profile the person did not want could not be launched from the picker at
+// all, and the carried (rp, false) is what keeps the released phase from
+// asking the same question again on /dev/tty.
+func TestCommitAskProfilePopupLaunchWithoutProfile(t *testing.T) {
+	forceTTY(t)
+	stubRouteNotes(t)
+	stubProfileResolver(t, testProfile, true, nil)
+	linked := linkedWorktree(t, rootRepo(t))
+	m := model{agent: "claude", selectedPath: linked, launchModel: config.Model{ID: "ollama/x"}, phase: phaseModel}
+	var got model
+	built := false
+	next, _ := m.commitAsk(m.launchModel, func(mm model) (model, tea.Cmd) {
+		built = true
+		got = mm
+		return mm, nil
+	}, func() tea.Msg { return nil })
+	if next.ask == nil || next.ask.purpose != askProfile {
+		t.Fatalf("want the profile popup, got %+v", next.ask)
+	}
+	after, _ := updateMsg(next, askKey("n"))
+	if !built {
+		t.Fatalf("n left phase %v: want the launch to proceed without the profile", after.phase)
+	}
+	if after.phase == phaseAsk || after.committed {
+		t.Errorf("after n: phase %v committed %v; want the picker's launching phase", after.phase, after.committed)
+	}
+	if got.profileCarry == nil || got.profileCarry.apply || got.profileCarry.rp == nil {
+		t.Errorf("carry = %+v; want (rp, false)", got.profileCarry)
+	}
+}
+
+// TestCommitAskProfilePopupCursorSelectsWithoutProfile: the third answer is a
+// real choice item too — down, enter picks "launch without profile" — and the
+// last item stays "go back", which still declines. It matters because the
+// keys are a shortcut, not the only way to the answer.
+func TestCommitAskProfilePopupCursorSelectsWithoutProfile(t *testing.T) {
+	forceTTY(t)
+	stubRouteNotes(t)
+	stubProfileResolver(t, testProfile, true, nil)
+	linked := linkedWorktree(t, rootRepo(t))
+	m := model{agent: "claude", selectedPath: linked, launchModel: config.Model{ID: "ollama/x"}, phase: phaseModel}
+	var got model
+	next, _ := m.commitAsk(m.launchModel, func(mm model) (model, tea.Cmd) { got = mm; return mm, nil })
+	if next.ask == nil || next.ask.purpose != askProfile {
+		t.Fatalf("want the profile popup, got %+v", next.ask)
+	}
+	next, _ = updateMsg(next, askKey("down"))
+	updateMsg(next, askKey("enter"))
+	if got.profileCarry == nil || got.profileCarry.apply {
+		t.Errorf("carry = %+v; want (rp, false) from the middle item", got.profileCarry)
+	}
+
+	var declined bool
+	next, _ = m.commitAsk(m.launchModel, func(mm model) (model, tea.Cmd) { return mm, nil },
+		func() tea.Msg { declined = true; return nil })
+	if next.ask == nil || next.ask.purpose != askProfile {
+		t.Fatalf("want the profile popup again, got %+v", next.ask)
+	}
+	next, _ = updateMsg(next, askKey("down"))
+	next, _ = updateMsg(next, askKey("down"))
+	after, cmd := updateMsg(next, askKey("enter"))
+	if cmd != nil {
+		cmd()
+	}
+	if !declined || after.phase != phaseModel {
+		t.Errorf("last item: declined %v phase %v; want the decline back to the picker", declined, after.phase)
 	}
 }
