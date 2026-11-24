@@ -117,7 +117,7 @@ func applySteps(ctx context.Context, env Env, p Plan, progress func(string)) Res
 			r.Recovery = run.recovery(env, p, &s)
 			return r
 		}
-		progress(fmt.Sprintf("step %d/%d: %s", i+1, len(p.Steps), stepLabel(s.Kind)))
+		progress(fmt.Sprintf("step %d/%d: %s", i+1, len(p.Steps), stepLabel(s)))
 		if err := applyStep(ctx, env, p, s, &r, &run); err != nil {
 			r = failed(r, s, err)
 			r.Recovery = run.recovery(env, p, &s)
@@ -133,15 +133,16 @@ func applySteps(ctx context.Context, env Env, p Plan, progress func(string)) Res
 // alias of another package's type.
 func failed(r Result, s Step, err error) Result {
 	r.Failed = &s
-	r.Err = fmt.Errorf("%s: %w", stepLabel(s.Kind), err)
+	r.Err = fmt.Errorf("%s: %w", stepLabel(s), err)
 	return r
 }
 
 // stepLabel is the short ASCII name a progress line and an error use. The
 // two session-side kinds are modelmode's; the rest are the admin steps this
-// package adds.
-func stepLabel(k StepKind) string {
-	switch k {
+// package adds. A wait names what it waits for: the LiteLLM plans wait for
+// LiteLLM first and for wt-model after it, and the two lines must differ.
+func stepLabel(s Step) string {
+	switch s.Kind {
 	case StepPair:
 		return "LiteLLM pair"
 	case StepPlist:
@@ -153,6 +154,9 @@ func stepLabel(k StepKind) string {
 	case StepKickstart:
 		return "restart the LaunchAgent"
 	case StepWait:
+		if s.Action == ActionWaitLiteLLM {
+			return "wait for LiteLLM"
+		}
 		return "wait for wt-model"
 	case StepRemovePlist:
 		return "remove the LaunchAgent plist"
@@ -167,7 +171,7 @@ func stepLabel(k StepKind) string {
 	case StepKickstartLiteLLM:
 		return "restart LiteLLM"
 	}
-	if l, ok := modelmode.StepLabel(k); ok {
+	if l, ok := modelmode.StepLabel(s.Kind); ok {
 		return l
 	}
 	return "unknown step"

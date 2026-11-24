@@ -1547,3 +1547,137 @@ func TestSetupTabKMenuActionsGateLikeA(t *testing.T) {
 		t.Errorf("y then y: applies = %d, want 1", sm.applies)
 	}
 }
+
+// settleStates is a loaded agent whose server answers (up) and one whose
+// server does not answer yet (down): what a read just after a restart sees.
+func settleStates() (up, down modelsetup.State) {
+	up = fullState()
+	up.Server = modelsetup.ServerState{URL: "http://127.0.0.1:8787", Checked: true, OK: true, API: 1, Schema: 1}
+	down = up
+	down.Server = modelsetup.ServerState{URL: "http://127.0.0.1:8787", Checked: true, Kind: modelsetup.KindUnreachable,
+		Message: "dial tcp 127.0.0.1:8787: connect: connection refused"}
+	return up, down
+}
+
+// TestSetupTabRestartWaitsForTheServerBeforeShowingTheResult pins #710's
+// second half: R returns as soon as launchd has restarted the job, and the
+// read right after found a server that was not listening yet, so the tab
+// flashed "problem: unreachable". It now reads again until the server
+// answers and shows the state that answered.
+func TestSetupTabRestartWaitsForTheServerBeforeShowingTheResult(t *testing.T) {
+	old := setupSettleDelay
+	setupSettleDelay = 0
+	t.Cleanup(func() { setupSettleDelay = old })
+	for _, key := range []string{"R", "s"} {
+		up, down := settleStates()
+		sm := &setupMachine{states: []modelsetup.State{up, down, down, up}}
+		m := setupEditor(t, sm, 120, 50)
+		m = keys(t, m, key)
+		if sm.observes != 4 {
+			t.Errorf("%s: observes = %d, want 4 (the first read, then one per try until the server answered)", key, sm.observes)
+		}
+		v := plain(m)
+		if strings.Contains(v, "problem: unreachable") {
+			t.Errorf("%s: the tab shows the server as a problem although it answered:\n%s", key, v)
+		}
+		if !strings.Contains(v, "ok: wt-model answers") {
+			t.Errorf("%s: the tab does not show the answering server:\n%s", key, v)
+		}
+		if want := modelsetup.AgentLabel + " " + controlWords[sm.actions[0]][1]; m.setup.status != want {
+			t.Errorf("%s: status = %q, want %q", key, m.setup.status, want)
+		}
+		if m.setup.busy || m.setup.settle != 0 {
+			t.Errorf("%s: busy = %v settle = %d after the wait", key, m.setup.busy, m.setup.settle)
+		}
+	}
+}
+
+// TestSetupTabRestartStopsWaitingAndShowsTheTruth pins that the wait is
+// bounded: a server that never answers is shown as the problem it is, after
+// setupSettleTries more reads, not hidden and not waited on forever.
+func TestSetupTabRestartStopsWaitingAndShowsTheTruth(t *testing.T) {
+	old := setupSettleDelay
+	setupSettleDelay = 0
+	t.Cleanup(func() { setupSettleDelay = old })
+	up, down := settleStates()
+	sm := &setupMachine{states: []modelsetup.State{up, down}}
+	m := setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "R")
+	if want := 1 + 1 + setupSettleTries; sm.observes != want {
+		t.Errorf("observes = %d, want %d (the first read, the one after R, and setupSettleTries retries)", sm.observes, want)
+	}
+	if v := plain(m); !strings.Contains(v, "problem: unreachable") {
+		t.Errorf("a server that never answered is not shown as a problem:\n%s", v)
+	}
+	if m.setup.busy || m.setup.settle != 0 {
+		t.Errorf("busy = %v settle = %d after giving up", m.setup.busy, m.setup.settle)
+	}
+}
+
+// TestSetupTabOnlyAConnectionFailureIsWaitedOn pins that a stop, a refused
+// token or a server that is not wt-model's is read once: those are not a
+// server that is still starting.
+func TestSetupTabOnlyAConnectionFailureIsWaitedOn(t *testing.T) {
+	old := setupSettleDelay
+	setupSettleDelay = 0
+	t.Cleanup(func() { setupSettleDelay = old })
+	_, down := settleStates()
+	sm := &setupMachine{states: []modelsetup.State{down}}
+	m := setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "x")
+	if sm.observes != 2 {
+		t.Errorf("a stop was followed by %d reads, want 1 more", sm.observes-1)
+	}
+	refused := fullState() // its server answers with a refused token
+	sm = &setupMachine{states: []modelsetup.State{refused}}
+	m = setupEditor(t, sm, 120, 50)
+	m = keys(t, m, "R")
+	if sm.observes != 2 {
+		t.Errorf("a refused token was waited on: %d reads after the restart, want 1", sm.observes-1)
+	}
+	_ = m
+}
+
+// TestSetupTabRAndCEndTheWaitAndAStrayTickIsIgnored pins the review's three
+// findings about r or c pressed during the wait after a restart: the key's
+// read replaces the wait (one chain of reads, not two sharing the tries),
+// the status is not left to the pending clear to blank twice over, and the
+// tick that was already out when the key came does nothing.
+func TestSetupTabRAndCEndTheWaitAndAStrayTickIsIgnored(t *testing.T) {
+	for _, key := range []string{"r", "c"} {
+		up, down := settleStates()
+		sm := &setupMachine{states: []modelsetup.State{up, down, up}}
+		m := setupEditor(t, sm, 120, 50)
+
+		// R succeeded; the read after it finds the server not listening yet.
+		next, cmd := m.Update(setupControlledMsg{action: modelsetup.ControlRestart})
+		m = next.(*model)
+		next, tick := m.Update(cmd())
+		m = next.(*model)
+		if tick == nil || m.setup.settle == 0 || !m.setup.busy {
+			t.Fatalf("%s: the tab is not waiting (tick nil = %v, settle = %d, busy = %v)", key, tick == nil, m.setup.settle, m.setup.busy)
+		}
+		if !strings.Contains(m.setup.status, "waiting for wt-model to answer") {
+			t.Errorf("%s: status = %q while waiting", key, m.setup.status)
+		}
+
+		// The key's read answers; it ends the wait.
+		next, cmd = m.Update(keyMsg(key))
+		m = next.(*model)
+		if m.setup.settle != 0 || m.setup.settled != "" {
+			t.Errorf("%s: the key did not end the wait (settle = %d, settled = %q)", key, m.setup.settle, m.setup.settled)
+		}
+		m = runCmd(t, m, cmd)
+		if m.setup.busy || strings.Contains(plain(m), "problem: unreachable") {
+			t.Errorf("%s: busy = %v after the read:\n%s", key, m.setup.busy, plain(m))
+		}
+		observed := sm.observes
+
+		// The tick that was out when the key came fires now: it does nothing.
+		next, cmd = m.Update(setupSettleMsg{})
+		m = next.(*model)
+		if cmd != nil || sm.observes != observed || m.setup.busy {
+			t.Errorf("%s: a stray tick started a read (cmd nil = %v, observes %d -> %d, busy = %v)", key, cmd == nil, observed, sm.observes, m.setup.busy)
+		}
+	}
+}

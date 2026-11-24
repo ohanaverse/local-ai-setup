@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -151,6 +152,34 @@ type setupTab struct {
 	// LiteLLM probe, is out. Only that read lets the mode keys through, so
 	// moving on from local is not held up by it.
 	probeRead bool
+	// settle is how many more reads the tab makes after a start or restart
+	// while the server it started is not answering yet (setupSettleTries at
+	// first); settled is the status the action left, kept through them.
+	settle  int
+	settled string
+	// waiting is true while a settle tick is out: the tick of the last try
+	// arrives with settle at 0 and must still do the final read, while a tick
+	// that r or c outlived must do nothing.
+	waiting bool
+}
+
+// setupSettleTries and setupSettleDelay bound the wait after a start or a
+// restart: launchd returns when the job is started, a little before serve
+// listens, and a read in that gap would show a failure that is gone a
+// moment later. About ten seconds in all, the apply path's own wait.
+const setupSettleTries = 20
+
+var setupSettleDelay = 500 * time.Millisecond
+
+// setupSettleMsg asks for the next read of the wait after a start or restart.
+type setupSettleMsg struct{}
+
+// stillStarting is whether an observation is of a loaded agent whose server
+// refused the connection: the one failure a start or restart that just
+// succeeded is expected to show for a moment. A refused token or another
+// server on the port is an answer, and is shown at once.
+func stillStarting(st modelsetup.State) bool {
+	return st.Server.Checked && !st.Server.OK && st.Server.Kind == modelsetup.KindUnreachable && st.Agent.Job.Loaded
 }
 
 // setupObservedMsg carries one observation.
@@ -323,6 +352,18 @@ func (m *model) applySetupObserved(msg setupObservedMsg) tea.Cmd {
 	st := &m.setup
 	if msg.gen != st.gen {
 		return nil // a later observation is on its way
+	}
+	if st.settle > 0 && stillStarting(msg.st) {
+		// Keep the last state on screen and read again shortly, so the
+		// server line never shows the gap between launchd and serve (#710).
+		st.settle--
+		st.busy, st.waiting = true, true
+		st.status = st.settled + "; waiting for wt-model to answer…"
+		return tea.Tick(setupSettleDelay, func(time.Time) tea.Msg { return setupSettleMsg{} })
+	}
+	if st.settle > 0 || st.settled != "" {
+		st.settle, st.waiting = 0, false
+		st.status, st.settled = st.settled, ""
 	}
 	st.state, st.loaded, st.busy, st.probeSkipped, st.probeRead = msg.st, true, false, msg.skippedProbe, false
 	if st.pending {
@@ -556,6 +597,9 @@ func (m *model) applySetupControlled(msg setupControlledMsg) tea.Cmd {
 		st.status = msg.action.String() + " failed: " + editorkit.Scrub(msg.err.Error())
 	} else {
 		st.status = modelsetup.AgentLabel + " " + controlWords[msg.action][1]
+		if msg.action == modelsetup.ControlStart || msg.action == modelsetup.ControlRestart {
+			st.settle, st.settled = setupSettleTries, st.status
+		}
 	}
 	return m.finishSetupWrite(msg.err == nil)
 }
@@ -712,11 +756,13 @@ func (m *model) updateSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Observe runs every check, the ping of the entered url included,
 		// and writes nothing.
 		st.status, st.pending = m.cancelSetupPlan()+"checking the model server", true
+		st.settle, st.settled, st.waiting = 0, "", false // its read replaces the wait after a start or restart
 		return m, m.observeSetupCmd()
 	case "r":
 		// The same read; the one before it, if still out, is dropped. This is
 		// how a config.toml repaired by hand is read again.
 		st.status, st.pending = m.cancelSetupPlan()+"re-reading the model server's state", true
+		st.settle, st.settled, st.waiting = 0, "", false // its read replaces the wait after a start or restart
 		return m, m.observeSetupCmd()
 	case "left", "right", " ", "down", "enter":
 		// The form is inert while anything is out (busy): a read, a plan,

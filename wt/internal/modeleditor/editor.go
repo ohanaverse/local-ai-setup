@@ -121,6 +121,12 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applySetupApplied(msg)
 	case setupControlledMsg:
 		return m, m.applySetupControlled(msg)
+	case setupSettleMsg:
+		if !m.setup.waiting {
+			return m, nil // the wait ended (r or c, or an answer) before this tick
+		}
+		m.setup.waiting = false
+		return m, m.observeSetupCmd()
 	}
 	if m.tab == TabSetup {
 		return m.updateSetup(msg)
