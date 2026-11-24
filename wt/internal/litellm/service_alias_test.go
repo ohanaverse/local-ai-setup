@@ -296,6 +296,62 @@ func TestCloudOnlyAliasRoutedBySync(t *testing.T) {
 	}
 }
 
+// TestNoLiveTargetIsWarnedOnceWhenTheLastRowGoes pins decision 3 of #691: the
+// "has no live target" warning belongs to the write that takes an alias's
+// last row away, not to every later write that finds the alias still
+// unrouted. An alias of one local model, never routed, is quiet on a plain
+// sync; routed by a start it has a row; the stop that removes that row warns
+// once; a plain sync or a second stop of the same target after that stays
+// quiet (the alias already had no rows). Before, every sync and every stop of
+// a target of an unrouted alias repeated the line for as long as the model
+// was down. The unrouted outcome and the plan still show the state.
+func TestNoLiveTargetIsWarnedOnceWhenTheLastRowGoes(t *testing.T) {
+	reg := testConfig()
+	reg.Aliases = []config.Alias{{ID: "alias/l", Targets: []config.AliasTarget{{Model: "ollama/gemma:9b", Order: 1}}}}
+	o, _, _, fake := aliasDBOpts(t, "model_list: []\n"+settledSettings, &reg)
+	const line = "alias/l has no live target"
+
+	res, err := Sync(reg, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countWarnings(res, line) != 0 {
+		t.Fatalf("first sync of a never-routed alias warned: %q", res.Warnings)
+	}
+	if _, err := Sync(reg, localFor(reg, "ollama/gemma:9b"), o); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.aliasIDs(); len(got) != 1 {
+		t.Fatalf("alias rows %v, want one while the model is routed", got)
+	}
+
+	res, err = ApplyChange(reg, Change{Remove: []string{"ollama/gemma:9b"}}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countWarnings(res, line); n != 1 {
+		t.Fatalf("the stop that took the last row: warnings %q, want one %q", res.Warnings, line)
+	}
+	if got := fake.aliasIDs(); len(got) != 0 {
+		t.Fatalf("alias rows %v, want none", got)
+	}
+
+	res, err = Sync(reg, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countWarnings(res, line); n != 0 {
+		t.Fatalf("a plain sync of an already-unrouted alias warned: %q", res.Warnings)
+	}
+	res, err = ApplyChange(reg, Change{Remove: []string{"ollama/gemma:9b"}}, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countWarnings(res, line); n != 0 {
+		t.Fatalf("a second stop of the target warned: %q", res.Warnings)
+	}
+}
+
 // TestCloudTargetBuildFailureKeepsItsAliasRow checks Review Focus 6: a cloud
 // target whose row cannot be built (its secret_ref unset in serve's
 // environment) is frozen, not dead: its alias row stays, nothing is added,

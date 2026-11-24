@@ -261,7 +261,8 @@ func aliasSetCmd(h *host, rec servestate.Store) *cobra.Command {
 			"given (repeat the flag, one target each). ID is a registry model id\n" +
 			"(`wt-model model list`); :ORDER is its LiteLLM order, 1 first tried (left\n" +
 			"out: its position among the flags). A model id that itself ends in :<digits>\n" +
-			"is read whole. An alias targets no alias and no native model. It may have\n" +
+			"is read whole; a :<digits> suffix is split off as the order only when what\n" +
+			"is left is a registered model id, else the value is refused as typed. An alias targets no alias and no native model. It may have\n" +
 			"several local targets (a start starts each in turn), but no two of one\n" +
 			"exclusive family such as mtplx, which runs one model at a time.\n\n" +
 			"The window the alias declares is the smallest of its targets' windows, and\n" +

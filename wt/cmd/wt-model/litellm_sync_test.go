@@ -788,7 +788,8 @@ func TestStartHookAndSyncAgreeOnDiscoveredRoute(t *testing.T) {
 
 // TestEnsureRouteChangeIsIdempotent pins "a launch whose route already exists
 // changes nothing" against the real litellm.ApplyChange: the Add-only change
-// the launch-time route check writes (lifecycle.EnsureRoute, #192) reports
+// the launch-time route check wrote (#192, deleted: the model server owns
+// routes now; the change is still StartRouteChange's Add) reports
 // Changed on the first write and not on the second, which leaves config.yaml
 // byte-for-byte as it was. Changed is what triggers the proxy restart, so a
 // second write that reported a change would bounce the proxy on every launch.

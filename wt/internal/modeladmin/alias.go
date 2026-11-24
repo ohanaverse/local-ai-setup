@@ -306,8 +306,11 @@ var orderSuffixRE = regexp.MustCompile(`^-?[0-9]+$`)
 // ParseAliasTargets reads target specs, ID or ID:ORDER, as `wt-model alias
 // set --target` and the TUI's Aliases tab both do (one parser, so the two
 // cannot drift). A value that names a registry model whole is that model (an
-// ollama tag holds a colon: ollama/qwen3:8b), else an all-digit suffix after
-// the last colon is the order, which must be from 1. A target given twice is
+// ollama tag holds a colon: ollama/qwen3:8b). Otherwise an all-digit suffix
+// after the last colon is the order, which must be from 1, and is split off
+// only when what is left is itself a registry model (#691): a half-typed tag
+// such as ollama/qwen3:8 is refused whole, naming the value as typed, not
+// read as order 8 of a model that does not exist. A target given twice is
 // refused.
 func ParseAliasTargets(cfg *config.Config, specs []string) ([]config.AliasTarget, error) {
 	var out []config.AliasTarget
@@ -319,6 +322,9 @@ func ParseAliasTargets(cfg *config.Config, specs []string) ([]config.AliasTarget
 		t := config.AliasTarget{Model: spec}
 		if config.IndexModelByID(cfg.Models, spec) < 0 {
 			if i := strings.LastIndex(spec, ":"); i > 0 && orderSuffixRE.MatchString(spec[i+1:]) {
+				if config.IndexModelByID(cfg.Models, spec[:i]) < 0 {
+					return nil, fmt.Errorf("--target %s: not a registry model (an order is written ID:ORDER with a registered ID)", spec)
+				}
 				n, err := strconv.Atoi(spec[i+1:])
 				if err != nil || n < 1 {
 					return nil, fmt.Errorf("--target %s: the order must be a whole number from 1", spec)

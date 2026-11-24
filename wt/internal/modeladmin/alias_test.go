@@ -326,12 +326,20 @@ func TestFinishedRedirects(t *testing.T) {
 func TestParseAliasTargets(t *testing.T) {
 	scratchRegistry(t, aliasRegistry)
 	cfg := loadCfg(t)
-	got, err := ParseAliasTargets(cfg, []string{"openrouter/big:2", "ollama/qwen3:8b", "openrouter/nope:12"})
-	want := []config.AliasTarget{{Model: "openrouter/big", Order: 2}, {Model: "ollama/qwen3:8b"}, {Model: "openrouter/nope", Order: 12}}
+	got, err := ParseAliasTargets(cfg, []string{"openrouter/big:2", "ollama/qwen3:8b", "openrouter/nope"})
+	want := []config.AliasTarget{{Model: "openrouter/big", Order: 2}, {Model: "ollama/qwen3:8b"}, {Model: "openrouter/nope"}}
 	if err != nil || !slices.Equal(got, want) {
 		t.Fatalf("ParseAliasTargets = %v, %v; want %v", got, err, want)
 	}
-	for spec, wantErr := range map[string]string{"openrouter/big:0": "whole number from 1", "": "empty"} {
+	// #691 decision 2: a :digits suffix splits only off a registered base; an
+	// unregistered spec whose base is no model either is refused quoting the
+	// whole value, not read as an order of a model that does not exist.
+	for spec, wantErr := range map[string]string{
+		"openrouter/big:0":   "whole number from 1",
+		"":                   "empty",
+		"ollama/qwen3:8":     "--target ollama/qwen3:8: not a registry model (an order is written ID:ORDER with a registered ID)",
+		"openrouter/nope:12": "--target openrouter/nope:12: not a registry model",
+	} {
 		if _, err := ParseAliasTargets(cfg, []string{spec}); err == nil || !strings.Contains(err.Error(), wantErr) {
 			t.Errorf("%q: %v, want %q", spec, err, wantErr)
 		}

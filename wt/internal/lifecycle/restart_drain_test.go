@@ -3,7 +3,6 @@ package lifecycle
 import (
 	"bytes"
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -42,25 +41,25 @@ func TestAsyncRestartNoticeFollowsTheOperation(t *testing.T) {
 		litellm.RestartNotice(ctx, drainNotice)
 		return nil
 	}
-	mdl := config.Model{ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal}
-	const want = "wt: LiteLLM route for ollama/a:1 updated\nwt: " + drainLine + "\n"
+	cfg := routesCfg()
+	const want = "wt: " + drainLine + "\n"
+	write := func(ctx context.Context) {
+		applyAndReport(ctx, cfg, litellm.Change{Add: []config.Model{{ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal}}}, restartIfChanged)
+		WaitPendingRoutes()
+	}
 
 	var captured bytes.Buffer
-	if !EnsureModelRouteTo(&captured, routesCfg(), mdl) {
-		t.Fatal("changed = false, want true")
-	}
-	WaitPendingRoutes()
+	write(withRouteOutput(context.Background(), &captured))
 	if got := captured.String(); got != want {
-		t.Fatalf("the check's writer got %q, want %q", got, want)
+		t.Fatalf("the operation's writer got %q, want %q", got, want)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr got %q, want nothing", stderr.String())
 	}
 
-	EnsureModelRoute(routesCfg(), mdl)
-	WaitPendingRoutes()
+	write(context.Background())
 	if got := stderr.String(); got != want {
-		t.Fatalf("stderr after a check with no writer = %q, want %q", got, want)
+		t.Fatalf("stderr after an operation with no writer = %q, want %q", got, want)
 	}
 }
 
@@ -84,9 +83,8 @@ func TestRestartNoticerTakesTheNotices(t *testing.T) {
 	waitProxy = func(context.Context, string, time.Duration) error { return nil }
 
 	var w noticeWriter
-	if err := RestartProxyTo(context.Background(), &w, profileCfg()); err != nil {
-		t.Fatalf("RestartProxyTo = %v, want nil", err)
-	}
+	BounceProxyTo(context.Background(), &w, routesCfg())
+	WaitPendingRoutes()
 	if len(w.notices) != 2 || w.notices[0] != drainNotice || w.notices[1] != cutOffNotice {
 		t.Fatalf("notices = %+v, want the drain notice, then the cut-off", w.notices)
 	}
@@ -96,10 +94,8 @@ func TestRestartNoticerTakesTheNotices(t *testing.T) {
 }
 
 // TestCutOffIsNotAFailedRestart pins what the drain bound's cut-off means to
-// the asynchronous restart: it is printed, the readiness wait still runs, and
-// the restart is remembered as one that worked. The proxy WAS restarted, so
-// recording a failure would refuse the next slot-profile launch (ProbeProxy)
-// over routes that are live.
+// the asynchronous restart: it is printed, and the readiness wait still runs,
+// because the proxy WAS restarted.
 func TestCutOffIsNotAFailedRestart(t *testing.T) {
 	_, warn := stubRoutes(t, litellm.Result{}, nil)
 	restartProxy = func(ctx context.Context) []string {
@@ -113,7 +109,8 @@ func TestCutOffIsNotAFailedRestart(t *testing.T) {
 		}
 		return nil
 	}
-	cfg := profileCfg()
+	cfg := routesCfg()
+	cfg.SetLitellmForTest(config.LitellmState{URL: proxyURL, APIKey: "sk-test-1234"})
 
 	bounceRoutes(context.Background(), cfg)
 	WaitPendingRoutes()
@@ -123,70 +120,6 @@ func TestCutOffIsNotAFailedRestart(t *testing.T) {
 	}
 	if !waited {
 		t.Fatal("the readiness wait did not run after a forced restart")
-	}
-	if err := ProbeProxy(context.Background(), cfg); err != nil {
-		t.Fatalf("ProbeProxy = %v, want nil: the proxy was restarted", err)
-	}
-
-	// A warning is a failed restart, whatever it says.
-	restartProxy = func(context.Context) []string { return []string{"restart command failed"} }
-	bounceRoutes(context.Background(), cfg)
-	WaitPendingRoutes()
-	if err := ProbeProxy(context.Background(), cfg); err == nil || err.Error() != restartFailed("restart command failed") {
-		t.Fatalf("ProbeProxy = %v, want %q", err, restartFailed("restart command failed"))
-	}
-}
-
-// TestRestartProxyToPrintsTheDrainLines pins the synchronous restart of a
-// slot-profile launch: the notice and the cut-off go to the writer it was
-// handed (stderr for none), and a restart forced at the bound is a restart
-// that worked — nil, the readiness wait made, the next probe clean.
-func TestRestartProxyToPrintsTheDrainLines(t *testing.T) {
-	_, stderr := stubRoutes(t, litellm.Result{}, nil)
-	restartProxy = drainThenCutOff
-	var waits int
-	waitProxy = func(_ context.Context, _ string, d time.Duration) error {
-		if d == proxyReadyTimeout {
-			waits++
-		}
-		return nil
-	}
-	cfg := profileCfg()
-	const want = "wt: " + drainLine + "\nwt: " + cutOffLine + "\n"
-
-	var out bytes.Buffer
-	if err := RestartProxyTo(context.Background(), &out, cfg); err != nil {
-		t.Fatalf("RestartProxyTo = %v, want nil", err)
-	}
-	if got := out.String(); got != want {
-		t.Fatalf("the caller's writer got %q, want %q", got, want)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr got %q, want nothing", stderr.String())
-	}
-	if waits != 1 {
-		t.Fatalf("readiness waits = %d, want 1", waits)
-	}
-	if err := ProbeProxy(context.Background(), cfg); err != nil {
-		t.Fatalf("ProbeProxy = %v, want nil", err)
-	}
-
-	if err := RestartProxy(context.Background(), cfg); err != nil {
-		t.Fatalf("RestartProxy = %v, want nil", err)
-	}
-	if got := stderr.String(); got != want {
-		t.Fatalf("stderr = %q, want %q", got, want)
-	}
-
-	// A failed restart is still the error, and is not also printed.
-	restartProxy = func(context.Context) []string { return []string{"restart command failed"} }
-	out.Reset()
-	err := RestartProxyTo(context.Background(), &out, cfg)
-	if err == nil || !strings.Contains(err.Error(), "restart command failed") {
-		t.Fatalf("RestartProxyTo = %v, want the failure", err)
-	}
-	if out.Len() != 0 {
-		t.Fatalf("output = %q, want nothing: the failure is the returned error", out.String())
 	}
 }
 

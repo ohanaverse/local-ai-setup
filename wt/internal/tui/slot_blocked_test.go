@@ -8,10 +8,10 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
-// Blocked-profile gaps of the picker (#412 A4): the remembered failed proxy
-// restart through the real lifecycle.ProbeProxy, the blocked text of rows
+// Blocked-profile gaps of the picker (#412 A4): the blocked text of rows
 // that static validation refuses, and a step-1 re-resolve that turns a
-// launch row into a blocked one.
+// launch row into a blocked one. (The remembered failed proxy restart,
+// lifecycle.ProbeProxy, was deleted with the launch-time route check, #691.)
 
 // TestStaticallyBlockedProfileRowsCarryTheCatalogReason verifies the picker
 // row of a profile that static validation refuses, run through the real

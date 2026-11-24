@@ -125,9 +125,8 @@ type Options struct {
 	Admin *AdminClient
 	// DBCtx, when set, is the context the database half's deadline starts
 	// from instead of Ctx; Ctx still bounds the config.yaml lock wait. For a
-	// caller whose Ctx is cancelled on purpose to try the lock exactly once
-	// (lifecycle.TryEnsureModelRouteTo), which would otherwise fail every API
-	// call and fall back to the file. Ignored without Admin.
+	// caller whose Ctx is cancelled on purpose to try the lock exactly once,
+	// which would otherwise fail every API call and fall back to the file. Ignored without Admin.
 	DBCtx context.Context
 	// AliasesRemoved says the registry write this sync follows removed
 	// aliases (`wt-model alias rm`): their database rows are now orphans

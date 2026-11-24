@@ -422,9 +422,11 @@ A registry alias is a gateway id `alias/<name>` (`<name>` matches
 and that routes to one model, or to several in priority order (a group: a
 lower `order` is tried first). Aliases live in a top-level `[[aliases]]`
 array of `registry.toml`, never in `[[models]]`: `id` and
-`targets = [{ model = "<registry id>", order = N }, ...]`, and nothing else
-(a `notes` key, or any unknown key, marks the alias malformed, and wt freezes
-it: reserved words are not accepted yet). The one other key is `redirect_to =
+`targets = [{ model = "<registry id>", order = N }, ...]`, and an optional
+`notes` string for your own comments (#691: wt ignores it, never stores it
+and keeps it when it rewrites the alias; a non-string `notes` marks the alias
+malformed). Any other unknown key marks the alias malformed, and wt freezes
+it. The one other key is `redirect_to =
 "alias/<new>"`, which `alias rename` writes in place of `targets` (an alias
 holds one or the other, never both); see **Renaming** below. `order` left out is the target's
 position, from 1. A target names exactly one registry model; no alias or native
@@ -460,7 +462,9 @@ parameters.
 `set` creates the alias or replaces its **whole** target list. A `--target`
 whose id is a registry model is read whole (an ollama tag such as
 `ollama/qwen3:8b` holds a colon); otherwise a digit suffix after the last
-colon is the order. It prints `set alias: <id>` or `no change: <id>`. A set
+colon is the order, split off only when what is left is a registry model id
+(#691: `ollama/qwen3:8` with no such model is refused as typed, `--target
+ollama/qwen3:8: not a registry model`, not read as order 8). It prints `set alias: <id>` or `no change: <id>`. A set
 that makes the alias's window smaller, or unknown where it was known, asks
 y/N (default No) and names the client sessions using the alias (they keep the
 window they launched with); `--accept-smaller-window` answers yes. Without a
@@ -560,7 +564,10 @@ a local row's `context` from the tiers file, so a newer client against it may
 declare a window the registry never set.
 
 An alias with no live target has no rows: LiteLLM answers its unknown-model
-error and a warning says `alias/<x> has no live target`. A target that is
+error. The warning `alias/<x> has no live target` is said once, by the write
+that takes the alias's last row away (#691); a later sync, or a stop of one
+of its targets, finds the alias already unrouted and stays quiet (`alias set
+--dry-run` and the `unrouted` outcome still show the state). A target that is
 only unresolvable (a cloud key missing from serve's environment) keeps its
 existing row and warns. Rows are compared by the hash stamped on them, so a
 hand edit in the LiteLLM UI that keeps the stamp is not detected. Two aliases

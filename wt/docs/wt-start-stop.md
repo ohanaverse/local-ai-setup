@@ -498,10 +498,9 @@ recently used when a load does not fit.
   are printed, with the failure under them, when wt exits or above the next
   agent launched from that picker. A status too tall to share the terminal
   with the table has the screen to itself until the next key. The agent is
-  still launched after a start that could not write the route: the picker
-  tries the route once more first (the launch-time check every launch gets),
-  and when that fails too the lines above the agent's output are where to
-  find why it answers `Invalid model name`. Once a start has reached
+  still launched after a start that could not write the route: the lines
+  above the agent's output are where to find why it answers
+  `Invalid model name`. Once a start has reached
   `updating LiteLLM routes` the model is loaded and there is nothing left to
   cancel: esc does nothing there, and ctrl+c quits wt without launching the
   agent, once the route update is finished (`wt: waiting for the LiteLLM
