@@ -17,7 +17,8 @@ import (
 // provider and family "alias", the name after "alias/" its model name (what
 // claude labels a slot with), registered, ordered from orderBase in file
 // order, with its targets, the window windows.Alias allows, the tier of its
-// lowest-order target (the lowest tier among equal orders) and no price. A
+// lowest-order target (a redirect row, #687, carries its target alias's targets,
+// window and tier and names it in RedirectTo; it stays launchable) (the lowest tier among equal orders) and no price. A
 // malformed alias, or one config.AliasFault rejects, is a block row naming
 // its fault; one whose id lacks the alias/ prefix gets no row (servedAliasID:
 // the id may be a model's, whose own row stands). routed is the gateway's id set (nil: unknown, read as routed).
@@ -53,12 +54,13 @@ func aliasRows(cfg *config.Config, models []modelapi.Row, ix tiers.Index, sessio
 			Protocols:  []string{},
 			Sessions:   counts[a.ID],
 			Kind:       modelapi.KindAlias,
+			RedirectTo: a.RedirectTo,
 		}
 		if routed != nil {
 			v := routed[a.ID]
 			row.Routed = &v
 		}
-		for _, t := range a.Targets {
+		for _, t := range cfg.AliasTargets(a) {
 			at := modelapi.AliasTarget{ID: t.Model, Order: t.Order}
 			if r, ok := rows[t.Model]; ok {
 				at.ProviderID, at.Location, at.State, at.Context = r.ProviderID, r.Location, r.State, r.Context

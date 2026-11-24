@@ -41,6 +41,15 @@ func serverListRows() []modelapi.Row {
 				{ID: "openrouter/z-ai/glm-5.3", Order: 1, ProviderID: "openrouter", Location: "cloud", State: modelapi.StateRunning, Context: 202752},
 				{ID: "omlx/qwen3.8-27b", Order: 2, ProviderID: "omlx", Location: "local", State: modelapi.StateRunning, Context: 131072},
 			}},
+		// A redirect `wt-model alias rename` left (#687): the target alias's
+		// targets, and the alias it redirects to.
+		{ID: "alias/old-coder", GatewayID: "alias/old-coder", Order: 6, Routed: boolp(true), Family: "alias", ProviderID: "alias",
+			ModelName: "old-coder", Location: "cloud", Tags: []string{}, Registered: true, State: modelapi.StateRunning,
+			Action: modelapi.ActionLaunch, Context: 131072, Protocols: []string{"openai"}, Kind: modelapi.KindAlias, RedirectTo: "alias/coder",
+			Targets: []modelapi.AliasTarget{
+				{ID: "openrouter/z-ai/glm-5.3", Order: 1, ProviderID: "openrouter", Location: "cloud", State: modelapi.StateRunning, Context: 202752},
+				{ID: "omlx/qwen3.8-27b", Order: 2, ProviderID: "omlx", Location: "local", State: modelapi.StateRunning, Context: 131072},
+			}},
 	}
 }
 
@@ -106,7 +115,7 @@ func TestModelListServerMatchesTheFixture(t *testing.T) {
 	if err := dec.Decode(&doc); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	if doc.Version != 1 || doc.Schema != modelapi.SchemaVersion || doc.Generated == "" || len(doc.Providers) == 0 || len(doc.Rows) != 5 {
+	if doc.Version != 1 || doc.Schema != modelapi.SchemaVersion || doc.Generated == "" || len(doc.Providers) == 0 || len(doc.Rows) != 6 {
 		t.Errorf("fixture says %+v", doc)
 	}
 	// An empty catalog still has "rows": [] and every row's slices are arrays.
@@ -158,8 +167,8 @@ func TestModelListServerPlainColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 6 {
-		t.Fatalf("want a header and five rows, got:\n%s", out)
+	if len(lines) != 7 {
+		t.Fatalf("want a header and six rows, got:\n%s", out)
 	}
 	if got := strings.Join(strings.Fields(lines[0]), " "); got != "MODEL STATE LOC TIER CLIENT SESSIONS" {
 		t.Errorf("header = %q", got)
@@ -170,6 +179,7 @@ func TestModelListServerPlainColumns(t *testing.T) {
 		"omlx/gemma4-9b":          "omlx/gemma4-9b stopped local - 0",
 		"ollama/old-model":        "ollama/old-model blocked local - 0",
 		"alias/coder":             "alias/coder running cloud - 1",
+		"alias/old-coder":         "alias/old-coder running cloud - 0",
 	}
 	for _, l := range lines[1:] {
 		id := strings.Fields(l)[0]

@@ -130,7 +130,7 @@ func planAliases(reg *config.Config, current []DBModel, hashKey string, only map
 			frozenAlias[a.ID] = true
 			w.warnings = append(w.warnings, warning+"; its database routes are left as they are")
 			p := AliasPlan{ID: a.ID, Action: AliasActionSkip}
-			for _, t := range a.Targets {
+			for _, t := range reg.AliasTargets(a) {
 				p.Skipped = append(p.Skipped, AliasSkip{Target: t.Model, Reason: reason, Frozen: true})
 			}
 			add(p)
@@ -165,7 +165,7 @@ func planAliases(reg *config.Config, current []DBModel, hashKey string, only map
 		rows, skips := dbModelsFromAlias(reg, a, live, hashKey, sub)
 		pairs := map[string]bool{}
 		configured[a.ID] = pairs
-		for _, t := range a.Targets {
+		for _, t := range reg.AliasTargets(a) {
 			pairs[t.Model] = true
 		}
 		fz := map[string]bool{}
@@ -422,7 +422,7 @@ func aliasesTouching(reg *config.Config, ch Change) map[string]bool {
 	changed := changedIDs(reg, ch)
 	var out map[string]bool
 	for _, a := range reg.Aliases {
-		if slices.ContainsFunc(a.Targets, func(t config.AliasTarget) bool { return changed(t.Model) }) {
+		if slices.ContainsFunc(reg.AliasTargets(a), func(t config.AliasTarget) bool { return changed(t.Model) }) {
 			if out == nil {
 				out = map[string]bool{}
 			}

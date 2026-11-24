@@ -22,7 +22,7 @@ func aliasExpansion(cfg *config.Config) map[string][]string {
 		if !servedAliasID(a.ID) {
 			continue
 		}
-		for _, t := range a.Targets {
+		for _, t := range cfg.AliasTargets(a) {
 			i := config.IndexModelByID(cfg.Models, t.Model)
 			if i < 0 {
 				continue

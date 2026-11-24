@@ -410,11 +410,14 @@ func TestCatalogDecodesTheFixture(t *testing.T) {
 	})
 	c := f.client()
 	cat, err := c.Catalog(ctx())
-	if err != nil || len(cat.Rows) != 8 || cat.Pricing == nil || cat.Rows[1].Price == nil || !cat.Rows[1].Price.TimePriced || cat.Rows[0].Routed == nil {
+	if err != nil || len(cat.Rows) != 9 || cat.Pricing == nil || cat.Rows[1].Price == nil || !cat.Rows[1].Price.TimePriced || cat.Rows[0].Routed == nil {
 		t.Fatalf("catalog: %+v %v", cat, err)
 	}
 	if a := cat.Rows[7]; a.Kind != modelapi.KindAlias || len(a.Targets) != 2 || a.Targets[1].ID != "omlx/qwen3.8-35b" || a.Targets[1].Order != 2 {
 		t.Errorf("alias row: %+v", a)
+	}
+	if r := cat.Rows[8]; r.RedirectTo != "alias/coder" || len(r.Targets) != 2 {
+		t.Errorf("redirect row: %+v", r)
 	}
 	js, err := c.Job(ctx(), "job-0001")
 	if err != nil || js.Result == nil || js.Result.Error == nil || js.Result.Error.Code != "occupied" || len(js.Result.Error.Others) != 1 || js.Result.Error.Others[0].Figure != "4.2 GB loaded" {

@@ -21,6 +21,12 @@ import (
 //	    { model = "openrouter/x", order = 1 },
 //	    { model = "ollama/y", order = 2 },
 //	]
+//
+// A renamed alias (#687) keeps its old id as a redirect: `redirect_to =
+// "alias/<new>"` in place of targets. The redirect has no targets of its own;
+// Config.AliasTargets resolves them from the target alias at read time, so a
+// later change to the target alias moves both ids and the two cannot drift.
+// One hop only: the target must be a real alias that is not a redirect itself.
 const (
 	// AliasIDPrefix starts every alias id; no model id may start with it.
 	AliasIDPrefix = "alias/"
@@ -34,6 +40,9 @@ var (
 	ErrAliasNotFound = errors.New("alias not found")
 	// ErrAliasExists: an alias already has the id.
 	ErrAliasExists = errors.New("alias already exists")
+	// ErrAliasRedirected: the alias is the target of a redirect, so it cannot
+	// be removed; the error names the redirects.
+	ErrAliasRedirected = errors.New("alias is a redirect target")
 	// ErrModelInUse: the model is the target of an alias, so it cannot be
 	// removed; the error names the aliases.
 	ErrModelInUse = errors.New("model is an alias target")
@@ -58,9 +67,13 @@ type AliasTarget struct {
 // malformed alias as not launchable and the route path freezes its rows.
 // The cross-table rules (AliasFault) are separate: they need the models.
 type Alias struct {
-	ID        string        `toml:"id"`
-	Targets   []AliasTarget `toml:"targets"`
-	Malformed string        `toml:"-"`
+	ID string `toml:"id"`
+	// RedirectTo is the id of the alias this one redirects to (#687): "" for
+	// an ordinary alias. A redirect has no Targets of its own; read them
+	// through Config.AliasTargets, never from this field.
+	RedirectTo string        `toml:"redirect_to"`
+	Targets    []AliasTarget `toml:"targets"`
+	Malformed  string        `toml:"-"`
 }
 
 // UnmarshalTOML reads an alias table and never fails; see Alias.
@@ -71,9 +84,10 @@ func (a *Alias) UnmarshalTOML(v any) error {
 
 // readAlias is the one judge of an alias table's shape, for the reader
 // (UnmarshalTOML) and, through it, the writer (validateAliasRow): an id
-// "alias/<name>", a non-empty targets array of tables each with a non-empty
-// string model and an optional order from 1, no target listed twice, and no
-// key but these (`notes` is reserved for later).
+// "alias/<name>", then either a non-empty targets array of tables each with a
+// non-empty string model and an optional order from 1, no target listed
+// twice, or a redirect_to "alias/<name>" (never both), and no key but these
+// (`notes` is reserved for later).
 func readAlias(v any) Alias {
 	var a Alias
 	m, ok := v.(map[string]any)
@@ -96,15 +110,29 @@ func readAlias(v any) Alias {
 	}
 	var unknown []string
 	for k := range m {
-		if k != "id" && k != "targets" {
+		if k != "id" && k != "targets" && k != "redirect_to" {
 			unknown = append(unknown, k)
 		}
 	}
 	sort.Strings(unknown)
 	for _, k := range unknown {
-		fault("unknown key %q (an alias holds id and targets)", k)
+		fault("unknown key %q (an alias holds id and targets, or id and redirect_to)", k)
 	}
 	raw, present := m["targets"]
+	if rt, hasRedirect := m["redirect_to"]; hasRedirect {
+		s, isString := rt.(string)
+		switch {
+		case present:
+			fault("an alias holds targets or redirect_to, not both")
+		case !isString || !strings.HasPrefix(s, AliasIDPrefix) || !aliasNameRE.MatchString(strings.TrimPrefix(s, AliasIDPrefix)):
+			fault(`redirect_to must be an alias id "alias/<name>"`)
+		case s == id:
+			fault("redirect_to %q is the alias itself", s)
+		default:
+			a.RedirectTo = s
+		}
+		return a
+	}
 	rows, isRows := aliasTargetRows(raw)
 	switch {
 	case !present:
@@ -183,6 +211,32 @@ func (c *Config) AliasByID(id string) (Alias, bool) {
 	return Alias{}, false
 }
 
+// AliasTargets is the targets an alias routes to, the one reader every
+// consumer uses instead of a.Targets (#687): an ordinary alias's own, or for a
+// redirect the target alias's, resolved here at read time. nil for a redirect
+// whose target is missing or is itself a redirect (AliasFault names that).
+func (c *Config) AliasTargets(a Alias) []AliasTarget {
+	if a.RedirectTo == "" {
+		return a.Targets
+	}
+	if t, ok := c.AliasByID(a.RedirectTo); ok && t.RedirectTo == "" {
+		return t.Targets
+	}
+	return nil
+}
+
+// AliasRedirectsTo lists, in file order, the ids of the aliases that redirect
+// to id.
+func (c *Config) AliasRedirectsTo(id string) []string {
+	var out []string
+	for _, a := range c.Aliases {
+		if a.RedirectTo == id && !slices.Contains(out, a.ID) {
+			out = append(out, a.ID)
+		}
+	}
+	return out
+}
+
 // AliasesTargeting lists, in file order, the ids of the aliases (malformed
 // ones included) with a target naming modelID.
 func (c *Config) AliasesTargeting(modelID string) []string {
@@ -199,7 +253,7 @@ func (c *Config) AliasesTargeting(modelID string) []string {
 // exactly one model whose location resolves to local. AliasFault allows at
 // most one.
 func (c *Config) AliasLocalTarget(a Alias) (Model, bool) {
-	for _, t := range a.Targets {
+	for _, t := range c.AliasTargets(a) {
 		m, ok := c.oneModel(t.Model)
 		if !ok {
 			continue
@@ -238,6 +292,9 @@ func AliasFault(cfg *Config, a Alias) error {
 	if slices.ContainsFunc(cfg.Models, func(m Model) bool { return m.ID == a.ID }) {
 		return fmt.Errorf("alias %q: its id is also a model id; an alias id must not name a model", a.ID)
 	}
+	if a.RedirectTo != "" {
+		return redirectFault(cfg, a)
+	}
 	var local []string
 	for _, t := range a.Targets {
 		if strings.HasPrefix(t.Model, AliasIDPrefix) || slices.ContainsFunc(cfg.Aliases, func(o Alias) bool { return o.ID == t.Model }) {
@@ -268,6 +325,24 @@ func AliasFault(cfg *Config, a Alias) error {
 	if len(local) > 1 {
 		return fmt.Errorf("alias %q has %d local targets (%s); an alias has at most one local target",
 			a.ID, len(local), strings.Join(local, ", "))
+	}
+	return nil
+}
+
+// redirectFault is AliasFault for a redirect (#687): the target must be a real
+// alias that is not a redirect, and no other alias may redirect to this one
+// (one hop only). The target alias's own targets are judged on the target
+// alias, not repeated here.
+func redirectFault(cfg *Config, a Alias) error {
+	t, ok := cfg.AliasByID(a.RedirectTo)
+	switch {
+	case !ok:
+		return fmt.Errorf("alias %q redirects to %q, which is not an alias", a.ID, a.RedirectTo)
+	case t.RedirectTo != "":
+		return fmt.Errorf("alias %q redirects to %q, which is itself a redirect; a redirect is one hop", a.ID, a.RedirectTo)
+	}
+	if by := cfg.AliasRedirectsTo(a.ID); len(by) > 0 {
+		return fmt.Errorf("alias %q is a redirect and %s redirects to it; a redirect is one hop", a.ID, strings.Join(by, ", "))
 	}
 	return nil
 }

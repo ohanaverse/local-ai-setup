@@ -172,3 +172,123 @@ targets = [{ model = "openrouter/big" }, { model = "openrouter/unknown" }]
 		}
 	}
 }
+
+// TestRenameAliasMovesTheTargetsAndKeepsTheOldIdAsARedirect pins #687
+// decision 2: one registry write creates alias/new with alias/old's targets
+// and orders and turns alias/old into `redirect_to = "alias/new"`; the
+// listing view of the old id shows the effective targets and window and names
+// the redirect; a later `alias set` on the new id moves both; the old id
+// cannot be set or removed-from-under, and the sweep helper finds it only
+// when no session uses it. If the write left the old id with targets of its
+// own, the two ids could drift.
+func TestRenameAliasMovesTheTargetsAndKeepsTheOldIdAsARedirect(t *testing.T) {
+	path := scratchRegistry(t, aliasRegistry+`
+[[aliases]]
+id = "alias/old"
+targets = [{ model = "openrouter/big", order = 2 }, { model = "openrouter/small" }]
+`)
+	if err := RenameAlias(RenameRequest{Old: "alias/old", New: "alias/new"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "[[aliases]]\nid = \"alias/old\"\nredirect_to = \"alias/new\"\n"; !strings.Contains(read(t, path), want) {
+		t.Fatalf("registry lacks the redirect:\n%s", read(t, path))
+	}
+	cfg := loadCfg(t)
+	nw, _ := cfg.AliasByID("alias/new")
+	if want := targets("openrouter/big", 2, "openrouter/small", 2); !slices.Equal(nw.Targets, want) {
+		t.Fatalf("alias/new targets = %v, want %v", nw.Targets, want)
+	}
+	views := AliasViews(cfg, tiers.Index{})
+	var ov AliasView
+	for _, v := range views {
+		if v.ID == "alias/old" {
+			ov = v
+		}
+	}
+	if ov.RedirectTo != "alias/new" || !slices.Equal(ov.Targets, nw.Targets) || ov.Context != 131072 {
+		t.Errorf("old view = %+v, want a redirect showing alias/new's targets and window", ov)
+	}
+	// alias set on the new id moves both ids.
+	if _, err := SetAlias(AliasRequest{ID: "alias/new", Targets: targets("openrouter/big", 1)}); err != nil {
+		t.Fatal(err)
+	}
+	cfg = loadCfg(t)
+	oldA, _ := cfg.AliasByID("alias/old")
+	if got := cfg.AliasTargets(oldA); !slices.Equal(got, targets("openrouter/big", 1)) {
+		t.Errorf("redirect targets after set = %v", got)
+	}
+	if err := CheckAlias(cfg, AliasRequest{ID: "alias/old", Targets: targets("openrouter/big", 1)}); err == nil || !strings.Contains(err.Error(), "set alias/new's targets instead") {
+		t.Errorf("CheckAlias on a redirect = %v", err)
+	}
+	// The removal guard: the target stays while the redirect points at it;
+	// one write may remove both, either way round.
+	if _, err := RemoveAliases([]string{"alias/new"}); !errors.Is(err, config.ErrAliasRedirected) || !strings.Contains(err.Error(), "alias/old") {
+		t.Errorf("RemoveAliases(target) = %v, want ErrAliasRedirected naming alias/old", err)
+	}
+	if removed, err := RemoveAliases([]string{"alias/new", "alias/old"}); err != nil || !slices.Equal(removed, []string{"alias/new", "alias/old"}) {
+		t.Errorf("RemoveAliases(both) = %v, %v", removed, err)
+	}
+}
+
+// TestCheckRenameRefusals pins what `alias rename` refuses before a write:
+// an unknown or already-redirected old id, a new id that exists, is the same,
+// is not alias/<name> or is a model's, and an old id some redirect still
+// points at. Each refusal names the id to fix, and none writes anything.
+func TestCheckRenameRefusals(t *testing.T) {
+	scratchRegistry(t, aliasRegistry+`
+[[aliases]]
+id = "alias/a"
+targets = [{ model = "openrouter/big" }]
+
+[[aliases]]
+id = "alias/b"
+redirect_to = "alias/c"
+
+[[aliases]]
+id = "alias/c"
+targets = [{ model = "openrouter/small" }]
+`)
+	cfg := loadCfg(t)
+	for name, tc := range map[string]struct {
+		r    RenameRequest
+		want string
+	}{
+		"unknown old":      {RenameRequest{"alias/zzz", "alias/n"}, "alias not found"},
+		"old is redirect":  {RenameRequest{"alias/b", "alias/n"}, "already a redirect to \"alias/c\""},
+		"new exists":       {RenameRequest{"alias/a", "alias/c"}, "alias already exists"},
+		"same":             {RenameRequest{"alias/a", "alias/a"}, "same as the old"},
+		"bad new id":       {RenameRequest{"alias/a", "main"}, `is not "alias/<name>"`},
+		"old has redirect": {RenameRequest{"alias/c", "alias/n"}, "redirect target of alias/b"},
+	} {
+		if _, _, err := CheckRename(cfg, tc.r); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: CheckRename = %v, want %q", name, err, tc.want)
+		}
+	}
+	if err := RenameAlias(RenameRequest{"alias/zzz", "alias/n"}); !errors.Is(err, config.ErrAliasNotFound) {
+		t.Errorf("RenameAlias of an unknown alias = %v", err)
+	}
+	after, nw, err := CheckRename(cfg, RenameRequest{"alias/a", "alias/n"})
+	if err != nil || nw.ID != "alias/n" || len(after.AliasTargets(nw)) != 1 {
+		t.Fatalf("CheckRename ok case = %v, %+v", err, nw)
+	}
+	if a, _ := after.AliasByID("alias/a"); a.RedirectTo != "alias/n" {
+		t.Errorf("the after-config's old alias = %+v, want a redirect", a)
+	}
+	if a, _ := cfg.AliasByID("alias/a"); a.RedirectTo != "" {
+		t.Error("CheckRename changed the caller's config")
+	}
+}
+
+// TestFinishedRedirects pins the sweep's selection: only redirects, and only
+// those no client session uses; the ones kept come back with their counts.
+func TestFinishedRedirects(t *testing.T) {
+	cfg := &config.Config{Aliases: []config.Alias{
+		{ID: "alias/n", Targets: targets("openrouter/big", 1)},
+		{ID: "alias/r1", RedirectTo: "alias/n"},
+		{ID: "alias/r2", RedirectTo: "alias/n"},
+	}}
+	fin, busy := FinishedRedirects(cfg, map[string]int{"alias/r2": 2, "alias/n": 5})
+	if !slices.Equal(fin, []string{"alias/r1"}) || busy["alias/r2"] != 2 || len(busy) != 1 {
+		t.Errorf("FinishedRedirects = %v, %v", fin, busy)
+	}
+}

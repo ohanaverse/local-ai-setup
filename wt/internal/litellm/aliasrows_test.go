@@ -465,3 +465,33 @@ func TestApplyAliasDBReplacesAnEditedRow(t *testing.T) {
 		t.Fatalf("not converged: %+v", again)
 	}
 }
+
+// TestRedirectAliasGetsRowsEqualToItsTargets pins #687 decision 3: an alias
+// with redirect_to builds rows from its target alias's targets (same target,
+// same order, same params), each named for the old id, so the old id keeps
+// routing with no gap after a rename; a redirect whose target alias is gone
+// builds none and says why. If the planner read a.Targets, the old id would
+// lose its rows the moment it became a redirect.
+func TestRedirectAliasGetsRowsEqualToItsTargets(t *testing.T) {
+	cfg := testConfig()
+	cfg.Aliases = []config.Alias{
+		{ID: "alias/new", Targets: []config.AliasTarget{{Model: "ollama/gemma:9b", Order: 2}}},
+		{ID: "alias/old", RedirectTo: "alias/new"},
+	}
+	oldA, _ := cfg.AliasByID("alias/old")
+	newA, _ := cfg.AliasByID("alias/new")
+	oldRows, skips := DBModelsFromAlias(cfg, oldA, allLive, testMasterKey)
+	newRows, _ := DBModelsFromAlias(cfg, newA, allLive, testMasterKey)
+	if len(skips) != 0 || len(oldRows) != 1 || len(newRows) != 1 {
+		t.Fatalf("old rows %+v skips %+v, new rows %+v", oldRows, skips, newRows)
+	}
+	o, n := oldRows[0], newRows[0]
+	if o.ModelName != "alias/old" || o.Info[AliasKey] != "alias/old" || o.Info[AliasTargetKey] != n.Info[AliasTargetKey] || o.Params["order"] != n.Params["order"] || o.Params["model"] != n.Params["model"] {
+		t.Errorf("redirect row %+v differs from its target's %+v beyond the name", o, n)
+	}
+	cfg.Aliases = cfg.Aliases[1:]
+	rows, _ := DBModelsFromAlias(cfg, cfg.Aliases[0], allLive, testMasterKey)
+	if len(rows) != 0 {
+		t.Errorf("a redirect to a missing alias built rows %+v", rows)
+	}
+}

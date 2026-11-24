@@ -225,3 +225,11 @@ targets = [
   { model = "pinned-cloud/contract-fixture:inherit", order = 1 },
   { model = "ollama/contract-fixture:local", order = 2 },
 ]
+
+# A renamed alias (#687, `wt-model alias rename`): the old id stays as a
+# redirect, `redirect_to` in place of targets. It has no targets of its own;
+# wt reads the target alias's. One hop only: the target is a real alias that
+# is not a redirect itself.
+[[aliases]]
+id = "alias/fixture-old"
+redirect_to = "alias/fixture-cloud"

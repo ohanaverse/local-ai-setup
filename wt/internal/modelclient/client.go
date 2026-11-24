@@ -421,7 +421,7 @@ func cleanRow(r *modelapi.Row) {
 	r.ProviderID, r.ModelName, r.Location = clean(r.ProviderID), clean(r.ModelName), clean(r.Location)
 	r.State, r.Action, r.BlockReason = clean(r.State), clean(r.Action), clean(r.BlockReason)
 	r.Tier, r.TierCode, r.Confidence = clean(r.Tier), clean(r.TierCode), clean(r.Confidence)
-	r.Kind = clean(r.Kind)
+	r.Kind, r.RedirectTo = clean(r.Kind), clean(r.RedirectTo)
 	cleanAll(r.Tags)
 	cleanAll(r.Protocols)
 	for i := range r.Targets {

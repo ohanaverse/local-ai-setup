@@ -9,14 +9,15 @@ import (
 
 // aliasListFixture is `wt-model alias list --json`'s contract fixture at the
 // monorepo root (style guide J3): one document in the shape the command
-// prints, with an alias whose window is known, routed and in use, and one
-// whose window is withheld (null), not routed and unused.
+// prints, with an alias whose window is known, routed and in use, a redirect
+// to it (redirect_to set, the effective targets) and one whose window is
+// withheld (null), not routed and unused.
 const aliasListFixture = "../../../docs/contracts/alias-list.sample.json"
 
 // TestAliasListJSONMatchesFixture pins `wt-model alias list --json` to its
 // fixture byte for byte: the same registry, database rows and client
 // sessions give exactly the fixture's document (version, the aliases with
-// id, targets {model, order}, context, sessions and routed, and the
+// id, redirect_to (null for an ordinary alias), targets {model, order}, context, sessions and routed, and the
 // warnings array always present, two-space indent). A key added or renamed
 // fails here until the fixture changes in the same change; and the fixture
 // holds no litellm_params, which no alias output may carry.
@@ -27,12 +28,18 @@ id = "alias/main"
 targets = [{ model = "openrouter/big" }, { model = "openrouter/small", order = 2 }]
 
 [[aliases]]
+id = "alias/old"
+redirect_to = "alias/main"
+
+[[aliases]]
 id = "alias/spare"
 targets = [{ model = "openrouter/unknown" }]
 `)
 	fake.seedAliasRow("alias/main", "openrouter/big", 1)
 	fake.seedAliasRow("alias/main", "openrouter/small", 2)
-	stubSessions(h, map[string]int{"alias/main": 2})
+	fake.seedAliasRow("alias/old", "openrouter/big", 1)
+	fake.seedAliasRow("alias/old", "openrouter/small", 2)
+	stubSessions(h, map[string]int{"alias/main": 2, "alias/old": 1})
 	out, errOut, err := execAlias(t, h, "alias", "list", "--json")
 	if err != nil || errOut != "" {
 		t.Fatalf("err %v stderr %q", err, errOut)
