@@ -593,7 +593,7 @@ func TestProfileShowSlotProfileContext(t *testing.T) {
 		want  string
 	}{
 		{"derived", 0, map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"}, "context: 131k (declared 131k, from the slots)\n"},
-		{"key wins", 90000, map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"}, "context: 131k (declared 90k, from the profile context key)\n"},
+		{"key wins", 90000, map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"}, "context: 90k (set by the profile context key; the slot models allow 131k)\n"},
 		{"unknown", 0, map[string]string{"sonnet": "openrouter/c"}, "context: - (nothing declared: window unknown)\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
