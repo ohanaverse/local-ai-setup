@@ -271,7 +271,12 @@ func (e Engine) worktreeGate(it Item) gated {
 	// Floors (held, default_branch) are not here: they read less_sure and
 	// need --accept-loss through needsOf.
 	if fresh.HardStop != "" {
-		return stop(refuse(it, blockerReason(fresh.Blockers, fresh.Kind)))
+		// Flattened, not capped: wt composed this text and the run-from-root
+		// hint at its end is the part the user acts on (#569).
+		o := refuse(it, "")
+		o.Reason = cleanup.Flatten(blockerReason(fresh.Blockers, fresh.Kind, e.Prior.Repo))
+		o.ReasonComposed = true
+		return stop(o)
 	}
 
 	// 6. An unknown is never approved, Force or not.
@@ -509,7 +514,7 @@ func (e Engine) branchGate(it Item) gated {
 
 	// 4. Hard blockers.
 	if fresh.HardStop != "" {
-		return refuseB(blockerReason(fresh.Blockers, fresh.Kind))
+		return refuseB(blockerReason(fresh.Blockers, fresh.Kind, e.Prior.Repo))
 	}
 
 	// 5. Changed since the user saw it.
@@ -656,8 +661,11 @@ func (e Engine) invalidPath(p string) string {
 
 // blockerReason names every hard stop's code (floors such as held and
 // default_branch are left out: they need --accept-loss, they do not refuse),
-// the first one's detail.
-func blockerReason(bs []cleanup.Reason, k cleanup.Kind) string {
+// the first one's detail. A current-directory blocker adds where to run
+// from: wt never removes a directory it is standing in, so the way out is to
+// run the same command from root (the repository root) or any directory
+// outside the worktree (#569).
+func blockerReason(bs []cleanup.Reason, k cleanup.Kind, root string) string {
 	var hard []cleanup.Reason
 	for _, b := range bs {
 		if cleanup.IsHardStop(b.Code, k) {
@@ -675,7 +683,47 @@ func blockerReason(bs []cleanup.Reason, k cleanup.Kind) string {
 	if hard[0].Detail != "" {
 		s += " (" + hard[0].Detail + ")"
 	}
-	return s
+	return s + StandingHint(bs, k, root)
+}
+
+// StandingHint is the sentence that follows a refusal for the worktree the
+// session is standing in: the command to run from root or any directory
+// outside it (#569). "" when the blockers hold no such refusal. Primary can
+// never be removed, from anywhere, and a branch target has no worktree path to
+// run it on: the hint would send the user nowhere. Exported so the CLI's own
+// in-use refusal (cmd/wt-session, which plans in-use rows without the engine)
+// says the same thing.
+func StandingHint(bs []cleanup.Reason, k cleanup.Kind, root string) string {
+	if k != cleanup.KindWorktree {
+		return ""
+	}
+	var cur *cleanup.Reason
+	for i, b := range bs {
+		switch {
+		case b.Code == cleanup.BlockPrimary:
+			return ""
+		case b.Code == cleanup.BlockCurrent && cur == nil:
+			cur = &bs[i]
+		}
+	}
+	if cur == nil {
+		return ""
+	}
+	return "; you are standing in it; run `wt remove " + shellArg(cur.Detail) + "` from the repository root (" + root + ") or any directory outside it"
+}
+
+// shellArg single-quotes s unless it is made of plainly safe characters.
+func shellArg(s string) string {
+	plain := s != ""
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("/._-+=:@,", c)) {
+			plain = false
+		}
+	}
+	if plain {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // maxProcNames is how many command names a live-process warning names.

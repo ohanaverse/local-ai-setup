@@ -970,3 +970,28 @@ func TestRemoveCmdLocalBaseDefaultBranchKept(t *testing.T) {
 		t.Errorf("stdout lacks retained_default:\n%s", stdout)
 	}
 }
+
+// TestRemoveCmdFromInsideTheWorktreeNamesTheWayOut (#569): the in-use
+// refusal for the worktree the command runs in names the repository root and
+// the command to run from there, through the CLI path (which plans in-use rows
+// without the engine), in text and JSON alike.
+func TestRemoveCmdFromInsideTheWorktreeNamesTheWayOut(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	p := mergedWorktree(t, dir, "topic")
+	stdout, stderr, err := runRemove(t, a, p, "", "--no-fetch", "--yes", "--json", ".")
+	if exitOf(err) != 2 {
+		t.Fatalf("exit %d, want 2 (refused)\nstdout=%s\nstderr=%s", exitOf(err), stdout, stderr)
+	}
+	env := decodeOne(t, stdout)
+	reason := ""
+	for _, it := range env.Items {
+		reason += it.Reason
+	}
+	if !strings.Contains(reason, "in use: current") || !strings.Contains(reason, "standing in it") || !strings.Contains(reason, "wt remove ") || !strings.Contains(reason, "from the repository root") {
+		t.Fatalf("reason %q, want the in-use code plus the run-from-root command", reason)
+	}
+	if !exists(p) {
+		t.Fatal("the worktree was removed")
+	}
+}

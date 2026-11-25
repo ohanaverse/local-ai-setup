@@ -116,7 +116,7 @@ func (e Engine) remoteGate(it Item) gated {
 		return refuseR(fmt.Sprintf("branch spelling changed: %s is now %s", it.Ref, fresh.Ref))
 	}
 	if fresh.HardStop != "" {
-		return refuseR(blockerReason(fresh.Blockers, fresh.Kind))
+		return refuseR(blockerReason(fresh.Blockers, fresh.Kind, e.Prior.Repo))
 	}
 	if fresh.Unknown {
 		detail := ""
