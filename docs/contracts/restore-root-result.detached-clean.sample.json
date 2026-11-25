@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "repo": "/Users/me/repo",
+  "dry_run": false,
+  "outcome": "moved",
+  "created": false,
+  "detached": true,
+  "head": "f92581ff5ac55df734270fc13d5b48260567e8a9",
+  "default": "main",
+  "carried": {
+    "commits": 0,
+    "staged": 0,
+    "unstaged": 0,
+    "untracked": 0,
+    "untracked_bytes": 0
+  },
+  "left_behind": {
+    "ignored_entries": 0
+  },
+  "completed": [
+    "released the root: reset, 0 carried untracked files removed, switched to main",
+    "read back: the root is on main and clean; its former detached HEAD f92581ff stays on origin/topic"
+  ],
+  "warnings": [
+    "the root's HEAD is held only by origin/topic; if that tracking ref is pruned and the root has no uncommitted work, nothing else keeps these commits"
+  ]
+}

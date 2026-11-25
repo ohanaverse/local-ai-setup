@@ -252,3 +252,18 @@ func TestRestoreRootRunReportFetchedHook(t *testing.T) {
 		})
 	}
 }
+
+// TestRestoreRootRefusalErrorClaimsNoBranch pins the exit error's wording: a
+// refusal with a detached root has no branch to speak of, so the line after
+// the result must not say one "was not moved".
+func TestRestoreRootRefusalErrorClaimsNoBranch(t *testing.T) {
+	o := rootmove.Outcome{Status: rescue.StatusRefused, Code: rootmove.CodeDetachedRoot, Reason: "x"}
+	var out, errOut bytes.Buffer
+	err := writeRestoreRootResult(&out, &errOut, false, rootmove.Meta{}, o)
+	if err == nil {
+		t.Fatal("a refusal must exit non-zero")
+	}
+	if strings.Contains(err.Error(), "branch") {
+		t.Errorf("error %q mentions a branch", err)
+	}
+}

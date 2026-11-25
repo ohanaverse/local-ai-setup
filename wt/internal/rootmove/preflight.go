@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // excludeRemedy is the one line that makes a repository ignore .worktrees/
@@ -67,8 +68,20 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		return nil, fmt.Errorf("the root's HEAD %q is not a commit id", cleanup.OneLine(prim.Head))
 	}
 	branch, onBranch := strings.CutPrefix(prim.Branch, "refs/heads/")
-	if prim.Detached || !onBranch || branch == "" {
-		return nil, refuse(CodeDetachedRoot, "the root is on a detached HEAD, so there is no branch to move; give it one first (git switch -c <name>)")
+	detached := prim.Detached || !onBranch || branch == ""
+	if !detached && e.NewBranch != "" {
+		return nil, refuse(CodeBranchUnneeded, "--branch %s is only for a root on a detached HEAD, and the root is on %s, which moves as it is",
+			cleanup.OneLine(e.NewBranch), cleanup.OneLine(branch))
+	}
+	if detached && e.NewBranch != "" {
+		if err := worktree.CheckNewBranch(root, e.NewBranch); err != nil {
+			return nil, refuse(CodeBranchInvalid, "%v", err)
+		}
+		if tip, exists, err := resolveCommit(rg, "refs/heads/"+e.NewBranch); err != nil {
+			return nil, err
+		} else if exists {
+			return nil, refuse(CodeBranchExists, "the branch %s already exists (at %s); pick another name", cleanup.OneLine(e.NewBranch), tip)
+		}
 	}
 
 	base, err := cleanup.ResolveBase(rg)
@@ -85,7 +98,7 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		return nil, refuse(CodeNoDefaultBranch, "the default branch %s exists only as origin/%s; create it locally first (git branch %s origin/%s)",
 			cleanup.OneLine(def), cleanup.OneLine(def), cleanup.OneLine(def), cleanup.OneLine(def))
 	}
-	if branch == def {
+	if !detached && branch == def {
 		return nil, refuse(CodeAlreadyDefault, "the root is already on the default branch %s; there is nothing to move", cleanup.OneLine(def))
 	}
 	for _, w := range facts[1:] {
@@ -126,11 +139,16 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 
 	r := e.Rescue
 	r.ForRoot = true
-	rp, err := r.Preflight(cleanup.Row{Kind: cleanup.KindWorktree, Path: prim.Path, Ref: prim.Branch}, dirName)
+	r.RootNewBranch = ""
+	ref := prim.Branch
+	if detached {
+		r.RootNewBranch, ref = e.NewBranch, ""
+	}
+	rp, err := r.Preflight(cleanup.Row{Kind: cleanup.KindWorktree, Path: prim.Path, Ref: ref}, dirName)
 	if err != nil {
 		return nil, err
 	}
-	if rp.Branch != branch || rp.Source.Head != prim.Head {
+	if detached != rp.SourceDetached || rp.Branch != branch+e.NewBranch || rp.Source.Head != prim.Head {
 		return nil, refuse(rescue.CodeSourceChanged, "the root's branch or HEAD moved while it was being checked; run it again")
 	}
 
@@ -149,12 +167,30 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 			cleanup.OneLine(hit), cleanup.OneLine(def))
 	}
 
+	// A detached root's commits: a branch that holds them (E: the new
+	// worktree stays detached, no ref made), or none (C: --branch NAME, else
+	// refused). Read last, after rescue's own refusals, so an operation in
+	// progress or unmerged paths win over a misleading "name a branch".
+	var held []string
+	if detached {
+		if held, err = reachableFrom(rg, prim.Head); err != nil {
+			return nil, fmt.Errorf("could not read which branches hold the root's HEAD: %w", err)
+		}
+		if len(held) == 0 && e.NewBranch == "" {
+			return nil, refuse(CodeDetachedRoot, "the root is on a detached HEAD with %s on no branch; name one with `wt restore-root --branch NAME` (or `git switch -c NAME` first), so the commits are kept",
+				commitsText(rp.Counts.Commits))
+		}
+	}
+
 	warnings := slices.Clone(rp.Warnings)
+	if detached && e.NewBranch == "" && onlyRemote(held) {
+		warnings = append(warnings, fmt.Sprintf("the root's HEAD is held only by %s; if that tracking ref is pruned and the root has no uncommitted work, nothing else keeps these commits", strings.Join(shortRefs(firstN(held, 3)), ", ")))
+	}
 	if heldWarn != "" {
 		warnings = append(warnings, heldWarn)
 	}
 	ff, note, benign := defaultFF(rg, def)
-	return &Plan{
+	pl := &Plan{
 		Repo:      rp.Repo,
 		Branch:    rp.Branch,
 		Default:   def,
@@ -167,7 +203,55 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		Counts:    rp.Counts,
 		Warnings:  warnings,
 		rp:        rp,
-	}, nil
+	}
+	if detached {
+		pl.Detached, pl.NewBranch, pl.ReachableFrom = true, e.NewBranch, shortRefs(firstN(held, 3))
+		if e.NewBranch == "" && !rp.HasDirt() {
+			// Nothing to keep: no worktree is made, the root only switches.
+			pl.DirName, pl.DestPath = "", ""
+		}
+	}
+	return pl, nil
+}
+
+// reachableFrom lists the full ref names of the local and remote-tracking
+// branches that contain commit (a symref like origin/HEAD does not count as
+// one). Tags, the stash, rescue records and other worktrees' HEADs are not
+// branches: only refs/heads and refs/remotes are asked. Reads only.
+func reachableFrom(rg cleanup.Git, commit string) ([]string, error) {
+	text, err := rg.Text("for-each-ref", "--format=%(refname)", "--contains", commit, "refs/heads", "refs/remotes")
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, l := range strings.Split(text, "\n") {
+		if l == "" || strings.HasPrefix(l, "refs/remotes/") && strings.HasSuffix(l, "/HEAD") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out, nil
+}
+
+// onlyRemote reports that every holder is a remote-tracking ref.
+func onlyRemote(held []string) bool {
+	return len(held) > 0 && !slices.ContainsFunc(held, func(h string) bool { return strings.HasPrefix(h, "refs/heads/") })
+}
+
+// shortRefs is refs without their refs/heads/ or refs/remotes/ prefix.
+func shortRefs(refs []string) []string {
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, strings.TrimPrefix(strings.TrimPrefix(r, "refs/heads/"), "refs/remotes/"))
+	}
+	return out
+}
+
+func firstN(ss []string, n int) []string {
+	if len(ss) > n {
+		ss = ss[:n]
+	}
+	return slices.Clone(ss)
 }
 
 // commonDir reads the repository's absolute common directory, where the
@@ -311,4 +395,12 @@ func defaultFF(rg cleanup.Git, def string) (ok bool, note string, benign bool) {
 		return false, fmt.Sprintf("%s is ahead of origin/%s (it has commits origin does not), so it is not fast-forwarded", d, d), false
 	}
 	return false, fmt.Sprintf("%s and origin/%s have diverged; no merge is made, so it is not fast-forwarded", d, d), false
+}
+
+// commitsText is "1 commit" or "N commits".
+func commitsText(n int) string {
+	if n == 1 {
+		return "1 commit"
+	}
+	return fmt.Sprintf("%d commits", n)
 }

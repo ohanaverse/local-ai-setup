@@ -13,8 +13,13 @@ import (
 // The decision shape (R501a-e) mirrors Preflight's own refusal order, so the
 // menu never offers a move the command would refuse. A non-root row names a
 // thing restore-root never moves. A bare repository has no checkout to move.
-// A root with no commit has nothing to move. A detached root has no branch to
-// move, so the menu explains instead of offering. A root in a repository
+// A root with no commit has nothing to move. A detached root (#584) is
+// offered when the default branch already reaches its HEAD (the row's
+// Losses.DetachedUnique is false): some branch holds the commits, so the move
+// can only succeed, leaving the new worktree detached. When the default does
+// not reach HEAD the menu cannot tell whether another branch holds it (the
+// row has no such fact), so it explains instead and names the command, which
+// needs --branch NAME if no branch does. A root in a repository
 // with no resolvable default has nothing to restore to (the move's whole
 // point is returning the root to the default). A root demonstrably on the
 // default — its row's cleanup.BlockDefaultBranch blocker, which the
@@ -35,8 +40,6 @@ func Offered(row cleanup.Row) (bool, string) {
 		return false, "a bare repository has no checkout to restore"
 	case noCommit(row.Head):
 		return false, "the root's branch has no commits yet"
-	case row.Branch == "":
-		return false, "the root is detached — there is no branch to move"
 	case hasReason(row.Reasons, cleanup.ReasonNoDefaultBranch):
 		return false, "no default branch to restore to"
 	case hasReason(row.Blockers, cleanup.BlockDefaultBranch):
@@ -49,10 +52,18 @@ func Offered(row cleanup.Row) (bool, string) {
 	// losses: raw, the move is refused whenever the root's state could not be read
 	case row.Losses.GatesUnknown:
 		return false, "its state could not be read"
+	// losses: raw, a detached root the default does not reach may be held by no branch at all
+	case row.Branch == "" && row.Losses.DetachedUnique:
+		return false, DetachedUniqueLine
 	default:
 		return true, ""
 	}
 }
+
+// DetachedUniqueLine is the status line for a detached root whose HEAD the
+// default branch does not reach: R cannot say from the row whether another
+// branch holds it.
+const DetachedUniqueLine = "the root is detached at commits the default branch lacks: run `wt restore-root` (it needs --branch NAME if no branch holds them)"
 
 // noCommit is Preflight's own no_commit check: a worktree's Head is "" — or
 // the 40-zero null sha, what `git worktree list` prints for an unborn branch

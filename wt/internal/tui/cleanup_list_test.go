@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootmove"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
@@ -1874,7 +1875,7 @@ func TestCleanupListRestoreRootKeyHandsOff(t *testing.T) {
 // rootmove.Offered refuses stays in the list and shows that gate's own line
 // byte-for-byte on the status line — one case per refusal shape (a linked
 // worktree and a branch row are not the root; the root on the default is
-// already there; a detached root has no branch to move; an unborn root has no
+// already there; a detached root at commits the default lacks is explained; an unborn root has no
 // commit to move). Why: a key that does nothing, silently, reads as broken,
 // and re-wording Offered's line here would let the two drift apart.
 func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
@@ -1892,11 +1893,12 @@ func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
 			Primary: true, Head: sha, Status: cleanup.StatusInUse,
 			Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary}, {Code: cleanup.BlockDefaultBranch, Detail: "main"}}}),
 			"main", "root is already on main"},
-		{"a detached root has no branch to move", restoreRootReport(cleanup.Row{
+		{"a detached root at commits the default lacks names the command and --branch", restoreRootReport(cleanup.Row{
 			Kind: cleanup.KindWorktree, Name: "repo", Path: "/repo", Primary: true, Head: sha,
 			Status:  cleanup.StatusLessSure,
-			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}}}),
-			"repo", "the root is detached — there is no branch to move"},
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}},
+			Losses:  cleanup.Losses{DetachedUnique: true}}),
+			"repo", rootmove.DetachedUniqueLine},
 		{"an unborn root has no commit to move", restoreRootReport(cleanup.Row{
 			Kind: cleanup.KindWorktree, Name: "fresh", Path: "/repo", Branch: "fresh", Ref: "refs/heads/fresh",
 			Primary: true, Head: "0000000000000000000000000000000000000000", Status: cleanup.StatusLessSure,
@@ -1930,6 +1932,25 @@ func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
 		if fm.status != c.want {
 			t.Errorf("%s: status = %q, want Offered's line byte-for-byte %q", c.name, fm.status, c.want)
 		}
+	}
+}
+
+// TestCleanupListRestoreRootOffersADetachedRootTheDefaultReaches checks `R` on
+// a detached root row whose HEAD the default branch reaches hands off like
+// any other offered root (#584). Why: some branch holds its commits, so the
+// move can only succeed.
+func TestCleanupListRestoreRootOffersADetachedRootTheDefaultReaches(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	rep := restoreRootReport(cleanup.Row{
+		Kind: cleanup.KindWorktree, Name: "repo", Path: "/repo", Primary: true, Head: sha,
+		Status:  cleanup.StatusLessSure,
+		Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}}})
+	m := newSizedCleanupList(t, rep, 100, 30)
+	m.rm.RestoreRoot = func(_ io.Reader, _, _ io.Writer) error { return nil }
+	m = moveTo(t, m, "repo")
+	next, cmd := press(t, m, keyRunes("R")).Update(keyRunes("R"))
+	if fm := next.(cleanupListModel); cmd == nil || !fm.restoreRoot || !fm.done {
+		t.Fatalf("cmd=%v restoreRoot=%v done=%v; want the hand-off", cmd, fm.restoreRoot, fm.done)
 	}
 }
 

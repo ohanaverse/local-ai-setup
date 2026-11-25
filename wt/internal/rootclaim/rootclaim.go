@@ -45,7 +45,8 @@ func Lookup(dir string) (r Root, ok bool, err error) {
 
 // Hint is the one line that points at `wt restore-root` when the root r is on
 // a named branch other than its default, and "" otherwise: on the default, on
-// a detached HEAD, or when the default is unknown (origin/HEAD unset, a
+// a detached HEAD (restore-root takes one since #584, but whether it needs
+// --branch NAME is not known here, so the hint stays silent), or when the default is unknown (origin/HEAD unset, a
 // declared limit: restore-root itself would still work there).
 func Hint(r Root) string {
 	if r.Default == "" || r.Branch == "(detached)" || r.Branch == r.Default {

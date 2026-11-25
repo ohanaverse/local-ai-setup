@@ -3,6 +3,8 @@ package rootmove
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
@@ -35,6 +37,9 @@ type Envelope struct {
 	Reason        string                 `json:"reason,omitempty"`
 	Created       bool                   `json:"created"`
 	Branch        string                 `json:"branch,omitempty"`
+	Detached      bool                   `json:"detached,omitempty"`
+	Head          string                 `json:"head,omitempty"`
+	BranchCreated bool                   `json:"branch_created,omitempty"`
 	Default       string                 `json:"default,omitempty"`
 	DestPath      string                 `json:"dest_path,omitempty"`
 	Record        *rescue.RecordJSON     `json:"record,omitempty"`
@@ -65,21 +70,30 @@ var Codes = []string{
 	CodeDetachedRoot, CodeAlreadyDefault, CodeDefaultInWorktree, CodeNoCommit,
 	CodeReleaseRefused, CodeReleaseFailed, CodeSwitchFailed, CodeNoDefaultBranch, CodeIgnoredCollision,
 	CodeRecordNotWritten, CodeWorktreesNotIgnored,
+	CodeBranchUnneeded, CodeBranchInvalid, CodeBranchExists, CodeBranchCreateFailed,
 }
 
 // EncodeResult is the document for one outcome. Plan facts (branch, default,
 // counts) appear when the outcome has a plan; dest_path only once the
-// directory exists (Created) or in a dry run, where it is where it would be.
+// directory exists (Created) or in a dry run, where it is where it would be,
+// and never for a clean detached root that a branch holds (no worktree is
+// made). branch is absent for a detached root that a branch holds;
+// branch_created says --branch NAME was created.
 func EncodeResult(o Outcome, m Meta) ([]byte, error) {
 	p := o.Plan
 	e := Envelope{Version: EnvelopeVersion, Repo: m.Repo, DryRun: m.DryRun,
 		Outcome: string(o.Status), Code: o.Code, Reason: cleanup.Flatten(o.Reason), Created: o.Created,
 		Branch: p.Branch, Default: p.Default, DefaultFF: p.DefaultFF, FastForwarded: o.FastForwarded,
 		Completed: sanitised(o.Completed), Warnings: sanitised(p.Warnings)}
-	if o.Created || o.Status == rescue.StatusWouldMove {
+	if (o.Created || o.Status == rescue.StatusWouldMove) && p.DestPath != "" {
 		e.DestPath = p.DestPath
 	}
-	if p.Branch != "" {
+	if p.Detached {
+		e.Detached, e.Head = true, p.Head
+		// The branch exists once step 3b finished, whatever came after.
+		e.BranchCreated = slices.ContainsFunc(o.Completed, func(c string) bool { return strings.HasPrefix(c, branchDonePrefix) })
+	}
+	if p.Branch != "" || p.Detached {
 		c := p.Counts
 		e.Carried = &rescue.CarriedJSON{Commits: c.Commits, Staged: c.Staged, Unstaged: c.Unstaged, Untracked: c.Untracked, UntrackedBytes: c.UntrackedBytes}
 		e.LeftBehind = &rescue.LeftBehindJSON{IgnoredEntries: c.IgnoredLeft}

@@ -82,8 +82,14 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 		if !primary {
 			return nil, refuse(CodeNotWorktree, "root mode takes only the repository's primary checkout")
 		}
-		if !strings.HasPrefix(fresh.Ref, "refs/heads/") || fresh.Ref == "refs/heads/" {
+		// A detached root (no Ref) has no branch to keep: its commits are on a
+		// branch already, or the caller names one to create (RootNewBranch).
+		// Any other ref is not a branch the move can keep.
+		if fresh.Ref != "" && (!strings.HasPrefix(fresh.Ref, "refs/heads/") || fresh.Ref == "refs/heads/") {
 			return nil, refuse(CodeNotWorktree, "a detached root has no branch to keep")
+		}
+		if fresh.Ref != "" && e.RootNewBranch != "" {
+			return nil, refuse(CodeNotWorktree, "a new branch is only for a detached root")
 		}
 	}
 	// losses: raw, rescue reads what the worktree holds; a record must not hide it (a second rescue stays possible)
@@ -105,9 +111,23 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 		return nil, refuse(CodeSourceChanged, "the worktree's HEAD moved while it was being checked; run it again")
 	}
 	// Commits that exist on no remote-tracking ref: the classifier's own
-	// "unpushed" definition, counted for a detached HEAD too.
+	// "unpushed" definition, counted for a detached HEAD too. A detached
+	// root's commits are counted against every branch and remote-tracking
+	// ref: those are the ones nothing else holds (0 when a branch has HEAD).
+	sourceDetached := e.ForRoot && fresh.Ref == ""
 	// losses: raw, rescue reads what the worktree holds; a record must not hide it (a second rescue stays possible)
-	if fresh.Losses.Unpushed > 0 || fresh.Losses.DetachedUnique {
+	if sourceDetached {
+		n, err := sg.text("rev-list", "--count", "HEAD", "--not", "--branches", "--remotes")
+		if err != nil {
+			return nil, err
+		}
+		c, err := parseCommitCount(n)
+		if err != nil {
+			return nil, fmt.Errorf("could not count the commits that exist only here: %w", err)
+		}
+		p.Counts.Commits = c
+		// losses: raw, rescue reads what the worktree holds; a record must not hide it (a second rescue stays possible)
+	} else if fresh.Losses.Unpushed > 0 || fresh.Losses.DetachedUnique {
 		n, err := sg.text("rev-list", "--count", "HEAD", "--not", "--remotes")
 		if err != nil {
 			return nil, err
@@ -150,15 +170,23 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 		// The branch is the root's own; name is the directory, which defaults
 		// to the branch (the worktree package flattens its slashes).
 		branch := strings.TrimPrefix(fresh.Ref, "refs/heads/")
+		if sourceDetached {
+			branch = e.RootNewBranch
+		}
 		dir := name
 		if dir == "" {
 			dir = branch
+		}
+		if dir == "" {
+			// A detached root with no branch to create: the directory is named
+			// for the commit; only the directory is named, no ref.
+			dir = "detached-" + fresh.Head[:8]
 		}
 		dest, err := worktree.CheckNewDetached(p.Repo, dir, branch)
 		if err != nil {
 			return nil, refuse(CodeNameUnavailable, fmt.Sprintf("pass --to NAME to choose another directory name (%v)", err))
 		}
-		p.Branch, p.DirName, p.DestPath, p.Detached = branch, dir, dest, true
+		p.Branch, p.DirName, p.DestPath, p.Detached, p.SourceDetached = branch, dir, dest, true, sourceDetached
 	} else {
 		branch := name
 		if branch == "" {

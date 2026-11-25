@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "repo": "/Users/me/repo",
+  "dry_run": false,
+  "outcome": "refused",
+  "code": "branch_exists",
+  "reason": "the branch spike already exists (at 3b1c9e7a5d2f48608c1e9a7b4d5f60213a8e7c9d); pick another name",
+  "created": false,
+  "completed": [],
+  "warnings": []
+}

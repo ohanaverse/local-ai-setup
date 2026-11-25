@@ -401,6 +401,7 @@ func TestRestoreRootCmdExitCodes(t *testing.T) {
 			dir := cleanupRepo(t)
 			excludeWorktrees(t, dir)
 			cgit(t, dir, "switch", "-q", "--detach")
+			cleanupCommit(t, dir, "orphan.txt", "only here") // on no branch
 			return dir
 		}, rootmove.CodeDetachedRoot},
 		{"default in a worktree", func(t *testing.T) string {

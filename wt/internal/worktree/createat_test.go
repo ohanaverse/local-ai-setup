@@ -408,3 +408,48 @@ func TestCreateDetachedAtTypesItsFailure(t *testing.T) {
 		t.Errorf("DirLeft = %v, but exists = %v", af.DirLeft, statErr == nil)
 	}
 }
+
+// TestCreateDetachedAtCommit checks a detached worktree is made at a commit
+// no branch tip is compared with, creates no ref, refuses a bad start and a
+// taken directory, and tolerates an empty branch in CheckNewDetached. Why:
+// restore-root on a detached root has no branch to compare.
+func TestCreateDetachedAtCommit(t *testing.T) {
+	dir, first, second := repoWithTwoCommits(t)
+	refs := gitOut(t, dir, "for-each-ref")
+
+	if _, err := CheckNewDetached(dir, "detached-x", ""); err != nil {
+		t.Fatalf("CheckNewDetached with an empty branch: %v", err)
+	}
+	path, err := CreateDetachedAtCommit(dir, "detached-x", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, ".worktrees", "detached-x"); path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	if _, err := runGitCmd(path, "symbolic-ref", "-q", "HEAD"); err == nil {
+		t.Error("HEAD of the new worktree is not detached")
+	}
+	if got := strings.TrimSpace(gitOut(t, path, "rev-parse", "HEAD")); got != first {
+		t.Errorf("HEAD = %s, want %s (the start, not the branch tip %s)", got, first, second)
+	}
+	if after := gitOut(t, dir, "for-each-ref"); after != refs {
+		t.Errorf("refs changed:\n%s\n--\n%s", refs, after)
+	}
+	var nc *NotCreatedError
+	if _, err := CreateDetachedAtCommit(dir, "detached-x", first); !errors.As(err, &nc) || !nc.NameUnavailable {
+		t.Errorf("a taken directory: %v, want NotCreatedError{NameUnavailable}", err)
+	}
+	if _, err := CreateDetachedAtCommit(dir, "other", "HEAD"); !errors.As(err, &nc) {
+		t.Errorf("a non-id start: %v, want NotCreatedError", err)
+	}
+	if err := CheckNewBranch(dir, "bad..name"); err == nil {
+		t.Error("CheckNewBranch accepted bad..name")
+	}
+	if err := CheckNewBranch(dir, "@"); err == nil {
+		t.Error("CheckNewBranch accepted @")
+	}
+	if err := CheckNewBranch(dir, "spike/ok"); err != nil {
+		t.Errorf("CheckNewBranch refused spike/ok: %v", err)
+	}
+}

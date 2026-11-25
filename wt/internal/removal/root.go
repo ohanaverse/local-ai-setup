@@ -64,6 +64,13 @@ type RootRelease struct {
 	RecordRef          string
 	Untracked          []string
 	Unchanged          func() (string, error)
+	// DetachedAt, when set, lets a root on a detached HEAD be released: it
+	// must be the root's full HEAD commit id, and ReleaseRoot re-proves,
+	// fresh, that some local or remote-tracking branch contains that commit,
+	// so switching away orphans nothing. "" (the zero value) keeps the rule
+	// that the root is on a branch. The caller's claim is never trusted: a
+	// mismatch with HEAD or no containing branch is a *ReleaseRefused.
+	DetachedAt string
 }
 
 // ReleaseResult says what a release did: the reset ran, how many carried
@@ -113,7 +120,9 @@ func (e *ReleaseFailed) Unwrap() error { return e.Err }
 // touched:
 //
 //  1. Root is absolute; no variable of rootRepoEnv is set; Root is the top of
-//     the repository's primary checkout, on a branch (not detached); Default
+//     the repository's primary checkout, on a branch (or, only with
+//     DetachedAt, detached at exactly that commit while a local or
+//     remote-tracking branch contains it, proven afresh here); Default
 //     names an existing local branch (not an option, a valid ref name) that
 //     no other worktree has checked out;
 //  2. Unchanged is set and reports no difference (the fingerprint);
@@ -173,7 +182,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	rg := rootGit(g, root)
 
 	// 1. Inputs.
-	if why, err := checkReleaseInputs(rg, root, r.Default); err != nil {
+	if why, err := checkReleaseInputs(rg, root, r.Default, r.DetachedAt); err != nil {
 		return refuse("could not check the root: %v", err)
 	} else if why != "" {
 		return refuse("%s", why)
@@ -292,9 +301,10 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 // checkReleaseInputs returns why root or def cannot be released ("" when
 // both hold): root must be the top of the primary checkout (not a linked
 // worktree or a subdirectory) and on a branch (not a detached HEAD, whose
-// commits would be left on no branch), and def an existing local branch that
+// commits would be left on no branch, unless detachedAt names that HEAD and a
+// branch contains it), and def an existing local branch that
 // no other worktree has checked out.
-func checkReleaseInputs(rg cleanup.Git, root, def string) (string, error) {
+func checkReleaseInputs(rg cleanup.Git, root, def, detachedAt string) (string, error) {
 	if def == "" || strings.HasPrefix(def, "-") {
 		return fmt.Sprintf("%q is not a branch name", def), nil
 	}
@@ -319,14 +329,33 @@ func checkReleaseInputs(rg cleanup.Git, root, def string) (string, error) {
 		return fmt.Sprintf("%s is a linked worktree, not the primary checkout", root), nil
 	}
 	// A detached root's commits may be on no branch: switching away would
-	// orphan them.
+	// orphan them. Only a caller that names the commit (DetachedAt) gets past
+	// this, and only when a branch contains it right now.
 	if o, err := runGit(rg, "symbolic-ref", "-q", "HEAD"); err != nil {
 		return "", err
 	} else if ref := strings.TrimSpace(o.Stdout); o.Code != 0 || !strings.HasPrefix(ref, "refs/heads/") || ref == "refs/heads/" {
 		if o.Code > 1 {
 			return "", fmt.Errorf("git symbolic-ref: exit %d: %s", o.Code, cleanup.OneLine(o.Stderr))
 		}
-		return fmt.Sprintf("%s is not on a branch (detached HEAD); its commits would be left on no branch", root), nil
+		if detachedAt == "" {
+			return fmt.Sprintf("%s is not on a branch (detached HEAD); its commits would be left on no branch", root), nil
+		}
+		head, err := gitText(rg, "rev-parse", "--verify", "HEAD^{commit}")
+		if err != nil {
+			return "", err
+		}
+		if head != detachedAt {
+			return fmt.Sprintf("%s is detached at %s, not at %s as checked", root, head, detachedAt), nil
+		}
+		holders, err := gitText(rg, "for-each-ref", "--count=1", "--format=%(refname)", "--contains", head, "refs/heads", "refs/remotes")
+		if err != nil {
+			return "", err
+		}
+		if holders == "" {
+			return fmt.Sprintf("HEAD is not on any branch: no local or remote-tracking branch contains %s, so switching %s away would leave its commits on no branch", head, root), nil
+		}
+	} else if detachedAt != "" {
+		return fmt.Sprintf("%s is on a branch, but its release was prepared for a detached HEAD at %s", root, detachedAt), nil
 	}
 	o, err := runGit(rg, "worktree", "list", "--porcelain", "-z")
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // preflightCase is one source state and what Preflight must answer.
@@ -622,36 +623,105 @@ func TestPreflightForRootKeepsEveryOtherRefusal(t *testing.T) {
 	})
 }
 
-// TestPreflightForRootRefusesDetachedRoot checks root mode refuses a primary
-// checkout with a detached HEAD as not_worktree, and a linked worktree as
-// not_worktree too, creating and changing nothing. Why: the move keeps a
-// branch, and a detached root has none; a worktree is `wt rescue`'s source,
-// never a root move's.
-func TestPreflightForRootRefusesDetachedRoot(t *testing.T) {
-	f := newFixture(t)
-	f.git("switch", "-q", "--detach")
-	f.Commit(f.Dir, "work.txt", "work", "work")
-	f.write(f.Dir, "new.txt", "n")
-	eng, row := f.rootEngine()
-	before, world := snapshot(t, f.Dir), f.world()
-
-	p, err := eng.Preflight(row, "")
-	if r := wantRefusal(t, p, err, CodeNotWorktree); !strings.Contains(r.Message, "a detached root has no branch to keep") {
-		t.Errorf("message %q", r.Message)
-	}
-	if d := before.diff(snapshot(t, f.Dir)); d != "" {
-		t.Errorf("the root changed (%s)", d)
-	}
-	if w := f.world(); w != world {
-		t.Errorf("refs or worktrees changed:\n%s\n--\n%s", world, w)
-	}
-
+// TestPreflightForRootRefusesWorktreeSource checks root mode refuses a linked
+// worktree as not_worktree, creating and changing nothing. Why: a worktree is
+// `wt rescue`'s source, never a root move's. (A detached root is planned: see
+// TestPreflightForRootDetachedPlan.)
+func TestPreflightForRootRefusesWorktreeSource(t *testing.T) {
 	g := newFixture(t)
 	wt := workTree(g)
 	geng, find := g.engine(g.Dir)
 	geng.ForRoot = true
-	p, err = geng.Preflight(find(wt), "")
+	p, err := geng.Preflight(find(wt), "")
 	wantRefusal(t, p, err, CodeNotWorktree)
+}
+
+// TestPreflightForRootDetachedPlan checks a detached root is planned as a
+// detached destination: with no new branch Branch is "" and the directory is
+// detached-<sha8>; with RootNewBranch Branch and the directory are that name;
+// Counts.Commits counts only commits no branch and no remote-tracking ref
+// holds; and the record names Wt-Dest-Branch detached / the name and is still
+// listed. Why: restore-root's detached modes ride this plan.
+func TestPreflightForRootDetachedPlan(t *testing.T) {
+	t.Run("commits on a branch: no branch, nothing parked", func(t *testing.T) {
+		f := newFixture(t)
+		f.git("switch", "-q", "--detach")
+		f.write(f.Dir, "new.txt", "n")
+		eng, row := f.rootEngine()
+		before, world := snapshot(t, f.Dir), f.world()
+		p, err := eng.Preflight(row, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		head := f.git("rev-parse", "HEAD")
+		if !p.Detached || !p.SourceDetached || p.Branch != "" || p.DirName != "detached-"+head[:8] || p.Counts.Commits != 0 || p.Counts.Untracked != 1 {
+			t.Errorf("plan %+v", p)
+		}
+		if d := before.diff(snapshot(t, f.Dir)); d != "" {
+			t.Errorf("the root changed (%s)", d)
+		}
+		if w := f.world(); w != world {
+			t.Errorf("refs or worktrees changed:\n%s\n--\n%s", world, w)
+		}
+	})
+	t.Run("commits on no branch with a new branch", func(t *testing.T) {
+		f := newFixture(t)
+		f.git("switch", "-q", "--detach")
+		f.Commit(f.Dir, "work.txt", "work", "work")
+		f.Commit(f.Dir, "work2.txt", "work", "work2")
+		f.write(f.Dir, "new.txt", "n")
+		eng, row := f.rootEngine()
+		eng.RootNewBranch = "spike/one"
+		p, err := eng.Preflight(row, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Branch != "spike/one" || p.DirName != "spike/one" || !p.SourceDetached || p.Counts.Commits != 2 {
+			t.Errorf("plan %+v", p)
+		}
+		dest, err := worktree.CreateDetachedAtCommit(f.Dir, p.DirName, p.Start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := eng.ExecuteInto(p, dest)
+		if out.Status != StatusMoved || out.Record == nil {
+			t.Fatalf("outcome %+v", out)
+		}
+		recs, err := cleanup.ListRecords(cleanup.Git{Dir: f.Dir})
+		if err != nil || len(recs) != 1 || recs[0].DestBranch != "spike/one" {
+			t.Errorf("records %+v err %v", recs, err)
+		}
+	})
+	t.Run("record of a branch-less plan is listed", func(t *testing.T) {
+		f := newFixture(t)
+		f.git("switch", "-q", "--detach")
+		f.write(f.Dir, "new.txt", "n")
+		eng, row := f.rootEngine()
+		p, err := eng.Preflight(row, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dest, err := worktree.CreateDetachedAtCommit(f.Dir, p.DirName, p.Start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := eng.ExecuteInto(p, dest)
+		if out.Status != StatusMoved || out.Record == nil {
+			t.Fatalf("outcome %+v", out)
+		}
+		recs, err := cleanup.ListRecords(cleanup.Git{Dir: f.Dir})
+		if err != nil || len(recs) != 1 || recs[0].DestBranch != "detached" {
+			t.Errorf("records %+v err %v", recs, err)
+		}
+	})
+	t.Run("a new branch on a root that is on a branch is refused", func(t *testing.T) {
+		f := newFixture(t)
+		f.rootOnTopic()
+		eng, row := f.rootEngine()
+		eng.RootNewBranch = "x"
+		p, err := eng.Preflight(row, "")
+		wantRefusal(t, p, err, CodeNotWorktree)
+	})
 }
 
 // TestPreflightForRootAcceptsStagedDeleteWithUntrackedTwin checks a root

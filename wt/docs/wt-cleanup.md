@@ -265,7 +265,7 @@ On a terminal `wt worktrees` shows every row, locked or not, and acts only on a 
 
 The action on the second press is the one the screen lists. `x` removes the **selected** row alone (the confirm says "selected"; ticks are ignored), `d` as `x` with the worktree's unmerged branch also deleted (the confirm's `[ ] also delete unmerged branch` is seeded on), `o` deletes only the row's `origin` ref — never its worktree or local branch — as the remote-only item `wt remove origin/<name> --remote` builds, under the typed `delete origin`, `r` rescues the row and `R` restores the root (`rootmove.Offered`, below). A key the screen does not list still answers, with the refusal on its status line: a locked row refuses `x` and `d` with `cannot be removed: <its reason>`. `o` is the exception: it deletes the row's `origin` ref, so it judges that ref's lock instead of the local row's — a locked origin target answers `its origin ref cannot be removed: <the origin row's reason>`, and a row with no `origin` ref answers `o` on the status line with `o deletes the highlighted row's origin ref; this row has none` (a locked row with none answers `cannot be removed: <its reason>`). `r`, `R` and `F` ignore the lock entirely: they copy or move work and re-read, never remove. Confirmation (`cleanup_confirm.go`): `y` is accepted only when every entry is proven; anything else needs the typed word `delete`, an `origin` entry `delete origin`, and a held entry's line names `held by session <id>`. A confirmation for one row (one `x`, `d` or `o`) shows that row's [detail block](#the-detail-screen) above the prompt — the same lines `i` showed, plus the toggle and the approvals — and `esc` goes back to the detail screen, not to the list; a batch confirmation (`enter`) keeps the compact per-entry layout and `esc` goes back to the list.
 
-**`R` is offered only from the row.** `rootmove.Offered` (it reads the row, never git) refuses, each with its line on the status line: a row that is not the root ("only the root can be restored"), a bare repository, a root with no commit, a detached root, a root with no default branch ("no default branch to restore to"), a root already on the default ("root is already on <branch>"), a root with a merge, cherry-pick or revert in progress and a root whose state could not be read. The list's `R` runs the same interactive restore-root as `wt restore-root` run by hand (fetches every remote, asks `Move? [y/N]` and prints the `root_held` warning in that prompt when another session holds the root; it never passes `--yes`, so a held root is moved only after you answer `y`).
+**`R` is offered only from the row.** `rootmove.Offered` (it reads the row, never git) refuses, each with its line on the status line: a row that is not the root ("only the root can be restored"), a bare repository, a root with no commit, a root with no default branch ("no default branch to restore to"), a root already on the default ("root is already on <branch>"), a root with a merge, cherry-pick or revert in progress, a root whose state could not be read and a detached root at commits the default branch lacks ("the root is detached at commits the default branch lacks: run `wt restore-root` (it needs --branch NAME if no branch holds them)"). A detached root the default branch reaches is offered: some branch holds its commits, so the move can only succeed (the new worktree is left detached). The row cannot tell whether another branch holds a detached root's commits when the default does not, so `R` explains instead of offering there although `wt restore-root` may still succeed without `--branch` (a known limit; an exact check needs a gathered fact and a cleanup-list contract change). The list's `R` runs the same interactive restore-root as `wt restore-root` run by hand (fetches every remote, asks `Move? [y/N]` and prints the `root_held` warning in that prompt when another session holds the root; it never passes `--yes`, so a held root is moved only after you answer `y`).
 
 **The session loop** (`RunCleanupList`). After `r` or `R` completes, the list is **re-entered** from a re-read report, so one session can do several actions. The re-read fetches (`RemoveFuncs.Refetch`) unless the hand-off already did: `R` fetches every remote itself, so after it the re-entry only re-reads (`RemoveFuncs.Reread`, chosen by the note's `Fetched`) and the header shows that fetch's result, a failure included; `r` does not fetch, so its re-entry does. The re-entered list opens with the cursor on the row you acted from (the top row when that row is gone). A hand-off that changed nothing (declined at its `y/N`, or refused before anything was created) or finished also re-enters, with a one-line status naming what happened (in `wt worktrees`, a signal that arrived during an `R` move shows on that status line too, as `interrupted (signal ...): the move was not stopped`); a hand-off that failed midway, could not start, or a failed re-read ends the session and is returned, so its recovery text is the last thing printed. The removal log (every outcome of every pass, with each deleted branch's commit) prints each outcome exactly once: the ones not yet printed are flushed before each `r`/`R` hand-off (ctrl+c at its prompt ends wt) and the rest when the session ends. Re-entry is only for `r` and `R`: after a removal run, any key but `q` or ctrl+c on the results screen returns to the list re-read in the same program, and leaving it ends the session. `F` failing to re-read keeps the old rows and says why in one line; a failed *fetch* is not an error: the header reads `fetch: FAILED (...)` and the rows stay listed, judged as of the last fetch.
 
@@ -664,11 +664,13 @@ anywhere in the repository and builds on `wt rescue`'s engine.
 wt restore-root --dry-run          # what would move and what stays; changes nothing, fetches nothing
 wt restore-root                    # asks Move? [y/N] on a terminal
 wt restore-root --to spike --yes   # no prompt; --to names only the directory under .worktrees/
+wt restore-root --branch spike     # a detached root whose commits no branch holds: create spike there
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--to DIR-NAME` | the new worktree's directory under `.worktrees/` (default: the branch name flattened); names only the directory; the branch is never renamed |
+| `--branch NAME` | only for a root on a detached HEAD whose commits no branch holds: the branch to create at that commit, in the new worktree; see [a detached root](#a-detached-root) |
 | `--dry-run` | say what would happen; writes no ref, index or working file and does not fetch |
 | `--yes` | move without asking |
 | `--json` | one document, [restore-root-result.schema.json](../../docs/contracts/restore-root-result.schema.json) (samples beside it), printed on refusal and failure too |
@@ -698,8 +700,49 @@ lines on stderr as it goes (in `wt rescue` and `wt restore-root` alike; not
 under `--json` or `--dry-run`, and never on stdout); this is an observed cost,
 not a promise.
 
-Refused, with nothing created (JSON `code` in brackets): a detached HEAD
-(`detached_root`; run `git switch -c <name>` first); a root already on the
+### A detached root
+
+A root on a detached HEAD (for example after `git checkout origin/main`) has no
+branch to move, so what is kept is its commits, and the move splits three ways
+by what git says about its HEAD commit (`git for-each-ref --contains` over
+`refs/heads` and `refs/remotes`: a tag, the stash, a rescue record or another
+worktree's HEAD does not count as a branch):
+
+- **A branch holds it** (a local branch, or a remote-tracking ref). There are
+  no commits to park. The root's staged, unstaged and untracked work is carried
+  into a new worktree under `.worktrees/` that is left **detached** at that
+  commit, with no ref and no invented branch name (the directory is
+  `detached-<first 8 of the commit>`, or `--to NAME`), and the root goes back to
+  the default branch. The record's `Wt-Dest-Branch` trailer reads `detached`
+  (`Wt-Source-Ref` already did). A **clean** such root has nothing to keep: no
+  worktree and no record are made, only the root switches to the default branch
+  (same gates as any clean release: unchanged fingerprint, empty status, no
+  hidden index entry, no ignored file at risk); the result is `moved` with
+  `created` false and no `dest_path`. When only a remote-tracking ref holds the
+  commit, a warning says a pruned tracking ref could orphan the commits of a
+  clean move (a dirty move is covered by the record); it never refuses.
+- **No branch holds it** and `--branch NAME` is given. After the verified copy
+  and the record, and **before** the root is released, `NAME` is created at
+  that commit **in the new worktree** (`git switch --no-track -c NAME`, hooks
+  off; never in the root), which ends on it. The release then proves afresh
+  that a branch holds the commits. A clean root still gets the new worktree,
+  because `NAME` lives there, but no record: the branch is the protection.
+  `--branch` is also honoured on a root a branch already holds.
+- **No branch holds it** and no `--branch`: refused as `detached_root`, and the
+  message names `--branch NAME` (or `git switch -c NAME` first).
+
+`--branch` is refused with nothing created when the root is on a branch
+(`branch_unneeded`), when `NAME` is not a valid new branch name by
+`git check-ref-format --branch`, is `@` or starts with `refs/`
+(`branch_invalid`), or exists (`branch_exists`); an empty, whitespace-only or
+padded name is a usage error (exit 1). The checks run again when the branch is
+created: a name that appeared in between is `branch_create_failed` (the
+existing branch is not touched, the root is untouched).
+
+Refused, with nothing created (JSON `code` in brackets): a detached HEAD whose
+commits no branch holds, with no `--branch` (`detached_root`); `--branch` on
+a root that is on a branch (`branch_unneeded`), an invalid name
+(`branch_invalid`) or an existing one (`branch_exists`); a root already on the
 default branch (`already_default`; exit 0, nothing to do); no commit yet
 (`no_commit`); no default branch, or one that exists only as `origin/<name>`
 (`no_default_branch`); the default branch checked out in another worktree
@@ -715,7 +758,9 @@ is `create_failed`, `carry_failed`, `verify_failed`, `record_not_written` (the
 copy could not be recorded, so the root was not released), `release_refused`
 (a proof was missing at the release; the root was not changed),
 `release_failed` (the reset or switch stopped part-way), `switch_failed` (the
-new worktree could not be switched onto the branch) or
+new worktree could not be switched onto the branch), `branch_create_failed`
+(`--branch NAME` could not be created in the new worktree; the root is
+untouched) or
 `source_changed_while_copying` (the root changed during the copy).
 
 A root held by another live `wt` session refuses nothing and is never a
@@ -740,8 +785,9 @@ message ends with where the root, the new worktree and the work are:
 |---|---|---|---|
 | creating the worktree, the copy or the record | untouched (a record that could not be written means the root was NOT released) | absent, half-built or the verified copy; kept, path named | all in the root (and, after the copy, in the kept copy too) |
 | the release, before the reset (a live session appeared, or a proof failed) | untouched | the verified copy | in the root and the copy |
-| the release, after the reset began (`release_failed`) | reset or partly changed; run `git status` there | the verified copy, detached at the branch tip | in the copy and the record; finish with `git switch <default>` in the root, then `git switch <branch>` in the new worktree (look at the root's `git status` first) |
+| the release, after the reset began (`release_failed`; for a detached root the new worktree is already final, detached or on `NAME`, so only the root is switched) | reset or partly changed; run `git status` there | the verified copy, detached at the branch tip | in the copy and the record; finish with `git switch <default>` in the root, then `git switch <branch>` in the new worktree (look at the root's `git status` first) |
 | switching the new worktree onto the branch (`switch_failed`) | on the default branch, clean | detached with all the work | in the copy and the record; `git switch <branch>` there finishes it, unless the branch moved during the run: then the message says not to switch blindly (that would lay the work over the moved branch), the new worktree stays detached at the old tip, and you decide where the work belongs first |
+| creating `--branch NAME` in the new worktree (`branch_create_failed`; a detached root) | untouched, still detached at the commit, work intact | the verified copy, detached; kept | in the root, the copy and the record (none when clean): nothing was released, so the commits are held only by the root's HEAD and the record; give them a branch (`git switch -c <name>` in the new worktree), check the root's `git status`, then `git switch <default>` there |
 | the fast-forward | on the default branch | on the branch | all moved; only the fast-forward is missing (a warning) |
 | the final read-back (`verify_failed`) | as read back | as read back | nothing is undone; in the copy and the record |
 

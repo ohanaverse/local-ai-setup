@@ -59,6 +59,12 @@ func checkNewBranchName(dir, name string) error {
 	return checkBranchName(dir, name)
 }
 
+// CheckNewBranch reports why name cannot be a new branch name (git's
+// check-ref-format --branch, "@", a refs/ prefix); nil when it is usable. It
+// reads nothing about existing branches: a taken name is the caller's own
+// refs/heads check. `wt restore-root --branch` uses it.
+func CheckNewBranch(dir, name string) error { return checkNewBranchName(dir, name) }
+
 // NotCreatedError says CreateAt refused before it ran `git worktree add`: the
 // start was unusable or CheckNew refused the name (taken, invalid, a path
 // already there). Nothing was made by this call, so whatever the name now
@@ -199,6 +205,33 @@ func CreateDetachedAt(dir, dirName, branch, start string) (string, error) {
 		return "", &NotCreatedError{Err: fmt.Errorf("branch %q is at %s, not the start %s", branch, tip, start)}
 	}
 	path, err := CheckNewDetached(dir, dirName, branch)
+	if err != nil {
+		return "", &NotCreatedError{NameUnavailable: true, Err: err}
+	}
+	_, e := os.Lstat(path)
+	dirBefore := e == nil
+	if out, err := runGitCombined(dir, "-c", "core.hooksPath="+os.DevNull, "worktree", "add", "--detach", path, start); err != nil {
+		fail := &AddFailedError{Err: fmt.Errorf("git worktree add --detach: %v: %s", err, strings.TrimSpace(string(out)))}
+		if _, e := os.Lstat(path); e == nil && !dirBefore {
+			fail.DirLeft = true
+		}
+		return "", fail
+	}
+	return path, nil
+}
+
+// CreateDetachedAtCommit adds a worktree under dir's .worktrees with a
+// detached HEAD at start and returns its path, for a start no branch
+// necessarily names (`wt restore-root` on a detached root). The directory is
+// .worktrees/<dirName flattened>. No branch or ref is made and no branch tip
+// is compared: start must be a full commit id of the repository
+// (checkStartCommit). Hooks are disabled as in CreateAt. The errors are as
+// CreateDetachedAt's.
+func CreateDetachedAtCommit(dir, dirName, start string) (string, error) {
+	if err := checkStartCommit(dir, start); err != nil {
+		return "", err
+	}
+	path, err := CheckNewDetached(dir, dirName, "")
 	if err != nil {
 		return "", &NotCreatedError{NameUnavailable: true, Err: err}
 	}
