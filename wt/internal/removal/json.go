@@ -21,6 +21,9 @@ const EnvelopeVersion = 1
 type Meta struct {
 	Repo   string
 	DryRun bool
+	// Records are the outcomes of a `wt remove --record` run (the additive
+	// `records` section; Items is then empty).
+	Records []RecordOutcome
 }
 
 // Envelope is the one JSON document a removal prints, on success and on
@@ -34,7 +37,23 @@ type Envelope struct {
 	Repo    string     `json:"repo"`
 	DryRun  bool       `json:"dry_run"`
 	Items   []ItemJSON `json:"items"`
-	Error   *ErrorJSON `json:"error,omitempty"`
+	// Records is the rescue records a `wt remove --record` run acted on
+	// (additive, optional); absent for every other run.
+	Records []RecordJSON `json:"records,omitempty"`
+	Error   *ErrorJSON   `json:"error,omitempty"`
+}
+
+// RecordJSON is one RecordOutcome. Outcome is pruned, refused_in_use,
+// skipped_changed, retained_recent or failed. Commit is the record's full
+// commit id, present only when the run issued (or may have issued) the
+// delete: the id `git update-ref <ref> <commit>` restores until git's gc.
+type RecordJSON struct {
+	Ref      string   `json:"ref"`
+	ID       string   `json:"id"`
+	Outcome  string   `json:"outcome"`
+	Reason   string   `json:"reason"`
+	Warnings []string `json:"warnings"`
+	Commit   string   `json:"commit,omitempty"`
 }
 
 // ItemJSON is one Outcome. Path is absent for a branch item, Ref for a
@@ -72,6 +91,7 @@ const InvalidValue = "invalid"
 var (
 	jsonKinds     = []cleanup.Kind{cleanup.KindWorktree, cleanup.KindBranch, cleanup.KindRemote}
 	jsonStatuses  = []cleanup.Status{cleanup.StatusProven, cleanup.StatusLessSure, cleanup.StatusUniqueWork, cleanup.StatusInUse}
+	jsonRecords   = []RecordOutcomeKind{RecPruned, RecRefusedInUse, RecSkippedChanged, RecRetainedRecent, RecFailed}
 	jsonWorktrees = []WorktreeOutcome{WtRemoved, WtSkippedChanged, WtRefused, WtFailed, WtNotRequested}
 	jsonBranches  = []BranchOutcome{BrDeleted, BrNotAttempted, BrRetainedUnmerged, BrRetainedMoved,
 		BrRetainedCheckedOut, BrRetainedDefault, BrRetainedUnknown}
@@ -126,6 +146,25 @@ func itemJSON(i int, o Outcome, problems *[]string) ItemJSON {
 	return j
 }
 
+// recordJSON is o as the contract writes it, an outcome outside it as
+// InvalidValue described in problems (index i counts after the items).
+func recordJSON(i int, o RecordOutcome, problems *[]string) RecordJSON {
+	j := RecordJSON{
+		Ref: cleanup.OneLine(o.Item.Ref), ID: cleanup.OneLine(o.Item.Name),
+		Outcome:  enumValue(i, "record outcome", o.Outcome, jsonRecords, problems),
+		Reason:   cleanup.OneLine(o.Reason),
+		Warnings: sanitised(o.Warnings),
+	}
+	switch {
+	case o.Commit == "":
+	case cleanup.IsFullCommitID(o.Commit):
+		j.Commit = o.Commit
+	default:
+		*problems = append(*problems, fmt.Sprintf("record %d: commit %q is not a full commit id", i, o.Commit))
+	}
+	return j
+}
+
 func marshal(e Envelope) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -158,6 +197,9 @@ func EncodeReport(outcomes []Outcome, meta Meta) (doc []byte, partial bool, err 
 	var problems []string
 	for i, o := range outcomes {
 		e.Items = append(e.Items, itemJSON(i, o, &problems))
+	}
+	for i, o := range meta.Records {
+		e.Records = append(e.Records, recordJSON(i, o, &problems))
 	}
 	if len(problems) > 0 {
 		e.Error = &ErrorJSON{Message: partialMessage(problems)}

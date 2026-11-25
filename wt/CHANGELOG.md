@@ -16,6 +16,7 @@
 
 ### Added
 
+- `wt remove --record <id>...` prunes rescue records (the `refs/wt/rescued/<id>` refs), and `wt worktrees` lists them in a `Rescue records` block (`--plain`) and an optional `records` array (`--json`) (#543). A record a worktree still matches is refused; one younger than 7 days or of unknown age needs `--accept-loss`; the delete is a compare-and-swap on the listed commit and the result prints `git update-ref <ref> <commit>` to restore it until gc. The JSON contracts gain `records` (additive; row kinds unchanged). The tick list does not show records; its header carries a one-line pointer.
 - A launch by `--root`, `-W` or `--cwd` (and `wt smoke --cwd`) on a branch whose pull request is merged now warns `PR #N is merged` in the one launch question, as the picker already did. It asks `gh` in the background and waits at most about a second: no `gh`, a failure, a slow answer, a non-GitHub origin, the default branch, a brand-new branch, an open PR, or a branch name reused after its PR merged all add no warning and never block or delay the launch (Refs #585).
 
 - `wt-model` holds the host-admin commands (phase 4 stage 2): `wt-model setup` (the Setup tab: this machine's LaunchAgent, token file and LiteLLM key; local and native), `wt-model model` (the Models tab TUI), `wt-model model init|list|add|edit|rm`, `wt-model served`, `wt-model warm`, `wt-model stop <provider>|--all`, `wt-model cloud-sync` and `wt-model litellm sync|list|providers|restart`.

@@ -136,7 +136,8 @@ less sure, never proven.
 
 Apart from the fetch, which updates and prunes every remote's remote-tracking
 refs (`--no-fetch` skips it), listing writes no ref, index or working file.
-It reads the `wt rescue` records under `refs/wt/rescued/` (one `for-each-ref`).
+It reads the `wt rescue` records under `refs/wt/rescued/` (one `for-each-ref`)
+and lists them in a section of their own (see [Rescue records](#rescue-records)).
 The per-remote fetch (`--json`, `--plain` and a pipe) takes `origin` first
 and on its own (it alone drives classification, 120s), then every other
 remote concurrently with a shorter limit (30s); the header and
@@ -375,6 +376,28 @@ instead, fetching first. While removal runs, keys
 and ctrl+c wait until it ends, and so do termination and hangup signals in both screens — the picker's program forwards them to its list the way the manage program always has, so a signal mid-run is remembered and wt quits once the run's outcomes have printed. A confirmation's ctrl+c cancels it. The results screen shows
 every outcome and the same outcomes print again when wt exits.
 
+### Rescue records
+
+`wt worktrees --plain` and the terminal text end with a `Rescue records`
+block, and `--json` carries the same records as an additive `records` array
+([cleanup-list.schema.json](../../docs/contracts/cleanup-list.schema.json);
+absent when there are none). Records are not rows: the row kinds are
+unchanged and the tick list does not show them (its header carries one note,
+`N rescue records, see wt worktrees --plain / wt remove --record`; a records
+tab is a follow-up). One line per record:
+
+```
+  3f9c2a1b7d4e5f60  unused  30d old  from /path/to/.worktrees/spike  to rescued/spike  [no worktree matches it]
+```
+
+| Column | Meaning |
+|---|---|
+| id | the first 16 hex digits of the record commit (the ref is `refs/wt/rescued/<id>`); what `wt remove --record` takes |
+| status | `in_use`: a worktree still has the recorded path, branch (or detached HEAD) and head, or reads as rescued through this record. `recent`: younger than 7 days, or of unknown age. `unused`: neither |
+| age | days since the record commit was made |
+| from / to | the source worktree and the copy's branch; `(branch gone)` when the copy's branch no longer exists |
+
+
 ### `wt remove` arguments, output and exit codes
 
 An argument is a worktree path (relative to the current directory) or a local
@@ -397,6 +420,45 @@ and `--min-age` behave as for `wt worktrees`.
 | 1 | could not start: an argument matched no target or more than one, no default branch, a registry that did not load, a `--min-age` below `1m` |
 | 2 | some item was refused, skipped or failed, or a branch was kept because it moved or its state could not be read |
 | 3 | approval missing: no `--yes` and no terminal, or the prompt was declined; nothing was removed |
+
+### Pruning rescue records: `wt remove --record`
+
+```bash
+wt remove --record 3f9c2a1b7d4e5f60 --dry-run   # what would happen; changes nothing
+wt remove --record 3f9c2a1b7d4e5f60 --yes       # prune it
+wt remove --record <id> --yes --accept-loss     # a record younger than 7 days
+```
+
+Every argument is a record id or the full `refs/wt/rescued/<id>` ref (a
+worktree or branch target cannot be mixed in, and `--force`, `-D` and
+`--remote` are refused: they name other things). It deletes only the record's
+ref; the rescued commits stay in the repository until git's gc, and the result
+prints the commit and the command that puts the ref back
+(`git update-ref <ref> <commit>`). Rules, checked again immediately before the
+delete:
+
+- **In use is never prunable.** If a worktree still matches the record (same
+  path, branch or detached HEAD, and head), the record is `refused_in_use` and
+  no flag overrides it: it is the only copy of that worktree's rescued state.
+  A record whose source is gone, or has moved on, is unused.
+- **A record younger than 7 days (or of unknown age) needs `--accept-loss`**;
+  without it the outcome is `retained_recent`. The floor is a decision: a
+  fresh record is usually the only copy of just-rescued work. An old record
+  needs only `--yes` (or the y/N prompt, which names the source, the copy's
+  branch and the age).
+- A destination branch that no longer exists does not block the prune (the
+  record still pins commits, which is the point of pruning it); the prompt says so.
+- The delete is `update-ref -d` on the commit that was listed, so a record that
+  moved since is `skipped_changed`; the ref is then read back, and one that
+  exists again is not reported pruned.
+
+`--json` prints [remove-result.schema.json](../../docs/contracts/remove-result.schema.json)
+with `items: []` and a `records` array (`outcome`: `pruned`, `refused_in_use`,
+`skipped_changed`, `retained_recent` or `failed`; `commit` when the run issued
+the delete). Exit 0: every record pruned (a dry run: would be); 1: could not
+start (an argument that is no record, a forbidden flag); 2: some record was
+refused, retained, skipped or failed; 3: approval missing (no `--yes` and no
+terminal, or declined).
 
 The tick list exits 0 after a removal run, whatever the outcomes: they were
 on screen and are printed at exit, unless the repository could not be
@@ -508,12 +570,11 @@ match the record exactly: on a case-insensitive volume, a worktree whose HEAD
 spells the branch in a different case from the ref's spelling does not read
 removable (it fails closed; `--accept-loss` still works). Only the source of a
 rescue is ever preserved, never the copy. A record pins its objects until you
-remove it, and wt does not prune records yet (#543). To drop one after you have
-checked the copy:
-
-```bash
-git update-ref -d refs/wt/rescued/<id>
-```
+prune it: [`wt remove --record`](#pruning-rescue-records-wt-remove---record)
+does that after you have checked the copy, and `wt worktrees --plain` lists
+the records. The manual form, which skips every check below, is
+`git update-ref -d refs/wt/rescued/<id> <commit>` (the commit is the compare-and-swap value;
+keep it, because it is what restores the ref).
 
 Refused, with nothing created (JSON `code` in brackets): nothing to keep
 (`nothing_to_keep`); the primary checkout (`primary`; [`wt restore-root`](#wt-restore-root-move-the-roots-branch-into-a-worktree) moves its branch and work into a worktree); a rebase, merge

@@ -22,13 +22,15 @@ const (
 	removeErrorFixture       = "../../../docs/contracts/remove-result.error.sample.json"
 	removeDryRunErrorFixture = "../../../docs/contracts/remove-result.dry-run.error.sample.json"
 	removePartialFixture     = "../../../docs/contracts/remove-result.partial.sample.json"
+	removeRecordsFixture     = "../../../docs/contracts/remove-result.records.sample.json"
 	removeSchema             = "../../../docs/contracts/remove-result.schema.json"
 	removalPkgDir            = "../../internal/removal"
 )
 
 // removeFixtures are the samples by name.
 var removeFixtures = map[string]string{"sample": removeFixture, "dry-run sample": removeDryRunFixture,
-	"error sample": removeErrorFixture, "dry-run error sample": removeDryRunErrorFixture, "partial sample": removePartialFixture}
+	"error sample": removeErrorFixture, "dry-run error sample": removeDryRunErrorFixture, "partial sample": removePartialFixture,
+	"records sample": removeRecordsFixture}
 
 // removeFixtureFacts are what each sample must say: dry_run, whether error
 // is present, and whether items is empty.
@@ -38,6 +40,7 @@ var removeFixtureFacts = map[string]struct{ dryRun, hasError, noItems bool }{
 	removeErrorFixture:       {false, true, true},
 	removeDryRunErrorFixture: {true, true, true},
 	removePartialFixture:     {false, true, false},
+	removeRecordsFixture:     {false, false, true},
 }
 
 // tipBranches are the branch outcomes a branch_tip may accompany (the ref
@@ -461,5 +464,74 @@ func TestRemoveLiveEncodeValidatesAgainstSchema(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("the run document has no deleted topic with branch_tip %s:\n%s", topicTip, runDoc)
+	}
+}
+
+// recordsSampleInput are the outcomes remove-result.records.sample.json is
+// the encoding of: one record per outcome constant.
+func recordsSampleInput() []removal.RecordOutcome {
+	it := func(id string) removal.RecordItem {
+		return removal.RecordItem{Ref: cleanup.RecordRefPrefix + id, Name: id}
+	}
+	const pruned = "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+	const failed = "1122334455667788990011223344556677889900"
+	a := removal.RecordOutcome{Item: it(pruned[:16]), Outcome: removal.RecPruned, Commit: pruned,
+		Reason:   "pruned refs/wt/rescued/" + pruned[:16] + " (was " + pruned + ")",
+		Warnings: []string{"restore with: git update-ref refs/wt/rescued/" + pruned[:16] + " " + pruned + " (until git gc)"}}
+	return []removal.RecordOutcome{a,
+		{Item: it("a1b2c3d4e5f60718"), Outcome: removal.RecRefusedInUse,
+			Reason: "worktree /Users/me/src/app/.worktrees/topic still matches this record; no approval overrides that"},
+		{Item: it("0f1e2d3c4b5a6978"), Outcome: removal.RecSkippedChanged,
+			Reason: "the record no longer exists (or is no longer a readable record)"},
+		{Item: it("9988776655443322"), Outcome: removal.RecRetainedRecent,
+			Reason: "younger than 7 days: it may be the only copy of a just-rescued worktree; --accept-loss approves pruning it"},
+		{Item: it(failed[:16]), Outcome: removal.RecFailed, Commit: failed,
+			Reason: "git update-ref failed: exit 128: fatal: cannot lock ref"},
+	}
+}
+
+// TestRemoveRecordsSampleIsEncodeOutput encodes recordsSampleInput and
+// requires the records sample to be that document, and to show every record
+// outcome constant (read from the Go source) and a commit only where the run
+// issued the delete. Why: a new outcome must fail here until the schema, the
+// encoder's enum list and the sample carry it; and the sample must be what
+// wt writes, not hand-written wording.
+func TestRemoveRecordsSampleIsEncodeOutput(t *testing.T) {
+	b, err := removal.Encode(nil, removal.Meta{Repo: "/Users/me/src/app", Records: recordsSampleInput()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if want := readJSONFile(t, removeRecordsFixture); !reflect.DeepEqual(got, want) {
+		t.Errorf("records sample is not Encode's output; Encode writes:\n%s", b)
+	}
+	schema := readJSONFile(t, removeSchema).(map[string]any)
+	wantEnum := schemaDefEnum(t, schema, "record", "properties", "outcome")
+	var consts []string
+	for _, c := range stringConsts(t, removalPkgDir) {
+		if c.typ == "RecordOutcomeKind" {
+			consts = append(consts, c.val)
+		}
+	}
+	checkEnumsEqual(t, map[string][]string{"outcome": append(slices.Clone(consts), removal.InvalidValue)}, map[string][]string{"outcome": wantEnum})
+	seen := map[string]bool{}
+	for _, r := range got.(map[string]any)["records"].([]any) {
+		seen[r.(map[string]any)["outcome"].(string)] = true
+	}
+	for _, c := range consts {
+		if !seen[c] {
+			t.Errorf("the records sample shows no %q record", c)
+		}
+	}
+	bad, _ := removal.Encode(nil, removal.Meta{Records: []removal.RecordOutcome{{}}})
+	var badDoc map[string]any
+	if err := json.Unmarshal(bad, &badDoc); err != nil {
+		t.Fatal(err)
+	}
+	if errs := checkAgainst(schema, badDoc, "off-contract record"); len(errs) > 0 || badDoc["error"] == nil {
+		t.Errorf("off-contract record: schema errors %v, error %v", errs, badDoc["error"])
 	}
 }
