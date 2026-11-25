@@ -291,8 +291,9 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	// terminal the streams name, exactly as `wt restore-root` does.
 	restoreRootFn := func(answer io.Reader, out, errOut io.Writer) error {
 		var got *rootmove.Outcome
-		err := restoreRootRunReport(answer, out, errOut, restoreRootFlags{}, in.CWD, func(o rootmove.Outcome) { got = &o })
-		return restoreRootHandOffResult(err, got)
+		var sig os.Signal
+		err := restoreRootRunReport(answer, out, errOut, restoreRootFlags{}, in.CWD, func(o rootmove.Outcome) { got = &o }, func(s os.Signal) { sig = s })
+		return restoreRootHandOffResult(err, got, sig)
 	}
 	// reGather re-reads the repository (never fetching) and stands the list
 	// — and the engine, when there is one — on the fresh snapshot.
@@ -386,8 +387,21 @@ func rescueHandOffResult(err error, o *rescue.Outcome) error {
 
 // restoreRootHandOffResult is rescueHandOffResult for `R`: a root already on
 // the default (exit 0, refused outcome) and a finished move re-enter with a
-// status line too.
-func restoreRootHandOffResult(err error, o *rootmove.Outcome) error {
+// status line too. sig is the signal the move held through (nil when none):
+// it rides on a note's text in the words of the line already printed, so the
+// re-entry status carries the fact (#580). A plain error ends the session
+// with that line on the terminal already; the picker has no re-entry, and
+// drops the note, so its printed line is the record.
+func restoreRootHandOffResult(err error, o *rootmove.Outcome, sig os.Signal) error {
+	err = restoreRootHandOffNote(err, o)
+	var n *tui.HandOffNote
+	if sig != nil && errors.As(err, &n) {
+		n.Text += fmt.Sprintf("; interrupted (signal %v): the move was not stopped", sig)
+	}
+	return err
+}
+
+func restoreRootHandOffNote(err error, o *rootmove.Outcome) error {
 	switch {
 	case err == nil && o != nil && o.Status == rescue.StatusMoved:
 		return &tui.HandOffNote{Text: "root restored to " + cleanup.OneLine(o.Plan.Default)}

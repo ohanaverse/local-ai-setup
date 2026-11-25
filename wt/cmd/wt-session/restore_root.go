@@ -145,14 +145,17 @@ func restoreRootFail(out io.Writer, f restoreRootFlags, repo string, code int, e
 // list's `R` hand-off the directory the list was built from: one run path
 // (rescueRow's shape — the command and the list's key both end here).
 func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string) error {
-	return restoreRootRunReport(answer, out, errOut, f, cwd, nil)
+	return restoreRootRunReport(answer, out, errOut, f, cwd, nil, nil)
 }
 
 // restoreRootRunReport is restoreRootRun that also hands the outcome it
 // printed to report (when non-nil): the cleanup list's `R` hand-off tells a
 // refusal that changed nothing from a failure that did by it. Only a written
 // result carries one; the command's output and exit codes are the same.
-func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string, report func(rootmove.Outcome)) error {
+// interrupted (when non-nil) is called with the first signal received while
+// the move ran, beside the "interrupted (signal ...)" line printed for it:
+// the `R` hand-off puts the same fact on its re-entry status line (#580).
+func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string, report func(rootmove.Outcome), interrupted func(os.Signal)) error {
 	signal.Ignore(syscall.SIGPIPE)
 	write := func(meta rootmove.Meta, o rootmove.Outcome) error {
 		if report != nil {
@@ -233,6 +236,9 @@ func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRoot
 	err = write(meta, o)
 	if got := received(); len(got) > 0 {
 		fmt.Fprintf(errOut, "interrupted (signal %v): the move was not stopped; see the result above\n", got[0])
+		if interrupted != nil {
+			interrupted(got[0])
+		}
 	}
 	return err
 }

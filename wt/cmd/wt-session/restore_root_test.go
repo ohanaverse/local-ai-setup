@@ -1214,3 +1214,46 @@ func TestRestoreRootCmdSignalWhileWritingTheResultIsHeld(t *testing.T) {
 		t.Errorf("stderr = %q, want the interrupted line once", errOut.String())
 	}
 }
+
+// TestRestoreRootRunReportTellsTheCallerAboutASignal pins #580 item 1's
+// seam: restoreRootRunReport hands the first signal received during the move
+// to its interrupted callback, once, beside the printed line, and never
+// calls it when no signal arrived. Why: the cleanup list's `R` hand-off puts
+// the same fact on its re-entry status line.
+func TestRestoreRootRunReportTellsTheCallerAboutASignal(t *testing.T) {
+	for _, signalled := range []bool{true, false} {
+		guard := make(chan os.Signal, 1)
+		signal.Notify(guard, syscall.SIGINT)
+		t.Cleanup(func() { signal.Stop(guard) })
+		restoreRootApp(t)
+		dir := cleanupRepo(t)
+		rootOnTopic(t, dir)
+		afterRestoreRootConfirm = func() {
+			if !signalled {
+				return
+			}
+			if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-guard:
+			case <-time.After(5 * time.Second):
+				t.Fatal("SIGINT was not delivered")
+			}
+		}
+		var got []os.Signal
+		var out, errOut bytes.Buffer
+		err := restoreRootRunReport(strings.NewReader(""), &out, &errOut, restoreRootFlags{yes: true, noFetch: true}, dir, nil,
+			func(s os.Signal) { got = append(got, s) })
+		if err != nil {
+			t.Fatalf("signalled=%v: %v\n%s", signalled, err, errOut.String())
+		}
+		if signalled {
+			if len(got) != 1 || got[0] != syscall.SIGINT {
+				t.Errorf("interrupted called with %v, want once with SIGINT", got)
+			}
+		} else if len(got) != 0 {
+			t.Errorf("interrupted called with %v though no signal arrived", got)
+		}
+	}
+}
