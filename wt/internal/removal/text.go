@@ -34,3 +34,22 @@ func DetailLines(o Outcome) []string {
 	}
 	return out
 }
+
+// RecordHeadline is the first line of a record outcome's text.
+func RecordHeadline(o RecordOutcome) string {
+	return fmt.Sprintf("record %s: %s", cleanup.OneLine(o.Item.Name), o.Outcome)
+}
+
+// RecordDetailLines are a record outcome's warnings and, when this run
+// issued the delete, the commit the ref pointed at, one sanitised line each
+// and unindented.
+func RecordDetailLines(o RecordOutcome) []string {
+	var out []string
+	for _, w := range o.Warnings {
+		out = append(out, "warning: "+cleanup.OneLine(w))
+	}
+	if o.Commit != "" {
+		out = append(out, "record commit was "+cleanup.OneLine(o.Commit))
+	}
+	return out
+}

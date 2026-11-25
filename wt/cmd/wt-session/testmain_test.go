@@ -13,6 +13,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
@@ -82,6 +83,7 @@ func TestMain(m *testing.M) {
 		},
 	)
 	code := m.Run()
+	gittest.CleanupTemplates()
 	rmConfigHome()
 	os.Exit(code)
 }

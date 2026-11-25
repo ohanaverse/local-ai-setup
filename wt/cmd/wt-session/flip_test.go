@@ -218,6 +218,8 @@ func TestPathsThatNeedNoServerStillRun(t *testing.T) {
 		// says: the output may name the missing server (stats says why it
 		// shows no spend).
 		says bool
+		// gh: the case gathers worktrees, so its app answers every gh call "no PRs".
+		gh bool
 	}{
 		{name: "shell launch", setup: func(t *testing.T, _ string) []string {
 			mark := filepath.Join(t.TempDir(), "shell-ran")
@@ -228,8 +230,7 @@ func TestPathsThatNeedNoServerStillRun(t *testing.T) {
 			})
 			return []string{"--cwd", "-A", "shell", "--", "touch", mark}
 		}},
-		{name: "worktrees", setup: func(t *testing.T, _ string) []string {
-			stubCleanupGH(t)
+		{name: "worktrees", gh: true, setup: func(t *testing.T, _ string) []string {
 			t.Chdir(cleanupRepo(t))
 			return []string{"worktrees", "--json", "--no-fetch"}
 		}},
@@ -253,15 +254,13 @@ func TestPathsThatNeedNoServerStillRun(t *testing.T) {
 		{name: "profile off", args: []string{"profile", "off"}},
 		{name: "--init", setup: inTestRepo, args: []string{"--init"}},
 		{name: "--no-guard", setup: inTestRepo, args: []string{"--no-guard"}},
-		{name: "remove --dry-run", setup: func(t *testing.T, _ string) []string {
-			stubCleanupGH(t)
+		{name: "remove --dry-run", gh: true, setup: func(t *testing.T, _ string) []string {
 			dir := cleanupRepo(t)
 			t.Chdir(dir)
 			cgit(t, dir, "branch", "topic")
 			return []string{"remove", "--dry-run", "--no-fetch", "-D", "--accept-loss", "topic"}
 		}},
-		{name: "rescue --dry-run", setup: func(t *testing.T, _ string) []string {
-			stubCleanupGH(t)
+		{name: "rescue --dry-run", gh: true, setup: func(t *testing.T, _ string) []string {
 			dir := cleanupRepo(t)
 			t.Chdir(dir)
 			p := filepath.Join(filepath.Dir(dir), "wt-topic")
@@ -269,14 +268,16 @@ func TestPathsThatNeedNoServerStillRun(t *testing.T) {
 			cleanupCommit(t, p, "x.txt", "work")
 			return []string{"rescue", "--dry-run", "--no-fetch", p}
 		}},
-		{name: "restore-root --dry-run", setup: func(t *testing.T, _ string) []string {
-			stubCleanupGH(t)
+		{name: "restore-root --dry-run", gh: true, setup: func(t *testing.T, _ string) []string {
 			t.Chdir(cleanupRepo(t))
 			return []string{"restore-root", "--dry-run", "--no-fetch"}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, _, h := noServerHome(t)
+			if tc.gh {
+				h = ghHooks(h, noPRs, noPRs)
+			}
 			args := tc.args
 			if tc.setup != nil {
 				args = append(args, tc.setup(t, home)...)

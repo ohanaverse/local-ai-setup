@@ -30,7 +30,7 @@ func restoreRootApp(t *testing.T) *app {
 	a, tmp := newTestApp(t)
 	t.Setenv("WT_REGISTRY", filepath.Join(tmp, "local-ai", "registry.toml"))
 	t.Setenv("WT_LITELLM_CONFIG", filepath.Join(tmp, "config.yaml"))
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	oldNow, oldTTY, oldAfter := removeNow, restoreRootTTY, afterRestoreRootConfirm
 	removeNow = func() time.Time { return time.Now().Add(time.Hour) }
 	restoreRootTTY = func(io.Reader, io.Writer) bool { return false }
@@ -1212,5 +1212,79 @@ func TestRestoreRootCmdSignalWhileWritingTheResultIsHeld(t *testing.T) {
 	}
 	if strings.Count(errOut.String(), "interrupted (signal interrupt)") != 1 {
 		t.Errorf("stderr = %q, want the interrupted line once", errOut.String())
+	}
+}
+
+// TestRestoreRootRunReportTellsTheCallerAboutASignal pins #580 item 1's
+// seam: restoreRootRunReport hands the first signal received during the move
+// to its interrupted callback, once, beside the printed line, and never
+// calls it when no signal arrived. Why: the cleanup list's `R` hand-off puts
+// the same fact on its re-entry status line.
+func TestRestoreRootRunReportTellsTheCallerAboutASignal(t *testing.T) {
+	for _, signalled := range []bool{true, false} {
+		guard := make(chan os.Signal, 1)
+		signal.Notify(guard, syscall.SIGINT)
+		t.Cleanup(func() { signal.Stop(guard) })
+		a := restoreRootApp(t)
+		dir := cleanupRepo(t)
+		rootOnTopic(t, dir)
+		afterRestoreRootConfirm = func() {
+			if !signalled {
+				return
+			}
+			if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-guard:
+			case <-time.After(5 * time.Second):
+				t.Fatal("SIGINT was not delivered")
+			}
+		}
+		var got []os.Signal
+		var out, errOut bytes.Buffer
+		err := restoreRootRunReport(a.hooks, strings.NewReader(""), &out, &errOut, restoreRootFlags{yes: true, noFetch: true}, dir, nil,
+			func(s os.Signal) { got = append(got, s) }, nil)
+		if err != nil {
+			t.Fatalf("signalled=%v: %v\n%s", signalled, err, errOut.String())
+		}
+		if signalled {
+			if len(got) != 1 || got[0] != syscall.SIGINT {
+				t.Errorf("interrupted called with %v, want once with SIGINT", got)
+			}
+		} else if len(got) != 0 {
+			t.Errorf("interrupted called with %v though no signal arrived", got)
+		}
+	}
+}
+
+// TestRestoreRootCmdProgressGoesToStderr runs restore-root over a root with
+// 120 untracked files: stderr carries the copy progress, stdout does not, and
+// --json carries none. Why: deleting the Progress wiring would otherwise pass
+// every test and make restore-root silent again.
+func TestRestoreRootCmdProgressGoesToStderr(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		a := restoreRootApp(t)
+		dir := cleanupRepo(t)
+		rootOnTopic(t, dir)
+		for i := 0; i < 120; i++ {
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("bulk%03d.txt", i)), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		args := []string{"--yes", "--no-fetch"}
+		if asJSON {
+			args = append(args, "--json")
+		}
+		stdout, stderr, err := runRestoreRoot(t, a, dir, "", args...)
+		if exitOf(err) != 0 {
+			t.Fatalf("exit %d\n%s\n%s", exitOf(err), stdout, stderr)
+		}
+		if strings.Contains(stdout, "copying untracked") {
+			t.Errorf("json=%v: progress on stdout: %s", asJSON, stdout)
+		}
+		if got := strings.Contains(stderr, "copying untracked files: 121 of 121"); got == asJSON {
+			t.Errorf("json=%v: stderr progress present = %v:\n%s", asJSON, got, stderr)
+		}
 	}
 }

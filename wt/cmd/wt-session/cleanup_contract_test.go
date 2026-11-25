@@ -250,6 +250,30 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 			}
 		}
 	}
+	// The additive records section: every status, an unknown age, in_use_by.
+	var recs struct {
+		Records []map[string]any `json:"records"`
+	}
+	if err := json.Unmarshal(raw, &recs); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs.Records {
+		seen["record:"+r["status"].(string)] = true
+		if _, has := r["age_days"]; !has {
+			seen["record:no-age"] = true
+		}
+		if _, has := r["in_use_by"]; has {
+			seen["record:in_use_by"] = true
+		}
+		if r["dest_exists"] == false {
+			seen["record:dest-gone"] = true
+		}
+	}
+	for _, want := range []string{"record:unused", "record:in_use", "record:recent", "record:no-age", "record:in_use_by", "record:dest-gone"} {
+		if !seen[want] {
+			t.Errorf("the fixture has no record for %q", want)
+		}
+	}
 	for _, want := range []string{"rescued", "preserved", "status:proven", "status:less_sure", "status:unique_work", "status:in_use",
 		"kind:worktree", "kind:branch", "kind:remote", "unknown", "blockers", "no-evidence", "hard_stop", "upstream"} {
 		if !seen[want] {
@@ -282,13 +306,32 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 	// The no-origin sample shows another remote's row: less sure by
 	// not_checked alone (nothing asks gh about it; not a gh failure).
 	foundNotChecked := false
-	for _, r := range noOriginDoc.(map[string]any)["rows"].([]any) {
-		row := r.(map[string]any)
+	noOriginMap, _ := noOriginDoc.(map[string]any)
+	rows, ok := noOriginMap["rows"].([]any)
+	if !ok {
+		t.Fatalf("no-origin fixture rows is %T, want an array", noOriginMap["rows"])
+	}
+	for i, r := range rows {
+		row, ok := r.(map[string]any)
+		if !ok {
+			t.Errorf("no-origin fixture rows[%d] is %T, want an object", i, r)
+			continue
+		}
 		if row["kind"] != "remote" || row["remote"] == "origin" {
 			continue
 		}
-		for _, re := range row["reasons"].([]any) {
-			foundNotChecked = foundNotChecked || re.(map[string]any)["code"] == cleanup.ReasonNotChecked
+		reasons, ok := row["reasons"].([]any)
+		if !ok {
+			t.Errorf("no-origin fixture rows[%d].reasons is %T, want an array", i, row["reasons"])
+			continue
+		}
+		for j, re := range reasons {
+			reason, ok := re.(map[string]any)
+			if !ok {
+				t.Errorf("no-origin fixture rows[%d].reasons[%d] is %T, want an object", i, j, re)
+				continue
+			}
+			foundNotChecked = foundNotChecked || reason["code"] == cleanup.ReasonNotChecked
 		}
 	}
 	if !foundNotChecked {

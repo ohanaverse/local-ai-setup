@@ -21,10 +21,9 @@ func TestPruneRemovesDeadAndReusedKeepsLiveAndUnknown(t *testing.T) {
 	// but its start time is unreadable (the override below), 101 absent from the
 	// table so it is dead, 104 malformed. None is this process or an ancestor
 	// (fakeProcs walks the parent chain to pid 1), so only liveness decides.
-	fakeProcs(t, map[int]int64{100: 1000, 102: 1100, 103: 1000})
-	base := startTime
-	defer func() { startTime = base }() // restored here, not left to fakeProcs' t.Cleanup
-	startTime = func(pid int) (int64, error) {
+	procs := fakeProcs(t, map[int]int64{100: 1000, 102: 1100, 103: 1000})
+	base := procs.StartTime
+	procs.StartTime = func(pid int) (int64, error) {
 		if pid == 103 {
 			return 0, fmt.Errorf("ps failed")
 		}
@@ -37,7 +36,7 @@ func TestPruneRemovesDeadAndReusedKeepsLiveAndUnknown(t *testing.T) {
 	unknown := claimFile(t, dir, 103, body(103, 1000, root))
 	malformed := claimFile(t, dir, 104, "not a claim\n")
 
-	removed, err := Prune(dir)
+	removed, err := procs.Prune(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +61,7 @@ func TestPruneRemovesDeadAndReusedKeepsLiveAndUnknown(t *testing.T) {
 // A prune that skipped the lock could delete a claim a concurrent Hold or Join
 // had just written (those take the same flock via withLock).
 func TestPruneTakesTheLock(t *testing.T) {
-	fakeProcs(t, nil) // pid 100 is absent from the table, so its claim is stale
+	procs := fakeProcs(t, nil) // pid 100 is absent from the table, so its claim is stale
 	dir := t.TempDir()
 	stale := claimFile(t, dir, 100, body(100, 1000, root))
 	lock, err := os.OpenFile(filepath.Join(dir, "wt-sessions", ".lock"), os.O_RDWR|os.O_CREATE, 0o600)
@@ -76,7 +75,7 @@ func TestPruneTakesTheLock(t *testing.T) {
 
 	done := make(chan int, 1)
 	go func() {
-		n, err := Prune(dir)
+		n, err := procs.Prune(dir)
 		if err != nil {
 			t.Error(err)
 		}
@@ -116,9 +115,9 @@ func TestPruneTakesTheLock(t *testing.T) {
 // would MkdirAll the dir and create .lock, so the missing case must be handled
 // before the lock is taken).
 func TestPruneMissingDirIsZeroNil(t *testing.T) {
-	fakeProcs(t, nil)
+	procs := fakeProcs(t, nil)
 	dir := t.TempDir()
-	removed, err := Prune(dir)
+	removed, err := procs.Prune(dir)
 	if err != nil || removed != 0 {
 		t.Fatalf("Prune = %d, %v; want 0, nil", removed, err)
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
 )
 
 // gatewayCmd is `wt-model gateway`: the host's [gateway] settings in the
@@ -27,7 +28,8 @@ changed. The key is never printed, only the paths.
 
 'wt-model gateway subscription on|off' writes the switch. serve reads
 [gateway] once, at start, so a change takes effect when wt-model serve is
-restarted ('wt-model setup' and R, or launchctl kickstart -k).
+restarted: bootout, then bootstrap ('wt-model setup', x then s; or the
+launchctl commands 'wt-model gateway' prints). A kickstart does not do it.
 
 Exit codes:
   0  done
@@ -47,7 +49,9 @@ It changes that one key and leaves the rest of the file (the [litellm] table,
 tls_cert, tls_key) as it is, under the lock the proxy-pair writer uses; the
 file it replaces is first copied to backups/config.toml.bak-<date>-<time>
 beside it (0700 directory, 0600 file). Asking for what the file already says
-writes nothing. serve must be restarted for the change to take effect.
+writes nothing. serve must be restarted for the change to take effect: a
+bootout then a bootstrap ('wt-model setup', x then s), not a kickstart. The
+Setup tab's g key writes the same switch.
 
 With the mode on, serve checks the LiteLLM proxy for what would make a keyless
 anthropic/ row unsafe, at start and then every minute. The first hazard turns
@@ -87,8 +91,14 @@ func onOff(on bool) string {
 
 // restartHint is the one line every change ends with: serve reads [gateway]
 // once, at start.
+// A kickstart is not offered (#693): it restarts the definition launchd already
+// loaded and serve is only told the file changed by a fresh start, so the
+// advice is a bootout and a bootstrap: x then s in 'wt-model setup', or the two
+// launchctl commands. The plist's contents are never printed, only its path.
 func restartHint() string {
-	return fmt.Sprintf("restart wt-model serve for it to take effect (wt-model setup, then R; or launchctl kickstart -k gui/%d/%s)", os.Getuid(), "local.wt-model.serve")
+	uid := os.Getuid()
+	return fmt.Sprintf("restart wt-model serve for it to take effect: in 'wt-model setup' press x then s (bootout, bootstrap); or run launchctl bootout gui/%d/%s, then launchctl bootstrap gui/%d %s",
+		uid, modelsetup.AgentLabel, uid, "~/Library/LaunchAgents/"+modelsetup.AgentLabel+".plist")
 }
 
 // readGatewaySwitch is config.GatewaySettings for a command that only needs
@@ -126,7 +136,7 @@ func runGatewayShow(out, errOut io.Writer) error {
 	} else {
 		fmt.Fprintf(out, "  tls: %s (key %s)\n", gw.TLSCert, gw.TLSKey)
 	}
-	fmt.Fprintln(out, "serve reads [gateway] once, at start: restart wt-model serve after a change.")
+	fmt.Fprintln(out, "serve reads [gateway] once, at start: "+restartHint())
 	return nil
 }
 

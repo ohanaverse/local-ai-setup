@@ -2,6 +2,7 @@ package rootclaim
 
 import (
 	"errors"
+	"sort"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -36,10 +37,21 @@ func HoldLaunch(dir, agent string) (release func(), others []sessionclaim.Claim,
 		return release, nil, err
 	}
 	holders, err := sessionclaim.Holders(site.CommonDir, self)
-	// others is keyed by each claim's recorded path as written (wt's own
-	// writers normalize via worktree.ToplevelOf, so they match); a consumer
-	// that must catch foreign or hand-written claims recorded under a symlink
-	// alias should fold via cleanup.ResolvePath the way HeldOn and rootmove's
-	// heldBy do.
-	return release, holders[site.Path], err
+	if err != nil {
+		return release, nil, err
+	}
+	// Holders keys claims by the path each recorded. wt's own writers record
+	// worktree.ToplevelOf, but a foreign or hand-written claim may name the
+	// worktree through a symlink alias (/var against /private/var), so every
+	// key is folded through worktree.ResolvePath, the resolver cleanup's
+	// HeldOn and rootmove's heldBy use, and compared with the resolved site
+	// path; the claims of all matching keys are joined and sorted by pid.
+	want := worktree.ResolvePath(site.Path)
+	for path, claims := range holders {
+		if worktree.ResolvePath(path) == want {
+			others = append(others, claims...)
+		}
+	}
+	sort.Slice(others, func(i, j int) bool { return others[i].PID < others[j].PID })
+	return release, others, nil
 }

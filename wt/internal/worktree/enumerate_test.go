@@ -384,8 +384,7 @@ func TestEnumerateListsARemoteBranchBesideItsLocal(t *testing.T) {
 // TestEnumerateDoesNotFetch pins Enumerate as fetch-free: a branch a
 // teammate pushed since the last fetch is not listed, and no remote-tracking
 // ref appears. Enumeration itself never fetches or prunes — refreshing is
-// FetchRemotes' job (the picker calls it on open; Part 3 moves that to a
-// refresh key).
+// cleanup.Fetch's job (the user's `F` or --fetch).
 func TestEnumerateDoesNotFetch(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -426,7 +425,7 @@ func TestEnumerateDoesNotFetch(t *testing.T) {
 	for _, g := range groups {
 		for _, e := range g.Entries {
 			if e.Branch == "origin/teammate-feature" {
-				t.Fatal("Enumerate fetched: origin/teammate-feature listed without FetchRemotes")
+				t.Fatal("Enumerate fetched: origin/teammate-feature listed without a fetch")
 			}
 		}
 	}
@@ -438,7 +437,7 @@ func TestEnumerateDoesNotFetch(t *testing.T) {
 // TestEnumerateDoesNotPrune pins the other half of the same contract: the
 // remote-tracking ref of a branch deleted upstream is still listed, and its
 // ref survives the call — proved with for-each-ref before and after, so
-// setup drift cannot pass the test. Stale rows stay until FetchRemotes
+// setup drift cannot pass the test. Stale rows stay until a fetch
 // --prune removes them; a read-only enumeration never silently shrinks the
 // list under the user.
 func TestEnumerateDoesNotPrune(t *testing.T) {
@@ -490,97 +489,11 @@ func TestEnumerateDoesNotPrune(t *testing.T) {
 	}
 }
 
-// TestFetchRemotesFetchesNewAndPrunesDeleted pins FetchRemotes, the
-// worktree package's explicit ref refresh (`git fetch --all --prune`, at
-// most fetchTimeout): a branch a teammate pushed becomes a remote-tracking
-// ref, and the ref of a branch deleted upstream goes away instead of
-// lingering as a stale row.
-func TestFetchRemotesFetchesNewAndPrunesDeleted(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-
-	remoteDir := filepath.Join(dir, "remote.git")
-	// -b main pins the bare repo's HEAD whatever init.defaultBranch says.
-	if out, err := exec.Command("git", "init", "--bare", "-b", "main", remoteDir).CombinedOutput(); err != nil {
-		t.Fatalf("git init --bare remote: %v\n%s", err, out)
-	}
-	// gone-soon is pushed and fetched here, then deleted upstream, leaving
-	// dir's origin/gone-soon stale before FetchRemotes runs.
-	for _, args := range [][]string{
-		{"remote", "add", "origin", remoteDir},
-		{"push", "-u", "origin", "main"},
-		{"checkout", "-b", "gone-soon"},
-		{"push", "origin", "gone-soon"},
-		{"checkout", "main"},
-		{"fetch", "origin"},
-		{"branch", "-d", "gone-soon"},
-	} {
-		if out, err := runGitCmd(dir, args...); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	if out, err := exec.Command("git", "-C", remoteDir, "branch", "-D", "gone-soon").CombinedOutput(); err != nil {
-		t.Fatalf("git -C remote branch -D gone-soon: %v\n%s", err, out)
-	}
-	// A teammate then pushes a branch dir has never fetched.
-	cloneDir := t.TempDir()
-	if out, err := exec.Command("git", "clone", remoteDir, cloneDir).CombinedOutput(); err != nil {
-		t.Fatalf("git clone: %v\n%s", err, out)
-	}
-	if out, err := runGitCmd(cloneDir, "checkout", "-b", "teammate-feature"); err != nil {
-		t.Fatalf("git checkout -b teammate-feature: %v\n%s", err, out)
-	}
-	if out, err := runGitCmd(cloneDir, "push", "origin", "teammate-feature"); err != nil {
-		t.Fatalf("git push teammate-feature: %v\n%s", err, out)
-	}
-
-	// The soon-gone ref exists before FetchRemotes — else the prune below
-	// would pass on a ref that never was.
-	if out, _ := runGitCmd(dir, "for-each-ref", "refs/remotes/origin/gone-soon"); strings.TrimSpace(string(out)) == "" {
-		t.Fatal("origin/gone-soon missing before FetchRemotes; setup drifted, nothing to prune")
-	}
-	if err := FetchRemotes(dir); err != nil {
-		t.Fatalf("FetchRemotes: %v", err)
-	}
-	if out, _ := runGitCmd(dir, "for-each-ref", "refs/remotes/origin/teammate-feature"); strings.TrimSpace(string(out)) == "" {
-		t.Fatal("origin/teammate-feature missing after FetchRemotes")
-	}
-	if out, _ := runGitCmd(dir, "for-each-ref", "refs/remotes/origin/gone-soon"); strings.TrimSpace(string(out)) != "" {
-		t.Fatalf("origin/gone-soon should have been pruned: %s", out)
-	}
-}
-
-// TestFetchRemotesReportsFailure pins FetchRemotes' error: a dead remote
-// returns a non-nil error of one line for the caller to handle (never a
-// multi-line dump), and Enumerate is unaffected by it.
-func TestFetchRemotesReportsFailure(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-
-	if out, err := runGitCmd(dir, "remote", "add", "origin", "/nonexistent/does-not-exist.git"); err != nil {
-		t.Fatalf("git remote add origin: %v\n%s", err, out)
-	}
-	err := FetchRemotes(dir)
-	if err == nil {
-		t.Fatal("FetchRemotes with a dead remote returned nil")
-	}
-	if strings.Contains(err.Error(), "\n") {
-		t.Errorf("error is not one line: %q", err)
-	}
-	groups, err := Enumerate(dir, dir)
-	if err != nil {
-		t.Fatalf("Enumerate() error = %v", err)
-	}
-	if len(groups) != 3 {
-		t.Fatalf("got %d groups, want 3", len(groups))
-	}
-}
-
 // TestLastFetched pins LastFetched, the source of the list's "refreshed
 // when" note, against real fetches: the stamp is when `git fetch` last ran
 // at that root, and every worktree keeps its own. false means no readable
 // FETCH_HEAD there — a fresh clone has none until a fetch runs at its root.
-// FetchRemotes(root) advances exactly the stamp LastFetched(root) reads, and
+// a fetch at root advances exactly the stamp LastFetched(root) reads, and
 // one worktree's fetch leaves the other stamps alone.
 func TestLastFetched(t *testing.T) {
 	dir := t.TempDir()
@@ -606,12 +519,12 @@ func TestLastFetched(t *testing.T) {
 	}
 
 	// A real fetch at the primary root stamps it.
-	if err := FetchRemotes(cloneDir); err != nil {
-		t.Fatalf("FetchRemotes(clone): %v", err)
+	if out, err := runGitCmd(cloneDir, "fetch", "--prune", "origin"); err != nil {
+		t.Fatalf("git fetch (clone): %v\n%s", err, out)
 	}
 	primary, ok := LastFetched(cloneDir)
 	if !ok {
-		t.Fatal("LastFetched after FetchRemotes at the primary root = false; want true")
+		t.Fatal("LastFetched after a fetch at the primary root = false; want true")
 	}
 	if time.Since(primary) > time.Minute {
 		t.Errorf("primary stamp %v is not the fetch that just ran", primary)
@@ -630,12 +543,12 @@ func TestLastFetched(t *testing.T) {
 	// time than the primary's (non-strict: a filesystem coarser than the
 	// inter-fetch gap may stamp both alike) — while the primary's stays
 	// exactly as it was.
-	if err := FetchRemotes(linked); err != nil {
-		t.Fatalf("FetchRemotes(linked): %v", err)
+	if out, err := runGitCmd(linked, "fetch", "--prune", "origin"); err != nil {
+		t.Fatalf("git fetch (linked): %v\n%s", err, out)
 	}
 	got, ok := LastFetched(linked)
 	if !ok {
-		t.Fatal("LastFetched after FetchRemotes at the linked root = false; want true")
+		t.Fatal("LastFetched after a fetch at the linked root = false; want true")
 	}
 	if got.Before(primary) {
 		t.Errorf("linked stamp %v is older than the primary's %v", got, primary)
@@ -1062,5 +975,36 @@ func TestListWorktreesMarksOnlyThePrimary(t *testing.T) {
 		if e.Root {
 			t.Errorf("bare repo entry %+v marked Root", e)
 		}
+	}
+}
+
+// TestResolvePath checks the resolver every claim comparison shares: a symlink
+// alias resolves to its target, a missing leaf resolves through its nearest
+// existing ancestor, and a relative path becomes absolute.
+func TestResolvePath(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct{ in, want string }{
+		"alias":               {alias, real},
+		"alias, missing leaf": {filepath.Join(alias, "gone", "deeper"), filepath.Join(real, "gone", "deeper")},
+		"plain":               {real, real},
+		"unclean":             {filepath.Join(real, "x", ".."), real},
+	} {
+		if got := ResolvePath(tc.in); got != tc.want {
+			t.Errorf("%s: ResolvePath(%q) = %q, want %q", name, tc.in, got, tc.want)
+		}
+	}
+	if got := ResolvePath("rel"); !filepath.IsAbs(got) {
+		t.Errorf("ResolvePath(rel) = %q, want absolute", got)
 	}
 }

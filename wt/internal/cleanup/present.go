@@ -501,13 +501,16 @@ func HeaderLines(r Report, now time.Time) []string {
 }
 
 // NoteLines are the caveats a reader must see beside the rows: the lowered
-// min-age, then the caller's Notes, one sanitised line each. The text header
+// min-age, unreadable rescue records, then the caller's Notes, one sanitised line each. The text header
 // and the --json `notes` array both carry exactly these.
 func NoteLines(r Report) []string {
 	var lines []string
 	// A zero MinAge is a Report not built by Classify: nothing was lowered.
 	if r.MinAge > 0 && r.MinAge < DefaultMinAge {
 		lines = append(lines, "min-age: lowered to "+shortDuration(r.MinAge)+" (default "+shortDuration(DefaultMinAge)+"): fresh branches may read as merged")
+	}
+	if r.RecordsErr != "" {
+		lines = append(lines, "rescue records could not be read ("+flat(r.RecordsErr)+"); rescued originals are listed as unique work")
 	}
 	for _, n := range r.Notes {
 		lines = append(lines, flat(n))
@@ -672,7 +675,7 @@ func RowTags(row Row) []Tag {
 		}
 	}
 	if ok {
-		text := "held by session"
+		text := HeldTagPrefix
 		if held.Detail != "" {
 			text += " " + held.Detail
 		}
@@ -683,3 +686,12 @@ func RowTags(row Row) []Tag {
 	}
 	return tags
 }
+
+// HeldTagPrefix is the text every held tag starts with: RowTags builds the
+// tag from it (plus the holder's description) and the screens that name the
+// holder find the tag with IsHeldTag, so a respelling fails to compile
+// instead of silently dropping the holder line (#581).
+const HeldTagPrefix = "held by session"
+
+// IsHeldTag reports whether t is the held tag RowTags builds.
+func IsHeldTag(t Tag) bool { return strings.HasPrefix(t.Text, HeldTagPrefix) }
