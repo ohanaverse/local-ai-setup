@@ -30,16 +30,6 @@ func hasControl(s string) bool {
 // the record (the destination's worktree add turns hooks off the same way).
 var hooksOff = []string{"core.hooksPath=/dev/null"}
 
-// writeRecord builds the record (buildRecord) and creates its ref
-// (createRecordRef) in one step, with no check between them.
-func writeRecord(src sgit, p *Plan) (Record, error) {
-	rec, err := buildRecord(src, p)
-	if err != nil {
-		return Record{}, err
-	}
-	return rec, createRecordRef(src, rec)
-}
-
 // buildRecord writes the two commits that prove a rescue and names the ref
 // that will keep them: I (the source's index tree, parent the source's HEAD)
 // and W (the source's working-tree tree, parent I). It only adds objects,
