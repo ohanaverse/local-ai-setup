@@ -14,13 +14,13 @@ import (
 // confirmation (rootclaim.AskContinue via launchwarn.Check) on whichever
 // launch path runs.
 func TestOthersReadsLiveClaimsWithoutWriting(t *testing.T) {
-	fakeProcs(t, map[int]int64{100: 1000, 101: 1000, 900: 5000})
+	procs := fakeProcs(t, map[int]int64{100: 1000, 101: 1000, 900: 5000})
 	dir := t.TempDir()
 	claimFile(t, dir, 100, body(100, 1000, root))
 	claimFile(t, dir, 101, body(101, 1000, "/elsewhere"))
 	claimFile(t, dir, 900, body(900, 5000, root))
 	stale := claimFile(t, dir, 102, body(102, 1000, root))
-	others, err := Others(dir, self())
+	others, err := procs.Others(dir, self())
 	if err != nil || len(others) != 1 || others[0].PID != 100 {
 		t.Fatalf("others=%v err=%v; want pid 100 only", others, err)
 	}
@@ -35,9 +35,9 @@ func TestOthersReadsLiveClaimsWithoutWriting(t *testing.T) {
 // TestOthersNoDirectoryIsNone checks a repository nobody has claimed (no
 // wt-sessions directory) has no others and no error, the common case.
 func TestOthersNoDirectoryIsNone(t *testing.T) {
-	fakeProcs(t, nil)
+	procs := fakeProcs(t, nil)
 	dir := t.TempDir()
-	others, err := Others(dir, self())
+	others, err := procs.Others(dir, self())
 	if err != nil || len(others) != 0 {
 		t.Fatalf("others=%v err=%v", others, err)
 	}

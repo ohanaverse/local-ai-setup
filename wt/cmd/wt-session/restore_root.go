@@ -89,7 +89,7 @@ func restoreRootCmd(a *app) *cobra.Command {
 			if err != nil {
 				return restoreRootFail(cmd.OutOrStdout(), f, "", 1, err)
 			}
-			return restoreRootRun(cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f, cwd)
+			return restoreRootRun(a.hooks, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f, cwd)
 		},
 	}
 	c.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
@@ -144,15 +144,21 @@ func restoreRootFail(out io.Writer, f restoreRootFlags, repo string, code int, e
 // from cwd. The command passes its own working directory and the cleanup
 // list's `R` hand-off the directory the list was built from: one run path
 // (rescueRow's shape — the command and the list's key both end here).
-func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string) error {
-	return restoreRootRunReport(answer, out, errOut, f, cwd, nil)
+func restoreRootRun(h hooks, answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string) error {
+	return restoreRootRunReport(h, answer, out, errOut, f, cwd, nil, nil, nil)
 }
 
 // restoreRootRunReport is restoreRootRun that also hands the outcome it
 // printed to report (when non-nil): the cleanup list's `R` hand-off tells a
 // refusal that changed nothing from a failure that did by it. Only a written
 // result carries one; the command's output and exit codes are the same.
-func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string, report func(rootmove.Outcome)) error {
+// interrupted (when non-nil) is called with the first signal received while
+// the move ran, beside the "interrupted (signal ...)" line printed for it:
+// the `R` hand-off puts the same fact on its re-entry status line (#580).
+// fetched (when non-nil) is called right after the gather, with its fetch
+// result, and only when the run really fetched (not --no-fetch, not a dry
+// run): the `R` hand-off uses it to skip the re-entry's second fetch (#579).
+func restoreRootRunReport(h hooks, answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string, report func(rootmove.Outcome), interrupted func(os.Signal), fetched func(cleanup.FetchResult)) error {
 	signal.Ignore(syscall.SIGPIPE)
 	write := func(meta rootmove.Meta, o rootmove.Outcome) error {
 		if report != nil {
@@ -166,8 +172,11 @@ func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRoot
 	}
 	// A dry run promises to write no ref: `git fetch` rewrites
 	// remote-tracking refs, so it reads the last fetch instead.
-	in := cleanupInputs(cwd, !f.noFetch && !f.dryRun, nil, "wt-restore-root")
+	in := cleanupInputs(h, cwd, !f.noFetch && !f.dryRun, nil, "wt-restore-root")
 	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, in)
+	if in.Fetch && fetched != nil {
+		fetched(snap.Fetch)
+	}
 	// With no default branch the snapshot is still whole; Preflight refuses
 	// it as no_default_branch.
 	if err != nil && !errors.Is(err, cleanup.ErrNoDefaultBranch) {
@@ -183,7 +192,8 @@ func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRoot
 	in.Fetch = false // a re-check never fetches
 	meta := rootmove.Meta{Repo: snap.Repo, DryRun: f.dryRun}
 	eng := rootmove.Engine{Rescue: rescue.Engine{G: cleanup.Git{Dir: cwd}, Prior: snap, In: in,
-		Classify: cleanup.Options{Now: removeNow()}, ForRoot: true}}
+		Classify: cleanup.Options{Now: removeNow()}, ForRoot: true,
+		Progress: copyProgress(errOut, f.json || f.dryRun)}}
 
 	var notes []string
 	if f.dryRun {
@@ -233,6 +243,9 @@ func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRoot
 	err = write(meta, o)
 	if got := received(); len(got) > 0 {
 		fmt.Fprintf(errOut, "interrupted (signal %v): the move was not stopped; see the result above\n", got[0])
+		if interrupted != nil {
+			interrupted(got[0])
+		}
 	}
 	return err
 }

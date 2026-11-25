@@ -73,7 +73,7 @@ type rowListOpts struct {
 	Theme themes.Theme
 	Now   time.Time // the header's clock
 	// Root is the repository root the header's refresh note reads: a fetch
-	// at this root is what "refreshed" means (worktree.FetchRemotes, and
+	// at this root is what "refreshed" means (cleanup.RecordFetch, and
 	// RemoveFuncs.Refetch, run there). Empty falls back to the report's Repo.
 	Root string
 	// Stamp is the fetch stamp the header's refresh note shows, read by the
@@ -406,9 +406,13 @@ func (m *cleanupListModel) empty() bool { return m.cursor < 0 }
 // session is as it always was. A hand-off that FAILED midway, or could not
 // start, returns a plain error and ends the session so its recovery text is
 // the last thing printed.
+//
+// Fetched means this hand-off already fetched every remote, so the re-entry
+// only re-reads (RemoveFuncs.Reread) instead of fetching a second time.
 type HandOffNote struct {
-	Text string
-	Err  error
+	Text    string
+	Err     error
+	Fetched bool
 }
 
 func (n *HandOffNote) Error() string {
@@ -458,11 +462,18 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 	if run == nil {
 		run = realCleanupProgram
 	}
+	var prev *rowKey // the row the cursor was on when the last pass ended
 	for {
 		m := newCleanupList(r, th, time.Now(), rm)
 		m.log = logged
 		m.status = status
 		status = ""
+		if prev != nil {
+			// The re-entered list keeps the user on the row they acted from;
+			// a row that is gone leaves the cursor on the top row.
+			m.seekRow(*prev)
+			prev = nil
+		}
 		final, stop, perr := run(m)
 		defer stop() // idempotent; the hand-offs and the re-entry stop it first
 		fm, ok := final.(cleanupListModel)
@@ -514,12 +525,24 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 		}
 		// Re-enter: the re-read's own failure ends the session (its error,
 		// never a silent retry); its report builds the next pass's model.
-		rep, rerr := rm.Refetch()
+		// A hand-off that already fetched (note.Fetched) only re-reads; a
+		// Reread-less funcs set falls back to Refetch, a second fetch but
+		// still correct.
+		read := rm.Refetch
+		if note != nil && note.Fetched && rm.Reread != nil {
+			read = rm.Reread
+		}
+		rep, rerr := read()
 		if rerr != nil {
 			err = rerr
 			break
 		}
 		stop() // the forwarding stops before the next pass's program runs
+		prev = nil
+		if fm.cursor >= 0 && fm.cursor < len(fm.items) && !fm.items[fm.cursor].newWorktree {
+			k := keyOf(fm.items[fm.cursor].row)
+			prev = &k
+		}
 		r = rep
 		if note != nil {
 			status = note.Text
@@ -792,8 +815,9 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// in-flight guard — and the manage list re-reads through
 			// RemoveFuncs.Refetch. Either way the refresh drops the stale
 			// session claims first (pruneStaleFirst, the key path's one
-			// prune): refresh is one of the two paths that prune, and
-			// opening the list never is. An F pressed while a refresh is
+			// prune): refresh is the interactive half of the one gate
+			// (cmd/wt-session's pruneAfterFetch is the other), and
+			// opening the list never prunes. An F pressed while a refresh is
 			// already in flight still prunes — idempotent, and the reload
 			// the app drops does not undo it — which is intended.
 			if m.launch() {
@@ -1188,7 +1212,7 @@ func (m *cleanupListModel) headerBlock() string {
 		}
 	}
 	if m.fetching {
-		lines = append(lines, "fetching every remote… (up to 5s)")
+		lines = append(lines, "fetching every remote…")
 	}
 	if note := refreshedNote(m.stamp, m.now, m.report.Fetch); note != "" {
 		lines = append(lines, note)

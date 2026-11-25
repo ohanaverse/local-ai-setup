@@ -1374,7 +1374,7 @@ func TestReleaseRootRefusesHiddenIndexFlags(t *testing.T) {
 				calls := recordRootGit(t)
 				_, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rel)
 				var refused *ReleaseRefused
-				if !errors.As(err, &refused) || !strings.Contains(refused.Reason, "assume-unchanged or skip-worktree") {
+				if !errors.As(err, &refused) || !strings.Contains(refused.Reason, "assume-unchanged or skip-worktree") || !strings.Contains(refused.Reason, "git sparse-checkout disable") || !strings.Contains(refused.Reason, "git update-index --no-skip-worktree <path>") {
 					t.Fatalf("err = %v, want *ReleaseRefused naming the hidden index flag", err)
 				}
 				if w := writes(*calls); len(w) != 0 {

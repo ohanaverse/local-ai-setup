@@ -3,13 +3,13 @@ package removal
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
 )
 
 // fixture is a real repository: a bare "origin" and a clone with main pushed
@@ -18,43 +18,26 @@ import (
 // clean. Each test builds its own (a wrong success leaves a worktree behind
 // that would mask every later case).
 //
-// It is a slim copy of internal/cleanup's fixture (plan call 9: duplicate,
-// extract later), holding only what the removal tests need.
+// The repository itself is gittest's base repository; this type holds only
+// what the removal tests need on top of it.
 type fixture struct {
 	t      *testing.T
 	Origin string
 	Dir    string
 }
 
-// gitIn runs git in dir and fails the test on a non-zero exit.
+// gitIn delegates to the shared runner (gittest.Git).
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	b, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, b)
-	}
-	return strings.TrimSpace(string(b))
+	return gittest.Git(t, dir, args...)
 }
 
+// newFixture is gittest's base repository with .worktrees/ excluded, wrapped
+// in this package's fixture.
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	root := t.TempDir()
-	f := &fixture{t: t, Origin: filepath.Join(root, "origin.git"), Dir: filepath.Join(root, "repo")}
-	if b, err := exec.Command("git", "init", "--bare", "-b", "main", f.Origin).CombinedOutput(); err != nil {
-		t.Fatalf("init bare: %v\n%s", err, b)
-	}
-	if b, err := exec.Command("git", "clone", f.Origin, f.Dir).CombinedOutput(); err != nil {
-		t.Fatalf("clone: %v\n%s", err, b)
-	}
-	f.git("config", "user.email", "t@example.com")
-	f.git("config", "user.name", "T")
-	f.git("config", "commit.gpgsign", "false")
-	f.git("checkout", "-B", "main")
-	f.exclude(".worktrees/")
-	f.Commit(f.Dir, "README", "init", "init")
-	f.git("push", "-u", "origin", "main")
-	f.git("remote", "set-head", "origin", "main")
-	return f
+	origin, repo := gittest.NewRepo(t, true)
+	return &fixture{t: t, Origin: origin, Dir: repo}
 }
 
 func (f *fixture) git(args ...string) string { f.t.Helper(); return gitIn(f.t, f.Dir, args...) }

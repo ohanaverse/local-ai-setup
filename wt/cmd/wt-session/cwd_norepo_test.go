@@ -46,6 +46,13 @@ func runCwdLaunch(t *testing.T, dir string, extra ...string) cwdLaunch {
 // the launch directory.
 func runPinnedLaunch(t *testing.T, dir string, where []string, extra ...string) cwdLaunch {
 	t.Helper()
+	return runPinnedLaunchWith(t, testHooks(), dir, where, extra...)
+}
+
+// runPinnedLaunchWith is runPinnedLaunch over an app carrying h, for a test
+// that sets a hook (prList) on top of testHooks().
+func runPinnedLaunchWith(t *testing.T, h hooks, dir string, where []string, extra ...string) cwdLaunch {
+	t.Helper()
 	t.Chdir(dir)
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
@@ -90,7 +97,7 @@ func runPinnedLaunch(t *testing.T, dir string, where []string, extra ...string) 
 		t.Fatal(err)
 	}
 	args := append(append(append([]string{}, where...), "-A", "claude", "-M", "claude/opus"), extra...)
-	captureFile(t, &os.Stdout, func() { res.output, res.err = runWT(t, args...) })
+	captureFile(t, &os.Stdout, func() { res.output, res.err = runWTWith(t, h, args...) })
 
 	res.ended = f.count("DELETE /control/v1/sessions/")
 	if b, rerr := os.ReadFile(pwdFile); rerr == nil {

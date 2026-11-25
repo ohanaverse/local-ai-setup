@@ -33,7 +33,7 @@ func localModel(id, path string) config.Model {
 // second ago could read as proven merged once removal acts on that verdict.
 func TestMinAgeFloorRejected(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	stdout, stderr, err := runCleanup(t, a, dir, "--plain", "--no-fetch", "--min-age", "30s")
 	if err == nil {
@@ -167,7 +167,7 @@ func TestProtectedPathsSortedDeduped(t *testing.T) {
 // not marked; the JSON contract must not change.
 func TestCleanupListHeaderWarnsWhenRegistryFailed(t *testing.T) {
 	a, _ := newTestApp(t)
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	cgit(t, dir, "branch", "topic")
 	// A fixed clock: the two JSON runs must not differ by an age.
@@ -261,7 +261,7 @@ func TestProtectedPathsMissingRegistryIsNothingToProtect(t *testing.T) {
 	if err != nil || len(got) != 0 {
 		t.Fatalf("protectedPaths = %q, %v; want none and no error", got, err)
 	}
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	dir := cleanupRepo(t)
 	plain, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch")
 	if err != nil {

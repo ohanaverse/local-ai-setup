@@ -142,3 +142,44 @@ func TestGatewaySubscriptionWorksWithAnUnusableTLSPair(t *testing.T) {
 		t.Errorf("off: %v\n%s", err, out)
 	}
 }
+
+// TestGatewayRestartHintIsBootoutAndBootstrap pins #693's restart wording:
+// serve must be started afresh to re-read [gateway], so every place that says
+// how names a bootout and a bootstrap (x then s in setup, or the launchctl
+// commands) and none recommends a kickstart. Show, the write and the help all
+// say it.
+func TestGatewayRestartHintIsBootoutAndBootstrap(t *testing.T) {
+	asWTModel(t)
+	seedProxyHome(t, "http://127.0.0.1:4000", "sk-test", 0o600)
+	show, _, err := execWTModel(t, testHost(), "gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrote, _, err := execWTModel(t, testHost(), "gateway", "subscription", "on")
+	if err != nil {
+		t.Fatal(err)
+	}
+	help1, _, _ := execWTModel(t, testHost(), "gateway", "--help")
+	help2, _, _ := execWTModel(t, testHost(), "gateway", "subscription", "--help")
+	for name, out := range map[string]string{"show": show, "write": wrote, "gateway help": help1} {
+		if !strings.Contains(out, "bootout") || !strings.Contains(out, "bootstrap") {
+			t.Errorf("%s lacks bootout and bootstrap:\n%s", name, out)
+		}
+		if strings.Contains(noKickstartAdvice(out), "kickstart") {
+			t.Errorf("%s recommends kickstart:\n%s", name, out)
+		}
+	}
+	if strings.Contains(noKickstartAdvice(help2), "kickstart") {
+		t.Errorf("subscription help mentions kickstart:\n%s", help2)
+	}
+	if !strings.Contains(wrote, "x then s") || !strings.Contains(wrote, "local.wt-model.serve") {
+		t.Errorf("the write's hint lacks the setup keys or the job:\n%s", wrote)
+	}
+}
+
+// noKickstartAdvice drops the two phrases that name a kickstart only to rule
+// it out, so what is left must not mention one.
+func noKickstartAdvice(s string) string {
+	s = strings.ReplaceAll(s, "A kickstart does not do it.", "")
+	return strings.ReplaceAll(s, "not a kickstart", "")
+}

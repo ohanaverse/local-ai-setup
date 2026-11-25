@@ -32,6 +32,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -171,7 +172,7 @@ var smokeSignalCtx = func() (context.Context, context.CancelFunc) {
 // anything starts (Task 18). It returns whether any row FAILed rather than
 // exiting, so the caller sets the exit code.
 func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err error) {
-	toolFlags, inPlace, cwd, err := smokePrelude(cmd)
+	toolFlags, inPlace, cwd, err := smokePrelude(cmd, a.hooks.prList)
 	if err != nil {
 		return false, err
 	}
@@ -182,7 +183,7 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 // tool flags, and with --cwd the launch warnings for the directory the rows
 // run in. It returns the tool flags, whether the rows run in place, and that
 // directory.
-func smokePrelude(cmd *cobra.Command) (toolFlags smokeToolFlags, inPlace bool, cwd string, err error) {
+func smokePrelude(cmd *cobra.Command, prList func(dir, branch string) ([]byte, error)) (toolFlags smokeToolFlags, inPlace bool, cwd string, err error) {
 	// Flag validation comes before the model is resolved: these are usage
 	// errors, knowable without a model, and a usage error must not cost the
 	// user an interactive model pick first.
@@ -204,8 +205,9 @@ func smokePrelude(cmd *cobra.Command) (toolFlags smokeToolFlags, inPlace bool, c
 		if cwd, err = os.Getwd(); err != nil {
 			return toolFlags, inPlace, "", err
 		}
+		pr := launchwarn.StartPRLookup(cwd, worktree.CurrentBranchAt(cwd), prList)
 		t, terr := launchwarn.ForDir(cwd)
-		if gerr := confirmLaunch(t, terr, cmd.InOrStdin(), osStderr, stdinTTY()); gerr != nil {
+		if gerr := confirmLaunch(t, terr, pr, cmd.InOrStdin(), osStderr, stdinTTY()); gerr != nil {
 			return toolFlags, inPlace, cwd, gerr // declined: exit 3, like every other no
 		}
 	}

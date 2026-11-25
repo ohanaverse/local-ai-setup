@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -22,13 +23,10 @@ type fixture struct {
 	Dir    string
 }
 
+// gitIn delegates to the shared runner (gittest.Git).
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	b, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, b)
-	}
-	return strings.TrimSpace(string(b))
+	return gittest.Git(t, dir, args...)
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -41,25 +39,8 @@ func newFixture(t *testing.T) *fixture {
 // worktree directory is a state a real user can be in.
 func newFixtureExcluding(t *testing.T, excludeWorktrees bool) *fixture {
 	t.Helper()
-	root := t.TempDir()
-	f := &fixture{t: t, Origin: filepath.Join(root, "origin.git"), Dir: filepath.Join(root, "repo")}
-	if b, err := exec.Command("git", "init", "--bare", "-b", "main", f.Origin).CombinedOutput(); err != nil {
-		t.Fatalf("init bare: %v\n%s", err, b)
-	}
-	if b, err := exec.Command("git", "clone", f.Origin, f.Dir).CombinedOutput(); err != nil {
-		t.Fatalf("clone: %v\n%s", err, b)
-	}
-	f.git("config", "user.email", "t@example.com")
-	f.git("config", "user.name", "T")
-	f.git("config", "commit.gpgsign", "false")
-	f.git("checkout", "-B", "main")
-	if excludeWorktrees {
-		f.exclude(".worktrees/")
-	}
-	f.Commit(f.Dir, "README", "init", "init")
-	f.git("push", "-u", "origin", "main")
-	f.git("remote", "set-head", "origin", "main")
-	return f
+	origin, repo := gittest.NewRepo(t, excludeWorktrees)
+	return &fixture{t: t, Origin: origin, Dir: repo}
 }
 
 func (f *fixture) git(args ...string) string { f.t.Helper(); return gitIn(f.t, f.Dir, args...) }

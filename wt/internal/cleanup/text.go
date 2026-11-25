@@ -2,6 +2,7 @@ package cleanup
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"unicode"
 )
@@ -41,7 +42,7 @@ func OneLine(s string) string { return gitErrText(s) }
 // Flatten is OneLine without the length cap: one sanitised line (every
 // control and bidi rune dropped or made a space, whitespace runs collapsed)
 // of any length. For messages wt composed itself whose end matters, such as
-// wt restore-root's recovery sentences and remedies; text that is git's
+// wt restore-root's and wt rescue's recovery sentences, reasons and remedies; text that is git's
 // output stays capped through OneLine where it is quoted.
 func Flatten(s string) string { return flat(s) }
 
@@ -101,4 +102,28 @@ func capRunes(s string, max int) string {
 // say more than its first, so they are joined, not dropped.
 func fetchErrText(s string) string {
 	return capRunes(flat(s), fetchErrMax)
+}
+
+// RecordLines is the "Rescue records" block `wt worktrees --plain` prints
+// under the groups, one line per record plus its reason, empty when the
+// report has no records. Each line carries the id `wt remove --record`
+// takes.
+func RecordLines(r Report) []string {
+	if len(r.Records) == 0 {
+		return nil
+	}
+	out := []string{"Rescue records (remove one with: wt remove --record <id>)"}
+	for _, rr := range r.Records {
+		age := "age unknown"
+		if rr.AgeDays >= 0 {
+			age = fmt.Sprintf("%dd old", rr.AgeDays)
+		}
+		dest := flat(rr.DestBranch)
+		if !rr.DestExists {
+			dest += " (branch gone)"
+		}
+		out = append(out, fmt.Sprintf("  %s  %-6s  %s  from %s  to %s  [%s]", rr.ID, rr.Status, age,
+			flat(rr.SourcePath), dest, flat(rr.Reason)))
+	}
+	return out
 }

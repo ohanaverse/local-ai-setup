@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
@@ -33,14 +34,14 @@ func TestHandOffResultSeparatesWhatChangedNothing(t *testing.T) {
 		return nil
 	}
 	declined := exit(3, "approval missing: declined; nothing was changed")
-	if n := asNote(restoreRootHandOffResult(declined, nil)); n == nil || n.Err != declined || n.Text != "restore root: approval missing: declined; nothing was changed" {
+	if n := asNote(restoreRootHandOffResult(declined, nil, nil, false)); n == nil || n.Err != declined || n.Text != "restore root: approval missing: declined; nothing was changed" {
 		t.Errorf("a declined R: %+v", n)
 	}
 	if n := asNote(rescueHandOffResult(exit(3, "approval missing: declined; nothing was created"), nil)); n == nil || n.Text != "rescue: approval missing: declined; nothing was created" {
 		t.Errorf("a declined r: %+v", n)
 	}
 	refusedRR := &rootmove.Outcome{Status: rescue.StatusRefused, Code: "default_in_worktree", Reason: "main is checked out in /x"}
-	if n := asNote(restoreRootHandOffResult(exit(2, "the branch was not moved"), refusedRR)); n == nil || n.Text != "restore root refused: main is checked out in /x" || n.Err == nil {
+	if n := asNote(restoreRootHandOffResult(exit(2, "the branch was not moved"), refusedRR, nil, false)); n == nil || n.Text != "restore root refused: main is checked out in /x" || n.Err == nil {
 		t.Errorf("a refused R: %+v", n)
 	}
 	refusedR := &rescue.Outcome{Status: rescue.StatusRefused, Code: "nested", Reason: "it has a nested repository; nothing was created"}
@@ -49,10 +50,10 @@ func TestHandOffResultSeparatesWhatChangedNothing(t *testing.T) {
 	}
 	// Failures and real errors end the session.
 	for name, err := range map[string]error{
-		"R failed":     restoreRootHandOffResult(exit(2, "the branch was not moved"), &rootmove.Outcome{Status: rescue.StatusFailed, Code: "carry", Reason: "x"}),
-		"R created":    restoreRootHandOffResult(exit(2, "x"), &rootmove.Outcome{Status: rescue.StatusRefused, Created: true}),
-		"R no outcome": restoreRootHandOffResult(exit(2, "x"), nil),
-		"R exit 1":     restoreRootHandOffResult(exit(1, "could not start"), nil),
+		"R failed":     restoreRootHandOffResult(exit(2, "the branch was not moved"), &rootmove.Outcome{Status: rescue.StatusFailed, Code: "carry", Reason: "x"}, nil, false),
+		"R created":    restoreRootHandOffResult(exit(2, "x"), &rootmove.Outcome{Status: rescue.StatusRefused, Created: true}, nil, false),
+		"R no outcome": restoreRootHandOffResult(exit(2, "x"), nil, nil, false),
+		"R exit 1":     restoreRootHandOffResult(exit(1, "could not start"), nil, nil, false),
 		"r failed":     rescueHandOffResult(exit(2, "x"), &rescue.Outcome{Status: rescue.StatusFailed}),
 		"r kept":       rescueHandOffResult(exit(2, "x"), &rescue.Outcome{Status: rescue.StatusRefused, BranchKept: true}),
 		"r exit 1":     rescueHandOffResult(exit(1, "x"), nil),
@@ -62,8 +63,21 @@ func TestHandOffResultSeparatesWhatChangedNothing(t *testing.T) {
 			t.Errorf("%s: %v, want a plain error that ends the session", name, err)
 		}
 	}
+	// #580: a signal during the move rides on the note, in the printed
+	// line's own words (moved and refused-after-the-hold alike); no signal
+	// leaves the text alone.
+	moved := &rootmove.Outcome{Status: rescue.StatusMoved, Plan: rootmove.Plan{Default: "main"}}
+	if n := asNote(restoreRootHandOffResult(nil, moved, syscall.SIGINT, false)); n == nil || !strings.HasSuffix(n.Text, "; interrupted (signal interrupt): the move was not stopped") {
+		t.Errorf("a moved R with a signal: %+v", n)
+	}
+	if n := asNote(restoreRootHandOffResult(nil, moved, nil, false)); n == nil || strings.Contains(n.Text, "interrupted") {
+		t.Errorf("a moved R without a signal: %+v", n)
+	}
+	if n := asNote(restoreRootHandOffResult(exit(2, "x"), refusedRR, syscall.SIGINT, false)); n == nil || n.Err == nil || !strings.Contains(n.Text, "interrupted (signal interrupt)") {
+		t.Errorf("a refused R with a signal: %+v", n)
+	}
 	// A root already on the default is a finished hand-off with a status.
-	if n := asNote(restoreRootHandOffResult(nil, &rootmove.Outcome{Status: rescue.StatusRefused, Code: rootmove.CodeAlreadyDefault, Reason: "the root is already on main"})); n == nil || n.Err != nil || !strings.Contains(n.Text, "already on main") {
+	if n := asNote(restoreRootHandOffResult(nil, &rootmove.Outcome{Status: rescue.StatusRefused, Code: rootmove.CodeAlreadyDefault, Reason: "the root is already on main"}, nil, false)); n == nil || n.Err != nil || !strings.Contains(n.Text, "already on main") {
 		t.Errorf("already on the default: %+v", n)
 	}
 }
@@ -72,13 +86,13 @@ func TestHandOffResultSeparatesWhatChangedNothing(t *testing.T) {
 // "n" at its prompt: the root is untouched and the closure returns a note
 // carrying the command's exit-3 error.
 func TestCleanupRestoreRootFuncDeclinedIsANote(t *testing.T) {
-	stubCleanupGH(t)
+	h := ghHooks(testHooks(), noPRs, noPRs)
 	tpl := gittest.Seed(t, gittest.SeedOpts{ExcludeWorktrees: true})
 	_, repo := tpl.Clone(t)
 	gittest.Lineage(t, repo)
 	cgit(t, repo, "switch", "-q", "-c", "topic")
 	cleanupCommit(t, repo, "one.txt", "one")
-	in := cleanupListInputs(repo, false, nil, "wt-cleanup")
+	in := cleanupListInputs(h, repo, false, nil, "wt-cleanup")
 	snap, err := cleanupGather(cleanup.Git{Dir: repo}, in)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +121,7 @@ func TestCleanupRestoreRootFuncDeclinedIsANote(t *testing.T) {
 // its result), or the root's drift survives while the list claims the action
 // ran.
 func TestCleanupRestoreRootFuncMovesTheRoot(t *testing.T) {
-	stubCleanupGH(t)
+	h := ghHooks(testHooks(), noPRs, noPRs)
 	// The fixture is a gittest template-seeded clone pair whose lineage
 	// ignores .worktrees/ (the state restore-root requires): every mutation
 	// stays inside this test's own temp clone, never near a real repository.
@@ -128,7 +142,7 @@ func TestCleanupRestoreRootFuncMovesTheRoot(t *testing.T) {
 	// path gathers its own snapshot) and the RemoveFuncs the list would get.
 	// No app: the app is read only by Refresh and Refetch, which this test
 	// never calls.
-	in := cleanupListInputs(repo, false, nil, "wt-cleanup")
+	in := cleanupListInputs(h, repo, false, nil, "wt-cleanup")
 	snap, err := cleanupGather(cleanup.Git{Dir: repo}, in)
 	if err != nil {
 		t.Fatal(err)
@@ -183,5 +197,58 @@ func TestCleanupRestoreRootFuncMovesTheRoot(t *testing.T) {
 func TestCleanupRemoveFuncsRestoreRootWiredEvenWhenRegistryOff(t *testing.T) {
 	if off := cleanupRemoveFuncs(nil, cleanup.Snapshot{}, cleanup.GatherInputs{}, 0, errRegistryUnavailable); off.RestoreRoot == nil {
 		t.Error("removal off took the restore-root hand-off away")
+	}
+}
+
+// TestRestoreRootHandOffFetchedFlag pins #579's note half: every note the
+// hand-off returns carries Fetched as given (decline, refusal, moved), and a
+// plain error stays a plain error.
+func TestRestoreRootHandOffFetchedFlag(t *testing.T) {
+	declined := exitcode.New(3, errors.New("approval missing: declined; nothing was changed"), false)
+	refused := &rootmove.Outcome{Status: rescue.StatusRefused, Code: rootmove.CodeAlreadyDefault, Reason: "the root is already on main"}
+	moved := &rootmove.Outcome{Status: rescue.StatusMoved}
+	for name, err := range map[string]error{
+		"declined": restoreRootHandOffResult(declined, nil, nil, true),
+		"refused":  restoreRootHandOffResult(nil, refused, nil, true),
+		"moved":    restoreRootHandOffResult(nil, moved, nil, true),
+	} {
+		var n *tui.HandOffNote
+		if !errors.As(err, &n) || !n.Fetched {
+			t.Errorf("%s: note = %v, want a note with Fetched", name, err)
+		}
+	}
+	var n *tui.HandOffNote
+	if err := restoreRootHandOffResult(nil, moved, nil, false); !errors.As(err, &n) || n.Fetched {
+		t.Errorf("an unfetched run's note must not say Fetched: %v", err)
+	}
+	if err := restoreRootHandOffResult(exitcode.New(1, errors.New("boom"), false), nil, nil, true); errors.As(err, &n) {
+		t.Errorf("a failure must stay a plain error: %v", err)
+	}
+}
+
+// TestRestoreRootRunReportFetchedHook: the hook fires once with the gather's
+// fetch on a real run, and never under --no-fetch or --dry-run.
+func TestRestoreRootRunReportFetchedHook(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags restoreRootFlags
+		want  int
+	}{
+		{"real run", restoreRootFlags{}, 1},
+		{"no-fetch", restoreRootFlags{noFetch: true}, 0},
+		{"dry-run", restoreRootFlags{dryRun: true}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := restoreRootApp(t)
+			dir := cleanupRepo(t)
+			rootOnTopic(t, dir)
+			calls := 0
+			var out, errOut bytes.Buffer
+			_ = restoreRootRunReport(a.hooks, strings.NewReader(""), &out, &errOut, tc.flags, dir, nil, nil,
+				func(cleanup.FetchResult) { calls++ })
+			if calls != tc.want {
+				t.Errorf("hook calls = %d, want %d", calls, tc.want)
+			}
+		})
 	}
 }

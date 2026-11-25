@@ -34,12 +34,12 @@ func dirSnapshot(t *testing.T, dir string) map[string]string {
 // as "10" < "100" < "9", so without Holders' pid sort root's slice reads
 // [100, 9] and the comparison below fails.
 func TestHoldersGroupsLiveClaimsByPath(t *testing.T) {
-	fakeProcs(t, map[int]int64{9: 1000, 10: 1000, 100: 1000})
+	procs := fakeProcs(t, map[int]int64{9: 1000, 10: 1000, 100: 1000})
 	dir := t.TempDir()
 	claimFile(t, dir, 9, body(9, 1000, root))
 	claimFile(t, dir, 100, body(100, 1000, root))
 	claimFile(t, dir, 10, body(10, 1000, "/elsewhere"))
-	got, err := Holders(dir, self())
+	got, err := procs.Holders(dir, self())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,12 +65,12 @@ func TestHoldersGroupsLiveClaimsByPath(t *testing.T) {
 // first two (fakeProcs walks this process's parents to pid 1, so a claim named
 // pid 1 is an ancestor's and pid 100 a stranger's).
 func TestHoldersExcludesSelfAndAncestors(t *testing.T) {
-	fakeProcs(t, map[int]int64{1: 1000, 100: 1000, 900: 5000})
+	procs := fakeProcs(t, map[int]int64{1: 1000, 100: 1000, 900: 5000})
 	dir := t.TempDir()
 	claimFile(t, dir, 900, body(900, 5000, root)) // self's own claim
 	claimFile(t, dir, 1, body(1, 1000, root))     // an ancestor's claim
 	claimFile(t, dir, 100, body(100, 1000, root)) // a real other session
-	got, err := Holders(dir, self())
+	got, err := procs.Holders(dir, self())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,10 +97,10 @@ func TestHoldersReusedPidIsNotAHolder(t *testing.T) {
 		{994, false},
 		{1100, false},
 	} {
-		fakeProcs(t, map[int]int64{100: tc.real})
+		procs := fakeProcs(t, map[int]int64{100: tc.real})
 		dir := t.TempDir()
 		claimFile(t, dir, 100, body(100, 1000, root))
-		got, err := Holders(dir, self())
+		got, err := procs.Holders(dir, self())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,7 +117,7 @@ func TestHoldersReusedPidIsNotAHolder(t *testing.T) {
 // read while other sessions run, so a read that tidied up could delete a claim
 // a concurrent Hold just wrote.
 func TestHoldersIsReadOnly(t *testing.T) {
-	fakeProcs(t, map[int]int64{100: 1000, 102: 1100})
+	procs := fakeProcs(t, map[int]int64{100: 1000, 102: 1100})
 	dir := t.TempDir()
 	dead := claimFile(t, dir, 101, body(101, 1000, root))
 	reused := claimFile(t, dir, 102, body(102, 1000, root))
@@ -125,7 +125,7 @@ func TestHoldersIsReadOnly(t *testing.T) {
 	claimFile(t, dir, 100, body(100, 1000, root))
 	claimsDir := filepath.Join(dir, "wt-sessions")
 	before := dirSnapshot(t, claimsDir)
-	got, err := Holders(dir, self())
+	got, err := procs.Holders(dir, self())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,9 +146,9 @@ func TestHoldersIsReadOnly(t *testing.T) {
 // wt-sessions directory) has no holders and no error — the common case — and
 // the read does not create the directory: Holders never writes anything.
 func TestHoldersNoDirIsEmptyNil(t *testing.T) {
-	fakeProcs(t, nil)
+	procs := fakeProcs(t, nil)
 	dir := t.TempDir()
-	got, err := Holders(dir, self())
+	got, err := procs.Holders(dir, self())
 	if err != nil || len(got) != 0 {
 		t.Fatalf("Holders = %v, %v; want empty, nil", got, err)
 	}
@@ -162,14 +162,14 @@ func TestHoldersNoDirIsEmptyNil(t *testing.T) {
 // file must not hide the real holders nor break the read. (Hold prunes such
 // files; this reader only ignores them.)
 func TestHoldersMalformedIgnored(t *testing.T) {
-	fakeProcs(t, map[int]int64{100: 1000, 101: 1000, 102: 1000, 103: 1000, 104: 1000})
+	procs := fakeProcs(t, map[int]int64{100: 1000, 101: 1000, 102: 1000, 103: 1000, 104: 1000})
 	dir := t.TempDir()
 	claimFile(t, dir, 101, "not a claim\n")
 	claimFile(t, dir, 102, "started=1000\npath=/repo\n")
 	claimFile(t, dir, 103, "pid=103\npath=/repo\n")
 	claimFile(t, dir, 104, "pid=104\nstarted=1000\n")
 	claimFile(t, dir, 100, body(100, 1000, root)) // the real holder
-	got, err := Holders(dir, self())
+	got, err := procs.Holders(dir, self())
 	if err != nil {
 		t.Fatal(err)
 	}

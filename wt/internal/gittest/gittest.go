@@ -10,8 +10,8 @@
 // (TestDeletionStringsOnlyInRemovalPackage, TestHardResetExistsNowhereOutsideRemoval)
 // stay green and a shape git treats as corrupt cannot hide behind a fixture
 // author's guess of git's on-disk format. The one deletion call the kit holds
-// is os.RemoveAll of its own MkdirTemp template directories in
-// CleanupTemplates (the allow-list entry names it); a test's clones live in
+// is os.RemoveAll of its own MkdirTemp template directories, in
+// CleanupTemplates and in a failed build (the allow-list entry counts both); a test's clones live in
 // t.TempDir and die with the test.
 package gittest
 
@@ -40,36 +40,63 @@ type SeedOpts struct {
 type Template struct {
 	// Origin is the absolute path of the template's bare origin.git.
 	Origin string
+
+	// opts is the lineage the template was seeded with; Clone registers it.
+	opts SeedOpts
 }
 
 var (
-	// seeds memoizes one build per SeedOpts behind sync.OnceValues, so the
-	// template is seeded exactly once no matter how many tests ask.
+	// seeds memoizes one finished template per SeedOpts. It is filled under
+	// seedMu only after a build succeeds: a failed build is not memoized (a
+	// sync.OnceValues would replay the first error to every later caller for
+	// the life of the process), so the next Seed call retries it.
 	seedMu sync.Mutex
-	seeds  = map[SeedOpts]func() (*Template, error){}
+	seeds  = map[SeedOpts]*Template{}
 
 	// tplDirs records every template directory made, for CleanupTemplates.
 	tplDirsMu sync.Mutex
 	tplDirs   []string
+
+	// pairs records every Clone pair by its repo path, so Lineage can judge a
+	// repo against the origin and lineage it was made with.
+	pairsMu sync.Mutex
+	pairs   = map[string]pair{}
 )
+
+// pair is what Clone registers for Lineage: the pair's own bare origin and the
+// lineage its template was seeded with.
+type pair struct {
+	origin string
+	opts   SeedOpts
+}
 
 // Seed returns the shared template for opts, seeding it on the first call.
 // The template directory is process-scoped (os.MkdirTemp under the temp root),
 // never a test's t.TempDir, which would delete the shared template when its
-// first caller ends; the directories are cleaned by CleanupTemplates.
+// first caller ends; the directories are cleaned by CleanupTemplates. Only a
+// successful build is kept: a failed one removes its half-made directory, fails
+// this call, and leaves the next call to retry.
 func Seed(t testing.TB, opts SeedOpts) *Template {
 	t.Helper()
+	return seedWith(t, opts, buildTemplate)
+}
+
+// seedWith is Seed with the build step passed in, so a test can make one build
+// fail without any package variable.
+func seedWith(t testing.TB, opts SeedOpts, build func(SeedOpts) (*Template, error)) *Template {
+	t.Helper()
+	// Held across the build so concurrent first callers do not seed twice.
 	seedMu.Lock()
-	build, ok := seeds[opts]
-	if !ok {
-		build = sync.OnceValues(func() (*Template, error) { return buildTemplate(opts) })
-		seeds[opts] = build
+	defer seedMu.Unlock()
+	if tpl, ok := seeds[opts]; ok {
+		return tpl
 	}
-	seedMu.Unlock()
-	tpl, err := build()
+	tpl, err := build(opts)
 	if err != nil {
 		t.Fatalf("gittest: seeding the template: %v", err)
+		return nil
 	}
+	seeds[opts] = tpl
 	return tpl
 }
 
@@ -93,14 +120,22 @@ func CleanupTemplates() {
 // its info/exclude. The seed commit carries its identity on the command line
 // (-c user.name=T -c user.email=t@example.com -c commit.gpgsign=false) so the
 // template needs no config state and the developer's config cannot reach it.
-func buildTemplate(opts SeedOpts) (*Template, error) {
+func buildTemplate(opts SeedOpts) (tpl *Template, err error) {
 	dir, err := os.MkdirTemp("", "gittest-tpl-")
 	if err != nil {
 		return nil, err
 	}
-	tplDirsMu.Lock()
-	tplDirs = append(tplDirs, dir)
-	tplDirsMu.Unlock()
+	// A failed build removes its half-made directory (the kit's own MkdirTemp
+	// directory, the one deletion the allow-list names) and is not recorded.
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(dir)
+			return
+		}
+		tplDirsMu.Lock()
+		tplDirs = append(tplDirs, dir)
+		tplDirsMu.Unlock()
+	}()
 	origin := filepath.Join(dir, "origin.git")
 	if out, err := gitRun(dir, "init", "--bare", "-b", "main", origin); err != nil {
 		return nil, fmt.Errorf("init bare origin: %w\n%s", err, out)
@@ -139,7 +174,40 @@ func buildTemplate(opts SeedOpts) (*Template, error) {
 			return nil, err
 		}
 	}
-	return &Template{Origin: origin}, nil
+	return &Template{Origin: origin, opts: opts}, nil
+}
+
+// Git runs git -C dir args... and returns its trimmed combined output; a
+// non-zero exit fails the test with "git <args>: <err>" and git's output. It
+// is the one runner behind every package's fixture helper (gitIn, cgit, rmGit
+// delegate here). It keeps the process environment as is, with no
+// GIT_OPTIONAL_LOCKS=0: a test that runs `git status` or `git diff` means the
+// locking behavior, and the kit's own read-only reads use gitRun instead.
+//
+// What stays inline in tests instead of using this kit: one-off repositories
+// that are deliberately odd (nested repos, sha256 object format, bare-only,
+// a trunk-default name, no-commit repos), because the kit builds the one
+// ordinary shape and bending it per case would hide the shape under test.
+func Git(t testing.TB, dir string, args ...string) string {
+	t.Helper()
+	b, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, b)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// NewRepo is the base repository every fixture starts from: Seed, Clone and
+// Lineage in one call. It returns the pair's bare origin and its clone (main
+// pushed with upstream origin/main, origin/HEAD set, identity T, one README
+// commit "init"); excludeWorktrees picks the lineage (see SeedOpts). A package
+// keeps its own fixture type and wraps the pair; the repeated bootstrap lives
+// here. See Git for the shapes that stay inline.
+func NewRepo(t testing.TB, excludeWorktrees bool) (origin, repo string) {
+	t.Helper()
+	origin, repo = Seed(t, SeedOpts{ExcludeWorktrees: excludeWorktrees}).Clone(t)
+	Lineage(t, repo)
+	return origin, repo
 }
 
 // Clone makes a per-test pair under t.TempDir: a bare origin cloned from the
@@ -181,31 +249,49 @@ func (tpl *Template) Clone(t testing.TB) (origin, repo string) {
 			t.Fatalf("gittest: carry the lineage's info/exclude into %s: %v", dst, err)
 		}
 	}
+	pairsMu.Lock()
+	pairs[repo] = pair{origin: origin, opts: tpl.opts}
+	pairsMu.Unlock()
 	return origin, repo
 }
 
 // Lineage fails the test naming the poison when repo does not read as a fresh
 // clone of a pristine template. Call it on a clone before the test body: an
 // exact-count assertion trusts a pristine repo, and a poisoned clone (or
-// template) would flip it without any assertion naming the cause. Ref names
-// are compared exactly, never case-folded: on a case-insensitive volume
-// show-ref resolves Feature/x through feature/x and would say yes.
+// template) would flip it without any assertion naming the cause. The repo
+// must be one Clone made (it is judged against its own pair's origin and
+// lineage); any other path fails loud. Ref names are compared exactly, never
+// case-folded: on a case-insensitive volume show-ref resolves Feature/x
+// through feature/x and would say yes.
 func Lineage(t testing.TB, repo string) {
 	t.Helper()
-	if err := lineageErr(repo); err != nil {
+	pairsMu.Lock()
+	p, ok := pairs[repo]
+	pairsMu.Unlock()
+	if !ok {
+		t.Fatalf("gittest: Lineage(%s): not a gittest.Clone pair", repo)
+		return
+	}
+	if err := lineageErr(repo, p.origin, p.opts); err != nil {
 		t.Fatalf("gittest: poisoned lineage in %s: %v", repo, err)
 	}
 }
 
-// lineageErr is Lineage's verdict: nil for a pristine clone, an error naming
-// the poison otherwise (an entry under .worktrees/, a ref under
-// refs/wt/rescued/, a refs/heads/topic ref, info/exclude content outside the
-// template's expected shape, or a HEAD not on main). The reads it makes
-// (for-each-ref, rev-parse, symbolic-ref) are ones git never refreshes the
-// index's stat cache for, so the gate judges a repo it does not change. The
+// pristineRefs is the exact ref set of a fresh pair's repo.
+var pristineRefs = []string{"refs/heads/main", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"}
+
+// lineageErr is Lineage's verdict for the pair (repo, origin, opts): nil for a
+// pristine clone, an error naming the poison otherwise (an entry under
+// .worktrees/, a ref under refs/wt/rescued/, a refs/heads/topic ref, any other
+// ref beyond exactly refs/heads/main, refs/remotes/origin/main and
+// refs/remotes/origin/HEAD, a remote other than origin or an origin URL that is
+// not the pair's own origin.git, a repo or origin info/exclude that is not the
+// lineage's exact shape, or a HEAD not on main). The reads it makes
+// (for-each-ref, rev-parse, symbolic-ref, remote) are ones git never refreshes
+// the index's stat cache for, so the gate judges a repo it does not change. The
 // GIT_OPTIONAL_LOCKS=0 gitRun adds is belt and braces only: it suppresses
 // `git status`'s refresh but NOT `git diff`'s (see gitRun).
-func lineageErr(repo string) error {
+func lineageErr(repo, origin string, opts SeedOpts) error {
 	ents, err := os.ReadDir(filepath.Join(repo, ".worktrees"))
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("reading .worktrees: %w", err)
@@ -221,6 +307,7 @@ func lineageErr(repo string) error {
 	if err != nil {
 		return fmt.Errorf("for-each-ref: %w\n%s", err, out)
 	}
+	have := map[string]bool{}
 	for _, line := range strings.Split(out, "\n") {
 		if line == "" {
 			continue
@@ -236,28 +323,7 @@ func lineageErr(repo string) error {
 		if ref == "refs/heads/topic" {
 			return fmt.Errorf("ref refs/heads/topic survived from another test's branch")
 		}
-	}
-	exclude, err := gitRun(repo, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude")
-	if err != nil {
-		return fmt.Errorf("resolve info/exclude: %w", err)
-	}
-	b, err := os.ReadFile(strings.TrimSpace(exclude))
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("reading info/exclude: %w", err)
-	}
-	// The template's expected content is git's default comment block, plus at
-	// most one .worktrees/ line for the ExcludeWorktrees lineage; anything
-	// else is an append a test left behind (the append-only IgnoredIn hazard).
-	seenWorktrees := false
-	for i, line := range strings.Split(string(b), "\n") {
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if line == ".worktrees/" && !seenWorktrees {
-			seenWorktrees = true
-			continue
-		}
-		return fmt.Errorf("info/exclude line %d is %q; the template's expected content is the default comments plus at most one .worktrees/ line", i+1, line)
+		have[ref] = true
 	}
 	head, err := gitRun(repo, "symbolic-ref", "-q", "HEAD")
 	if err != nil {
@@ -265,6 +331,75 @@ func lineageErr(repo string) error {
 	}
 	if got := strings.TrimSpace(head); got != "refs/heads/main" {
 		return fmt.Errorf("HEAD is %s, not refs/heads/main", got)
+	}
+	// The catch-all after the named checks: exactly the pristine set.
+	want := map[string]bool{}
+	for _, r := range pristineRefs {
+		want[r] = true
+		if !have[r] {
+			return fmt.Errorf("ref %s is missing; a pristine clone holds exactly %s", r, strings.Join(pristineRefs, ", "))
+		}
+	}
+	for r := range have {
+		if !want[r] {
+			return fmt.Errorf("ref %s is not in a pristine clone, which holds exactly %s", r, strings.Join(pristineRefs, ", "))
+		}
+	}
+	remotes, err := gitRun(repo, "remote")
+	if err != nil {
+		return fmt.Errorf("git remote: %w\n%s", err, remotes)
+	}
+	if got := strings.TrimSpace(remotes); got != "origin" {
+		return fmt.Errorf("remotes are %q, want exactly origin", got)
+	}
+	url, err := gitRun(repo, "remote", "get-url", "origin")
+	if err != nil {
+		return fmt.Errorf("remote get-url origin: %w\n%s", err, url)
+	}
+	if got := strings.TrimSpace(url); filepath.Clean(got) != filepath.Clean(origin) {
+		return fmt.Errorf("origin points at %q, not this pair's own %q (another pair's origin would let one test's push leak into another)", got, origin)
+	}
+	for _, dir := range []string{repo, origin} {
+		if err := excludeErr(dir, opts); err != nil {
+			return fmt.Errorf("%s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+// excludeErr checks dir's info/exclude is the lineage's exact shape: git's
+// default comment block, plus exactly one .worktrees/ line for the
+// ExcludeWorktrees lineage and none for the plain one. Anything else is an
+// append a test left behind (the append-only IgnoredIn hazard) or a clone that
+// lost the lineage's line.
+func excludeErr(dir string, opts SeedOpts) error {
+	exclude, err := gitRun(dir, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude")
+	if err != nil {
+		return fmt.Errorf("resolve info/exclude: %w", err)
+	}
+	b, err := os.ReadFile(strings.TrimSpace(exclude))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reading info/exclude: %w", err)
+	}
+	n := 0
+	for i, line := range strings.Split(string(b), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if line == ".worktrees/" {
+			n++
+			if n > 1 {
+				return fmt.Errorf("info/exclude line %d repeats .worktrees/; the lineage carries it at most once", i+1)
+			}
+			continue
+		}
+		return fmt.Errorf("info/exclude line %d is %q; the lineage's expected content is the default comments plus the .worktrees/ line only when ExcludeWorktrees", i+1, line)
+	}
+	if opts.ExcludeWorktrees && n != 1 {
+		return fmt.Errorf("info/exclude lacks the .worktrees/ line the ExcludeWorktrees lineage requires")
+	}
+	if !opts.ExcludeWorktrees && n != 0 {
+		return fmt.Errorf("info/exclude carries a .worktrees/ line the plain lineage must not have")
 	}
 	return nil
 }

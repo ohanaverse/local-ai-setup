@@ -8,6 +8,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
 )
 
 // TestMain keeps git, in this package's tests, to the repositories they make:
@@ -35,6 +36,7 @@ func TestMain(m *testing.M) {
 		return nil, errors.New("test forgot to stub the gh pr list --base seam")
 	})
 	code := m.Run()
+	gittest.CleanupTemplates()
 	_ = os.RemoveAll(home)
 	os.Exit(code)
 }

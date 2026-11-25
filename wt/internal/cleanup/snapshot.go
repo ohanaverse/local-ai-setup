@@ -18,16 +18,23 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
-// RecordFetch runs one explicit fetch — fn, a caller's per-call hook
-// (GatherInputs.FetchRemotes), or worktree.FetchRemotes when fn is nil — at
-// root and records the outcome the way the header's fetch note reads it: ok,
-// or failed with git's line. A failure is a value, never an error: the list
+// RecordFetch runs one explicit fetch at root and records the outcome the way
+// the header's fetch note reads it. With a nil fn it is Fetch (per remote,
+// never prompting, origin first, skipFetchAll honoured: the one fetch
+// mechanism, #586), and the per-remote results come along; At is stamped even
+// when nothing was fetched (no remotes), because the user did ask. A non-nil
+// fn is a caller's per-call hook (GatherInputs.FetchRemotes, for tests): ok,
+// or failed with its error. A failure is a value, never an error: the list
 // still opens and the header says how the fetch went. It is the one home of
 // that wording for the picker's `F`, the manage list's `F` and `wt worktrees
 // --fetch`.
 func RecordFetch(fn func(root string) error, root string) FetchResult {
 	if fn == nil {
-		fn = worktree.FetchRemotes
+		r := Fetch(Git{Dir: root})
+		if r.At.IsZero() {
+			r.At = time.Now()
+		}
+		return r
 	}
 	if err := fn(root); err != nil {
 		return FetchResult{At: time.Now(), Err: err.Error()}
@@ -45,7 +52,7 @@ type GatherInputs struct {
 	Fetched FetchResult
 	// FetchRemotes is this call's fetch hook for a caller that fetches
 	// outside Gather (the picker's rows load): what that load runs in place
-	// of worktree.FetchRemotes when set, so a test can count the fetches and
+	// of cleanup.Fetch when set, so a test can count the fetches and
 	// the hook rides with the call (as PRList does). Gather itself never
 	// calls it: its own Fetch is the per-remote fetch in base.go.
 	FetchRemotes   func(root string) error
@@ -189,7 +196,11 @@ type Snapshot struct {
 	Claims    []sessionclaim.Claim
 	ClaimsErr string
 	// Records are the well-formed rescue records; a failed listing leaves none.
-	Records []RescueRecord
+	// RecordsErr is why the listing failed (one sanitised line, "" when it
+	// worked or has not run: a facts-only snapshot reads no records), shown
+	// as a note so rescued originals listed as unique work are explained.
+	Records    []RescueRecord
+	RecordsErr string
 	// FactsOnly marks a snapshot from GatherFacts whose fill has not run
 	// yet: the worktree facts, refs, base and claims are read, the per-worktree
 	// gates, records, proofs and PR lookups are not. Classify floors such a
@@ -303,7 +314,12 @@ func FillDetails(g Git, s Snapshot, in GatherInputs) (Snapshot, error) {
 	// built at paint time hold it): fill copies, never writes into it.
 	s.Worktrees = slices.Clone(s.Worktrees)
 	s.Proofs = maps.Clone(s.Proofs)
-	s.Records, _ = ListRecords(g) // an error reads as no records
+	// A failed listing reads as no records, and the note says why (#548).
+	recs, rerr := ListRecords(g)
+	s.Records, s.RecordsErr = recs, ""
+	if rerr != nil {
+		s.Records, s.RecordsErr = nil, gitDetail(rerr)
+	}
 	gin := GateInputs{Base: s.BaseTip, ProtectedPaths: in.ProtectedPaths}
 	for i := range s.Worktrees {
 		s.Worktrees[i] = worktreeState(g, s.Worktrees[i].Fact, gin, s.Records)
@@ -879,6 +895,14 @@ func originURL(g Git) string {
 		return ""
 	}
 	return strings.TrimSpace(o.Stdout)
+}
+
+// OwnRepoOf is the owner/repo of dir's origin remote when it is on github.com
+// (the form LookupPRs filters head repositories by), through the package's git
+// runner; "" means not applicable: no origin, a non-GitHub host, or a git that
+// cannot answer. It is read-only.
+func OwnRepoOf(dir string) string {
+	return ownRepoFromURL(originURL(Git{Dir: dir, Timeout: 5 * time.Second}))
 }
 
 var githubURL = regexp.MustCompile(`^(?:https?://(?:[^@/]+@)?github\.com/|ssh://git@github\.com(?::\d+)?/|git@github\.com:)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$`)
