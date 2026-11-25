@@ -9,7 +9,7 @@ help:                   # Show available targets
 	@echo "  format    - Run shfmt on bin/*-wt and scripts/agents-smoke.sh, and gofmt on the Go tree"
 	@echo "  format-check - Check shfmt formatting on bin/*-wt and scripts/agents-smoke.sh"
 	@echo "  go-format-check - Check gofmt formatting of the Go tree"
-	@echo "  single-p      - One-P pass over the goroutine-sensitive packages (wt-ci's single-p job and test-all run this)"
+	@echo "  single-p      - One-P pass over the goroutine-sensitive packages (test-all and bin/go-test-sharded run this)"
 	@echo "  print-single-p-pkgs - Print the one-P package list (bin/go-test-sharded reads it)"
 	@echo "  check     - Run lint + format-check + go-format-check"
 	@echo "  test      - Run smoke tests"
@@ -77,16 +77,17 @@ go-format-check:        # Fail if any Go file is not gofmt-clean
 		exit 1; \
 	fi
 
-# The goroutine-sensitive packages, for the one-P pass wt-ci's single-p job
-# runs. This variable is the list's one home — CI's single-p job, `make
-# single-p`, test-all and bin/go-test-sharded (through print-single-p-pkgs)
-# all read it: add a package here whenever a test in it waits on a goroutine.
-SINGLE_P_PKGS := ./cmd/wt-session ./internal/tui ./internal/removal ./internal/lifecycle ./internal/sessioneditor ./internal/modeleditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./internal/modelsetup ./internal/modelmode ./cmd/wt-model
+# The goroutine-sensitive packages, for the one-P pass. This variable is the
+# list's one home: `make single-p`, test-all and bin/go-test-sharded (through
+# print-single-p-pkgs) all read it. TestEveryGoroutineWaitingPackageIsInTheSingleP
+# in internal/gitenv enforces it: a package whose tests start a goroutine,
+# call time.Sleep or receive from time.After must be here, or the test fails.
+SINGLE_P_PKGS := ./cmd/wt-session ./internal/tui ./internal/removal ./internal/lifecycle ./internal/sessioneditor ./internal/modeleditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./internal/modelsetup ./internal/modelmode ./cmd/wt-model ./internal/agents ./internal/claudelogin ./internal/cli ./internal/modelping ./internal/servestate
 
 # -count=1 is load-bearing: `go test`'s cache does not account for
 # GOMAXPROCS (verified — a single-core run after a parallel one reports
 # "(cached)"), and setup-go restores that cache across jobs and runs, so
-# without it wt-ci's single-p job replays the multi-P run from cache and
+# without it the single-p pass replays the multi-P run from cache and
 # guards nothing.
 single-p:               # Run the goroutine-sensitive packages on one P
 	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 $(SINGLE_P_PKGS)
