@@ -189,7 +189,11 @@ type Snapshot struct {
 	Claims    []sessionclaim.Claim
 	ClaimsErr string
 	// Records are the well-formed rescue records; a failed listing leaves none.
-	Records []RescueRecord
+	// RecordsErr is why the listing failed (one sanitised line, "" when it
+	// worked or has not run: a facts-only snapshot reads no records), shown
+	// as a note so rescued originals listed as unique work are explained.
+	Records    []RescueRecord
+	RecordsErr string
 	// FactsOnly marks a snapshot from GatherFacts whose fill has not run
 	// yet: the worktree facts, refs, base and claims are read, the per-worktree
 	// gates, records, proofs and PR lookups are not. Classify floors such a
@@ -303,7 +307,12 @@ func FillDetails(g Git, s Snapshot, in GatherInputs) (Snapshot, error) {
 	// built at paint time hold it): fill copies, never writes into it.
 	s.Worktrees = slices.Clone(s.Worktrees)
 	s.Proofs = maps.Clone(s.Proofs)
-	s.Records, _ = ListRecords(g) // an error reads as no records
+	// A failed listing reads as no records, and the note says why (#548).
+	recs, rerr := ListRecords(g)
+	s.Records, s.RecordsErr = recs, ""
+	if rerr != nil {
+		s.Records, s.RecordsErr = nil, gitDetail(rerr)
+	}
 	gin := GateInputs{Base: s.BaseTip, ProtectedPaths: in.ProtectedPaths}
 	for i := range s.Worktrees {
 		s.Worktrees[i] = worktreeState(g, s.Worktrees[i].Fact, gin, s.Records)

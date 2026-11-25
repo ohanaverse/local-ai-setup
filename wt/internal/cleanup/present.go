@@ -501,13 +501,16 @@ func HeaderLines(r Report, now time.Time) []string {
 }
 
 // NoteLines are the caveats a reader must see beside the rows: the lowered
-// min-age, then the caller's Notes, one sanitised line each. The text header
+// min-age, unreadable rescue records, then the caller's Notes, one sanitised line each. The text header
 // and the --json `notes` array both carry exactly these.
 func NoteLines(r Report) []string {
 	var lines []string
 	// A zero MinAge is a Report not built by Classify: nothing was lowered.
 	if r.MinAge > 0 && r.MinAge < DefaultMinAge {
 		lines = append(lines, "min-age: lowered to "+shortDuration(r.MinAge)+" (default "+shortDuration(DefaultMinAge)+"): fresh branches may read as merged")
+	}
+	if r.RecordsErr != "" {
+		lines = append(lines, "rescue records could not be read ("+flat(r.RecordsErr)+"); rescued originals are listed as unique work")
 	}
 	for _, n := range r.Notes {
 		lines = append(lines, flat(n))

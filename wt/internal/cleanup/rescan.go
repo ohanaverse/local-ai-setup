@@ -125,7 +125,9 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 			return Row{}, fmt.Errorf("cleanup: worktree %s is now %s (was %s)", flat(w.Path), flat(now), flat(t.Ref))
 		}
 		// Records are listed afresh, never taken from prior; a failed
-		// listing is no records, not an error.
+		// listing is no records, not an error (a Rescan error means refused
+		// in the removal engine). The list and Gather show it as a note
+		// (Snapshot.RecordsErr); Rescan stays silent.
 		recs, _ := ListRecords(g)
 		mini.Worktrees = []WorktreeState{worktreeState(g, w, gin, recs)}
 		if w.Branch != "" {
