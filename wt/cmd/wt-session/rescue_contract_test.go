@@ -138,6 +138,11 @@ func TestRescueEncodersProduceSchemaValidDocuments(t *testing.T) {
 	if !strings.Contains(string(b), `"record"`) {
 		t.Errorf("a moved outcome with a record encodes no record:\n%s", b)
 	}
+	b, err = rescue.EncodeResult(rescue.Outcome{Status: rescue.StatusMoved, Plan: plan, Reason: "r"}, rescue.Meta{Repo: "/r"})
+	check("moved without record", b, err)
+	if strings.Contains(string(b), `"record"`) {
+		t.Errorf("a moved outcome with no record encodes a record key:\n%s", b)
+	}
 	b, err = rescue.EncodeResult(rescue.Outcome{Status: rescue.StatusRefused, Code: rescue.CodePrimary}, rescue.Meta{Repo: "/r"})
 	check("bare refusal", b, err)
 	b, err = rescue.EncodeError(rescue.Meta{Repo: "/r"}, errors.New("boom\nline"))

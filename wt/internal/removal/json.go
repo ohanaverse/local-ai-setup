@@ -129,7 +129,7 @@ func itemJSON(i int, o Outcome, problems *[]string) ItemJSON {
 		Branch:   enumValue(i, "branch outcome", o.Branch, jsonBranches, problems),
 		// Reason and Warnings are set through SetReason/AddWarning, but an
 		// Outcome is a plain struct: sanitise again, never trust the input.
-		Reason:   cleanup.OneLine(o.Reason),
+		Reason:   o.ShownReason(),
 		Warnings: sanitised(o.Warnings),
 		Losses:   sanitised(o.LossLines),
 	}
