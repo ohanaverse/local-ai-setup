@@ -470,3 +470,61 @@ func TestAliasSetDryRunAgreesWithTheRealRunForASubscriptionTarget(t *testing.T) 
 		t.Errorf("the real run wrote alias rows %v, want the one for openrouter/big the dry run named", rows)
 	}
 }
+
+// TestAliasSetShrinkIsRecheckedInsideTheWrite pins #689: the shrink the user
+// approved is the (old, new) pair read before the lock. When another program
+// changes a window between the approval and the write so the pair differs,
+// the write refuses (naming both windows) and changes nothing; the same pair
+// still goes through, and --accept-smaller-window accepts any shrink.
+func TestAliasSetShrinkIsRecheckedInsideTheWrite(t *testing.T) {
+	h, _, path := aliasEnv(t, aliasRegistry)
+	if _, _, err := execAlias(t, h, "alias", "set", "alias/x", "--target", "openrouter/big"); err != nil {
+		t.Fatal(err)
+	}
+	stubSessions(h, nil)
+	shrinkSmall := func() {
+		b := mustRead(t, path)
+		if err := os.WriteFile(path, []byte(strings.Replace(b, "context_window = 131072", "context_window = 50000", 1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Approved: 262144 -> 131072. During the prompt small shrinks to 50000.
+	h.confirmRemove = func(string) (bool, error) { shrinkSmall(); return true, nil }
+	_, _, err := execAlias(t, h, "alias", "set", "alias/x", "--target", "openrouter/small")
+	if err == nil || !strings.Contains(err.Error(), "from 262144 to 50000") || !strings.Contains(err.Error(), "you approved 262144 to 131072") ||
+		!strings.Contains(err.Error(), "the window changed since the check; nothing was changed, rerun") {
+		t.Fatalf("err = %v, want the re-check refusal naming both windows", err)
+	}
+	if got := mustRead(t, path); !strings.Contains(got, `{ model = "openrouter/big" }`) || strings.Contains(got, `{ model = "openrouter/small" }`) {
+		t.Errorf("the alias changed after a refused re-check:\n%s", got)
+	}
+	// The flag accepts any shrink, the changed window included.
+	if out, _, err := execAlias(t, h, "alias", "set", "alias/x", "--target", "openrouter/small", "--accept-smaller-window"); err != nil || !strings.HasPrefix(out, "set alias: alias/x\n") {
+		t.Fatalf("with the flag: %v %q", err, out)
+	}
+}
+
+// TestAliasShrinkGuardRefusesWhenNothingWasApproved pins the other half: a
+// set that did not shrink at the check but shrinks under the lock is refused.
+func TestAliasShrinkGuardRefusesWhenNothingWasApproved(t *testing.T) {
+	h, _, path := aliasEnv(t, aliasRegistry)
+	if _, _, err := execAlias(t, h, "alias", "set", "alias/x", "--target", "openrouter/small"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := modeladmin.AliasRequest{ID: "alias/x", Targets: []config.AliasTarget{{Model: "openrouter/big", Order: 1}}}
+	// Between the check (131072 -> 262144, no shrink) and the write, big loses
+	// its window.
+	req.Guard = aliasShrinkGuard(h.tiersIndex(), req, false, false, 0, 0)
+	b := strings.Replace(mustRead(t, path), "context_window = 262144", "", 1)
+	if err := os.WriteFile(path, []byte(b), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = cfg
+	if _, err := modeladmin.SetAlias(req); err == nil || !strings.Contains(err.Error(), "from 131072 to - tokens (nothing was approved)") {
+		t.Fatalf("err = %v, want a refusal that nothing was approved", err)
+	}
+}

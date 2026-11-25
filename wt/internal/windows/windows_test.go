@@ -127,3 +127,18 @@ func TestAliasWindowIsTheMinimum(t *testing.T) {
 		t.Errorf("Alias = (%d, %q), want (128000, openrouter/t) from the tiers file", got, lim)
 	}
 }
+
+func TestShort(t *testing.T) {
+	for n, want := range map[int]string{-1: "-", 0: "-", 512: "512", 999: "999", 1000: "1k", 8192: "8k", 131072: "131k", 200000: "200k",
+		262144: "262k", 999499: "999k", 999500: "1M", 1000000: "1M", 1048576: "1M", 1500000: "1.5M", 2097152: "2.1M"} {
+		if got := Short(n); got != want {
+			t.Errorf("Short(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestMin(t *testing.T) {
+	if Min() != 0 || Min(5, 0) != 0 || Min(0, 5) != 0 || Min(7, 3, 9) != 3 {
+		t.Error("Min must be 0 for none or any unknown, else the smallest")
+	}
+}

@@ -11,7 +11,7 @@ single-model launch that matches them. A **slot profile** is a different
 kind: a named entry you pick in the model picker, which assigns a registry
 model to each of Claude Code's model slots. Slot profiles have their own
 file and page: [slot-profiles.md](slot-profiles.md). `wt profile list` and
-`wt profile show` report both kinds; `wt profile on|off|status` and
+`wt profile show` report both kinds (a slot profile's context window, the `context` key included, is in [slot-profiles.md](slot-profiles.md)); `wt profile on|off|status` and
 everything else on this page are about automatic profiles only.
 
 **Nothing is enabled out of the box.** `~/.config/agent-wt/profiles.toml`

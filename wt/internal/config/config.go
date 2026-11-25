@@ -481,6 +481,11 @@ type Model struct {
 	// window, an alias's minimum over its targets); 0 when unknown.
 	// Session-side only, never persisted.
 	HostContext int `toml:"-"`
+	// WindowLimiter is, for an alias row whose HostContext is 0, the id of the
+	// first target with no known window (the one `wt-model model edit
+	// --context-window` should fix); "" otherwise. Session-side only, never
+	// persisted.
+	WindowLimiter string `toml:"-"`
 	// GatewayID is the id an agent must send to the gateway; empty means ID.
 	// Session-side only, never persisted.
 	GatewayID string `toml:"-"`

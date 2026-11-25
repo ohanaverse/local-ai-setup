@@ -620,3 +620,53 @@ func TestRepointWholeIdOnlyWhenRefusing(t *testing.T) {
 		t.Errorf("dotted keys naming a longer id: %v", err)
 	}
 }
+
+// TestContextKey pins #689: Add writes `context` after default, Set inserts,
+// replaces (keeping a trailing comment) and removes it (0), touching no other
+// line, and every result parses back with the value.
+func TestContextKey(t *testing.T) {
+	added, err := Add(nil, profiles.SlotProfile{Name: "a", Agent: "claude", Default: "sonnet", Context: 131072,
+		Slots: map[string]string{"sonnet": "x/y"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(added), "default = \"sonnet\"\ncontext = 131072\n") {
+		t.Errorf("Add output:\n%s", added)
+	}
+	if s, _ := profiles.ParseSlots(added); len(s.Profiles) != 1 || s.Profiles[0].Context != 131072 || len(s.Unknown) != 0 {
+		t.Fatalf("round-trip: %+v", s)
+	}
+	n := 64000
+	set, err := Set(added, "a", Patch{Context: &n})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBytes(t, set, replaceOnce(t, string(added), "context = 131072", "context = 64000"))
+
+	withComment := strings.Replace(string(added), "context = 131072", "context = 131072  # why", 1)
+	set, err = Set([]byte(withComment), "a", Patch{Context: &n})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBytes(t, set, replaceOnce(t, withComment, "131072  # why", "64000  # why"))
+
+	zero := 0
+	cleared, err := Set(added, "a", Patch{Context: &zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBytes(t, cleared, replaceOnce(t, string(added), "context = 131072\n", ""))
+
+	// Insert into an entry that has none, after its own last key.
+	ins, err := Set(cleared, "a", Patch{Context: &n})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := profiles.ParseSlots(ins); s.Profiles[0].Context != 64000 || len(s.Unknown) != 0 {
+		t.Errorf("insert:\n%s", ins)
+	}
+	neg := -1
+	if _, err := Set(added, "a", Patch{Context: &neg}); err == nil {
+		t.Error("a negative context was accepted")
+	}
+}

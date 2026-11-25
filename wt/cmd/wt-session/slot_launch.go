@@ -326,6 +326,9 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 			fmt.Fprintln(osStderr, n)
 		}
 	}
+	if note := agents.SlotWindowNote(p.Launch()); note != "" && !agents.EnvDeclaresWindow(os.Environ()) {
+		fmt.Fprintf(osStderr, "wt: note: %s\n", note)
+	}
 	cleanup, err := applySlotProfile(cmd, agent, row, info.HeaderMode)
 	if err != nil {
 		end()

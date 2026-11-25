@@ -7,6 +7,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/windows"
 )
 
 // ProfileRow is what a slot-profile row carries in place of a registry model.
@@ -61,6 +62,19 @@ func (p *ProfileRow) Cloud() []config.Model {
 	return out
 }
 
+// Window is the smallest context window over the profile's slot models, in
+// tokens, 0 when any slot's is unknown (the claudeSlotWindow rule: a minimum
+// over the known ones alone would over-state it). It is what the picker's CTX
+// column and `wt profile show` report for the models; the profile's own
+// `context` key is a separate, declared value (SlotLaunch.Context).
+func (p *ProfileRow) Window() int {
+	ws := make([]int, 0, len(p.Models))
+	for _, m := range p.Models {
+		ws = append(ws, m.HostContext)
+	}
+	return windows.Min(ws...)
+}
+
 // Launch is the profile as an agent's slot build takes it. Models is a copy,
 // so the build cannot change the row.
 func (p *ProfileRow) Launch() profiles.SlotLaunch {
@@ -70,6 +84,7 @@ func (p *ProfileRow) Launch() profiles.SlotLaunch {
 		Default:       p.Check.Profile.Default,
 		Env:           p.Check.Profile.Env,
 		ConfigContent: p.Check.Profile.ConfigContent,
+		Context:       p.Check.Profile.Context,
 	}
 }
 

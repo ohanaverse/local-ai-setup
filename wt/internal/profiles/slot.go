@@ -30,6 +30,9 @@ type SlotProfile struct {
 	Args          []string          `toml:"args,omitempty"`
 	ConfigContent map[string]any    `toml:"config_content,omitempty"`
 	Wrapper       *WrapperSpec      `toml:"wrapper,omitempty"`
+	// Context is the context window, in tokens, the session declares. 0 or
+	// absent means derived from the slot models (#689); only claude reads it.
+	Context int `toml:"context,omitempty"`
 }
 
 // ID is the profile's row id, SlotIDPrefix + Name.
@@ -149,6 +152,7 @@ type SlotLaunch struct {
 	Default       string                  // the default slot's name
 	Env           map[string]string       // the profile's env
 	ConfigContent map[string]any          // the profile's config_content
+	Context       int                     // the profile's context key; 0 means derived
 }
 
 // SlotBuildInput is what a driver's slot build receives.

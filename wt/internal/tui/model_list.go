@@ -57,6 +57,9 @@ type modelItem struct {
 	// for the highlighted row (costNote); "" for a row with no per-token
 	// price.
 	cost string
+	// window is the row's context window as the mode line names it ("ctx
+	// 262k", windowNote); "" when unknown or for a profile row.
+	window string
 	// tier is the row's rating in the tiers file as the mode line names it
 	// for the highlighted row, longest form first (tiers.Entry.Notes); nil
 	// for a row with no rating.

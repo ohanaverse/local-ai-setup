@@ -86,6 +86,7 @@ slot model raises no warning.
 | `args` | Optional string list |
 | `config_content` | Optional free-form table, merged into the agent's settings. `config_content.modelOverrides` is how a profile supplies Claude Code's `modelOverrides` setting. It must be a table whose every target is a string, or the profile is blocked; wt does not validate its keys, and a target that is not one of the profile's slot models is a warning ([below](#a-modeloverrides-target-wt-does-not-route)). Checked on 2026-10-13: `modelOverrides` is honoured behind the proxy; an id it names is sent as the id it maps to. |
 | `wrapper` | Optional `{binary, args_template}` |
+| `context` | Optional whole number of tokens, 0 or absent meaning derived (#689). The window the session declares to Claude Code (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`), replacing the one wt derives from the slot models ([below](#what-claude-code-is-given)). A negative value blocks the profile. The key is accepted for any slot agent, but only claude declares it. Set it with `wt profile slots add --context N` or `set --context N` (`--context 0` goes back to derived) |
 
 **Unfilled slots use the `default` slot's model.** The example fills three
 of four slots; `fable` gets the `sonnet` model. No slot is ever left sending
@@ -280,6 +281,7 @@ some columns omitted.
 | STATUS | `ok`. A start or blocked profile is shown as a start or blocked model row is, by its action and note |
 | RUNNING | The local model's state (`run`, `load` or `-`), on a blocked row too, whichever rule blocked it; `-` for an all-cloud profile, for a profile that names two local models, for one whose local model is not in the registry or has no row of its own, and for the one row of profiles sharing a name |
 | COST | The `default` slot model's price in force (the `sonnet` slot's for `opusplan`), with `~` when it is time-priced |
+| CTX | The smallest context window over the profile's slot models, short (`131k`, `1M`); `-` when any slot's is unknown (#689). The profile's own `context` key is not shown here: `wt profile show` says what the session declares |
 | 1D / 7D / 30D | Launches of this profile |
 | In-use prefix | Blank |
 
@@ -398,7 +400,17 @@ either has none. The variable is one value per session and `/model` can move
 the session onto any slot, so the value is then lowered to the smallest window
 of any other slot that has one; a slot with none is ignored, not a veto. A
 value in the profile's `env` or
-`config_content.env`, or exported in your shell, is left as it is. See
+`config_content.env`, or exported in your shell, is left as it is. A profile's own
+`context` key (#689) is the declared value instead of the derived one, whatever
+its slot models' windows are (it still yields to `env`, `config_content.env` and
+your shell). `wt profile show` prints a `context:` line with the smallest slot
+window, the value declared and where it comes from (the `context` key, the
+slots, or unknown); `wt profile list` appends `, context <N>` to a profile that
+sets the key (it asks no model server, so a derived window is only in `show`).
+A launch of a profile that declares nothing (no `context` key, and the default
+slot's model has no window) prints one `wt: note:` naming the model and
+`wt-model model edit <id> --context-window N`; the note is advice, not a
+warning, and `wt smoke` does not count it. See
 [claude-wt.md](claude-wt.md#context-window-of-a-gateway-model).
 
 Arguments: the yolo flag when `--yolo` is given, `--model <default slot>`

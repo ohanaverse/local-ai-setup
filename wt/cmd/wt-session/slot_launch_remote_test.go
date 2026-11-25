@@ -490,3 +490,38 @@ func TestSlotLaunchRemoteNotesARenamedAlias(t *testing.T) {
 		}
 	}
 }
+
+// TestSlotLaunchRemoteNotesAnUnknownWindow pins #689: a slot profile that
+// declares no window (the default slot's model has none, no `context` key)
+// prints one note naming the model; a profile with a `context` key, or one
+// whose default slot has a window, prints none.
+func TestSlotLaunchRemoteNotesAnUnknownWindow(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "")
+	slots := map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"}
+	r, _ := slotRig(t, slots)
+	if err := r.launch(t, context.Background(), "profile/mix", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if got := r.stderr.String(); strings.Count(got, "wt-model model edit openrouter/a --context-window N") != 1 {
+		t.Errorf("stderr = %q, want one window note for the default slot's model", got)
+	}
+
+	r, _ = slotRig(t, slots)
+	r.a.slotChecks[0].Profile.Context = 100000
+	if err := r.launch(t, context.Background(), "profile/mix", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if got := r.stderr.String(); strings.Contains(got, "context window") {
+		t.Errorf("stderr = %q, want no note when the profile declares context", got)
+	}
+
+	rows := slotWireRows()
+	rows[0].Context = 200000 // the default slot's model; haiku's is unknown and ignored
+	r, _ = slotRigRows(t, rows, slots)
+	if err := r.launch(t, context.Background(), "profile/mix", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if got := r.stderr.String(); strings.Contains(got, "context window") {
+		t.Errorf("stderr = %q, want no note when the default slot has a window", got)
+	}
+}

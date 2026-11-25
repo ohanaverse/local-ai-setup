@@ -328,7 +328,9 @@ func TestLaunchRemoteHeartbeatFailureDoesNotKillTheAgent(t *testing.T) {
 // the server would not register is advisory: one `wt: note:` line, the agent
 // still launches, and the launch's outcome is unchanged.
 func TestLaunchRemoteRegisterFailureIsANoteAndLaunches(t *testing.T) {
-	r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+	row := wireRow("openrouter/a", modelapi.ActionLaunch, 1)
+	row.Context = 131072 // a known window: no window note beside the one under test
+	r := newRemoteRig(t, row)
 	r.f.RegisterStatus = 500
 	if err := r.launch(t, context.Background(), "", "", false); err != nil {
 		t.Fatalf("launch: %v", err)
@@ -822,5 +824,38 @@ func TestSubscriptionRefusesNodeTLSRejectUnauthorized(t *testing.T) {
 		if err := r.launch(t, context.Background(), "claude-haiku-5-5", "", false); err != nil {
 			t.Errorf("%q: launch: %v", v, err)
 		}
+	}
+}
+
+// TestLaunchRemoteNotesAnUnknownWindow pins #689: a gateway model whose
+// window nobody knows prints one `wt: note:` naming the fix, a known window
+// prints none, and the note is neither a launch warning nor a refusal.
+func TestLaunchRemoteNotesAnUnknownWindow(t *testing.T) {
+	r := newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+	t.Setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "")
+	if err := r.launch(t, context.Background(), "", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if got := r.stderr.String(); !strings.Contains(got, "wt-model model edit openrouter/a --context-window N") || strings.Count(got, "wt: note:") != 1 {
+		t.Errorf("stderr = %q, want one window note", got)
+	}
+
+	known := wireRow("openrouter/a", modelapi.ActionLaunch, 1)
+	known.Context = 131072
+	r = newRemoteRig(t, known)
+	if err := r.launch(t, context.Background(), "", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if got := r.stderr.String(); strings.Contains(got, "context window") {
+		t.Errorf("stderr = %q, want no window note for a known window", got)
+	}
+
+	r = newRemoteRig(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1))
+	t.Setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "500000")
+	if err := r.launch(t, context.Background(), "", "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if got := r.stderr.String(); strings.Contains(got, "context window") {
+		t.Errorf("stderr = %q, want no note when the user's variable is set", got)
 	}
 }

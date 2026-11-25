@@ -1,8 +1,10 @@
 package agents
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -42,8 +44,12 @@ func claudeWindow(models ...config.Model) (int, bool) {
 // server does not know) is ignored, not a veto: requiring all four would withdraw the
 // declaration from every profile with one local slot and return it to Claude
 // Code's assumed 200K. Such a slot can still run past a smaller declared value;
-// the profile's own env is the escape hatch.
+// the profile's own env is the escape hatch. A profile's explicit `context`
+// (#689) replaces the derivation altogether.
 func claudeSlotWindow(in profiles.SlotBuildInput) (int, bool) {
+	if in.Context > 0 {
+		return in.Context, true // the profile's own `context` key (#689) wins over the derived minimum
+	}
 	window, ok := claudeWindow(claudeActiveModels(in)...)
 	if !ok {
 		return 0, false
@@ -107,4 +113,101 @@ func claudeWindowSetting(env map[string]any, in profiles.SlotBuildInput) (string
 		return "", false
 	}
 	return declaredWindow(func() (int, bool) { return claudeSlotWindow(in) })
+}
+
+// Slot-window sources, as SlotWindow reports them.
+const (
+	SlotWindowFromContext = "profile context key"
+	SlotWindowFromSlots   = "slots"
+	SlotWindowUnknown     = "unknown"
+)
+
+// SlotWindow is the window a slot profile's session declares to its agent,
+// and where it comes from, for `wt profile show` (#689). Only claude declares
+// one: another agent gets (0, ""). It is claudeSlotWindow's answer before the
+// environment overrides (the profile env, config_content.env and the user's
+// own variable still win at launch).
+func SlotWindow(sl profiles.SlotLaunch) (int, string) {
+	if sl.Agent != "claude" {
+		return 0, ""
+	}
+	in := profiles.SlotBuildInput{SlotLaunch: sl}
+	if sl.Context > 0 {
+		return sl.Context, SlotWindowFromContext
+	}
+	if w, ok := claudeSlotWindow(in); ok {
+		return w, SlotWindowFromSlots
+	}
+	return 0, SlotWindowUnknown
+}
+
+// WindowNote is the launch-time note for a gateway model whose context window
+// is unknown (#689): the agent then assumes its own default, which can be
+// larger or smaller than the model's. "" when there is nothing to say: any
+// agent but claude and pi, a native model, or a known window. For an alias it
+// names the target without a window (the alias's own HostContext is 0 exactly
+// then). The note is advice, not a launch warning: it never reaches
+// LaunchCmd.Warn, which `wt smoke` treats as a failure.
+func WindowNote(agent string, models ...config.Model) string {
+	var assumes string
+	switch agent {
+	case "claude":
+		assumes = "claude assumes 200K"
+	case "pi":
+		assumes = fmt.Sprintf("pi assumes %d", piDefaultWindow)
+	default:
+		return ""
+	}
+	for _, m := range models {
+		if m.Native || m.HostContext > 0 {
+			continue
+		}
+		name := m.ID
+		if m.GatewayID != "" {
+			name = m.GatewayID
+		}
+		if m.WindowLimiter != "" {
+			return fmt.Sprintf("%s has no known context window (%s has none): %s; set it with `wt-model model edit %s --context-window N`", name, m.WindowLimiter, assumes, m.WindowLimiter)
+		}
+		return fmt.Sprintf("%s has no known context window: %s; set it with `wt-model model edit %s --context-window N`", name, assumes, m.ID)
+	}
+	return ""
+}
+
+// EnvDeclaresWindow reports whether env ("KEY=VALUE" entries, as an
+// exec.Cmd carries them) already sets Claude Code's context-window variable:
+// the user's own value, or one a profile put there. A launch that does is not
+// told its window is unknown.
+func EnvDeclaresWindow(env []string) bool {
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, claudeContextVar+"="); ok && v != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// SlotWindowNote is WindowNote for a slot-profile launch: "" unless the
+// profile declares no window at all (no `context` key, no window for the
+// default slot, nothing in the profile's env), in which case it names the
+// first model of the default slot (both opus and sonnet for opusplan) that
+// has none. A slot with no window while the default has one is ignored, as
+// the declaration ignores it (claudeSlotWindow).
+func SlotWindowNote(sl profiles.SlotLaunch) string {
+	if sl.Agent != "claude" || sl.Context > 0 {
+		return ""
+	}
+	in := profiles.SlotBuildInput{SlotLaunch: sl}
+	if _, ok := claudeSlotWindow(in); ok {
+		return ""
+	}
+	if _, set := sl.Env[claudeContextVar]; set {
+		return ""
+	}
+	if env, ok := sl.ConfigContent["env"].(map[string]any); ok {
+		if _, set := env[claudeContextVar]; set {
+			return ""
+		}
+	}
+	return WindowNote("claude", claudeActiveModels(in)...)
 }

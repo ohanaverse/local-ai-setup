@@ -78,6 +78,21 @@ Concrete observations from this machine:
 
 wt does not auto-detect `~/.pi/agent/activate-litellm.sh`; the sibling spec [`2026-06-01-pi-wt-litellm-wrapper-design.md`](../superpowers/specs/2026-06-01-pi-wt-litellm-wrapper-design.md) proposes that and is not implemented. To launch pi through a wrapper, declare it as a `wrapper` profile for pi in `profiles.toml` (see [profiles.md](profiles.md)). A profile applies only when `profiles.toml` has `enabled` on and the launched model is a non-native model the profile matches. A `pi/native` launch never gets a profile: it always runs the `pi` found on PATH.
 
+### The window wt writes into models.json (#689)
+
+For every non-native model of the catalog and the launch target, wt keeps an
+entry under the `litellm` provider with a `contextWindow` taken from the
+catalog row's `context` (the registry `context_window`, else a cloud model's
+host window in `tiers.toml`, else for an alias the smallest of its targets).
+A new entry gets that window, or 262144 when the catalog does not know one. An
+existing entry that wt launches (`_launch: true`) is brought to the catalog's
+window when the catalog has one and it differs: the catalog is the source of
+truth, and no other field or the order changes. An entry with an unknown
+catalog window keeps whatever value it has, and a `_launch: false` entry is
+left alone. A launch of a model with no known window prints one `wt: note:`
+(`pi assumes 262144`) naming `wt-model model edit <id> --context-window N`.
+Slot profiles are claude-only, so pi has no `context` key.
+
 ### Reaching an external LiteLLM gateway (pi's own credential command)
 
 For a LiteLLM gateway that is not the `wt-model` server (for instance an enterprise one with a rotating credential), write the provider in `~/.pi/agent/models.json` yourself and let pi run the credential command. wt has no part in it: launch with `wt -A pi` and the `pi/native` entry (no `--model`), or run `pi --model <provider>/<id>` directly.

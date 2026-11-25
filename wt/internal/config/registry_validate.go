@@ -126,9 +126,15 @@ func decodeAliasRow(row *tomlw.Table) Alias {
 	return reg.Aliases[0]
 }
 
+// rowValue is the value of key in row, nil when absent.
+func rowValue(row *tomlw.Table, key string) any {
+	v, _ := row.Get(key)
+	return v
+}
+
 // refConfig reads the document's rows as far as the cross-table rules need
 // them: each provider's id, location and auth type, each model's id,
-// provider and location, and every alias (decodeAliasRow). Native-ness is
+// provider, model_name, context_window and location, and every alias (decodeAliasRow). Native-ness is
 // derived as the loader derives it.
 func (d *RegistryDoc) refConfig() *Config {
 	str := func(t *tomlw.Table, key string) string {
@@ -147,7 +153,18 @@ func (d *RegistryDoc) refConfig() *Config {
 		cfg.Providers = append(cfg.Providers, prov)
 	}
 	for _, m := range d.rows("models") {
-		cfg.Models = append(cfg.Models, Model{ID: rowID(m), ProviderID: str(m, "provider_id"), Location: Location(str(m, "location"))})
+		mod := Model{ID: rowID(m), ProviderID: str(m, "provider_id"), ModelName: str(m, "model_name"), Location: Location(str(m, "location"))}
+		// The window the shrink check of an alias write reads inside the lock
+		// (#689); a value that is not a whole non-negative number is no window.
+		switch w := rowValue(m, "context_window").(type) {
+		case int:
+			mod.ContextWindow = ContextTokens(max(w, 0))
+		case int64:
+			if w > 0 && w <= math.MaxInt32 {
+				mod.ContextWindow = ContextTokens(w)
+			}
+		}
+		cfg.Models = append(cfg.Models, mod)
 	}
 	for _, a := range d.rows("aliases") {
 		cfg.Aliases = append(cfg.Aliases, decodeAliasRow(a))

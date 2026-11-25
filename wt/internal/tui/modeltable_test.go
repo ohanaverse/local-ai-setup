@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -258,14 +259,14 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 		if got := costCellOf(t, tbl, plain); got != " 0.0600  0.0590  6.0000 " {
 			t.Errorf("%s: the one-price model's COST = %q, want it unmarked", c.name, got)
 		}
-		if !strings.Contains(tbl.header, "  COST (~ varies by time)   1D") {
+		if !strings.Contains(tbl.header, "  COST (~ varies by time)   CTX") {
 			t.Errorf("%s: header = %q, want the COST heading to explain the mark", c.name, tbl.header)
 		}
 		// The heading is no wider than the column it heads, and every cell
 		// is padded to that column, so the columns after it still line up
 		// under their own headings.
-		if got := strings.Index(tbl.header, "1D") - strings.Index(tbl.header, "COST"); got != 24+2 {
-			t.Errorf("%s: the 1D heading starts %d columns after COST, want 26 (a 24-column cell and the separator)", c.name, got)
+		if got := strings.Index(tbl.header, "CTX") - strings.Index(tbl.header, "COST"); got != 24+2 {
+			t.Errorf("%s: the CTX heading starts %d columns after COST, want 26 (a 24-column cell and the separator)", c.name, got)
 		}
 		for _, it := range tbl.items {
 			if got := len(it.cells[colCost]); got != 24 {
@@ -320,5 +321,38 @@ func TestRenderTableShowsThePriceInForce(t *testing.T) {
 	night[0] = night[0].pricedAt(ollamaPeak)
 	if got := costCellOf(t, renderTable(night, "", nil, ""), deepseek); got != " 1.3200  0.0440  3.9600~" {
 		t.Errorf("a window past midnight, outside it: COST = %q, want the flat price, marked", got)
+	}
+}
+
+// TestRenderTableShowsTheWindow pins #689: the CTX column shows a model's
+// window compactly ("-" unknown), a profile row shows the smallest over its
+// slot models ("-" when any is unknown), and the mode line names the
+// highlighted model's window.
+func TestRenderTableShowsTheWindow(t *testing.T) {
+	mk := func(id string, w int) tableRow {
+		return tableRow{Row: catalog.Row{Model: config.Model{ID: id, HostContext: w}, Location: config.LocationCloud, Status: catalog.StatusOK}}
+	}
+	prof := func(id string, ws ...int) tableRow {
+		p := &catalog.ProfileRow{Models: map[string]config.Model{}}
+		for i, w := range ws {
+			p.Models[fmt.Sprint("s", i)] = config.Model{ID: fmt.Sprint(id, i), HostContext: w}
+		}
+		return tableRow{Row: catalog.Row{Model: config.Model{ID: id}, Profile: p}}
+	}
+	tbl := renderTable([]tableRow{mk("a/one", 262144), mk("a/two", 1000000), mk("a/three", 0), prof("profile/min", 200000, 131072), prof("profile/unk", 200000, 0)}, "claude", nil, "")
+	want := []string{"262k", "1M", "-", "131k", "-"}
+	for i, it := range tbl.items {
+		if got := strings.TrimSpace(it.cells[colCtx]); got != want[i] {
+			t.Errorf("row %d CTX = %q, want %q", i, got, want[i])
+		}
+	}
+	if !strings.Contains(tbl.header, "CTX") {
+		t.Errorf("header %q lacks CTX", tbl.header)
+	}
+	if got := remoteModeLine(tbl.items[0], 80); !strings.Contains(got, "ctx 262k") {
+		t.Errorf("mode line = %q, want the window", got)
+	}
+	if got := remoteModeLine(tbl.items[2], 80); strings.Contains(got, "ctx") {
+		t.Errorf("mode line = %q, want no window for an unknown one", got)
 	}
 }

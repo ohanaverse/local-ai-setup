@@ -291,6 +291,33 @@ func TestClaudeWindowFromHostContext(t *testing.T) {
 	}
 }
 
+// TestClaudeSlotContextOverridesTheDerivedWindow pins #689: a slot profile's
+// explicit `context` wins over the derived minimum (and works when a slot has
+// no window), yet still yields to the profile env and the user's environment.
+func TestClaudeSlotContextOverridesTheDerivedWindow(t *testing.T) {
+	cloud := config.Model{ID: "ollama/c", ProviderID: "ollama", Location: config.LocationCloud, HostContext: 200000}
+	local := config.Model{ID: "omlx/l", ProviderID: "omlx", Location: config.LocationLocal}
+	models := map[string]config.Model{}
+	for _, s := range claudeSlots {
+		models[s] = cloud
+	}
+	in := profiles.SlotBuildInput{SlotLaunch: profiles.SlotLaunch{Agent: "claude", Models: models, Default: "sonnet", Context: 90000}}
+	if got, ok := claudeWindowSetting(map[string]any{}, in); !ok || got != "90000" {
+		t.Errorf("explicit context = %q,%v want 90000", got, ok)
+	}
+	models["sonnet"] = local // no derived window at all: the override still declares
+	if got, ok := claudeWindowSetting(map[string]any{}, in); !ok || got != "90000" {
+		t.Errorf("explicit context with a window-less default = %q,%v want 90000", got, ok)
+	}
+	if _, ok := claudeWindowSetting(map[string]any{claudeContextVar: "1"}, in); ok {
+		t.Error("the profile env must win over context")
+	}
+	t.Setenv(claudeContextVar, "12345")
+	if _, ok := claudeWindowSetting(map[string]any{}, in); ok {
+		t.Error("the user's environment must win over context")
+	}
+}
+
 // gwAliasModel is an alias row as a launch sees it: its id is the gateway id
 // (alias/x), its provider "alias".
 func gwAliasModel() config.Model {

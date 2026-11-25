@@ -51,10 +51,10 @@ func realisticTable() modelTable {
 // captured from that code, with the TIER column added after MODEL: the header
 // and the three rows' titles.
 const (
-	goldenHeader = "    FAMILY   MODEL                                            TIER  LOC    STATUS  RUNNING  COST                     1D  7D  30D"
-	goldenRow0   = "  > sonnet   openrouter/anthropic/claude-sonnet-4.5-thinking  D52   cloud  ok      -         3.0000  0.3000 15.0000  3   12  104"
-	goldenRow1   = "2   qwen3.8  omlx/Qwen3.8-27B-Instruct-MLX-6bit               -     local  ok      run      -                        1   4   9"
-	goldenRow2   = "    -        ollama/gemma4:9b                                 -     local  new     -        -                        0   0   0"
+	goldenHeader = "    FAMILY   MODEL                                            TIER  LOC    STATUS  RUNNING  COST                     CTX  1D  7D  30D"
+	goldenRow0   = "  > sonnet   openrouter/anthropic/claude-sonnet-4.5-thinking  D52   cloud  ok      -         3.0000  0.3000 15.0000  -    3   12  104"
+	goldenRow1   = "2   qwen3.8  omlx/Qwen3.8-27B-Instruct-MLX-6bit               -     local  ok      run      -                        -    1   4   9"
+	goldenRow2   = "    -        ollama/gemma4:9b                                 -     local  new     -        -                        -    0   0   0"
 )
 
 // tablePicker is the agent flow's model picker over realisticTable in a
@@ -81,7 +81,7 @@ func shownColumns(header string) string {
 
 // TestModelTableDropsWholeColumnsInOrder pins what a model table shows when it
 // is wider than its list: whole columns go, from the right-hand end of the
-// drop order (30D, 7D, 1D, cost, tier, location, family), and MODEL, STATUS
+// drop order (30D, 7D, 1D, CTX, cost, tier, location, family), and MODEL, STATUS
 // and RUNNING always stay. Before this the terminal cut the row wherever its
 // edge fell, so on an 80-column terminal a long model id pushed STATUS and
 // RUNNING — whether Enter launches or starts — off the screen. Each width also
@@ -89,7 +89,7 @@ func shownColumns(header string) string {
 // whole in the header and in every row, and that the header and the rows start
 // each shown column at the same place.
 func TestModelTableDropsWholeColumnsInOrder(t *testing.T) {
-	const all = "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"
+	const all = "FAMILY MODEL TIER LOC STATUS RUNNING COST CTX 1D 7D 30D"
 	for _, tc := range []struct {
 		width int
 		want  string
@@ -228,10 +228,12 @@ func TestModelTableColumnBoundaries(t *testing.T) {
 		// TIER is 4 columns and its separator 2.
 		{97, "FAMILY MODEL TIER LOC STATUS RUNNING"},
 		{119, "FAMILY MODEL TIER LOC STATUS RUNNING COST"},
-		{126, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D"},
-		{130, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D"},
-		{135, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"},
-		{152, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"},
+		// CTX (3 columns and its separator, #689) is given up just before COST.
+		{127, "FAMILY MODEL TIER LOC STATUS RUNNING COST CTX"},
+		{131, "FAMILY MODEL TIER LOC STATUS RUNNING COST CTX 1D"},
+		{135, "FAMILY MODEL TIER LOC STATUS RUNNING COST CTX 1D 7D"},
+		{140, "FAMILY MODEL TIER LOC STATUS RUNNING COST CTX 1D 7D 30D"},
+		{157, "FAMILY MODEL TIER LOC STATUS RUNNING COST CTX 1D 7D 30D"},
 	})
 	// One column short of the first boundary the rows still fit — they need no
 	// title-bar room — and the header is what is cut.

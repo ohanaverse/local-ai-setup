@@ -25,6 +25,15 @@ import (
 type AliasRequest struct {
 	ID      string
 	Targets []config.AliasTarget
+	// Guard, when set, is called inside SetAlias's apply with the document's
+	// rows (RegistryDoc.RefConfig, which carries each model's provider,
+	// model_name and context_window) after the shape checks pass; an error
+	// refuses the write and nothing is changed. `wt-model alias set` supplies
+	// the shrink re-check (#689): the window decision was made before the
+	// lock, so a window another program changed since is caught here. The
+	// apply is pure and may run up to three times (config.UpdateRegistry), so
+	// Guard must be pure too: no prompt, no write.
+	Guard func(cfg *config.Config) error
 }
 
 // alias is r as the reader would read it: the shape judged by the reader's
@@ -109,6 +118,11 @@ func SetAlias(r AliasRequest) (changed bool, err error) {
 	return config.UpdateRegistry(func(d *config.RegistryDoc) error {
 		if err := CheckAlias(d.RefConfig(), r); err != nil {
 			return err
+		}
+		if r.Guard != nil {
+			if err := r.Guard(d.RefConfig()); err != nil {
+				return err
+			}
 		}
 		exists := slices.ContainsFunc(d.Aliases(), func(t *tomlw.Table) bool {
 			id, _ := t.Get("id")

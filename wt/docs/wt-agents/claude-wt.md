@@ -152,6 +152,9 @@ so it declares nothing until the next `modeltiers run`. A model with no
 declarable window gets nothing from wt: give it a registry `context_window`
 (`wt-model model edit <id> --context-window N`), or set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
 yourself, in your shell or in a profile's `env`, to the window you serve.
+A single-model launch of such a gateway model prints one `wt: note:` naming it
+and that command (#689); the note is not a launch warning, and it is left out
+when `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is already in your environment.
 
 The variable holds one value per session. A value already exported in your
 shell is left alone (unlike the slot variables above, wt does not remove it),
@@ -160,7 +163,9 @@ and an applied profile's `env` value wins over wt's. For a
 smallest window among the slots that have one, provided the default slot has
 one (`/model` can move the session onto any slot). A slot with no window of
 its own, a local build for instance, is ignored and can still run past a
-smaller declared value: set the variable in the profile's `env` to override.
+smaller declared value: set the variable in the profile's `env` to override,
+or give the profile a `context` key ([slot-profiles.md](slot-profiles.md)), which
+replaces the derived value (#689).
 
 wt sets nothing else for the slots: no `modelOverrides` (a slot profile
 may set its own under `config_content`, a table checked as in

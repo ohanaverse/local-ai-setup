@@ -118,9 +118,10 @@ func TestModelItemLinePricingAfterUsageCounts(t *testing.T) {
 	if !strings.Contains(pricedLine, price) {
 		t.Errorf("priced line %q missing %q", pricedLine, price)
 	}
-	// Usage cells follow the cost cell: 0, 0, 0 after the price.
+	// The window cell ("-": unknown) and the usage cells follow the cost
+	// cell: 0, 0, 0 after the price and the window.
 	ptIdx := strings.Index(pricedLine, price)
-	if rest := strings.Fields(pricedLine[ptIdx+len(price):]); strings.Join(rest, " ") != "0 0 0" {
+	if rest := strings.Fields(pricedLine[ptIdx+len(price):]); len(rest) < 1 || rest[0] != "-" || strings.Join(rest[1:], " ") != "0 0 0" {
 		t.Errorf("priced line %q: cells after the price = %q, want the 1D/7D/30D counts %q", pricedLine, rest, "0 0 0")
 	}
 	if strings.Index(tbl.header, "COST") > strings.Index(tbl.header, "1D") {

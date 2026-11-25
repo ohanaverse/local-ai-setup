@@ -582,3 +582,29 @@ func TestSlotsUsageJSONEmptySlotsIsObject(t *testing.T) {
 		t.Errorf("out = %s", out)
 	}
 }
+
+// TestSlotsContextFlag pins #689: `slots add --context` writes the key,
+// `slots set --context` changes it (0 derives again), a negative value is
+// refused before the file is touched, and --context alone is a change.
+func TestSlotsContextFlag(t *testing.T) {
+	a := slotsFixture(t, "")
+	if out, err := runProfileCmd(t, a, "slots", "add", "mine", "--slot", "sonnet=openrouter/a", "--context", "131072"); err != nil || !strings.Contains(out, "claude: profile/mine ok, context 131k") {
+		t.Fatalf("add: %v\n%s", err, out)
+	}
+	if st, _ := profiles.LoadSlots(); st.Profiles[0].Context != 131072 {
+		t.Errorf("context = %d", st.Profiles[0].Context)
+	}
+	if out, err := runProfileCmd(t, a, "slots", "set", "mine", "--context", "64000"); err != nil || !strings.Contains(out, "context 64k") {
+		t.Fatalf("set: %v\n%s", err, out)
+	}
+	before := readSlotFile(t)
+	if _, err := runProfileCmd(t, a, "slots", "set", "mine", "--context", "-5"); err == nil {
+		t.Error("a negative --context was accepted")
+	}
+	if readSlotFile(t) != before {
+		t.Error("a refused --context changed the file")
+	}
+	if out, err := runProfileCmd(t, a, "slots", "set", "mine", "--context", "0"); err != nil || strings.Contains(readSlotFile(t), "context") {
+		t.Fatalf("reset: %v\n%s\n%s", err, out, readSlotFile(t))
+	}
+}
