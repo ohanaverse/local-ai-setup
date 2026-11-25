@@ -180,7 +180,8 @@ type Row struct {
 	Pending bool
 
 	// The facts below serve removal only and are never serialised (RowJSON
-	// is built field by field; TestCleanupJSONUnchangedByNewRowFields).
+	// is built field by field; TestCleanupJSONUnchangedByNewRowFields),
+	// except HeadHeld.
 
 	// Ref is the full refname the row names: refs/heads/<b> for a branch row
 	// and a worktree on a branch (the spelling for-each-ref gave, when the
@@ -194,6 +195,10 @@ type Row struct {
 	Head string
 	// Losses is what removing the row would lose.
 	Losses Losses
+	// HeadHeld is a detached root's fact that a local or remote-tracking
+	// branch holds its HEAD (Gates.HeadHeld): a display and offer fact,
+	// serialised as head_held; Unknown when not read.
+	HeadHeld Tri
 	// BranchProven is Ruling A: the branch alone, ignoring the worktree's
 	// gates (dirty or ignored files, blockers), would classify proven. For a
 	// branch row it is Status == proven; for a remote row or a detached
@@ -613,6 +618,7 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		row.Losses.IgnoredEntries = g.IgnoredCount
 		row.Losses.IgnoredBytes = g.IgnoredBytes
 		row.Losses.DetachedUnique = g.DetachedUnique
+		row.HeadHeld = g.HeadHeld
 		// Covered dirt is not raised; the preserved reason (soft) says it
 		// instead, and Losses.Dirty stays raw. Contained dirt is not raised
 		// either, but only under spec §4's own gate: the branch (or a

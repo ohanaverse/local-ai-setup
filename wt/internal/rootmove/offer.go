@@ -13,13 +13,12 @@ import (
 // The decision shape (R501a-e) mirrors Preflight's own refusal order, so the
 // menu never offers a move the command would refuse. A non-root row names a
 // thing restore-root never moves. A bare repository has no checkout to move.
-// A root with no commit has nothing to move. A detached root (#584) is
-// offered when the default branch already reaches its HEAD (the row's
-// Losses.DetachedUnique is false): some branch holds the commits, so the move
-// can only succeed, leaving the new worktree detached. When the default does
-// not reach HEAD the menu cannot tell whether another branch holds it (the
-// row has no such fact), so it explains instead and names the command, which
-// needs --branch NAME if no branch does. A root in a repository
+// A root with no commit has nothing to move. A detached root (#584, #749) is
+// offered only when a local or remote-tracking branch holds its HEAD (the
+// row's HeadHeld, gathered by the same git read restore-root's Preflight
+// makes); it is explained, naming --branch NAME, when it was read and no
+// branch holds the commits, and explained as unread when the fact is unknown
+// (an unread fact never offers a move Preflight might refuse). A root on a branch never looks at the fact. A root in a repository
 // with no resolvable default has nothing to restore to (the move's whole
 // point is returning the root to the default). A root demonstrably on the
 // default — its row's cleanup.BlockDefaultBranch blocker, which the
@@ -52,18 +51,27 @@ func Offered(row cleanup.Row) (bool, string) {
 	// losses: raw, the move is refused whenever the root's state could not be read
 	case row.Losses.GatesUnknown:
 		return false, "its state could not be read"
-	// losses: raw, a detached root the default does not reach may be held by no branch at all
-	case row.Branch == "" && row.Losses.DetachedUnique:
-		return false, DetachedUniqueLine
+	// A detached root no branch holds: Preflight's last refusal (detached_root).
+	case row.Branch == "" && row.HeadHeld == cleanup.TriNo:
+		return false, HeadNotHeldLine
+	// An unread fact fails safe: Preflight would refuse detached_root if no
+	// branch holds the HEAD, and the list cannot tell.
+	case row.Branch == "" && row.HeadHeld != cleanup.TriYes:
+		return false, HeadUnreadLine
 	default:
 		return true, ""
 	}
 }
 
-// DetachedUniqueLine is the status line for a detached root whose HEAD the
-// default branch does not reach: R cannot say from the row whether another
-// branch holds it.
-const DetachedUniqueLine = "the root is detached at commits the default branch lacks: run `wt restore-root` (it needs --branch NAME if no branch holds them)"
+// HeadNotHeldLine is the status line for a detached root whose HEAD no local
+// or remote-tracking branch holds (Row.HeadHeld read and false): restore-root
+// would refuse it with detached_root unless given a branch name.
+const HeadNotHeldLine = "the root is detached at commits no branch holds: run `wt restore-root --branch NAME` to give them one"
+
+// HeadUnreadLine is the status line for a detached root whose HEAD-holder read
+// failed or was not made (Row.HeadHeld unknown): the list cannot promise
+// restore-root would not refuse it with detached_root.
+const HeadUnreadLine = "whether a branch holds the detached HEAD could not be read: run `wt restore-root --dry-run`"
 
 // noCommit is Preflight's own no_commit check: a worktree's Head is "" — or
 // the 40-zero null sha, what `git worktree list` prints for an unborn branch

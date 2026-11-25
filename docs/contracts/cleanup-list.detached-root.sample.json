@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "repo": "/home/owner/src/project",
+  "base": {"default": "main", "ref": "origin/main", "fallback": false, "fetched_at": "2026-08-30T10:00:00Z"},
+  "fetch": {"ok": true, "at": "2026-08-30T10:00:00Z"},
+  "gh": "ok",
+  "rows": [
+    {"kind": "worktree", "name": "project", "path": "/home/owner/src/project", "status": "less_sure", "unknown": false, "reasons": [{"code": "root_drift", "detail": "root is detached"}], "blockers": [{"code": "primary", "detail": "/home/owner/src/project"}], "hard_stop": "primary", "head_held": true}
+  ]
+}

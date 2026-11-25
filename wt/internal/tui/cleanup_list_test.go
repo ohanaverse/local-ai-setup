@@ -1875,7 +1875,7 @@ func TestCleanupListRestoreRootKeyHandsOff(t *testing.T) {
 // rootmove.Offered refuses stays in the list and shows that gate's own line
 // byte-for-byte on the status line — one case per refusal shape (a linked
 // worktree and a branch row are not the root; the root on the default is
-// already there; a detached root at commits the default lacks is explained; an unborn root has no
+// already there; a detached root no branch holds is explained; an unborn root has no
 // commit to move). Why: a key that does nothing, silently, reads as broken,
 // and re-wording Offered's line here would let the two drift apart.
 func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
@@ -1893,12 +1893,17 @@ func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
 			Primary: true, Head: sha, Status: cleanup.StatusInUse,
 			Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary}, {Code: cleanup.BlockDefaultBranch, Detail: "main"}}}),
 			"main", "root is already on main"},
-		{"a detached root at commits the default lacks names the command and --branch", restoreRootReport(cleanup.Row{
+		{"a detached root no branch holds names the command and --branch", restoreRootReport(cleanup.Row{
 			Kind: cleanup.KindWorktree, Name: "repo", Path: "/repo", Primary: true, Head: sha,
 			Status:  cleanup.StatusLessSure,
 			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}},
-			Losses:  cleanup.Losses{DetachedUnique: true}}),
-			"repo", rootmove.DetachedUniqueLine},
+			Losses:  cleanup.Losses{DetachedUnique: true}, HeadHeld: cleanup.TriNo}),
+			"repo", rootmove.HeadNotHeldLine},
+		{"a detached root whose holder read failed is not offered", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "repo", Path: "/repo", Primary: true, Head: sha,
+			Status:  cleanup.StatusLessSure,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}}}),
+			"repo", rootmove.HeadUnreadLine},
 		{"an unborn root has no commit to move", restoreRootReport(cleanup.Row{
 			Kind: cleanup.KindWorktree, Name: "fresh", Path: "/repo", Branch: "fresh", Ref: "refs/heads/fresh",
 			Primary: true, Head: "0000000000000000000000000000000000000000", Status: cleanup.StatusLessSure,
@@ -1944,7 +1949,7 @@ func TestCleanupListRestoreRootOffersADetachedRootTheDefaultReaches(t *testing.T
 	rep := restoreRootReport(cleanup.Row{
 		Kind: cleanup.KindWorktree, Name: "repo", Path: "/repo", Primary: true, Head: sha,
 		Status:  cleanup.StatusLessSure,
-		Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}}})
+		Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}}, HeadHeld: cleanup.TriYes})
 	m := newSizedCleanupList(t, rep, 100, 30)
 	m.rm.RestoreRoot = func(_ io.Reader, _, _ io.Writer) error { return nil }
 	m = moveTo(t, m, "repo")
@@ -3251,6 +3256,27 @@ func TestDetailRestatesANameTheTableCuts(t *testing.T) {
 		wide, tbl := at(200)
 		if tbl.Merged() || strings.Contains(squash(wide), squash("name "+long)) {
 			t.Errorf("kind %v: a name the table shows whole is restated anyway:\n%s", kind, wide)
+		}
+	}
+}
+
+// TestCleanupListRestoreRootOffersDetachedRootAnyBranchHolds checks `R` on a
+// detached root whose HEAD a branch holds, quits
+// the list with the restore flagged even though the default lacks the commit
+// (#749). Why: the list used to explain these as unique commits.
+func TestCleanupListRestoreRootOffersDetachedRootAnyBranchHolds(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	for name, held := range map[string]cleanup.Tri{"held": cleanup.TriYes} {
+		m := newSizedCleanupList(t, restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "repo", Path: "/repo", Primary: true, Head: sha,
+			Status:  cleanup.StatusLessSure,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}},
+			Losses:  cleanup.Losses{DetachedUnique: true}, HeadHeld: held}), 100, 30)
+		m.rm.RestoreRoot = func(_ io.Reader, _, _ io.Writer) error { return nil }
+		m = moveTo(t, m, "repo")
+		next, cmd := press(t, m, keyRunes("R")).Update(keyRunes("R"))
+		if fm := next.(cleanupListModel); cmd == nil || !fm.restoreRoot || !fm.done {
+			t.Errorf("%s: cmd=%v restoreRoot=%v done=%v; want quit with the restore flagged", name, cmd, fm.restoreRoot, fm.done)
 		}
 	}
 }

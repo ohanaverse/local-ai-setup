@@ -173,7 +173,7 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 	// progress or unmerged paths win over a misleading "name a branch".
 	var held []string
 	if detached {
-		if held, err = reachableFrom(rg, prim.Head); err != nil {
+		if held, err = cleanup.BranchesHolding(rg, prim.Head); err != nil {
 			return nil, fmt.Errorf("could not read which branches hold the root's HEAD: %w", err)
 		}
 		if len(held) == 0 && e.NewBranch == "" {
@@ -212,25 +212,6 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		}
 	}
 	return pl, nil
-}
-
-// reachableFrom lists the full ref names of the local and remote-tracking
-// branches that contain commit (a symref like origin/HEAD does not count as
-// one). Tags, the stash, rescue records and other worktrees' HEADs are not
-// branches: only refs/heads and refs/remotes are asked. Reads only.
-func reachableFrom(rg cleanup.Git, commit string) ([]string, error) {
-	text, err := rg.Text("for-each-ref", "--format=%(refname)", "--contains", commit, "refs/heads", "refs/remotes")
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, l := range strings.Split(text, "\n") {
-		if l == "" || strings.HasPrefix(l, "refs/remotes/") && strings.HasSuffix(l, "/HEAD") {
-			continue
-		}
-		out = append(out, l)
-	}
-	return out, nil
 }
 
 // onlyRemote reports that every holder is a remote-tracking ref.
