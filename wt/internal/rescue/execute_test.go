@@ -1368,3 +1368,43 @@ func TestExecuteIntoWithWorktreesDirNotIgnored(t *testing.T) {
 		}
 	})
 }
+
+// TestExecuteReportsCopyProgress checks Engine.Progress: a plan of at least
+// progressEvery untracked files calls it every progressEvery files and at the
+// end with (total, total); a small plan never calls it. Why: a big copy ran
+// silent for seconds (#558).
+func TestExecuteReportsCopyProgress(t *testing.T) {
+	run := func(n int) (calls [][2]int, out Outcome) {
+		f := newFixture(t)
+		p := f.Detached("scratch")
+		f.Commit(p, "a.txt", "a", "a")
+		for i := 0; i < n; i++ {
+			f.write(p, "u/f"+strings.Repeat("x", 0)+string(rune('a'+i/26/26%26))+string(rune('a'+i/26%26))+string(rune('a'+i%26)), "x")
+		}
+		eng, find := f.engine(f.Dir)
+		eng.Progress = func(done, total int) { calls = append(calls, [2]int{done, total}) }
+		plan, err := eng.Preflight(find(p), "")
+		if err != nil {
+			t.Fatalf("Preflight: %v", err)
+		}
+		return calls, eng.Execute(plan)
+	}
+	t.Run("250 files", func(t *testing.T) {
+		calls, out := run(250)
+		_ = out
+		want := [][2]int{{100, 250}, {200, 250}, {250, 250}}
+		if len(calls) != len(want) {
+			t.Fatalf("calls = %v, want %v", calls, want)
+		}
+		for i := range want {
+			if calls[i] != want[i] {
+				t.Fatalf("calls = %v, want %v", calls, want)
+			}
+		}
+	})
+	t.Run("small", func(t *testing.T) {
+		if calls, _ := run(99); len(calls) != 0 {
+			t.Fatalf("a 99-file copy reported progress: %v", calls)
+		}
+	})
+}

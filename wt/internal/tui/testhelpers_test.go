@@ -17,6 +17,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -97,6 +98,7 @@ func TestMain(m *testing.M) {
 		return nil, errors.New("gh pr list --base not stubbed in this test")
 	})
 	code := m.Run()
+	gittest.CleanupTemplates()
 	rmConfigHome()
 	os.Exit(code)
 }

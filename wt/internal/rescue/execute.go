@@ -182,7 +182,7 @@ func (e Engine) executeInto(r *runState) Outcome {
 		return keep(CodeCarryFailed, "setting file modes: %v", err)
 	}
 	var madeDirs []string
-	for _, rel := range p.untracked {
+	for i, rel := range p.untracked {
 		made, err := copyUntracked(p.Source.Path, dest, rel)
 		madeDirs = append(madeDirs, made...)
 		if err != nil {
@@ -196,6 +196,9 @@ func (e Engine) executeInto(r *runState) Outcome {
 				msg += fmt.Sprintf("; directory modes could not be restored: %v", merr)
 			}
 			return keep(CodeCarryFailed, "%s", msg)
+		}
+		if n := i + 1; e.Progress != nil && len(p.untracked) >= progressEvery && (n%progressEvery == 0 || n == len(p.untracked)) {
+			e.Progress(n, len(p.untracked))
 		}
 	}
 	// Directory modes go on last: a read-only source directory must not block

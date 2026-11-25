@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "repo": "/Users/me/src/app",
+  "dry_run": false,
+  "items": [],
+  "records": [
+    {
+      "ref": "refs/wt/rescued/3f9c2a1b7d4e5f60",
+      "id": "3f9c2a1b7d4e5f60",
+      "outcome": "pruned",
+      "reason": "pruned refs/wt/rescued/3f9c2a1b7d4e5f60 (was 3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345)",
+      "warnings": ["restore with: git update-ref refs/wt/rescued/3f9c2a1b7d4e5f60 3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 (until git gc)"],
+      "commit": "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+    },
+    {
+      "ref": "refs/wt/rescued/a1b2c3d4e5f60718",
+      "id": "a1b2c3d4e5f60718",
+      "outcome": "refused_in_use",
+      "reason": "worktree /Users/me/src/app/.worktrees/topic still matches this record; no approval overrides that",
+      "warnings": []
+    },
+    {
+      "ref": "refs/wt/rescued/0f1e2d3c4b5a6978",
+      "id": "0f1e2d3c4b5a6978",
+      "outcome": "skipped_changed",
+      "reason": "the record no longer exists (or is no longer a readable record)",
+      "warnings": []
+    },
+    {
+      "ref": "refs/wt/rescued/9988776655443322",
+      "id": "9988776655443322",
+      "outcome": "retained_recent",
+      "reason": "younger than 7 days: it may be the only copy of a just-rescued worktree; --accept-loss approves pruning it",
+      "warnings": []
+    },
+    {
+      "ref": "refs/wt/rescued/1122334455667788",
+      "id": "1122334455667788",
+      "outcome": "failed",
+      "reason": "git update-ref failed: exit 128: fatal: cannot lock ref",
+      "warnings": [],
+      "commit": "1122334455667788990011223344556677889900"
+    }
+  ]
+}

@@ -186,7 +186,7 @@ Found while building, beyond the numbered rulings:
 - **`hidden_index_flags` covers sparse checkouts.** Any skip-worktree entry, and any assume-unchanged entry, is refused in Preflight and again by `ReleaseRoot`, which fails closed because status cannot see an edit to one.
 - **`release_failed` and `switch_failed`** are failure codes: `release_refused` would wrongly say nothing was touched after a reset. `release_failed` is a `*removal.ReleaseFailed` (its `Uncertain` flag is set for any reset or switch call that errored, so the text does not claim the root is untouched); `switch_failed` is step 5, the destination switch (also when the branch ref moved meanwhile). A read-back mismatch (step 7) is rescue's `verify_failed`. The code list has 32 entries.
 - **`ReleaseRoot`'s gate order** is: inputs, the fingerprint, the status, hidden index flags, the record check, and the ignored-files check last; every git call runs in the root with fsmonitor off, and the reset and switch with hooks and submodule recursion off.
-- **Output.** Reasons, steps and warnings print in full (one line, control characters stripped, no length cap) so a failure's recovery text is never cut. A benign note (the default already at origin) is a step in `completed`, not a warning. `wt rescue` still truncates its messages at 200 characters (a known limitation).
+- **Output.** Reasons, steps and warnings print in full (one line, control characters stripped, no length cap) so a failure's recovery text is never cut. A benign note (the default already at origin) is a step in `completed`, not a warning. `wt rescue` prints them in full too (since #558).
 
 ### Stale sentences rewritten in place
 

@@ -35,10 +35,16 @@ func releaseRootClaim() {
 // one default-yes question when a terminal and a warning remain. With no
 // terminal it prints and proceeds, reading nothing. Target.Hint follows as
 // trailing advice (Collect ignores it). A "no" is errCancelled.
-func confirmLaunch(t launchwarn.Target, readErr error, in io.Reader, out io.Writer, isTTY bool) error {
+//
+// pr is the flag launch's background merged-PR lookup (#585), started at the
+// top of the launch; it is waited for at most launchwarn.PRBudget here, and
+// only a merged answer adds the PR warning to the same one line. nil (the
+// picker's rows, which carry PR facts already, and tests) adds nothing.
+func confirmLaunch(t launchwarn.Target, readErr error, pr *launchwarn.PRLookup, in io.Reader, out io.Writer, isTTY bool) error {
 	if readErr != nil {
 		fmt.Fprintf(out, "wt: note: %v\n", readErr)
 	}
+	t = pr.Resolve(t, launchwarn.PRBudget)
 	warnings, info := launchwarn.Collect(t)
 	if t.Dir == "" {
 		// No directory, no line. A launch outside a checkout root (a plain

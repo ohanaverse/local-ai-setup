@@ -195,6 +195,26 @@ func (fr FetchResult) FailureSummary() string {
 // over the network takes longer than the 30s every other git call gets.
 const fetchTimeout = 120 * time.Second
 
+// remoteListTimeout is the floor for the local `git remote` listing and the
+// skipFetchAll config reads, whatever timeout the caller gave the fetch.
+const remoteListTimeout = 30 * time.Second
+
+// timedOutText is the one-line text for a git call that hit its timeout.
+func timedOutText(args string, d time.Duration) string {
+	return fmt.Sprintf("git %s timed out after %s", args, d)
+}
+
+// remoteListErrText is the FAILED text for a `git remote` listing that
+// errored: a timeout is named (with the floor it hit), anything else is the
+// error itself. Split out so a test can reach the timeout branch without a
+// 30s wait.
+func remoteListErrText(err error, d time.Duration) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return timedOutText("remote", d)
+	}
+	return fetchErrText(err.Error())
+}
+
 // otherFetchTimeout bounds each non-origin remote's fetch (they run
 // concurrently, after origin): the classification does not depend on them, so
 // a slow one must not hold the command for origin's full window. A seam for
@@ -212,9 +232,14 @@ var otherFetchTimeout = 30 * time.Second
 // other remotes are still fetched and Skipped says so.
 func Fetch(g Git) FetchResult {
 	g.Env = append(slices.Clone(g.Env), NonInteractive(g.Dir)...)
-	o, err := g.Run("remote")
+	// The listing is a local call with its own floor: g.Timeout is the
+	// fetch's, and a zero or tiny one must not decide `git remote` (a const,
+	// not a Git field, so no new variable).
+	lg := g
+	lg.Timeout = max(g.Timeout, remoteListTimeout)
+	o, err := lg.Run("remote")
 	if err != nil {
-		return FetchResult{Err: fetchErrText(err.Error()), At: time.Now()}
+		return FetchResult{Err: remoteListErrText(err, lg.Timeout), At: time.Now()}
 	}
 	if o.Code != 0 {
 		return FetchResult{Err: fetchErrText(gitFailure(o, "remote").Error()), At: time.Now()}
@@ -249,7 +274,7 @@ func Fetch(g Git) FetchResult {
 		// skipFetchAll only leaves a remote out of `fetch --all`; a plain
 		// `git fetch origin` fetches it, and the base is origin's, so origin
 		// is always fetched (above).
-		if c, err := g.Run("config", "--type=bool", "--get", "remote."+n+".skipFetchAll"); err == nil && c.Code == 0 && strings.TrimSpace(c.Stdout) == "true" {
+		if c, err := lg.Run("config", "--type=bool", "--get", "remote."+n+".skipFetchAll"); err == nil && c.Code == 0 && strings.TrimSpace(c.Stdout) == "true" {
 			res.Remotes[i].Skipped = true
 			continue
 		}
@@ -270,7 +295,7 @@ func Fetch(g Git) FetchResult {
 func fetchOne(g Git, name string) (bool, string) {
 	o, err := g.Run("fetch", "--prune", name)
 	if errors.Is(err, context.DeadlineExceeded) {
-		return false, fmt.Sprintf("git fetch --prune %s timed out after %s", name, g.Timeout)
+		return false, timedOutText("fetch --prune "+name, g.Timeout)
 	}
 	if err != nil {
 		return false, fetchErrText(err.Error())

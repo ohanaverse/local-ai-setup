@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // WorktreeFact is one entry of `git worktree list --porcelain -z`.
@@ -149,32 +151,14 @@ func listWorktrees(g Git) ([]WorktreeFact, error) {
 	return facts, nil
 }
 
-// resolve makes p absolute and resolves symlinks (macOS /var is
-// /private/var). A path that does not exist resolves through its nearest
-// existing ancestor, so a missing worktree or artifact still compares.
-func resolve(p string) string {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		abs = filepath.Clean(p)
-	}
-	rest := ""
-	for dir := abs; ; {
-		if r, err := filepath.EvalSymlinks(dir); err == nil {
-			return filepath.Join(r, rest)
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return abs
-		}
-		rest = filepath.Join(filepath.Base(dir), rest)
-		dir = parent
-	}
-}
+// resolve is worktree.ResolvePath: absolute, symlinks resolved (macOS /var is
+// /private/var), through the nearest existing ancestor when p is gone.
+func resolve(p string) string { return worktree.ResolvePath(p) }
 
 // ResolvePath is p as every comparison here sees it: absolute, symlinks
 // resolved (through its nearest existing ancestor when p is gone). Removal
 // compares paths with it so /var and /private/var are one directory.
-func ResolvePath(p string) string { return resolve(p) }
+func ResolvePath(p string) string { return worktree.ResolvePath(p) }
 
 // Within reports whether child is parent or below it, separator-safe and
 // case-folded (an over-match only blocks more). Both should be resolved.

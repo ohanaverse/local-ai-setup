@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
 )
 
 // fixture is a real repository: a bare "origin", a clone with main pushed and
@@ -18,34 +20,20 @@ type fixture struct {
 	n      int
 }
 
+// gitIn delegates to the shared runner: gittest is the one place git is run
+// for fixtures and the base repository is built.
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	b, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, b)
-	}
-	return strings.TrimSpace(string(b))
+	return gittest.Git(t, dir, args...)
 }
 
+// newFixture is gittest's base repository (no .worktrees exclusion: the
+// classifier tests cover a repository that does not ignore its worktree
+// directory) wrapped in this package's fixture.
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	root := t.TempDir()
-	f := &fixture{t: t, Origin: filepath.Join(root, "origin.git"), Dir: filepath.Join(root, "repo")}
-	if b, err := exec.Command("git", "init", "--bare", "-b", "main", f.Origin).CombinedOutput(); err != nil {
-		t.Fatalf("init bare: %v\n%s", err, b)
-	}
-	if b, err := exec.Command("git", "clone", f.Origin, f.Dir).CombinedOutput(); err != nil {
-		t.Fatalf("clone: %v\n%s", err, b)
-	}
-	f.git("config", "user.email", "t@example.com")
-	f.git("config", "user.name", "T")
-	f.git("config", "commit.gpgsign", "false")
-	f.git("checkout", "-B", "main")
-	f.Commit("README", "init", "init")
-	f.git("push", "-u", "origin", "main")
-	f.git("remote", "set-head", "origin", "main")
-	return f
+	origin, repo := gittest.NewRepo(t, false)
+	return &fixture{t: t, Origin: origin, Dir: repo}
 }
 
 func (f *fixture) git(args ...string) string { f.t.Helper(); return gitIn(f.t, f.Dir, args...) }

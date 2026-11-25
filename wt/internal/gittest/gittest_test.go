@@ -1,6 +1,7 @@
 package gittest
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,18 @@ func combined(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	out, _ := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
 	return string(out)
+}
+
+// lineageOf is lineageErr as Lineage calls it: judged against the pair Clone
+// registered for repo.
+func lineageOf(repo string) error {
+	pairsMu.Lock()
+	p, ok := pairs[repo]
+	pairsMu.Unlock()
+	if !ok {
+		return fmt.Errorf("not a gittest.Clone pair")
+	}
+	return lineageErr(repo, p.origin, p.opts)
 }
 
 // TestSeedCloneIsolatesOrigins checks two Clone pairs of one Seed never share
@@ -65,6 +78,10 @@ func TestSeedCloneIsolatesOrigins(t *testing.T) {
 		t.Errorf("the shared template origin holds pair A's commit %s; a clone mutated the template:\n%s", sha, got)
 	}
 
+	if originA == originB {
+		t.Errorf("two pairs share origin %q", originA)
+	}
+
 	// Each repo's origin remote must name its own origin's absolute path.
 	for repo, origin := range map[string]string{repoA: originA, repoB: originB} {
 		if got := runGit(t, repo, "remote", "get-url", "origin"); got != origin {
@@ -89,7 +106,7 @@ func TestLineageGateNamesThePoison(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, ".worktrees", "stray"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := lineageErr(repo)
+	err := lineageOf(repo)
 	if err == nil {
 		t.Fatal("lineageErr accepted a repo holding .worktrees/stray")
 	}
@@ -138,6 +155,16 @@ func TestLineageGateNamesEachPoison(t *testing.T) {
 			appendExclude(t, repo, ".worktrees/")
 			appendExclude(t, repo, ".worktrees/")
 		}},
+		{"origin of another pair", "not this pair's own", func(t *testing.T, repo string) {
+			other, _ := Seed(t, SeedOpts{}).Clone(t)
+			runGit(t, repo, "remote", "set-url", "origin", other)
+		}},
+		{"extra ref", "refs/heads/feature", func(t *testing.T, repo string) {
+			runGit(t, repo, "update-ref", "refs/heads/feature", "HEAD")
+		}},
+		{"deleted origin/HEAD", "refs/remotes/origin/HEAD is missing", func(t *testing.T, repo string) {
+			runGit(t, repo, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+		}},
 		{"head moved", "not refs/heads/main", func(t *testing.T, repo string) {
 			runGit(t, repo, "switch", "-q", "-c", "other")
 		}},
@@ -148,7 +175,7 @@ func TestLineageGateNamesEachPoison(t *testing.T) {
 			_, repo := tpl.Clone(t)
 			Lineage(t, repo)
 			c.setup(t, repo)
-			err := lineageErr(repo)
+			err := lineageOf(repo)
 			if err == nil {
 				t.Fatalf("lineageErr accepted a repo holding %s", c.name)
 			}
@@ -156,6 +183,106 @@ func TestLineageGateNamesEachPoison(t *testing.T) {
 				t.Errorf("lineageErr said %q; the message must name the poison (%s)", err, c.want)
 			}
 		})
+	}
+}
+
+// TestLineageGateIsLineageAware checks the exclude verdict follows the pair's
+// own lineage: the ExcludeWorktrees lineage must carry exactly one .worktrees/
+// line and the plain lineage none, on the repo and on its origin.
+func TestLineageGateIsLineageAware(t *testing.T) {
+	truncate := func(t *testing.T, dir string) {
+		t.Helper()
+		ex := runGit(t, dir, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude")
+		if err := os.WriteFile(ex, []byte("# none\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendLine := func(t *testing.T, dir string) {
+		t.Helper()
+		ex := runGit(t, dir, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude")
+		f, err := os.OpenFile(ex, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(".worktrees/\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("missing line on the exclude lineage", func(t *testing.T) {
+		_, repo := Seed(t, SeedOpts{ExcludeWorktrees: true}).Clone(t)
+		Lineage(t, repo)
+		truncate(t, repo)
+		if err := lineageOf(repo); err == nil || !strings.Contains(err.Error(), "lacks the .worktrees/ line") {
+			t.Errorf("lineageErr said %v, want the missing .worktrees/ line named", err)
+		}
+	})
+	t.Run("stray line on the plain lineage", func(t *testing.T) {
+		_, repo := Seed(t, SeedOpts{}).Clone(t)
+		Lineage(t, repo)
+		appendLine(t, repo)
+		if err := lineageOf(repo); err == nil || !strings.Contains(err.Error(), "must not have") {
+			t.Errorf("lineageErr said %v, want the stray .worktrees/ line named", err)
+		}
+	})
+	t.Run("origin exclude is checked too", func(t *testing.T) {
+		origin, repo := Seed(t, SeedOpts{}).Clone(t)
+		Lineage(t, repo)
+		appendLine(t, origin)
+		if err := lineageOf(repo); err == nil || !strings.Contains(err.Error(), origin) {
+			t.Errorf("lineageErr said %v, want the origin's exclude named", err)
+		}
+	})
+}
+
+// TestLineageRefusesAStrangerRepo checks Lineage fails loud on a repo Clone did
+// not make, naming why.
+func TestLineageRefusesAStrangerRepo(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q", "-b", "main")
+	msg := recordFatal(t, func(tb testing.TB) { Lineage(tb, dir) })
+	if !strings.Contains(msg, "not a gittest.Clone pair") {
+		t.Errorf("Lineage said %q, want it to refuse a repo Clone did not make", msg)
+	}
+}
+
+// TestSeedRetriesAFailedBuild checks a failed build is neither memoized nor
+// leaked: the next Seed for the same opts builds again and succeeds. Why: a
+// memoized error would fail every later test in the process for one transient
+// failure.
+func TestSeedRetriesAFailedBuild(t *testing.T) {
+	// The memo entry is saved and restored so other tests keep their template.
+	opts := SeedOpts{ExcludeWorktrees: true}
+	seedMu.Lock()
+	saved, had := seeds[opts]
+	delete(seeds, opts)
+	seedMu.Unlock()
+	t.Cleanup(func() {
+		seedMu.Lock()
+		defer seedMu.Unlock()
+		if had {
+			seeds[opts] = saved
+		} else {
+			delete(seeds, opts)
+		}
+	})
+	calls := 0
+	build := func(o SeedOpts) (*Template, error) {
+		calls++
+		if calls == 1 {
+			return nil, fmt.Errorf("boom")
+		}
+		return buildTemplate(o)
+	}
+	if msg := recordFatal(t, func(tb testing.TB) { seedWith(tb, opts, build) }); !strings.Contains(msg, "boom") {
+		t.Fatalf("first seed said %q, want the build error", msg)
+	}
+	tpl := seedWith(t, opts, build)
+	if tpl == nil || calls != 2 {
+		t.Fatalf("retry: tpl=%v after %d builds, want a template after exactly 2", tpl, calls)
+	}
+	if again := seedWith(t, opts, build); again != tpl || calls != 2 {
+		t.Errorf("a successful build must be memoized: got %p after %d builds", again, calls)
 	}
 }
 
@@ -244,5 +371,89 @@ func TestTemplateNeverCarriesWorktrees(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("template origin lists worktree %q, want its own root %q", got, want)
+	}
+}
+
+// fatalRecorder stands in for a test whose Fatalf must be observed, not
+// obeyed: Fatalf records the message and panics with fatalSentinel so the
+// caller unwinds the way t.Fatalf's Goexit would, and recordFatal recovers it.
+type fatalRecorder struct {
+	testing.TB
+	msg string
+}
+
+type fatalSentinel struct{}
+
+func (r *fatalRecorder) Fatalf(format string, args ...any) {
+	r.msg = fmt.Sprintf(format, args...)
+	panic(fatalSentinel{})
+}
+
+// recordFatal runs fn against a recorder and returns what fn's Fatalf said, or
+// "" when fn did not fail.
+func recordFatal(t *testing.T, fn func(testing.TB)) string {
+	t.Helper()
+	r := &fatalRecorder{TB: t}
+	func() {
+		defer func() {
+			if v := recover(); v != nil {
+				if _, ok := v.(fatalSentinel); !ok {
+					panic(v)
+				}
+			}
+		}()
+		fn(r)
+	}()
+	return r.msg
+}
+
+// TestGitReturnsTrimmedOutputAndFailsOnBadArgs checks Git hands back git's
+// output with the trailing newline trimmed, and that a failing command fails
+// the test with "git <args>: <err>" followed by git's own output. Why: every
+// package's fixture helper delegates to it, so a Git that swallowed a failure
+// would turn a broken setup into a green test.
+func TestGitReturnsTrimmedOutputAndFailsOnBadArgs(t *testing.T) {
+	_, repo := Seed(t, SeedOpts{}).Clone(t)
+	if got := Git(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); got != "main" {
+		t.Errorf("Git rev-parse = %q, want %q (trimmed, no newline)", got, "main")
+	}
+	msg := recordFatal(t, func(tb testing.TB) { Git(tb, repo, "no-such-subcommand") })
+	if !strings.HasPrefix(msg, "git no-such-subcommand: ") || !strings.Contains(msg, "not a git command") {
+		t.Errorf("failure message = %q, want it to name the args, the error and git's output", msg)
+	}
+}
+
+// TestNewRepoBuildsTheBaseRepository checks NewRepo's pair is the base
+// repository every fixture starts from: origin/HEAD set, main tracking
+// origin/main, identity T, one README commit "init". Why: the five packages
+// that used to build this by hand now trust it, so the shape is pinned here
+// once.
+func TestNewRepoBuildsTheBaseRepository(t *testing.T) {
+	origin, repo := NewRepo(t, false)
+	if got := Git(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD"); got != "refs/remotes/origin/main" {
+		t.Errorf("origin/HEAD = %q, want refs/remotes/origin/main", got)
+	}
+	if got := Git(t, repo, "rev-parse", "--abbrev-ref", "main@{upstream}"); got != "origin/main" {
+		t.Errorf("main tracks %q, want origin/main", got)
+	}
+	if got := Git(t, repo, "config", "user.name"); got != "T" {
+		t.Errorf("user.name = %q, want T", got)
+	}
+	if got := Git(t, repo, "log", "--format=%s", "main"); got != "init" {
+		t.Errorf("log = %q, want the single seed commit \"init\"", got)
+	}
+	if b, err := os.ReadFile(filepath.Join(repo, "README")); err != nil || string(b) != "init" {
+		t.Errorf("README = %q, %v; want \"init\"", b, err)
+	}
+	if got := Git(t, origin, "rev-parse", "main"); got != Git(t, repo, "rev-parse", "main") {
+		t.Errorf("origin main %s differs from the repo's", got)
+	}
+	// The exclude flag picks the lineage.
+	_, ex := NewRepo(t, true)
+	if b, _ := os.ReadFile(filepath.Join(ex, ".git", "info", "exclude")); !strings.Contains(string(b), ".worktrees/") {
+		t.Errorf("NewRepo(excludeWorktrees=true) info/exclude lacks .worktrees/:\n%s", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude")); strings.Contains(string(b), ".worktrees/") {
+		t.Errorf("NewRepo(excludeWorktrees=false) info/exclude has .worktrees/:\n%s", b)
 	}
 }
