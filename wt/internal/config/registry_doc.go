@@ -55,7 +55,7 @@ var (
 		"draft":                    {"repo", "local_path"},
 	}
 	aliasSchemas = map[string][]string{
-		"":        {"id", "redirect_to", "targets"},
+		"":        {"id", "redirect_to", "targets", "notes"},
 		"targets": {"model", "order"},
 	}
 )

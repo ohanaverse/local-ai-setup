@@ -193,7 +193,13 @@ func planAliases(reg *config.Config, current []DBModel, hashKey string, only map
 			target, _ := m.Info[AliasTargetKey].(string)
 			p.Live = append(p.Live, AliasLive{Target: target, Order: paramOrder(m.Params["order"])})
 		}
-		if len(rows) == 0 && len(fz) == 0 {
+		// Said once, by the write that takes the alias's last row away (#691):
+		// an alias that already had no rows stays quiet on every later sync
+		// and stop of its targets. The state is still shown, by the plan's
+		// action and the unrouted outcome. (A scoped write, only != nil, is a
+		// start or stop of a target, not `alias set`, which is a full sync, so
+		// scope cannot be what lets the line through.)
+		if len(rows) == 0 && len(fz) == 0 && had[a.ID] > 0 {
 			w.warnings = append(w.warnings, fmt.Sprintf("%s has no live target", a.ID))
 		}
 		add(p)

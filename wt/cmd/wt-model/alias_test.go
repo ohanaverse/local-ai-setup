@@ -253,12 +253,11 @@ func TestAliasSetWithDatabaseDownThenSyncHeals(t *testing.T) {
 func TestAliasSetTargetParsing(t *testing.T) {
 	cfg := &config.Config{Models: []config.Model{{ID: "openrouter/big"}, {ID: "ollama/qwen3:8b"}, {ID: "ollama/odd:7"}}}
 	ok := map[string][]config.AliasTarget{
-		"openrouter/big":     {{Model: "openrouter/big"}},
-		"openrouter/big:2":   {{Model: "openrouter/big", Order: 2}},
-		"ollama/qwen3:8b":    {{Model: "ollama/qwen3:8b"}},
-		"ollama/qwen3:8b:3":  {{Model: "ollama/qwen3:8b", Order: 3}},
-		"ollama/odd:7":       {{Model: "ollama/odd:7"}},
-		"openrouter/nope:12": {{Model: "openrouter/nope", Order: 12}},
+		"openrouter/big":    {{Model: "openrouter/big"}},
+		"openrouter/big:2":  {{Model: "openrouter/big", Order: 2}},
+		"ollama/qwen3:8b":   {{Model: "ollama/qwen3:8b"}},
+		"ollama/qwen3:8b:3": {{Model: "ollama/qwen3:8b", Order: 3}},
+		"ollama/odd:7":      {{Model: "ollama/odd:7"}},
 	}
 	for spec, want := range ok {
 		got, err := modeladmin.ParseAliasTargets(cfg, []string{spec})
@@ -267,9 +266,11 @@ func TestAliasSetTargetParsing(t *testing.T) {
 		}
 	}
 	for spec, wantErr := range map[string]string{
-		"openrouter/big:0":  "order must be a whole number from 1",
-		"openrouter/big:-1": "order must be a whole number from 1",
-		"":                  "empty",
+		"openrouter/big:0":   "order must be a whole number from 1",
+		"openrouter/big:-1":  "order must be a whole number from 1",
+		"":                   "empty",
+		"ollama/qwen3:8":     "--target ollama/qwen3:8: not a registry model",
+		"openrouter/nope:12": "--target openrouter/nope:12: not a registry model",
 	} {
 		if _, err := modeladmin.ParseAliasTargets(cfg, []string{spec}); err == nil || !strings.Contains(err.Error(), wantErr) {
 			t.Errorf("parse %q = %v, want %q", spec, err, wantErr)

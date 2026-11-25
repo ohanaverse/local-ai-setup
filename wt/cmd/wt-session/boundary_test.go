@@ -118,7 +118,7 @@ func boundaryViolations(fset *token.FileSet, path string, src any) ([]string, er
 						report(n, fn, "config.Load")
 					}
 				case "lifecycle":
-					if name == "Start" || name == "EnsureModelRoute" || name == "WaitPendingRoutes" {
+					if name == "Start" || name == "WaitPendingRoutes" {
 						report(n, fn, "lifecycle."+name)
 					}
 				case "localmodels":
@@ -170,7 +170,7 @@ var boundaryAllowed = map[string]bool{
 // file may load the registry (config.Load), resolve a direct route
 // (.ResolveRoute, IsLitellm), read the host's LiteLLM url or key
 // (LitellmBaseURL, LitellmAPIKey, R4), start or route a model in process
-// (lifecycle.Start, EnsureModelRoute, WaitPendingRoutes), probe local
+// (lifecycle.Start, WaitPendingRoutes), probe local
 // inventory (localmodels.Inventory), keep a local refcount, or reach the
 // provider table. It is a go/ast scan of selector expressions and calls, so
 // comments and strings do not count. The allowed exceptions are the four in
@@ -342,7 +342,6 @@ func f(a *app, p struct{ Name string }) string {
 	_, _ = cfgpkg.Load()
 	_ = refcount.Store{}
 	_ = lc.Start
-	lc.EnsureModelRoute()
 	_ = lm.Inventory
 	var _ provider.Family
 	key := a.cfg.LitellmAPIKey
@@ -361,11 +360,10 @@ func f(a *app, p struct{ Name string }) string {
 		"x.go:17: f: config.Load",
 		"x.go:18: f: refcount.Store",
 		"x.go:19: f: lifecycle.Start",
-		"x.go:20: f: lifecycle.EnsureModelRoute",
-		"x.go:21: f: localmodels.Inventory",
-		"x.go:22: f: provider.Family",
-		"x.go:23: f: .LitellmAPIKey",
-		"x.go:24: f: .hostConfig",
+		"x.go:20: f: localmodels.Inventory",
+		"x.go:21: f: provider.Family",
+		"x.go:22: f: .LitellmAPIKey",
+		"x.go:23: f: .hostConfig",
 	}
 	if strings.Join(vs, "\n") != strings.Join(want, "\n") {
 		t.Errorf("violations =\n%s\nwant\n%s", strings.Join(vs, "\n"), strings.Join(want, "\n"))

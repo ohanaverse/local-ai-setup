@@ -356,6 +356,44 @@ targets = [{ model = "openrouter/x" }]
 	}
 }
 
+// TestAliasNotesKeyIsAcceptedAndKept pins decision 1 of #691: a hand-written
+// `notes` string on an alias is read as well-formed (and not stored), a
+// non-string `notes` is Malformed, and the writer keeps the key when it
+// patches the alias's targets. If notes read as an unknown key, a comment a
+// user left on an alias would freeze its routes; if the writer dropped it,
+// the first `wt-model alias set` would erase the user's note.
+func TestAliasNotesKeyIsAcceptedAndKept(t *testing.T) {
+	path := scratchRegistry(t, aliasRegistry+`
+[[aliases]]
+id = "alias/noted"
+notes = "my daily driver"
+targets = [{ model = "openrouter/x" }]
+
+[[aliases]]
+id = "alias/badnotes"
+notes = 3
+targets = [{ model = "openrouter/x" }]
+`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if a, ok := cfg.AliasByID("alias/noted"); !ok || a.Malformed != "" || len(a.Targets) != 1 {
+		t.Errorf("alias/noted = %+v, %v, want a well-formed alias with one target", a, ok)
+	}
+	if a, ok := cfg.AliasByID("alias/badnotes"); !ok || !strings.Contains(a.Malformed, "notes must be a string") {
+		t.Errorf("alias/badnotes: Malformed = %q, want %q", a.Malformed, "notes must be a string")
+	}
+	if _, err := UpdateRegistry(func(d *RegistryDoc) error {
+		return d.SetAliasTargets("alias/noted", []map[string]any{tgt("ollama/cloud-c", 1)})
+	}); err != nil {
+		t.Fatalf("SetAliasTargets on an alias with notes: %v", err)
+	}
+	if got := readFile(t, path); !strings.Contains(got, `notes = "my daily driver"`) {
+		t.Errorf("the writer dropped the notes key:\n%s", got)
+	}
+}
+
 // TestAliasFaultIsARegistryEntryError pins that a cross-table fault a hand
 // edit left (two local targets, a target no model has) is a validation error
 // marked ErrRegistryEntry, so the repair hint names registry.toml, while Load

@@ -457,3 +457,44 @@ targets = [{ model = "openrouter/vendor--old", order = 1 }, { model = "ollama/re
 		}
 	}
 }
+
+// TestKeptAliasTargetNeitherRemovesNorDilutesTheMassGuard pins how the
+// mass-removal guard counts an alias target the plan keeps (#691, rechecking
+// #686): it is not a removal, and it does not count among the removable
+// candidates either, so it can neither trip the guard nor dilute it.
+// Registry: gpt (listed), old1 and old2 (vanished), kept (vanished, targeted
+// by an alias). The guard must read 2 of 3 and refuse without --force. If the
+// kept target were counted as a removal it would read 3 of 4 (still refused,
+// and the digest would name it); if it sat in the denominator it would read
+// 2 of 4, which is not more than half, and an approved run would delete two
+// of the three models that left OpenRouter's list without --force. (The
+// issue text and plan said "counted in the denominator"; the shipped rule,
+// the doc comment on RemovableCandidates and this test say excluded, which is
+// the conservative reading.)
+func TestKeptAliasTargetNeitherRemovesNorDilutesTheMassGuard(t *testing.T) {
+	h := testHost()
+	registry := vanishedRegistry("old1", "old2", "kept") + `
+[[aliases]]
+id = "alias/x"
+targets = [{ model = "openrouter/vendor--kept", order = 1 }]
+`
+	path, cfg := cloudSyncHome(t, h, registry)
+	stubCloudFetch(t, h, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
+	stubRouteSync(h, "")
+	dry, _, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
+	if code != 0 || strings.Contains(dry, "openrouter:   openrouter/vendor--kept\n") {
+		t.Fatalf("dry run exit %d plans the alias target's removal:\n%s", code, dry)
+	}
+	digest := orDigestIn(t, dry)
+	_, stderr, _, code := runCSFinal(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: digest})
+	if code != 4 || !strings.Contains(stderr, "openrouter: error: 2 of 3 OpenRouter-priced models would be removed") {
+		t.Fatalf("approved run without --force: exit %d, stderr %q; want the guard to read 2 of 3", code, stderr)
+	}
+	if _, stderr, code := runCS(t, h, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: digest, force: true}); code != 0 || stderr != "" {
+		t.Fatalf("--force with the digest: exit %d, stderr %q", code, stderr)
+	}
+	text := mustRead(t, path)
+	if strings.Contains(text, "vendor--old") || !strings.Contains(text, `id = "openrouter/vendor--kept"`) {
+		t.Errorf("want old1 and old2 removed and the alias target kept:\n%s", text)
+	}
+}

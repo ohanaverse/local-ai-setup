@@ -88,8 +88,8 @@ func (a *Alias) UnmarshalTOML(v any) error {
 // (UnmarshalTOML) and, through it, the writer (validateAliasRow): an id
 // "alias/<name>", then either a non-empty targets array of tables each with a
 // non-empty string model and an optional order from 1, no target listed
-// twice, or a redirect_to "alias/<name>" (never both), and no key but these
-// (`notes` is reserved for later).
+// twice, or a redirect_to "alias/<name>" (never both), an optional `notes`
+// string (ignored, not stored; #691), and no key but these.
 func readAlias(v any) Alias {
 	var a Alias
 	m, ok := v.(map[string]any)
@@ -112,13 +112,18 @@ func readAlias(v any) Alias {
 	}
 	var unknown []string
 	for k := range m {
-		if k != "id" && k != "targets" && k != "redirect_to" {
+		if k != "id" && k != "targets" && k != "redirect_to" && k != "notes" {
 			unknown = append(unknown, k)
 		}
 	}
 	sort.Strings(unknown)
 	for _, k := range unknown {
-		fault("unknown key %q (an alias holds id and targets, or id and redirect_to)", k)
+		fault("unknown key %q (an alias holds id and targets, or id and redirect_to, and an optional notes)", k)
+	}
+	if n, hasNotes := m["notes"]; hasNotes {
+		if _, isString := n.(string); !isString {
+			fault("notes must be a string")
+		}
 	}
 	raw, present := m["targets"]
 	if rt, hasRedirect := m["redirect_to"]; hasRedirect {

@@ -90,7 +90,7 @@ tags = []
 
 [[aliases]]
 id = "alias/odd"
-notes = "an unknown key: the alias is malformed"
+odd_key = "an unknown key: the alias is malformed"
 targets = [{ model = "openrouter/a" }]
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
