@@ -162,7 +162,7 @@ func executeRemove(cmd *cobra.Command, a *app, f removeFlags, args []string) err
 	if err != nil {
 		return removeFail(out, f, "", 1, err)
 	}
-	in := cleanupInputs(cwd, !f.noFetch, protected, "wt-remove")
+	in := cleanupInputs(a.hooks, cwd, !f.noFetch, protected, "wt-remove")
 	// Only a named origin/<branch> needs the per-branch gh --base query; a
 	// local branch or worktree never reads an origin row.
 	in.OriginRows = slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "origin/") })

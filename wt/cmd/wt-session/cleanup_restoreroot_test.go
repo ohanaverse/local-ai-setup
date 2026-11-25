@@ -86,13 +86,13 @@ func TestHandOffResultSeparatesWhatChangedNothing(t *testing.T) {
 // "n" at its prompt: the root is untouched and the closure returns a note
 // carrying the command's exit-3 error.
 func TestCleanupRestoreRootFuncDeclinedIsANote(t *testing.T) {
-	stubCleanupGH(t)
+	h := ghHooks(testHooks(), noPRs, noPRs)
 	tpl := gittest.Seed(t, gittest.SeedOpts{ExcludeWorktrees: true})
 	_, repo := tpl.Clone(t)
 	gittest.Lineage(t, repo)
 	cgit(t, repo, "switch", "-q", "-c", "topic")
 	cleanupCommit(t, repo, "one.txt", "one")
-	in := cleanupListInputs(repo, false, nil, "wt-cleanup")
+	in := cleanupListInputs(h, repo, false, nil, "wt-cleanup")
 	snap, err := cleanupGather(cleanup.Git{Dir: repo}, in)
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestCleanupRestoreRootFuncDeclinedIsANote(t *testing.T) {
 // its result), or the root's drift survives while the list claims the action
 // ran.
 func TestCleanupRestoreRootFuncMovesTheRoot(t *testing.T) {
-	stubCleanupGH(t)
+	h := ghHooks(testHooks(), noPRs, noPRs)
 	// The fixture is a gittest template-seeded clone pair whose lineage
 	// ignores .worktrees/ (the state restore-root requires): every mutation
 	// stays inside this test's own temp clone, never near a real repository.
@@ -142,7 +142,7 @@ func TestCleanupRestoreRootFuncMovesTheRoot(t *testing.T) {
 	// path gathers its own snapshot) and the RemoveFuncs the list would get.
 	// No app: the app is read only by Refresh and Refetch, which this test
 	// never calls.
-	in := cleanupListInputs(repo, false, nil, "wt-cleanup")
+	in := cleanupListInputs(h, repo, false, nil, "wt-cleanup")
 	snap, err := cleanupGather(cleanup.Git{Dir: repo}, in)
 	if err != nil {
 		t.Fatal(err)
@@ -239,12 +239,12 @@ func TestRestoreRootRunReportFetchedHook(t *testing.T) {
 		{"dry-run", restoreRootFlags{dryRun: true}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			restoreRootApp(t)
+			a := restoreRootApp(t)
 			dir := cleanupRepo(t)
 			rootOnTopic(t, dir)
 			calls := 0
 			var out, errOut bytes.Buffer
-			_ = restoreRootRunReport(strings.NewReader(""), &out, &errOut, tc.flags, dir, nil, nil,
+			_ = restoreRootRunReport(a.hooks, strings.NewReader(""), &out, &errOut, tc.flags, dir, nil, nil,
 				func(cleanup.FetchResult) { calls++ })
 			if calls != tc.want {
 				t.Errorf("hook calls = %d, want %d", calls, tc.want)

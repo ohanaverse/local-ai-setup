@@ -93,8 +93,8 @@ func executeRemoveRecords(cmd *cobra.Command, f removeFlags, args []string) erro
 	if err != nil {
 		return removeFail(out, f, "", 1, err)
 	}
-	in := cleanupInputs(cwd, false, nil, "wt-remove")
-	in.SkipPRs = true // records need no pull-request state, so gh is never asked
+	in := cleanupInputs(hooks{}, cwd, false, nil, "wt-remove") // SkipPRs below: no gh hook is needed
+	in.SkipPRs = true                                          // records need no pull-request state, so gh is never asked
 	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, in)
 	// No default branch only means nothing can be proven merged; a record's
 	// state does not depend on it.

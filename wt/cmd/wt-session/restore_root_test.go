@@ -30,7 +30,7 @@ func restoreRootApp(t *testing.T) *app {
 	a, tmp := newTestApp(t)
 	t.Setenv("WT_REGISTRY", filepath.Join(tmp, "local-ai", "registry.toml"))
 	t.Setenv("WT_LITELLM_CONFIG", filepath.Join(tmp, "config.yaml"))
-	stubCleanupGH(t)
+	stubCleanupGH(t, a)
 	oldNow, oldTTY, oldAfter := removeNow, restoreRootTTY, afterRestoreRootConfirm
 	removeNow = func() time.Time { return time.Now().Add(time.Hour) }
 	restoreRootTTY = func(io.Reader, io.Writer) bool { return false }
@@ -1225,7 +1225,7 @@ func TestRestoreRootRunReportTellsTheCallerAboutASignal(t *testing.T) {
 		guard := make(chan os.Signal, 1)
 		signal.Notify(guard, syscall.SIGINT)
 		t.Cleanup(func() { signal.Stop(guard) })
-		restoreRootApp(t)
+		a := restoreRootApp(t)
 		dir := cleanupRepo(t)
 		rootOnTopic(t, dir)
 		afterRestoreRootConfirm = func() {
@@ -1243,7 +1243,7 @@ func TestRestoreRootRunReportTellsTheCallerAboutASignal(t *testing.T) {
 		}
 		var got []os.Signal
 		var out, errOut bytes.Buffer
-		err := restoreRootRunReport(strings.NewReader(""), &out, &errOut, restoreRootFlags{yes: true, noFetch: true}, dir, nil,
+		err := restoreRootRunReport(a.hooks, strings.NewReader(""), &out, &errOut, restoreRootFlags{yes: true, noFetch: true}, dir, nil,
 			func(s os.Signal) { got = append(got, s) }, nil)
 		if err != nil {
 			t.Fatalf("signalled=%v: %v\n%s", signalled, err, errOut.String())

@@ -39,10 +39,10 @@ func hourLater(t *testing.T) {
 	t.Cleanup(func() { cleanupClassify = old })
 }
 
-func ghDown(t *testing.T) {
+func ghDown(t *testing.T, a *app) {
 	t.Helper()
-	t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) { return nil, errors.New("gh: offline") }))
-	t.Cleanup(cleanup.StubPRBaseListForTest(func(string, string) ([]byte, error) { return nil, errors.New("gh: offline") }))
+	down := func(string, string) ([]byte, error) { return nil, errors.New("gh: offline") }
+	a.hooks = ghHooks(a.hooks, down, down)
 }
 
 func topicRow(t *testing.T, stdout string) (status string, reasons string) {
@@ -70,7 +70,7 @@ func topicRow(t *testing.T, stdout string) (status string, reasons string) {
 func TestCleanupCmdGHDownOnGitHubOriginFloorsMergedBranch(t *testing.T) {
 	a, _ := removeApp(t)
 	dir := mergedBranchRepo(t, true)
-	ghDown(t)
+	ghDown(t, a)
 	hourLater(t)
 	stdout, _, err := runCleanup(t, a, dir, "--json", "--no-fetch")
 	if err != nil {
@@ -85,7 +85,7 @@ func TestCleanupCmdGHDownOnGitHubOriginFloorsMergedBranch(t *testing.T) {
 func TestRemoveCmdGHDownNeedsAcceptLoss(t *testing.T) {
 	a, _ := removeApp(t)
 	dir := mergedBranchRepo(t, true)
-	ghDown(t)
+	ghDown(t, a)
 	stdout, stderr, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "topic")
 	if exitOf(err) != 2 || !hasBranch(t, dir, "topic") || !strings.Contains(stdout+stderr+errText(err), "--accept-loss") {
 		t.Fatalf("exit %d branch kept %v\n%s%s%v", exitOf(err), hasBranch(t, dir, "topic"), stdout, stderr, err)
@@ -99,7 +99,7 @@ func TestRemoveCmdGHDownNeedsAcceptLoss(t *testing.T) {
 func TestNonGitHubOriginStaysProvenAndRemovable(t *testing.T) {
 	a, _ := removeApp(t)
 	dir := mergedBranchRepo(t, false)
-	ghDown(t)
+	ghDown(t, a)
 	hourLater(t)
 	stdout, _, err := runCleanup(t, a, dir, "--json", "--no-fetch")
 	if err != nil {
