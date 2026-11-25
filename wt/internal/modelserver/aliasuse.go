@@ -50,21 +50,43 @@ func serverAlias(cfg *config.Config, id string) (config.Alias, bool) {
 	return cfg.AliasByID(id)
 }
 
-// startKey is the id a start job is keyed by: an alias's local target id
-// for an alias id, else id itself. A start of alias/x and a start of its
+// startKey is the id a start job is keyed by: the local target id for an
+// alias with exactly one local target, else id itself (an alias with several
+// local targets, #690, is keyed by its own id: it starts them all, so it
+// joins no single model's start). A start of alias/x and a start of its one
 // target then share one job (modeljobs.SubmitOnce), and Jobs.Pending(target)
 // is true while either runs, which keeps auto-stop from forgetting the
-// target under the start.
+// target under the start; pendingStart covers the several-target case.
 func startKey(cfg *config.Config, id string) string {
 	if cfg == nil {
 		return id
 	}
 	if a, ok := serverAlias(cfg, id); ok {
-		if m, ok := cfg.AliasLocalTarget(a); ok {
-			return m.ID
+		if locals := cfg.AliasLocalTargets(a); len(locals) == 1 {
+			return locals[0].ID
 		}
 	}
 	return id
+}
+
+// pendingStart reports whether a start job is queued or running that covers
+// model id: one keyed by the id itself, by an alias's single local target
+// (startKey), or by any alias that targets it (a several-target alias is
+// keyed by its own id). Auto-stop must neither forget nor stop a model under
+// such a start.
+func pendingStart(cfg *config.Config, jobs interface{ Pending(string) bool }, id string) bool {
+	if jobs.Pending(id) || jobs.Pending(startKey(cfg, id)) {
+		return true
+	}
+	if cfg == nil {
+		return false
+	}
+	for _, aid := range cfg.AliasesTargeting(id) {
+		if jobs.Pending(aid) {
+			return true
+		}
+	}
+	return false
 }
 
 // configTap remembers the last config Deps.Config loaded, so the session

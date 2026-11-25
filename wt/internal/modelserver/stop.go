@@ -75,8 +75,12 @@ func (d Deps) StopJob(req modelapi.StopRequest, sessions *sessionreg.Registry) m
 // aliasStop answers a stop of an alias id: an alias is a name, so nothing
 // is stopped and the message names the local target to stop instead.
 func aliasStop(cfg *config.Config, a config.Alias) modelapi.JobResult {
-	if m, ok := cfg.AliasLocalTarget(a); ok {
-		return problem(modelapi.CodeFailed, fmt.Sprintf("%s has nothing to stop; stop %s", a.ID, m.ID))
+	if locals := cfg.AliasLocalTargets(a); len(locals) > 0 {
+		ids := make([]string, len(locals))
+		for i, m := range locals {
+			ids[i] = m.ID
+		}
+		return problem(modelapi.CodeFailed, fmt.Sprintf("%s has nothing to stop; stop %s", a.ID, strings.Join(ids, " and ")))
 	}
 	return problem(modelapi.CodeFailed, fmt.Sprintf("%s has nothing to stop: it has no local target", a.ID))
 }

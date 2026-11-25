@@ -27,6 +27,8 @@ func aliasServerCfg() *config.Config {
 		{ID: "alias/x", Targets: []config.AliasTarget{{Model: "omlx/a", Order: 1}, {Model: "openrouter/c", Order: 2}}},
 		{ID: "alias/m", Targets: []config.AliasTarget{{Model: "mtplx/y", Order: 1}}},
 		{ID: "alias/cloud", Targets: []config.AliasTarget{{Model: "openrouter/c", Order: 1}}},
+		// Two local targets of one Pool provider (#690), listed out of order.
+		{ID: "alias/two", Targets: []config.AliasTarget{{Model: "omlx/b", Order: 2}, {Model: "omlx/a", Order: 1}}},
 	}
 	return cfg
 }
@@ -444,5 +446,244 @@ func TestPrefixlessMalformedAliasNeverShadowsTheModel(t *testing.T) {
 	res = f.deps(cfg).StopJob(modelapi.StopRequest{Model: "omlx/a"}, testSessions())(context.Background(), func(string) {})
 	if !res.OK || len(f.stopped()) != 1 || f.stopped()[0].ModelID != "omlx/a" {
 		t.Errorf("stop omlx/a: result %+v, stopped %v, want the model stopped", res.Error, f.stopped())
+	}
+}
+
+// twoRig is a fake engine whose Start marks the started model running in the
+// inventory (as a real start does); evict names models a start removes from
+// the inventory again (a Pool eviction), by started model.
+type twoRig struct {
+	f      *fakeLife
+	d      Deps
+	evict  map[string][]string
+	failOn string
+	onTgt  func(id string)
+}
+
+func newTwoRig(t *testing.T, running ...string) *twoRig {
+	t.Helper()
+	r := &twoRig{f: &fakeLife{snap: serverSnap(running...)}, evict: map[string][]string{}}
+	r.d = r.f.deps(aliasServerCfg())
+	base := r.d.Start
+	r.d.Start = func(ctx context.Context, c *config.Config, tg lifecycle.Target, o lifecycle.Options) error {
+		if err := base(ctx, c, tg, o); err != nil {
+			return err
+		}
+		if r.onTgt != nil {
+			r.onTgt(tg.ModelID)
+		}
+		if tg.ModelID == r.failOn {
+			return errors.New("boom")
+		}
+		r.f.mu.Lock()
+		defer r.f.mu.Unlock()
+		var now []string
+		for _, e := range r.f.snap.Entries {
+			if e.Running && !slices.Contains(r.evict[tg.ModelID], e.ModelID) {
+				now = append(now, e.ModelID)
+			}
+		}
+		r.f.snap = serverSnap(append(now, tg.ModelID)...)
+		return nil
+	}
+	return r
+}
+
+func (r *twoRig) run(ctx context.Context, model string) (modelapi.JobResult, *stepLog, *sessionreg.Registry) {
+	steps := &stepLog{}
+	reg := sessionreg.New(time.Minute, func() time.Time { return testNow })
+	return r.d.StartJob(modelapi.StartRequest{Model: model}, reg)(ctx, steps.step), steps, reg
+}
+
+// TestStartAliasStartsEveryLocalTargetInOrder pins #690: a start of an alias
+// with two local targets starts both, in (order, file position) order, each
+// through the per-model path, reports "starting <id> (i of n)", then confirms
+// every target and touches the alias and both targets.
+func TestStartAliasStartsEveryLocalTargetInOrder(t *testing.T) {
+	r := newTwoRig(t)
+	var asked []string
+	r.d.AliasListed = func(_ context.Context, _ *config.Config, alias, target string) (bool, error) {
+		asked = append(asked, alias+" "+target)
+		return true, nil
+	}
+	steps := &stepLog{}
+	reg := sessionreg.New(time.Minute, func() time.Time { return testNow })
+	d := tapConfig(r.d, reg)
+	_ = reg.Register("s", []string{"alias/two"})
+	reg.End("s")
+	res := d.StartJob(modelapi.StartRequest{Model: "alias/two"}, reg)(context.Background(), steps.step)
+	if !res.OK {
+		t.Fatalf("result = %+v", res.Error)
+	}
+	want := []string{"Start omlx/a", "Settle omlx/a", "Routed omlx/a", "Start omlx/b", "Settle omlx/b", "Routed omlx/b"}
+	if got := r.f.callList(); !reflect.DeepEqual(got, want) {
+		t.Errorf("engine calls %v, want %v", got, want)
+	}
+	var starting []string
+	for _, s := range steps.list() {
+		if strings.HasPrefix(s, "starting ") {
+			starting = append(starting, s)
+		}
+	}
+	if !reflect.DeepEqual(starting, []string{"starting omlx/a (1 of 2)", "starting omlx/b (2 of 2)"}) {
+		t.Errorf("steps %v", starting)
+	}
+	if !reflect.DeepEqual(asked, []string{"alias/two omlx/a", "alias/two omlx/b"}) {
+		t.Errorf("alias row checks %v, want one per target", asked)
+	}
+	for _, id := range []string{"alias/two", "omlx/a", "omlx/b"} {
+		if _, ok := reg.IdleSince(id); !ok {
+			t.Errorf("%s was not touched", id)
+		}
+	}
+}
+
+// TestStartAliasSkipsATargetAlreadyRunningAndRouted pins that a re-post after
+// the client answered a problem resumes: a target running and routed (with the
+// alias routed) is not started again.
+func TestStartAliasSkipsATargetAlreadyRunningAndRouted(t *testing.T) {
+	r := newTwoRig(t, "omlx/a")
+	r.d.RoutedIDs = func(context.Context) (map[string]bool, error) {
+		return map[string]bool{"omlx/a": true, "alias/two": true}, nil
+	}
+	res, _, _ := r.run(context.Background(), "alias/two")
+	if !res.OK {
+		t.Fatalf("result = %+v", res.Error)
+	}
+	if got := r.f.callList(); slices.Contains(got, "Start omlx/a") || !slices.Contains(got, "Start omlx/b") {
+		t.Errorf("engine calls %v, want only omlx/b started", got)
+	}
+	// Running but not routed: started again so the route write runs.
+	r = newTwoRig(t, "omlx/a")
+	r.d.RoutedIDs = func(context.Context) (map[string]bool, error) { return map[string]bool{}, nil }
+	r.d.AliasListed = func(context.Context, *config.Config, string, string) (bool, error) { return true, nil }
+	if res, _, _ := r.run(context.Background(), "alias/two"); !res.OK {
+		t.Fatalf("result = %+v", res.Error)
+	}
+	if got := r.f.callList(); !slices.Contains(got, "Start omlx/a") {
+		t.Errorf("engine calls %v, want omlx/a started: it is not routed", got)
+	}
+}
+
+// TestStartAliasPartialFailureNamesWhatStarted pins the no-rollback rule: when
+// the second target fails, the first keeps running and the message names the
+// started target, the failed one and why, and says to run the start again.
+func TestStartAliasPartialFailureNamesWhatStarted(t *testing.T) {
+	r := newTwoRig(t)
+	r.failOn = "omlx/b"
+	res, _, _ := r.run(context.Background(), "alias/two")
+	p := wantProblem(t, res, modelapi.CodeFailed)
+	for _, want := range []string{"started omlx/a", "omlx/b", "boom", "run the start again"} {
+		if !strings.Contains(p.Message, want) {
+			t.Errorf("message %q lacks %q", p.Message, want)
+		}
+	}
+	if len(r.f.stopped()) != 0 {
+		t.Errorf("stopped %v: a partial failure rolls nothing back", r.f.stopped())
+	}
+	// A failure of the first target is the plain per-model failure.
+	r = newTwoRig(t)
+	r.failOn = "omlx/a"
+	p = wantProblem(t, func() modelapi.JobResult { res, _, _ := r.run(context.Background(), "alias/two"); return res }(), modelapi.CodeFailed)
+	if strings.Contains(p.Message, "started") || slices.Contains(r.f.callList(), "Start omlx/b") {
+		t.Errorf("message %q, calls %v: nothing started, the second must not start", p.Message, r.f.callList())
+	}
+}
+
+// TestStartAliasFailsWhenALaterStartDisplacedAnEarlierTarget pins the final
+// check: a Pool eviction by the second start removes the first from the
+// inventory, which fails the job naming the displaced model.
+func TestStartAliasFailsWhenALaterStartDisplacedAnEarlierTarget(t *testing.T) {
+	r := newTwoRig(t)
+	r.evict["omlx/b"] = []string{"omlx/a"}
+	res, _, _ := r.run(context.Background(), "alias/two")
+	p := wantProblem(t, res, modelapi.CodeFailed)
+	if !strings.Contains(p.Message, "displaced omlx/a") {
+		t.Errorf("message = %q, want it to name the displaced omlx/a", p.Message)
+	}
+}
+
+// TestStartAliasCancelStopsBetweenTargets pins that cancelling the job after
+// the first target started starts no second one.
+func TestStartAliasCancelStopsBetweenTargets(t *testing.T) {
+	r := newTwoRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.onTgt = func(id string) {
+		if id == "omlx/a" {
+			cancel()
+		}
+	}
+	res, _, _ := r.run(ctx, "alias/two")
+	p := wantProblem(t, res, modelapi.CodeCancelled)
+	if slices.Contains(r.f.callList(), "Start omlx/b") || !strings.Contains(p.Message, "omlx/b") {
+		t.Errorf("message %q, calls %v: want cancelled before omlx/b started", p.Message, r.f.callList())
+	}
+}
+
+// TestStartKeyIsTheTargetForOneLocalTargetAndTheAliasForSeveral pins D4: a
+// one-local alias still joins its target's job; a several-local alias is keyed
+// by its own id.
+func TestStartKeyIsTheTargetForOneLocalTargetAndTheAliasForSeveral(t *testing.T) {
+	cfg := aliasServerCfg()
+	if got := startKey(cfg, "alias/x"); got != "omlx/a" {
+		t.Errorf("startKey(alias/x) = %q, want omlx/a", got)
+	}
+	if got := startKey(cfg, "alias/two"); got != "alias/two" {
+		t.Errorf("startKey(alias/two) = %q, want the alias id", got)
+	}
+}
+
+// TestAutoStopDoesNotForgetATargetWhileAMultiTargetAliasStartRuns pins that a
+// running start of a several-local alias (keyed by the alias id) protects
+// each of its targets from forgetIdle and from an auto stop.
+func TestAutoStopDoesNotForgetATargetWhileAMultiTargetAliasStartRuns(t *testing.T) {
+	const grace = time.Minute
+	f := &fakeLife{snap: serverSnap("omlx/a")}
+	s, clk, release := gatedServer(t, f, grace)
+	_ = s.sessions.Register("s", []string{"alias/two"})
+	s.sessions.End("s")
+	clk.advance(2 * grace)
+	id := postAliasStart(t, s, "alias/two")
+	if !s.jobs.Pending("alias/two") {
+		t.Fatal("Jobs.Pending(alias/two) is false while its start runs")
+	}
+	s.stopper.Tick(context.Background())
+	for _, m := range []string{"omlx/a", "omlx/b", "alias/two"} {
+		if _, seen := s.sessions.IdleSince(m); !seen {
+			t.Errorf("%s was forgotten while the multi-target start ran", m)
+		}
+	}
+	if got := stoppedIDs(f); len(got) != 0 {
+		t.Errorf("stopped %v under a running start", got)
+	}
+	release()
+	waitJob(t, s, id)
+}
+
+// TestSessionOnAMultiTargetAliasCountsForEveryTarget pins D7: the session
+// accounting expands an alias to all its local targets.
+func TestSessionOnAMultiTargetAliasCountsForEveryTarget(t *testing.T) {
+	exp := aliasExpansion(aliasServerCfg())
+	if got := exp["alias/two"]; !reflect.DeepEqual(got, []string{"omlx/a", "omlx/b"}) && !reflect.DeepEqual(got, []string{"omlx/b", "omlx/a"}) {
+		t.Errorf("expansion of alias/two = %v, want both targets", got)
+	}
+	reg := sessionreg.New(time.Minute, func() time.Time { return testNow })
+	reg.SetExpand(func() map[string][]string { return exp })
+	_ = reg.Register("s", []string{"alias/two"})
+	for _, m := range []string{"omlx/a", "omlx/b"} {
+		if got := reg.Users(m); !reflect.DeepEqual(got, []string{"s"}) {
+			t.Errorf("Users(%s) = %v, want the session on alias/two", m, got)
+		}
+	}
+}
+
+// TestStopOfAMultiTargetAliasNamesEveryTarget pins D7's message.
+func TestStopOfAMultiTargetAliasNamesEveryTarget(t *testing.T) {
+	f := &fakeLife{snap: serverSnap("omlx/a", "omlx/b")}
+	res := f.deps(aliasServerCfg()).StopJob(modelapi.StopRequest{Model: "alias/two"}, testSessions())(context.Background(), func(string) {})
+	p := wantProblem(t, res, modelapi.CodeFailed)
+	if p.Message != "alias/two has nothing to stop; stop omlx/a and omlx/b" {
+		t.Errorf("message = %q", p.Message)
 	}
 }

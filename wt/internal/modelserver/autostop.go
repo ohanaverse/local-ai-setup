@@ -64,7 +64,7 @@ func (a *AutoStopper) Tick(ctx context.Context) {
 		if !seenOK || now.Sub(since) < a.Grace {
 			continue
 		}
-		if a.Jobs.Pending(id) {
+		if pendingStart(cfg, a.Jobs, id) {
 			continue
 		}
 		a.Jobs.Submit(jobAutoStop, id, a.Deps.StopJob(modelapi.StopRequest{Model: id}, a.Sessions))
@@ -88,8 +88,9 @@ func (a *AutoStopper) forgetIdle(cfg *config.Config, snap localmodels.Snapshot, 
 	if len(a.Sessions.Users(id)) > 0 {
 		return
 	}
-	// An alias's start is keyed by its local target (startKey).
-	if a.Jobs.Pending(id) || a.Jobs.Pending(startKey(cfg, id)) {
+	// An alias's start is keyed by its single local target (startKey), or by
+	// its own id when it has several (#690).
+	if pendingStart(cfg, a.Jobs, id) {
 		return
 	}
 	if since, ok := a.Sessions.IdleSince(id); !ok || now.Sub(since) < a.Grace {

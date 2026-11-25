@@ -383,14 +383,37 @@ func TestSyncSkipsAnAliasWhoseIDIsAModel(t *testing.T) {
 	aliasFaultCase(t, bad, nil)
 }
 
-// TestSyncSkipsAnAliasWithTwoLocalTargets checks that an alias AliasFault
-// rejects for two local targets (both running) is skipped with one warning:
-// no row of either target is added and the existing rows stay.
-func TestSyncSkipsAnAliasWithTwoLocalTargets(t *testing.T) {
+// TestSyncSkipsAnAliasWithTwoLocalTargetsOfOneExclusiveFamily checks that an
+// alias AliasFault rejects for two local targets of one Exclusive family
+// (mtplx: one model per process, #690), both running, is skipped with one
+// warning: no row of either target is added and the existing rows stay.
+func TestSyncSkipsAnAliasWithTwoLocalTargetsOfOneExclusiveFamily(t *testing.T) {
 	bad := cloudAliasCfg()
+	bad.Models = append(bad.Models, config.Model{ID: "mtplx/other", ProviderID: "mtplx", ModelName: "other"})
 	bad.Aliases[0].Targets = append(bad.Aliases[0].Targets,
+		config.AliasTarget{Model: "mtplx/other", Order: 2}, config.AliasTarget{Model: "mtplx/Youssofal--Q", Order: 3})
+	aliasFaultCase(t, bad, []string{"mtplx/other", "mtplx/Youssofal--Q"})
+}
+
+// TestSyncWritesRowsForAnAliasWithTwoLocalTargetsOfDifferentFamilies pins
+// #690: two running local targets of different families (ollama and mtplx) are
+// a sound alias, and each gets its alias row beside the cloud target's.
+func TestSyncWritesRowsForAnAliasWithTwoLocalTargetsOfDifferentFamilies(t *testing.T) {
+	reg := cloudAliasCfg()
+	reg.Aliases[0].Targets = append(reg.Aliases[0].Targets,
 		config.AliasTarget{Model: "ollama/gemma:9b", Order: 2}, config.AliasTarget{Model: "mtplx/Youssofal--Q", Order: 3})
-	aliasFaultCase(t, bad, []string{"ollama/gemma:9b", "mtplx/Youssofal--Q"})
+	o, _, _, fake := aliasDBOpts(t, "model_list: []\n"+settledSettings, &reg)
+	res, err := Sync(reg, localFor(reg, "ollama/gemma:9b", "mtplx/Youssofal--Q"), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countWarnings(res, "alias/c"); n != 0 {
+		t.Errorf("warnings %q, want none", res.Warnings)
+	}
+	got := fake.aliasTargets("alias/c")
+	if len(got) != 3 {
+		t.Errorf("alias rows %v, want one per target (cloud and both local)", got)
+	}
 }
 
 // TestLaunchEnsureNeverReachesTheAliasHalf checks that the launch-time cloud

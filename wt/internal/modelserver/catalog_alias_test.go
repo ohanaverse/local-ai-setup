@@ -346,3 +346,51 @@ func TestRedirectAliasRowStaysLaunchableAndNamesItsTarget(t *testing.T) {
 		t.Errorf("redirect to a missing alias: %+v", r)
 	}
 }
+
+// TestAliasActionWithSeveralLocalTargets pins #690's policy for an alias whose
+// lowest-order level holds local targets: the action reads every local target
+// (start when any must start, or any runs while the alias is not routed), the
+// state is that target's when exactly one must start, loading when any is
+// loading, else stopped; a cloud-first alias keeps launching without starting
+// its local fallbacks.
+func TestAliasActionWithSeveralLocalTargets(t *testing.T) {
+	local := func(id, state, action string) modelapi.Row {
+		return modelapi.Row{ID: id, Location: "local", State: state, Action: action}
+	}
+	stopped := func(id string) modelapi.Row { return local(id, modelapi.StateStopped, modelapi.ActionStart) }
+	loading := func(id string) modelapi.Row { return local(id, modelapi.StateLoading, modelapi.ActionStart) }
+	running := func(id string) modelapi.Row { return local(id, modelapi.StateRunning, modelapi.ActionLaunch) }
+	cloudUp := modelapi.Row{ID: "openrouter/c", Location: "cloud", State: modelapi.StateStopped, Action: modelapi.ActionLaunch}
+	tg := func(id string, order int) modelapi.AliasTarget { return modelapi.AliasTarget{ID: id, Order: order} }
+	rowsOf := func(rs ...modelapi.Row) map[string]modelapi.Row {
+		m := map[string]modelapi.Row{}
+		for _, r := range rs {
+			m[r.ID] = r
+		}
+		return m
+	}
+	two := []modelapi.AliasTarget{tg("omlx/a", 1), tg("omlx/b", 2)}
+	for _, c := range []struct {
+		name         string
+		targets      []modelapi.AliasTarget
+		rows         map[string]modelapi.Row
+		routed       bool
+		loc, st, act string
+	}{
+		{"both stopped", two, rowsOf(stopped("omlx/a"), stopped("omlx/b")), true, "local", modelapi.StateStopped, modelapi.ActionStart},
+		{"one running, one stopped", two, rowsOf(running("omlx/a"), stopped("omlx/b")), true, "local", modelapi.StateStopped, modelapi.ActionStart},
+		{"one running, one loading", two, rowsOf(running("omlx/a"), loading("omlx/b")), true, "local", modelapi.StateLoading, modelapi.ActionStart},
+		{"both stopped, one loading", two, rowsOf(stopped("omlx/a"), loading("omlx/b")), true, "local", modelapi.StateLoading, modelapi.ActionStart},
+		{"both running, routed", two, rowsOf(running("omlx/a"), running("omlx/b")), true, "local", modelapi.StateRunning, modelapi.ActionLaunch},
+		{"both running, alias unrouted", two, rowsOf(running("omlx/a"), running("omlx/b")), false, "local", modelapi.StateStopped, modelapi.ActionStart},
+		{"cloud first, two local fallbacks stopped", []modelapi.AliasTarget{tg("openrouter/c", 1), tg("omlx/a", 2), tg("omlx/b", 3)},
+			rowsOf(cloudUp, stopped("omlx/a"), stopped("omlx/b")), true, "cloud", modelapi.StateRunning, modelapi.ActionLaunch},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			loc, state, action, reason := aliasAction(c.targets, c.rows, c.routed)
+			if loc != c.loc || state != c.st || action != c.act || reason != "" {
+				t.Errorf("got %s/%s/%s (%q), want %s/%s/%s", loc, state, action, reason, c.loc, c.st, c.act)
+			}
+		})
+	}
+}

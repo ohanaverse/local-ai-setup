@@ -82,16 +82,19 @@ func aliasRows(cfg *config.Config, models []modelapi.Row, ix tiers.Index, sessio
 
 // aliasAction is decision 5's policy for an alias row, from its targets and
 // the model rows by id. The location is local only when the lowest-order
-// level holds the alias's local target. The action, in order: start when
-// that level's local target must start, or runs while the alias is not
-// routed (an alias start re-runs the target's route write, which adds the
-// alias's rows, so catalog.NeedsStart agrees); launch when a target is
+// level holds a local target; the action then reads every local target of
+// the alias (#690). The action, in order: start when any local target must
+// start, or runs while the alias is not routed (an alias start re-runs the
+// target's route write, which adds the alias's rows, so catalog.NeedsStart
+// agrees); launch when a target is
 // servable and the alias routed; block when a target is servable but the
 // alias is not routed; start when any target can start; else block, joining
 // the targets' reasons. The state follows the action, as on every model row
 // (blocked exactly when block, a running row launches): launch is running,
 // block is blocked, and start is stopped, or the local target's own state
-// (stopped, loading, unknown) when the start is that target's start. A
+// (stopped, loading, unknown) when the start is that one target's start; with
+// several targets to start the state is loading when any is loading, else
+// stopped. A
 // target with no model row blocks the alias.
 func aliasAction(targets []modelapi.AliasTarget, rows map[string]modelapi.Row, routed bool) (location, state, action, blockReason string) {
 	location = string(config.LocationCloud)
@@ -99,7 +102,7 @@ func aliasAction(targets []modelapi.AliasTarget, rows map[string]modelapi.Row, r
 		return location, modelapi.StateBlocked, modelapi.ActionBlock, "the alias has no targets"
 	}
 	low := lowestOrder(targets)
-	var levelLocal *modelapi.Row
+	var levelLocals, allLocals []modelapi.Row
 	servable, canStart := false, false
 	for _, t := range targets {
 		r, ok := rows[t.ID]
@@ -107,19 +110,42 @@ func aliasAction(targets []modelapi.AliasTarget, rows map[string]modelapi.Row, r
 			return location, modelapi.StateBlocked, modelapi.ActionBlock,
 				fmt.Sprintf("target %s is not in the model server's catalog", t.ID)
 		}
-		if t.Order == low && r.Location == string(config.LocationLocal) {
-			levelLocal = &r
+		if r.Location == string(config.LocationLocal) {
+			allLocals = append(allLocals, r)
+			if t.Order == low {
+				levelLocals = append(levelLocals, r)
+			}
 		}
 		servable = servable || r.Action == modelapi.ActionLaunch
 		canStart = canStart || r.Action == modelapi.ActionStart
 	}
-	if levelLocal != nil {
+	// An alias whose lowest-order level holds a local target is a local
+	// alias, and its start starts every local target (#690), so the action
+	// reads all of them. A cloud-first alias with a local fallback is cloud:
+	// it launches without starting the fallback (an explicit start still does).
+	var locals []modelapi.Row
+	if len(levelLocals) > 0 {
 		location = string(config.LocationLocal)
+		locals = allLocals
+	}
+	var needStart []modelapi.Row
+	anyRunning, anyLoading := false, false
+	for _, r := range locals {
+		if r.Action == modelapi.ActionStart {
+			needStart = append(needStart, r)
+		}
+		anyRunning = anyRunning || r.State == modelapi.StateRunning
+		anyLoading = anyLoading || r.State == modelapi.StateLoading
 	}
 	switch {
-	case levelLocal != nil && levelLocal.Action == modelapi.ActionStart:
-		return location, levelLocal.State, modelapi.ActionStart, ""
-	case levelLocal != nil && levelLocal.State == modelapi.StateRunning && !routed:
+	case len(needStart) == 1:
+		return location, needStart[0].State, modelapi.ActionStart, ""
+	case len(needStart) > 1:
+		if anyLoading {
+			return location, modelapi.StateLoading, modelapi.ActionStart, ""
+		}
+		return location, modelapi.StateStopped, modelapi.ActionStart, ""
+	case anyRunning && !routed:
 		return location, modelapi.StateStopped, modelapi.ActionStart, ""
 	case servable && routed:
 		return location, modelapi.StateRunning, modelapi.ActionLaunch, ""

@@ -214,7 +214,10 @@ tags = ["code"]
 # wt reads it into Config.Aliases. `order` is optional and reads as the
 # target's 1-based position; targets with equal order share the requests
 # (measured on LiteLLM 1.109.1); a lower order is tried first.
-# A group has at most one local target.
+# A group may hold several local targets (#690): a start starts them one
+# after another. Two local targets of one Exclusive-tenancy family (mtplx) are
+# refused, since the second would evict the first; ollama and omlx may hold
+# several.
 [[aliases]]
 id = "alias/fixture-cloud"
 targets = [{ model = "openrouter/contract-fixture:cloud" }]
@@ -224,6 +227,13 @@ id = "alias/fixture-group"
 targets = [
   { model = "pinned-cloud/contract-fixture:inherit", order = 1 },
   { model = "ollama/contract-fixture:local", order = 2 },
+]
+
+[[aliases]]
+id = "alias/fixture-locals"
+targets = [
+  { model = "ollama/contract-fixture:local", order = 1 },
+  { model = "ollama/contract-fixture:absent", order = 2 },
 ]
 
 # A renamed alias (#687, `wt-model alias rename`): the old id stays as a

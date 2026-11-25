@@ -45,7 +45,8 @@ func (d *RegistryDoc) validateTouched() error {
 // (validateAliasRow), and re-checks each other alias that targets a touched
 // model or a model of a touched provider: a write that touches only a model
 // row (`wt-model model edit --location local`, a location unset so the model
-// inherits its provider's) must not give an alias a second local target.
+// inherits its provider's) must not give an alias two local targets of one
+// Exclusive family (#690).
 // Such an alias is refused only for a fault the write gave it; one it
 // already had (a hand edit elsewhere) is not this write's doing.
 func (d *RegistryDoc) validateAliases() error {
