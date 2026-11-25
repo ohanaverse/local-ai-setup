@@ -154,7 +154,7 @@ func TestAliasesRoundTripThroughTheWriter(t *testing.T) {
 }
 
 func aliasEqual(a, b Alias) bool {
-	return a.ID == b.ID && a.Malformed == b.Malformed && slices.Equal(a.Targets, b.Targets)
+	return a.ID == b.ID && a.RedirectTo == b.RedirectTo && a.Malformed == b.Malformed && slices.Equal(a.Targets, b.Targets)
 }
 
 // TestAliasOrderDefaultsToPosition pins decision 1: `order` is optional and a

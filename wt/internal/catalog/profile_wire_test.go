@@ -6,6 +6,7 @@ package catalog
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -226,5 +227,26 @@ func TestSlotProfileTwoAliasesTwoLocalTargetsRefused(t *testing.T) {
 		if row.Running || row.Profile.Local != nil {
 			t.Errorf("%v: running %v local %v, want neither", tc.slots, row.Running, row.Profile.Local)
 		}
+	}
+}
+
+// TestSlotRedirectNotesNameEachRenamedSlotOnce pins #687's client note: one
+// line per distinct slot id the catalog reports as a redirect, in FilledOrder,
+// with the exact repoint command; a slot on an ordinary alias or a model, or
+// on an id the catalog lacks, gets none. The launch is never blocked by it.
+func TestSlotRedirectNotesNameEachRenamedSlotOnce(t *testing.T) {
+	rows := []modelapi.Row{
+		{ID: "alias/old", Kind: modelapi.KindAlias, RedirectTo: "alias/new"},
+		{ID: "alias/new", Kind: modelapi.KindAlias},
+		{ID: "openrouter/a"},
+	}
+	slots := map[string]string{"sonnet": "alias/old", "opus": "alias/old", "haiku": "openrouter/a", "fable": "alias/ghost"}
+	got := SlotRedirectNotes(rows, slotCheck(0, "p", "sonnet", slots))
+	want := []string{"alias/old is renamed to alias/new; run 'wt profile slots repoint alias/old alias/new'"}
+	if !slices.Equal(got, want) {
+		t.Errorf("notes = %q, want %q", got, want)
+	}
+	if got := SlotRedirectNotes(rows, slotCheck(0, "p", "sonnet", map[string]string{"sonnet": "alias/new"})); len(got) != 0 {
+		t.Errorf("an ordinary alias got notes %q", got)
 	}
 }

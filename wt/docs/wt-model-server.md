@@ -821,7 +821,8 @@ Every row carries `id`, `family`, `provider_id`, `model_name`, `location`,
 | `context` | The context window in tokens: the registry's `context_window` (any location), else, for a cloud model, the tiers file's window when it records the model's own host window (not the largest row of its key). Absent when unknown. |
 | `price.time_priced` | True when the model has time-windowed prices, so the figures are those in force at `generated`. |
 | `kind` | `"alias"` on an alias row, absent on a model row. |
-| `targets` | An alias row's targets in the alias's order, each `{"id", "order", "provider_id", "location", "state", "context"}` (`context` absent when unknown). Absent on a model row. |
+| `targets` | An alias row's targets in the alias's order, each `{"id", "order", "provider_id", "location", "state", "context"}` (`context` absent when unknown). Absent on a model row. A redirect row (#687) carries its target alias's targets. |
+| `redirect_to` | An alias row's redirect target (`alias/<new>`, left by `wt-model alias rename`); absent on every other row. The row stays launchable; a client names it in a launch note and `wt profile slots repoint` moves profiles off it. Added to schema 2 without a bump. |
 
 **Alias rows** (#596). Each registry `[[aliases]]` entry is one row:
 `id` and `gateway_id` are the alias id, `provider_id` and `family` are

@@ -117,8 +117,14 @@ type Row struct {
 	// Kind is KindAlias for an alias row and absent for a model row.
 	Kind string `json:"kind,omitempty"`
 	// Targets are an alias row's targets, in the alias's order; absent on a
-	// model row.
+	// model row. A redirect row (RedirectTo set) carries the targets of the
+	// alias it redirects to.
 	Targets []AliasTarget `json:"targets,omitempty"`
+	// RedirectTo is the alias id an alias row redirects to (#687, `wt-model
+	// alias rename` left it behind); absent on every other row. The row stays
+	// launchable: running sessions and unchanged profiles keep working. Added
+	// to schema 2 without a bump: an older client ignores the key.
+	RedirectTo string `json:"redirect_to,omitempty"`
 }
 
 // Pricing describes the OpenRouter price refresh.

@@ -55,7 +55,7 @@ var (
 		"draft":                    {"repo", "local_path"},
 	}
 	aliasSchemas = map[string][]string{
-		"":        {"id", "targets"},
+		"":        {"id", "redirect_to", "targets"},
 		"targets": {"model", "order"},
 	}
 )
@@ -635,6 +635,9 @@ func (d *RegistryDoc) SetAliasTargets(id string, targets []map[string]any) error
 	if err != nil {
 		return err
 	}
+	if to := rowRedirect(rows[i]); to != "" {
+		return fmt.Errorf("alias %q is a redirect to %q (#687); set %s's targets instead", id, to, to)
+	}
 	if targets == nil {
 		targets = []map[string]any{}
 	}
@@ -650,13 +653,67 @@ func (d *RegistryDoc) SetAliasTargets(id string, targets []map[string]any) error
 	return nil
 }
 
-// RemoveAlias deletes the alias id and returns its table. Removing the last
+// rowRedirect is an alias table's redirect_to, "" when it has none.
+func rowRedirect(row *tomlw.Table) string {
+	v, _ := row.Get("redirect_to")
+	s, _ := v.(string)
+	return s
+}
+
+// AliasRedirectTo is the redirect_to of the alias id, "" when the alias has
+// none or does not exist. modeladmin reads it to remove redirects before the
+// aliases they point at.
+func (d *RegistryDoc) AliasRedirectTo(id string) string {
+	rows, i, err := d.aliasRow(id)
+	if err != nil {
+		return ""
+	}
+	return rowRedirect(rows[i])
+}
+
+// RedirectsTo is the ids of the alias tables whose redirect_to is id, in
+// file order (#687).
+func (d *RegistryDoc) RedirectsTo(id string) []string {
+	var out []string
+	for _, row := range d.rows("aliases") {
+		if rowRedirect(row) == id && !slices.Contains(out, rowID(row)) {
+			out = append(out, rowID(row))
+		}
+	}
+	return out
+}
+
+// RedirectAlias turns the ordinary alias old into a redirect to target and
+// returns old's targets: its targets key is dropped and redirect_to set, in
+// the schema's order. The caller (modeladmin.RenameAlias) adds the target
+// alias in the same write; this validates with the write like any alias edit.
+func (d *RegistryDoc) RedirectAlias(old, target string) error {
+	rows, i, err := d.aliasRow(old)
+	if err != nil {
+		return err
+	}
+	row := rows[i].Clone()
+	row.Delete("targets")
+	row.Set("redirect_to", target)
+	rows[i] = reorderTable(row, aliasSchemas, "")
+	d.setRows("aliases", rows)
+	d.touchAlias(rows[i])
+	return nil
+}
+
+// RemoveAlias deletes the alias id and returns its table. An alias that other
+// aliases redirect to (#687) is refused, the error naming them: removing it
+// would leave their sessions with no route. Removing the last
 // alias removes the top-level `aliases` key, so the file is again one an
 // older wt-model (which refuses a top-level key it does not know) can write.
 func (d *RegistryDoc) RemoveAlias(id string) (*tomlw.Table, error) {
 	rows, i, err := d.aliasRow(id)
 	if err != nil {
 		return nil, err
+	}
+	if by := d.RedirectsTo(id); len(by) > 0 {
+		return nil, fmt.Errorf("%w: alias %q is the redirect target of %s; remove the redirect first (`wt-model alias rm --finished` once its sessions end)",
+			ErrAliasRedirected, id, strings.Join(by, ", "))
 	}
 	row := rows[i]
 	if rest := slices.Delete(slices.Clone(rows), i, i+1); len(rest) > 0 {

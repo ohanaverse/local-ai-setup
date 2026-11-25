@@ -3,6 +3,7 @@
   "aliases": [
     {
       "id": "alias/main",
+      "redirect_to": null,
       "targets": [
         {
           "model": "openrouter/big",
@@ -18,7 +19,25 @@
       "routed": true
     },
     {
+      "id": "alias/old",
+      "redirect_to": "alias/main",
+      "targets": [
+        {
+          "model": "openrouter/big",
+          "order": 1
+        },
+        {
+          "model": "openrouter/small",
+          "order": 2
+        }
+      ],
+      "context": 131072,
+      "sessions": 1,
+      "routed": true
+    },
+    {
       "id": "alias/spare",
+      "redirect_to": null,
       "targets": [
         {
           "model": "openrouter/unknown",

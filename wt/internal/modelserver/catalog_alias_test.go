@@ -315,3 +315,34 @@ func TestMalformedAliasIsABlockRow(t *testing.T) {
 		}
 	}
 }
+
+// TestRedirectAliasRowStaysLaunchableAndNamesItsTarget pins #687 on the wire:
+// a redirect alias is a launchable alias row with its target alias's targets
+// and window, carrying redirect_to so a client can note the rename, and a
+// session on the old id still counts against the local target (decision 12),
+// so the target is not stopped under it. A redirect to a missing alias is a
+// block row naming the fault. Without this a running session on the old id
+// would lose its row at the rename.
+func TestRedirectAliasRowStaysLaunchableAndNamesItsTarget(t *testing.T) {
+	cfg := aliasCfg()
+	cfg.Aliases = append(cfg.Aliases, config.Alias{ID: "alias/old", RedirectTo: "alias/x"})
+	sess := testSessions()
+	_ = sess.Register("s", []string{"alias/old"})
+	routed := map[string]bool{"alias/x": true, "alias/old": true, "openrouter/c": true}
+	c := BuildCatalog(cfg, aliasSnap(false), nil, sess, routed, testNow, CatalogOptions{})
+	nw, old := rowByID(t, c, "alias/x"), rowByID(t, c, "alias/old")
+	if old.RedirectTo != "alias/x" || nw.RedirectTo != "" || old.Kind != modelapi.KindAlias {
+		t.Fatalf("redirect_to: old %q new %q", old.RedirectTo, nw.RedirectTo)
+	}
+	if old.Action != nw.Action || old.State != nw.State || len(old.Targets) != len(nw.Targets) || len(old.Targets) == 0 || old.Context != nw.Context || old.Sessions != 1 {
+		t.Errorf("old row %+v differs from the new row %+v beyond the id", old, nw)
+	}
+	if got := aliasExpansion(cfg)["alias/old"]; len(got) != 1 || got[0] != "omlx/a" {
+		t.Errorf("a session on the redirect expands to %v, want the local target omlx/a", got)
+	}
+	cfg.Aliases[len(cfg.Aliases)-1].RedirectTo = "alias/ghost"
+	c = BuildCatalog(cfg, aliasSnap(false), nil, sess, routed, testNow, CatalogOptions{})
+	if r := rowByID(t, c, "alias/old"); r.Action != modelapi.ActionBlock || !strings.Contains(r.BlockReason, "not an alias") {
+		t.Errorf("redirect to a missing alias: %+v", r)
+	}
+}

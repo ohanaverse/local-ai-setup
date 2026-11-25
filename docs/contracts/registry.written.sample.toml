@@ -155,3 +155,7 @@ targets = [
     { model = "openrouter/written-fixture:cloud", order = 1 },
     { model = "ollama/written-fixture:int", order = 2 },
 ]
+
+[[aliases]]
+id = "alias/written-old"
+redirect_to = "alias/written-single"

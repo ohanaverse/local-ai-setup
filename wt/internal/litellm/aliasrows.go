@@ -84,8 +84,9 @@ func dbModelsFromAlias(cfg *config.Config, a config.Alias, live func(id string) 
 		if a.Malformed == "" {
 			reason = fmt.Sprintf("alias id %q is not %s<name>", a.ID, config.AliasIDPrefix)
 		}
-		skips := make([]AliasSkip, 0, len(a.Targets))
-		for _, t := range a.Targets {
+		targets := cfg.AliasTargets(a)
+		skips := make([]AliasSkip, 0, len(targets))
+		for _, t := range targets {
 			skips = append(skips, AliasSkip{Target: t.Model, Reason: reason, Frozen: true})
 		}
 		return nil, skips
@@ -95,7 +96,7 @@ func dbModelsFromAlias(cfg *config.Config, a config.Alias, live func(id string) 
 	frozen := func(t config.AliasTarget, format string, args ...any) {
 		skips = append(skips, AliasSkip{Target: t.Model, Reason: fmt.Sprintf(format, args...), Frozen: true})
 	}
-	for i, t := range a.Targets {
+	for i, t := range cfg.AliasTargets(a) {
 		m, ok := onlyModel(cfg, t.Model)
 		if !ok {
 			frozen(t, "target %q does not name exactly one registry model", t.Model)

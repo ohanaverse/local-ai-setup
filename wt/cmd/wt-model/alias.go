@@ -37,15 +37,16 @@ const aliasListTimeout = 10 * time.Second
 func aliasCmd(h *host, rec servestate.Store) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "alias",
-		Short: "List, set and remove registry aliases (one gateway id for one model or a priority group)",
+		Short: "List, set, rename and remove registry aliases (one gateway id for one model or a priority group)",
 		Long: "An alias is a registry id alias/<name> that a slot profile, pi or codex can name\n" +
 			"like a model: it routes to one model, or to several in priority order (a group;\n" +
 			"LiteLLM tries a lower order first; targets with equal order share the requests).\n" +
 			"Its routes live in LiteLLM's database and follow its targets: a cloud target always, a local\n" +
 			"one while it runs. `wt-model alias set` re-points an alias with no gap and no\n" +
-			"restart.",
+			"restart. `wt-model alias rename` gives an alias a new id and keeps the old id\n" +
+			"working as a redirect until its sessions end.",
 	}
-	c.AddCommand(aliasListCmd(h, rec), aliasSetCmd(h, rec), aliasRmCmd(h, rec))
+	c.AddCommand(aliasListCmd(h, rec), aliasSetCmd(h, rec), aliasRenameCmd(h), aliasRmCmd(h, rec))
 	return c
 }
 
@@ -56,13 +57,16 @@ func aliasListCmd(h *host, rec servestate.Store) *cobra.Command {
 		Short: "List the registry's aliases with their targets, window, client sessions and routes",
 		Long: "List every alias in the registry, one row each:\n\n" +
 			"  ALIAS     the alias id\n" +
-			"  TARGETS   order:model for each target, lowest order first tried\n" +
+			"  TARGETS   order:model for each target, lowest order first tried (a redirect\n" +
+			"            shows the targets of the alias it redirects to)\n" +
 			"  CONTEXT   the window the alias declares: the smallest of its targets'\n" +
 			"            windows, - when any target's window is unknown\n" +
 			"  SESSIONS  client sessions of the running model server using it, - when no\n" +
 			"            server is running (read through serve's runtime record)\n" +
 			"  ROUTED    yes when LiteLLM's database has a row for it, no when it has none,\n" +
-			"            ? when the proxy pair is not set or the database cannot be read\n\n" +
+			"            ? when the proxy pair is not set or the database cannot be read\n" +
+			"  REDIRECT  `-> alias/new` for an alias kept by `alias rename`; the column\n" +
+			"            shows only when some alias is one\n\n" +
 			"It needs neither a running model server nor the proxy. An alias the registry\n" +
 			"cannot use (malformed, or a target that names no model) is listed, and a\n" +
 			"warning says why. No output carries a route's parameters.\n\n" +
@@ -94,11 +98,14 @@ type aliasListJSON struct {
 }
 
 type aliasListRow struct {
-	ID       string            `json:"id"`
-	Targets  []aliasListTarget `json:"targets"`
-	Context  *int              `json:"context"`
-	Sessions *int              `json:"sessions"`
-	Routed   *bool             `json:"routed"`
+	ID string `json:"id"`
+	// RedirectTo is the alias this one redirects to (#687), null for an
+	// ordinary alias; Targets are then the effective ones.
+	RedirectTo *string           `json:"redirect_to"`
+	Targets    []aliasListTarget `json:"targets"`
+	Context    *int              `json:"context"`
+	Sessions   *int              `json:"sessions"`
+	Routed     *bool             `json:"routed"`
 }
 
 type aliasListTarget struct {
@@ -141,6 +148,9 @@ func (h *host) runAliasList(ctx context.Context, out, errOut io.Writer, rec serv
 		doc := aliasListJSON{Version: 1, Aliases: []aliasListRow{}, Warnings: append([]string{}, warnings...)}
 		for _, v := range views {
 			row := aliasListRow{ID: v.ID, Targets: []aliasListTarget{}}
+			if v.RedirectTo != "" {
+				row.RedirectTo = &v.RedirectTo
+			}
 			for _, t := range v.Targets {
 				row.Targets = append(row.Targets, aliasListTarget{Model: t.Model, Order: t.Order})
 			}
@@ -163,6 +173,10 @@ func (h *host) runAliasList(ctx context.Context, out, errOut io.Writer, rec serv
 		fmt.Fprintln(out, "no aliases: `wt-model alias set alias/<name> --target ID` adds one")
 	} else {
 		cells := make([][]string, 0, len(views))
+		anyRedirect := false
+		for _, v := range views {
+			anyRedirect = anyRedirect || v.RedirectTo != ""
+		}
 		for _, v := range views {
 			parts := make([]string, 0, len(v.Targets))
 			for _, t := range v.Targets {
@@ -182,9 +196,20 @@ func (h *host) runAliasList(ctx context.Context, out, errOut io.Writer, rec serv
 				}
 			}
 			// Registry text: no control sequence may reach the terminal.
-			cells = append(cells, []string{cli.VisibleID(v.ID), cli.VisibleID(strings.Join(parts, ",")), window, sess, route})
+			row := []string{cli.VisibleID(v.ID), cli.VisibleID(strings.Join(parts, ",")), window, sess, route}
+			if anyRedirect {
+				redirect := "-"
+				if v.RedirectTo != "" {
+					redirect = "-> " + cli.VisibleID(v.RedirectTo)
+				}
+				row = append(row, redirect)
+			}
+			cells = append(cells, row)
 		}
 		cols := []cli.PlainColumn{{Head: "ALIAS"}, {Head: "TARGETS"}, {Head: "CONTEXT"}, {Head: "SESSIONS"}, {Head: "ROUTED"}}
+		if anyRedirect {
+			cols = append(cols, cli.PlainColumn{Head: "REDIRECT"})
+		}
 		fmt.Fprintln(out, cli.RenderPlainTable(cols, cells, 0))
 	}
 	for _, w := range warnings {
@@ -380,7 +405,7 @@ func (h *host) runAliasSet(ctx context.Context, out, errOut io.Writer, rec serve
 // clean, and is skipped with the check's own reason otherwise.
 func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alias, oldW, newW int, had, shrinks bool) error {
 	fmt.Fprintf(out, "would set alias: %s\n", a.ID)
-	for _, t := range a.Targets {
+	for _, t := range cfg.AliasTargets(a) {
 		fmt.Fprintf(out, "  target %s order %d\n", t.Model, t.Order)
 	}
 	old := "-"
@@ -392,13 +417,20 @@ func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alia
 		line += " (smaller: the real run asks, or needs --accept-smaller-window)"
 	}
 	fmt.Fprintln(out, line)
+	h.printAliasRows(out, cfg, a)
+	fmt.Fprintln(out, "dry run: nothing was changed")
+	return nil
+}
+
+// printAliasRows is the rows half of a dry run: each database row the
+// write's sync would plan for alias a over cfg, or why there are none.
+func (h *host) printAliasRows(out io.Writer, cfg *config.Config, a config.Alias) {
 	admin := h.adminFor(cfg)
 	if admin == nil {
 		// The real run writes no row without the pair (decision 4), and an
 		// h8 under no key would match no row the proxy ever holds.
 		fmt.Fprintln(out, "no proxy pair: no rows would be written")
-		fmt.Fprintln(out, "dry run: nothing was changed")
-		return nil
+		return
 	}
 	// The rows come from the planner the real write uses (PlanSync), so the
 	// liveness and the Claude subscription check are the write's own: a local
@@ -409,8 +441,7 @@ func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alia
 	rows, skips, err := litellm.PreviewAlias(cfg, desired, o, a)
 	if err != nil {
 		fmt.Fprintf(out, "cannot preview the rows: %s\n", oneLineText(err.Error()))
-		fmt.Fprintln(out, "dry run: nothing was changed")
-		return nil
+		return
 	}
 	name := strings.TrimPrefix(a.ID, config.AliasIDPrefix)
 	for _, m := range rows {
@@ -421,14 +452,12 @@ func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alia
 	for _, s := range skips {
 		fmt.Fprintf(out, "  no row for %s: %s\n", s.Target, oneLineText(s.Reason))
 	}
-	fmt.Fprintln(out, "dry run: nothing was changed")
-	return nil
 }
 
 func aliasRmCmd(h *host, rec servestate.Store) *cobra.Command {
-	var yes, forceInUse bool
+	var yes, forceInUse, finished bool
 	c := &cobra.Command{
-		Use:   "rm <alias/name>...",
+		Use:   "rm <alias/name>... | --finished",
 		Short: "Remove aliases from the registry and their LiteLLM routes",
 		Long: "Remove one or more aliases from the registry; the route sync that follows\n" +
 			"deletes their LiteLLM database rows. The models they target are not touched.\n" +
@@ -440,8 +469,14 @@ func aliasRmCmd(h *host, rec servestate.Store) *cobra.Command {
 			"It asks for confirmation on the terminal; --yes skips it. An alias that client\n" +
 			"sessions of the running model server use is removed only with --force-in-use\n" +
 			"as well: those sessions lose their route. When one id is not an alias,\n" +
-			"nothing is removed.\n\n" +
+			"nothing is removed. An alias that a redirect (`alias rename`) points at is\n" +
+			"removed only after the redirect is, or in the same command.\n\n" +
+			"--finished takes no ids: it removes every redirect that `alias rename` left\n" +
+			"and no client session uses any more, and says which it kept. With the running\n" +
+			"server's sessions unreadable it refuses (exit 3) unless --force-in-use, which\n" +
+			"also removes the redirects in use.\n\n" +
 			"Flags:\n" +
+			"  --finished       remove every redirect no client session uses\n" +
 			"  --yes            do not ask for confirmation\n" +
 			"  --force-in-use   also remove an alias client sessions use\n\n" +
 			"Exit codes:\n" +
@@ -449,22 +484,34 @@ func aliasRmCmd(h *host, rec servestate.Store) *cobra.Command {
 			"  1  a plain error: an id that is not an alias, a registry write that failed\n" +
 			"  3  approval missing: no --yes and no terminal, the answer was no, or an\n" +
 			"     alias in use without --force-in-use; nothing was removed",
-		Example:      "  wt-model alias rm alias/old\n  wt-model alias rm alias/old --yes",
-		Args:         cobra.MinimumNArgs(1),
+		Example:      "  wt-model alias rm alias/old\n  wt-model alias rm alias/old --yes\n  wt-model alias rm --finished",
+		Args:         cobra.ArbitraryArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return h.runAliasRm(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), rec, args, yes, forceInUse)
+			switch {
+			case finished && len(args) > 0:
+				cmd.SilenceUsage = false
+				return errors.New("--finished takes no alias ids: it removes every redirect no client session uses")
+			case !finished && len(args) == 0:
+				cmd.SilenceUsage = false
+				return errors.New("nothing to remove: pass an alias id, or --finished")
+			}
+			return h.runAliasRm(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), rec, args, yes, forceInUse, finished)
 		},
 	}
+	c.Flags().BoolVar(&finished, "finished", false, "remove every redirect left by `alias rename` that no client session uses")
 	c.Flags().BoolVar(&yes, "yes", false, "do not ask for confirmation")
 	c.Flags().BoolVar(&forceInUse, "force-in-use", false, "also remove an alias that client sessions of the running model server use")
 	return c
 }
 
 // runAliasRm is `wt-model alias rm`.
-func (h *host) runAliasRm(ctx context.Context, out, errOut io.Writer, rec servestate.Store, ids []string, yes, forceInUse bool) error {
+func (h *host) runAliasRm(ctx context.Context, out, errOut io.Writer, rec servestate.Store, ids []string, yes, forceInUse, finished bool) error {
 	ids = uniqueInOrder(ids)
 	cfg, loadErr := h.hostConfig()
+	if finished {
+		return h.runAliasRmFinished(ctx, out, errOut, rec, cfg, loadErr, yes, forceInUse)
+	}
 	if loadErr == nil {
 		// Refused before the question, as model rm does; without a loaded
 		// config the write is what finds out.
@@ -499,6 +546,12 @@ func (h *host) runAliasRm(ctx context.Context, out, errOut io.Writer, rec serves
 			return cli.Declined("nothing was removed")
 		}
 	}
+	return h.removeAliasesAndSync(out, errOut, ids)
+}
+
+// removeAliasesAndSync is the write half of `alias rm`: one registry write,
+// a line per alias, then the sync that deletes their rows.
+func (h *host) removeAliasesAndSync(out, errOut io.Writer, ids []string) error {
 	removed, err := modeladmin.RemoveAliases(ids)
 	if err != nil {
 		return err
@@ -509,4 +562,121 @@ func (h *host) runAliasRm(ctx context.Context, out, errOut io.Writer, rec serves
 	// The sync that deletes the removed aliases' rows; when its database
 	// half cannot run it says so with decision 4's line and the repair.
 	return litellm.SyncAndWarn(out, errOut, nil, h.syncRoutesAfterAliasRemoval)
+}
+
+// runAliasRmFinished is `wt-model alias rm --finished` (#687): the sweep of
+// the redirects `alias rename` left. It reads the running server's sessions
+// as `alias rm` does and refuses the same way when they cannot be read
+// (exit 3, --force-in-use); a redirect a session still uses is kept and
+// named, unless --force-in-use removes it too. The removal, the question
+// and the route sync are `alias rm`'s own.
+func (h *host) runAliasRmFinished(ctx context.Context, out, errOut io.Writer, rec servestate.Store, cfg *config.Config, loadErr error, yes, forceInUse bool) error {
+	if loadErr != nil {
+		return config.ConfigError(loadErr)
+	}
+	var unread error
+	sessions := h.clientSessions(ctx, errOut, rec, &unread)()
+	if unread != nil && !forceInUse {
+		return exitcode.New(cli.ExitApprovalMissing,
+			errors.New("approval missing: pass --force-in-use (the running model server's client sessions could not be read, so a redirect may be in use); nothing was removed"), false)
+	}
+	if forceInUse {
+		sessions = nil
+	}
+	ids, inUse := modeladmin.FinishedRedirects(cfg, sessions)
+	for _, a := range cfg.Aliases {
+		if n, kept := inUse[a.ID]; kept {
+			fmt.Fprintf(out, "kept redirect: %s (used by %d client session(s))\n", cli.VisibleID(a.ID), n)
+			delete(inUse, a.ID)
+		}
+	}
+	if len(ids) == 0 {
+		fmt.Fprintln(out, "no finished redirects")
+		return nil
+	}
+	if !yes {
+		ok, err := h.confirmRemove(fmt.Sprintf("Remove %d finished redirect(s) from the registry (%s)? Their LiteLLM routes go with them.", len(ids), strings.Join(ids, ", ")))
+		if err != nil {
+			return cli.NoTerminalRefusal(err, "--yes", "nothing was removed")
+		}
+		if !ok {
+			return cli.Declined("nothing was removed")
+		}
+	}
+	return h.removeAliasesAndSync(out, errOut, ids)
+}
+
+func aliasRenameCmd(h *host) *cobra.Command {
+	var dryRun bool
+	c := &cobra.Command{
+		Use:   "rename <alias/old> <alias/new>",
+		Short: "Give an alias a new id and keep the old id working as a redirect",
+		Long: "Create alias/new with alias/old's current targets and turn alias/old into a\n" +
+			"redirect to it (`redirect_to` in registry.toml), in one registry write. A\n" +
+			"redirect has no targets of its own: it routes to whatever alias/new targets, so\n" +
+			"a later `alias set alias/new` moves both ids. Both ids keep LiteLLM rows from\n" +
+			"the same targets through the one route sync that follows, so running client\n" +
+			"sessions and profiles still naming alias/old keep working with no gap and no\n" +
+			"proxy restart. A rename never changes the window.\n\n" +
+			"Refused: an old id that is not an alias or is itself a redirect, an old id\n" +
+			"another redirect points at (run `alias rm --finished` first), and a new id\n" +
+			"that exists.\n\n" +
+			"The output ends with the line to run on each machine that launches slot\n" +
+			"profiles, `wt profile slots repoint alias/old alias/new`: wt-model cannot\n" +
+			"reach another machine's slot-profiles.toml, so repointing is explicit. When no\n" +
+			"session uses alias/old any more, `wt-model alias rm --finished` removes it.\n\n" +
+			"Flags:\n" +
+			"  --dry-run   say what would happen and change nothing\n\n" +
+			"Exit codes:\n" +
+			"  0  done (also when the routes could not be written; a warning says so)\n" +
+			"  1  a plain error: a refused rename, a registry write that failed",
+		Example:      "  wt-model alias rename alias/sonnet-main alias/main --dry-run\n  wt-model alias rename alias/sonnet-main alias/main",
+		Args:         cobra.ExactArgs(2),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return h.runAliasRename(cmd.OutOrStdout(), cmd.ErrOrStderr(), strings.TrimSpace(args[0]), strings.TrimSpace(args[1]), dryRun)
+		},
+	}
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "say what would happen and change nothing")
+	return c
+}
+
+// repointLine is the last line of `alias rename`: the command to run on each
+// machine that launches slot profiles (wt profile slots repoint).
+func repointLine(old, nw string) string {
+	return fmt.Sprintf("next, on each machine that launches slot profiles: wt profile slots repoint %s %s", old, nw)
+}
+
+// runAliasRename is `wt-model alias rename`. A rename never changes the
+// window (the new alias has the old one's targets), so it asks nothing: there
+// is no --accept-smaller-window to pass.
+func (h *host) runAliasRename(out, errOut io.Writer, old, nw string, dryRun bool) error {
+	cfg, loadErr := h.hostConfig()
+	if loadErr != nil {
+		return config.ConfigError(loadErr)
+	}
+	req := modeladmin.RenameRequest{Old: old, New: nw}
+	after, alias, err := modeladmin.CheckRename(cfg, req)
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		fmt.Fprintf(out, "would rename alias: %s -> %s\n", old, nw)
+		fmt.Fprintf(out, "  %s keeps routing as a redirect to %s\n", old, nw)
+		for _, t := range after.AliasTargets(alias) {
+			fmt.Fprintf(out, "  target %s order %d\n", t.Model, t.Order)
+		}
+		h.printAliasRows(out, after, alias)
+		fmt.Fprintln(out, "dry run: nothing was changed")
+		fmt.Fprintln(out, repointLine(old, nw))
+		return nil
+	}
+	if err := modeladmin.RenameAlias(req); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "renamed alias: %s -> %s\n", old, nw)
+	fmt.Fprintf(out, "%s stays as a redirect to %s until `wt-model alias rm --finished`\n", old, nw)
+	err = h.syncAndWarn(out, errOut, nil)
+	fmt.Fprintln(out, repointLine(old, nw))
+	return err
 }

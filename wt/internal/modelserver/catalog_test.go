@@ -266,7 +266,10 @@ context_basis = "host"
 	cfg.Providers = append(cfg.Providers, config.Provider{ID: "acme", Location: config.LocationCloud},
 		config.Provider{ID: "nat", Location: config.LocationCloud})
 	cfg.Models[0].Cost.TimePrices = []config.TimePrice{{Label: "night", Timezone: "UTC"}}
-	cfg.Aliases = []config.Alias{{ID: "alias/x", Targets: []config.AliasTarget{{Model: "openrouter/c", Order: 1}, {Model: "acme/m", Order: 2}}}}
+	cfg.Aliases = []config.Alias{
+		{ID: "alias/x", Targets: []config.AliasTarget{{Model: "openrouter/c", Order: 1}, {Model: "acme/m", Order: 2}}},
+		{ID: "alias/old-x", RedirectTo: "alias/x"},
+	}
 	b, err := json.Marshal(BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), map[string]bool{"acme/m": true}, testNow, CatalogOptions{}))
 	if err != nil {
 		t.Fatal(err)

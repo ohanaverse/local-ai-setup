@@ -616,3 +616,90 @@ func Remove(src []byte, name string) ([]byte, error) {
 	}
 	return []byte(strings.Join(kept, "")), nil
 }
+
+// Repoint rewrites every slot value (and every env value, which may name a
+// model: REMEMBER_MODEL) that equals from to to, in every entry, changing only those lines (padding and a trailing comment
+// stay, as in Set), and returns the names of the entries it changed in file
+// order (an entry with no name reads "(unnamed)"). It is the text half of
+// `wt profile slots repoint` (#687). from and to are matched whole, never as
+// a prefix. An entry that writes slots as an inline table or dotted keys and
+// mentions from is refused, as Set refuses one, rather than skipped: a
+// profile left on the old id would keep working only until the redirect is
+// swept. changed is nil, and the bytes are returned as they came, when no
+// entry uses from, so repointing twice is a no-op.
+func Repoint(src []byte, from, to string) (out []byte, changed []string, err error) {
+	if from == "" || to == "" {
+		return nil, nil, errors.New("slotedit: repoint needs both ids")
+	}
+	lines, entries, err := scan(src)
+	if err != nil {
+		return nil, nil, err
+	}
+	replace := map[int]string{}
+	for _, e := range entries {
+		name := e.name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		secs, err := sections(lines, e)
+		if err != nil {
+			// Dotted slots/env: only a problem when the entry mentions from.
+			if mentions(lines[e.header:e.end], from) {
+				return nil, nil, err
+			}
+			continue
+		}
+		if i, ok := secs[""].keys["slots"]; ok && holdsWhole(lines[i], from) {
+			return nil, nil, fmt.Errorf("slotedit: profile %q writes slots as an inline table; edit the file by hand", name)
+		}
+		hit := false
+		rewrite := func(sec *section, key string) {
+			i := sec.keys[key]
+			kv, _ := parseKV(lines[i])
+			if kv.valEnd < 0 {
+				return
+			}
+			var v struct{ V string }
+			if _, err := toml.Decode("V = "+lines[i][kv.valStart:kv.valEnd], &v); err != nil || v.V != from {
+				return
+			}
+			replace[i] = lines[i][:kv.valStart] + formatString(to) + lines[i][kv.valEnd:]
+			hit = true
+		}
+		// default names a slot, not a model, so it never holds from; the slot
+		// values do, and so can an env value that names a model
+		// (REMEMBER_MODEL).
+		for _, tbl := range []string{"[profile.slots]", "[profile.env]"} {
+			if sec := secs[tbl]; sec != nil {
+				for k := range sec.keys {
+					rewrite(sec, k)
+				}
+			}
+		}
+		if hit {
+			changed = append(changed, name)
+		}
+	}
+	if len(replace) == 0 {
+		return src, nil, nil
+	}
+	var b strings.Builder
+	for i, l := range lines {
+		if r, ok := replace[i]; ok {
+			l = r
+		}
+		b.WriteString(l)
+	}
+	return []byte(b.String()), changed, nil
+}
+
+// mentions reports whether any of lines holds s as a whole quoted string.
+func mentions(lines []line, s string) bool {
+	return slices.ContainsFunc(lines, func(l line) bool { return holdsWhole(l, s) })
+}
+
+// holdsWhole reports whether l holds s as a whole quoted TOML string, so an id
+// that merely starts with s (alias/main-2 for alias/main) does not count.
+func holdsWhole(l line, s string) bool {
+	return strings.Contains(string(l), `"`+s+`"`) || strings.Contains(string(l), `'`+s+`'`)
+}

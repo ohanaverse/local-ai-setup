@@ -218,3 +218,27 @@ func WireByID(rows []modelapi.Row) map[string]modelapi.Row {
 	}
 	return out
 }
+
+// SlotRedirectNotes is, for a slot profile's slots, one note per distinct slot
+// model the server's catalog reports as a redirect (#687, modelapi.Row.
+// RedirectTo): `alias/old is renamed to alias/new; run 'wt profile slots
+// repoint alias/old alias/new'`, in FilledOrder. The launch goes on: the old
+// id stays routed until the redirect is removed, so this is advice, never a
+// block. A launch prints each after "wt: note: "; the picker adds them to its
+// launch notes (both paths call this, so the wording cannot drift). rows are
+// the catalog's rows.
+func SlotRedirectNotes(rows []modelapi.Row, c profiles.SlotCheck) []string {
+	byID := WireByID(rows)
+	var out []string
+	seen := map[string]bool{}
+	for _, slot := range c.FilledOrder() {
+		id := c.Profile.Slots[slot]
+		r, ok := byID[id]
+		if !ok || r.RedirectTo == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, fmt.Sprintf("%s is renamed to %s; run 'wt profile slots repoint %s %s'", id, r.RedirectTo, id, r.RedirectTo))
+	}
+	return out
+}

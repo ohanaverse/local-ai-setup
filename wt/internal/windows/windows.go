@@ -37,7 +37,7 @@ func Model(cfg *config.Config, m config.Model, ix tiers.Index) int {
 // over-declare, and a client would compact too late on the target with the
 // smaller window. An alias with no targets reads (0, "").
 func Alias(cfg *config.Config, a config.Alias, ix tiers.Index) (min int, limiting string) {
-	for _, t := range a.Targets {
+	for _, t := range cfg.AliasTargets(a) {
 		i := config.IndexModelByID(cfg.Models, t.Model)
 		if i < 0 || cfg.CheckModelRow(t.Model) != nil {
 			return 0, t.Model

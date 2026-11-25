@@ -117,6 +117,8 @@ func TestLoadRegistryMatchesSharedFixture(t *testing.T) {
 			{Model: "pinned-cloud/contract-fixture:inherit", Order: 1},
 			{Model: "ollama/contract-fixture:local", Order: 2},
 		}},
+		// A redirect (#687): no targets of its own, the target alias's.
+		{ID: "alias/fixture-old", RedirectTo: "alias/fixture-cloud"},
 	}
 	if !slices.EqualFunc(reg.Aliases, wantAliases, aliasEqual) {
 		t.Fatalf("aliases decoded wrong: %+v, want %+v", reg.Aliases, wantAliases)
@@ -363,6 +365,7 @@ func TestTypedReaderLoadsTheWrittenFixture(t *testing.T) {
 			{Model: "openrouter/written-fixture:cloud", Order: 1},
 			{Model: "ollama/written-fixture:int", Order: 2},
 		}},
+		{ID: "alias/written-old", RedirectTo: "alias/written-single"},
 	}
 	if !slices.EqualFunc(reg.Aliases, wantAliases, aliasEqual) {
 		t.Errorf("aliases decoded wrong: %+v, want %+v", reg.Aliases, wantAliases)
