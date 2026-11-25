@@ -370,12 +370,15 @@ func TestOfferedRefusesWhatPreflightAlwaysRefuses(t *testing.T) {
 			t.Errorf("%s: Offered = %v, %q; want false, %q", name, offered, why, c.want)
 		}
 	}
-	// What was not read is offered (Preflight re-reads and refuses itself), and a
-	// root on a branch never looks at the fact.
+	// A detached root whose fact was not read is not offered, and a root on a
+	// branch never looks at the fact.
+	if offered, why := Offered(root(func(r *cleanup.Row) { r.Branch = "" })); offered || why != HeadUnreadLine {
+		t.Errorf("detached, fact not read: Offered = %v, %q; want false, %q", offered, why, HeadUnreadLine)
+	}
+
 	for name, mod := range map[string]func(*cleanup.Row){
-		"detached, fact not read": func(r *cleanup.Row) { r.Branch = "" },
-		"detached, held":          func(r *cleanup.Row) { r.Branch = ""; r.HeadHeld = cleanup.TriYes },
-		"on a branch, not held":   func(r *cleanup.Row) { r.HeadHeld = cleanup.TriNo },
+		"detached, held":        func(r *cleanup.Row) { r.Branch = ""; r.HeadHeld = cleanup.TriYes },
+		"on a branch, not held": func(r *cleanup.Row) { r.HeadHeld = cleanup.TriNo },
 	} {
 		if offered, why := Offered(root(mod)); !offered || why != "" {
 			t.Errorf("%s: Offered = %v, %q; want true", name, offered, why)

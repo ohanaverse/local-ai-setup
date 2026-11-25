@@ -1899,6 +1899,11 @@ func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
 			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}},
 			Losses:  cleanup.Losses{DetachedUnique: true}, HeadHeld: cleanup.TriNo}),
 			"repo", rootmove.HeadNotHeldLine},
+		{"a detached root whose holder read failed is not offered", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "repo", Path: "/repo", Primary: true, Head: sha,
+			Status:  cleanup.StatusLessSure,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}}}),
+			"repo", rootmove.HeadUnreadLine},
 		{"an unborn root has no commit to move", restoreRootReport(cleanup.Row{
 			Kind: cleanup.KindWorktree, Name: "fresh", Path: "/repo", Branch: "fresh", Ref: "refs/heads/fresh",
 			Primary: true, Head: "0000000000000000000000000000000000000000", Status: cleanup.StatusLessSure,
@@ -1944,7 +1949,7 @@ func TestCleanupListRestoreRootOffersADetachedRootTheDefaultReaches(t *testing.T
 	rep := restoreRootReport(cleanup.Row{
 		Kind: cleanup.KindWorktree, Name: "repo", Path: "/repo", Primary: true, Head: sha,
 		Status:  cleanup.StatusLessSure,
-		Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}}})
+		Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}}, HeadHeld: cleanup.TriYes})
 	m := newSizedCleanupList(t, rep, 100, 30)
 	m.rm.RestoreRoot = func(_ io.Reader, _, _ io.Writer) error { return nil }
 	m = moveTo(t, m, "repo")
@@ -3256,12 +3261,12 @@ func TestDetailRestatesANameTheTableCuts(t *testing.T) {
 }
 
 // TestCleanupListRestoreRootOffersDetachedRootAnyBranchHolds checks `R` on a
-// detached root whose HEAD a branch holds, or whose fact was not read, quits
+// detached root whose HEAD a branch holds, quits
 // the list with the restore flagged even though the default lacks the commit
 // (#749). Why: the list used to explain these as unique commits.
 func TestCleanupListRestoreRootOffersDetachedRootAnyBranchHolds(t *testing.T) {
 	const sha = "0123456789abcdef0123456789abcdef01234567"
-	for name, held := range map[string]cleanup.Tri{"held": cleanup.TriYes, "not read": cleanup.TriUnknown} {
+	for name, held := range map[string]cleanup.Tri{"held": cleanup.TriYes} {
 		m := newSizedCleanupList(t, restoreRootReport(cleanup.Row{
 			Kind: cleanup.KindWorktree, Name: "repo", Path: "/repo", Primary: true, Head: sha,
 			Status:  cleanup.StatusLessSure,
