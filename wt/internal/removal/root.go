@@ -214,7 +214,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	if hidden, err := cleanup.HiddenIndexFlags(rg); err != nil {
 		return refuse("could not read the root's index flags: %v", err)
 	} else if hidden {
-		return refuse("the root has an assume-unchanged or skip-worktree index entry, which status cannot see; clear it first (git update-index --no-assume-unchanged / --no-skip-worktree)")
+		return refuse("the root has an assume-unchanged or skip-worktree index entry, which status cannot see; clear it first: an assume-unchanged entry with git update-index --no-assume-unchanged <path>, a sparse checkout with git sparse-checkout disable, a skip-worktree entry outside one with git update-index --no-skip-worktree <path>")
 	}
 	// 5. The record.
 	fold := cleanup.PathFold(rg) // fresh: it guards the reset below

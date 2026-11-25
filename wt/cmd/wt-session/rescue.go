@@ -158,7 +158,8 @@ func rescueRowReport(answer io.Reader, out, errOut io.Writer, f rescueFlags, sna
 		return writeRescueResult(out, errOut, f.json, meta, o)
 	}
 	meta := rescue.Meta{Repo: snap.Repo, DryRun: f.dryRun}
-	eng := rescue.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{Now: removeNow(), MinAge: f.minAge}}
+	eng := rescue.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{Now: removeNow(), MinAge: f.minAge},
+		Progress: copyProgress(errOut, f.json || f.dryRun)}
 
 	var notes []string
 	if f.dryRun {
@@ -193,6 +194,19 @@ func rescueRowReport(answer io.Reader, out, errOut io.Writer, f rescueFlags, sna
 	}
 	afterRescueConfirm()
 	return write(meta, eng.Execute(plan))
+}
+
+// copyProgress is the Engine.Progress that writes "copying untracked files: N
+// of M" to errOut, one plain line per tick (no carriage return or terminal
+// control code, so a non-tty log stays readable). It is stderr only, never
+// stdout, and nil (silent) under --json or --dry-run.
+func copyProgress(errOut io.Writer, quiet bool) func(done, total int) {
+	if quiet {
+		return nil
+	}
+	return func(done, total int) {
+		fmt.Fprintf(errOut, "copying untracked files: %d of %d\n", done, total)
+	}
 }
 
 // afterRescueConfirm is a test seam, called after the confirmation (or --yes)
@@ -257,7 +271,10 @@ func writeRescueResult(out, errOut io.Writer, asJSON bool, meta rescue.Meta, o r
 		func(w io.Writer) error { return printRescueText(w, meta, o) })
 }
 
-// printRescueText is the human result.
+// printRescueText is the human result. Reasons, done lines and warnings are
+// wt-composed text whose end matters (a remedy), so they are printed whole
+// through cleanup.Flatten, as restore-root does; paths and branch names quoted
+// in the plan keep the capped cleanup.OneLine.
 func printRescueText(w io.Writer, meta rescue.Meta, o rescue.Outcome) error {
 	p := o.Plan
 	var b strings.Builder
@@ -270,9 +287,9 @@ func printRescueText(w io.Writer, meta rescue.Meta, o rescue.Outcome) error {
 	case rescue.StatusMoved:
 		fmt.Fprintf(&b, "copied %s to branch %s in %s\n", cleanup.OneLine(p.Source.Path), cleanup.OneLine(p.Branch), cleanup.OneLine(o.Plan.DestPath))
 	case rescue.StatusFailed:
-		fmt.Fprintf(&b, "failed: %s\n", cleanup.OneLine(o.Reason))
+		fmt.Fprintf(&b, "failed: %s\n", cleanup.Flatten(o.Reason))
 	default:
-		fmt.Fprintf(&b, "refused (%s): %s\n", o.Code, cleanup.OneLine(o.Reason))
+		fmt.Fprintf(&b, "refused (%s): %s\n", o.Code, cleanup.Flatten(o.Reason))
 	}
 	if p.Branch != "" {
 		fmt.Fprintf(&b, "    starts at %s; carries %s\n", p.Start, countsText(p.Counts))
@@ -281,13 +298,13 @@ func printRescueText(w io.Writer, meta rescue.Meta, o rescue.Outcome) error {
 		}
 	}
 	for _, s := range o.Completed {
-		b.WriteString("    done: " + cleanup.OneLine(s) + "\n")
+		b.WriteString("    done: " + cleanup.Flatten(s) + "\n")
 	}
 	if o.Record != nil {
 		b.WriteString("    record: " + cleanup.OneLine(o.Record.Ref) + " (holds the commits and the working state)\n")
 	}
 	for _, s := range p.Warnings {
-		b.WriteString("    warning: " + cleanup.OneLine(s) + "\n")
+		b.WriteString("    warning: " + cleanup.Flatten(s) + "\n")
 	}
 	if o.Status == rescue.StatusMoved {
 		if o.Record != nil {

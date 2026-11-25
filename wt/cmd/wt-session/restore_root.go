@@ -186,7 +186,8 @@ func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRoot
 	in.Fetch = false // a re-check never fetches
 	meta := rootmove.Meta{Repo: snap.Repo, DryRun: f.dryRun}
 	eng := rootmove.Engine{Rescue: rescue.Engine{G: cleanup.Git{Dir: cwd}, Prior: snap, In: in,
-		Classify: cleanup.Options{Now: removeNow()}, ForRoot: true}}
+		Classify: cleanup.Options{Now: removeNow()}, ForRoot: true,
+		Progress: copyProgress(errOut, f.json || f.dryRun)}}
 
 	var notes []string
 	if f.dryRun {

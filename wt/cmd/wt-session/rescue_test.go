@@ -635,3 +635,62 @@ func TestRescueStartRecheckDependsOnWhetherAPromptWasShown(t *testing.T) {
 		})
 	}
 }
+
+// TestPrintRescueTextPrintsReasonsWhole checks a long failure reason, done
+// line and warning print whole on one line with control runes dropped. Why:
+// the old 200-rune cap cut a remedy off the end (#558).
+func TestPrintRescueTextPrintsReasonsWhole(t *testing.T) {
+	long := strings.Repeat("remedy words ", 40) + "THE-END"
+	o := rescue.Outcome{Status: rescue.StatusFailed, Code: rescue.CodeCarryFailed, Reason: "a\x1b[31m\nb " + long,
+		Completed: []string{long}, Plan: rescue.Plan{Warnings: []string{long}}}
+	var b bytes.Buffer
+	if err := printRescueText(&b, rescue.Meta{}, o); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+	if len(lines) != 3 || strings.Count(b.String(), "THE-END") != 3 || strings.ContainsRune(b.String(), 0x1b) {
+		t.Errorf("reasons cut, split or not sanitised (%d lines):\n%s", len(lines), b.String())
+	}
+}
+
+// TestCopyProgressWritesToStderrOnly checks the progress seam writes one plain
+// line per tick to the writer it is given and is nil under --json/--dry-run.
+func TestCopyProgressWritesToStderrOnly(t *testing.T) {
+	var b bytes.Buffer
+	copyProgress(&b, false)(100, 250)
+	if got := b.String(); got != "copying untracked files: 100 of 250\n" {
+		t.Errorf("progress line = %q", got)
+	}
+	if copyProgress(&b, true) != nil {
+		t.Error("a quiet run (--json or --dry-run) got a progress func")
+	}
+}
+
+// TestRescueCmdProgressGoesToStderr runs the command over a 120-file source:
+// stderr carries the progress, stdout does not, and --json carries none.
+func TestRescueCmdProgressGoesToStderr(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		a := rescueApp(t)
+		dir := cleanupRepo(t)
+		src := workWorktree(t, dir)
+		for i := 0; i < 120; i++ {
+			if err := os.WriteFile(filepath.Join(src, fmt.Sprintf("bulk%03d.txt", i)), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		args := []string{"spike", "--yes", "--no-fetch"}
+		if asJSON {
+			args = append(args, "--json")
+		}
+		stdout, stderr, err := runRescue(t, a, dir, "", args...)
+		if exitOf(err) != 0 {
+			t.Fatalf("exit %d\n%s\n%s", exitOf(err), stdout, stderr)
+		}
+		if strings.Contains(stdout, "copying untracked") {
+			t.Errorf("json=%v: progress on stdout: %s", asJSON, stdout)
+		}
+		if got := strings.Contains(stderr, "copying untracked files: 121 of 121"); got == asJSON {
+			t.Errorf("json=%v: stderr progress present = %v:\n%s", asJSON, got, stderr)
+		}
+	}
+}
