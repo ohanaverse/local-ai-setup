@@ -1,6 +1,7 @@
 package gittest
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -244,5 +245,89 @@ func TestTemplateNeverCarriesWorktrees(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("template origin lists worktree %q, want its own root %q", got, want)
+	}
+}
+
+// fatalRecorder stands in for a test whose Fatalf must be observed, not
+// obeyed: Fatalf records the message and panics with fatalSentinel so the
+// caller unwinds the way t.Fatalf's Goexit would, and recordFatal recovers it.
+type fatalRecorder struct {
+	testing.TB
+	msg string
+}
+
+type fatalSentinel struct{}
+
+func (r *fatalRecorder) Fatalf(format string, args ...any) {
+	r.msg = fmt.Sprintf(format, args...)
+	panic(fatalSentinel{})
+}
+
+// recordFatal runs fn against a recorder and returns what fn's Fatalf said, or
+// "" when fn did not fail.
+func recordFatal(t *testing.T, fn func(testing.TB)) string {
+	t.Helper()
+	r := &fatalRecorder{TB: t}
+	func() {
+		defer func() {
+			if v := recover(); v != nil {
+				if _, ok := v.(fatalSentinel); !ok {
+					panic(v)
+				}
+			}
+		}()
+		fn(r)
+	}()
+	return r.msg
+}
+
+// TestGitReturnsTrimmedOutputAndFailsOnBadArgs checks Git hands back git's
+// output with the trailing newline trimmed, and that a failing command fails
+// the test with "git <args>: <err>" followed by git's own output. Why: every
+// package's fixture helper delegates to it, so a Git that swallowed a failure
+// would turn a broken setup into a green test.
+func TestGitReturnsTrimmedOutputAndFailsOnBadArgs(t *testing.T) {
+	_, repo := Seed(t, SeedOpts{}).Clone(t)
+	if got := Git(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); got != "main" {
+		t.Errorf("Git rev-parse = %q, want %q (trimmed, no newline)", got, "main")
+	}
+	msg := recordFatal(t, func(tb testing.TB) { Git(tb, repo, "no-such-subcommand") })
+	if !strings.HasPrefix(msg, "git no-such-subcommand: ") || !strings.Contains(msg, "not a git command") {
+		t.Errorf("failure message = %q, want it to name the args, the error and git's output", msg)
+	}
+}
+
+// TestNewRepoBuildsTheBaseRepository checks NewRepo's pair is the base
+// repository every fixture starts from: origin/HEAD set, main tracking
+// origin/main, identity T, one README commit "init". Why: the five packages
+// that used to build this by hand now trust it, so the shape is pinned here
+// once.
+func TestNewRepoBuildsTheBaseRepository(t *testing.T) {
+	origin, repo := NewRepo(t, false)
+	if got := Git(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD"); got != "refs/remotes/origin/main" {
+		t.Errorf("origin/HEAD = %q, want refs/remotes/origin/main", got)
+	}
+	if got := Git(t, repo, "rev-parse", "--abbrev-ref", "main@{upstream}"); got != "origin/main" {
+		t.Errorf("main tracks %q, want origin/main", got)
+	}
+	if got := Git(t, repo, "config", "user.name"); got != "T" {
+		t.Errorf("user.name = %q, want T", got)
+	}
+	if got := Git(t, repo, "log", "--format=%s", "main"); got != "init" {
+		t.Errorf("log = %q, want the single seed commit \"init\"", got)
+	}
+	if b, err := os.ReadFile(filepath.Join(repo, "README")); err != nil || string(b) != "init" {
+		t.Errorf("README = %q, %v; want \"init\"", b, err)
+	}
+	if got := Git(t, origin, "rev-parse", "main"); got != Git(t, repo, "rev-parse", "main") {
+		t.Errorf("origin main %s differs from the repo's", got)
+	}
+	// The exclude flag picks the lineage.
+	_, ex := NewRepo(t, true)
+	if b, _ := os.ReadFile(filepath.Join(ex, ".git", "info", "exclude")); !strings.Contains(string(b), ".worktrees/") {
+		t.Errorf("NewRepo(excludeWorktrees=true) info/exclude lacks .worktrees/:\n%s", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude")); strings.Contains(string(b), ".worktrees/") {
+		t.Errorf("NewRepo(excludeWorktrees=false) info/exclude has .worktrees/:\n%s", b)
 	}
 }

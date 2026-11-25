@@ -25,13 +25,10 @@ type fixture struct {
 	Dir    string
 }
 
+// gitIn delegates to the shared runner (gittest.Git).
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	b, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, b)
-	}
-	return strings.TrimSpace(string(b))
+	return gittest.Git(t, dir, args...)
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -48,11 +45,8 @@ func newFixture(t *testing.T) *fixture {
 // Lineage gates the clone before any test body trusts it (Constraint 4).
 func newFixtureExcluding(t *testing.T, excludeWorktrees bool) *fixture {
 	t.Helper()
-	tpl := gittest.Seed(t, gittest.SeedOpts{ExcludeWorktrees: excludeWorktrees})
-	origin, repo := tpl.Clone(t)
-	f := &fixture{t: t, Origin: origin, Dir: repo}
-	gittest.Lineage(t, repo)
-	return f
+	origin, repo := gittest.NewRepo(t, excludeWorktrees)
+	return &fixture{t: t, Origin: origin, Dir: repo}
 }
 
 func (f *fixture) git(args ...string) string { f.t.Helper(); return gitIn(f.t, f.Dir, args...) }

@@ -142,6 +142,39 @@ func buildTemplate(opts SeedOpts) (*Template, error) {
 	return &Template{Origin: origin}, nil
 }
 
+// Git runs git -C dir args... and returns its trimmed combined output; a
+// non-zero exit fails the test with "git <args>: <err>" and git's output. It
+// is the one runner behind every package's fixture helper (gitIn, cgit, rmGit
+// delegate here). It keeps the process environment as is, with no
+// GIT_OPTIONAL_LOCKS=0: a test that runs `git status` or `git diff` means the
+// locking behavior, and the kit's own read-only reads use gitRun instead.
+//
+// What stays inline in tests instead of using this kit: one-off repositories
+// that are deliberately odd (nested repos, sha256 object format, bare-only,
+// a trunk-default name, no-commit repos), because the kit builds the one
+// ordinary shape and bending it per case would hide the shape under test.
+func Git(t testing.TB, dir string, args ...string) string {
+	t.Helper()
+	b, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, b)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// NewRepo is the base repository every fixture starts from: Seed, Clone and
+// Lineage in one call. It returns the pair's bare origin and its clone (main
+// pushed with upstream origin/main, origin/HEAD set, identity T, one README
+// commit "init"); excludeWorktrees picks the lineage (see SeedOpts). A package
+// keeps its own fixture type and wraps the pair; the repeated bootstrap lives
+// here. See Git for the shapes that stay inline.
+func NewRepo(t testing.TB, excludeWorktrees bool) (origin, repo string) {
+	t.Helper()
+	origin, repo = Seed(t, SeedOpts{ExcludeWorktrees: excludeWorktrees}).Clone(t)
+	Lineage(t, repo)
+	return origin, repo
+}
+
 // Clone makes a per-test pair under t.TempDir: a bare origin cloned from the
 // template and a worktree repo cloned from that origin, with the repo's
 // commit identity configured (user.email=t@example.com, user.name=T,
