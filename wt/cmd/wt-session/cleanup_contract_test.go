@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -46,7 +47,7 @@ func readJSONFile(t *testing.T, path string) any {
 // models; a schema using any other keyword fails the test rather than being
 // silently unchecked.
 var schemaKeywords = []string{"$schema", "$id", "title", "description", "$defs", "$ref",
-	"type", "required", "enum", "const", "properties", "additionalProperties", "items"}
+	"type", "required", "enum", "const", "pattern", "properties", "additionalProperties", "items"}
 
 // walkSchema checks the WHOLE schema once, whether or not a document reaches
 // a part of it: every keyword must be one the validator models, and in the
@@ -65,6 +66,15 @@ func walkSchema(s map[string]any, path string) []string {
 		case "type", "$ref", "$schema", "$id", "title", "description":
 			if _, ok := v.(string); !ok {
 				bad("%s must be a string (unsupported form %T)", k, v)
+			}
+		case "pattern":
+			str, ok := v.(string)
+			if !ok {
+				bad("pattern must be a string (unsupported form %T)", v)
+				break
+			}
+			if _, err := regexp.Compile(str); err != nil {
+				bad("pattern %q does not compile: %v", str, err)
 			}
 		case "enum":
 			if _, ok := v.([]any); !ok {
@@ -121,7 +131,7 @@ func checkAgainst(schema map[string]any, v any, path string) []string {
 
 // validateSchema is a purpose-built validator (no JSON Schema module is in
 // go.mod) for type, required, enum, const, properties, additionalProperties
-// (false only), items, plus local "#/$defs/<name>" references.
+// (false only), items, pattern (strings), plus local "#/$defs/<name>" references.
 func validateSchema(root, schema map[string]any, v any, path string) []string {
 	var errs []string
 	if ref, ok := schema["$ref"].(string); ok {
@@ -135,6 +145,14 @@ func validateSchema(root, schema map[string]any, v any, path string) []string {
 	}
 	if typ, ok := schema["type"].(string); ok && jsonType(v) != typ {
 		return append(errs, fmt.Sprintf("%s: type %s, want %s", path, jsonType(v), typ))
+	}
+	if pat, ok := schema["pattern"].(string); ok {
+		// A pattern constrains strings only; a non-string is the type check's.
+		if str, isStr := v.(string); isStr {
+			if re, err := regexp.Compile(pat); err == nil && !re.MatchString(str) {
+				errs = append(errs, fmt.Sprintf("%s: %q does not match pattern %q", path, str, pat))
+			}
+		}
 	}
 	if c, ok := schema["const"]; ok && !reflect.DeepEqual(c, v) {
 		errs = append(errs, fmt.Sprintf("%s: %v, want const %v", path, v, c))
@@ -558,10 +576,13 @@ func TestCleanupSchemaValidatorIsLoud(t *testing.T) {
 		{"misspelt enum", base(), map[string]any{"a": "z"}, `not in enum`},
 		{"unmodelled keyword", mod(func(m map[string]any) { m["minLength"] = 1.0 }), map[string]any{"a": "x"}, `unmodelled keyword`},
 		{"unmodelled keyword in unreached $defs", mod(func(m map[string]any) {
-			m["$defs"].(map[string]any)["unused"].(map[string]any)["pattern"] = "x"
+			m["$defs"].(map[string]any)["unused"].(map[string]any)["minLength"] = 1.0
 		}), map[string]any{"a": "x"}, `unmodelled keyword`},
 		{"unmodelled keyword in unreached property", mod(func(m map[string]any) { prop(m, "l")["items"].(map[string]any)["minimum"] = 0.0 }),
 			map[string]any{"a": "x"}, `unmodelled keyword`},
+		{"pattern match", mod(func(m map[string]any) { delete(prop(m, "a"), "enum"); prop(m, "a")["pattern"] = "^x+$" }), map[string]any{"a": "xx"}, ""},
+		{"pattern mismatch", mod(func(m map[string]any) { delete(prop(m, "a"), "enum"); prop(m, "a")["pattern"] = "^x+$" }), map[string]any{"a": "y"}, `does not match pattern`},
+		{"pattern not string", mod(func(m map[string]any) { prop(m, "a")["pattern"] = 1.0 }), map[string]any{"a": "x"}, `unsupported form`},
 		{"type list", mod(func(m map[string]any) { prop(m, "a")["type"] = []any{"string", "null"} }), map[string]any{"a": "x"}, `unsupported form`},
 		{"enum not array", mod(func(m map[string]any) { prop(m, "a")["enum"] = "x" }), map[string]any{"a": "x"}, `unsupported form`},
 		{"required not array", mod(func(m map[string]any) { m["required"] = "a" }), map[string]any{"a": "x"}, `unsupported form`},

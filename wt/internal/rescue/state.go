@@ -2,12 +2,14 @@ package rescue
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 )
@@ -73,10 +75,44 @@ func paths(es []entry) []string {
 	return slices.Compact(out)
 }
 
+// leadingBlocked reports whether a proper prefix of rel (slash-separated,
+// under root) is a symlink, not a directory, or missing: git's
+// has_symlink_leading_path, so the path is absent from the working tree as git
+// sees it. It is the same rule as dirtsnap's prefixCheck (kept unexported
+// there; the fingerprint must agree with the classifier). Any other Lstat
+// failure on a prefix is returned.
+func leadingBlocked(root, rel string) (bool, error) {
+	for i := 0; i < len(rel); i++ {
+		if rel[i] != '/' {
+			continue
+		}
+		fi, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel[:i])))
+		switch {
+		case errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR):
+			return true, nil
+		case err != nil:
+			return false, err
+		case !fi.IsDir():
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // hashPath summarises what sits at root/rel without following a symlink: its
 // kind, permission bits and content (or link target). Two trees agree on a
-// path exactly when these strings are equal.
+// path exactly when these strings are equal. A path behind a symlink, a
+// non-directory or a missing parent is "absent", as git sees it: os.Lstat
+// declines to follow only the last component, so without the prefix check a
+// tracked directory replaced by a symlink was read through the link. Both the
+// fingerprint and verify (DestinationMatches) compare through this function.
 func hashPath(root, rel string) string {
+	switch blocked, err := leadingBlocked(root, rel); {
+	case err != nil:
+		return "error:" + err.Error()
+	case blocked:
+		return "absent"
+	}
 	p := filepath.Join(root, rel)
 	fi, err := os.Lstat(p)
 	switch {
