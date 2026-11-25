@@ -53,7 +53,7 @@ type RemoveFuncs struct {
 	// Refetch fetches the remotes and re-reads the repository on the list's
 	// `F` and on the session's re-entry after an `r` or `R` hand-off,
 	// returning the fresh report the list is rebuilt from. Fetch at the
-	// report's repository root (worktree.FetchRemotes), so the header's
+	// report's repository root (cleanup.RecordFetch), so the header's
 	// refresh note advances; a fetch failure is not this error — it travels
 	// in the report's Fetch field, which the header renders. This error is
 	// the re-read's own failure: on `F` the list keeps its rows and says why,
@@ -914,12 +914,13 @@ func refetchCmd(refetch func() (cleanup.Report, error), root string) tea.Cmd {
 // pruneStaleFirst wraps a `F` refresh's command (never nil) so the user's
 // refresh first drops the stale session claims in root's wt-sessions —
 // sessionclaim.Prune: the file of a dead or reused pid, or a malformed one —
-// then runs next (the fetch and the re-read) unchanged. This is the list
-// half of wt's prune contract and this package's single sessionclaim.Prune
-// call site: the list's refresh (this one key path, the picker's rows reload
-// and the manage list's re-read alike) and cmd/wt-session's fetch-first `--json` run
-// are the only two paths that prune — opening the list, the post-run re-read
-// and `--no-fetch` never drop a claim. All of it is best-effort: no readable
+// then runs next (the fetch and the re-read) unchanged. This is the
+// interactive half of the one prune gate (cmd/wt-session's pruneAfterFetch is
+// the other: every fetch-first run, --json, --plain, a pipe or --fetch) and
+// this package's single sessionclaim.Prune call site: the list's refresh
+// (this one key path, the picker's rows reload and the manage list's re-read
+// alike). Any run that asked for fresh state is a refresh; opening the list,
+// the post-run re-read and `--no-fetch` never drop a claim. All of it is best-effort: no readable
 // common directory, or a prune that fails, leaves the claims as they were
 // and the refresh runs anyway (the readers ignore a stale claim in display,
 // so nothing hangs on the drop).

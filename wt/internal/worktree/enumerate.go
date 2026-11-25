@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"cmp"
-	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -42,45 +41,13 @@ func ResolvePath(p string) string {
 	}
 }
 
-// fetchTimeout bounds how long FetchRemotes waits on `git fetch` before
-// giving up: an unreachable remote must never hold up the picker.
-const fetchTimeout = 5 * time.Second
-
-// FetchRemotes refreshes remote-tracking refs and prunes the ones deleted
-// upstream (`git fetch --all --prune`, every configured remote, at most
-// fetchTimeout). It is the worktree package's explicit fetch: enumeration
-// never fetches on its own. A run at root advances exactly the stamp
-// LastFetched(root) reads. The error is one line — git's first line of
-// output, else the process error — returned for the caller to handle.
-func FetchRemotes(root string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "fetch", "--all", "--prune")
-	if root != "" {
-		cmd.Dir = root
-	}
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		return nil
-	}
-	if ctx.Err() != nil {
-		return fmt.Errorf("git fetch --all --prune: timed out after %s", fetchTimeout)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			return fmt.Errorf("git fetch --all --prune: %s", line)
-		}
-	}
-	return fmt.Errorf("git fetch --all --prune: %w", err)
-}
-
 // LastFetched returns when `git fetch` last ran at root — the mtime of the
 // FETCH_HEAD git writes on every fetch there, an up-to-date fetch included
 // (a manual fetch counts) — and false when root has no readable FETCH_HEAD:
 // a fresh clone has none until a fetch runs there, and a read error folds
 // into the same false. Every worktree keeps its own stamp: LastFetched(root)
-// reads exactly the file a fetch at root writes, so FetchRemotes(root)
-// advances this stamp while a fetch at another worktree does not.
+// reads exactly the file a fetch at root writes, so a fetch at root
+// (cleanup.Fetch, via cleanup.RecordFetch) advances this stamp while a fetch at another worktree does not.
 func LastFetched(root string) (time.Time, bool) {
 	p := fetchHeadPath(root)
 	if p == "" {
@@ -492,7 +459,7 @@ func IsDefaultBranchForm(branch, db string) bool {
 // first, then local branches, then remote branches. It hides nothing: a
 // branch a worktree holds is also a local branch, and a remote branch with a
 // same-named local branch is listed too. It is read-only: it fetches and
-// prunes nothing (FetchRemotes does both, on request). Only `wt
+// prunes nothing (cleanup.Fetch does both, on request). Only `wt
 // --debug-worktrees` uses it; the picker lists internal/cleanup's rows.
 func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
 	groups, _, err := EnumerateRepos(dir, cwdRoot)

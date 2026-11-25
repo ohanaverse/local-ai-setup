@@ -565,7 +565,7 @@ func TestPickerListsBranchesOfAnUntrackedRemote(t *testing.T) {
 // skipped".
 func TestPickerFailedFetchReadsAsFailed(t *testing.T) {
 	r := newRmRepo(t)
-	r.git("remote", "add", "dead", filepath.Join(t.TempDir(), "missing.git"))
+	r.git("remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git")) // origin: the per-remote fetch's top-level result is origin's
 	msg := loadRowsCmd(r.dir, nil, cleanup.GatherInputs{CWD: r.dir, OwnRepo: "o/r"}, true)().(rowsLoadedMsg)
 	if msg.err != nil {
 		t.Fatal(msg.err)

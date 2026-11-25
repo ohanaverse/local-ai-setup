@@ -927,9 +927,11 @@ func TestCleanupCmdTerminalFetchFailureStillOpensTheList(t *testing.T) {
 	a, _ := newTestApp(t)
 	stubCleanupGH(t)
 	dir := cleanupRepo(t)
-	// A remote whose URL cannot be reached: the one `git fetch --all --prune`
-	// fails on it (fast — a missing local path, not a network).
-	cgit(t, dir, "remote", "add", "dead", filepath.Join(t.TempDir(), "no-such.git"))
+	// Origin's URL cannot be reached: the per-remote fetch fails on it (fast
+	// — a missing local path, not a network). Origin's failure is the
+	// fetch's top-level one (the base is origin's); another remote's alone
+	// reads "<name> FAILED" in the header's remote list (#586).
+	cgit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such.git"))
 	oldTTY, oldList := isTerminalWriter, runCleanupList
 	isTerminalWriter = func(io.Writer) bool { return true }
 	var got cleanup.Report
@@ -1254,8 +1256,8 @@ func staleClaimFile(t *testing.T, repo string) string {
 
 // TestCleanupJSONFetchPrunesStaleClaims: a fetch-first `wt worktrees --json`
 // run drops the stale session claims. Why: the fetch-first JSON report is the
-// refresh the agent path gets (the TUI list's `F` is the other of the two
-// paths that prune), so a session that died without releasing its claim is
+// refresh the agent path gets (every fetch-first run prunes through one gate,
+// pruneAfterFetch; the TUI list's `F` is its interactive half), so a session that died without releasing its claim is
 // tidied when fresh state is next asked for instead of piling up. The stale
 // claim is a real dead process, never a manufactured one.
 func TestCleanupJSONFetchPrunesStaleClaims(t *testing.T) {
@@ -1274,9 +1276,9 @@ func TestCleanupJSONFetchPrunesStaleClaims(t *testing.T) {
 
 // TestCleanupJSONNoFetchLeavesClaims: `--no-fetch` means the run fetched
 // nothing — no refresh happened — so it drops no claim, stale ones included.
-// Why: the prune rides the fetch-first JSON run only (sessionclaim.Prune's
-// two paths); a listing told not to touch the network must not delete
-// anything under the user either.
+// Why: the prune rides every fetch-first run (pruneAfterFetch) and nothing
+// else; a listing told not to touch the network must not delete anything
+// under the user either.
 func TestCleanupJSONNoFetchLeavesClaims(t *testing.T) {
 	a, _ := newTestApp(t)
 	stubCleanupGH(t)
@@ -1287,6 +1289,39 @@ func TestCleanupJSONNoFetchLeavesClaims(t *testing.T) {
 	}
 	if _, statErr := os.Stat(file); statErr != nil {
 		t.Fatalf("the --no-fetch --json run dropped the stale claim %s: %v", file, statErr)
+	}
+}
+
+// TestCleanupPlainFetchPrunesStaleClaims: a fetch-first `--plain` run prunes
+// stale claims exactly as --json does. Why: any run that asked for fresh state
+// is a refresh (#586); before, only --json pruned, so the same fetch pruned or
+// not by output format.
+func TestCleanupPlainFetchPrunesStaleClaims(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	file := staleClaimFile(t, dir)
+	stdout, _, err := runCleanup(t, a, dir, "--plain")
+	if err != nil {
+		t.Fatalf("--plain: %v\n%s", err, stdout)
+	}
+	if _, statErr := os.Stat(file); !os.IsNotExist(statErr) {
+		t.Fatalf("the fetch-first --plain run left the stale claim %s behind (stat error %v)", file, statErr)
+	}
+}
+
+// TestCleanupPlainNoFetchLeavesClaims: --plain --no-fetch is no refresh, so
+// the stale claim stays.
+func TestCleanupPlainNoFetchLeavesClaims(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	file := staleClaimFile(t, dir)
+	if _, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(file); statErr != nil {
+		t.Fatalf("the --no-fetch --plain run dropped the stale claim %s: %v", file, statErr)
 	}
 }
 
@@ -1529,5 +1564,41 @@ func TestCleanupRemoveFuncsRereadNeverFetches(t *testing.T) {
 	}
 	if rep.Fetch.NotAttempted || rep.Fetch.OK || rep.Fetch.Err == "" {
 		t.Errorf("report.Fetch = %+v, want the hand-off's failed fetch", rep.Fetch)
+	}
+}
+
+// TestCleanupTerminalFetchPrunesStaleClaims: a terminal `--fetch` run prunes
+// stale claims through the one gate (#586), the header names the second
+// remote's result, and a plain terminal open (no --fetch) leaves the claim.
+func TestCleanupTerminalFetchPrunesStaleClaims(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	up := filepath.Join(t.TempDir(), "up.git")
+	if b, err := exec.Command("git", "init", "--bare", "-b", "main", up).CombinedOutput(); err != nil {
+		t.Fatalf("init up: %v\n%s", err, b)
+	}
+	cgit(t, dir, "remote", "add", "up", up)
+	file := staleClaimFile(t, dir)
+	oldTTY, oldList := isTerminalWriter, runCleanupList
+	isTerminalWriter = func(io.Writer) bool { return true }
+	var got cleanup.Report
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, _ tui.RemoveFuncs) error { got = r; return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
+
+	if _, _, err := runCleanup(t, a, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(file); statErr != nil {
+		t.Fatalf("a terminal open without --fetch dropped the stale claim %s: %v", file, statErr)
+	}
+	if _, _, err := runCleanup(t, a, dir, "--fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(file); !os.IsNotExist(statErr) {
+		t.Fatalf("the terminal --fetch run left the stale claim %s behind (stat error %v)", file, statErr)
+	}
+	if hdr := strings.Join(cleanup.HeaderLines(got, time.Now()), "\n"); !strings.Contains(hdr, "also fetched up") {
+		t.Errorf("the terminal --fetch header does not name the remote %q:\n%s", "up", hdr)
 	}
 }
