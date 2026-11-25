@@ -535,8 +535,7 @@ the ref `refs/wt/rescued/<id>`, printed as a `record:` line (JSON
 `record {ref, commit}`). It points at two commits: the source's index state
 (parent: the source's HEAD) and its working state on top of that. So it holds
 the commits and the working state: staged, unstaged and untracked files that
-are not ignored. It does not hold ignored files, file modes beyond the
-executable bit, or empty directories. The commits carry the source path,
+are not ignored. It does not hold the contents of ignored files, file modes beyond the executable bit, or empty directories. The commits carry the source path,
 branch and HEAD in `Wt-*` trailers. Inspect it:
 
 ```bash
