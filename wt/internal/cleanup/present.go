@@ -675,7 +675,7 @@ func RowTags(row Row) []Tag {
 		}
 	}
 	if ok {
-		text := "held by session"
+		text := HeldTagPrefix
 		if held.Detail != "" {
 			text += " " + held.Detail
 		}
@@ -686,3 +686,12 @@ func RowTags(row Row) []Tag {
 	}
 	return tags
 }
+
+// HeldTagPrefix is the text every held tag starts with: RowTags builds the
+// tag from it (plus the holder's description) and the screens that name the
+// holder find the tag with IsHeldTag, so a respelling fails to compile
+// instead of silently dropping the holder line (#581).
+const HeldTagPrefix = "held by session"
+
+// IsHeldTag reports whether t is the held tag RowTags builds.
+func IsHeldTag(t Tag) bool { return strings.HasPrefix(t.Text, HeldTagPrefix) }

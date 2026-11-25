@@ -822,3 +822,25 @@ func TestSingleRowConfirmDropsTheKeptBranchNoteWhenTheToggleDeletesIt(t *testing
 		t.Errorf("notes with the toggle off: %q, want the kept-branch note", got.pv.Notes)
 	}
 }
+
+// TestDetailBlockStatesTheHoldOnce pins #581: the labelled holder line names
+// the session, so the Verdict sentence does not repeat the held reason; a
+// reason that is not the hold still reads in the Verdict line.
+func TestDetailBlockStatesTheHoldOnce(t *testing.T) {
+	row := detailWorktreeRow("topic")
+	row.Reasons = []cleanup.Reason{
+		{Code: cleanup.ReasonHeld, Detail: "claude (pid 7)"},
+		{Code: cleanup.ReasonOpenPR, Detail: "PR #9 is open"},
+	}
+	d := &rowDetail{row: row, lists: ptrDetail(detailLists())}
+	text := strings.Join(detailBlock(cleanup.Report{Repo: "/repo", Rows: []cleanup.Row{row}}, row, d, themes.Default, 120), "\n")
+	if n := strings.Count(text, "claude (pid 7)"); n != 1 {
+		t.Errorf("the holder appears %d times, want once:\n%s", n, text)
+	}
+	if n := strings.Count(text, "held by another wt session"); n != 0 {
+		t.Errorf("the Verdict repeats the hold %d times:\n%s", n, text)
+	}
+	if !strings.Contains(text, "PR #9 is open") {
+		t.Errorf("a non-held reason left the Verdict line:\n%s", text)
+	}
+}

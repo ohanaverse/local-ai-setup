@@ -31,6 +31,8 @@ func TestWrapTextBreaksOnlyBetweenWords(t *testing.T) {
 	if got := WrapText(text, 0); got != text {
 		t.Errorf("width 0 = %q, want the text unchanged", got)
 	}
+	// Pins the decision (#581): a lone unbroken word longer than the line is
+	// hard-cut at the width, the only way to keep every line within it.
 	if got := Flow([]string{"abcdefghij"}, " ", 4); strings.Join(got, "|") != "abcd|efgh|ij" {
 		t.Errorf("a word longer than a line = %q, want it cut at the line's end", got)
 	}
