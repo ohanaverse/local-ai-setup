@@ -58,7 +58,7 @@ func rootCmdOver(mk depsFactory, h *host, rt serveRuntime) *cobra.Command {
 	root.SetVersionTemplate("wt-model {{.Version}}\n")
 	// One host config for the whole tree: every admin command reads the
 	// registry through the same h.
-	root.AddCommand(serveCmd(mk, rt, h), litellmCmd(h), modelCmd(h), setupCmd(h), servedCmd(h), warmCmd(h), cloudSyncCmd(h), stopCmd(h, rt.Record), aliasCmd(h, rt.Record), gatewayCmd(h))
+	root.AddCommand(serveCmd(mk, rt, h), litellmCmd(h), modelCmd(h, rt.Record), setupCmd(h, rt.Record), servedCmd(h), warmCmd(h), cloudSyncCmd(h), stopCmd(h, rt.Record), aliasCmd(h, rt.Record), gatewayCmd(h))
 	silenceUsageOnError(root)
 	return root
 }

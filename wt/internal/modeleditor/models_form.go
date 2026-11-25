@@ -478,6 +478,11 @@ func (m *model) applyModelSaved(msg modelSavedMsg) tea.Cmd {
 	mt.status = strings.Join(append([]string{verb + msg.id}, msg.notes...), "\n")
 	mt.phase, mt.form = modelsList, nil
 	m.registryChanged = m.registryChanged || msg.changed
+	if msg.changed {
+		// The Aliases tab's snapshot lacks this model: its next visit reads
+		// again, so a target naming it is judged on the registry as it is.
+		m.aliases.asked = false
+	}
 	if m.quitPending {
 		m.quitPending = false
 		_, cmd := m.quit()

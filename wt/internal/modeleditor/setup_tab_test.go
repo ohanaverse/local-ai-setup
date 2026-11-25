@@ -17,9 +17,9 @@ import (
 )
 
 // TestNextTabCycles pins the one tab order that every tab key uses:
-// Models, Setup, back to Models.
+// Models, Aliases, Setup, back to Models.
 func TestNextTabCycles(t *testing.T) {
-	for from, want := range map[Tab]Tab{TabModels: TabSetup, TabSetup: TabModels} {
+	for from, want := range map[Tab]Tab{TabModels: TabAliases, TabAliases: TabSetup, TabSetup: TabModels} {
 		if got := nextTab(from); got != want {
 			t.Errorf("nextTab(%d) = %d, want %d", from, got, want)
 		}
@@ -233,11 +233,11 @@ func TestSetupTabObservesOnFirstVisitOnly(t *testing.T) {
 	if sm.observes != 0 {
 		t.Fatalf("observes on the Models tab = %d, want 0", sm.observes)
 	}
-	m = keys(t, m, "tab")
+	m = keys(t, m, "tab", "tab")
 	if m.tab != TabSetup || sm.observes != 1 {
 		t.Fatalf("tab = %d observes = %d, want the Setup tab observed once", m.tab, sm.observes)
 	}
-	m = keys(t, m, "tab", "tab")
+	m = keys(t, m, "tab", "tab", "tab")
 	if m.tab != TabSetup || sm.observes != 1 {
 		t.Errorf("tab = %d observes = %d after a second visit, want still 1", m.tab, sm.observes)
 	}
@@ -247,7 +247,7 @@ func TestSetupTabObservesOnFirstVisitOnly(t *testing.T) {
 	if sm.observes != 1 {
 		t.Fatalf("observes with StartTab = TabSetup = %d, want 1 from Init", sm.observes)
 	}
-	m = keys(t, m, "tab", "tab")
+	m = keys(t, m, "tab", "tab", "tab")
 	if sm.observes != 1 {
 		t.Errorf("observes after coming back = %d, want 1", sm.observes)
 	}

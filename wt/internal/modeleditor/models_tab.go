@@ -784,6 +784,7 @@ func (m *model) applyModelRemoved(msg modelRemovedMsg) tea.Cmd {
 		return m.probeCmd()
 	}
 	m.registryChanged = true
+	m.aliases.asked = false // its snapshot still lists the model
 	mt.status = "removed " + msg.id
 	if msg.note != "" {
 		// The path again: the prompt that showed it is gone.

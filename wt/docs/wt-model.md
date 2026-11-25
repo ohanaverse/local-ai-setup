@@ -10,6 +10,7 @@ deletes weights; it registers what a provider already has, or will have.
 
 ```bash
 wt-model model                    # the Models tab, on the host (needs a terminal); see below
+                                  # Tab: the Aliases tab (alias set|rm), then Setup
 wt-model model list [--json]      # every registry model, and every local model found on this machine
 wt model list --server [--json]   # the model server's catalog, as a client session sees it
 wt-model model init [--json]      # create the registry if it is missing; add the default provider rows
@@ -559,7 +560,7 @@ with one id fail the registry load, the one case where a bad alias does.
 
 **Launching.** `-M alias/<name>`, the picker and slot profiles list and launch an alias like a model. A launch with no pin (and rotation) never picks an alias: it walks the registered models only.
 
-The Models tab has no alias screen yet: use `wt-model alias`.
+The Aliases tab of `wt-model model` does the same set and remove on a terminal (see [The Aliases tab](#the-aliases-tab-wt-model-model)).
 
 ## `wt-model gateway`
 
@@ -629,8 +630,8 @@ Run `wt-model litellm sync` after a hand edit: no tool saw it.
 
 ## The Models tab (`wt-model model`)
 
-`wt-model model` opens it on the host that holds the registry, the screen's
-one tab; it needs a terminal (without one it exits 1 and names `wt-model model
+`wt-model model` opens it on the host that holds the registry, the first of
+the screen's tabs (Models, Aliases, Setup); it needs a terminal (without one it exits 1 and names `wt-model model
 list`, `add`, `edit` and `rm`). Bare `model` under wt only points here.
 
 The same rows as `wt-model model list`, as a table: FAMILY, MODEL, LOC, STATUS,
@@ -662,7 +663,7 @@ absent`): the model picker does not apply it.
 | `d` | remove the selected registry model, after a `y/N` prompt that shows where its weights are (on a terminal too short for a long id and path the prompt drops its blank lines, then its closing sentence, before any of the path); the path is repeated in the status afterwards |
 | `r` | probe the providers again; the status says `probing providers...` until they answer — also after a save or a removal, which probe again — and `n`, `enter`, `r` and `d` wait for it |
 | `/` | filter by id or family: type, `Enter` to keep the filter, `Esc` to clear it |
-| `Tab` | nothing: the screen has one tab |
+| `Tab` | the next tab: Aliases, then Setup, then back to Models |
 | `q`, `Ctrl+C` | quit — but on the remove prompt `q` cancels it, as `Esc` and `n` do (`Ctrl+C` also quits while a filter is being typed, where `q` is text) |
 
 `Esc` does not quit, and `Ctrl+S` does nothing here: there is nothing to save.
@@ -751,3 +752,59 @@ lines) it is shown whole without the table, and the next key brings the table
 back. A registry that does not load is reported the same way, with the repair
 that fits the error (`fix that file by hand`), and stays until `r` reads it
 again.
+
+## The Aliases tab (`wt-model model`)
+
+`Tab` from the Models tab opens it (its data is read on the first visit, off
+the screen's loop, so a slow proxy does not freeze it). It does what
+`wt-model alias list|set|rm` do, with the same checks and the same words: the
+parser, the checks and the shrink rule are the command's own functions
+(`modeladmin.ParseAliasTargets`, `CheckAlias`, `AliasWindowChange`), so the
+two cannot disagree. It is a tab of its own, not a mode of the Models table.
+It writes `registry.toml` only; the one route sync is what runs when the
+screen closes, as for the Models tab, and the tab shows `LiteLLM routes
+pending (sync on quit)` once it has written.
+
+The table: ALIAS, TARGETS (`1:model,2:model`, lowest order tried first), CONTEXT
+(the window the alias declares, `-` when a target's is unknown), ROUTED (`yes`
+when LiteLLM's database has a row for it, `no`, `?` when the database was not
+read; a footer line says why) and SESSIONS (client sessions of the running
+model server using it; `-` with no server, `?` when a running server's
+sessions could not be read). A narrow terminal gives up SESSIONS, then ROUTED,
+never ALIAS, TARGETS or CONTEXT; a TARGETS column still too wide loses the end
+of long rows to an ellipsis. Under the table is the selected alias's detail: its
+id, a redirect (`redirects to alias/new`), its targets whole, and, for an alias
+the registry cannot use, `unusable:` with the reason (`config.AliasFault`'s
+text).
+
+| Key | Does |
+|---|---|
+| `↑`/`↓`, `j`/`k` | move |
+| `n` | add an alias (the form) |
+| `enter` | edit the selected alias's targets; a redirect says it is one and opens nothing |
+| `d` | remove the selected alias after `Remove alias/x from the registry? Its LiteLLM routes go with it. [y/N]` |
+| `r` | read everything again |
+| `Tab` | the next tab: Setup |
+| `q`, `Ctrl+C` | quit; held until a write in flight has reported, so the route sync is not skipped |
+
+**The form** has an Alias field (an add only; `alias/` is supplied when left
+out) and one Targets field, written as `wt-model alias set --target` reads
+it: `model[:order], model[:order]`, a model id that itself ends in `:<digits>`
+read whole. `Ctrl+S` saves; `Enter` on Targets does too; `Tab` and `Shift+Tab`
+move; `Esc` cancels. The targets are free text checked by the real rules, not
+a picker: an unknown model, an alias or a native model as a target, two local
+targets, an order below 1 and a target given twice are each refused on the
+form, with nothing written. A save that changes nothing says `no change`. A
+save that makes the alias's window smaller, or unknown where it was known,
+asks first, in the command's sentence: `alias/x's context window would go from
+X to Y tokens; N client session(s) use it and keep the window they launched
+with. Set it anyway? [y/N]`. Only `y` writes; any other key goes back to the
+form. The write checks the request again under the registry lock, so a model
+another program removed since the tab read the registry is refused on the form.
+
+**Remove guard.** `d` refuses, with no prompt, while a client session of the
+running server uses the alias (`not removed: alias/x is used by N client
+session(s); `wt-model alias rm --force-in-use` overrides`), and while the
+running server's sessions cannot be read. There is no force override in the
+tab; with no server running nothing is in use. `wt-model model rm` and the
+Models tab's `d` still refuse a model an alias targets, unchanged.

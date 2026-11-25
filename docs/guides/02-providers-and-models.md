@@ -25,7 +25,7 @@ LiteLLM's `config.yaml` defaults to `~/.config/litellm/config.yaml` (`WT_LITELLM
 
 ```bash
 wt-model model init                                 # create registry.toml if it is missing, add the default provider rows (never changes a row that exists)
-wt-model model                                      # the Models tab (on the host): n add, enter edit, d remove (Step 1)
+wt-model model                                      # the Models tab (on the host): n add, enter edit, d remove (Step 1); Tab to the Aliases tab (alias set|rm)
 wt-model model add openrouter <model> --family <f>  # the same without a terminal; also `wt-model model edit <id> …`, `wt-model model rm <id>`
 wt-model model list                                 # every registry model, and every local model found that has no entry
 wt-model litellm sync --dry-run                     # read-only: what wt would route/unroute for the registry as edited
@@ -70,7 +70,7 @@ What to keep in mind:
 
 **A model's context window.** A registry model may carry `context_window`, a whole number of tokens: `wt-model model add ... --context-window N`, or `wt-model model edit <id> --context-window N` (`0` removes it). It is the only way a **local** model gets a declared window (`tiers.toml` records none for a local build), and for any model it wins over the tiers file. The model server reports it as the catalog row's `context`, and a claude launch sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from it, so Claude Code compacts against the window you serve. Set it to the window the server really runs with (oMLX's `sampling.max_context_window`, for instance): a larger value makes Claude compact too late.
 
-**Aliases.** One gateway id for one model or a priority group of several is a registry alias, `alias/<name>`, managed with `wt-model alias list|set|rm` (guide 04 step 7). It is not a model row and `wt-model model rm` refuses a model an alias targets.
+**Aliases.** One gateway id for one model or a priority group of several is a registry alias, `alias/<name>`, managed with `wt-model alias list|set|rm` (guide 04 step 7) or on the Aliases tab of `wt-model model`. It is not a model row and `wt-model model rm` refuses a model an alias targets.
 
 ### 2. Add a cloud provider (OpenRouter)
 

@@ -292,3 +292,80 @@ func TestFinishedRedirects(t *testing.T) {
 		t.Errorf("FinishedRedirects = %v, %v", fin, busy)
 	}
 }
+
+// TestParseAliasTargets pins the shared target parser: ID, ID:ORDER, a model
+// id that holds a colon whole, and the refusals the CLI's flag and the Aliases
+// tab's field both give.
+func TestParseAliasTargets(t *testing.T) {
+	scratchRegistry(t, aliasRegistry)
+	cfg := loadCfg(t)
+	got, err := ParseAliasTargets(cfg, []string{"openrouter/big:2", "ollama/qwen3:8b", "openrouter/nope:12"})
+	want := []config.AliasTarget{{Model: "openrouter/big", Order: 2}, {Model: "ollama/qwen3:8b"}, {Model: "openrouter/nope", Order: 12}}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("ParseAliasTargets = %v, %v; want %v", got, err, want)
+	}
+	for spec, wantErr := range map[string]string{"openrouter/big:0": "whole number from 1", "": "empty"} {
+		if _, err := ParseAliasTargets(cfg, []string{spec}); err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("%q: %v, want %q", spec, err, wantErr)
+		}
+	}
+	if _, err := ParseAliasTargets(cfg, []string{"openrouter/big", "openrouter/big:2"}); err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Errorf("duplicate: %v", err)
+	}
+}
+
+// TestAliasTargetsTextRoundTrips pins the form's text: what AliasTargetsText
+// writes, ParseAliasTargetsText reads back, an ollama tag included.
+func TestAliasTargetsTextRoundTrips(t *testing.T) {
+	scratchRegistry(t, aliasRegistry)
+	cfg := loadCfg(t)
+	a := config.Alias{ID: "alias/x", Targets: targets("openrouter/big", 0, "ollama/qwen3:8b", 5)}
+	text := AliasTargetsText(cfg, a)
+	if text != "openrouter/big:1, ollama/qwen3:8b:5" {
+		t.Fatalf("text = %q", text)
+	}
+	got, err := ParseAliasTargetsText(cfg, text)
+	if err != nil || !slices.Equal(got, targets("openrouter/big", 1, "ollama/qwen3:8b", 5)) {
+		t.Errorf("round trip = %v, %v", got, err)
+	}
+	if _, err := ParseAliasTargetsText(cfg, " , "); err == nil {
+		t.Error("no targets should be refused")
+	}
+}
+
+// TestAliasWindowChange pins decision 7's shrink rule in its one home: a new
+// alias never shrinks, a smaller or unknown window over a known one does, an
+// equal or larger one does not.
+func TestAliasWindowChange(t *testing.T) {
+	path := scratchRegistry(t, aliasRegistry)
+	_ = path
+	if _, err := SetAlias(AliasRequest{ID: "alias/x", Targets: targets("openrouter/big", 1)}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := loadCfg(t)
+	for name, tc := range map[string]struct {
+		id       string
+		t        []config.AliasTarget
+		shrinks  bool
+		had      bool
+		old, new int
+	}{
+		"new alias":    {"alias/y", targets("openrouter/small", 1), false, false, 0, 131072},
+		"smaller":      {"alias/x", targets("openrouter/small", 1), true, true, 262144, 131072},
+		"unknown":      {"alias/x", targets("openrouter/unknown", 1), true, true, 262144, 0},
+		"same":         {"alias/x", targets("openrouter/big", 1), false, true, 262144, 262144},
+		"min of group": {"alias/x", targets("openrouter/big", 1, "openrouter/small", 2), true, true, 262144, 131072},
+	} {
+		wc := AliasWindowChange(cfg, tiers.Index{}, AliasRequest{ID: tc.id, Targets: tc.t})
+		if wc.Shrinks != tc.shrinks || wc.Had != tc.had || wc.Old != tc.old || wc.New != tc.new {
+			t.Errorf("%s: %+v, want shrinks %v had %v old %d new %d", name, wc, tc.shrinks, tc.had, tc.old, tc.new)
+		}
+	}
+	wc := AliasWindowChange(cfg, tiers.Index{}, AliasRequest{ID: "alias/x", Targets: targets("openrouter/small", 1)})
+	if got, want := wc.ShrinkSentence("alias/x", 2), "alias/x's context window would go from 262144 to 131072 tokens; 2 client session(s) use it and keep the window they launched with"; got != want {
+		t.Errorf("sentence = %q", got)
+	}
+	if got := wc.ShrinkSentence("alias/x", -1); strings.Contains(got, "session") {
+		t.Errorf("unread sessions should add nothing: %q", got)
+	}
+}

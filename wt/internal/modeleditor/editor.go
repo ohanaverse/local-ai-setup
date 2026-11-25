@@ -1,6 +1,7 @@
 // Package modeleditor is wt-model's screen: a Models tab that manages the
 // models in the shared registry.toml (through internal/modeladmin), opened by
-// `wt-model model`, and a Setup tab that sets up wt-model on this machine
+// `wt-model model`, an Aliases tab that manages its aliases through the same
+// package (the registry half of `wt-model alias set|rm`), and a Setup tab that sets up wt-model on this machine
 // (local mode's LaunchAgent, token and LiteLLM, through internal/modelsetup,
 // reached only by its injected SetupDeps) or chooses native. It is an admin
 // screen: it reads and writes the registry, probes the providers and
@@ -30,6 +31,8 @@ type model struct {
 	// tab has written registry.toml (Result.RegistryChanged).
 	models          modelsTab
 	registryChanged bool
+	// aliases is the Aliases tab's state.
+	aliases aliasesTab
 	// setup is the Setup tab's state.
 	setup setupTab
 	// quitPending is true when the user asked to leave while a registry
@@ -64,8 +67,11 @@ func (m *model) Init() tea.Cmd {
 		// cfg and cfgErr are captured when newModel is called.
 		return loadedMsg{cfg: m.cfg, err: m.cfgErr}
 	}
-	if m.tab == TabSetup {
+	switch m.tab {
+	case TabSetup:
 		return tea.Batch(loaded, m.observeSetupCmd())
+	case TabAliases:
+		return tea.Batch(loaded, m.loadAliasesCmd())
 	}
 	return tea.Batch(loaded, m.probeCmd())
 }
@@ -76,6 +82,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	if nm, ok := next.(*model); ok && nm.ready {
 		nm.fitModels()
+		nm.fitAliases()
 		return nm, cmd
 	}
 	return next, cmd
@@ -87,6 +94,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.resizeModelForm()
+		m.resizeAliasForm()
 		m.resizeSetupInputs()
 	case loadedMsg:
 		m.ready = true
@@ -110,6 +118,13 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyModelRemoved(msg)
 	case modelSavedMsg:
 		return m, m.applyModelSaved(msg)
+	case aliasesLoadedMsg:
+		m.applyAliases(msg)
+		return m, nil
+	case aliasSavedMsg:
+		return m, m.applyAliasSaved(msg)
+	case aliasRemovedMsg:
+		return m, m.applyAliasRemoved(msg)
 	case filterMatchesMsg:
 		return m, m.applyFilterMatches(msg)
 	case setupObservedMsg:
@@ -130,8 +145,11 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setup.waiting = false
 		return m, m.observeSetupCmd()
 	}
-	if m.tab == TabSetup {
+	switch m.tab {
+	case TabSetup:
 		return m.updateSetup(msg)
+	case TabAliases:
+		return m.updateAliases(msg)
 	}
 	return m.updateModels(msg)
 }
@@ -148,13 +166,16 @@ func (m *model) quit() (tea.Model, tea.Cmd) {
 // handled would return Result{RegistryChanged: false} for a registry that did
 // change, and the caller would skip the route sync it owes, or would drop an
 // apply's result unread. So the quit is recorded and shown on the tab of the
-// write it waits for, and applyModelRemoved, applyModelSaved or
-// finishSetupWrite, whichever the write reports to, issues it. That tab says
+// write it waits for, and applyModelRemoved, applyModelSaved,
+// applyAliasSaved, applyAliasRemoved or finishSetupWrite, whichever the write reports to, issues it. That tab says
 // the quit is waiting. A probe or an observation in flight holds nothing up.
 func (m *model) leave() (tea.Model, tea.Cmd) {
 	switch {
 	case m.models.writing:
 		m.quitPending, m.tab = true, TabModels
+		return m, nil
+	case m.aliases.writing:
+		m.quitPending, m.tab = true, TabAliases
 		return m, nil
 	case m.setup.writing:
 		m.quitPending, m.tab = true, TabSetup
@@ -173,8 +194,11 @@ func (m *model) View() string {
 	if !m.ready {
 		return "Loading config..."
 	}
-	if m.tab == TabSetup {
+	switch m.tab {
+	case TabSetup:
 		return m.setupTabView()
+	case TabAliases:
+		return m.aliasesView()
 	}
 	return m.modelsView()
 }
@@ -200,6 +224,7 @@ func resolveHome(f func() (string, error)) string {
 func Run(theme themes.Theme, cfg *config.Config, cfgErr error, o Options, opts ...tea.ProgramOption) (Result, error) {
 	m := newModel(theme, cfg, cfgErr)
 	o.Models = o.Models.withDefaults()
+	o.Aliases = o.Aliases.withDefaults()
 	o.Setup = o.Setup.withDefaults()
 	m.opts, m.tab = o, o.StartTab
 	m.home = resolveHome(o.UserHome)

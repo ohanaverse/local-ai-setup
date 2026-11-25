@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeleditor"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
 // TestWtModelModelOpensTheModelsTab verifies `wt-model model`, on a terminal,
@@ -50,6 +54,51 @@ func TestWtModelModelOpensTheModelsTab(t *testing.T) {
 	}
 	if *syncs != 0 {
 		t.Errorf("syncs = %d with nothing changed, want 0", *syncs)
+	}
+}
+
+// TestWtModelModelWiresTheAliasesTab verifies the Aliases tab is handed this
+// package's own seams, each asked with an answer no real function would give:
+// the routes through routedAliases, the sessions through clientSessions over
+// the runtime record (an unread server arrives as an error), the windows'
+// index through tiersIndex.
+func TestWtModelModelWiresTheAliasesTab(t *testing.T) {
+	modelHome(t, writeRegistry)
+	h := testHost()
+	h.stdinTTY = func() bool { return true }
+	call := stubModelEditor(h, modeleditor.Result{}, nil)
+	stubRouteSync(h, "")
+	var unread error
+	h.clientSessions = func(_ context.Context, _ io.Writer, _ servestate.Store, u *error) func() map[string]int {
+		*u = unread
+		return func() map[string]int { return map[string]int{"alias/marker": 3} }
+	}
+	h.tiersIndex = func() tiers.Index { return tiers.Index{} }
+	if _, _, err := execWTModel(t, h, "model"); err != nil {
+		t.Fatal(err)
+	}
+	d := call.opts.Aliases
+	if d.Routed == nil || d.Sessions == nil || d.Index == nil {
+		t.Fatalf("the tab was not given the alias seams: %+v", d)
+	}
+	// No proxy pair in the test host: routes are unknown, with no warning.
+	if routed, warn := d.Routed(context.Background(), &config.Config{}); routed != nil || warn != "" {
+		t.Errorf("Routed with no pair = %v, %q; want nil and no warning", routed, warn)
+	}
+	if got, err := d.Sessions(context.Background()); err != nil || got["alias/marker"] != 3 {
+		t.Errorf("Sessions = %v, %v; want the clientSessions seam's answer", got, err)
+	}
+	unread = errors.New("server running, sessions unreadable")
+	if _, err := d.Sessions(context.Background()); err == nil {
+		t.Error("an unreadable server must reach the tab as an error")
+	}
+	if d.Index() == nil {
+		t.Error("Index should be the tiersIndex seam's (an empty, non-nil index here)")
+	}
+	// `wt-model setup` opens the same screen with the same deps.
+	call2 := stubModelEditor(h, modeleditor.Result{}, nil)
+	if _, _, err := execWTModel(t, h, "setup"); err != nil || !call2.called || call2.opts.Aliases.Sessions == nil {
+		t.Errorf("setup opens the screen too, with the Aliases deps: err = %v, called = %v", err, call2.called)
 	}
 }
 

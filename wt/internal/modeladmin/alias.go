@@ -3,7 +3,9 @@ package modeladmin
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -282,4 +284,120 @@ func FinishedRedirects(cfg *config.Config, sessions map[string]int) (finished []
 		finished = append(finished, a.ID)
 	}
 	return finished, inUse
+}
+
+// orderSuffixRE is an order written after a target's last colon.
+var orderSuffixRE = regexp.MustCompile(`^-?[0-9]+$`)
+
+// ParseAliasTargets reads target specs, ID or ID:ORDER, as `wt-model alias
+// set --target` and the TUI's Aliases tab both do (one parser, so the two
+// cannot drift). A value that names a registry model whole is that model (an
+// ollama tag holds a colon: ollama/qwen3:8b), else an all-digit suffix after
+// the last colon is the order, which must be from 1. A target given twice is
+// refused.
+func ParseAliasTargets(cfg *config.Config, specs []string) ([]config.AliasTarget, error) {
+	var out []config.AliasTarget
+	for _, spec := range specs {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			return nil, errors.New("--target is empty: pass a registry model id")
+		}
+		t := config.AliasTarget{Model: spec}
+		if config.IndexModelByID(cfg.Models, spec) < 0 {
+			if i := strings.LastIndex(spec, ":"); i > 0 && orderSuffixRE.MatchString(spec[i+1:]) {
+				n, err := strconv.Atoi(spec[i+1:])
+				if err != nil || n < 1 {
+					return nil, fmt.Errorf("--target %s: the order must be a whole number from 1", spec)
+				}
+				t = config.AliasTarget{Model: spec[:i], Order: n}
+			}
+		}
+		if slices.ContainsFunc(out, func(o config.AliasTarget) bool { return o.Model == t.Model }) {
+			return nil, fmt.Errorf("--target %s: target %s is given more than once", spec, t.Model)
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+// AliasTargetsText is a's targets in the syntax ParseAliasTargetsText reads:
+// "model:order, model:order", the order written for every target (a
+// position the file leaves out is its 1-based place).
+func AliasTargetsText(cfg *config.Config, a config.Alias) string {
+	ts := cfg.AliasTargets(a)
+	parts := make([]string, 0, len(ts))
+	for i, t := range ts {
+		order := t.Order
+		if order < 1 {
+			order = i + 1
+		}
+		parts = append(parts, t.Model+":"+strconv.Itoa(order))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ParseAliasTargetsText reads the text AliasTargetsText writes (and any
+// comma-separated ID[:ORDER] list) with ParseAliasTargets. Empty pieces
+// between commas are ignored; no piece at all is an error.
+func ParseAliasTargetsText(cfg *config.Config, text string) ([]config.AliasTarget, error) {
+	var specs []string
+	for _, p := range strings.Split(text, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			specs = append(specs, p)
+		}
+	}
+	if len(specs) == 0 {
+		return nil, errors.New("no targets: write model[:order], model[:order]")
+	}
+	return ParseAliasTargets(cfg, specs)
+}
+
+// WindowChange is what an alias set does to the window the alias declares
+// (decision 7): Old is its window now (Had says the alias exists), New the
+// window after, 0 for unknown. Shrinks is true when the alias exists with a
+// known window and the new one is smaller or unknown: the set then asks
+// first, because client sessions keep the window they launched with. After
+// and Alias are the config with the request in place and the alias as the
+// reader reads it, for the dry run's rows.
+type WindowChange struct {
+	Old, New int
+	Had      bool
+	Shrinks  bool
+	After    *config.Config
+	Alias    config.Alias
+}
+
+// AliasWindowChange works out the window change of setting req over cfg. It
+// is the one home of the shrink rule: `wt-model alias set` and the Aliases tab
+// both ask it. cfg is not changed.
+func AliasWindowChange(cfg *config.Config, ix tiers.Index, req AliasRequest) WindowChange {
+	w := WindowChange{}
+	w.After, w.Alias = ConfigWithAlias(cfg, req)
+	w.New, _ = windows.Alias(w.After, w.Alias, ix)
+	if old, ok := cfg.AliasByID(req.ID); ok {
+		w.Had = true
+		w.Old, _ = windows.Alias(cfg, old, ix)
+	}
+	w.Shrinks = w.Had && w.Old > 0 && (w.New <= 0 || w.New < w.Old)
+	return w
+}
+
+// WindowText is a window for a line: its tokens, or - when unknown.
+func WindowText(w int) string {
+	if w <= 0 {
+		return "-"
+	}
+	return strconv.Itoa(w)
+}
+
+// ShrinkSentence is the sentence that precedes the question a shrinking set
+// asks, in the CLI's and the tab's own words. sessions is the number of
+// client sessions using the alias, or negative when they could not be read
+// (the sentence then says nothing of them).
+func (w WindowChange) ShrinkSentence(id string, sessions int) string {
+	s := fmt.Sprintf("%s's context window would go from %s to %s tokens", id, WindowText(w.Old), WindowText(w.New))
+	if sessions >= 0 {
+		s += fmt.Sprintf("; %d client session(s) use it and keep the window they launched with", sessions)
+	}
+	return s
 }

@@ -719,6 +719,8 @@ func (m *model) finishSetupWrite(ok bool) tea.Cmd {
 func (m *model) switchTab() tea.Cmd {
 	m.tab = nextTab(m.tab)
 	switch {
+	case m.tab == TabAliases && !m.aliases.asked:
+		return m.loadAliasesCmd()
 	case m.tab == TabSetup && !m.setup.asked:
 		return m.observeSetupCmd()
 	case m.tab == TabModels && !m.models.asked:
