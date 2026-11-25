@@ -4,6 +4,7 @@
 
 ### Changed
 
+- The `block-main-commit` hook is now v2 and also blocks a commit on any named branch in the repository's primary checkout (a detached HEAD and linked worktrees are allowed; the message names `wt restore-root` and `wt -W <name>`; `git commit --no-verify` and `WT_SKIP_MAIN_BLOCK=1` still bypass). The next launch upgrades a v1 hook in place, keeping any preserved original hook, and prints the usual install line. Creating a branch is not blocked: the commit is where the harm starts. wt cannot detect "my worktree was removed" after launch, since Claude Code owns the session's directory; the root-launch warning and `--root` consent already cover launches wt starts (Refs #560).
 - `wt rescue` prints a failure or refusal reason, its done lines and warnings whole on one line (it cut them at 200 characters, which could drop the remedy), as `wt restore-root` does; paths and branch names in the plan stay capped (Refs #558).
 - A copy of 100 or more untracked files by `wt rescue` or `wt restore-root` writes `copying untracked files: N of M` to stderr every 100 files and at the end (never to stdout, and not under `--json` or `--dry-run`; one plain line per tick, no terminal control codes) (Refs #558).
 - The refusal for an assume-unchanged or skip-worktree entry in the root (`wt remove` of the root's work) now names the remedy per case, as `wt restore-root` does: `git update-index --no-assume-unchanged <path>`, `git sparse-checkout disable`, or `git update-index --no-skip-worktree <path>` (Refs #558).

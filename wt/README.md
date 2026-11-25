@@ -171,7 +171,7 @@ wt notes each launch in the worktree the agent runs in — the root or a linked 
 
 ## Main guard
 
-Launchers auto-install a `block-main-commit` pre-commit hook on every invocation when inside a git repo, and `wt --init` installs it too. A first-time install prints one line on stderr — `wt: installed the block-main-commit hook (--no-guard to skip)` — on every install path; a hook already present is left alone and prints nothing. It blocks commits to `main`/`master` unless bypassed:
+Launchers auto-install a `block-main-commit` pre-commit hook on every invocation when inside a git repo, and `wt --init` installs it too. A first-time install prints one line on stderr — `wt: installed the block-main-commit hook (--no-guard to skip)` — on every install path; a hook already present is left alone and prints nothing. It blocks commits to `main`/`master`, and commits on any named branch in the repository's primary checkout (a detached HEAD and linked worktrees are allowed; the message points to `wt -W <name>` and `wt restore-root`), unless bypassed. An older hook is upgraded in place on the next launch and announced by the same line:
 
 - `git commit --no-verify` (emergency)
 - `WT_SKIP_MAIN_BLOCK=1` env var (CI/automation)
