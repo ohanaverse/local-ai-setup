@@ -1244,7 +1244,7 @@ func TestRestoreRootRunReportTellsTheCallerAboutASignal(t *testing.T) {
 		var got []os.Signal
 		var out, errOut bytes.Buffer
 		err := restoreRootRunReport(strings.NewReader(""), &out, &errOut, restoreRootFlags{yes: true, noFetch: true}, dir, nil,
-			func(s os.Signal) { got = append(got, s) })
+			func(s os.Signal) { got = append(got, s) }, nil)
 		if err != nil {
 			t.Fatalf("signalled=%v: %v\n%s", signalled, err, errOut.String())
 		}

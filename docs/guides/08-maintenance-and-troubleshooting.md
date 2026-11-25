@@ -664,7 +664,7 @@ A row wt could not judge (a git error, no `gh` where a proof needs it) shows the
 | `d` | as `x`, and also delete the worktree's branch when it is not proven merged (the confirm opens with that choice already on) |
 | `o` | delete only the selected row's `origin` branch, never its worktree or local branch (needs the typed `delete origin`) |
 | `r` | `wt rescue` the selected row; the list comes back with a fresh read and a status line when it is done, when you decline at its prompt, or when it is refused before anything was created |
-| `R` | `wt restore-root` for the root row; the same: back to a fresh read with a status line after it is done, declined or refused (a move that fails midway ends the session instead, so its recovery text is the last thing printed) |
+| `R` | `wt restore-root` for the root row; the same: back to a fresh read (without a second fetch, and with the cursor still on the row) with a status line after it is done, declined or refused (a move that fails midway ends the session instead, so its recovery text is the last thing printed) |
 | `F` | fetch every remote and refresh the rows (the rows are re-read either way; a failed fetch is not an error: the header says `fetch: FAILED (...)` and the rows are judged as of the last fetch) |
 | `q` | quit (`esc` on the detail screen goes back to the list, `esc` on the list quits) |
 

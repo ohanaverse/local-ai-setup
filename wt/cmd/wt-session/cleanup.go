@@ -292,8 +292,13 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	restoreRootFn := func(answer io.Reader, out, errOut io.Writer) error {
 		var got *rootmove.Outcome
 		var sig os.Signal
-		err := restoreRootRunReport(answer, out, errOut, restoreRootFlags{}, in.CWD, func(o rootmove.Outcome) { got = &o }, func(s os.Signal) { sig = s })
-		return restoreRootHandOffResult(err, got, sig)
+		// restore-root fetched every remote before it asked anything, so
+		// the re-entry only re-reads (HandOffNote.Fetched, Reread) and its
+		// report shows this fetch's outcome, a failure included (#579).
+		fetched := false
+		err := restoreRootRunReport(answer, out, errOut, restoreRootFlags{}, in.CWD, func(o rootmove.Outcome) { got = &o }, func(s os.Signal) { sig = s },
+			func(r cleanup.FetchResult) { in.Fetched, fetched = r, true })
+		return restoreRootHandOffResult(err, got, sig, fetched)
 	}
 	// reGather re-reads the repository (never fetching) and stands the list
 	// — and the engine, when there is one — on the fresh snapshot.
@@ -326,8 +331,17 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	detail := func(row cleanup.Row) cleanup.RowDetail {
 		return cleanup.ReadRowDetail(cleanup.Git{Dir: in.CWD}, row)
 	}
+	// reread is the re-entry after a hand-off that already fetched: the
+	// re-read alone, its report carrying in.Fetched (that hand-off's fetch).
+	reread := func() (cleanup.Report, error) {
+		fresh, err := reGather()
+		if err != nil {
+			return cleanup.Report{}, err
+		}
+		return cleanupReport(a, fresh, minAge, protErr), nil
+	}
 	if protErr != nil {
-		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Rescue: rescueRowFn, RestoreRoot: restoreRootFn, Detail: detail}
+		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Reread: reread, Rescue: rescueRowFn, RestoreRoot: restoreRootFn, Detail: detail}
 	}
 	eng = &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
 		Opts: removal.Options{Now: removeNow, Procs: removeProcs()}}
@@ -353,6 +367,7 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 			return cleanupReport(a, fresh, minAge, nil), nil
 		},
 		Refetch: refetch,
+		Reread:  reread,
 	}
 }
 
@@ -392,11 +407,14 @@ func rescueHandOffResult(err error, o *rescue.Outcome) error {
 // re-entry status carries the fact (#580). A plain error ends the session
 // with that line on the terminal already; the picker has no re-entry, and
 // drops the note, so its printed line is the record.
-func restoreRootHandOffResult(err error, o *rootmove.Outcome, sig os.Signal) error {
+func restoreRootHandOffResult(err error, o *rootmove.Outcome, sig os.Signal, fetched bool) error {
 	err = restoreRootHandOffNote(err, o)
 	var n *tui.HandOffNote
-	if sig != nil && errors.As(err, &n) {
-		n.Text += fmt.Sprintf("; interrupted (signal %v): the move was not stopped", sig)
+	if errors.As(err, &n) {
+		n.Fetched = fetched
+		if sig != nil {
+			n.Text += fmt.Sprintf("; interrupted (signal %v): the move was not stopped", sig)
+		}
 	}
 	return err
 }

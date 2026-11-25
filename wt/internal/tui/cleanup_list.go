@@ -406,9 +406,13 @@ func (m *cleanupListModel) empty() bool { return m.cursor < 0 }
 // session is as it always was. A hand-off that FAILED midway, or could not
 // start, returns a plain error and ends the session so its recovery text is
 // the last thing printed.
+//
+// Fetched means this hand-off already fetched every remote, so the re-entry
+// only re-reads (RemoveFuncs.Reread) instead of fetching a second time.
 type HandOffNote struct {
-	Text string
-	Err  error
+	Text    string
+	Err     error
+	Fetched bool
 }
 
 func (n *HandOffNote) Error() string {
@@ -458,11 +462,18 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 	if run == nil {
 		run = realCleanupProgram
 	}
+	var prev *rowKey // the row the cursor was on when the last pass ended
 	for {
 		m := newCleanupList(r, th, time.Now(), rm)
 		m.log = logged
 		m.status = status
 		status = ""
+		if prev != nil {
+			// The re-entered list keeps the user on the row they acted from;
+			// a row that is gone leaves the cursor on the top row.
+			m.seekRow(*prev)
+			prev = nil
+		}
 		final, stop, perr := run(m)
 		defer stop() // idempotent; the hand-offs and the re-entry stop it first
 		fm, ok := final.(cleanupListModel)
@@ -514,12 +525,24 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 		}
 		// Re-enter: the re-read's own failure ends the session (its error,
 		// never a silent retry); its report builds the next pass's model.
-		rep, rerr := rm.Refetch()
+		// A hand-off that already fetched (note.Fetched) only re-reads; a
+		// Reread-less funcs set falls back to Refetch, a second fetch but
+		// still correct.
+		read := rm.Refetch
+		if note != nil && note.Fetched && rm.Reread != nil {
+			read = rm.Reread
+		}
+		rep, rerr := read()
 		if rerr != nil {
 			err = rerr
 			break
 		}
 		stop() // the forwarding stops before the next pass's program runs
+		prev = nil
+		if fm.cursor >= 0 && fm.cursor < len(fm.items) && !fm.items[fm.cursor].newWorktree {
+			k := keyOf(fm.items[fm.cursor].row)
+			prev = &k
+		}
 		r = rep
 		if note != nil {
 			status = note.Text

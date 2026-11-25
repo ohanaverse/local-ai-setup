@@ -145,7 +145,7 @@ func restoreRootFail(out io.Writer, f restoreRootFlags, repo string, code int, e
 // list's `R` hand-off the directory the list was built from: one run path
 // (rescueRow's shape — the command and the list's key both end here).
 func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string) error {
-	return restoreRootRunReport(answer, out, errOut, f, cwd, nil, nil)
+	return restoreRootRunReport(answer, out, errOut, f, cwd, nil, nil, nil)
 }
 
 // restoreRootRunReport is restoreRootRun that also hands the outcome it
@@ -155,7 +155,10 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags,
 // interrupted (when non-nil) is called with the first signal received while
 // the move ran, beside the "interrupted (signal ...)" line printed for it:
 // the `R` hand-off puts the same fact on its re-entry status line (#580).
-func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string, report func(rootmove.Outcome), interrupted func(os.Signal)) error {
+// fetched (when non-nil) is called right after the gather, with its fetch
+// result, and only when the run really fetched (not --no-fetch, not a dry
+// run): the `R` hand-off uses it to skip the re-entry's second fetch (#579).
+func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string, report func(rootmove.Outcome), interrupted func(os.Signal), fetched func(cleanup.FetchResult)) error {
 	signal.Ignore(syscall.SIGPIPE)
 	write := func(meta rootmove.Meta, o rootmove.Outcome) error {
 		if report != nil {
@@ -171,6 +174,9 @@ func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRoot
 	// remote-tracking refs, so it reads the last fetch instead.
 	in := cleanupInputs(cwd, !f.noFetch && !f.dryRun, nil, "wt-restore-root")
 	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, in)
+	if in.Fetch && fetched != nil {
+		fetched(snap.Fetch)
+	}
 	// With no default branch the snapshot is still whole; Preflight refuses
 	// it as no_default_branch.
 	if err != nil && !errors.Is(err, cleanup.ErrNoDefaultBranch) {
