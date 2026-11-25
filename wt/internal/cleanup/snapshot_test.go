@@ -571,3 +571,29 @@ func TestFillDetailsLeavesTheFactsSnapshotAlone(t *testing.T) {
 		t.Fatal("FillDetails cleared FactsOnly on the caller's snapshot")
 	}
 }
+
+// TestOwnRepoOfReadsTheOrigin checks OwnRepoOf gives owner/repo for a
+// github.com origin and "" for a non-GitHub origin or none. Why: the flag
+// launches' merged-PR lookup (#585) is skipped outside GitHub.
+func TestOwnRepoOfReadsTheOrigin(t *testing.T) {
+	dir := t.TempDir()
+	ownGit(t, dir, "init", "-q")
+	if got := OwnRepoOf(dir); got != "" {
+		t.Errorf("no origin: %q, want empty", got)
+	}
+	ownGit(t, dir, "remote", "add", "origin", "git@gitlab.example.com:o/r.git")
+	if got := OwnRepoOf(dir); got != "" {
+		t.Errorf("gitlab origin: %q, want empty", got)
+	}
+	ownGit(t, dir, "remote", "set-url", "origin", "https://github.com/o/r.git")
+	if got := OwnRepoOf(dir); got != "o/r" {
+		t.Errorf("github origin: %q, want o/r", got)
+	}
+}
+
+func ownGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
