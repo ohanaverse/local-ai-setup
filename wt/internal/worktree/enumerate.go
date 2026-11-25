@@ -17,6 +17,31 @@ import (
 	"time"
 )
 
+// ResolvePath makes p absolute and resolves symlinks (macOS /var is
+// /private/var). A path that does not exist resolves through its nearest
+// existing ancestor, so a missing worktree or artifact still compares. It is
+// the one resolver every path comparison shares (cleanup's removal checks and
+// rootclaim's claim matching), and it lives here because rootclaim cannot
+// import cleanup.
+func ResolvePath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = filepath.Clean(p)
+	}
+	rest := ""
+	for dir := abs; ; {
+		if r, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(r, rest)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return abs
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
+}
+
 // fetchTimeout bounds how long FetchRemotes waits on `git fetch` before
 // giving up: an unreachable remote must never hold up the picker.
 const fetchTimeout = 5 * time.Second

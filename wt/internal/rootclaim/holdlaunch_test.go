@@ -159,3 +159,28 @@ func TestHoldLaunchNotARepoIsNoop(t *testing.T) {
 		}
 	}
 }
+
+// TestHoldLaunchCountsClaimRecordedUnderSymlinkAlias checks a holder whose
+// claim names the worktree through a symlink alias (a foreign or hand-written
+// claim; macOS /var against /private/var is the usual case) still counts as
+// another session on this worktree: HoldLaunch compares resolved paths, not
+// raw keys. The claim is returned as recorded, alias path and all.
+func TestHoldLaunchCountsClaimRecordedUnderSymlinkAlias(t *testing.T) {
+	root, linked := linkedRepo(t)
+	commonDir := filepath.Join(root, ".git")
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(filepath.Dir(linked), alias); err != nil {
+		t.Fatal(err)
+	}
+	aliased := filepath.Join(alias, filepath.Base(linked))
+	peer := holderClaim(t, commonDir, aliased, "feat", "peer")
+	holderClaim(t, commonDir, root, "main", "peer-elsewhere")
+	release, others, err := HoldLaunch(linked, "claude")
+	t.Cleanup(release)
+	if err != nil {
+		t.Fatalf("HoldLaunch = %v; want no error", err)
+	}
+	if len(others) != 1 || others[0] != peer {
+		t.Fatalf("others = %+v; want exactly the aliased peer %+v", others, peer)
+	}
+}
