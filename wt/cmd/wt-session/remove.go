@@ -278,7 +278,11 @@ func planRemove(eng removal.Engine, rows []cleanup.Row, f removeFlags) []planned
 	for i, row := range rows {
 		out[i].row = row
 		if row.HardStop != "" {
-			o := removal.NewOutcome(removal.ItemFromRow(row), removal.WtRefused, removal.BrNotAttempted, inUseReason(row))
+			o := removal.NewOutcome(removal.ItemFromRow(row), removal.WtRefused, removal.BrNotAttempted, "")
+			// Flattened, not capped, as the engine does: the run-from-root hint
+			// at the end is the part the user acts on (#569).
+			o.Reason = cleanup.Flatten(inUseReason(row, eng.Prior.Repo))
+			o.ReasonComposed = true
 			out[i].outcome = o
 			continue
 		}
@@ -341,8 +345,10 @@ func missingFlags(need, granted removal.Needs) string {
 	return strings.Join(m, ", ")
 }
 
-// inUseReason is the refusal for a row listed in use: its blockers' codes.
-func inUseReason(row cleanup.Row) string {
+// inUseReason is the refusal for a row listed in use: its blockers' codes,
+// and for the worktree the session stands in, the command to run from the
+// repository root (#569; the engine adds the same hint to its own refusals).
+func inUseReason(row cleanup.Row, root string) string {
 	var codes []string
 	for _, b := range row.Blockers {
 		if cleanup.IsHardStop(b.Code, row.Kind) {
@@ -352,7 +358,7 @@ func inUseReason(row cleanup.Row) string {
 	if len(codes) == 0 {
 		return "in use"
 	}
-	return "in use: " + strings.Join(codes, ", ")
+	return "in use: " + strings.Join(codes, ", ") + removal.StandingHint(row.Blockers, row.Kind, root)
 }
 
 // promptRemove prints, for every item, what removing it would lose, its live
@@ -410,7 +416,7 @@ func promptRemove(ask io.Writer, answer io.Reader, items []plannedItem, runnable
 		if p.run != nil {
 			continue
 		}
-		fmt.Fprintf(&b, "  not removed: %s %s: %s\n", p.outcome.Item.Kind, cleanup.OneLine(p.outcome.Item.Name), cleanup.OneLine(p.outcome.Reason))
+		fmt.Fprintf(&b, "  not removed: %s %s: %s\n", p.outcome.Item.Kind, cleanup.OneLine(p.outcome.Item.Name), p.outcome.ShownReason())
 	}
 	word := "items"
 	if runnable == 1 {
@@ -499,7 +505,7 @@ func printRemoveText(w io.Writer, meta removal.Meta, outcomes []removal.Outcome)
 	for _, o := range outcomes {
 		b.WriteString(removal.Headline(o))
 		if o.Reason != "" {
-			b.WriteString(": " + cleanup.OneLine(o.Reason))
+			b.WriteString(": " + o.ShownReason())
 		}
 		b.WriteString("\n")
 		for _, l := range removal.DetailLines(o) {
