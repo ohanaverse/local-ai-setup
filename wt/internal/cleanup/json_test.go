@@ -517,6 +517,14 @@ func TestHeaderNamesOtherRemotes(t *testing.T) {
 	if !strings.Contains(h, "up FAILED (boom)") || !strings.Contains(h, "skipFetchAll) fk") {
 		t.Fatalf("header:\n%s", h)
 	}
+	// A failed other remote is not a clean fetch: the first words say so.
+	if !strings.Contains(h, "fetch: partial, ") || strings.Contains(h, "fetch: ok") {
+		t.Fatalf("header opens as a clean fetch although a remote failed:\n%s", h)
+	}
+	clean := Report{Repo: "/r", Fetch: FetchResult{OK: true, At: time.Now(), Remotes: []RemoteFetch{{Name: "origin", OK: true}, {Name: "up", OK: true}, {Name: "fk", Skipped: true}}}}
+	if h := strings.Join(HeaderLines(clean, time.Now()), "\n"); !strings.Contains(h, "fetch: ok, ") {
+		t.Fatalf("a fetch where every remote worked or was skipped must still read ok:\n%s", h)
+	}
 }
 
 // TestNoOriginRepoReportsItsOtherRemotesFetch encodes and prints a report
