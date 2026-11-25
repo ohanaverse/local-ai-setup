@@ -471,6 +471,10 @@ func HeaderLines(r Report, now time.Time) []string {
 		lines = append(lines, "fetch: not run (this list does not fetch when it opens); press F to fetch. The base is as old as the last fetch, merges since may be missed")
 	case r.Fetch.At.IsZero():
 		lines = append(lines, "fetch: skipped; the base is as old as the last fetch, merges since may be missed")
+	case r.Fetch.OK && otherRemoteFailed(r.Fetch):
+		// Origin fetched but another remote did not: "ok" first would read as a
+		// clean fetch to a reader who stops at the first word.
+		lines = append(lines, "fetch: partial, "+agoText(r.Fetch.At, now)+otherRemotesText(r.Fetch))
 	case r.Fetch.OK:
 		lines = append(lines, "fetch: ok, "+agoText(r.Fetch.At, now)+otherRemotesText(r.Fetch))
 	default:
@@ -533,6 +537,17 @@ func shortDuration(d time.Duration) string {
 // otherRemotesText says how the remotes besides origin fared, as a header
 // suffix ("; also fetched upstream; not fetched: fork (reason)"), or "" when
 // origin is the only remote. Origin's own result is the header line itself.
+// otherRemoteFailed reports whether a remote other than origin was fetched
+// and failed (a skipped one did not fail).
+func otherRemoteFailed(f FetchResult) bool {
+	for _, r := range f.Remotes {
+		if r.Name != "origin" && !r.Skipped && !r.OK {
+			return true
+		}
+	}
+	return false
+}
+
 func otherRemotesText(f FetchResult) string {
 	var ok, bad, skipped []string
 	for _, r := range f.Remotes {
