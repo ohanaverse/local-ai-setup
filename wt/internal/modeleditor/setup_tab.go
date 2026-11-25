@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/editorkit"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelmode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelsetup"
@@ -54,6 +55,10 @@ const (
 	// promptRunUnused is asked before s or R when the stored mode is not
 	// local: no session would use the server started (G2); n starts nothing.
 	promptRunUnused
+	// promptGateway is asked by g: write the [gateway] subscription switch
+	// (#693); y writes it, n writes nothing. Decision: the same confirm phase
+	// as the other writes, default-No, naming that serve must be restarted.
+	promptGateway
 )
 
 // The form's fields, shown for local only (visibleFields): the listen
@@ -138,6 +143,9 @@ type setupTab struct {
 	// control is the start or restart the unused-server gate (promptRunUnused)
 	// was asked for: y runs it, n does not.
 	control modelsetup.ControlAction
+	// gatewayOn is the value of the subscription switch promptGateway asks
+	// for: the opposite of what the row showed when g was pressed.
+	gatewayOn bool
 	// result is the result screen after an apply that left notes or
 	// recovery commands to read; nil when none is showing.
 	result *editorkit.ResultScreen
@@ -209,6 +217,14 @@ type setupAppliedMsg struct {
 type setupControlledMsg struct {
 	action modelsetup.ControlAction
 	err    error
+}
+
+// setupGatewayMsg carries the outcome of g's write of the subscription switch.
+type setupGatewayMsg struct {
+	on  bool
+	was bool
+	res config.GatewayWrite
+	err error
 }
 
 // needsMasterKey is true when no LiteLLM master key is on record: neither
@@ -589,6 +605,72 @@ func (m *model) setupControlCmd(a modelsetup.ControlAction) tea.Cmd {
 	}
 }
 
+// gatewayRestartText is what the tab says after the switch is written: serve
+// reads [gateway] once, at start, and a restart that reloads it is a bootout
+// and a bootstrap (x then s here), never a kickstart (#693). s and x are
+// blocked unless the mode is local, so any other mode is told the launchctl
+// route instead of keys that would answer "choose local first".
+func gatewayRestartText(mode modelmode.Mode) string {
+	if mode == modelmode.ModeLocal {
+		return "serve must be restarted: press x then s (bootout/bootstrap)"
+	}
+	return "serve must be restarted (bootout, then bootstrap with launchctl; x and s work only in local mode)"
+}
+
+// startGateway is g: ask whether to turn the subscription switch the other
+// way. A blocked write says why, like a, s, x and R.
+func (m *model) startGateway() tea.Cmd {
+	st := &m.setup
+	if why := m.setupWriteBlocked(); why != "" {
+		st.status = why
+		return nil
+	}
+	st.gatewayOn = !st.state.Gateway.SubscriptionPassthrough
+	st.prompt, st.phase = promptGateway, setupConfirm
+	return nil
+}
+
+// setupGatewayCmd writes the switch in a command, the dep taken here.
+func (m *model) setupGatewayCmd() tea.Cmd {
+	st := &m.setup
+	if why := m.setupWriteBlocked(); why != "" {
+		st.phase, st.status = setupView, why
+		return nil
+	}
+	on, was := st.gatewayOn, st.state.Gateway.SubscriptionPassthrough
+	st.phase, st.busy, st.writing, st.status, st.pending = setupApplying, true, true, "writing the subscription switch…", false
+	set := m.opts.Setup.SetGateway
+	return func() tea.Msg {
+		res, err := set(on)
+		return setupGatewayMsg{on: on, was: was, res: res, err: err}
+	}
+}
+
+// applySetupGateway says how the write went and reads the machine again, so
+// the gateway row shows what config.toml now holds.
+func (m *model) applySetupGateway(msg setupGatewayMsg) tea.Cmd {
+	st := &m.setup
+	word := func(b bool) string {
+		if b {
+			return "on"
+		}
+		return "off"
+	}
+	switch {
+	case msg.err != nil:
+		st.status = "subscription switch failed: " + editorkit.Scrub(msg.err.Error()) + "; nothing was changed"
+	case !msg.res.Changed:
+		st.status = "subscription passthrough is already " + word(msg.on) + "; nothing was changed"
+	default:
+		st.status = "subscription passthrough " + word(msg.on) + " (was " + word(msg.was) + ")"
+		if msg.res.Backup != "" {
+			st.status += "; backup " + msg.res.Backup
+		}
+		st.status += "; " + gatewayRestartText(st.want.Mode)
+	}
+	return m.finishSetupWrite(msg.err == nil)
+}
+
 // applySetupControlled says how a start, stop or restart went and reads the
 // machine again.
 func (m *model) applySetupControlled(msg setupControlledMsg) tea.Cmd {
@@ -800,6 +882,8 @@ func (m *model) updateSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.setupControlCmd(modelsetup.ControlStop)
 	case "R":
 		return m, m.startControl(modelsetup.ControlRestart)
+	case "g":
+		return m, m.startGateway()
 	}
 	// ctrl+s, a save key elsewhere, does nothing here.
 	return m, nil
@@ -938,6 +1022,9 @@ func (m *model) updateSetupConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "esc":
 		st.phase, st.queue, st.plan, st.planText, st.planWant = setupView, nil, modelsetup.Plan{}, "", modelsetup.Desired{}
 		st.status = "not applied; nothing was changed"
+		if st.prompt == promptGateway {
+			st.status = "subscription switch not written; nothing was changed"
+		}
 		if st.prompt == promptRunUnused {
 			// The unused-server gate starts nothing, so it cancels in its own
 			// words, exactly as its n does (G2N).
@@ -948,6 +1035,13 @@ func (m *model) updateSetupConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch st.prompt {
+	case promptGateway:
+		if yes {
+			return m, m.setupGatewayCmd()
+		}
+		st.phase = setupView
+		st.status = "subscription switch not written; nothing was changed"
+		return m, nil
 	case promptRunUnused:
 		if yes {
 			return m, m.setupControlCmd(st.control)

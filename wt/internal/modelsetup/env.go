@@ -126,6 +126,9 @@ type Env struct {
 	// Gateway reads the home's [gateway] subscription switch for the Setup
 	// tab's status row (#693). Nil is not asked.
 	Gateway func() GatewayState
+	// SetGateway writes the home's [gateway] subscription switch (the Setup
+	// tab's g key, #693). Nil refuses the write rather than doing nothing.
+	SetGateway func(on bool) (config.GatewayWrite, error)
 	// DesiredRoutes lists the model names the LiteLLM config should hold.
 	DesiredRoutes func(ctx context.Context) ([]string, error)
 	// TLSPair is serve's own check of the [gateway] tls_cert and tls_key pair
@@ -139,14 +142,15 @@ type Env struct {
 // a test binary.
 func DefaultEnv() Env {
 	return Env{
-		FS:      realFS{},
-		Launchd: realLaunchd{},
-		Config:  realConfig{},
-		Gateway: realGateway,
-		Net:     realNet{},
-		Host:    realHost{},
-		LiteLLM: realLiteLLM{},
-		TLSPair: realTLSPair,
+		FS:         realFS{},
+		Launchd:    realLaunchd{},
+		Config:     realConfig{},
+		Gateway:    realGateway,
+		SetGateway: config.SetGatewayPassthrough,
+		Net:        realNet{},
+		Host:       realHost{},
+		LiteLLM:    realLiteLLM{},
+		TLSPair:    realTLSPair,
 	}
 }
 
