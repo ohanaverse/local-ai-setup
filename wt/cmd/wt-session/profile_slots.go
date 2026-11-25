@@ -102,9 +102,15 @@ func writeSlotProfileShow(w io.Writer, agent, id string, row catalog.Row, origin
 	// unknown) and what the session declares, with where that comes from.
 	if declared, source := agents.SlotWindow(p.Launch()); source != "" {
 		line := fmt.Sprintf("context: %s", windows.Short(p.Window()))
-		if declared > 0 {
+		switch {
+		case declared > 0 && source == agents.SlotWindowFromContext:
+			// The session runs at the declared value, not at what the slot
+			// models allow: lead with it so the line does not read as two
+			// answers.
+			line = fmt.Sprintf("context: %s (set by the %s; the slot models allow %s)", windows.Short(declared), source, windows.Short(p.Window()))
+		case declared > 0:
 			line += fmt.Sprintf(" (declared %s, from the %s)", windows.Short(declared), source)
-		} else {
+		default:
 			line += " (nothing declared: window " + source + ")"
 		}
 		fmt.Fprintln(w, line)
