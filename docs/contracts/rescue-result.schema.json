@@ -208,10 +208,12 @@
       "properties": {
         "ref": {
           "type": "string",
+          "pattern": "^refs/wt/rescued/[0-9a-f]{16}$",
           "description": "The record ref, under refs/wt/rescued/."
         },
         "commit": {
           "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
           "description": "Full commit id the record ref names."
         }
       }
