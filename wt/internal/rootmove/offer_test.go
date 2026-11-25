@@ -1,12 +1,14 @@
 package rootmove
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
 )
 
 // rowsOf classifies f's repository exactly as the cleanup list does (the
@@ -107,17 +109,17 @@ func TestOfferedRootOnDefaultSaysAlreadyThere(t *testing.T) {
 	})
 }
 
-// TestOfferedDetachedRoot pins the #584 rule (it replaces R501c, "a detached
-// root is not offered"): a detached root the default branch reaches is
-// offered, because some branch holds its commits and the move can only
-// succeed; one at commits the default lacks is explained, naming the command
-// and --branch, since the row cannot tell whether another branch holds them.
+// TestOfferedDetachedRoot pins the #584/#749 rule (it replaces R501c, "a
+// detached root is not offered"): a detached root is offered exactly where
+// restore-root would not refuse it for want of a branch, that is when a local
+// or remote-tracking branch holds its HEAD, whichever branch that is; it is
+// explained, naming --branch NAME, when none does. Each case also runs
+// Preflight on the same repository, so the list and the command cannot
+// disagree.
 func TestOfferedDetachedRoot(t *testing.T) {
 	t.Parallel()
-	t.Run("reached by the default is offered", func(t *testing.T) {
-		t.Parallel()
-		f := newFixture(t)
-		f.git("switch", "-q", "--detach", "HEAD")
+	check := func(t *testing.T, f *fixture, wantOffered bool) {
+		t.Helper()
 		row := primaryRow(t, rowsOf(t, f))
 		if row.Branch != "" {
 			t.Fatalf("root row branch = %q, want %q (detached)", row.Branch, "")
@@ -125,26 +127,58 @@ func TestOfferedDetachedRoot(t *testing.T) {
 		if !hasReason(row.Reasons, cleanup.ReasonRootDrift) {
 			t.Fatalf("the root row carries no %s reason: %+v", cleanup.ReasonRootDrift, row.Reasons)
 		}
-		if row.Losses.DetachedUnique {
-			t.Fatalf("the fixture's HEAD is on main, DetachedUnique must be false")
+		offered, why := Offered(row)
+		_, err := f.engine().Preflight("")
+		var r *rescue.Refusal
+		refusedDetached := errors.As(err, &r) && r.Code == CodeDetachedRoot
+		if wantOffered {
+			if !offered || why != "" {
+				t.Errorf("Offered = %v, %q; want true", offered, why)
+			}
+			if refusedDetached {
+				t.Errorf("Offered but Preflight refuses %s: %v", CodeDetachedRoot, err)
+			}
+			return
 		}
-		if offered, why := Offered(row); !offered || why != "" {
-			t.Errorf("Offered = %v, %q; want true", offered, why)
+		if offered || why != HeadNotHeldLine || !strings.Contains(why, "--branch NAME") || !strings.Contains(why, "wt restore-root") {
+			t.Errorf("Offered = %v, %q; want false, %q", offered, why, HeadNotHeldLine)
 		}
-	})
-	t.Run("commits the default lacks are explained", func(t *testing.T) {
+		if !refusedDetached {
+			t.Errorf("explained but Preflight does not refuse %s: %v", CodeDetachedRoot, err)
+		}
+	}
+	t.Run("reached by the default is offered", func(t *testing.T) {
 		t.Parallel()
 		f := newFixture(t)
 		f.git("switch", "-q", "--detach", "HEAD")
-		f.Commit(f.Dir, "orphan.txt", "o", "only here")
-		row := primaryRow(t, rowsOf(t, f))
-		if !row.Losses.DetachedUnique {
-			t.Fatalf("the fixture's HEAD is on no branch, DetachedUnique must be true")
+		if row := primaryRow(t, rowsOf(t, f)); row.Losses.DetachedUnique {
+			t.Fatalf("the fixture's HEAD is on main, DetachedUnique must be false")
 		}
-		offered, why := Offered(row)
-		if offered || why != DetachedUniqueLine || !strings.Contains(why, "--branch NAME") || !strings.Contains(why, "wt restore-root") {
-			t.Errorf("Offered = %v, %q; want false, %q", offered, why, DetachedUniqueLine)
+		check(t, f, true)
+	})
+	t.Run("held only by a local feature branch is offered", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		f.onBranch("topic")
+		f.git("switch", "-q", "--detach")
+		if row := primaryRow(t, rowsOf(t, f)); !row.Losses.DetachedUnique {
+			t.Fatalf("the default lacks the commit, DetachedUnique must be true")
 		}
+		check(t, f, true)
+	})
+	t.Run("held only by a remote-tracking ref is offered", func(t *testing.T) {
+		t.Parallel()
+		check(t, detachedRemoteOnly(t), true)
+	})
+	t.Run("held by no branch is explained", func(t *testing.T) {
+		t.Parallel()
+		check(t, detachedOrphan(t), false)
+	})
+	t.Run("held only by a tag is explained", func(t *testing.T) {
+		t.Parallel()
+		f := detachedOrphan(t)
+		f.git("tag", "keep", f.git("rev-parse", "HEAD"))
+		check(t, f, false)
 	})
 }
 
@@ -322,11 +356,29 @@ func TestOfferedRefusesWhatPreflightAlwaysRefuses(t *testing.T) {
 		}), "root is already on topic"},
 		"detached and unreadable": {root(func(r *cleanup.Row) { r.Branch = ""; r.Losses.GatesUnknown = true }),
 			"its state could not be read"},
-		"detached at commits the default lacks": {root(func(r *cleanup.Row) { r.Branch = ""; r.Losses.DetachedUnique = true }),
-			DetachedUniqueLine},
+		"detached at commits no branch holds": {root(func(r *cleanup.Row) { r.Branch = ""; r.HeadHeld = cleanup.TriNo }),
+			HeadNotHeldLine},
+		"detached, not held, and unreadable": {root(func(r *cleanup.Row) { r.Branch = ""; r.HeadHeld = cleanup.TriNo; r.Losses.GatesUnknown = true }),
+			"its state could not be read"},
+		"detached, not held, mid-operation": {root(func(r *cleanup.Row) {
+			r.Branch = ""
+			r.HeadHeld = cleanup.TriNo
+			r.Blockers = append(r.Blockers, cleanup.Reason{Code: cleanup.BlockOperation})
+		}), "an operation is in progress there"},
 	} {
 		if offered, why := Offered(c.row); offered || why != c.want {
 			t.Errorf("%s: Offered = %v, %q; want false, %q", name, offered, why, c.want)
+		}
+	}
+	// What was not read is offered (Preflight re-reads and refuses itself), and a
+	// root on a branch never looks at the fact.
+	for name, mod := range map[string]func(*cleanup.Row){
+		"detached, fact not read": func(r *cleanup.Row) { r.Branch = "" },
+		"detached, held":          func(r *cleanup.Row) { r.Branch = ""; r.HeadHeld = cleanup.TriYes },
+		"on a branch, not held":   func(r *cleanup.Row) { r.HeadHeld = cleanup.TriNo },
+	} {
+		if offered, why := Offered(root(mod)); !offered || why != "" {
+			t.Errorf("%s: Offered = %v, %q; want true", name, offered, why)
 		}
 	}
 	// A plain root off the default is still offered.

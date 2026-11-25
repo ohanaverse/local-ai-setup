@@ -449,7 +449,7 @@ func TestCleanupJSONUnchangedByNewRowFields(t *testing.T) {
 	if err := json.Unmarshal(got, &doc); err != nil {
 		t.Fatal(err)
 	}
-	prA := []string{"kind", "name", "path", "branch", "remote", "status", "evidence", "unknown", "age_days", "reasons", "blockers", "pr", "hard_stop", "upstream"}
+	prA := []string{"kind", "name", "path", "branch", "remote", "status", "evidence", "unknown", "age_days", "reasons", "blockers", "pr", "hard_stop", "upstream", "head_held"} // plus the optional head_held
 	for _, row := range doc.Rows {
 		for k := range row {
 			if !slices.Contains(prA, k) {
@@ -599,5 +599,30 @@ func TestEncodeHardStopAndUpstream(t *testing.T) {
 	}
 	if _, has := doc.Rows[3]["upstream"]; has {
 		t.Error("row without upstream has an upstream key")
+	}
+}
+
+// TestCleanupJSONHeadHeld pins the optional head_held key (#749): present,
+// true or false, only when the fact was read, and absent otherwise so a row
+// without it encodes byte for byte as before.
+func TestCleanupJSONHeadHeld(t *testing.T) {
+	row := func(h Tri) Row {
+		return Row{Kind: KindWorktree, Name: "root", Primary: true, Status: StatusUniqueWork, HeadHeld: h}
+	}
+	enc := func(h Tri) string {
+		b, err := Encode(Report{Repo: "/r", GH: GHOK, Base: Base{Default: "main", Ref: "origin/main"}, Rows: []Row{row(h)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if got := enc(TriYes); !strings.Contains(got, `"head_held": true`) && !strings.Contains(got, `"head_held":true`) {
+		t.Errorf("TriYes: no head_held true in %s", got)
+	}
+	if got := enc(TriNo); !strings.Contains(got, `"head_held": false`) && !strings.Contains(got, `"head_held":false`) {
+		t.Errorf("TriNo: no head_held false in %s", got)
+	}
+	if got := enc(TriUnknown); strings.Contains(got, "head_held") {
+		t.Errorf("TriUnknown: key written: %s", got)
 	}
 }

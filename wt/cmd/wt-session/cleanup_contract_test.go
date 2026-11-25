@@ -26,8 +26,10 @@ const (
 	// cleanupNoOriginFixture is a repository with remotes but no origin:
 	// fetch.skipped and the other remotes' results, no fetch.at.
 	cleanupNoOriginFixture = "../../../docs/contracts/cleanup-list.no-origin.sample.json"
-	cleanupSchema          = "../../../docs/contracts/cleanup-list.schema.json"
-	cleanupPkgDir          = "../../internal/cleanup"
+	// cleanupDetachedRootFixture is a detached root row carrying head_held (#749).
+	cleanupDetachedRootFixture = "../../../docs/contracts/cleanup-list.detached-root.sample.json"
+	cleanupSchema              = "../../../docs/contracts/cleanup-list.schema.json"
+	cleanupPkgDir              = "../../internal/cleanup"
 )
 
 func readJSONFile(t *testing.T, path string) any {
@@ -321,6 +323,18 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 	if errs := checkAgainst(schema, noOriginDoc, "no-origin fixture"); len(errs) > 0 {
 		t.Errorf("no-origin fixture violates the schema:\n%s", strings.Join(errs, "\n"))
 	}
+	detachedRaw, err := os.ReadFile(cleanupDetachedRootFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkJSONShape(t, "detached-root document", detachedRaw, reflect.TypeFor[cleanup.Envelope]())
+	detachedDoc := readJSONFile(t, cleanupDetachedRootFixture)
+	if errs := checkAgainst(schema, detachedDoc, "detached-root fixture"); len(errs) > 0 {
+		t.Errorf("detached-root fixture violates the schema:\n%s", strings.Join(errs, "\n"))
+	}
+	if !strings.Contains(string(detachedRaw), `"head_held": true`) {
+		t.Errorf("the detached-root fixture carries no head_held")
+	}
 	// The no-origin sample shows another remote's row: less sure by
 	// not_checked alone (nothing asks gh about it; not a gh failure).
 	foundNotChecked := false
@@ -402,7 +416,7 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 	// Every key of every struct reachable from Envelope (not just rows) must
 	// appear in a fixture or in the live error document, so an omitempty
 	// key nobody shows cannot be renamed unnoticed.
-	checkEveryKeyAppears(t, schema, reflect.TypeFor[cleanup.Envelope](), fixtureDoc, fetchFailedDoc, noOriginDoc, errV)
+	checkEveryKeyAppears(t, schema, reflect.TypeFor[cleanup.Envelope](), fixtureDoc, fetchFailedDoc, noOriginDoc, errV, detachedDoc)
 }
 
 // checkEveryKeyAppears fails for every json key of every struct reachable

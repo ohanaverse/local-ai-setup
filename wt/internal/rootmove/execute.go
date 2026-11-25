@@ -436,7 +436,7 @@ func (e Engine) recheckDetached(rootGit cleanup.Git, p *Plan) (string, error) {
 		}
 		return "", nil
 	}
-	held, err := reachableFrom(rootGit, head)
+	held, err := cleanup.BranchesHolding(rootGit, head)
 	if err != nil {
 		return "", err
 	}

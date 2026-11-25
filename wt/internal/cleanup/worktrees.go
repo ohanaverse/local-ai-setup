@@ -59,6 +59,11 @@ type Gates struct {
 	IgnoredCount   int   // ignored entries (a wholly ignored directory counts once)
 	IgnoredBytes   int64 // their size on disk, symlinks not followed
 	DetachedUnique bool  // detached HEAD the base does not reach
+	// HeadHeld is a detached root's answer to "does a local or remote-tracking
+	// branch contain its HEAD" (BranchesHolding). TriUnknown when not read: a
+	// facts-only snapshot, a branch row, a linked worktree or a read that
+	// failed (not a gates error: it is no removal fact).
+	HeadHeld Tri
 	// Diff counts the uncommitted change diffstat-style (readDiffStat).
 	// Unknown when it could not be read — including every gate error before
 	// it, so a row whose gates failed never shows a confident +0/-0.
@@ -241,6 +246,17 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	if w.Detached {
 		if out.DetachedUnique, err = detachedUnique(g, w.Head, in.Base); err != nil {
 			return partial(), err
+		}
+		// Only the root can be restored (restore-root), so only its row pays
+		// for this one read. A failure leaves HeadHeld unknown, never a gates
+		// error: the fact is not a removal fact.
+		if w.Primary {
+			if names, herr := BranchesHolding(g, w.Head); herr == nil {
+				out.HeadHeld = TriNo
+				if len(names) > 0 {
+					out.HeadHeld = TriYes
+				}
+			}
 		}
 	}
 	return out, nil

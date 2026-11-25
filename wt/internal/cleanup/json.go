@@ -119,6 +119,10 @@ type RowJSON struct {
 	// HardStop is the code of the first blocker that refuses a removal
 	// outright (Row.HardStop); absent when none does.
 	HardStop string `json:"hard_stop,omitempty"`
+	// HeadHeld is Row.HeadHeld: whether a local or remote-tracking branch
+	// holds a detached root's HEAD. Present only on a detached root row whose
+	// fact was read.
+	HeadHeld *bool `json:"head_held,omitempty"`
 	// Upstream is the remote ref folded into a local row (Row.Upstream);
 	// absent when none is.
 	Upstream *UpstreamJSON `json:"upstream,omitempty"`
@@ -222,6 +226,10 @@ func Encode(r Report) ([]byte, error) {
 		if u := row.Upstream; u != nil {
 			rj.Upstream = &UpstreamJSON{Ref: u.Ref, Remote: u.Remote, Name: u.Name, Tip: u.Tip,
 				Gone: u.Gone, Status: string(u.Status), Evidence: string(u.Evidence)}
+		}
+		if row.HeadHeld != TriUnknown {
+			held := row.HeadHeld == TriYes
+			rj.HeadHeld = &held
 		}
 		if row.AgeKnown {
 			days := row.AgeDays
