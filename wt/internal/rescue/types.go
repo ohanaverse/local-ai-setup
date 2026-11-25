@@ -88,7 +88,7 @@ type Source struct {
 
 // Counts is what a rescue carries and what it leaves behind.
 type Counts struct {
-	Commits        int   // commits reachable from no remote-tracking ref (Preflight fails rather than leave it unknown)
+	Commits        int   // commits reachable from no remote-tracking ref (Preflight fails rather than leave it unknown); for a detached root, from no branch and no remote-tracking ref
 	Staged         int   // paths with a staged change
 	Unstaged       int   // paths with an unstaged change
 	Untracked      int   // untracked, non-ignored paths copied
@@ -105,15 +105,21 @@ type Plan struct {
 	DestPath string // the new worktree
 	// Detached says the destination is a detached worktree of Branch, which
 	// already exists and stays checked out in the root (root mode): no branch
-	// is created. Branch is then the root's real branch, never empty, so the
-	// record's Wt-Dest-Branch trailer names it. DirName is the destination's
+	// is created. Branch is then the root's real branch, so the record's
+	// Wt-Dest-Branch trailer names it. For a detached root (SourceDetached)
+	// Branch is "" (its commits are on a branch already: nothing to name, the
+	// trailer reads "detached") or the branch the caller will create in the
+	// destination (Engine.RootNewBranch; the trailer names it). DirName is the destination's
 	// directory name under .worktrees (before flattening); "" outside root
 	// mode, where the directory follows Branch.
 	Detached bool
-	DirName  string
-	Start    string // the commit the new branch starts at: the source's HEAD
-	Counts   Counts
-	Warnings []string
+	// SourceDetached says the source, the root, is on a detached HEAD
+	// (root mode with no branch to move).
+	SourceDetached bool
+	DirName        string
+	Start          string // the commit the new branch starts at: the source's HEAD
+	Counts         Counts
+	Warnings       []string
 
 	untracked        []string    // paths to copy, relative to the source
 	tracked          []string    // changed tracked paths (a rename names its new path and its old)
@@ -165,6 +171,12 @@ type Engine struct {
 	In       cleanup.GatherInputs
 	Classify cleanup.Options
 	ForRoot  bool
+	// RootNewBranch, with ForRoot and a detached root, is the branch the
+	// caller will create at the root's HEAD in the destination after the
+	// copy ("" none: the commits are on a branch already). It only shapes the
+	// plan (Branch, the directory name, the commit count, the record's
+	// Wt-Dest-Branch); rescue creates no branch.
+	RootNewBranch string
 	// Progress, when non-nil, is called from the untracked-file copy after
 	// every progressEvery files and once at the end (done == total), only for
 	// a plan of at least progressEvery untracked files. Nil is silent. It is a

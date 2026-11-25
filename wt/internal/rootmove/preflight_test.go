@@ -150,11 +150,12 @@ func TestPreflightRefusals(t *testing.T) {
 		code  string
 		says  []string // substrings the message must hold
 	}{
-		{"detached root", func(t *testing.T) *fixture {
+		{"detached root on no branch", func(t *testing.T) *fixture {
 			f := topic(t)
 			f.git("switch", "-q", "--detach")
+			f.Commit(f.Dir, "orphan.txt", "o", "only here")
 			return f
-		}, "", CodeDetachedRoot, []string{"git switch -c"}},
+		}, "", CodeDetachedRoot, []string{"--branch NAME", "1 commit on no branch"}},
 		{"already on the default", func(t *testing.T) *fixture { return newFixture(t) }, "", CodeAlreadyDefault, []string{"main"}},
 		{"default in a linked worktree", func(t *testing.T) *fixture {
 			f := topic(t)

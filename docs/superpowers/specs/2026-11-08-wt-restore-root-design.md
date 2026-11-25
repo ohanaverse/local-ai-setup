@@ -31,7 +31,7 @@ Work sometimes starts directly in the repository root, leaving it on a branch ot
 
 > Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: "A TUI row/key" is no longer a non-goal: `R` in the `wt worktrees` list and in the launch picker runs `wt restore-root` for the root row (`rootmove.Offered` decides when it is offered). Also, nothing in wt switches the root automatically; the move happens only when the user asks.
 
-- A detached root. There is no branch to keep (the issue says refuse). **The user's decision:** v1 refuses and names `git switch -c <name>` first. A rescue-style `rescued/` branch for a detached root is a later option.
+- ~~A detached root.~~ **Superseded by `2026-11-24-wt-restore-root-detached.md` (#584):** v1 refused and named `git switch -c <name>`; a detached root is now moved (a branch holds its commit: new worktree left detached; none does: `--branch NAME`).
 - A root already on the default branch (nothing to do; exit 0 with that message).
 - Carrying ignored files (they stay in the root, as in `wt rescue`; the count is shown).
 - Anything the rescue engine already refuses (see "Refusals"). Lifting those is `wt rescue`'s job, and both commands improve together.
@@ -149,7 +149,7 @@ Real scratch repos throughout, as in the rescue and removal tests:
 > Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: decision 5 ("surfacing in v1 is the hint line only; a `wt cleanup` list key can follow") is overtaken: the list key `R` exists.
 
 1. Command name `wt restore-root`.
-2. A detached root is refused in v1.
+2. A detached root is refused in v1. (Superseded 2026-11-24, #584: see `2026-11-24-wt-restore-root-detached.md`; it is refused only when no branch holds its commits and no `--branch NAME` is given.)
 3. The record is required before the root is released.
 4. A real run fetches once before the fast-forward (as built: every remote, through `cleanup.Gather`); `--dry-run` and `--no-fetch` never fetch.
 5. Surfacing in v1 is the hint line only; a `wt cleanup` list key can follow.

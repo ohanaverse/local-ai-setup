@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "restore-root-result.schema.json",
   "title": "wt restore-root result",
-  "description": "The one document `wt restore-root --json` prints, on success, refusal and failure (nothing else goes to stdout). `wt restore-root` moves the branch the repository's primary checkout (the root) has checked out into a new linked worktree under .worktrees, carrying the root's uncommitted work, and puts the root back on the default branch. `outcome` is one of `moved`, `would_move` (a dry run: it would), `refused` (a check failed before anything was created; `created` is false; `already_default` is a refusal whose process exit code is 0) or `failed` (something went wrong after a write; `created` says whether the new worktree exists: when true it is KEPT, never rolled back, at `dest_path`, and `reason` names the state of the root and the step that stopped). `code` is the stable refusal or failure code (rescue's codes except `primary` and `nothing_to_keep`, plus restore-root's own); `reason` one sanitised line. `branch` is the root's branch that moves, `default` the branch the root returns to, `dest_path` the new worktree. `record` is the rescue record (ref under refs/wt/rescued/ and the commit it names) that held the root's uncommitted work before the root was reset; it is absent when the root had nothing uncommitted or none was written. `carried` and `left_behind` count what is (or would be) copied and what is not (ignored entries stay in the root). `default_ff` and `fast_forwarded` describe the optional fast-forward of the default branch to origin. `completed` lists the steps that finished (a benign note such as the default already being at origin appears here, not in `warnings`); `warnings` holds sanitised lines (always arrays). A run that failed before any outcome has `error` and none of `outcome`, `branch`, `default`, `dest_path`, `carried`, `left_behind`. Branch names, paths and refs are raw identifiers carried verbatim: JSON escapes only C0 controls, so a consumer MUST escape them before printing to a terminal. Pinned to wt/internal/rootmove/json.go by wt/cmd/wt-session/restore_root_contract_test.go; a key or code added there must be added here and in the samples in the same change. Reuses the shapes of rescue-result.schema.json for `carried`, `left_behind`, `record` and `error`, which are unchanged.",
+  "description": "The one document `wt restore-root --json` prints, on success, refusal and failure (nothing else goes to stdout). `wt restore-root` moves the branch the repository's primary checkout (the root) has checked out into a new linked worktree under .worktrees, carrying the root's uncommitted work, and puts the root back on the default branch. A root on a detached HEAD moves too (`detached` is true, `head` is its commit): when a local or remote-tracking branch already holds that commit the new worktree is left detached and no branch is made (`branch` is absent); a clean such root only switches to the default, with no worktree (`created` false, no `dest_path`, no `record`, `outcome` still `moved`: a consumer must not assume `moved` implies `dest_path`); when no branch holds the commit, `--branch NAME` creates NAME at that commit in the new worktree (`branch` is NAME, `branch_created` true) before the root is released. `outcome` is one of `moved`, `would_move` (a dry run: it would), `refused` (a check failed before anything was created; `created` is false; `already_default` is a refusal whose process exit code is 0) or `failed` (something went wrong after a write; `created` says whether the new worktree exists: when true it is KEPT, never rolled back, at `dest_path`, and `reason` names the state of the root and the step that stopped). `code` is the stable refusal or failure code (rescue's codes except `primary` and `nothing_to_keep`, plus restore-root's own); `reason` one sanitised line. `branch` is the root's branch that moves (for a detached root, absent, or the branch `--branch` creates), `default` the branch the root returns to, `dest_path` the new worktree (absent when none is made). `record` is the rescue record (ref under refs/wt/rescued/ and the commit it names) that held the root's uncommitted work before the root was reset; it is absent when the root had nothing uncommitted or none was written. `carried` and `left_behind` count what is (or would be) copied and what is not (ignored entries stay in the root). `default_ff` and `fast_forwarded` describe the optional fast-forward of the default branch to origin. `completed` lists the steps that finished (a benign note such as the default already being at origin appears here, not in `warnings`); `warnings` holds sanitised lines (always arrays). A run that failed before any outcome has `error` and none of `outcome`, `branch`, `default`, `dest_path`, `carried`, `left_behind`. The `detached`, `head` and `branch_created` keys were added without a version bump (version stays 1): a consumer that ignores unknown keys is unaffected. Branch names, paths and refs are raw identifiers carried verbatim: JSON escapes only C0 controls, so a consumer MUST escape them before printing to a terminal. Pinned to wt/internal/rootmove/json.go by wt/cmd/wt-session/restore_root_contract_test.go; a key or code added there must be added here and in the samples in the same change. Reuses the shapes of rescue-result.schema.json for `carried`, `left_behind`, `record` and `error`, which are unchanged.",
   "type": "object",
   "required": [
     "version",
@@ -67,9 +67,13 @@
         "no_default_branch",
         "ignored_collision",
         "record_not_written",
-        "worktrees_not_ignored"
+        "worktrees_not_ignored",
+        "branch_unneeded",
+        "branch_invalid",
+        "branch_exists",
+        "branch_create_failed"
       ],
-      "description": "Present for a refused or failed outcome. `already_default` is a refusal that exits 0: the root is already where it should be."
+      "description": "Present for a refused or failed outcome. `already_default` is a refusal that exits 0: the root is already where it should be. `detached_root` now means a detached root whose commits are on no branch and no `--branch` was given. `branch_unneeded` (`--branch` on a root that is on a branch), `branch_invalid` and `branch_exists` are refusals; `branch_create_failed` is a failure creating the `--branch` name in the new worktree (the root is untouched)."
     },
     "reason": {
       "type": "string"
@@ -80,7 +84,19 @@
     },
     "branch": {
       "type": "string",
-      "description": "The root's branch (short name): the branch that moves into the new worktree."
+      "description": "The root's branch (short name): the branch that moves into the new worktree. For a detached root it is absent when a branch already holds its commit, and is the name `--branch` creates otherwise."
+    },
+    "detached": {
+      "type": "boolean",
+      "description": "Present (true) only when the root was on a detached HEAD."
+    },
+    "head": {
+      "type": "string",
+      "description": "Present with `detached`: the root's HEAD commit (full id)."
+    },
+    "branch_created": {
+      "type": "boolean",
+      "description": "Present (true) only when `--branch NAME` was created in the new worktree."
     },
     "default": {
       "type": "string",
@@ -88,7 +104,7 @@
     },
     "dest_path": {
       "type": "string",
-      "description": "The new worktree under .worktrees. Present once it exists (`created`) and in a dry run, where it is where it would be."
+      "description": "The new worktree under .worktrees. Present once it exists (`created`) and in a dry run, where it is where it would be; absent when no worktree is made (a clean detached root that a branch holds)."
     },
     "record": {
       "$ref": "#/$defs/record"

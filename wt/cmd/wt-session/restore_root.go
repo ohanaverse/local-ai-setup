@@ -32,7 +32,7 @@ var restoreRootTTY = bothTerminals
 var afterRestoreRootConfirm = func() {}
 
 type restoreRootFlags struct {
-	to                                     string
+	to, branch                             string
 	yes, acceptLoss, dryRun, json, noFetch bool
 }
 
@@ -52,7 +52,18 @@ func restoreRootCmd(a *app) *cobra.Command {
 			"gives it up. Ignored files stay in the root (the count is reported). When\n" +
 			"origin/<default> is strictly ahead of the default branch, the root's default\n" +
 			"is fast-forwarded to it; never a merge.\n\n" +
-			"It refuses, creating nothing, a root on a detached HEAD, already on the\n" +
+			"A root on a detached HEAD moves too. When a local or remote-tracking branch\n" +
+			"already holds its commit, the new worktree is left detached at it (no branch\n" +
+			"is created and none is named; the directory is detached-<first 8 of the\n" +
+			"commit>, or --to NAME), and a clean such root has nothing to keep: it only\n" +
+			"goes back to the default branch, with no worktree and no record. When no\n" +
+			"branch holds its commits it is refused until --branch NAME names one: that\n" +
+			"branch is created at the commit in the new worktree, after the copy and the\n" +
+			"record and before the root is released, never in the root. --branch is\n" +
+			"refused for a root that is on a branch, for an invalid name and for one\n" +
+			"that exists.\n\n" +
+			"It refuses, creating nothing, a detached root whose commits are on no\n" +
+			"branch and no --branch, already on the\n" +
 			"default branch (exit 0, nothing to do), with no commit, with the default\n" +
 			"branch checked out in another worktree, that does not ignore .worktrees/,\n" +
 			"with an ignored file the move would overwrite, and every state `wt rescue`\n" +
@@ -76,12 +87,17 @@ func restoreRootCmd(a *app) *cobra.Command {
 			"no terminal, or the prompt was declined). With --json the one result\n" +
 			"document (docs/contracts/restore-root-result.schema.json) is printed, on\n" +
 			"failure too.",
-		Example:      "  wt restore-root --dry-run\n  wt restore-root\n  wt restore-root --to spike --yes",
+		Example:      "  wt restore-root --dry-run\n  wt restore-root\n  wt restore-root --to spike --yes\n  wt restore-root --branch spike   # a detached root whose commits no branch holds",
 		Args:         func(cmd *cobra.Command, args []string) error { return restoreRootArgs(cmd, f, args) },
 		SilenceUsage: true, SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("to") {
 				if err := checkRestoreRootTo(f.to); err != nil {
+					return restoreRootFail(cmd.OutOrStdout(), f, "", 1, err)
+				}
+			}
+			if cmd.Flags().Changed("branch") {
+				if err := checkRestoreRootBranch(f.branch); err != nil {
 					return restoreRootFail(cmd.OutOrStdout(), f, "", 1, err)
 				}
 			}
@@ -96,6 +112,7 @@ func restoreRootCmd(a *app) *cobra.Command {
 		return restoreRootFail(cmd.OutOrStdout(), f, "", 1, err)
 	})
 	c.Flags().StringVar(&f.to, "to", "", "the new worktree's directory name under .worktrees/ (default: the branch name)")
+	c.Flags().StringVar(&f.branch, "branch", "", "for a root on a detached HEAD whose commits no branch holds: the branch to create at that commit in the new worktree")
 	c.Flags().BoolVar(&f.yes, "yes", false, "move without asking")
 	c.Flags().BoolVar(&f.acceptLoss, "accept-loss", false, "with --yes, also move a root another live wt session holds (the agent there is left running in a root that changes under it)")
 	c.Flags().BoolVar(&f.dryRun, "dry-run", false, "say what would happen and change nothing, fetch included (needs no --yes)")
@@ -128,6 +145,21 @@ func checkRestoreRootTo(to string) error {
 		return fmt.Errorf("--to %q is not a directory name", name)
 	case strings.EqualFold(name, ".git"), strings.EqualFold(name, ".worktrees"):
 		return fmt.Errorf("--to %q is reserved: it names the repository's metadata or the worktrees directory itself", cleanup.OneLine(to))
+	}
+	return nil
+}
+
+// checkRestoreRootBranch refuses a --branch that cannot name a branch at all:
+// empty or only whitespace, or with leading or trailing whitespace. A usage
+// error (exit 1, nothing read or created), like --to; whether the name is a
+// valid, free branch name for this repository is Preflight's refusal
+// (branch_invalid, branch_exists).
+func checkRestoreRootBranch(name string) error {
+	switch {
+	case strings.TrimSpace(name) == "":
+		return errors.New("--branch names the branch to create and must not be empty or only whitespace")
+	case strings.TrimSpace(name) != name:
+		return fmt.Errorf("--branch %q has leading or trailing whitespace, which would become part of the branch name", name)
 	}
 	return nil
 }
@@ -193,7 +225,7 @@ func restoreRootRunReport(h hooks, answer io.Reader, out, errOut io.Writer, f re
 	meta := rootmove.Meta{Repo: snap.Repo, DryRun: f.dryRun}
 	eng := rootmove.Engine{Rescue: rescue.Engine{G: cleanup.Git{Dir: cwd}, Prior: snap, In: in,
 		Classify: cleanup.Options{Now: removeNow()}, ForRoot: true,
-		Progress: copyProgress(errOut, f.json || f.dryRun)}}
+		Progress: copyProgress(errOut, f.json || f.dryRun)}, NewBranch: f.branch}
 
 	var notes []string
 	if f.dryRun {
@@ -306,19 +338,71 @@ func ffText(p rootmove.Plan) string {
 	return "no"
 }
 
+// shortCommit is the first eight characters of a commit id.
+func shortCommit(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// holdersText names the branches that hold a detached root's commit.
+func holdersText(p rootmove.Plan) string {
+	if len(p.ReachableFrom) == 0 {
+		return "a branch"
+	}
+	return cleanup.Flatten(strings.Join(p.ReachableFrom, ", "))
+}
+
+// noWorktree says the plan makes no worktree: a clean root on a detached
+// HEAD that a branch holds only switches to the default.
+func noWorktree(p rootmove.Plan) bool { return p.Detached && p.NewBranch == "" && p.DestPath == "" }
+
+// whereText says what the new worktree is: on the branch, detached with no
+// branch made, or on the branch about to be created.
+func whereText(p rootmove.Plan) string {
+	switch {
+	case p.NewBranch != "":
+		return "on the new branch " + cleanup.Flatten(p.NewBranch) + " (created at " + shortCommit(p.Head) + ")"
+	case p.Detached:
+		return "detached at " + shortCommit(p.Head) + " (no branch is created)"
+	}
+	return "on " + cleanup.Flatten(p.Branch)
+}
+
 // promptRestoreRoot prints what the move will do and asks y/N (default No).
 func promptRestoreRoot(ask io.Writer, answer io.Reader, p *rootmove.Plan) bool {
 	var b strings.Builder
-	fmt.Fprintf(&b, "wt restore-root will move branch %s out of the root %s:\n", cleanup.Flatten(p.Branch), cleanup.Flatten(p.Repo))
-	fmt.Fprintf(&b, "  carries       %s\n", countsText(p.Counts))
-	fmt.Fprintf(&b, "  left behind   %s in the root (not carried)\n", ignoredText(p.Counts.IgnoredLeft))
-	fmt.Fprintf(&b, "  new worktree  %s, on %s\n", cleanup.Flatten(p.DestPath), cleanup.Flatten(p.Branch))
+	switch {
+	case noWorktree(*p):
+		fmt.Fprintf(&b, "wt restore-root will put the root %s, detached at %s (held by %s), back on %s:\n",
+			cleanup.Flatten(p.Repo), shortCommit(p.Head), holdersText(*p), cleanup.Flatten(p.Default))
+		b.WriteString("  nothing is uncommitted, so no worktree is made and no record is written\n")
+	default:
+		if p.Detached {
+			fmt.Fprintf(&b, "wt restore-root will move the root %s, detached at %s, into a new worktree:\n", cleanup.Flatten(p.Repo), shortCommit(p.Head))
+			if p.NewBranch != "" {
+				fmt.Fprintf(&b, "  new branch    %s at %s, holding %s no branch holds yet\n", cleanup.Flatten(p.NewBranch), shortCommit(p.Head), plural(p.Counts.Commits, "commit"))
+			} else {
+				fmt.Fprintf(&b, "  held by       %s (so no branch is made)\n", holdersText(*p))
+			}
+		} else {
+			fmt.Fprintf(&b, "wt restore-root will move branch %s out of the root %s:\n", cleanup.Flatten(p.Branch), cleanup.Flatten(p.Repo))
+		}
+		fmt.Fprintf(&b, "  carries       %s\n", countsText(p.Counts))
+		fmt.Fprintf(&b, "  left behind   %s in the root (not carried)\n", ignoredText(p.Counts.IgnoredLeft))
+		fmt.Fprintf(&b, "  new worktree  %s, %s\n", cleanup.Flatten(p.DestPath), whereText(*p))
+	}
 	fmt.Fprintf(&b, "  the root      goes back to %s, with no uncommitted changes\n", cleanup.Flatten(p.Default))
 	fmt.Fprintf(&b, "  fast-forward  %s\n", ffText(*p))
 	for _, w := range p.Warnings {
 		b.WriteString("  warning: " + cleanup.Flatten(w) + "\n")
 	}
-	b.WriteString("The root gives up its copy of the work only after the new worktree is verified and the record is written.\nMove? [y/N] ")
+	if noWorktree(*p) {
+		b.WriteString("The root is switched only if it is still clean and a branch still holds its commit.\nMove? [y/N] ")
+	} else {
+		b.WriteString("The root gives up its copy of the work only after the new worktree is verified and the record is written.\nMove? [y/N] ")
+	}
 	if _, err := io.WriteString(ask, b.String()); err != nil {
 		return false
 	}
@@ -365,6 +449,18 @@ func printRestoreRootText(w io.Writer, meta rootmove.Meta, o rootmove.Outcome) e
 		b.WriteString("dry run: nothing was changed\n")
 	}
 	switch {
+	case o.Status == rescue.StatusWouldMove && noWorktree(p):
+		fmt.Fprintf(&b, "would put the root %s, detached at %s (held by %s), back on %s; no worktree would be made\n",
+			cleanup.Flatten(p.Repo), shortCommit(p.Head), holdersText(p), cleanup.Flatten(p.Default))
+	case o.Status == rescue.StatusMoved && noWorktree(p):
+		fmt.Fprintf(&b, "put the root %s back on %s; its detached HEAD %s stays on %s; no worktree was made\n",
+			cleanup.Flatten(p.Repo), cleanup.Flatten(p.Default), shortCommit(p.Head), holdersText(p))
+	case o.Status == rescue.StatusWouldMove && p.Detached:
+		fmt.Fprintf(&b, "would move the root %s, detached at %s, to %s, %s; the root would go back to %s\n",
+			cleanup.Flatten(p.Repo), shortCommit(p.Head), cleanup.Flatten(p.DestPath), whereText(p), cleanup.Flatten(p.Default))
+	case o.Status == rescue.StatusMoved && p.Detached:
+		fmt.Fprintf(&b, "moved the root %s, detached at %s, to %s, %s; the root is on %s\n",
+			cleanup.Flatten(p.Repo), shortCommit(p.Head), cleanup.Flatten(p.DestPath), whereText(p), cleanup.Flatten(p.Default))
 	case o.Status == rescue.StatusWouldMove:
 		fmt.Fprintf(&b, "would move branch %s from the root %s to %s; the root would go back to %s\n",
 			cleanup.Flatten(p.Branch), cleanup.Flatten(p.Repo), cleanup.Flatten(p.DestPath), cleanup.Flatten(p.Default))
@@ -392,7 +488,15 @@ func printRestoreRootText(w io.Writer, meta rootmove.Meta, o rootmove.Outcome) e
 	case o.Status == rescue.StatusMoved || o.Created:
 		verb = "carried"
 	}
-	if p.Branch != "" && verb != "" {
+	if p.Detached && !noWorktree(p) && verb != "" {
+		fmt.Fprintf(&b, "    detached HEAD %s %s %s\n", p.Head, verb, countsText(p.Counts))
+		fmt.Fprintf(&b, "    left behind: %s in the root\n", ignoredText(p.Counts.IgnoredLeft))
+		if o.Status == rescue.StatusWouldMove {
+			fmt.Fprintf(&b, "    fast-forward: %s\n", ffText(p))
+		}
+	} else if noWorktree(p) && o.Status == rescue.StatusWouldMove {
+		fmt.Fprintf(&b, "    fast-forward: %s\n", ffText(p))
+	} else if p.Branch != "" && verb != "" {
 		fmt.Fprintf(&b, "    branch %s at %s %s %s\n", cleanup.Flatten(p.Branch), p.Head, verb, countsText(p.Counts))
 		fmt.Fprintf(&b, "    left behind: %s in the root\n", ignoredText(p.Counts.IgnoredLeft))
 		if o.Status == rescue.StatusWouldMove {

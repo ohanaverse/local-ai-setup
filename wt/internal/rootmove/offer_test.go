@@ -107,27 +107,45 @@ func TestOfferedRootOnDefaultSaysAlreadyThere(t *testing.T) {
 	})
 }
 
-// TestOfferedDetachedRoot pins R501c: a detached root is NOT offered. Its
-// row carries the drift label ("root is detached") and Branch "", yet the
-// menu explains instead of offering — the explanation in restore-root's
-// CodeDetachedRoot vocabulary ("there is no branch to move", preflight's
-// detached refusal). Why: the move operates on "the branch the primary
-// checkout has checked out" and a detached root has none, so an offered R
-// could only fail.
+// TestOfferedDetachedRoot pins the #584 rule (it replaces R501c, "a detached
+// root is not offered"): a detached root the default branch reaches is
+// offered, because some branch holds its commits and the move can only
+// succeed; one at commits the default lacks is explained, naming the command
+// and --branch, since the row cannot tell whether another branch holds them.
 func TestOfferedDetachedRoot(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	f.git("switch", "-q", "--detach", "HEAD")
-	row := primaryRow(t, rowsOf(t, f))
-	if row.Branch != "" {
-		t.Fatalf("root row branch = %q, want %q (detached)", row.Branch, "")
-	}
-	if !hasReason(row.Reasons, cleanup.ReasonRootDrift) {
-		t.Fatalf("the root row carries no %s reason: %+v", cleanup.ReasonRootDrift, row.Reasons)
-	}
-	if offered, why := Offered(row); offered || why != "the root is detached — there is no branch to move" {
-		t.Errorf("Offered = %v, %q; want false, %q", offered, why, "the root is detached — there is no branch to move")
-	}
+	t.Run("reached by the default is offered", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		f.git("switch", "-q", "--detach", "HEAD")
+		row := primaryRow(t, rowsOf(t, f))
+		if row.Branch != "" {
+			t.Fatalf("root row branch = %q, want %q (detached)", row.Branch, "")
+		}
+		if !hasReason(row.Reasons, cleanup.ReasonRootDrift) {
+			t.Fatalf("the root row carries no %s reason: %+v", cleanup.ReasonRootDrift, row.Reasons)
+		}
+		if row.Losses.DetachedUnique {
+			t.Fatalf("the fixture's HEAD is on main, DetachedUnique must be false")
+		}
+		if offered, why := Offered(row); !offered || why != "" {
+			t.Errorf("Offered = %v, %q; want true", offered, why)
+		}
+	})
+	t.Run("commits the default lacks are explained", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		f.git("switch", "-q", "--detach", "HEAD")
+		f.Commit(f.Dir, "orphan.txt", "o", "only here")
+		row := primaryRow(t, rowsOf(t, f))
+		if !row.Losses.DetachedUnique {
+			t.Fatalf("the fixture's HEAD is on no branch, DetachedUnique must be true")
+		}
+		offered, why := Offered(row)
+		if offered || why != DetachedUniqueLine || !strings.Contains(why, "--branch NAME") || !strings.Contains(why, "wt restore-root") {
+			t.Errorf("Offered = %v, %q; want false, %q", offered, why, DetachedUniqueLine)
+		}
+	})
 }
 
 // TestOfferedBareRootSaysNoCheckout pins R501d's case 2 on a real bare
@@ -303,7 +321,9 @@ func TestOfferedRefusesWhatPreflightAlwaysRefuses(t *testing.T) {
 			r.Blockers = append(r.Blockers, cleanup.Reason{Code: cleanup.BlockDefaultBranch}, cleanup.Reason{Code: cleanup.BlockOperation})
 		}), "root is already on topic"},
 		"detached and unreadable": {root(func(r *cleanup.Row) { r.Branch = ""; r.Losses.GatesUnknown = true }),
-			"the root is detached — there is no branch to move"},
+			"its state could not be read"},
+		"detached at commits the default lacks": {root(func(r *cleanup.Row) { r.Branch = ""; r.Losses.DetachedUnique = true }),
+			DetachedUniqueLine},
 	} {
 		if offered, why := Offered(c.row); offered || why != c.want {
 			t.Errorf("%s: Offered = %v, %q; want false, %q", name, offered, why, c.want)

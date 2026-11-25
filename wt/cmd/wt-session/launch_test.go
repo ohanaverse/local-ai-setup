@@ -1383,7 +1383,7 @@ func TestZeroDirLaunchClaimsNothing(t *testing.T) {
 // warning plus the `wt restore-root` hint), and that runLaunch adds no second
 // `wt: note:` copy: `topic` against origin's default main reads `wt: root is
 // on topic, not main`; a detached root reads `wt: root is detached` with no
-// restore-root pointer (`wt restore-root` refuses one); a root on its default
+// restore-root pointer (the launch hint stays silent for a detached root: whether the move needs --branch is not known there; the `wt worktrees` list's R explains it); a root on its default
 // branch prints neither.
 func TestLaunchNamesRootDriftOnce(t *testing.T) {
 	launch := func(t *testing.T, switchRoot ...string) string {
@@ -1420,7 +1420,7 @@ func TestLaunchNamesRootDriftOnce(t *testing.T) {
 			t.Errorf("drift named %d times in %q; want once", n, out)
 		}
 		if strings.Contains(out, "wt restore-root") {
-			t.Errorf("output %q points a detached root at wt restore-root (it refuses one)", out)
+			t.Errorf("output %q points a detached root at wt restore-root (the launch hint does not know whether --branch is needed)", out)
 		}
 	})
 	t.Run("a root on its default branch prints no drift", func(t *testing.T) {

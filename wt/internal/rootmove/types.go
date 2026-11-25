@@ -20,11 +20,19 @@ import (
 // unchanged beside these; CodeHiddenIndex is rescue's own string, which
 // Preflight also answers for a clean root.
 const (
-	CodeDetachedRoot        = "detached_root"
-	CodeAlreadyDefault      = "already_default"
-	CodeDefaultInWorktree   = "default_in_worktree"
-	CodeNoCommit            = "no_commit"
-	CodeReleaseRefused      = "release_refused"
+	CodeDetachedRoot      = "detached_root"
+	CodeAlreadyDefault    = "already_default"
+	CodeDefaultInWorktree = "default_in_worktree"
+	CodeNoCommit          = "no_commit"
+	CodeReleaseRefused    = "release_refused"
+	// CodeBranchUnneeded, CodeBranchInvalid and CodeBranchExists refuse a
+	// --branch NAME: the root is on a branch already, the name is not a valid
+	// new branch name, or a branch of that name exists. CodeBranchCreateFailed
+	// is the failure of the step that creates NAME in the new worktree.
+	CodeBranchUnneeded      = "branch_unneeded"
+	CodeBranchInvalid       = "branch_invalid"
+	CodeBranchExists        = "branch_exists"
+	CodeBranchCreateFailed  = "branch_create_failed"
 	CodeNoDefaultBranch     = "no_default_branch"
 	CodeIgnoredCollision    = "ignored_collision"
 	CodeRecordNotWritten    = "record_not_written"
@@ -54,6 +62,10 @@ const HeldWarningPrefix = "root_held: "
 type Engine struct {
 	Rescue rescue.Engine
 	Hooks  Hooks
+	// NewBranch is `--branch NAME`: the branch to create at a detached
+	// root's HEAD in the new worktree. "" none. Only a detached root takes
+	// one (branch_unneeded otherwise); it is set here, never on Rescue.
+	NewBranch string
 }
 
 // gitAt is the one way rootmove builds a Git: one that runs in dir with
@@ -72,7 +84,7 @@ func (e Engine) gitAt(dir string) cleanup.Git {
 // which reads only.
 type Plan struct {
 	Repo     string // the root (the primary checkout)
-	Branch   string // the root's branch, short name: the branch that moves
+	Branch   string // the root's branch, short name: the branch that moves ("" for a detached root unless NewBranch names the branch to create)
 	Default  string // the default branch the root is switched to
 	Head     string // the root's HEAD commit, the destination's start
 	DirName  string // the destination's directory name under .worktrees
@@ -87,6 +99,16 @@ type Plan struct {
 	FFBenign bool
 	Counts   rescue.Counts
 	Warnings []string
+
+	// Detached says the root is on a detached HEAD (Head is its commit). Then
+	// Branch is "" when a branch already holds Head (the new worktree is left
+	// detached: no ref is made) and NewBranch otherwise; ReachableFrom names
+	// up to three branches holding Head. DirName and DestPath are "" when the
+	// root is clean and reachable: no worktree is made, the root only
+	// switches. Counts.Commits is the commits no branch holds.
+	Detached      bool
+	NewBranch     string
+	ReachableFrom []string
 
 	rp        *rescue.Plan // the root-mode rescue plan Execute copies with
 	skipStart bool         // see SkipStartRecheck

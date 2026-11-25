@@ -1512,3 +1512,91 @@ func TestRootIgnoredAtRiskIsTheGatesCheck(t *testing.T) {
 		}
 	})
 }
+
+// TestReleaseRootDetached checks the DetachedAt gate: a detached root is
+// released only when the caller names HEAD exactly and a local branch or a
+// remote-tracking ref contains it now. Why: the commits of a detached root
+// that no branch holds would be orphaned by the switch; the caller's claim is
+// never trusted.
+func TestReleaseRootDetached(t *testing.T) {
+	rel := func(f *fixture, at string) RootRelease {
+		return RootRelease{Root: f.Dir, Default: "main", NothingUncommitted: true, DetachedAt: at,
+			Unchanged: func() (string, error) { return "", nil }}
+	}
+	t.Run("reachable from a local branch is released", func(t *testing.T) {
+		f := newFixture(t)
+		f.rootOnBranch("topic")
+		head := f.git("rev-parse", "HEAD")
+		f.git("switch", "-q", "--detach")
+		res, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rel(f, head))
+		if err != nil || !res.Switched {
+			t.Fatalf("res %+v err %v, want a release", res, err)
+		}
+		if got := f.git("symbolic-ref", "HEAD"); got != "refs/heads/main" {
+			t.Errorf("root on %s, want main", got)
+		}
+	})
+	t.Run("reachable only from a remote-tracking ref is released", func(t *testing.T) {
+		f := newFixture(t)
+		f.rootOnBranch("topic")
+		head := f.git("rev-parse", "HEAD")
+		f.git("update-ref", "refs/remotes/origin/topic", head)
+		f.git("switch", "-q", "--detach")
+		f.git("branch", "-q", "-D", "topic")
+		if _, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rel(f, head)); err != nil {
+			t.Fatalf("err = %v, want a release", err)
+		}
+	})
+	refused := func(t *testing.T, f *fixture, r RootRelease, want string, headBefore string) {
+		t.Helper()
+		calls := recordRootGit(t)
+		_, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, r)
+		var rr *ReleaseRefused
+		if !errors.As(err, &rr) || !strings.Contains(rr.Reason, want) {
+			t.Fatalf("err = %v, want *ReleaseRefused containing %q", err, want)
+		}
+		if w := writes(*calls); len(w) != 0 {
+			t.Errorf("a refusal ran writes %q", w)
+		}
+		if got := f.git("rev-parse", "HEAD"); got != headBefore {
+			t.Errorf("HEAD %s, want %s", got, headBefore)
+		}
+	}
+	t.Run("no branch contains HEAD", func(t *testing.T) {
+		f := newFixture(t)
+		f.rootOnBranch("topic")
+		f.git("switch", "-q", "--detach")
+		tip := f.Commit(f.Dir, "orphan.txt", "o", "only here")
+		refused(t, f, rel(f, tip), "not on any branch", tip)
+	})
+	t.Run("a commit held only by a tag does not count", func(t *testing.T) {
+		f := newFixture(t)
+		f.rootOnBranch("topic")
+		f.git("switch", "-q", "--detach")
+		tip := f.Commit(f.Dir, "orphan.txt", "o", "only here")
+		f.git("tag", "keep", tip)
+		refused(t, f, rel(f, tip), "not on any branch", tip)
+	})
+	t.Run("DetachedAt differs from HEAD", func(t *testing.T) {
+		f := newFixture(t)
+		f.rootOnBranch("topic")
+		other := f.git("rev-parse", "HEAD~1")
+		f.git("switch", "-q", "--detach")
+		refused(t, f, rel(f, other), "not at", f.git("rev-parse", "HEAD"))
+	})
+	t.Run("DetachedAt empty keeps the old refusal", func(t *testing.T) {
+		f := newFixture(t)
+		f.rootOnBranch("topic")
+		f.git("switch", "-q", "--detach")
+		refused(t, f, rel(f, ""), "is not on a branch", f.git("rev-parse", "HEAD"))
+	})
+	t.Run("a branch deleted after the check refuses", func(t *testing.T) {
+		f := newFixture(t)
+		f.rootOnBranch("topic")
+		f.git("switch", "-q", "--detach")
+		head := f.Commit(f.Dir, "orphan.txt", "o", "only here")
+		f.git("branch", "-q", "holder", head)
+		f.git("branch", "-q", "-D", "holder")
+		refused(t, f, rel(f, head), "not on any branch", head)
+	})
+}

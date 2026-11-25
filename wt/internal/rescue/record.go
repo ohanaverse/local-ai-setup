@@ -41,7 +41,14 @@ func buildRecord(src sgit, p *Plan) (Record, error) {
 	if refName == "" {
 		refName = "detached"
 	}
-	for _, v := range []string{srcPath, refName, p.Branch, p.DestPath} {
+	// A detached root's plan names no branch when its commits are on one
+	// already: the trailer must still be one clean value (ListRecords drops
+	// a record without), so it reads "detached", as Wt-Source-Ref does.
+	destBranch := p.Branch
+	if destBranch == "" {
+		destBranch = "detached"
+	}
+	for _, v := range []string{srcPath, refName, destBranch, p.DestPath} {
 		if hasControl(v) {
 			return Record{}, fmt.Errorf("a control character in %q cannot be written as a trailer", v)
 		}
@@ -51,7 +58,7 @@ func buildRecord(src sgit, p *Plan) (Record, error) {
 		"Wt-Source-Path: " + srcPath,
 		"Wt-Source-Ref: " + refName,
 		"Wt-Source-Head: " + p.Source.Head,
-		"Wt-Dest-Branch: " + p.Branch,
+		"Wt-Dest-Branch: " + destBranch,
 		"Wt-Dest-Path: " + p.DestPath,
 	}, "\n") + "\n"
 

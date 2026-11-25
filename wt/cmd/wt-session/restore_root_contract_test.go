@@ -28,6 +28,13 @@ var restoreRootFixtures = map[string]struct {
 	"failed sample":  {"../../../docs/contracts/restore-root-result.failed.sample.json", "failed", false, false},
 	"error sample":   {"../../../docs/contracts/restore-root-result.error.sample.json", "", false, false},
 	"held sample":    {"../../../docs/contracts/restore-root-result.held.sample.json", "moved", false, true},
+	// A detached root: a branch holds it (the new worktree stays detached),
+	// the same clean (no worktree: moved with created false), and
+	// --branch NAME creating the branch; plus a --branch refusal.
+	"detached sample":       {"../../../docs/contracts/restore-root-result.detached.sample.json", "moved", false, false},
+	"detached clean sample": {"../../../docs/contracts/restore-root-result.detached-clean.sample.json", "moved", false, false},
+	"branch sample":         {"../../../docs/contracts/restore-root-result.branch.sample.json", "moved", false, false},
+	"branch refusal sample": {"../../../docs/contracts/restore-root-result.branch-exists.sample.json", "refused", false, false},
 }
 
 // TestRestoreRootFixturesMatchEnvelopeShape pins the samples
@@ -62,6 +69,14 @@ func TestRestoreRootFixturesMatchEnvelopeShape(t *testing.T) {
 				t.Errorf("%s: created %v / record %v, want false / none", name, doc["created"], doc["record"])
 			}
 		case "moved", "failed":
+			// A clean detached root a branch holds makes no worktree: moved
+			// with created false and no dest_path or record.
+			if name == "detached clean sample" {
+				if doc["created"] != false || doc["dest_path"] != nil || doc["record"] != nil || doc["branch"] != nil || doc["detached"] != true {
+					t.Errorf("%s: created %v / dest_path %v / record %v / branch %v", name, doc["created"], doc["dest_path"], doc["record"], doc["branch"])
+				}
+				break
+			}
 			if doc["created"] != true || doc["dest_path"] == nil {
 				t.Errorf("%s: created %v / dest_path %v", name, doc["created"], doc["dest_path"])
 			}
@@ -174,6 +189,20 @@ func TestRestoreRootEncodersProduceSchemaValidDocuments(t *testing.T) {
 	check("moved with record", b, err)
 	if !strings.Contains(string(b), `"record"`) || !strings.Contains(string(b), `"fast_forwarded"`) {
 		t.Errorf("a moved outcome with a record and a fast-forward encodes neither:\n%s", b)
+	}
+	dplan := plan
+	dplan.Branch, dplan.Detached, dplan.NewBranch = "spike", true, "spike"
+	b, err = rootmove.EncodeResult(rootmove.Outcome{Status: rescue.StatusMoved, Plan: dplan, Created: true,
+		Completed: []string{"created the branch spike at x in the new worktree"}}, rootmove.Meta{Repo: "/r"})
+	check("moved with a created branch", b, err)
+	if !strings.Contains(string(b), `"branch_created": true`) || !strings.Contains(string(b), `"detached": true`) || !strings.Contains(string(b), `"head"`) {
+		t.Errorf("a detached move with --branch encodes neither detached, head nor branch_created:\n%s", b)
+	}
+	dplan.Branch, dplan.NewBranch, dplan.DestPath = "", "", ""
+	b, err = rootmove.EncodeResult(rootmove.Outcome{Status: rescue.StatusMoved, Plan: dplan}, rootmove.Meta{Repo: "/r"})
+	check("moved clean detached", b, err)
+	if strings.Contains(string(b), `"dest_path"`) || strings.Contains(string(b), `"branch"`) {
+		t.Errorf("a clean detached move encodes a dest_path or branch:\n%s", b)
 	}
 	b, err = rootmove.EncodeResult(rootmove.Outcome{Status: rescue.StatusRefused, Code: rootmove.CodeDetachedRoot}, rootmove.Meta{Repo: "/r"})
 	check("bare refusal", b, err)
