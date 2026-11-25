@@ -582,7 +582,11 @@ func TestPrintRescueTextNamesTheRecord(t *testing.T) {
 	if strings.Count(got, line) != 1 {
 		t.Fatalf("want the record line once:\n%s", got)
 	}
-	if d, r, w := strings.Index(got, "done: step"), strings.Index(got, line), strings.Index(got, "warning: w1"); !(d < r && r < w) {
+	d, r, w := strings.Index(got, "done: step"), strings.Index(got, line), strings.Index(got, "warning: w1")
+	if d < 0 || r < 0 || w < 0 {
+		t.Fatalf("missing a line (done %d, record %d, warning %d):\n%s", d, r, w, got)
+	}
+	if !(d < r && r < w) {
 		t.Errorf("record line is not between done and warning:\n%s", got)
 	}
 	got = render(rescue.Outcome{Status: rescue.StatusMoved, Plan: plan})

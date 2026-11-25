@@ -134,7 +134,12 @@ type Outcome struct {
 	Worktree WorktreeOutcome
 	Branch   BranchOutcome
 	Reason   string
-	Warnings []string
+	// ReasonComposed says wt wrote Reason itself and its end is the part the
+	// user acts on (the run-from-root command of a refusal for the current
+	// worktree, #569): every output shows it flattened, never capped
+	// (ShownReason). Git's own text stays capped.
+	ReasonComposed bool
+	Warnings       []string
 	// LossLines are what removing the item would lose as the engine saw it
 	// fresh when it decided (cleanup.LossLines of the re-check, one
 	// sanitised line each); empty when the item was refused or skipped
@@ -163,6 +168,15 @@ func NewOutcome(it Item, wt WorktreeOutcome, br BranchOutcome, reason string) Ou
 	o := Outcome{Item: it, Worktree: wt, Branch: br}
 	o.SetReason(reason)
 	return o
+}
+
+// ShownReason is Reason as an output prints it: sanitised, and capped unless
+// wt composed it (ReasonComposed).
+func (o Outcome) ShownReason() string {
+	if o.ReasonComposed {
+		return cleanup.Flatten(o.Reason)
+	}
+	return cleanup.OneLine(o.Reason)
 }
 
 // SetReason sets Reason to s as one sanitised, capped line.
