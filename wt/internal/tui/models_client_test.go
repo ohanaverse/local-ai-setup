@@ -341,6 +341,21 @@ func TestCatalogFetchFailureShowsStatusAndRetries(t *testing.T) {
 	}
 }
 
+// TestWireTableRowsSortsAnAliasIntoItsBand pins that an alias row built the
+// real way (wireTableRows over the server's catalog rows, which sets Wire) is
+// recognised by its wire Kind and sorts ahead of a model with a far higher
+// score; hand-built rows alone would not catch a detection that reads a field
+// only a test sets.
+func TestWireTableRowsSortsAnAliasIntoItsBand(t *testing.T) {
+	rows := []modelapi.Row{
+		wireRow("openrouter/top", "top", func(r *modelapi.Row) { r.Aligned = f64(90) }),
+		wireRow("alias/group", "alias", func(r *modelapi.Row) { r.Kind = modelapi.KindAlias }),
+	}
+	tr := wireTableRows(rows, time.Time{})
+	sortRows(tr)
+	assertOrder(t, tr, "alias/group,openrouter/top")
+}
+
 // TestTableRowsFromWire pins what a wire row draws: the price the server
 // stated and its `~` marker with the cost legend, the tier cell from tier_code
 // or the bare score, the native band first, and the in-use digit from the

@@ -89,6 +89,8 @@ func TestSortRowsPutsProfilesBetweenNativeAndTheRest(t *testing.T) {
 		profile(0, "start", catalog.ActionStart),
 		{Row: catalog.Row{Model: config.Model{ID: "claude/native", Native: true}, Location: config.LocationCloud}},
 		profile(1, "alpha", catalog.ActionBlock),
+		sortAlias("alias/x", config.LocationCloud, false, 5),
+		sortLocal("omlx/run", true, false, 90),
 	}
 
 	sortRows(rows)
@@ -97,7 +99,7 @@ func TestSortRowsPutsProfilesBetweenNativeAndTheRest(t *testing.T) {
 	for _, r := range rows {
 		got = append(got, r.Model.ID)
 	}
-	want := "claude/native,profile/alpha,profile/start,profile/zeta,omlx/idle,openrouter/cheap,openrouter/dear"
+	want := "claude/native,profile/alpha,profile/start,profile/zeta,alias/x,omlx/run,omlx/idle,openrouter/cheap,openrouter/dear"
 	if strings.Join(got, ",") != want {
 		t.Errorf("order = %s\nwant    %s", strings.Join(got, ","), want)
 	}
