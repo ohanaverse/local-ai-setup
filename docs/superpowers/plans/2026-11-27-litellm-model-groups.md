@@ -74,7 +74,7 @@
 - [ ] **Step 4:** Restart the proxy the documented way (guide 08 section 5) and wait for `/health/liveliness`; check `~/.litellm.err.log` for a startup error naming `router_settings`.
 - [ ] **Step 5:** Check that order and affinity cooperate: send ten requests with one session header to `alias/open-flash` and ten with none (through the gateway, tiny prompts, see Task 5 for the request recipe); the first ten hit one deployment, the second ten more than one. If order alone does not give tiered selection, then set `enable_priority_based_load_balancing: true` and repeat; record which was needed.
 
-### Task 4: Session header function for `wt`
+### Task 4: Session header function for `wt` (skipped as built: LiteLLM reads Claude Code's own `x-claude-code-session-id`; see the spec, step 4)
 
 **Files:** Modify `~/.zshrc` (machine state); document in Task 6.
 

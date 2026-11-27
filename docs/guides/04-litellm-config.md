@@ -341,6 +341,14 @@ wt-model alias set alias/open-flash --dry-run \
 wt-model alias list            # TARGETS shows order:model, ROUTED shows yes
 ```
 
+To use the four claude groups as one launch, give them a slot profile (guide 06, section 10; `wt/docs/wt-agents/slot-profiles.md`):
+
+```bash
+wt profile slots add claude-fallback --default sonnet \
+  --slot fable=alias/claude-fable --slot opus=alias/claude-opus \
+  --slot sonnet=alias/claude-sonnet --slot haiku=alias/claude-haiku
+```
+
 A claude slot group needs the subscription model registered first (`wt-model model add claude-subscription <id> --family claude --context-window 1000000`, section 2 of guide 02) and a proxy that passes the subscription hazard check (§2).
 
 **Session affinity.** With the check on, requests that carry the same session id go to the same deployment of a group, and `session_affinity_repin_on_failover` moves the pin to the replacement after a failover, so a session that fell over to an Ollama model stays there instead of returning to the subscription on the next turn. The pin is per session id and per model group, so a session's main-slot and background-slot calls are pinned separately. wt does not write this setting yet; add it once, by hand, as a top-level block of `config.yaml` (wt keeps keys it does not manage):

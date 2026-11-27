@@ -1,6 +1,6 @@
 # LiteLLM model groups: claude-* and open-* (design)
 
-Date: 2026-11-27. Status: draft for approval. Step A is specified in full; step B is a marked follow-up.
+Date: 2026-11-27. Status: approved; step A implemented 2026-11-27 (PR #751). Step B is a marked follow-up.
 
 ## Intent and why
 
@@ -99,16 +99,13 @@ Prerequisite: register `claude-sonnet-5-5` (provider `claude-subscription`, `con
    (`optional_pre_call_checks: ["session_affinity"]`, `session_affinity_repin_on_failover: true`, a
    `deployment_affinity_ttl_seconds`), check against the installed LiteLLM's option names, and
    check that it survives `wt-model litellm sync`.
-4. The session id header (`x-litellm-session-id`) is sent by a shell function around **`wt`**, not
-   bare `claude`: `wt` launches claude and already merges an inherited `ANTHROPIC_CUSTOM_HEADERS`
-   (it replaces only its own `x-wt-model-token`, keeping other lines such as `x-litellm-tags`). The
-   function must append to the variable, never overwrite it, or it would break subscription
-   passthrough. The gateway drops only credential headers, so the session header should reach
-   LiteLLM; the plan verifies it with one request. Affinity in step A covers `wt`-launched claude
-   only; pi and codex get it in step B.
-5. Keep `alias/fable-mixed` (my call). It is never removed in step A; removing it is a separate
-   `wt-model alias rm` the user can run once nothing uses it. Two machines work this repo, so
-   "no session uses it" cannot be established from here.
+4. The session id needs no header function (as built, a change from the first draft): LiteLLM reads
+   Claude Code's own `x-claude-code-session-id` header (and `x-litellm-session-id` for scripts), and a
+   real past session showed one stable id across 17 calls. Affinity in step A covers `wt`-launched
+   claude; pi and codex get it in step B if they send no id of their own.
+5. `alias/fable-mixed` was kept while the groups were checked, then removed at the user's request
+   after no slot profile, pi or codex config named it. The six old slot profiles were replaced by one,
+   `claude-fallback` (the four slots on `alias/claude-fable|opus|sonnet|haiku`).
 6. Document in `docs/guides/04-litellm-config.md` section 7 as a worked example, with a command
    that shows the live groups and no model counts (guides never embed live state).
 

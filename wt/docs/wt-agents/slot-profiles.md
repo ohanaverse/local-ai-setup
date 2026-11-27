@@ -499,6 +499,8 @@ sonnet = "alias/sonnet"         # an alias (a priority group of other models)
 haiku  = "alias/haiku"
 ```
 
+The four tiered groups of [guide 04, section 7](../../../docs/guides/04-litellm-config.md) (the subscription first, then pools of open models) fill the four slots of one profile the same way: `fable = "alias/claude-fable"`, `opus = "alias/claude-opus"`, `sonnet = "alias/claude-sonnet"`, `haiku = "alias/claude-haiku"`.
+
 > **Usage credits.** Depending on your plan and seat tier, the Fable row
 > (`claude-fable-5-2`), and other large models, may need usage credits or
 > count against your plan's limits; Claude Code's `/model` picker can show
