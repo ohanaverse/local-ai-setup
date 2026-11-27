@@ -321,6 +321,50 @@ An alias is a registry id `alias/<name>` that a slot profile, pi or codex names 
 - **Install order.** An older `wt-model` refuses every registry write once `[[aliases]]` exists, and ignores alias rows (its start, stop and sync neither add nor remove them). Run `make install` and restart the `wt-model serve` LaunchAgent before the first `alias set`. After editing its plist, `launchctl bootout` then `bootstrap` the job: a `kickstart` alone keeps the old loaded definition.
 - **Hand edits.** Alias rows are compared by the hash wt stamped on them, so an edit in the admin UI that keeps the stamp is not noticed; a row that lost it is replaced. A row under `wta:alias/` without wt's marker is never deleted: remove it by hand.
 
+#### Worked example: tiered groups with session affinity
+
+A fallback group is an alias whose targets carry three tiers: the order is the tier, and targets that share an order are a pool the proxy picks from at random. This set uses the Claude subscription first, then a pool of Ollama cloud models, then a pool of OpenRouter models; the two `open-*` groups skip the subscription tier.
+
+| Alias | order 1 | order 2 | order 3 |
+|---|---|---|---|
+| `alias/claude-fable`, `alias/claude-opus` | the subscription model for the slot | the "pro" Ollama pool | the "pro" OpenRouter pool |
+| `alias/claude-sonnet`, `alias/claude-haiku` | the subscription model for the slot | the "flash" Ollama pool | the "flash" OpenRouter pool |
+| `alias/open-pro` | the "pro" Ollama pool | the "pro" OpenRouter pool | none |
+| `alias/open-flash` | the "flash" Ollama pool | the "flash" OpenRouter pool | none |
+
+Which models make up each pool is your choice from `wt-model model list` (pick models that tool-call reliably and whose window matches; the alias window is the smallest of its targets). Give every `--target` an explicit `:ORDER`: left out, the order is the flag's position, which makes a pool a sequence instead of a random choice.
+
+```bash
+wt-model alias set alias/open-flash --dry-run \
+  --target ollama/glm-5.3-flash:cloud:1 --target ollama/mimo-v2.6-flash:cloud:1 \
+  --target openrouter/z-ai/glm-5.3-flash:2 --target openrouter/xiaomi--mimo-v2.6-flash:2
+wt-model alias list            # TARGETS shows order:model, ROUTED shows yes
+```
+
+To use the four claude groups as one launch, give them a slot profile (guide 06, section 10; `wt/docs/wt-agents/slot-profiles.md`):
+
+```bash
+wt profile slots add claude-fallback --default sonnet \
+  --slot fable=alias/claude-fable --slot opus=alias/claude-opus \
+  --slot sonnet=alias/claude-sonnet --slot haiku=alias/claude-haiku
+```
+
+A claude slot group needs the subscription model registered first (`wt-model model add claude-subscription <id> --family claude --context-window 1000000`, section 2 of guide 02) and a proxy that passes the subscription hazard check (§2).
+
+**Session affinity.** With the check on, requests that carry the same session id go to the same deployment of a group, and `session_affinity_repin_on_failover` moves the pin to the replacement after a failover, so a session that fell over to an Ollama model stays there instead of returning to the subscription on the next turn. The pin is per session id and per model group, so a session's main-slot and background-slot calls are pinned separately. wt does not write this setting yet; add it once, by hand, as a top-level block of `config.yaml` (wt keeps keys it does not manage):
+
+```yaml
+router_settings:
+  optional_pre_call_checks:
+    - session_affinity
+  deployment_affinity_ttl_seconds: 14400
+  session_affinity_repin_on_failover: true
+```
+
+Then restart the proxy (`wt-model litellm restart`). The session id comes from the client: LiteLLM reads Claude Code's own `x-claude-code-session-id` header, so a claude session launched by wt needs no extra header; a request with no session id gets a fresh generated one and is never pinned. Sending `x-litellm-session-id` pins a script's requests the same way. pi and codex are not covered by this section.
+
+Checks (illustrative, from 2026-11-27; counts differ per run): twelve requests to a group with no session id were answered by several models of its first pool and none from the next tier; six requests with one `x-litellm-session-id` were all answered by one model; a request to a Claude slot group sent without a Claude login (so the subscription row cannot answer) was answered by a model of the order 2 pool, and further requests with the same session id stayed on it. Read which model answered from LiteLLM's spend log (`session_id`, `model` and `model_group` columns of `LiteLLM_SpendLogs`; rows appear after about 30 seconds) or the admin UI's Logs page.
+
 ## Verification
 
 Auth is live and the routed model is in the served list:
