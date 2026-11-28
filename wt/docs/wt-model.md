@@ -160,8 +160,10 @@ It has no `protocols` and no `secret_ref`.
 Init also adds a native provider row (`auth.type = "native"`, `location =
 "cloud"`) for each of claude, codex, copilot and agy, whether or not that agent
 is installed on this machine; pi and opencode have no native provider and get
-none. The set is fixed: init reads no `config.toml`, and an unreadable one is
-no warning. A native row is offered only to the agent it is named for, so an
+none. The set is fixed: seeding reads no `config.toml`. (The route sync that follows
+a change still loads it, so on a machine with a LiteLLM `config.yaml` an
+unreadable `config.toml` is that sync's warning, `LiteLLM routes not synced:
+…`.) A native row is offered only to the agent it is named for, so an
 unused one is inert. No command removes a provider row, so a row you do not
 want is deleted from `registry.toml` by hand (its `[[providers]]` block, or its
 line when the file lists its providers inline); `wt-model model init` adds it

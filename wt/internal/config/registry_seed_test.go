@@ -206,13 +206,13 @@ name = "oMLX"
 type = "none"
 `
 	path := scratchRegistry(t, custom)
-	env := SeedEnv{OnPath: onPath("ollama", "omlx")}
+	env := SeedEnv{OnPath: onPath("ollama", "omlx", "mtplx")}
 	added, changed := seed(t, env)
-	if len(added) != 0 || changed {
-		t.Fatalf("first run: added %v (changed %v), want nothing: both providers have a row", added, changed)
+	if !slices.Equal(added, []string{"mtplx"}) || !changed {
+		t.Fatalf("first run: added %v (changed %v), want [mtplx]: ollama and omlx already have a row", added, changed)
 	}
 	after := readFile(t, path)
-	if after != custom {
+	if !strings.HasPrefix(after, custom) {
 		t.Errorf("existing rows were edited:\n%s", after)
 	}
 	added, changed = seed(t, env)

@@ -195,13 +195,16 @@ func TestModelInitSeedsAnOpenRouterRowThatFailsLoudlyWithoutItsKey(t *testing.T)
 	}
 }
 
-// TestModelInitIgnoresConfigToml pins that init no longer reads config.toml
-// at all: a config.toml that does not parse produces no warning (stderr is
-// empty, --json has "warnings":[]) and the same output as a machine with no
-// config.toml, namely the four native rows. Before, an unreadable file
-// meant no agent got a row and the user had to be told why; the set is now
-// fixed, so there is nothing to tell. The next wt command still fails on the
-// broken file, which is the right place to say so.
+// TestModelInitIgnoresConfigToml pins that init's seeding no longer reads
+// config.toml: a config.toml that does not parse gives no seeding warning
+// (stderr is empty, --json has "warnings":[]) and the same output as a
+// machine with no config.toml, namely the four native rows. Before, an
+// unreadable file meant no agent got a row and init had to say why; the set is
+// now fixed, so there is nothing to say. The route sync is stubbed here: in
+// production the sync after a change still loads config.toml
+// (litellm.SyncAfterWrite, when a LiteLLM config.yaml exists) and would warn
+// "LiteLLM routes not synced: parse config: ...", which this test does not
+// cover.
 func TestModelInitIgnoresConfigToml(t *testing.T) {
 	wantText := func(registry string) string {
 		return "registry: " + registry + " (created)\nadded provider: claude\nadded provider: codex\nadded provider: copilot\nadded provider: agy\n"

@@ -32,10 +32,12 @@ func modelInitCmd(h *host) *cobra.Command {
 			"  - claude, codex, copilot, agy: a native provider row each, whether or\n" +
 			"                         not the agent is installed on this machine (an unused\n" +
 			"                         one is offered only to the agent it is named for;\n" +
-			"                         delete its [[providers]] block from registry.toml if\n" +
+			"                         delete its [[providers]] block (or its line, when the\n" +
+			"                         file lists providers inline) from registry.toml if\n" +
 			"                         you do not want it, `model init` adds it back)\n\n" +
-			"config.toml is not read. pi and opencode have no native provider and get\n" +
-			"no row.\n\n" +
+			"Seeding reads no config.toml. pi and opencode have no native provider and\n" +
+			"get no row. The route sync after a change still loads config.toml, and a\n" +
+			"file it cannot read is that sync's warning.\n\n" +
 			"A row that exists is never changed, so running it again is safe. When it\n" +
 			"changes the registry it then syncs the LiteLLM routes once; a sync that\n" +
 			"cannot run is a warning, and the exit status is still 0.",
