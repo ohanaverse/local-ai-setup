@@ -140,6 +140,12 @@ by entry:
   (person-edited, not wt-written) `supported_providers` list, wt prints one
   stderr note per such agent per process:
   `wt: note: config.toml: agent <name>: supported_providers is no longer used and is ignored (eligibility is derived from the provider and the model)`.
+  To silence it, trim the list to the stock shape (`[<agent>, ollama]`), or
+  remove the key from the agent entry; removing is safe once every machine's
+  `wt-model` is at or after this change (an older one refuses an agent entry
+  with no list, so update every machine first). A list already in a stock
+  shape (`[<agent>, ollama]`, `[<agent>, ollama, sushi]`, agy's `[agy]`, pi's
+  and opencode's `[ollama]` / `[ollama, sushi]`) prints nothing.
   An agent added here is written without a list, which a `wt-model` older than
   this change cannot load: run `make install` on every machine before adding
   one.

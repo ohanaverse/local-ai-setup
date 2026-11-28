@@ -90,7 +90,7 @@ token_file = "/t"
 }
 
 // TestPatchSaveNeverWritesASynthesizedAgent proves an editor save that hands
-// back every in-memory agent (the synthesized Synthesized ones included)
+// back every in-memory agent (the Synthesized ones included)
 // writes only the agents config.toml held, so a session save never turns a
 // synthesized agent into a real entry.
 func TestPatchSaveNeverWritesASynthesizedAgent(t *testing.T) {

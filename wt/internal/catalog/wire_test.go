@@ -106,7 +106,7 @@ func TestEligibleWireSushiForEveryAgent(t *testing.T) {
 	}
 }
 
-// TestEligibleWireSynthesizedExcludesOthersNative pins that an Synthesized
+// TestEligibleWireSynthesizedExcludesOthersNative pins that a Synthesized
 // claude sees its own native row and every non-native row, not copilot's.
 func TestEligibleWireSynthesizedExcludesOthersNative(t *testing.T) {
 	a := config.Agent{Name: "claude", Synthesized: true}
@@ -219,7 +219,7 @@ func TestProviderEligible(t *testing.T) {
 
 	for _, c := range cases {
 		if got := providerEligible(c.agent, c.provider, c.native); got != c.want {
-			t.Errorf("%s (native=%v, list=%v, all=%v): got %v, want %v",
+			t.Errorf("%s (native=%v, list=%v, synthesized=%v): got %v, want %v",
 				c.name, c.native, c.agent.SupportedProviders, c.agent.Synthesized, got, c.want)
 		}
 	}

@@ -928,6 +928,8 @@ var NativeOnlyAgents = []string{"agy"}
 // but pi and opencode. A native provider id equals its driver name. It lives
 // in this leaf package for the same reason as NativeOnlyAgents, and
 // internal/agents' TestNativeTablesMatchTheDrivers pins it to the drivers.
+// It has no production reader yet: PR 2's wt-model seeding reads it, and today
+// only that test does.
 var NativeCapableAgents = []string{"claude", "codex", "copilot", "agy"}
 
 // IsSubscriptionProvider reports whether id is the Claude subscription

@@ -183,9 +183,9 @@ func TestSave_PreservesConcurrentLitellmChange(t *testing.T) {
 	if err := os.MkdirAll(registryDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// migrateConfigSchema unconditionally ensures an "agy" agent on Load
-	// (wt/CLAUDE.md's "Fixture gotcha"), so the registry needs a matching
-	// agy provider (native) alongside ollama for the added claude agent.
+	// The agy provider row (native) is kept alongside ollama so a config.toml
+	// that names an agy agent still validates; migrateConfigSchema only
+	// renames google to agy and no longer adds an agy agent on Load.
 	registryToml := `providers = [{id = "ollama", name = "Ollama"}, {id = "agy", name = "Agy", auth = {type = "native"}}]
 models = []
 `
