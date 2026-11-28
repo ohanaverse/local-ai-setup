@@ -53,7 +53,7 @@ func aliasCmd(h *host, rec servestate.Store) *cobra.Command {
 }
 
 func aliasListCmd(h *host, rec servestate.Store) *cobra.Command {
-	var asJSON bool
+	var asJSON, asTOML bool
 	c := &cobra.Command{
 		Use:   "list",
 		Short: "List the registry's aliases with their targets, window, client sessions and routes",
@@ -73,19 +73,64 @@ func aliasListCmd(h *host, rec servestate.Store) *cobra.Command {
 			"cannot use (malformed, or a target that names no model) is listed, and a\n" +
 			"warning says why. No output carries a route's parameters.\n\n" +
 			"Flags:\n" +
-			"  --json   print one JSON document (docs/contracts/alias-list.sample.json)\n\n" +
+			"  --json   print one JSON document (docs/contracts/alias-list.sample.json)\n" +
+			"  --toml   print the aliases as [[aliases]] tables in the shape `alias apply`\n" +
+			"           reads, each target with an explicit order, and nothing else (no\n" +
+			"           server or proxy is asked): `alias list --toml > aliases.toml`\n" +
+			"           captures a machine's groups and `alias apply aliases.toml` replays\n" +
+			"           them as `no change` on any registry. Only aliases apply would\n" +
+			"           accept are printed: a redirect, a malformed alias and one with a\n" +
+			"           target naming no model are left out, and one stderr note names\n" +
+			"           them. Notes are not printed. Exclusive with --json\n\n" +
 			"Exit codes:\n" +
 			"  0  done\n" +
-			"  1  the registry could not be read",
-		Example:      "  wt-model alias list\n  wt-model alias list --json",
+			"  1  the registry could not be read, or --json and --toml were both given",
+		Example:      "  wt-model alias list\n  wt-model alias list --json\n  wt-model alias list --toml > aliases.toml",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if asJSON && asTOML {
+				cmd.SilenceUsage = false
+				return errors.New("--json and --toml cannot be used together: pass one")
+			}
+			if asTOML {
+				return h.runAliasListTOML(cmd.OutOrStdout(), cmd.ErrOrStderr())
+			}
 			return h.runAliasList(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), rec, asJSON)
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "print one JSON document (docs/contracts/alias-list.sample.json)")
+	c.Flags().BoolVar(&asTOML, "toml", false, "print the aliases in the shape alias apply reads (exclusive with --json)")
 	return c
+}
+
+// runAliasListTOML is `wt-model alias list --toml`: the text from
+// modeladmin.AliasesTOML on out and, when it left aliases out, one note on
+// errOut naming each with its reason. It reads the registry only.
+func (h *host) runAliasListTOML(out, errOut io.Writer) error {
+	cfg, loadErr := h.hostConfig()
+	if loadErr != nil {
+		return config.ConfigError(loadErr)
+	}
+	text, skipped, err := modeladmin.AliasesTOML(cfg)
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(out, text); err != nil {
+		return err
+	}
+	if len(skipped) > 0 {
+		parts := make([]string, 0, len(skipped))
+		for _, s := range skipped {
+			parts = append(parts, cli.VisibleID(s.ID)+" ("+cli.VisibleID(s.Why)+")")
+		}
+		noun := "aliases"
+		if len(skipped) == 1 {
+			noun = "alias"
+		}
+		fmt.Fprintf(errOut, "wt-model: note: %d %s skipped: %s\n", len(skipped), noun, strings.Join(parts, ", "))
+	}
+	return nil
 }
 
 // aliasListJSON is `wt-model alias list --json`'s one document (J1, J4).

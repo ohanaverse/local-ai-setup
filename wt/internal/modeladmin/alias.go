@@ -235,6 +235,64 @@ func SetAliases(reqs []AliasRequest) (changed []string, err error) {
 	return ids, nil
 }
 
+// SkippedAlias is an alias AliasesTOML leaves out, and why (one short line).
+type SkippedAlias struct{ ID, Why string }
+
+// AliasesTOML is the registry's aliases as `alias apply` reads them: one
+// [[aliases]] table each, in the order `alias list` lists them, with an id and
+// targets as inline tables holding model and an explicit order (the effective
+// one, Config.AliasTargets with an omitted order read as the position), so the
+// registry's own spelling never matters. Only aliases apply would accept are
+// printed: a redirect, a malformed alias and one config.AliasFault refuses
+// are returned in skipped, in the same order, with a short reason each. notes
+// are not printed (they are not loaded). With nothing to print text is empty.
+func AliasesTOML(cfg *config.Config) (text string, skipped []SkippedAlias, err error) {
+	var rows []any
+	for _, a := range cfg.Aliases {
+		switch {
+		case a.RedirectTo != "":
+			skipped = append(skipped, SkippedAlias{a.ID, "a redirect to " + a.RedirectTo})
+			continue
+		case a.Malformed != "":
+			skipped = append(skipped, SkippedAlias{a.ID, "malformed: " + oneLine(a.Malformed)})
+			continue
+		}
+		if ferr := config.AliasFault(cfg, a); ferr != nil {
+			why := strings.TrimPrefix(oneLine(ferr.Error()), fmt.Sprintf("alias %q: ", a.ID))
+			skipped = append(skipped, SkippedAlias{a.ID, why})
+			continue
+		}
+		targets := make([]any, 0, len(a.Targets))
+		for i, t := range cfg.AliasTargets(a) {
+			order := t.Order
+			if order < 1 {
+				order = i + 1
+			}
+			row := tomlw.NewTable()
+			row.Set("model", t.Model)
+			row.Set("order", int64(order))
+			targets = append(targets, row)
+		}
+		row := tomlw.NewTable()
+		row.Set("id", a.ID)
+		row.Set("targets", targets)
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		return "", skipped, nil
+	}
+	root := tomlw.NewTable()
+	root.Set("aliases", rows)
+	b, err := tomlw.Encode(root)
+	if err != nil {
+		return "", nil, fmt.Errorf("writing the aliases as TOML: %w", err)
+	}
+	return string(b), skipped, nil
+}
+
+// oneLine is s with every run of whitespace one space.
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 // RemoveAliases removes the aliases ids from the registry in one write, all
 // or nothing: an id the registry does not have (config.ErrAliasNotFound)
 // removes none. It returns the ids removed, in the order given.

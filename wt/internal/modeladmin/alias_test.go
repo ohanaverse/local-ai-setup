@@ -627,3 +627,79 @@ targets = [{ model = "openrouter/big", order = 1 }, { model = "openrouter/small"
 		}
 	}
 }
+
+// aliasRegistryForExport is aliasRegistry holding one good alias without
+// explicit orders, one with explicit orders, a redirect, a malformed alias
+// (an unknown key) and a faulty one (a target naming no model).
+const aliasRegistryForExport = aliasRegistry + `
+[[aliases]]
+id = "alias/a"
+targets = [{ model = "openrouter/big" }, { model = "openrouter/small" }]
+
+[[aliases]]
+id = "alias/b"
+targets = [{ model = "openrouter/small", order = 2 }, { model = "openrouter/big", order = 1 }]
+
+[[aliases]]
+id = "alias/old"
+redirect_to = "alias/a"
+
+[[aliases]]
+id = "alias/bad"
+targets = [{ model = "openrouter/big" }]
+colour = "red"
+
+[[aliases]]
+id = "alias/gone"
+targets = [{ model = "openrouter/missing" }]
+`
+
+// TestAliasesTOMLPrintsExplicitOrders pins that an alias the registry spells
+// without orders is exported with each target's effective order spelled out
+// (order = 1, order = 2), so a replay on another machine means the same
+// priority whatever spelling the source registry used.
+func TestAliasesTOMLPrintsExplicitOrders(t *testing.T) {
+	scratchRegistry(t, aliasRegistryForExport)
+	text, _, err := AliasesTOML(loadCfg(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`id = "alias/a"`,
+		`{ model = "openrouter/big", order = 1 }`,
+		`{ model = "openrouter/small", order = 2 }`,
+		"[[aliases]]",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("export lacks %q:\n%s", want, text)
+		}
+	}
+}
+
+// TestAliasesTOMLSkipsRedirectsMalformedAndFaulty pins that the export holds
+// only aliases `alias apply` would accept: a redirect, a malformed alias and
+// one with a target naming no model are returned in skipped, each with a
+// reason, and none is printed, so the output always replays cleanly.
+func TestAliasesTOMLSkipsRedirectsMalformedAndFaulty(t *testing.T) {
+	scratchRegistry(t, aliasRegistryForExport)
+	text, skipped, err := AliasesTOML(loadCfg(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skipped) != 3 || skipped[0].ID != "alias/old" || skipped[1].ID != "alias/bad" || skipped[2].ID != "alias/gone" {
+		t.Fatalf("skipped = %+v", skipped)
+	}
+	for _, s := range skipped {
+		if s.Why == "" || strings.Contains(s.Why, "\n") {
+			t.Errorf("skipped %s: reason %q", s.ID, s.Why)
+		}
+	}
+	for _, id := range []string{"alias/old", "alias/bad", "alias/gone"} {
+		if strings.Contains(text, id) {
+			t.Errorf("export prints skipped %s:\n%s", id, text)
+		}
+	}
+	if !strings.Contains(text, `"alias/a"`) || !strings.Contains(text, `"alias/b"`) {
+		t.Errorf("export lacks the good aliases:\n%s", text)
+	}
+}
