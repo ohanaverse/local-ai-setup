@@ -122,7 +122,7 @@ func (r *nativeRig) run(t *testing.T, args ...string) (out string, code int) {
 // chosen in config.toml, `wt -A <agent>` launches the agent itself, exit 0,
 // with the native model and a zero Gateway (so no gateway token or origin can
 // reach it), passes --yolo and the arguments after `--` on, prints exactly one
-// "launching <agent> natively" note, and leaves no rotation or usage record.
+// "launching <agent> natively" note, and leaves no launch history or usage record.
 // Before this a machine whose agent reaches its model by the agent's own
 // configuration could not launch through wt at all.
 func TestLaunchWithoutAServerRunsEveryAgentNatively(t *testing.T) {
@@ -154,6 +154,8 @@ func TestLaunchWithoutAServerRunsEveryAgentNatively(t *testing.T) {
 					t.Errorf("the agent's environment carries %q, want no model-server or gateway setting", line)
 				}
 			}
+			// rotation.state stays in the list: nothing writes it any more,
+			// so its absence proves a launch path does not bring it back.
 			for _, f := range []string{"rotation.state", "last-picked.state", "usage.jsonl"} {
 				if fileExists(filepath.Join(r.home, ".config", "agent-wt", f)) {
 					t.Errorf("a native launch wrote %s", f)

@@ -150,20 +150,19 @@ func physical(t *testing.T, dir string) string {
 }
 
 // wantCwdBookkeeping asserts the state one single-model --cwd launch records:
-// the rotation pointer, the picker's marker and one usage event for the pair,
-// all in the scratch config home, and that the launch ended its client
-// session on the server exactly once.
+// the picker's marker and one usage event for the pair, both in the scratch
+// config home, no rotation.state (nothing writes it any more), and that the
+// launch ended its client session on the server exactly once.
 func wantCwdBookkeeping(t *testing.T, res cwdLaunch) {
 	t.Helper()
-	for _, name := range []string{"rotation.state", "last-picked.state"} {
-		data, err := os.ReadFile(filepath.Join(res.stateDir, name))
-		if err != nil {
-			t.Errorf("%s not written: %v", name, err)
-			continue
-		}
-		if got := strings.TrimSpace(string(data)); got != "claude/opus" {
-			t.Errorf("%s = %q, want claude/opus", name, got)
-		}
+	data, err := os.ReadFile(filepath.Join(res.stateDir, "last-picked.state"))
+	if err != nil {
+		t.Errorf("last-picked.state not written: %v", err)
+	} else if got := strings.TrimSpace(string(data)); got != "claude/opus" {
+		t.Errorf("last-picked.state = %q, want claude/opus", got)
+	}
+	if fileExists(filepath.Join(res.stateDir, "rotation.state")) {
+		t.Error("rotation.state written by a launch, want it never written")
 	}
 	if got := usage.NewStoreAt(res.stateDir).CountsForAgent("claude", []string{"claude/opus"})["claude/opus"]; got.ThirtyDay != 1 {
 		t.Errorf("usage events for claude × claude/opus = %d, want 1", got.ThirtyDay)
@@ -174,14 +173,14 @@ func wantCwdBookkeeping(t *testing.T, res cwdLaunch) {
 }
 
 // cwdStateFiles is every entry a single-model launch adds under wt's config
-// directory: the three state files, the usage lock and the profile
+// directory: the two state files, the usage lock and the profile
 // self-heal's backup directory. A client session of the model server writes
 // no refcount file and runs no config.toml migration (config.LoadSession
 // migrates in memory), so neither those nor their locks appear. The
 // inside-a-repository and outside-a-repository tests compare against the
 // same list, so the two launches cannot drift apart.
 var cwdStateFiles = []string{
-	"last-picked.state", "profile-backups", "rotation.state",
+	"last-picked.state", "profile-backups",
 	"usage.jsonl", "usage.jsonl.lock",
 }
 

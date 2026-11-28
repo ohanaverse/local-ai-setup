@@ -20,8 +20,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -1361,7 +1361,8 @@ func TestSessionRegisteredBeforeStartAndEndedOnExit(t *testing.T) {
 // TestRemoteLaunchRunsTheAgentOnTheGateway pins the launch half of the API
 // path, the non-TUI remote launch's steps in the run command: the agent is
 // built against the server's gateway with the model's gateway id, the client
-// session holds the model before the agent runs, the rotation is recorded,
+// session holds the model before the agent runs, the launch is recorded (the
+// last-picked marker and one usage event, no rotation.state),
 // and nothing on the registry path (the refcount, the stop picker) is touched.
 func TestRemoteLaunchRunsTheAgentOnTheGateway(t *testing.T) {
 	f := &fakeModels{cat: startRowCatalog()}
@@ -1391,8 +1392,15 @@ func TestRemoteLaunchRunsTheAgentOnTheGateway(t *testing.T) {
 	if h := f.history(); !reflect.DeepEqual(h, []string{"register openrouter/glm-5.3"}) {
 		t.Errorf("calls = %v, want the client session registered by the run command", h)
 	}
-	if last, _ := rotation.New().Last(); last != "openrouter/glm-5.3" {
-		t.Errorf("rotation last = %q, want the launched model recorded", last)
+	stateDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt")
+	if data, _ := os.ReadFile(filepath.Join(stateDir, "last-picked.state")); string(data) != "openrouter/glm-5.3\n" {
+		t.Errorf("last-picked.state = %q, want the launched model recorded", data)
+	}
+	if n := usage.NewStoreAt(stateDir).CountsForAgent("claude", []string{"openrouter/glm-5.3"})["openrouter/glm-5.3"].ThirtyDay; n != 1 {
+		t.Errorf("usage events for the launched model = %d, want 1", n)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "rotation.state")); err == nil {
+		t.Error("rotation.state written by a launch, want it never written")
 	}
 }
 

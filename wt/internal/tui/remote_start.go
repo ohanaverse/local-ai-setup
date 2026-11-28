@@ -26,9 +26,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // launchHooks are the per-model test seams over the launch builds. The zero
@@ -567,7 +567,7 @@ type remotePreparedMsg struct {
 // server's non-native models for an agent that syncs them, build the agent
 // against the gateway) runs in a prep command behind the launching screen;
 // only once it is done does Update hand the built command to the run command,
-// which records the rotation once the launch gate is past. The post-exit flow
+// which records the launch once the launch gate is past. The post-exit flow
 // ends the client session (exitTail).
 func (m model) launchRemote(it *modelItem) (model, tea.Cmd) {
 	mdl := it.model
@@ -703,7 +703,7 @@ func (m model) handlePrepared(msg remotePreparedMsg) (model, tea.Cmd) {
 	}
 	agent, id, h := m.agent, m.launchModel.ID, m.hold
 	record := func() string {
-		if err := rotation.New().RecordFor(agent, id); err != nil {
+		if err := usage.NewStore().RecordLaunch(agent, id); err != nil {
 			return err.Error()
 		}
 		return ""
