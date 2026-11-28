@@ -431,9 +431,9 @@ it. The one other key is `redirect_to =
 holds one or the other, never both); see **Renaming** below. `order` left out is the target's
 position, from 1. A target names exactly one registry model; no alias or native
 model is a target; an alias may name several local targets (a start starts each
-in turn) of a Pool or Shared provider such as oMLX or Ollama, but never two local targets of one
-Exclusive-tenancy family such as mtplx, which runs one model at a time
-(`config.AliasFault`). An alias id never equals a model id, and provider id
+in turn), but never two of one Exclusive-tenancy family such as mtplx, which
+runs one model at a time (Pool and Shared providers such as oMLX and Ollama may
+hold several; `config.AliasFault`). An alias id never equals a model id, and provider id
 `alias` and model ids under `alias/` are refused.
 
 ```bash
@@ -508,8 +508,9 @@ every alias.
 `targets = [{ model = "<registry id>", order = N }, ...]` (an `order` left out
 is the target's position, from 1) and an optional `notes` string, which is
 accepted and ignored; any other top-level key or table, a `redirect_to`, an id
-given twice and a file with no alias are refused, each as `<file>: <why>;
-nothing was changed`. A sample file:
+given twice and a file with no alias are refused. Every refusal, a file that
+cannot be read and one refused inside the registry write included, reads
+`<file>: <why>; nothing was changed`. A sample file:
 [alias-apply.sample.toml](../../docs/contracts/alias-apply.sample.toml).
 
 ```toml
@@ -527,11 +528,15 @@ Exclusive family; an id that is currently a redirect refuses the file), so one
 bad alias anywhere refuses the whole file and nothing is changed or asked. An
 alias whose effective targets are the ones the file names (the same models at
 the same orders) is `no change`: it is not rewritten, and the registry keeps
-the spelling it has. The rest are written in one registry update and one route
+the spelling it has. An alias the registry holds malformed is never `no
+change`, even when the targets it could read match: it is rewritten, which
+repairs it (`list --toml` names such an alias in its note; write the corrected
+table to a file and `apply` it). The rest are written in one registry update and one route
 sync runs, only when something changed. The output is one line per alias in
 file order, `set alias: <id>` or `no change: <id>`. `--dry-run` prints each
 changed alias's plan as `set --dry-run` does (`would set alias: <id>`, targets,
-window change and rows; `no change: <id>` for the others) and changes nothing.
+window change and rows; `no change: <id>` for the others), then one `dry run:
+nothing was changed` line for the whole file, and changes nothing.
 When any window gets smaller, or unknown where it was known, **one** question
 names every such alias and asks y/N (default No); `--accept-smaller-window`
 answers yes, and without a terminal or on an answer of no it exits 3 with

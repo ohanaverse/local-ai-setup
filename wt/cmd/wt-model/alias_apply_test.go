@@ -54,12 +54,13 @@ func countRouteSync(h *host) *int {
 	return &calls
 }
 
-// aliasIDsIn is the alias ids the registry at path holds, in file order.
-func aliasIDsIn(t *testing.T, path string) []string {
+// registryAliasIDs is the alias ids the scratch registry (WT_REGISTRY, set by
+// aliasEnv) holds, in file order.
+func registryAliasIDs(t *testing.T) []string {
 	t.Helper()
 	cfg, err := config.Load()
 	if err != nil {
-		t.Fatalf("load %s: %v", path, err)
+		t.Fatalf("load the registry: %v", err)
 	}
 	var ids []string
 	for _, a := range cfg.Aliases {
@@ -79,7 +80,7 @@ func TestAliasApplyCreatesAllFromAFile(t *testing.T) {
 	if err != nil || !strings.HasPrefix(out, "set alias: alias/a\nset alias: alias/b\nset alias: alias/c\n") {
 		t.Fatalf("err %v stdout %q stderr %q", err, out, errOut)
 	}
-	if got := aliasIDsIn(t, path); !slices.Equal(got, []string{"alias/a", "alias/b", "alias/c"}) {
+	if got := registryAliasIDs(t); !slices.Equal(got, []string{"alias/a", "alias/b", "alias/c"}) {
 		t.Fatalf("registry aliases %v", got)
 	}
 	if *syncs != 1 || len(aliasRows(fake, "alias/a")) != 2 || len(aliasRows(fake, "alias/b")) != 2 || len(aliasRows(fake, "alias/c")) != 1 {
@@ -397,7 +398,7 @@ func TestAliasApplyAcceptSmallerWindowAnswersYes(t *testing.T) {
 // apply: with LiteLLM's database unreachable the registry is still written,
 // one warning names the repair and the command exits 0, as `alias set` does.
 func TestAliasApplyRoutesUnavailableStillWritesTheRegistry(t *testing.T) {
-	h, fake, path := aliasEnv(t, aliasRegistry)
+	h, fake, _ := aliasEnv(t, aliasRegistry)
 	fake.mu.Lock()
 	fake.down = true
 	fake.mu.Unlock()
@@ -409,8 +410,8 @@ func TestAliasApplyRoutesUnavailableStillWritesTheRegistry(t *testing.T) {
 	if n := strings.Count(errOut, "alias routes unavailable"); n != 1 || !strings.Contains(errOut, "wt-model litellm sync") {
 		t.Fatalf("stderr has %d unavailable warnings, want 1:\n%s", n, errOut)
 	}
-	if *syncs != 1 || !slices.Equal(aliasIDsIn(t, path), []string{"alias/a", "alias/b", "alias/c"}) || len(fake.ids()) != 0 {
-		t.Fatalf("syncs %d registry %v rows %v", *syncs, aliasIDsIn(t, path), fake.ids())
+	if *syncs != 1 || !slices.Equal(registryAliasIDs(t), []string{"alias/a", "alias/b", "alias/c"}) || len(fake.ids()) != 0 {
+		t.Fatalf("syncs %d registry %v rows %v", *syncs, registryAliasIDs(t), fake.ids())
 	}
 }
 
@@ -474,5 +475,221 @@ func TestAliasApplySampleFileParses(t *testing.T) {
 	out, _, err = execAlias(t, h, "alias", "apply", aliasApplySample)
 	if err != nil || strings.Count(out, "no change: ") != len(reqs) {
 		t.Fatalf("second apply: err %v stdout %q", err, out)
+	}
+}
+
+// aliasRegistryMalformed is aliasRegistry holding alias/m, frozen by a target
+// row whose order is 0; the reader still reads its target as openrouter/big
+// at position 1.
+const aliasRegistryMalformed = aliasRegistry + `
+[[aliases]]
+id = "alias/m"
+targets = [{ model = "openrouter/big", order = 0 }]
+`
+
+// repairFile is the corrected alias/m: the same effective target as the
+// malformed registry alias, spelled validly.
+const repairFile = "[[aliases]]\nid = \"alias/m\"\ntargets = [{ model = \"openrouter/big\", order = 1 }]\n"
+
+// aliasMalformed is what the registry reader says of alias/m now ("" for a
+// well-formed alias).
+func aliasMalformed(t *testing.T) string {
+	t.Helper()
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, ok := cfg.AliasByID("alias/m")
+	if !ok {
+		t.Fatal("alias/m is gone")
+	}
+	return a.Malformed
+}
+
+// TestAliasApplyRepairsAMalformedAlias pins that apply repairs an alias the
+// registry holds malformed (frozen routes) even when its readable targets
+// already mean what the file says: it prints `set alias:`, not `no change:`,
+// exits 0, runs one route sync and the alias reads well-formed afterwards, as
+// `alias set` with the same targets would leave it.
+func TestAliasApplyRepairsAMalformedAlias(t *testing.T) {
+	h, _, _ := aliasEnv(t, aliasRegistryMalformed)
+	if aliasMalformed(t) == "" {
+		t.Fatal("the fixture alias is not malformed")
+	}
+	syncs := countRouteSync(h)
+	out, errOut, err := execAlias(t, h, "alias", "apply", writeAliasFile(t, repairFile))
+	if err != nil || !strings.HasPrefix(out, "set alias: alias/m\n") || strings.Contains(out, "no change:") {
+		t.Fatalf("err %v (exit %d) stdout %q stderr %q", err, exitcode.Of(err), out, errOut)
+	}
+	if *syncs != 1 {
+		t.Errorf("route syncs %d, want 1", *syncs)
+	}
+	if m := aliasMalformed(t); m != "" {
+		t.Errorf("alias/m is still malformed: %s", m)
+	}
+}
+
+// TestAliasApplyDryRunShowsTheRepairNotNoChange pins that the dry run agrees
+// with the real run on a malformed alias: it prints the alias's would-set
+// block, never `no change:`, which would tell the user the frozen alias is
+// fine, and changes nothing.
+func TestAliasApplyDryRunShowsTheRepairNotNoChange(t *testing.T) {
+	h, _, path := aliasEnv(t, aliasRegistryMalformed)
+	before := mustRead(t, path)
+	out, errOut, err := execAlias(t, h, "alias", "apply", writeAliasFile(t, repairFile), "--dry-run")
+	if err != nil || !strings.Contains(out, "would set alias: alias/m\n") || strings.Contains(out, "no change:") {
+		t.Fatalf("err %v stdout %q stderr %q", err, out, errOut)
+	}
+	if mustRead(t, path) != before {
+		t.Fatal("a dry run changed the registry")
+	}
+}
+
+// TestAliasListTOMLNoteThenApplyRepairsTheAlias pins the user's repair path:
+// `alias list --toml` leaves a malformed alias out with a stderr note naming
+// it, the user writes the corrected table to a file, `alias apply` repairs
+// it, and the next `alias list --toml` prints it with no note.
+func TestAliasListTOMLNoteThenApplyRepairsTheAlias(t *testing.T) {
+	h, _, _ := aliasEnv(t, aliasRegistryMalformed)
+	out, errOut, err := execAlias(t, h, "alias", "list", "--toml")
+	if err != nil || out != "" || !strings.Contains(errOut, "wt-model: note: 1 alias skipped: alias/m (malformed: ") {
+		t.Fatalf("list --toml: err %v stdout %q stderr %q", err, out, errOut)
+	}
+	stubRouteSync(h, "")
+	if out, errOut, err := execAlias(t, h, "alias", "apply", writeAliasFile(t, repairFile)); err != nil || !strings.HasPrefix(out, "set alias: alias/m\n") {
+		t.Fatalf("apply: err %v stdout %q stderr %q", err, out, errOut)
+	}
+	out, errOut, err = execAlias(t, h, "alias", "list", "--toml")
+	if err != nil || !strings.Contains(out, `id = "alias/m"`) || errOut != "" {
+		t.Fatalf("list --toml after the repair: err %v stdout %q stderr %q", err, out, errOut)
+	}
+}
+
+// TestAliasApplyShrinkIsRecheckedInsideTheWrite is
+// TestAliasSetShrinkIsRecheckedInsideTheWrite for a file (#689): the shrinks
+// approved at the one question are (old, new) pairs read before the lock, so
+// when another program changes a window while the question is open, the
+// write refuses with the re-check's error (its own "nothing was changed",
+// not a second one), no alias of the file is written (the other alias's
+// approved shrink included), no sync runs, and the registry holds only that
+// other program's change.
+func TestAliasApplyShrinkIsRecheckedInsideTheWrite(t *testing.T) {
+	h, _, path := aliasEnv(t, aliasRegistryTwoBig)
+	stubSessions(h, nil)
+	syncs := stubRouteSync(h, "")
+	var afterMutation string
+	// Approved: alias/a 262144 -> 131072, alias/b 262144 -> unknown. During
+	// the question openrouter/small shrinks to 50000.
+	h.confirmRemove = func(string) (bool, error) {
+		b := strings.Replace(mustRead(t, path), "context_window = 131072", "context_window = 50000", 1)
+		if err := os.WriteFile(path, []byte(b), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		afterMutation = b
+		return true, nil
+	}
+	_, _, err := execAlias(t, h, "alias", "apply", writeAliasFile(t, shrinkBothFile))
+	if err == nil || exitcode.Of(err) != 1 || !strings.Contains(err.Error(), "alias/a's context window would now go from 262144 to 50000") ||
+		!strings.Contains(err.Error(), "you approved 262144 to 131072") || !strings.Contains(err.Error(), "the window changed since the check; nothing was changed, rerun") ||
+		strings.Count(err.Error(), "nothing was changed") != 1 {
+		t.Fatalf("err = %v (exit %d), want the re-check refusal naming both windows, nothing was changed once", err, exitcode.Of(err))
+	}
+	if got := mustRead(t, path); afterMutation == "" || got != afterMutation || *syncs != 0 {
+		t.Errorf("the registry changed after a refused re-check (syncs %d):\n%s", *syncs, got)
+	}
+}
+
+// TestAliasApplyDryRunPrintsOneFooter pins that `apply --dry-run` ends with
+// exactly one `dry run: nothing was changed` line, whether several aliases
+// would change (one block each, not one footer each) or none would (every
+// alias `no change:`, so the user still reads that nothing was written).
+func TestAliasApplyDryRunPrintsOneFooter(t *testing.T) {
+	h, _, _ := aliasEnv(t, aliasRegistry)
+	stubRouteSync(h, "")
+	file := writeAliasFile(t, threeAliasFile)
+	out, _, err := execAlias(t, h, "alias", "apply", file, "--dry-run")
+	if err != nil || strings.Count(out, "would set alias: ") != 3 || strings.Count(out, "dry run: nothing was changed\n") != 1 ||
+		!strings.HasSuffix(out, "dry run: nothing was changed\n") {
+		t.Fatalf("three changes: err %v stdout:\n%s", err, out)
+	}
+	if _, _, err := execAlias(t, h, "alias", "apply", file); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err = execAlias(t, h, "alias", "apply", file, "--dry-run")
+	want := "no change: alias/a\nno change: alias/b\nno change: alias/c\ndry run: nothing was changed\n"
+	if err != nil || out != want {
+		t.Fatalf("all equal: err %v stdout %q, want %q", err, out, want)
+	}
+}
+
+// TestAliasApplyErrorsEndInNothingWasChanged pins the one shape of every
+// refusal of `apply`, `<file>: <why>; nothing was changed`, on the two paths
+// outside the file's own parse and first check: a file that cannot be read,
+// and a refusal from inside the registry write (a target model another
+// program removed while the shrink question was open, caught by the write's
+// own re-check). A user can then tell from the message alone that the
+// registry was not touched.
+func TestAliasApplyErrorsEndInNothingWasChanged(t *testing.T) {
+	h, _, path := aliasEnv(t, aliasRegistryTwoBig)
+	missing := filepath.Join(t.TempDir(), "absent.toml")
+	_, _, err := execAlias(t, h, "alias", "apply", missing)
+	if err == nil || exitcode.Of(err) != 1 || !strings.HasPrefix(err.Error(), missing+": ") || !strings.HasSuffix(err.Error(), "; nothing was changed") {
+		t.Fatalf("unreadable file: err %v (exit %d)", err, exitcode.Of(err))
+	}
+	stubSessions(h, nil)
+	syncs := stubRouteSync(h, "")
+	var afterMutation string
+	h.confirmRemove = func(string) (bool, error) {
+		b := strings.Replace(mustRead(t, path), "[[models]]\nid = \"openrouter/unknown\"\nfamily = \"f\"\nprovider_id = \"openrouter\"\nmodel_name = \"org/unknown\"\ntags = []\n", "", 1)
+		if err := os.WriteFile(path, []byte(b), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		afterMutation = b
+		return true, nil
+	}
+	file := writeAliasFile(t, shrinkBothFile)
+	_, _, err = execAlias(t, h, "alias", "apply", file)
+	if err == nil || exitcode.Of(err) != 1 || !strings.HasPrefix(err.Error(), file+": ") || !strings.Contains(err.Error(), `"openrouter/unknown" names no model`) ||
+		!strings.HasSuffix(err.Error(), "; nothing was changed") || strings.Count(err.Error(), "nothing was changed") != 1 {
+		t.Fatalf("in-write refusal: err %v (exit %d)", err, exitcode.Of(err))
+	}
+	if afterMutation == "" || mustRead(t, path) != afterMutation || *syncs != 0 {
+		t.Errorf("the registry changed after an in-write refusal (syncs %d)", *syncs)
+	}
+}
+
+// TestAliasApplyAcceptsBOMCRLFAndSubTables pins that the spellings an editor
+// or a hand-written file may produce all read as the same aliases: a UTF-8
+// byte-order mark, CRLF line endings, and targets written as
+// [[aliases.targets]] sub-tables instead of inline tables. Each applies
+// cleanly, reads well-formed, and a second apply is `no change`.
+func TestAliasApplyAcceptsBOMCRLFAndSubTables(t *testing.T) {
+	subTables := "[[aliases]]\nid = \"alias/a\"\n\n[[aliases.targets]]\nmodel = \"openrouter/big\"\norder = 1\n\n" +
+		"[[aliases.targets]]\nmodel = \"openrouter/small\"\norder = 2\n"
+	for name, body := range map[string]string{
+		"utf-8 bom":  "\xef\xbb\xbf" + threeAliasFile,
+		"crlf":       strings.ReplaceAll(threeAliasFile, "\n", "\r\n"),
+		"sub-tables": subTables,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, _, _ := aliasEnv(t, aliasRegistry)
+			stubRouteSync(h, "")
+			file := writeAliasFile(t, body)
+			out, errOut, err := execAlias(t, h, "alias", "apply", file)
+			if err != nil || !strings.HasPrefix(out, "set alias: alias/a\n") {
+				t.Fatalf("apply: err %v stdout %q stderr %q", err, out, errOut)
+			}
+			cfg, lerr := config.Load()
+			if lerr != nil {
+				t.Fatal(lerr)
+			}
+			want := []config.AliasTarget{{Model: "openrouter/big", Order: 1}, {Model: "openrouter/small", Order: 2}}
+			if a, _ := cfg.AliasByID("alias/a"); a.Malformed != "" || !slices.Equal(a.Targets, want) {
+				t.Errorf("alias/a reads as %+v, want targets %v", a, want)
+			}
+			if out, _, err := execAlias(t, h, "alias", "apply", file); err != nil || strings.Contains(out, "set alias:") {
+				t.Errorf("second apply: err %v stdout %q", err, out)
+			}
+		})
 	}
 }

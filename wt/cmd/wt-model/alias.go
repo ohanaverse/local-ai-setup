@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"slices"
 	"strconv"
@@ -544,14 +545,22 @@ type aliasApplyItem struct {
 
 // runAliasApply is `wt-model alias apply`: `alias set` for every alias of a
 // file, all or nothing. Every alias is checked before anything is asked; a
-// dry run prints each one's `alias set --dry-run` block (or `no change:`);
+// dry run prints each one's `alias set --dry-run` block (or `no change:`)
+// and one `dry run: nothing was changed` footer for the whole file;
 // a real run asks one question for every shrinking window, writes the
 // changed aliases in one registry write (modeladmin.SetAliases, each with
-// its shrink re-check) and runs one route sync.
+// its shrink re-check) and runs one route sync, only when something changed.
 func (h *host) runAliasApply(ctx context.Context, out, errOut io.Writer, rec servestate.Store, path string, acceptSmaller, dryRun bool) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read the alias file: %w", err)
+		// The path leads, as in every other refusal; the PathError's own copy
+		// of it would say it twice.
+		why := err
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			why = pe.Err
+		}
+		return fmt.Errorf("%s: cannot read the alias file: %w; nothing was changed", path, why)
 	}
 	reqs, err := parseAliasFile(data)
 	if err != nil {
@@ -586,10 +595,9 @@ func (h *host) runAliasApply(ctx context.Context, out, errOut io.Writer, rec ser
 				continue
 			}
 			wc := it.wc
-			if err := h.printAliasDryRun(out, wc.After, wc.Alias, wc.Old, wc.New, wc.Had, wc.Shrinks); err != nil {
-				return err
-			}
+			h.printAliasDryRunBlock(out, wc.After, wc.Alias, wc.Old, wc.New, wc.Had, wc.Shrinks)
 		}
+		fmt.Fprintln(out, "dry run: nothing was changed")
 		return nil
 	}
 	if len(shrinking) > 0 && !acceptSmaller {
@@ -625,7 +633,12 @@ func (h *host) runAliasApply(ctx context.Context, out, errOut io.Writer, rec ser
 	}
 	changed, err := modeladmin.SetAliases(writes)
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		// The registry write is all or nothing; the shrink re-check's own
+		// text already says so, every other refusal gets the suffix.
+		if strings.Contains(err.Error(), "nothing was changed") {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		return fmt.Errorf("%s: %w; nothing was changed", path, err)
 	}
 	for _, r := range reqs {
 		if slices.Contains(changed, r.ID) {
@@ -674,6 +687,15 @@ func aliasShrinkGuard(ix tiers.Index, req modeladmin.AliasRequest, acceptSmaller
 // subscription target is live only while the write's subscription check is
 // clean, and is skipped with the check's own reason otherwise.
 func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alias, oldW, newW int, had, shrinks bool) error {
+	h.printAliasDryRunBlock(out, cfg, a, oldW, newW, had, shrinks)
+	fmt.Fprintln(out, "dry run: nothing was changed")
+	return nil
+}
+
+// printAliasDryRunBlock is printAliasDryRun without its footer, so `alias
+// apply --dry-run` can print one block per changed alias and one footer for
+// the whole file.
+func (h *host) printAliasDryRunBlock(out io.Writer, cfg *config.Config, a config.Alias, oldW, newW int, had, shrinks bool) {
 	fmt.Fprintf(out, "would set alias: %s\n", a.ID)
 	for _, t := range cfg.AliasTargets(a) {
 		fmt.Fprintf(out, "  target %s order %d\n", t.Model, t.Order)
@@ -688,8 +710,6 @@ func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alia
 	}
 	fmt.Fprintln(out, line)
 	h.printAliasRows(out, cfg, a)
-	fmt.Fprintln(out, "dry run: nothing was changed")
-	return nil
 }
 
 // printAliasRows is the rows half of a dry run: each database row the

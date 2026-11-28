@@ -628,6 +628,73 @@ targets = [{ model = "openrouter/big", order = 1 }, { model = "openrouter/small"
 	}
 }
 
+// TestAliasTargetsEqualIsFalseForAMalformedOrRedirectAlias pins that "equal"
+// is never said of an alias that is not an ordinary, well-formed one: the
+// reader keeps the targets it could read from a malformed alias (an order of
+// 0 read as the position, a target with an unknown key) and a redirect reads
+// as its target alias's targets, so a plain comparison says "equal" and
+// `alias apply` would skip the rewrite that repairs a frozen alias.
+func TestAliasTargetsEqualIsFalseForAMalformedOrRedirectAlias(t *testing.T) {
+	scratchRegistry(t, aliasRegistry+`
+[[aliases]]
+id = "alias/main"
+targets = [{ model = "openrouter/big" }]
+
+[[aliases]]
+id = "alias/zero"
+targets = [{ model = "openrouter/big", order = 0 }]
+
+[[aliases]]
+id = "alias/weight"
+targets = [{ model = "openrouter/big", weight = 2 }]
+
+[[aliases]]
+id = "alias/old"
+redirect_to = "alias/main"
+`)
+	cfg := loadCfg(t)
+	for name, tc := range map[string]struct {
+		id   string
+		want bool
+	}{
+		"well-formed control":      {"alias/main", true},
+		"order 0 (malformed)":      {"alias/zero", false},
+		"unknown key in a target":  {"alias/weight", false},
+		"redirect to a same alias": {"alias/old", false},
+	} {
+		if got := AliasTargetsEqual(cfg, tc.id, targets("openrouter/big", 1)); got != tc.want {
+			t.Errorf("%s: AliasTargetsEqual = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// TestSetAliasesRewritesAMalformedAliasWhoseTargetsMatch pins the repair path
+// of `alias apply`: a registry alias frozen by a faulty target row (order 0,
+// or an unknown key) whose readable targets already match the request is
+// rewritten, reported in changed, and reads well-formed afterwards, as
+// `alias set` with the same targets repairs it. Skipping it as "no change"
+// would leave its routes frozen while the command said all was well.
+func TestSetAliasesRewritesAMalformedAliasWhoseTargetsMatch(t *testing.T) {
+	for name, row := range map[string]string{
+		"order 0":     `{ model = "openrouter/big", order = 0 }`,
+		"unknown key": `{ model = "openrouter/big", weight = 2 }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			scratchRegistry(t, aliasRegistry+"\n[[aliases]]\nid = \"alias/m\"\ntargets = ["+row+"]\n")
+			if a, _ := loadCfg(t).AliasByID("alias/m"); a.Malformed == "" {
+				t.Fatal("the fixture alias is not malformed")
+			}
+			changed, err := SetAliases([]AliasRequest{{ID: "alias/m", Targets: targets("openrouter/big", 1)}})
+			if err != nil || !slices.Equal(changed, []string{"alias/m"}) {
+				t.Fatalf("SetAliases = %v, %v; want [alias/m] changed", changed, err)
+			}
+			if a, _ := loadCfg(t).AliasByID("alias/m"); a.Malformed != "" || !slices.Equal(a.Targets, targets("openrouter/big", 1)) {
+				t.Errorf("after the write: malformed %q targets %v", a.Malformed, a.Targets)
+			}
+		})
+	}
+}
+
 // aliasRegistryForExport is aliasRegistry holding one good alias without
 // explicit orders, one with explicit orders, a redirect, a malformed alias
 // (an unknown key) and a faulty one (a target naming no model).

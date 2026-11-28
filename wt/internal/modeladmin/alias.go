@@ -145,10 +145,13 @@ func SetAlias(r AliasRequest) (changed bool, err error) {
 // with exactly targets: the same set of (model, effective order) pairs as
 // Config.AliasTargets gives, an omitted order (0) being the target's 1-based
 // position in its list. The list order among targets that share an order does
-// not matter. An alias cfg does not have is never equal.
+// not matter. An alias cfg does not have is never equal, and neither is a
+// malformed one (the reader keeps the targets it could read, but the alias is
+// frozen until it is rewritten) or a redirect (its targets are its target
+// alias's, not its own).
 func AliasTargetsEqual(cfg *config.Config, id string, targets []config.AliasTarget) bool {
 	cur, ok := cfg.AliasByID(id)
-	if !ok {
+	if !ok || cur.Malformed != "" || cur.RedirectTo != "" {
 		return false
 	}
 	have := effectiveTargets(cfg.AliasTargets(cur))
@@ -179,7 +182,8 @@ func effectiveTargets(ts []config.AliasTarget) []config.AliasTarget {
 // request is checked (CheckAlias, then its Guard) against the document with
 // the earlier requests of the call already applied, and any failure refuses
 // all and changes nothing. A request whose effective targets already equal the
-// registry's alias (AliasTargetsEqual) is skipped, so the file keeps its own
+// registry's well-formed alias (AliasTargetsEqual; a malformed alias is always
+// rewritten, which repairs it) is skipped, so the file keeps its own
 // spelling and, when every request is equal, is not written at all. changed
 // lists the ids written, in request order. An id given twice is refused. The
 // apply is pure (config.UpdateRegistry may run it up to three times), so a
@@ -192,9 +196,8 @@ func SetAliases(reqs []AliasRequest) (changed []string, err error) {
 		}
 		seen[r.ID] = true
 	}
-	var wrote bool
 	var ids []string
-	wrote, err = config.UpdateRegistry(func(d *config.RegistryDoc) error {
+	wrote, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
 		ids = nil
 		for _, r := range reqs {
 			if err := CheckAlias(d.RefConfig(), r); err != nil {
