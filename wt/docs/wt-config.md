@@ -21,9 +21,8 @@ tabs, named on its first line; `Tab` switches between them.
 
 `wt config` needs no model server and reads no `registry.toml`: it opens, and
 edits `config.toml`, with none configured. Its save checks only the session
-rules (no two agents with one name, a default provider inside the agent's
-supported list); provider ids are not checked against a registry, and an
-agent `wt` only infers (one with no entry) is never written.
+rules (no agent with an empty name, no two agents with one name); an agent
+`wt` only infers (one with no entry) is never written.
 
 The models in `registry.toml` are edited on the host, on the Models tab of
 `wt-model model` ([`wt-model.md`](wt-model.md), "The Models tab"), and this
@@ -114,15 +113,16 @@ goes on).
 ### Agent list
 
 The scrollable list includes commands first, then regular agents, both
-groups sorted by name. Each row shows the agent's supported providers and
-one of `✓ installed`, `✗ not installed`, or `✗ not configured`.
+groups sorted by name. Each row shows the agent's name and one of
+`✓ installed`, `✗ not installed`, or `✗ not configured`.
 
 > **`wt config`'s "not configured" marker is not the same as launch
 > eligibility.** This editor exists to add the missing `config.toml` entry,
 > so a `✗ not configured` row here is exactly what it says. But a launch
-> needs no entry: every model-driven agent with none is eligible for every
-> model the model server lists except another agent's native row, and an
-> entry only narrows that (its `supported_providers`). Only an uninstalled
+> needs no entry: eligibility is derived from the model row, never from the
+> entry (every non-native row goes to every agent, an agent's own native row
+> to it alone, a Claude-subscription row to claude only), and an `[[agents]]`
+> entry marks an agent as configured and nothing else. Only an uninstalled
 > agent is truly blocked in the launcher.
 
 ### Editing rows
@@ -130,8 +130,16 @@ one of `✓ installed`, `✗ not installed`, or `✗ not configured`.
 Press `Enter` on any row to open an edit form for that entry. Forms vary
 by entry:
 
-- **Agents** — editable fields: `Name`, `Supported Providers`
-  (comma-separated), `Default Provider`; `Installed` is read-only.
+- **Agents** — the editable field is `Name`; `Installed` is read-only. The
+  form has no provider fields: an entry's `supported_providers` and
+  `default_provider` keys are still parsed and written back as found, and
+  ignored (older binaries need them). When `config.toml` carries a customized
+  (person-edited, not wt-written) `supported_providers` list, wt prints one
+  stderr note per such agent per process:
+  `wt: note: config.toml: agent <name>: supported_providers is no longer used and is ignored (eligibility is derived from the provider and the model)`.
+  An agent added here is written without a list, which a `wt-model` older than
+  this change cannot load: run `make install` on every machine before adding
+  one.
 
 `Tab` / `Shift+Tab` cycles form fields. `Ctrl+S` saves the changes and
 returns to the list. `Esc` cancels without saving.
@@ -141,8 +149,7 @@ returns to the list. `Esc` cancels without saving.
 Press `n` to open the add form for an agent. The same validation rules
 apply as when editing:
 - Empty agent names are rejected.
-- At least one supported provider is required.
-- Agent default providers must be in the agent's supported providers list.
+- Two agents with one name are rejected.
 
 ### Deleting entries
 

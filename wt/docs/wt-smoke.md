@@ -28,7 +28,7 @@ wt smoke claude-haiku-5-5 --subscription  # a Claude subscription model: only wh
   unselectable), using the same decorated, sorted list (family,
   usage, cost, tags, last-launched marker) the `wt` agent flow's model picker
   renders — unlike that flow, the list here is never narrowed to one
-  agent's supported providers, since `wt smoke` picks the model first and
+  agent's eligible rows, since `wt smoke` picks the model first and
   derives its eligible agents from that choice afterward.
 - `--prompt` — override the default sentinel prompt. A custom prompt
   cannot be verified for a sentinel it was never asked to produce, so
@@ -109,15 +109,17 @@ login and spends your plan, so `wt smoke` never runs one unless you name it
 ## Eligibility
 
 An agent is eligible for a model when selecting it would launch or could
-launch after a start: the model's provider is in the agent's
-`supported_providers` and the row is a launch row (cloud, or a local model
+launch after a start: the model's row is offered to that agent (the derived
+rule: every non-native row, sushi and paid OpenRouter rows included, goes to
+every agent; an agent's own native row goes to it alone; agy sees only its own
+native row; a Claude-subscription row reaches claude only) and the row is a launch row (cloud, or a local model
 the live probe reports running and loaded) or a start row (an idle local
 model wt can start, or one omlx is still loading). Rows that cannot run —
 no lifecycle backend, or an unmapped cloud model with no LiteLLM route — are
 excluded, and a local model that is not on disk has no row;
 passing either by id names the
 reason (not on disk, no lifecycle backend) as `wt start` does, while other ineligible ids (for
-example a model no agent supports) get a generic "cannot be smoke-tested"
+example a model no agent is offered) get a generic "cannot be smoke-tested"
 message
 (`smoke.CandidatesWire` walks the same catalog rows a real launch consults).
 A discovered model (on disk, no registry entry) is eligible like any other:

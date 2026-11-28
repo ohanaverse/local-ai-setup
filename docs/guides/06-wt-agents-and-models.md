@@ -138,7 +138,7 @@ and stop jobs add and remove local-model routes automatically (see
 
 - **No model is hidden for want of a route; the route is what makes it reachable.**
   The picker has no routing column (#179): every native and cloud model the
-  agent supports is in the list, and local models are listed from what is on
+  agent is offered is in the list, and local models are listed from what is on
   disk or running on the model server's host, registered or not. A registry
   local model that is not on disk, and a stopped `mlx_lm_server` pairing,
   have no row. What decides whether a model is reachable through LiteLLM is
@@ -174,21 +174,17 @@ Available Commands:
 - `wt config theme` → `list` / `show [name]` / `set <name>` / `unset`; stored in `~/.config/agent-wt/themes.toml`, effective on next launch.
 - `wt config path` → prints `/Users/user_name/.config/agent-wt`.
 
-`~/.config/agent-wt/config.toml` shape (wt-owned): a `default_tag = "code"` line plus `[[agents]]` entries (launch names, per-agent provider availability). **wt never writes providers or models into this file** — the Agents tab of `wt config` touches only agents and the default tag; `registry.toml` is written by the Models tab of `wt-model model` and by `wt-model model add|edit|rm`; registry data is overwritten in-memory on every load and never persisted back here (the `Load()` comment in `internal/config/config.go`: "registry.toml is the source of truth"). The `[[providers]]`/`[[models]]` blocks still present on disk are inert migration exchange output (see [00-config-map](00-config-map.md)).
+`~/.config/agent-wt/config.toml` shape (wt-owned): a `default_tag = "code"` line plus `[[agents]]` entries (the agents wt is configured for). **wt never writes providers or models into this file** — the Agents tab of `wt config` touches only agents and the default tag; `registry.toml` is written by the Models tab of `wt-model model` and by `wt-model model add|edit|rm`; registry data is overwritten in-memory on every load and never persisted back here (the `Load()` comment in `internal/config/config.go`: "registry.toml is the source of truth"). The `[[providers]]`/`[[models]]` blocks still present on disk are inert migration exchange output (see [00-config-map](00-config-map.md)).
 
-**An agent sees a provider's models only when its `supported_providers` lists the provider.** That list is per agent, in this file, and a new provider is not added to it for you: to use `rec/flint` ([02-providers-and-models](02-providers-and-models.md) Step 4) from an agent, add `rec` to that agent's `supported_providers` — on the Agents tab of `wt config` (the Supported Providers field) or by editing the agent's entry. Without it the model is missing from that agent's picker, and `-M rec/flint` is not in its eligible list. rec serves OpenAI chat completions only, so an agent that speaks only another protocol reaches it through LiteLLM (§4). Check which agents list it:
+**An agent is offered a model by a rule, not by a list.** Every agent but agy sees every non-native row, sushi and paid OpenRouter rows included, so a new provider such as `rec/flint` ([02-providers-and-models](02-providers-and-models.md) Step 4) needs nothing added for an agent. Three cases are narrower: an agent's own native row (the provider named for it) is offered to that agent alone, never to another; agy sees only its own native row and nothing else; a `claude-subscription` row reaches claude only. `[[agents]]` in `config.toml` marks an agent as configured and nothing else: its `supported_providers` and `default_provider` keys are still parsed and written back untouched (older binaries need them) and ignored, the Agents tab of `wt config` edits the name only, and a list a person edited prints one `wt: note:` line per agent per process saying so. Every non-native model reaches an agent through the model server's gateway (§4): rec and sushi serve OpenAI chat completions only (their provider rows declare no `protocols`), and LiteLLM maps each agent's own protocol onto that. An agent added in the Agents tab is written without a list, which a `wt-model` older than this change cannot load, so run `make install` on every machine before adding one.
 
-```bash
-grep -n 'supported_providers' ~/.config/agent-wt/config.toml
-```
-
-**Sushi** (`sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`, [02-providers-and-models](02-providers-and-models.md) Step 4) is the exception: `wt-model model add sushi ...` adds `sushi` to the `supported_providers` of claude and pi, the two agents it is set up for, and prints `added sushi to supported_providers of: ...` when it changed one. An agent that is not in config.toml is skipped. Whenever the registry holds a sushi model, wt also treats `sushi` as listed for claude and pi in memory, so a pack registered through the Models tab of `wt-model model`, by hand or on a restored registry works the same; to keep sushi away from one of them, remove the registry's sushi models (an agent with no `supported_providers` at all is left alone). Sushi speaks OpenAI chat completions only (its provider row declares no `protocols`, in particular no `anthropic`), so claude reaches it through the LiteLLM proxy (§4), which turns claude's requests into chat completions, and needs the proxy configured. pi can dial Sushi directly or go through the proxy. To check that the model really calls tools from an agent:
+**Sushi** (`sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`, [02-providers-and-models](02-providers-and-models.md) Step 4) works for every agent but agy, however the pack was registered; `wt-model model add sushi ...` changes no agent setting. To check that the model really calls tools from an agent:
 
 ```bash
 wt smoke --tools sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --only claude,pi
 ```
 
-<!-- UNVERIFIED — this smoke run was not made for this guide: it loads the 46 GB pack. The flags are from wt/docs/wt-smoke.md (`--tools`, `--only`); `--only` must be a subset of the agents the model is eligible for, so it fails for an agent whose `supported_providers` lacks `sushi`. -->
+<!-- UNVERIFIED — this smoke run was not made for this guide: it loads the 46 GB pack. The flags are from wt/docs/wt-smoke.md (`--tools`, `--only`); `--only` must be a subset of the agents the model is eligible for, and every agent but agy is eligible for the sushi row. -->
 
 Start the model first (`wt start sushi/…`) or let the smoke run do it; either way the pack must fit the GPU wired limit (guide 02, Step 4). The context window Sushi serves is the 131072 wt starts it with.
 
