@@ -951,3 +951,26 @@ func TestPickerSaysDecisionTwoForABlockedSubscriptionRow(t *testing.T) {
 		t.Errorf("pin: phase %v status %q, want decision 2's message", m.phase, m.status)
 	}
 }
+
+// TestUsableRowID pins the remembered-row rule on its own: the id comes back
+// only when the table shows a row of that id that is not blocked, and a slot
+// profile row ("profile/<name>") is remembered like a model.
+func TestUsableRowID(t *testing.T) {
+	item := func(id, blocked string) *modelItem {
+		return &modelItem{model: config.Model{ID: id}, blocked: blocked}
+	}
+	tbl := modelTable{items: []*modelItem{
+		item("native/x", ""), item("profile/work", ""), item("openrouter/b", "not available"),
+	}}
+	for _, tc := range []struct{ id, want string }{
+		{"", ""},
+		{"native/x", "native/x"},
+		{"profile/work", "profile/work"},
+		{"openrouter/b", ""},
+		{"openrouter/gone", ""},
+	} {
+		if got := usableRowID(tbl, tc.id); got != tc.want {
+			t.Errorf("usableRowID(%q) = %q, want %q", tc.id, got, tc.want)
+		}
+	}
+}

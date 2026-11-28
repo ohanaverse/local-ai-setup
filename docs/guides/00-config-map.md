@@ -27,7 +27,7 @@ None — this is a reference doc, not a procedure.
 | `~/.config/agent-wt/themes.toml` | `wt` (`wt config theme set`) | `wt` | Active theme |
 | `~/.config/agent-wt/models.conf` | you by hand (pre-wt bash era) | `wt` first-run migration (read-only input) | Legacy bash rotation config |
 | `~/.config/agent-wt/usage.jsonl` | `wt` | `wt stats` | Launch log |
-| `~/.config/agent-wt/last-picked.state` | `wt` | `wt` | The row launched last, a model or a slot profile: the model picker's `> ` marker and starting cursor |
+| `~/.config/agent-wt/last-picked.state` | `wt` | `wt` | The row launched last, a model or a slot profile; the launcher's model picker takes its `> ` marker and starting cursor from it (the `wt smoke` and `wt start` pickers always open on their first row) |
 | `~/.config/agent-wt/slot-profiles.toml` | you by hand, or `wt profile slots add\|set\|rm` (backs up, validates) | `wt` | Slot profiles: named sets that map each of Claude Code's model slots to a registry model ([06-wt-agents-and-models](06-wt-agents-and-models.md) §10). Absent by default |
 | `~/.config/agent-wt/profiles.toml` | you by hand; `wt profile on\|off` sets its `enabled` line | `wt` | Local-model launch profiles ([06-wt-agents-and-models](06-wt-agents-and-models.md) §9). Absent by default; `profile-backups/` beside it holds wt's snapshots of the files a profile rewrites |
 | `~/.config/agent-wt/survey.jsonl` | `wt` (the post-session survey, which is switched off) | `wt stats`, the model picker | Recorded survey answers ([07-usage-and-spend](07-usage-and-spend.md)) |
@@ -243,7 +243,7 @@ Example (illustrative — your ids will differ):
 ### `~/.config/agent-wt/last-picked.state`
 
 - **Owner:** `wt` (every launch that records: a model launch and a slot-profile launch).
-- **Consumers:** `wt` (the model picker's `> ` marker and, after a `-M` pin, its starting cursor when that row is shown and not blocked).
+- **Consumers:** `wt` (the launcher's model picker: the `> ` marker, and its starting cursor when there is no `-M` pin and that row is shown and not blocked). The standalone pickers of `wt smoke` and `wt start` ignore the file for the cursor and always open on their first row.
 - **Purpose:** one line, the id of the row launched last, a model or a slot profile. Written in the same call as the usage event. When the file is missing there is no marker until the next launch.
 
 Example (illustrative — your id will differ):

@@ -22,7 +22,7 @@ func removedRotateCmd() *cobra.Command {
 		Args:        cobra.ArbitraryArgs,
 		Annotations: map[string]string{removedCmdAnnotation: "2026-11-27 (rotation removed)"},
 		RunE: func(*cobra.Command, []string) error {
-			return exitcode.New(1, errors.New("rotate was removed: the model picker no longer rotates, it opens on what you launched last; nothing was changed"), false)
+			return exitcode.New(1, errors.New("rotate was removed: the model picker no longer rotates, it opens on the row you launched last, else the first row that is not blocked; nothing was changed"), false)
 		},
 	}
 }

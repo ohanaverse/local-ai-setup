@@ -153,7 +153,7 @@ registry entry — matching LiteLLM's `model_list` entries.
 ### 5. Launch history
 
 - Every launch that records (a model launch or a slot-profile launch, through the picker or not) writes `~/.config/agent-wt/last-picked.state` and appends to `usage.jsonl` (§8) in one call (`(*usage.StoreImpl).RecordLaunch`). `esc` and canceled prompts write nothing. Nothing advances or rotates: the picker's cursor opens on the `-M` pin, else on the row the last launch recorded (the `> ` marker's row) while it is shown and not blocked, else on the first row that is not blocked (§2, which also covers a subscription row).
-- The picker's `> ` marker is read from `last-picked.state`: the row launched last, which can be a slot profile (§10). It marks a row, and the picker's cursor opens on it (after the `-M` pin) when it is shown and not blocked (§2); with no file there is no marker and the cursor opens on the first row that is not blocked, until the next launch.
+- The launcher picker's `> ` marker is read from `last-picked.state`: the row launched last, which can be a slot profile (§10). It marks a row, and the picker's cursor opens on it (after the `-M` pin) when it is shown and not blocked (§2); with no file there is no marker and the cursor opens on the first row that is not blocked, until the next launch. The standalone pickers of `wt smoke` and `wt start` do not follow it: they always open on their first row.
 
   ```bash
   cat ~/.config/agent-wt/last-picked.state   # from: any dir, read-only — one line, a row id
