@@ -1343,3 +1343,22 @@ func TestOpenRouterPricedModel(t *testing.T) {
 		}
 	}
 }
+
+// TestFinalizeCfgLeavesAgentListsAlone verifies finalizeCfg no longer appends
+// "sushi" to an agent's supported_providers when the registry holds a sushi
+// model. Eligibility of sushi is now derived by one rule in internal/catalog,
+// so a Config's agent lists must stay exactly what config.toml said; the old
+// in-memory derivation would hide a stale list and re-add what a user removed.
+func TestFinalizeCfgLeavesAgentListsAlone(t *testing.T) {
+	cfg := &Config{Agents: []Agent{{Name: "claude", SupportedProviders: []string{"claude", "ollama"}}}}
+	providers := []Provider{{ID: "sushi"}}
+	models := []Model{{ID: "sushi/p", ProviderID: "sushi", ModelName: "p"}}
+	out, err := finalizeCfg(cfg, providers, models, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.Agents[0].SupportedProviders
+	if len(got) != 2 || got[0] != "claude" || got[1] != "ollama" {
+		t.Errorf("claude's supported_providers = %v, want [claude ollama] unchanged", got)
+	}
+}

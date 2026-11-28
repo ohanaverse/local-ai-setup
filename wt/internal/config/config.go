@@ -893,14 +893,9 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 func finalizeCfg(cfg *Config, providers []Provider, models []Model, aliases []Alias) (*Config, error) {
 	cfg.Providers, cfg.Models, cfg.Aliases = providers, models, aliases
 	deriveNative(cfg)
-	deriveSushiAgents(cfg)
 	applyProxyState(cfg)
 	return cfg, nil
 }
-
-// SushiAgents are the agents that can run a Sushi model: claude (through
-// LiteLLM, as Sushi serves only openai-chat) and pi (direct).
-var SushiAgents = []string{"claude", "pi"}
 
 // SubscriptionProvider is the provider id of models served on the owner's
 // own Claude subscription (#597; provider.IDClaudeSubscription): keyless
@@ -930,31 +925,6 @@ var NativeCapableAgents = []string{"claude", "codex", "copilot", "agy"}
 // IsSubscriptionProvider reports whether id is the Claude subscription
 // provider.
 func IsSubscriptionProvider(id string) bool { return id == SubscriptionProvider }
-
-// deriveSushiAgents lists the sushi provider in SushiAgents' in-memory
-// supported_providers when the registry holds a sushi model and the agent
-// does not name it. A stock config.toml has no sushi entry, and without one
-// `wt smoke` and the pickers report no agent supports the model; deriving it
-// here covers a pack registered by the `wt-model model` Models screen, by hand, or
-// on a restored registry, where `wt-model model add` never ran. Nothing is written.
-// An agent config.toml does not name is skipped, and so is one with no
-// supported_providers at all (an empty list is its own validation error). To
-// keep sushi away from an agent, remove the registry's sushi models.
-func deriveSushiAgents(cfg *Config) {
-	if !slices.ContainsFunc(cfg.Models, func(m Model) bool { return m.ProviderID == "sushi" }) {
-		return
-	}
-	if !slices.ContainsFunc(cfg.Providers, func(p Provider) bool { return p.ID == "sushi" }) {
-		return // an agent naming a provider the registry lacks fails validation
-	}
-	for _, name := range SushiAgents {
-		a, err := cfg.AgentByName(name)
-		if err != nil || len(a.SupportedProviders) == 0 || slices.Contains(a.SupportedProviders, "sushi") {
-			continue
-		}
-		a.SupportedProviders = append(slices.Clone(a.SupportedProviders), "sushi")
-	}
-}
 
 // Validate returns an error describing the first invalid entry.
 func (c *Config) Validate() error {

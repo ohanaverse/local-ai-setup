@@ -209,27 +209,7 @@ func (h *host) runModelAdd(out, errOut io.Writer, cfg *config.Config, req modela
 		fmt.Fprintf(out, "no default row for provider: %s (an agent lists it; add it to registry.toml by hand)\n", p)
 	}
 	warnings = append(warnings, res.Warnings...)
-	warnings = append(warnings, enableSushiForAgents(out, req.ProviderID)...)
 	return h.syncAndWarn(out, errOut, warnings)
-}
-
-// enableSushiForAgents lists sushi in config.SushiAgents' supported_providers
-// in config.toml after a sushi model is registered, and says which agents it
-// changed. config.Load also derives the entry in memory for any registry that
-// holds a sushi model, so this write only makes it durable. A failure
-// is a warning: the model is registered, and the line to add by hand is in it.
-func enableSushiForAgents(out io.Writer, providerID string) []string {
-	if providerID != "sushi" {
-		return nil
-	}
-	changed, err := config.EnsureAgentProvider("sushi", config.SushiAgents...)
-	if err != nil {
-		return []string{fmt.Sprintf("could not add sushi to the agents' supported_providers in config.toml (%v); add it to claude and pi by hand", err)}
-	}
-	if len(changed) > 0 {
-		fmt.Fprintf(out, "added sushi to supported_providers of: %s\n", strings.Join(changed, ", "))
-	}
-	return nil
 }
 
 // syncAndWarn runs the one route sync that follows a registry write
