@@ -1486,3 +1486,146 @@ other_checks: *checks
 		t.Fatalf("optional_pre_call_checks = %#v", m["optional_pre_call_checks"])
 	}
 }
+
+// TestMergedGetFollowsAMergeThatAliasesAList pins #760: "<<: *lst" where lst
+// is an anchored list of mappings is read like an inline list (PyYAML applies
+// it), the first source naming a key winning. Before the fix the alias was
+// tested for a sequence only after it had been wrapped, so the list was never
+// searched and a key it supplies read as absent, which let wt write a default
+// over a user's opt-out.
+func TestMergedGetFollowsAMergeThatAliasesAList(t *testing.T) {
+	f, err := Open(writeConfig(t, "lst: &lst [{x: 1}, {y: 2, x: 9}]\ninner: &inner {z: 3}\nlst2: &lst2 [*inner]\nr: {<<: *lst}\ns: {<<: *lst2}\nu: {<<: [{y: 2}]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := f.root()
+	r, s, u := mapGet(root, "r"), mapGet(root, "s"), mapGet(root, "u")
+	if v := mergedGet(r, "x"); v == nil || v.Value != "1" {
+		t.Errorf("mergedGet(r, x) = %v, want 1 (first source wins)", v)
+	}
+	if v := mergedGet(r, "y"); v == nil || v.Value != "2" {
+		t.Errorf("mergedGet(r, y) = %v, want 2", v)
+	}
+	if v := mergedGet(r, "nope"); v != nil {
+		t.Errorf("mergedGet(r, nope) = %v, want nil", v)
+	}
+	if v := mergedGet(s, "z"); v == nil || v.Value != "3" {
+		t.Errorf("mergedGet(s, z) = %v, want 3 (an alias inside the aliased list)", v)
+	}
+	if v := mergedGet(u, "y"); v == nil || v.Value != "2" {
+		t.Errorf("mergedGet(u, y) = %v, want 2 (control: an inline list worked before)", v)
+	}
+
+	t.Run("dangling element alias", func(t *testing.T) {
+		f, err := Open(writeConfig(t, "inner: &inner {z: 3}\nlst2: &lst2 [*inner]\ns: {<<: *lst2}\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := f.root()
+		mapGet(root, "lst2").Content[0].Alias = nil
+		s := mapGet(root, "s")
+		if v := mergedGet(s, "z"); v != nil {
+			t.Errorf("mergedGet = %v, want nil: a dangling element is no source", v)
+		}
+		if mergeAmbiguous(s, mergeDepth) {
+			t.Error("mergeAmbiguous = true, want false")
+		}
+	})
+	t.Run("self-referential list", func(t *testing.T) {
+		f, err := Open(writeConfig(t, "l: &l [*l]\nq: {<<: *l}\nr: &r {<<: *r}\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		q, r := mapGet(f.root(), "q"), mapGet(f.root(), "r")
+		if mergedGet(q, "x") != nil || mergedGet(r, "x") != nil {
+			t.Error("a list or mapping that merges itself must read as key absent")
+		}
+		if mergeAmbiguous(q, mergeDepth) || mergeAmbiguous(r, mergeDepth) {
+			t.Error("a self-merge is not ambiguous, only bounded")
+		}
+	})
+}
+
+// TestMergeAmbiguousSeesInsideAnAliasedList pins #760 for mergeAmbiguous: a
+// merge value that aliases a list is searched for a mapping with repeated
+// merge keys, like an inline list, and one "<<" with a list of sources stays
+// unambiguous. Without it a block read through such a list could not be
+// called unreadable.
+func TestMergeAmbiguousSeesInsideAnAliasedList(t *testing.T) {
+	f, err := Open(writeConfig(t, "a: &a {x: 1}\nb: &b {x: 2}\nm: &m {<<: *a, <<: *b}\nlst: &lst [*m]\nr: {<<: *lst}\nlst2: &lst2 [*a, *b]\nok: {<<: *lst2}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mergeAmbiguous(mapGet(f.root(), "r"), mergeDepth) {
+		t.Error("mergeAmbiguous(r) = false, want true: the aliased list holds a mapping with two merges")
+	}
+	if mergeAmbiguous(mapGet(f.root(), "ok"), mergeDepth) {
+		t.Error("mergeAmbiguous(ok) = true, want false: one << with a list of sources")
+	}
+}
+
+// TestEnsureSettingsReadsAnAliasedMergeListInBothBlocks pins #760 at the level
+// that matters: a router_settings or general_settings whose keys come from a
+// "<<" aliasing a list (as a shared block or through the root) counts as set,
+// so wt prints no warning and writes nothing.
+func TestEnsureSettingsReadsAnAliasedMergeListInBothBlocks(t *testing.T) {
+	for name, tc := range map[string]struct{ body, rest string }{
+		"router_settings block merge": {"o: &o [{optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds: 14400}, {session_affinity_repin_on_failover: false}]\nrouter_settings:\n  <<: *o\n", settledWithoutAffinity},
+		"router_settings root merge":  {"o: &o [{router_settings: {optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds: 14400, session_affinity_repin_on_failover: false}}]\n<<: *o\n", settledWithoutAffinity},
+		"general_settings block merge": {"o: &o [{cancel_on_disconnect: false}, {store_model_in_db: true}]\ngeneral_settings:\n  <<: *o\n",
+			litellmSettingsDone + affinitySettings},
+		"general_settings root merge": {"o: &o [{general_settings: {cancel_on_disconnect: false, store_model_in_db: true}}]\n<<: *o\n",
+			litellmSettingsDone + affinitySettings},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := Open(writeConfig(t, tc.body+"model_list: []\n"+tc.rest))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := f.settingsWarnings(); len(got) != 0 {
+				t.Fatalf("settingsWarnings = %q, want none: the aliased list supplies every key", got)
+			}
+			f.EnsureSettings()
+			if f.Changed() {
+				t.Fatalf("EnsureSettings changed the file; the aliased list already supplies the keys:\n%s", enc(t, f))
+			}
+		})
+	}
+}
+
+// TestEnsureSettingsDoesNotWriteOverAnOptOutAnAliasedListSupplies is the #760
+// scenario: the aliased list holds session_affinity_repin_on_failover: false
+// (PyYAML applies it, so the user opted out), and wt must add only the two
+// keys the list does not name, never a literal true beside the merge.
+func TestEnsureSettingsDoesNotWriteOverAnOptOutAnAliasedListSupplies(t *testing.T) {
+	rest := "model_list: []\n" + settledWithoutAffinity
+	two := []string{"optional_pre_call_checks", "deployment_affinity_ttl_seconds"}
+	for name, tc := range map[string]struct {
+		body string
+		want []string
+	}{
+		"aliased list":         {"overrides: &o\n  - {session_affinity_repin_on_failover: false}\nrouter_settings:\n  <<: *o\n", two},
+		"inline list":          {"router_settings:\n  <<: [{session_affinity_repin_on_failover: false}]\n", two},
+		"list without the key": {"overrides: &o\n  - {num_retries: 2}\nrouter_settings:\n  <<: *o\n", []string{"optional_pre_call_checks", "deployment_affinity_ttl_seconds", "session_affinity_repin_on_failover"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := Open(writeConfig(t, tc.body+rest))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := routerSettingsToAdd(f.root()); !slices.Equal(got, tc.want) {
+				t.Fatalf("routerSettingsToAdd = %v, want %v", got, tc.want)
+			}
+			f.EnsureSettings()
+			out := enc(t, f)
+			if tc.want[len(tc.want)-1] != "session_affinity_repin_on_failover" {
+				if v := mapGet(mapGet(f.root(), "router_settings"), "session_affinity_repin_on_failover"); v != nil {
+					t.Errorf("a literal session_affinity_repin_on_failover = %v was written beside the merge", v.Value)
+				}
+				if strings.Contains(out, "session_affinity_repin_on_failover: true") {
+					t.Errorf("wt wrote repin true over the list's false:\n%s", out)
+				}
+			}
+		})
+	}
+}

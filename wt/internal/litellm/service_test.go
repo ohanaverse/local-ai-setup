@@ -1557,3 +1557,39 @@ func TestSyncKeepsAHandWrittenRouterSettings(t *testing.T) {
 		t.Fatalf("config.yaml rewritten (mtime %v, want %v):\n%s", st.ModTime(), old, got)
 	}
 }
+
+// TestSyncDoesNotWriteOverAnOptOutFromAnAliasedList pins #760 end to end: a
+// config whose router_settings merges an aliased list that sets
+// session_affinity_repin_on_failover: false gets the two missing affinity keys
+// and keeps the opt-out, with one restart. wt must not write true beside it.
+func TestSyncDoesNotWriteOverAnOptOutFromAnAliasedList(t *testing.T) {
+	body := "overrides: &o\n  - {session_affinity_repin_on_failover: false}\nrouter_settings:\n  <<: *o\nmodel_list: []\n" + settledWithoutAffinity
+	o, restarts, p := opts(t, body)
+	plan, err := PlanSync(&config.Config{}, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"optional_pre_call_checks", "deployment_affinity_ttl_seconds"}; !slices.Equal(plan.affinityKeys, want) || !plan.Restart {
+		t.Fatalf("plan affinityKeys=%v restart=%v, want %v/true", plan.affinityKeys, plan.Restart, want)
+	}
+	res, err := Sync(&config.Config{}, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Changed || *restarts != 1 {
+		t.Fatalf("changed=%v restarts=%d, want true/1", res.Changed, *restarts)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	for _, want := range []string{"optional_pre_call_checks: [session_affinity]", "deployment_affinity_ttl_seconds: 14400", "session_affinity_repin_on_failover: false"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the written file lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "session_affinity_repin_on_failover: true") {
+		t.Errorf("wt wrote repin true over the list's false:\n%s", out)
+	}
+}

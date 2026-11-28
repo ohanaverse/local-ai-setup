@@ -467,7 +467,8 @@ const mergeDepth = 8
 // itself wins, then each merged mapping in order. That is the value the YAML
 // loader LiteLLM reads config.yaml with hands it, so a key supplied by a merge
 // is present as far as the proxy is concerned even though the row does not
-// spell it.
+// spell it. A merge value that aliases an anchored list ("<<: *overrides") is
+// followed like an inline list (#760).
 func mergedGet(m *yaml.Node, key string) *yaml.Node {
 	return mergedGetDepth(m, key, mergeDepth)
 }
@@ -480,20 +481,31 @@ func mergedGetDepth(m *yaml.Node, key string, depth int) *yaml.Node {
 		if k := m.Content[i]; k.Kind != yaml.ScalarNode || k.Tag != "!!merge" {
 			continue
 		}
-		sources := []*yaml.Node{m.Content[i+1]}
-		if sources[0].Kind == yaml.SequenceNode {
-			sources = sources[0].Content
-		}
-		for _, s := range sources {
-			if s.Kind == yaml.AliasNode {
-				s = s.Alias
-			}
+		for _, s := range mergeSources(m.Content[i+1]) {
 			if v := mergedGetDepth(s, key, depth-1); v != nil {
 				return v
 			}
 		}
 	}
 	return nil
+}
+
+// mergeSources is the mappings one "<<" key's value merges, in order: the value
+// with its alias resolved, and when that is a list, each element resolved too.
+// Resolving the value before asking whether it is a list is what lets
+// "<<: *overrides" (an anchored list) be followed. An element that resolves to
+// nothing (an alias with no anchor) comes back as it is; the walkers ignore
+// anything that is not a mapping.
+func mergeSources(v *yaml.Node) []*yaml.Node {
+	v = aliasValue(v)
+	if v == nil || v.Kind != yaml.SequenceNode {
+		return []*yaml.Node{v}
+	}
+	out := make([]*yaml.Node, len(v.Content))
+	for i, e := range v.Content {
+		out[i] = aliasValue(e)
+	}
+	return out
 }
 
 // EnsureOllamaAPIBase gives every ollama row with no api_base the address
@@ -807,7 +819,8 @@ func resolvedBlock(root *yaml.Node, key string) *yaml.Node {
 // mergeAmbiguous says whether m, or any mapping its merge keys reach (followed
 // down to depth, like mergedGet), has more than one "<<" key. LiteLLM's loader
 // (PyYAML) applies repeated merge keys in order, so the last one wins a key two
-// of them supply, while mergedGet takes the first: on such a mapping wt's
+// of them supply, while mergedGet takes the first (a merge value that aliases a
+// list is searched like an inline one, through mergeSources): on such a mapping wt's
 // reading and the proxy's can differ, and a check that must not call a
 // protection on treats the block as unreadable. One "<<" key with a list of
 // sources is not ambiguous under PyYAML 6.0.3, the version LiteLLM's
@@ -832,11 +845,7 @@ func mergeAmbiguous(m *yaml.Node, depth int) bool {
 		if depth == 0 {
 			continue
 		}
-		sources := []*yaml.Node{m.Content[i+1]}
-		if sources[0].Kind == yaml.SequenceNode {
-			sources = sources[0].Content
-		}
-		for _, s := range sources {
+		for _, s := range mergeSources(m.Content[i+1]) {
 			if mergeAmbiguous(s, depth-1) {
 				return true
 			}
