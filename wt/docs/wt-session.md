@@ -123,7 +123,7 @@ it tried and `check the server there, or change the url or mode in wt config
 `nothing was launched` (a launch that asks for a model: `-M`, `-T`, `-F`), `nothing was started`
 (`wt start`), `nothing was stopped` (`wt stop MODEL`), `the job was not read`
 or `nothing was cancelled` (`wt job`), `nothing was run` (`wt smoke`),
-`nothing was printed` (`wt rotate TAG`), `nothing was listed`
+`nothing was listed`
 (`wt model list --server`), `nothing was changed` (`wt profile slots
 add|set`), `no candidates were listed` (`wt profile slots candidates`) and `nothing was
 shown` (`wt profile show -M ...`).
@@ -332,7 +332,7 @@ These refuse, as above, when none is configured, before anything starts:
 - the model picker (an agent with no `-M` on a terminal when a server is
   configured is the only case that shows one);
 - `wt start`, `wt stop MODEL` (and `wt stop` with no argument), `wt job`;
-- `wt smoke`, `wt rotate TAG`, `wt model list --server`;
+- `wt smoke`, `wt model list --server`;
 - `wt profile slots add|set|candidates` and `wt profile show -M ...`.
 
 A model-driven agent with no `[[agents]]` entry in `config.toml` is not an
@@ -357,7 +357,7 @@ silent:
 wt: native mode — launching claude natively, with its own configuration; to choose models through wt-model, change the mode in wt config
 ```
 
-The agent gets no gateway origin or token (the zero route), no rotation or
+The agent gets no gateway origin or token (the zero route), no last-picked or
 usage record is written (there is no model id), and `profiles.toml` overlays
 do not apply to a native launch; slot profiles cannot apply either, so a
 problem in `slot-profiles.toml` is not reported on one. In the picker the line
@@ -373,7 +373,7 @@ still refuses and names the missing setting, an
 unreachable server or a refused token still fails fast, and a launch that asks
 for a model (`-M`, `-T`, `-F`, a slot profile) still refuses with nothing
 launched. A configured server is never bypassed. `wt start`, `stop`, `job`,
-`smoke`, `rotate`, `model list --server` and the slot-profile commands that
+`smoke`, `model list --server` and the slot-profile commands that
 need a server refuse as before. This is not the local fallback the design
 rules out: a native launch uses no wt-model route and no server at all. A
 bare `wt` still needs a terminal for its picker.

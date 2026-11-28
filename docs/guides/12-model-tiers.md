@@ -35,7 +35,7 @@ writes `tiers.toml` and its own snapshot cache, and nothing else
 ## What a tier means
 
 A tier is a capability band, set from public benchmark scores. It is a label
-to read. No launch, rotation or route looks at it.
+to read. No launch or route looks at it.
 
 | Code | Tier | Intended work |
 |---|---|---|

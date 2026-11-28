@@ -10,7 +10,7 @@ components — fresh install starts at
 | `llmbench/` | benchmarks (throughput, agent, eval) and the provider isolation they need (`llmbench` CLI) |
 | `agent-utilities/` | read-only stdlib-Python helpers for specific coding agents (`claude-utilities/`: transcript and OTel speed estimates); run manually |
 | `modeltiers/` | advisory capability tiers for the models wt lists, from public benchmark sources (`modeltiers` CLI) |
-| `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims); `wt worktrees`, `wt remove` and `wt rescue` retire worktrees and branches, and `wt restore-root` moves the root's branch into a worktree ([reference](wt/docs/wt-cleanup.md), [guide 08 §9](docs/guides/08-maintenance-and-troubleshooting.md)) |
+| `wt/` | worktree agent launcher with a model picker (`wt` binary + `*-wt` shims); `wt worktrees`, `wt remove` and `wt rescue` retire worktrees and branches, and `wt restore-root` moves the root's branch into a worktree ([reference](wt/docs/wt-cleanup.md), [guide 08 §9](docs/guides/08-maintenance-and-troubleshooting.md)) |
 
 ## User guides (docs/guides/)
 
@@ -22,7 +22,7 @@ The how-to lives in the guides now; this README is just the index. Read
 | [`00-config-map.md`](docs/guides/00-config-map.md) | which tool owns, writes, reads each config file |
 | [`01-initial-setup.md`](docs/guides/01-initial-setup.md) | fresh-machine install; smoke-test the stack |
 | [`02-providers-and-models.md`](docs/guides/02-providers-and-models.md) | register and download providers and models — a configured cloud model is routed, a local model while it runs |
-| [`03-model-families.md`](docs/guides/03-model-families.md) | families, tags, and wt's model rotation |
+| [`03-model-families.md`](docs/guides/03-model-families.md) | families, tags, and how wt's picker uses them |
 | [`04-litellm-config.md`](docs/guides/04-litellm-config.md) | audit proxy config, `wt-model litellm sync` routing, admin UI |
 | [`05-benchmarks.md`](docs/guides/05-benchmarks.md) | safe isolated llmbench runs |
 | [`06-wt-agents-and-models.md`](docs/guides/06-wt-agents-and-models.md) | pick worktree/agent/model, then launch |

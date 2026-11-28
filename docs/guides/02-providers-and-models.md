@@ -129,7 +129,7 @@ family = "<family>"
 provider_id = "openrouter"
 model_name = "<org>/<model>"
 location = "cloud"
-tags = []                      # e.g. ["code"] — rotation groups, guide 03
+tags = []                      # e.g. ["code"] — tag groups for -T, guide 03
 
 [models.model_info]            # optional: capabilities copied into the LiteLLM route
 supports_function_calling = true

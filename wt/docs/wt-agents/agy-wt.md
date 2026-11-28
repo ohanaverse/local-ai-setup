@@ -2,7 +2,7 @@
 
 ## Overview
 
-`agy-wt` is the worktree launcher for [Antigravity CLI](https://antigravity.google/cli) (`agy`), Google's AI coding agent CLI. See [README](README.md) for launcher flags and model rotation.
+`agy-wt` is the worktree launcher for [Antigravity CLI](https://antigravity.google/cli) (`agy`), Google's AI coding agent CLI. See [README](README.md) for launcher flags and model picking.
 
 ## Installation
 

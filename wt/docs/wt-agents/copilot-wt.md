@@ -2,7 +2,7 @@
 
 ## Overview
 
-`copilot-wt` is the worktree launcher for [GitHub Copilot CLI](https://github.com/github/copilot-cli). Copilot CLI authenticates against the GitHub Copilot subscription and supports routing to alternative providers via env-var configuration (e.g., the [Ollama-Copilot integration](https://docs.ollama.com/integrations/copilot-cli)). See [README](README.md) for launcher flags and model rotation.
+`copilot-wt` is the worktree launcher for [GitHub Copilot CLI](https://github.com/github/copilot-cli). Copilot CLI authenticates against the GitHub Copilot subscription and supports routing to alternative providers via env-var configuration (e.g., the [Ollama-Copilot integration](https://docs.ollama.com/integrations/copilot-cli)). See [README](README.md) for launcher flags and model picking.
 
 ## Installation
 

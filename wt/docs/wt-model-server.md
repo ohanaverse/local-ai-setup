@@ -853,7 +853,7 @@ id, if any. An older client (from before aliases) ignores `kind` and
 `targets` and reads an alias row as a model of provider `alias`: an agent
 allowed every provider (each agent a session synthesizes) finds it eligible,
 so a launch with no `-M` counts it among the launchable models (one model plus
-an alias over it is then "multiple models match") and may rotate onto it, and
+an alias over it is then "multiple models match"), and
 a launch of it goes to the gateway under the alias id, which LiteLLM routes;
 an agent whose `config.toml` lists its providers never sees it. A server from before aliases sends a local row's
 `context` from the tiers file, not the registry, so update the server before

@@ -1,12 +1,12 @@
 # wt
 
-Launch AI coding agent CLIs in git worktrees with model rotation.
+Launch AI coding agent CLIs in git worktrees on the model you pick.
 
-The `wt` binary is a Go TUI tool that picks a worktree or branch, rotates models by tag, and launches the selected agent. The `bin/*-wt` shims are thin wrappers (`claude-wt` → `wt --agent claude`, `shell-wt` → `wt --agent shell`). See `docs/superpowers/specs/` for design docs.
+The `wt` binary is a Go TUI tool that picks a worktree or branch, picks a model (filterable by tag), and launches the selected agent. The `bin/*-wt` shims are thin wrappers (`claude-wt` → `wt --agent claude`, `shell-wt` → `wt --agent shell`). See `docs/superpowers/specs/` for design docs.
 
 ## Supported agents
 
-| Launcher | Agent | Model rotation |
+| Launcher | Agent | Model picker |
 |---|---|---|
 | `claude-wt` | Claude Code | Yes |
 | `codex-wt` | OpenAI Codex CLI | Yes |
@@ -60,7 +60,7 @@ claude-wt --yolo
 
 | Key | Action |
 |-----|--------|
-| `enter` | Select worktree → agent+model screen → launch (and advance rotation) |
+| `enter` | Select worktree → agent+model screen → launch (records the launch for the `> ` marker and usage) |
 | `up` / `down` (or `j` / `k`) | Move the model cursor |
 | `n` | New worktree (in the worktree picker) |
 | `q` / `esc` | Quit / go back |
@@ -89,7 +89,7 @@ All launchers support:
 | `--check-guard` | Report whether the main guard is installed |
 | `--no-guard` | Remove the main-branch commit guard and exit |
 
-Model rotation happens inside the TUI — there are no `--code`/`--design`/`--native` flags. Use `-T <tag>` to filter to a tag group, then `up`/`down` to pick a model — launching it advances the rotation automatically for the next entry.
+Model choice happens inside the TUI — there are no `--code`/`--design`/`--native` flags. Use `-T <tag>` to filter to a tag group, then `up`/`down` to pick a model; the cursor opens on the `-M` pin, else the first row that is not blocked.
 
 ## Commands
 
@@ -111,7 +111,7 @@ Beyond launching, `wt` has subcommands; `wt --help` lists them. Each has a refer
 
 ## Configuration
 
-The Go tool uses `~/.config/agent-wt/config.toml` (TOML) for wt-owned state — Agents (AI coding tool with supported providers and optional default) and the default rotation tag, plus the legacy `[launch]` table (its `exit_prompt` key is tolerated and ignored; see [Exit prompt](#exit-prompt-for-an-untouched-worktree)).
+The Go tool uses `~/.config/agent-wt/config.toml` (TOML) for wt-owned state — Agents (AI coding tool with supported providers and optional default) and the default tag, plus the legacy `[launch]` table (its `exit_prompt` key is tolerated and ignored; see [Exit prompt](#exit-prompt-for-an-untouched-worktree)).
 
 Providers (model source with auth config: ollama, openrouter, claude, copilot) and Models (a variant from a provider, grouped by family and tagged, e.g. `code`, `design`) are no longer stored in `config.toml`. They live in `~/.config/local-ai/registry.toml`. `wt-model model init` creates that file and adds the default provider rows; models are listed, added, edited and removed with `wt-model model list|add|edit|rm`, or on the Models tab of `wt-model model` — see `docs/wt-model.md`. A `wt` launch reads no registry (its models come from the model server); `wt worktrees` and `wt remove` read it when it exists, only to protect model artifacts from deletion, and `wt stats` reads it for model families when the server cannot be reached; `wt-model` reads it on the host, and nothing writes providers or models into `config.toml`.
 
@@ -137,20 +137,14 @@ wt config path               # print the config directory
 
 Themes apply to the TUI picker, CLI tables, and `wt config theme list` output. See `docs/wt-config.md` for the full reference, including the `themes.toml` file format and the full list of built-in palettes.
 
-## Model rotation
+## Launch history
 
 Works for `claude-wt`, `codex-wt`, `copilot-wt`, `opencode-wt`, and `pi-wt`.
 
-The `internal/rotation` package implements tag-based model rotation. Any tag can be a rotation group, not just `code` and `design`. Rotation is implicit: every picker entry lands the cursor on the model after the one most recently launched, and pressing Enter records the launch. There is no `r` key — the user navigates with up/down and the rotation advances as a side effect of launching.
+Every launch, a single model or a slot profile, is recorded by one call (`usage.RecordLaunch`). Any tag can filter the picker with `-T`, not just `code` and `design`. The picker's cursor does not follow the history: it opens on the first row that is not blocked (a stopped local model counts, Enter starts it), or on the `-M` pin.
 
-- State is persisted to `~/.config/agent-wt/rotation.state` (single global slot: the model ID of the last single-model launch)
-- `~/.config/agent-wt/last-picked.state` holds the row the picker's `> ` marker sits on. Every launch writes it, a slot-profile launch included, which leaves `rotation.state` alone
-- Legacy per-tag `rotation-<tag>.state` files are one-shot migration inputs; they are merged into the global slot on first run and then deleted
-- The `wt rotate <tag>` subcommand prints the model after the last-launched one (read-only debug helper)
-
-```bash
-wt rotate code    # print the model after the last launch within the "code" tag group
-```
+- `~/.config/agent-wt/last-picked.state` holds the row the picker's `> ` marker sits on. Every launch writes it, a slot-profile launch included
+- `~/.config/agent-wt/usage.jsonl` gets one agent-tagged event per launch (the 1D/7D/30D columns, `wt stats`)
 
 ## Copilot-specific: provider variables
 
@@ -222,11 +216,11 @@ go vet ./...       # Vet
 |---|---|
 | `cmd/wt-session/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
 | `cmd/wt-session/app.go` | Shared dependency struct: loads and validates config, the active theme and `profiles.toml` once (no model discovery) |
-| `cmd/wt-session/commands.go` | Subcommand constructors: `rotate` (debug helper) |
+| `cmd/wt-session/commands.go` | `removedRotateCmd`: the hidden `wt rotate` stub (prints a one-line pointer, exit 1) |
 | `cmd/wt-session/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `borderStyle`, `renderTable`, guard helpers (`checkGuardStatus`, `removeGuard`), the `stdinTTY` seam (over `cli.IsStdinTTY`), `configError`, `pickerNeedsTTYError` |
 | `cmd/wt-session/launch.go` | Non-TUI launch helpers: `runAgentCmd`, `applyProfileForLaunch`; the launch on the model server is `launch_remote.go` |
 | `internal/config/` | Config loading, model registry types (joined from `registry.toml`), validation, secrets, legacy migration |
-| `internal/rotation/` | Tag-based model rotation with snapshot-based model set and persistent state |
+| `internal/usage/` | Launch history: `RecordLaunch` writes the `last-picked.state` marker and appends the `usage.jsonl` event; 1D/7D/30D counts |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
 | `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook |
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
@@ -260,6 +254,6 @@ make clean        # Remove build artifacts
 ## Architecture
 
 - `bin/*-wt` — thin shims that `exec wt --agent <name>`
-- `cmd/wt-session/` — unified Go tool: cobra CLI, Bubble Tea TUI, model registry, rotation, guard, init seeding
+- `cmd/wt-session/` — unified Go tool: cobra CLI, Bubble Tea TUI, model registry, guard, init seeding
 
 See `CLAUDE.md` for the full architecture documentation.

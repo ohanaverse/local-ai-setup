@@ -187,7 +187,7 @@ model under when it finds it unregistered (`ollama/qwen3:8b`,
 registering a model does not rename it. For any other provider it is
 `<provider>/<name>` with each `/` in the name written `--`
 (`openrouter/qwen--qwen3.8-27b`). The id, the provider and the name cannot be
-changed afterwards: usage history, rotation and launch profiles key on the id.
+changed afterwards: usage history and launch profiles key on the id.
 `wt-model model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>`
 registers `sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`, the id
 llmbench's `eval-sushi-vs-ollama` suite names; only a cloud id spells its slash
@@ -573,7 +573,7 @@ existing row and warns. Rows are compared by the hash stamped on them, so a
 hand edit in the LiteLLM UI that keeps the stamp is not detected. Two aliases
 with one id fail the registry load, the one case where a bad alias does.
 
-**Launching.** `-M alias/<name>`, the picker and slot profiles list and launch an alias like a model. A launch with no pin (and rotation) never picks an alias: it walks the registered models only.
+**Launching.** `-M alias/<name>`, the picker and slot profiles list and launch an alias like a model. A launch with no pin never picks an alias: it launches the one launchable model, or, with several, hands a terminal launch to the picker and refuses one without a terminal. The picker lists aliases in their own band after the slot profiles and opens its cursor on one when it is the first row that is not blocked.
 
 The Aliases tab of `wt-model model` does the same set and remove on a terminal (see [The Aliases tab](#the-aliases-tab-wt-model-model)).
 
