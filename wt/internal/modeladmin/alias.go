@@ -1,6 +1,7 @@
 package modeladmin
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"regexp"
@@ -138,6 +139,100 @@ func SetAlias(r AliasRequest) (changed bool, err error) {
 		}
 		return d.SetAliasTargets(r.ID, r.targetRows())
 	})
+}
+
+// AliasTargetsEqual reports whether the registry in cfg already holds alias id
+// with exactly targets: the same set of (model, effective order) pairs as
+// Config.AliasTargets gives, an omitted order (0) being the target's 1-based
+// position in its list. The list order among targets that share an order does
+// not matter. An alias cfg does not have is never equal.
+func AliasTargetsEqual(cfg *config.Config, id string, targets []config.AliasTarget) bool {
+	cur, ok := cfg.AliasByID(id)
+	if !ok {
+		return false
+	}
+	have := effectiveTargets(cfg.AliasTargets(cur))
+	want := effectiveTargets(targets)
+	return slices.Equal(have, want)
+}
+
+// effectiveTargets is ts with every omitted order filled in with the 1-based
+// position, sorted by (order, model) so that the list order among equal
+// orders is gone.
+func effectiveTargets(ts []config.AliasTarget) []config.AliasTarget {
+	out := slices.Clone(ts)
+	for i := range out {
+		if out[i].Order < 1 {
+			out[i].Order = i + 1
+		}
+	}
+	slices.SortFunc(out, func(a, b config.AliasTarget) int {
+		if c := cmp.Compare(a.Order, b.Order); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Model, b.Model)
+	})
+	return out
+}
+
+// SetAliases writes every request in one registry update, all or nothing: each
+// request is checked (CheckAlias, then its Guard) against the document with
+// the earlier requests of the call already applied, and any failure refuses
+// all and changes nothing. A request whose effective targets already equal the
+// registry's alias (AliasTargetsEqual) is skipped, so the file keeps its own
+// spelling and, when every request is equal, is not written at all. changed
+// lists the ids written, in request order. An id given twice is refused. The
+// apply is pure (config.UpdateRegistry may run it up to three times), so a
+// Guard must be pure too.
+func SetAliases(reqs []AliasRequest) (changed []string, err error) {
+	seen := map[string]bool{}
+	for _, r := range reqs {
+		if seen[r.ID] {
+			return nil, fmt.Errorf("alias %q is given more than once", r.ID)
+		}
+		seen[r.ID] = true
+	}
+	var wrote bool
+	var ids []string
+	wrote, err = config.UpdateRegistry(func(d *config.RegistryDoc) error {
+		ids = nil
+		for _, r := range reqs {
+			if err := CheckAlias(d.RefConfig(), r); err != nil {
+				return err
+			}
+			if r.Guard != nil {
+				if err := r.Guard(d.RefConfig()); err != nil {
+					return err
+				}
+			}
+			if AliasTargetsEqual(d.RefConfig(), r.ID, r.Targets) {
+				continue
+			}
+			if !slices.ContainsFunc(d.Aliases(), func(t *tomlw.Table) bool {
+				id, _ := t.Get("id")
+				return id == r.ID
+			}) {
+				row := tomlw.NewTable()
+				row.Set("id", r.ID)
+				row.Set("targets", []any{})
+				if err := d.AddAlias(row); err != nil {
+					return err
+				}
+			}
+			if err := d.SetAliasTargets(r.ID, r.targetRows()); err != nil {
+				return err
+			}
+			ids = append(ids, r.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !wrote {
+		return nil, nil
+	}
+	return ids, nil
 }
 
 // RemoveAliases removes the aliases ids from the registry in one write, all

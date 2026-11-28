@@ -429,3 +429,201 @@ func TestSetAliasGuardRunsInsideTheWrite(t *testing.T) {
 		t.Fatalf("SetAlias with a passing guard = %v, %v", changed, err)
 	}
 }
+
+// aliasIDs is the ids of the registry's aliases, in file order.
+func aliasIDs(t *testing.T) []string {
+	t.Helper()
+	var ids []string
+	for _, a := range loadCfg(t).Aliases {
+		ids = append(ids, a.ID)
+	}
+	return ids
+}
+
+// TestSetAliasesWritesAllInOneUpdate pins that SetAliases writes several new
+// aliases in one registry update and reports each id it wrote in request
+// order: `alias apply` promises one write, so a file edited mid-way can never
+// hold half a set.
+func TestSetAliasesWritesAllInOneUpdate(t *testing.T) {
+	path := scratchRegistry(t, aliasRegistry)
+	reqs := []AliasRequest{
+		{ID: "alias/a", Targets: targets("openrouter/big", 1)},
+		{ID: "alias/b", Targets: targets("openrouter/small", 1, "ollama/qwen3:8b", 2)},
+		{ID: "alias/c", Targets: targets("openrouter/unknown", 0)},
+	}
+	changed, err := SetAliases(reqs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"alias/a", "alias/b", "alias/c"}; !slices.Equal(changed, want) {
+		t.Fatalf("changed = %v, want %v", changed, want)
+	}
+	if got := aliasIDs(t); !slices.Equal(got, []string{"alias/a", "alias/b", "alias/c"}) {
+		t.Fatalf("registry aliases = %v\n%s", got, read(t, path))
+	}
+	if b, _ := loadCfg(t).AliasByID("alias/b"); !slices.Equal(b.Targets, targets("openrouter/small", 1, "ollama/qwen3:8b", 2)) {
+		t.Errorf("alias/b targets = %v", b.Targets)
+	}
+}
+
+// TestSetAliasesRefusesAllWhenOneFails pins all-or-nothing: when the second of
+// three requests names a model the registry lacks, the whole call fails with
+// an error naming that alias and the registry bytes are exactly as before, so
+// a bad line in a file never leaves its good neighbours half applied.
+func TestSetAliasesRefusesAllWhenOneFails(t *testing.T) {
+	path := scratchRegistry(t, aliasRegistry)
+	before := read(t, path)
+	changed, err := SetAliases([]AliasRequest{
+		{ID: "alias/a", Targets: targets("openrouter/big", 1)},
+		{ID: "alias/bad", Targets: targets("openrouter/nope", 1)},
+		{ID: "alias/c", Targets: targets("openrouter/small", 1)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "alias/bad") {
+		t.Fatalf("SetAliases = %v, %v; want an error naming alias/bad", changed, err)
+	}
+	if changed != nil {
+		t.Errorf("changed = %v, want none", changed)
+	}
+	if read(t, path) != before {
+		t.Errorf("the registry changed:\n%s", read(t, path))
+	}
+}
+
+// TestSetAliasesSkipsAnAliasWhoseEffectiveTargetsMatch pins the no-op rule: an
+// alias written without orders equals a request that spells the positions out,
+// so it is not in changed and the registry bytes stay (the file keeps its own
+// spelling); a request with a different order for one target is written.
+func TestSetAliasesSkipsAnAliasWhoseEffectiveTargetsMatch(t *testing.T) {
+	path := scratchRegistry(t, aliasRegistry)
+	if _, err := SetAlias(AliasRequest{ID: "alias/main", Targets: targets("openrouter/big", 0, "openrouter/small", 0)}); err != nil {
+		t.Fatal(err)
+	}
+	before := read(t, path)
+	changed, err := SetAliases([]AliasRequest{{ID: "alias/main", Targets: targets("openrouter/big", 1, "openrouter/small", 2)}})
+	if err != nil || len(changed) != 0 {
+		t.Fatalf("SetAliases = %v, %v; want nothing changed", changed, err)
+	}
+	if read(t, path) != before {
+		t.Errorf("an equal alias rewrote the file:\n%s", read(t, path))
+	}
+	changed, err = SetAliases([]AliasRequest{{ID: "alias/main", Targets: targets("openrouter/big", 1, "openrouter/small", 3)}})
+	if err != nil || !slices.Equal(changed, []string{"alias/main"}) {
+		t.Fatalf("SetAliases with another order = %v, %v", changed, err)
+	}
+	if a, _ := loadCfg(t).AliasByID("alias/main"); !slices.Equal(a.Targets, targets("openrouter/big", 1, "openrouter/small", 3)) {
+		t.Errorf("targets = %v", a.Targets)
+	}
+}
+
+// TestSetAliasesIgnoresListOrderAmongEqualOrders pins that two targets that
+// share an order are a set: the same pair listed the other way round is equal,
+// so re-applying a file that only reshuffled such a pair writes nothing.
+func TestSetAliasesIgnoresListOrderAmongEqualOrders(t *testing.T) {
+	path := scratchRegistry(t, aliasRegistry)
+	if _, err := SetAlias(AliasRequest{ID: "alias/main", Targets: targets("openrouter/big", 1, "openrouter/small", 1)}); err != nil {
+		t.Fatal(err)
+	}
+	before := read(t, path)
+	changed, err := SetAliases([]AliasRequest{{ID: "alias/main", Targets: targets("openrouter/small", 1, "openrouter/big", 1)}})
+	if err != nil || len(changed) != 0 || read(t, path) != before {
+		t.Fatalf("SetAliases = %v, %v, file changed %v; want a no-op", changed, err, read(t, path) != before)
+	}
+}
+
+// TestSetAliasesRefusesARedirect pins that an id that is currently a redirect
+// (#687) refuses the whole call, naming it, with the file unchanged: a redirect
+// has no targets of its own, and a good alias beside it must not be written.
+func TestSetAliasesRefusesARedirect(t *testing.T) {
+	path := scratchRegistry(t, aliasRegistry)
+	if _, err := SetAlias(AliasRequest{ID: "alias/new", Targets: targets("openrouter/big", 1)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameAlias(RenameRequest{Old: "alias/new", New: "alias/newer"}); err != nil {
+		t.Fatal(err)
+	}
+	before := read(t, path)
+	_, err := SetAliases([]AliasRequest{
+		{ID: "alias/fresh", Targets: targets("openrouter/small", 1)},
+		{ID: "alias/new", Targets: targets("openrouter/small", 1)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "alias/new") || !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("SetAliases = %v; want a refusal naming the redirect alias/new", err)
+	}
+	if read(t, path) != before {
+		t.Errorf("the registry changed:\n%s", read(t, path))
+	}
+}
+
+// TestSetAliasesRefusesDuplicateIDsInTheRequests pins that one id twice in a
+// call is a plain error naming it, with the file unchanged: the second would
+// silently win over the first, which is never what a file of aliases means.
+func TestSetAliasesRefusesDuplicateIDsInTheRequests(t *testing.T) {
+	path := scratchRegistry(t, aliasRegistry)
+	before := read(t, path)
+	_, err := SetAliases([]AliasRequest{
+		{ID: "alias/a", Targets: targets("openrouter/big", 1)},
+		{ID: "alias/a", Targets: targets("openrouter/small", 1)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "alias/a") || !strings.Contains(err.Error(), "more than once") {
+		t.Fatalf("SetAliases = %v; want an error naming alias/a given more than once", err)
+	}
+	if read(t, path) != before {
+		t.Errorf("the registry changed:\n%s", read(t, path))
+	}
+}
+
+// TestSetAliasesGuardRunsInsideTheWrite pins that a request's Guard runs
+// against the document being written and that its error refuses every request,
+// the earlier good ones included, with the file unchanged (the shrink re-check
+// of #689 must hold for a batch too).
+func TestSetAliasesGuardRunsInsideTheWrite(t *testing.T) {
+	path := scratchRegistry(t, aliasRegistry)
+	before := read(t, path)
+	var seen int
+	second := AliasRequest{ID: "alias/g", Targets: targets("openrouter/big", 1)}
+	second.Guard = func(cfg *config.Config) error {
+		seen = AliasWindowChange(cfg, tiers.Index{}, second).New
+		return errors.New("guard says no")
+	}
+	_, err := SetAliases([]AliasRequest{{ID: "alias/a", Targets: targets("openrouter/small", 1)}, second})
+	if err == nil || err.Error() != "guard says no" || read(t, path) != before {
+		t.Fatalf("SetAliases = %v; want the guard's refusal and the file unchanged", err)
+	}
+	if seen != 262144 {
+		t.Errorf("the guard read window %d from the document, want 262144", seen)
+	}
+}
+
+// TestAliasTargetsEqual pins the comparison the writer and the dry run share:
+// an omitted order is the 1-based position, equal orders are a set, a missing
+// alias never equals, and different models or orders differ.
+func TestAliasTargetsEqual(t *testing.T) {
+	scratchRegistry(t, aliasRegistry+`
+[[aliases]]
+id = "alias/main"
+targets = [{ model = "openrouter/big" }, { model = "openrouter/small" }]
+
+[[aliases]]
+id = "alias/tie"
+targets = [{ model = "openrouter/big", order = 1 }, { model = "openrouter/small", order = 1 }]
+`)
+	cfg := loadCfg(t)
+	for name, tc := range map[string]struct {
+		id   string
+		ts   []config.AliasTarget
+		want bool
+	}{
+		"positions spelled out": {"alias/main", targets("openrouter/big", 1, "openrouter/small", 2), true},
+		"omitted orders":        {"alias/main", targets("openrouter/big", 0, "openrouter/small", 0), true},
+		"swapped orders":        {"alias/main", targets("openrouter/big", 2, "openrouter/small", 1), false},
+		"another model":         {"alias/main", targets("openrouter/big", 1, "openrouter/unknown", 2), false},
+		"fewer targets":         {"alias/main", targets("openrouter/big", 1), false},
+		"tie either way":        {"alias/tie", targets("openrouter/small", 1, "openrouter/big", 1), true},
+		"tie with another rank": {"alias/tie", targets("openrouter/big", 1, "openrouter/small", 2), false},
+		"no such alias":         {"alias/none", targets("openrouter/big", 1), false},
+	} {
+		if got := AliasTargetsEqual(cfg, tc.id, tc.ts); got != tc.want {
+			t.Errorf("%s: AliasTargetsEqual = %v, want %v", name, got, tc.want)
+		}
+	}
+}
