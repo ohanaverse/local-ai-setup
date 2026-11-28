@@ -11,7 +11,7 @@ import (
 // the model. It is the zero-ID, Native sentinel every driver already accepts
 // (agy's only kind), and GatewayRoute maps it to the zero Route, so neither a
 // gateway origin nor a token ever reaches the agent. It has no ID, so no
-// rotation, usage or survey record is made for it and the summary line names
+// last-picked, usage or survey record is made for it and the summary line names
 // no model.
 func NativeModel() config.Model {
 	return config.Model{Native: true, ModelName: "native"}

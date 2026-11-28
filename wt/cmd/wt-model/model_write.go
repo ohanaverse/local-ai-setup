@@ -251,7 +251,7 @@ func modelEditCmd(h *host) *cobra.Command {
 			"them. wt refuses its own flags there (--model, --port, --host, --model-id),\n" +
 			"and a change applies from the model's next start.\n\n" +
 			"The id, the provider and the model name cannot be edited: usage history,\n" +
-			"rotation and launch profiles key on the id. Remove the model and add it\n" +
+			"usage history and launch profiles key on the id. Remove the model and add it\n" +
 			"again to change one.\n\n" +
 			"An id that more than one registry row carries is refused: wt cannot tell\n" +
 			"which row is meant, and the message names the file to repair.\n\n" +

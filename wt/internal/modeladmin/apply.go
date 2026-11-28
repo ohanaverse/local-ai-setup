@@ -415,7 +415,7 @@ func describe(err error, providerID string) error {
 
 // Edit patches the given fields of model id in one locked registry write and
 // reports whether the file changed. The id, the provider and the model name
-// are not editable: usage history, rotation and launch profiles key on the
+// are not editable: usage history and launch profiles key on the
 // id, and the inventory matches a row to its weights by provider and name.
 // It does not stamp pricing_updated_at; `wt-model cloud-sync` owns that date. An
 // id that more than one row carries is refused with the registry's own

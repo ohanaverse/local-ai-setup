@@ -523,7 +523,7 @@ func TestPhaseModelUpDownMovesCursor(t *testing.T) {
 // TestNoRKeyInModelPhase asserts pressing 'r' in phaseModel is a
 // no-op: a launch is recorded only when it is committed, never on a key,
 // so the picker must ignore the standalone 'r' key. This test guards
-// against accidental re-introduction of an in-picker rotation key.
+// against accidental re-introduction of an in-picker model-cycling key.
 func TestNoRKeyInModelPhase(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:9b")

@@ -112,9 +112,9 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 	// Isolate both state seams the picker entry reads: the usage store (via
 	// the newUsageStore seam — usage.jsonl counts feed the 1d/7d/30d columns
 	// and the 7d-usage tie-break, so the host's real file would otherwise
-	// skew fixture rows) and rotation state (via
-	// XDG_CONFIG_HOME — enterModelPhase positions the cursor from the host's
-	// real rotation.state without it).
+	// skew fixture rows) and last-picked state (via
+	// XDG_CONFIG_HOME — enterModelPhase reads the marker from the host's
+	// real last-picked.state without it).
 	tempStateDir(t)
 	stubUsageStore(t)
 	cfg := &config.Config{

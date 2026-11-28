@@ -69,7 +69,7 @@ func CatalogRows(in CatalogInput) []catalog.Row {
 			if !ok || !listed(e) {
 				// The hidden registry id still shadows a discovered entry
 				// spelling the same id (provider/artifact): surfacing that
-				// artifact under a registry id would let rotation, usage and
+				// artifact under a registry id would let usage history and
 				// profiles — all keyed by id — resolve it to the registry
 				// model, whose model_name is a different, missing artifact.
 				seen[m.ID] = true

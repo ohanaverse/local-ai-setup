@@ -171,7 +171,7 @@ func TestModelItemLinePartialPerTokenPricing(t *testing.T) {
 }
 
 // TestBuildTableMarksLastLaunchedRow verifies that exactly one row —
-// the model matching the rotation's last-launched ID — carries the "> "
+// the model matching the last-launched ID — carries the "> "
 // marker prefix in Title() and every other row a blank 2-rune prefix, so
 // the marker pins the "where I left off" row without shifting any columns
 // (all titles stay rune-equal in length). It also pins the inverse
@@ -237,7 +237,7 @@ func TestBuildTableHasNoSurveyColumn(t *testing.T) {
 }
 
 // TestBuildTableNoMarkerWithoutLastLaunched verifies that an empty
-// last-launched ID (no rotation.state) or an ID outside the eligible slice
+// last-launched ID (no last-picked.state) or an ID outside the eligible slice
 // (different agent, -T/-F filter, deleted model) leaves every row unmarked —
 // the picker must not fabricate a "last used" signal.
 func TestBuildTableNoMarkerWithoutLastLaunched(t *testing.T) {
@@ -302,7 +302,7 @@ func TestBuildTableRefColumnClampsAtNine(t *testing.T) {
 
 // TestBuildTableRefColumnBeforeMarker verifies the ref digit and the
 // last-launched marker compose correctly when both apply to the same row —
-// "1 > " — matching the design's table (ref column, then the rotation
+// "1 > " — matching the design's table (ref column, then the last-picked
 // marker, then the line).
 func TestBuildTableRefColumnBeforeMarker(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}

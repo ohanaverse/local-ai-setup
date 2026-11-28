@@ -254,7 +254,7 @@ func TestModelFormEditSendsOnlyWhatChanged(t *testing.T) {
 // TestModelFormRegistersADiscoveredModelUnderItsOwnId verifies enter on a
 // `new` row opens the form with the provider and the name fixed, and that
 // saving registers the model under the id it already had as a discovered
-// row — the id its routes, usage history and rotation already use — with the
+// row — the id its routes, usage history already use — with the
 // capabilities ollama reports.
 func TestModelFormRegistersADiscoveredModelUnderItsOwnId(t *testing.T) {
 	tm := newTabMachine(t, tabRegistry)

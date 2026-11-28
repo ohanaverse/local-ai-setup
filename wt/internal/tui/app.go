@@ -74,7 +74,7 @@ type model struct {
 
 	phase phase
 	agent string         // current agent name
-	tag   string         // active rotation tag group
+	tag   string         // active tag group
 	cfg   *config.Config // loaded config for the model catalog
 	theme themes.Theme   // active color theme; passed from cmd/wt-session
 
@@ -209,7 +209,7 @@ type model struct {
 	// (launchDoneMsg) must NOT release it: the terminal is handed back just
 	// before that message is processed, so a key queued during teardown can
 	// still reach Update before the QuitMsg and would otherwise commit a
-	// duplicate run command (a second agent, a second rotation/usage
+	// duplicate run command (a second agent, a second last-picked/usage
 	// record).
 	committed bool
 
@@ -573,7 +573,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				// to the bottom m.models.Update(msg) below lets bubbles/list
 				// handle it. Without this guard, Enter always ran the launch
 				// path regardless of filter state — committing an ollama
-				// check (and potentially rotation/usage state) for whatever
+				// check (and potentially last-picked/usage state) for whatever
 				// model happened to be highlighted underneath the filter
 				// overlay, instead of narrowing the list as the user typed.
 				if m.models.FilterState() == list.Filtering {

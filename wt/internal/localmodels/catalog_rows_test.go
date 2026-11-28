@@ -111,7 +111,7 @@ func TestCatalogRowsHidesLocalModelsNotOnDisk(t *testing.T) {
 // registry's model_name is a different artifact that is not on disk, while an
 // unregistered artifact named like the id's suffix is). Listing that artifact
 // under the registry id would make a -M pin launch it instead of reporting
-// "not on disk", and non-TUI rotation — which returns the registry model for
+// "not on disk", and the non-TUI path — which returns the registry model for
 // an id — would launch the missing model_name.
 func TestCatalogRowsHiddenRegistryIDShadowsDiscovered(t *testing.T) {
 	cfg := catalogTestCfg()
@@ -180,7 +180,7 @@ func TestCatalogRowsUnknownLocalStatus(t *testing.T) {
 // that spells the repo's "/" as "--" and for one shaped provider/model_name —
 // an overlay whose artifact is missing gets no row, and an unmatched artifact
 // becomes a discovered row under config.DiscoveredModelID with
-// Source=discovered and no family. Stats and rotation are keyed on these ids,
+// Source=discovered and no family. Stats and usage history are keyed on these ids,
 // so a matching regression silently forks a model's history.
 func TestCatalogRowsOverlayMatchedAgainstRealInventory(t *testing.T) {
 	gone := httptest.NewServer(http.NotFoundHandler())
