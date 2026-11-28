@@ -1487,6 +1487,52 @@ func TestSyncIsSilentOnASharedBlockThatCarriesTheKeys(t *testing.T) {
 	}
 }
 
+// TestSyncSurfacesASharedBlockSkipWarning pins the other half of #758 end to
+// end: a shared block that still lacks a key keeps its skip warning, and the
+// warning reaches the caller through the plumbing, both PlanSync's
+// plan.Warnings (the dry run) and Sync's res.Warnings, with the exact text. A
+// router_settings alias missing the TTL and a general_settings alias missing
+// cancel_on_disconnect are each the only warning, and nothing is written.
+func TestSyncSurfacesASharedBlockSkipWarning(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want []string
+	}{
+		"router_settings missing the ttl": {
+			"model_list: []\n" + settledWithoutAffinity + "base: &r {optional_pre_call_checks: [session_affinity], session_affinity_repin_on_failover: true}\nrouter_settings: *r\n",
+			[]string{affinitySkipLine(whyAlias)},
+		},
+		"general_settings missing cancel_on_disconnect": {
+			"model_list: []\n" + litellmSettingsDone + "gs: &g {store_model_in_db: true}\ngeneral_settings: *g\n" + affinitySettings,
+			[]string{cancelSkipLine(whyAlias)},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o, restarts, p := opts(t, tc.body)
+			plan, err := PlanSync(&config.Config{}, nil, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(plan.Warnings, tc.want) {
+				t.Fatalf("plan.Warnings =\n%q\nwant\n%q", plan.Warnings, tc.want)
+			}
+			res, err := Sync(&config.Config{}, nil, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(res.Warnings, tc.want) {
+				t.Fatalf("res.Warnings =\n%q\nwant\n%q", res.Warnings, tc.want)
+			}
+			if res.Changed || *restarts != 0 {
+				t.Fatalf("Sync changed=%v restarts=%d, want nothing written through the shared block", res.Changed, *restarts)
+			}
+			if got := readFile(t, p); got != tc.body {
+				t.Fatalf("config.yaml rewritten:\n%s", got)
+			}
+		})
+	}
+}
+
 // TestSyncKeepsAHandWrittenRouterSettings pins that a config.yaml already
 // holding Step A's hand-written router_settings, with nothing else to change,
 // is not rewritten by a sync: the bytes and the mtime stay and the proxy is

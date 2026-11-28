@@ -1088,10 +1088,17 @@ const (
 	litellmSettingsDone = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
 )
 
+// cancelSkipLine is the cancel_on_disconnect skip warning settingsWarnings
+// prints for the reason why. It is a deliberate literal copy of the production
+// string, not a call into it, so the test pins the exact text: a change to the
+// wording must be made here and in settingsWarnings.
 func cancelSkipLine(why string) string {
 	return "general_settings " + why + ", so wt did not write cancel_on_disconnect: true; set it there by hand or the proxy keeps generating for abandoned non-streamed requests (#399)"
 }
 
+// affinitySkipLine is the session-affinity skip warning settingsWarnings prints
+// for the reason why, a deliberate literal copy like cancelSkipLine: change the
+// wording here and in settingsWarnings together.
 func affinitySkipLine(why string) string {
 	return "router_settings " + why + ", so wt did not write the session affinity settings (optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds, session_affinity_repin_on_failover); set them there by hand or a model group may send one conversation to several deployments"
 }
@@ -1102,7 +1109,10 @@ type sharedShape struct{ body, why string }
 
 // sharedShapes places block (a flow mapping, or any YAML value) under key in
 // every layout EnsureSettings does not write through: a whole-value alias, a
-// root merge key, and a root merge key given as a list.
+// root merge key, and a root merge key given as a list. Each shape's why is a
+// literal copy of the reason routerSettingsSkipped and cancelOnDisconnectSkipped
+// give (whyAlias, whyMerge), so a change to one of those reasons must be made
+// in both places too.
 func sharedShapes(key, block string) map[string]sharedShape {
 	return map[string]sharedShape{
 		"alias":           {"base: &blk " + block + "\n" + key + ": *blk\n", whyAlias},
@@ -1138,6 +1148,7 @@ func TestAffinitySkipWarningFiresOnlyWhenTheSharedBlockLacksAKey(t *testing.T) {
 		"null checks":              {"", "{optional_pre_call_checks: null, deployment_affinity_ttl_seconds: 14400, session_affinity_repin_on_failover: true}", skip},
 		"null ttl":                 {"", "{optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds: ~, session_affinity_repin_on_failover: true}", skip},
 		"null repin":               {"", "{optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds: 14400, session_affinity_repin_on_failover: null}", skip},
+		"ttl an alias of null":     {"n: &n ~\n", "{optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds: *n, session_affinity_repin_on_failover: true}", skip},
 		"checks without session_affinity": {"", "{optional_pre_call_checks: [prompt_caching], deployment_affinity_ttl_seconds: 14400, session_affinity_repin_on_failover: true}",
 			func(string) []string { return []string{affinityOffLine} }},
 		"missing keys and checks without session_affinity": {"", "{optional_pre_call_checks: [prompt_caching]}",
@@ -1182,6 +1193,7 @@ func TestCancelSkipWarningFiresOnlyWhenTheSharedBlockLacksTheKey(t *testing.T) {
 		"key from a merge inside": {"keys: &k {cancel_on_disconnect: true}\n", "{<<: *k, " + db + "}", false},
 		"absent":                  {"", "{" + db + "}", true},
 		"null":                    {"", "{" + db + ", cancel_on_disconnect: null}", true},
+		"an alias of null":        {"n: &n ~\n", "{" + db + ", cancel_on_disconnect: *n}", true},
 	} {
 		for shape, s := range sharedShapes("general_settings", tc.block) {
 			t.Run(name+"/"+shape, func(t *testing.T) {
@@ -1290,6 +1302,136 @@ func TestDBRoutesOffWarningIsUnchangedForASharedGeneralSettings(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestSkipWarningsFailClosedOnRepeatedMergeKeys pins that a shared block read
+// through a mapping with more than one "<<" key keeps the skip warning. LiteLLM's
+// loader (PyYAML) applies repeated merge keys in order, so the last one wins a
+// key two of them supply, while mergedGet takes the first: on such a mapping wt
+// may read the protection as on while the proxy runs with it off (cases a and
+// b of the review on #758: a root merge whose second source has no affinity
+// keys, a block whose second merge nulls the TTL). wt cannot know which reading
+// is right, so it warns (fail closed; the reverse order is a harmless false
+// alarm) and makes no affinity-off claim about that block either. The root
+// mapping counts for a root merge, and any mapping a merge key reaches counts
+// in every skipped shape. wt still writes nothing through the shared block.
+func TestSkipWarningsFailClosedOnRepeatedMergeKeys(t *testing.T) {
+	const (
+		full   = "{optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds: 14400, session_affinity_repin_on_failover: true}"
+		noTTL  = "{deployment_affinity_ttl_seconds: null}"
+		gsFull = "{cancel_on_disconnect: true, store_model_in_db: true}"
+		gsNull = "{cancel_on_disconnect: null}"
+	)
+	for _, b := range []struct {
+		key, full, partial, rest string
+		line                     func(string) string
+	}{
+		{"router_settings", full, "{num_retries: 2}", settledWithoutAffinity, affinitySkipLine},
+		{"general_settings", gsFull, "{store_model_in_db: true}", litellmSettingsDone + affinitySettings, cancelSkipLine},
+	} {
+		nulled := noTTL
+		if b.key == "general_settings" {
+			nulled = gsNull
+		}
+		for name, tc := range map[string]struct{ body, why string }{
+			"root: full then partial (a)":            {"a: &a {" + b.key + ": " + b.full + "}\nb: &b {" + b.key + ": " + b.partial + "}\n<<: *a\n<<: *b\n", whyMerge},
+			"root: partial then full (c)":            {"a: &a {" + b.key + ": " + b.full + "}\nb: &b {" + b.key + ": " + b.partial + "}\n<<: *b\n<<: *a\n", whyMerge},
+			"root source with two merges":            {"a: &a {" + b.key + ": " + b.full + "}\nb: &b {" + b.key + ": " + b.partial + "}\nc: &c {<<: *a, <<: *b}\n<<: *c\n", whyMerge},
+			"block: full then null (b)":              {"k: &k " + b.full + "\nn: &n " + nulled + "\nr: &r {<<: *k, <<: *n}\n" + b.key + ": *r\n", whyAlias},
+			"block: null then full (c)":              {"k: &k " + b.full + "\nn: &n " + nulled + "\nr: &r {<<: *n, <<: *k}\n" + b.key + ": *r\n", whyAlias},
+			"block merges a mapping with two merges": {"k: &k " + b.full + "\nn: &n " + nulled + "\nm: &m {<<: *k, <<: *n}\nr: &r {<<: *m}\n" + b.key + ": *r\n", whyAlias},
+		} {
+			t.Run(b.key+"/"+name, func(t *testing.T) {
+				f, err := Open(writeConfig(t, tc.body+"model_list: []\n"+b.rest))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, want := f.settingsWarnings(), []string{b.line(tc.why)}; !slices.Equal(got, want) {
+					t.Fatalf("settingsWarnings =\n%q\nwant\n%q", got, want)
+				}
+				f.EnsureSettings()
+				if f.Changed() {
+					t.Fatalf("EnsureSettings wrote through a shared %s:\n%s", b.key, enc(t, f))
+				}
+			})
+		}
+	}
+
+	// A checks list the first merge gives without session_affinity and the
+	// second with it: mergedGet would say affinity is off, PyYAML that it is on.
+	// Only the skip warning is said, never the affinity-off claim.
+	t.Run("router_settings/no affinity-off claim on an ambiguous block", func(t *testing.T) {
+		body := "k: &k {optional_pre_call_checks: [prompt_caching], deployment_affinity_ttl_seconds: 14400, session_affinity_repin_on_failover: true}\n" +
+			"n: &n {optional_pre_call_checks: [session_affinity]}\nr: &r {<<: *k, <<: *n}\nrouter_settings: *r\n"
+		f, err := Open(writeConfig(t, body+"model_list: []\n"+settledWithoutAffinity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := f.settingsWarnings(), []string{affinitySkipLine(whyAlias)}; !slices.Equal(got, want) {
+			t.Fatalf("settingsWarnings =\n%q\nwant\n%q", got, want)
+		}
+	})
+}
+
+// TestAMergeListIsReadableInASharedBlock pins the other side of the repeated
+// merge-key rule: one "<<" key whose value is a list of sources is not
+// ambiguous (PyYAML 6.0.3 and mergedGet both take the first source that
+// supplies a key), so a shared block whose keys arrive through such a list, at
+// the root or inside the block, draws no warning when the keys are all there.
+// The sources here supply disjoint keys, so the test holds under any PyYAML; a
+// list whose sources overlap on a key is where 6.0.4 would differ (see
+// mergeAmbiguous).
+func TestAMergeListIsReadableInASharedBlock(t *testing.T) {
+	for name, tc := range map[string]struct{ body, rest string }{
+		"router_settings/root merge list": {"a: &a {router_settings: {optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds: 14400, session_affinity_repin_on_failover: true}}\nb: &b {other: 1}\n<<: [*b, *a]\n",
+			settledWithoutAffinity},
+		"router_settings/block merge list": {"k: &k {optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds: 14400}\nn: &n {session_affinity_repin_on_failover: true}\nr: &r {<<: [*k, *n]}\nrouter_settings: *r\n",
+			settledWithoutAffinity},
+		"general_settings/root merge list": {"a: &a {general_settings: {cancel_on_disconnect: true, store_model_in_db: true}}\nb: &b {other: 1}\n<<: [*b, *a]\n",
+			litellmSettingsDone + affinitySettings},
+		"general_settings/block merge list": {"k: &k {cancel_on_disconnect: true}\nn: &n {store_model_in_db: true}\ng: &g {<<: [*k, *n]}\ngeneral_settings: *g\n",
+			litellmSettingsDone + affinitySettings},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := Open(writeConfig(t, tc.body+"model_list: []\n"+tc.rest))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := f.settingsWarnings(); len(got) != 0 {
+				t.Fatalf("settingsWarnings = %q, want none: the merge list supplies every key", got)
+			}
+		})
+	}
+}
+
+// TestADanglingKeyAliasCountsAsSetInASharedBlock pins an accepted edge: a key
+// in a shared router_settings whose value is an alias node with no anchor
+// (Alias nil, which only a hand-built node has) counts as set, so the skip
+// warning stays quiet. That is the rule routerSettingsToAdd applies to the
+// same key in a literal block (it does not write it), so the read and the
+// write path agree about what "set" means.
+func TestADanglingKeyAliasCountsAsSetInASharedBlock(t *testing.T) {
+	const block = "{optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds: *t, session_affinity_repin_on_failover: true}"
+	t.Run("alias shape", func(t *testing.T) {
+		f, err := Open(writeConfig(t, "t: &t 14400\nbase: &blk "+block+"\nrouter_settings: *blk\nmodel_list: []\n"+settledWithoutAffinity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mapGet(mapGet(f.root(), "base"), "deployment_affinity_ttl_seconds").Alias = nil
+		if got := f.settingsWarnings(); len(got) != 0 {
+			t.Fatalf("settingsWarnings = %q, want none: a dangling key alias counts as set", got)
+		}
+	})
+	t.Run("literal block", func(t *testing.T) {
+		f, err := Open(writeConfig(t, "t: &t 14400\nrouter_settings: "+block+"\nmodel_list: []\n"+settledWithoutAffinity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mapGet(mapGet(f.root(), "router_settings"), "deployment_affinity_ttl_seconds").Alias = nil
+		if got := routerSettingsToAdd(f.root()); len(got) != 0 {
+			t.Fatalf("routerSettingsToAdd = %v, want none: a dangling key alias counts as set", got)
+		}
+	})
 }
 
 // TestSaveKeepsAHandWrittenRouterSettingsMeaning pins that a hand-written
