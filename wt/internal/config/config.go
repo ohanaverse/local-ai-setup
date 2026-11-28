@@ -1213,16 +1213,6 @@ func (c *Config) OpenRouterPricedModel() bool {
 	return false
 }
 
-// AgentSupportsProvider reports whether the named agent lists providerID in
-// supported_providers. An unknown agent supports nothing.
-func (c *Config) AgentSupportsProvider(agentName, providerID string) bool {
-	a, err := c.AgentByName(agentName)
-	if err != nil {
-		return false
-	}
-	return slices.Contains(a.SupportedProviders, providerID)
-}
-
 // ProviderByID returns the provider with the given id, or nil if not found.
 func (c *Config) ProviderByID(id string) *Provider {
 	for i := range c.Providers {
@@ -1594,31 +1584,6 @@ func lockedApply(apply func(fresh *Config) (bool, error)) (fresh *Config, change
 	return fresh, changed, err
 }
 
-// ModelsForAgent returns the models whose ProviderID is in the named
-// agent's supported_providers list. Order matches cfg.Models.
-//
-// Errors:
-//   - agent not found in cfg.Agents
-//   - agent references a provider not in cfg.Providers (only reachable
-//     if Validate was bypassed)
-func (c *Config) ModelsForAgent(agentName string) ([]Model, error) {
-	a, err := c.AgentByName(agentName)
-	if err != nil {
-		return nil, err
-	}
-	allowed := map[string]bool{}
-	for _, pid := range a.SupportedProviders {
-		allowed[pid] = true
-	}
-	var out []Model
-	for _, m := range c.Models {
-		if allowed[m.ProviderID] {
-			out = append(out, m)
-		}
-	}
-	return out, nil
-}
-
 // ParseFilterList splits a comma-delimited string, trimming whitespace and
 // dropping empty entries. Empty or whitespace-only input returns nil.
 // Used by the -T/--tags and -F/--family CLI flags.
@@ -1655,62 +1620,4 @@ func FirstTag(s, fallback string) string {
 		return fallback
 	}
 	return parts[0]
-}
-
-// EligibleModels returns the models usable by agent after applying tag
-// and family filters. Order matches cfg.Models.
-//
-// Semantics:
-//   - Provider filter is hard: only models whose ProviderID is in
-//     agent.SupportedProviders are considered.
-//   - tags == "" → no tag filter.
-//   - tags != "" → model must have at least one matching tag.
-//   - family == "" → no family filter.
-//   - family != "" → model.Family must equal one of the listed families.
-//   - When both are non-empty: tags and family are AND-combined.
-//
-// Errors:
-//   - agent not found
-func (c *Config) EligibleModels(agentName, tags, family string) ([]Model, error) {
-	return c.EligibleModelsIn(agentName, nil, tags, family)
-}
-
-// EligibleModelsIn is the single full-catalog traversal shared by
-// EligibleModels and the TUI model picker. It applies the tag/family
-// filters to a caller-supplied full catalog (agentName's models) and returns
-// the eligible slice — so a caller that needs both the full catalog (for
-// cross-filter family count aggregation) and the eligible subset only walks
-// the registry once. Order matches the provided catalog's order.
-//
-// See EligibleModels for the filter semantics.
-func (c *Config) EligibleModelsIn(agentName string, ms []Model, tags, family string) ([]Model, error) {
-	if ms == nil {
-		var err error
-		ms, err = c.ModelsForAgent(agentName)
-		if err != nil {
-			return nil, err
-		}
-	}
-	tagSet := map[string]bool{}
-	for _, t := range ParseFilterList(tags) {
-		tagSet[t] = true
-	}
-	familySet := map[string]bool{}
-	for _, f := range ParseFilterList(family) {
-		familySet[f] = true
-	}
-	var out []Model
-	for _, m := range ms {
-		if len(tagSet) > 0 && !slices.ContainsFunc(m.Tags, func(t string) bool { return tagSet[t] }) {
-			continue
-		}
-		if len(familySet) > 0 && !familySet[m.Family] {
-			continue
-		}
-		if !c.InCatalog(m) {
-			continue
-		}
-		out = append(out, m)
-	}
-	return out, nil
 }

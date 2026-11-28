@@ -14,8 +14,8 @@ import (
 )
 
 // CatalogInput gathers everything CatalogRows needs. Models is the caller's
-// eligible list (every catalog model the agent supports, already filtered by
-// agent/-T/-F); Inventory is nil when no local probe ran, in which case no
+// list (the registry's models, already filtered by -T/-F where those apply);
+// Inventory is nil when no local probe ran, in which case no
 // local row is assessed at all: locals read as not running with status ok.
 // When Inventory is set, local rows come only from it (#179 Phase B): a
 // registry local model gets a row only when its inventory entry is running,
@@ -28,7 +28,6 @@ import (
 // filter could match.
 type CatalogInput struct {
 	Config         *config.Config
-	Agent          string
 	Models         []config.Model
 	Inventory      *Snapshot
 	HideDiscovered bool
@@ -86,9 +85,6 @@ func CatalogRows(in CatalogInput) []catalog.Row {
 	if in.Inventory != nil && !in.HideDiscovered {
 		for _, e := range in.Inventory.Entries {
 			if e.Registered || seen[e.ModelID] {
-				continue
-			}
-			if in.Agent != "" && (in.Config == nil || !in.Config.AgentSupportsProvider(in.Agent, e.ProviderID)) {
 				continue
 			}
 			rows = append(rows, catalog.Row{

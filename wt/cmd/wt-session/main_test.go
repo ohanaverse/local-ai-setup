@@ -656,7 +656,7 @@ func TestCommandAgentWithoutModelLaunchesDirectly(t *testing.T) {
 // TestAgentWithOneEligibleModelAutoLaunches verifies that `wt --cwd -A claude`
 // with exactly one eligible model in config auto-launches via launchFiltered
 // instead of routing to the model picker. This restores the pre-PR-2 UX
-// contract: `-A` alone is sufficient when EligibleModels resolves to a
+// contract: `-A` alone is sufficient when the eligible list resolves to a
 // single entry. Without this fix, scripts and CI invocations of
 // `wt --cwd -A <agent>` force an interactive picker or fail with a TTY error.
 func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {

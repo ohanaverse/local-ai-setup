@@ -51,7 +51,7 @@ func TestCatalogRowsIncludesConfiguredAndDiscoveredLocal(t *testing.T) {
 		{ProviderID: "omlx", ModelID: "omlx/a", Artifact: "a", Registered: true, Running: true},
 		{ProviderID: "omlx", ModelID: "omlx/disc", Artifact: "disc"},
 	}}
-	rows := CatalogRows(CatalogInput{Config: cfg, Agent: "claude", Models: models, Inventory: inv})
+	rows := CatalogRows(CatalogInput{Config: cfg, Models: models, Inventory: inv})
 
 	if got := strings.Join(rowIDs(rows), ","); got != "openrouter/cheap,omlx/a,omlx/disc" {
 		t.Fatalf("rows = %s", got)
@@ -72,9 +72,9 @@ func TestCatalogRowsIncludesConfiguredAndDiscoveredLocal(t *testing.T) {
 // registry local model gets a row only from its inventory entry. An overlay
 // the probe confirmed is not on disk, and one with no inventory entry at all
 // (e.g. its location could not be resolved), both get no row — the picker
-// lists what exists, not what is configured. Agent supported_providers stays a hard constraint
-// for discovered rows, HideDiscovered (-T/-F) drops them, and a discovered id
-// equal to a registry row's id is dropped (the registry row wins).
+// lists what exists, not what is configured. HideDiscovered (-T/-F) drops
+// discovered rows, and a discovered id equal to a registry row's id is dropped
+// (the registry row wins).
 func TestCatalogRowsHidesLocalModelsNotOnDisk(t *testing.T) {
 	cfg := catalogTestCfg()
 	models := []config.Model{
@@ -87,12 +87,11 @@ func TestCatalogRowsHidesLocalModelsNotOnDisk(t *testing.T) {
 		Entries: []Entry{
 			{ProviderID: "omlx", ModelID: "omlx/gone", Registered: true, ArtifactKnown: true},
 			{ProviderID: "omlx", ModelID: "omlx/here", Artifact: "here", Registered: true, ArtifactKnown: true},
-			{ProviderID: "mtplx", ModelID: "mtplx/x", Artifact: "x", ArtifactKnown: true},      // claude does not support mtplx
 			{ProviderID: "ollama", ModelID: "omlx/here", Artifact: "dup", ArtifactKnown: true}, // id collision with a row
 			{ProviderID: "ollama", ModelID: "ollama/ok", Artifact: "ok", ArtifactKnown: true},
 		},
 	}
-	in := CatalogInput{Config: cfg, Agent: "claude", Models: models, Inventory: inv}
+	in := CatalogInput{Config: cfg, Models: models, Inventory: inv}
 	rows := CatalogRows(in)
 	if got := strings.Join(rowIDs(rows), ","); got != "omlx/here,ollama/ok" {
 		t.Fatalf("rows = %s, want only the on-disk overlay and the discovered model", got)
@@ -123,7 +122,7 @@ func TestCatalogRowsHiddenRegistryIDShadowsDiscovered(t *testing.T) {
 			{ProviderID: "ollama", ModelID: config.DiscoveredModelID("ollama", "foo"), ModelName: "foo", Artifact: "foo", Running: true, ArtifactKnown: true},
 		},
 	}
-	rows := CatalogRows(CatalogInput{Config: cfg, Agent: "claude", Models: models, Inventory: inv})
+	rows := CatalogRows(CatalogInput{Config: cfg, Models: models, Inventory: inv})
 	if len(rows) != 0 {
 		t.Fatalf("rows = %v, want none (the hidden registry id shadows the same-id discovered artifact)", rowIDs(rows))
 	}
@@ -157,7 +156,7 @@ func TestCatalogRowsUnknownLocalStatus(t *testing.T) {
 			{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/idle", Registered: true},
 		},
 	}
-	rows := CatalogRows(CatalogInput{Config: cfg, Agent: "claude", Models: models, Inventory: inv})
+	rows := CatalogRows(CatalogInput{Config: cfg, Models: models, Inventory: inv})
 	byID := map[string]catalog.Row{}
 	for _, r := range rows {
 		byID[r.Model.ID] = r
@@ -275,7 +274,7 @@ func TestCatalogRowsHidesStoppedMlxLmServer(t *testing.T) {
 func TestCatalogRowsWithoutInventoryKeepsLocalRowsStartable(t *testing.T) {
 	cfg := catalogTestCfg()
 	models := []config.Model{{ID: "omlx/a", ProviderID: "omlx", ModelName: "a", Family: "fam"}}
-	rows := CatalogRows(CatalogInput{Config: cfg, Agent: "claude", Models: models})
+	rows := CatalogRows(CatalogInput{Config: cfg, Models: models})
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
@@ -393,7 +392,7 @@ func TestALoadingRowIsAStartRow(t *testing.T) {
 		{ProviderID: "omlx", ModelID: "omlx/ready", Artifact: "ready", Running: true},
 	}}
 	registry := []config.Model{{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"}}
-	rows := CatalogRows(CatalogInput{Config: catalogTestCfg(), Agent: "claude", Models: registry, Inventory: inv})
+	rows := CatalogRows(CatalogInput{Config: catalogTestCfg(), Models: registry, Inventory: inv})
 	// Second pass: the rows' own models fed back in, as `wt start`'s picker does.
 	var again []config.Model
 	for _, r := range rows {
@@ -432,7 +431,7 @@ func TestCatalogRowsWithoutInventoryEqualsModelRows(t *testing.T) {
 		{ID: "acme/n", ProviderID: "acme", ModelName: "n", Native: true},
 		{ID: "omlx/a", ProviderID: "omlx", ModelName: "a"},
 	}
-	got := CatalogRows(CatalogInput{Config: cfg, Agent: "claude", Models: models, HideDiscovered: true})
+	got := CatalogRows(CatalogInput{Config: cfg, Models: models, HideDiscovered: true})
 	want := catalog.ModelRows(cfg, models)
 	if len(got) != len(want) {
 		t.Fatalf("rows = %d, want %d", len(got), len(want))

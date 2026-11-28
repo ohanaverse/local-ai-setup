@@ -861,52 +861,6 @@ func TestSave(t *testing.T) {
 	}
 }
 
-// TestModelsForAgentFiltersByProvider asserts ModelsForAgent returns only
-// models whose ProviderID is in the agent's supported_providers list.
-// Without this filter the TUI list would show models the active agent
-// cannot drive (e.g. claude/native listed for the codex agent).
-func TestModelsForAgentFiltersByProvider(t *testing.T) {
-	cfg := &Config{
-		Providers: []Provider{
-			{ID: "ollama"},
-			{ID: "claude"},
-		},
-		Models: []Model{
-			{ID: "claude/native", ProviderID: "claude", ModelName: "native"},
-			{ID: "ollama/a:9b", ProviderID: "ollama", Tags: []string{"code"}},
-			{ID: "ollama/b:9b", ProviderID: "ollama", Tags: []string{"code"}},
-		},
-		Agents: []Agent{
-			{Name: "codex", SupportedProviders: []string{"ollama"}},
-		},
-	}
-	got, err := cfg.ModelsForAgent("codex")
-	if err != nil {
-		t.Fatalf("ModelsForAgent: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("len = %d, want 2 (claude/native filtered out)", len(got))
-	}
-	for _, m := range got {
-		if m.ProviderID != "ollama" {
-			t.Errorf("got model %q with provider %q, want only ollama", m.ID, m.ProviderID)
-		}
-	}
-}
-
-// TestModelsForAgentUnknownAgent asserts that asking for a non-existent
-// agent returns an error rather than panicking. The TUI uses this to
-// surface a clear error if --agent points at a typo.
-func TestModelsForAgentUnknownAgent(t *testing.T) {
-	cfg := &Config{
-		Agents: []Agent{{Name: "claude"}},
-	}
-	_, err := cfg.ModelsForAgent("nope")
-	if err == nil {
-		t.Fatal("expected error for unknown agent, got nil")
-	}
-}
-
 // TestDeriveNative marks models whose provider authenticates natively
 // (auth.type == "native") as Native, and leaves others non-native. This is
 // the single source of truth for native-ness: a model is native iff its
@@ -1079,19 +1033,6 @@ func TestDiscoveredModelID(t *testing.T) {
 	// mtplx artifact is the repo id form (org/name), not the directory form (org--name)
 	if got := DiscoveredModelID("mtplx", "Youssofal/Qwen3.8-27B-MTPLX"); got != "mtplx/Youssofal/Qwen3.8-27B-MTPLX" {
 		t.Errorf("got %q", got)
-	}
-}
-
-// TestAgentSupportsProvider verifies the agent's supported_providers list is
-// the check, and an unknown agent supports nothing — the selector uses it to
-// decide which discovered models an agent may show.
-func TestAgentSupportsProvider(t *testing.T) {
-	cfg := &Config{Agents: []Agent{{Name: "claude", SupportedProviders: []string{"ollama", "omlx"}}}}
-	if !cfg.AgentSupportsProvider("claude", "omlx") {
-		t.Error("claude should support omlx")
-	}
-	if cfg.AgentSupportsProvider("claude", "mtplx") || cfg.AgentSupportsProvider("nope", "omlx") {
-		t.Error("unsupported provider / unknown agent must be false")
 	}
 }
 
