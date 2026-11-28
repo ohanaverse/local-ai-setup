@@ -373,13 +373,25 @@ func TestUpdateModelServerRefusesATypeErrorElsewhere(t *testing.T) {
 }
 
 // TestUpdateModelServerWorksWhenConfigFailsValidationButParses proves a file
-// that decodes but fails validation (an agent naming a missing provider) is
-// still written, so a broken agent never blocks fixing the server.
+// that decodes but fails validation (a repeated agent name) is still written,
+// so a broken agent never blocks fixing the server.
 func TestUpdateModelServerWorksWhenConfigFailsValidationButParses(t *testing.T) {
-	path := sessionHome(t, `[[agents]]
+	path := sessionHome(t, `default_tag = "code"
+
+[[agents]]
+name = "claude"
+
+[[agents]]
 name = "claude"
 `)
-	err := UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
+	pre, err := LoadSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pre.ValidateSession() == nil {
+		t.Fatal("fixture should fail ValidateSession (a repeated agent name)")
+	}
+	err = UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
 		cur.Mode = "local"
 		return cur, nil
 	})

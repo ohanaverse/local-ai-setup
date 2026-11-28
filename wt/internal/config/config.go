@@ -856,6 +856,8 @@ func Load() (*Config, error) {
 	// the schema-migration probe both take real time, and a concurrent
 	// PatchSave-based writer landing in that window must not be clobbered by
 	// a stale whole-file save (issue #143 follow-up).
+	// The changed result is dropped on purpose: dropLegacyGateway prints its own
+	// notice, so no generic "migrated" message belongs here.
 	fresh, _, err := lockedApply(migrateConfigSchema)
 	if err != nil {
 		return nil, fmt.Errorf("schema migration: %w", err)

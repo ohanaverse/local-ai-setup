@@ -274,11 +274,10 @@ func TestSave_FailureKeepsDirty(t *testing.T) {
 }
 
 // TestSave_ValidatesOnlyTheSessionRules pins the session editor's save rule:
-// it validates with config.ValidateSession, so an agent naming a provider no
-// registry is loaded for still saves (wt config reads no registry, and every
-// provider id would look unknown), while a session rule such as two agents
-// with one name refuses the save with a "validation: " status and no registry
-// hint.
+// it validates with config.ValidateSession, so a named agent saves with no
+// registry loaded (wt config reads none), while a session rule such as two
+// agents with one name refuses the save with a "validation: " status and no
+// registry hint.
 func TestSave_ValidatesOnlyTheSessionRules(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{
 		DefaultTag: "code",
@@ -287,7 +286,7 @@ func TestSave_ValidatesOnlyTheSessionRules(t *testing.T) {
 	m.dirty = true
 	got, cmd := m.handleSave()
 	if cmd == nil || !got.(*model).saving {
-		t.Fatalf("an agent naming an unloaded provider was not saved: status %q", got.(*model).status)
+		t.Fatalf("a named agent was not saved: status %q", got.(*model).status)
 	}
 
 	m = newModel(testTheme(), &config.Config{

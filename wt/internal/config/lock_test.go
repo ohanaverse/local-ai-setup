@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -120,30 +119,31 @@ func TestPatchSavePreservesConcurrentDefaultTagChange(t *testing.T) {
 
 // TestEditorSavePreservesConcurrentLockedApplyChange is the reverse of
 // TestLockedApplyPreservesConcurrentEditorChange: an editor save against a
-// snapshot taken before a concurrent Load migration write must not revert
-// that write's drop of the legacy [gateway] block when it persists its own change. (The
+// snapshot taken before a concurrent lockedApply write (Load's self-persisting
+// migration path) must not revert that write when it persists its own change.
+// The concurrent write adds an agent, a change the editor's DefaultTag edit
+// does not own, so a save of the stale snapshot as a whole would lose it. (The
 // editor-vs-`wt litellm set` pair this test used to pin disappears with the
 // wt-model config home: `set` no longer touches config.toml at all.)
 func TestEditorSavePreservesConcurrentLockedApplyChange(t *testing.T) {
 	scratchRegistry(t, "providers = []\nmodels = []\n")
-	must(t, Path(), legacyGatewayConfig)
+	must(t, Path(), "default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\n")
 
-	// The editor opens its snapshot first — readConfigFile, not Load, so the
-	// migration below still has something to persist.
+	// The editor opens its snapshot first (readConfigFile, not Load).
 	stale, _, err := readConfigFile()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// ...then Load's schema-migration write runs (the config.toml fixture
-	// carries a legacy [gateway] block, so migrateConfigSchema reports a
-	// change).
+	// ...then a locked read-modify-write lands a change of its own, as Load's
+	// migration write does: a second agent.
 	if _, changed, err := lockedApply(func(fresh *Config) (bool, error) {
-		return migrateConfigSchema(fresh)
+		fresh.Agents = append(fresh.Agents, Agent{Name: "codex"})
+		return true, nil
 	}); err != nil {
 		t.Fatal(err)
 	} else if !changed {
-		t.Fatal("expected the [gateway] fixup to report a change")
+		t.Fatal("lockedApply reported no change for an apply that made one")
 	}
 
 	// Now the editor persists its own change from its stale snapshot.
@@ -151,17 +151,16 @@ func TestEditorSavePreservesConcurrentLockedApplyChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Read the file before any Load: Load re-runs the migration and would
-	// drop a stale [gateway] block on disk itself, hiding a clobber.
-	if gatewayBlockOnDisk(t) {
-		t.Fatal("concurrent migration fixup was clobbered: config.toml has its [gateway] block again")
-	}
-	reloaded, err := Load()
+	// Read the file raw, before any Load: both writers' changes must be there.
+	onDisk, _, err := readConfigFile()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.DefaultTag != "design" {
-		t.Fatal("editor's own change was lost")
+	if !hasAgent(onDisk.Agents, "codex") {
+		t.Fatalf("concurrent lockedApply change was lost: agents = %+v", onDisk.Agents)
+	}
+	if onDisk.DefaultTag != "design" {
+		t.Fatalf("editor's own change was lost: default_tag = %q", onDisk.DefaultTag)
 	}
 }
 
@@ -214,23 +213,6 @@ func TestLockedApplyPreservesConcurrentEditorChange(t *testing.T) {
 	if onDisk.DefaultTag != "design" || !hasAgent(onDisk.Agents, "codex") || !hasAgent(onDisk.Agents, "claude") {
 		t.Fatalf("a writer's change was lost on disk: default_tag %q, agents %+v", onDisk.DefaultTag, onDisk.Agents)
 	}
-}
-
-// legacyGatewayConfig is a config.toml with a claude agent and a legacy
-// [gateway] block: the one thing migrateConfigSchema reports a change for.
-const legacyGatewayConfig = "default_tag = \"code\"\n\n[gateway]\nenabled = true\n\n[[agents]]\nname = \"claude\"\n"
-
-// gatewayBlockOnDisk reports whether config.toml still has a [gateway] block.
-// It reads the raw file, never Load: Load re-runs the migration, persists it
-// and returns the migrated copy, so a stale save that wrote the block back
-// would still read as gone through it. Call it before any Load in the test.
-func gatewayBlockOnDisk(t *testing.T) bool {
-	t.Helper()
-	raw, err := os.ReadFile(Path())
-	if err != nil {
-		t.Fatalf("reading config.toml: %v", err)
-	}
-	return strings.Contains(string(raw), "[gateway]")
 }
 
 func hasAgent(agents []Agent, name string) bool {
