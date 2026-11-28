@@ -260,7 +260,7 @@ Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before
 - **A start is a job on the model server** (`remote_start.go`): its screen shows the job's step; ctrl+c detaches, `c` cancels the job.
 - **A slot-profile launch prepares behind the launching screen** (`beginRemoteSlotLaunch`); no route is written and no proxy restarted.
 - **A model table is priced once, when built** (`modelrows.go`): read `tableRow.price()`/`timePriced()`, never `Model.Cost`'s flat fields or a clock.
-- **TIER's score orders the picker's model rows** (descending, within the running-local and other bands) but is never routed on; a missing or unparseable `tiers.toml` is `-` and unscored, never an error.
+- **TIER's score orders the picker's model rows** (descending, within the alias, running-local and other bands) but is never routed on; a missing or unparseable `tiers.toml` is `-` and unscored, never an error.
 - A test that sets state by hand goes through `Update` before reading `View()`.
 
 > **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`) skip the TUI; `-W`/`--cwd` need a TTY when `-A` or `-M` is omitted. A launch warning's question is asked only on a terminal; with no TTY the warnings print and the launch proceeds (nothing is refused, and a new name is still created and announced).
