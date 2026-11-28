@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
 	"github.com/spf13/cobra"
 )
 
@@ -45,7 +48,7 @@ func aliasCmd(h *host, rec servestate.Store) *cobra.Command {
 			"working as a redirect until its sessions end. `wt-model model` has an Aliases\n" +
 			"tab that does the same on a terminal.",
 	}
-	c.AddCommand(aliasListCmd(h, rec), aliasSetCmd(h, rec), aliasRenameCmd(h), aliasRmCmd(h, rec))
+	c.AddCommand(aliasListCmd(h, rec), aliasSetCmd(h, rec), aliasApplyCmd(h, rec), aliasRenameCmd(h), aliasRmCmd(h, rec))
 	return c
 }
 
@@ -350,6 +353,245 @@ func (h *host) runAliasSet(ctx context.Context, out, errOut io.Writer, rec serve
 		return nil
 	}
 	fmt.Fprintf(out, "set alias: %s\n", req.ID)
+	return h.syncAndWarn(out, errOut, nil)
+}
+
+func aliasApplyCmd(h *host, rec servestate.Store) *cobra.Command {
+	var acceptSmaller, dryRun bool
+	c := &cobra.Command{
+		Use:   "apply <file>",
+		Short: "Create or replace several aliases from one file, in one registry write",
+		Long: "Create every alias the file holds, or replace its whole target list: `alias\n" +
+			"set` for many aliases at once. The file holds [[aliases]] tables exactly as\n" +
+			"registry.toml does (id = \"alias/<name>\", targets = [{ model = \"ID\", order = N }],\n" +
+			"an optional notes, which is ignored) and nothing else: any other key or table\n" +
+			"is refused. An order left out is the target's position in its list\n" +
+			"(docs/contracts/alias-apply.sample.toml is a sample). It never removes aliases\n" +
+			"absent from the file and creates no models: register the targets first.\n\n" +
+			"Every alias is checked as `alias set` checks it before anything is asked or\n" +
+			"written, and one that fails (a target that names no model, a redirect id, an\n" +
+			"id given twice) refuses the whole file. An alias whose targets already mean\n" +
+			"the same (the same models at the same orders) is `no change` and is not\n" +
+			"rewritten. The rest are written in one registry write, and the LiteLLM routes\n" +
+			"are synced once afterwards; when the database cannot be reached the registry\n" +
+			"is still written, a warning says so, and `wt-model litellm sync` adds the\n" +
+			"rows later.\n\n" +
+			"When any alias's window would get smaller, or unknown where it was known, one\n" +
+			"question names each of them (client sessions already running keep the window\n" +
+			"they launched with); --accept-smaller-window answers yes.\n\n" +
+			"Flags:\n" +
+			"  --accept-smaller-window   apply it even when a window gets smaller or unknown\n" +
+			"  --dry-run                 say what would happen and change nothing\n\n" +
+			"Exit codes:\n" +
+			"  0  done (also when the routes could not be written; a warning says so)\n" +
+			"  1  a plain error: a file that cannot be read or is refused, a registry write\n" +
+			"     that failed\n" +
+			"  3  approval missing: a window gets smaller and there is no terminal to ask\n" +
+			"     (or the answer was no); nothing was changed",
+		Example: "  wt-model alias apply aliases.toml --dry-run\n" +
+			"  wt-model alias apply aliases.toml\n" +
+			"  wt-model alias apply aliases.toml --accept-smaller-window",
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return h.runAliasApply(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), rec, args[0], acceptSmaller, dryRun)
+		},
+	}
+	c.Flags().BoolVar(&acceptSmaller, "accept-smaller-window", false, "apply it even when an alias's window gets smaller or unknown")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "say what would happen and change nothing")
+	return c
+}
+
+// parseAliasFile reads an `alias apply` file: [[aliases]] tables only, each
+// judged by the registry's own reader (config.Alias.UnmarshalTOML), so apply
+// and `alias set` refuse the same shapes. notes is accepted and dropped; an
+// order the file leaves out stays 0 (written without an order key, read as
+// the position). It refuses invalid TOML, any top-level key but aliases, an
+// entry that is not a table, a malformed alias, a redirect_to (apply sets
+// targets; `alias rename` makes a redirect), an id given twice and a file
+// with no alias. Its errors do not name the file; the caller adds it.
+func parseAliasFile(data []byte) ([]modeladmin.AliasRequest, error) {
+	doc, err := tomlw.Decode(data)
+	if err != nil {
+		return nil, fmt.Errorf("not valid TOML: %w", err)
+	}
+	for _, k := range doc.Keys() {
+		if k != "aliases" {
+			return nil, fmt.Errorf("unknown top-level key %q (an alias file holds [[aliases]] tables only)", k)
+		}
+	}
+	errEmpty := errors.New("no [[aliases]] table, so there is nothing to apply")
+	raw, ok := doc.Get("aliases")
+	if !ok {
+		return nil, errEmpty
+	}
+	entries, ok := raw.([]any)
+	if !ok {
+		return nil, errors.New("aliases is not an array of tables (write [[aliases]] tables)")
+	}
+	if len(entries) == 0 {
+		return nil, errEmpty
+	}
+	var reqs []modeladmin.AliasRequest
+	where := map[string]int{}
+	for i, e := range entries {
+		row, ok := e.(*tomlw.Table)
+		if !ok {
+			return nil, fmt.Errorf("aliases[%d] is not a table", i)
+		}
+		plain, _ := plainTOML(row).(map[string]any)
+		var a config.Alias
+		_ = a.UnmarshalTOML(plain)
+		switch {
+		case a.Malformed != "":
+			return nil, fmt.Errorf("aliases[%d]: alias %q: %s", i, a.ID, a.Malformed)
+		case a.RedirectTo != "":
+			return nil, fmt.Errorf("aliases[%d]: alias %q: redirect_to is not accepted here: apply sets targets (`wt-model alias rename` makes a redirect)", i, a.ID)
+		}
+		if j, dup := where[a.ID]; dup {
+			return nil, fmt.Errorf("alias %q is listed more than once (aliases[%d] and aliases[%d])", a.ID, j, i)
+		}
+		where[a.ID] = i
+		// The reader fills an omitted order with the position; the request
+		// keeps it omitted, as `alias set --target ID` does.
+		rows, _ := plain["targets"].([]any)
+		targets := slices.Clone(a.Targets)
+		for k := range targets {
+			if k < len(rows) {
+				if t, isMap := rows[k].(map[string]any); isMap {
+					if _, has := t["order"]; !has {
+						targets[k].Order = 0
+					}
+				}
+			}
+		}
+		reqs = append(reqs, modeladmin.AliasRequest{ID: a.ID, Targets: targets})
+	}
+	return reqs, nil
+}
+
+// plainTOML is a tomlw document value as BurntSushi's decoder hands it to an
+// UnmarshalTOML method: a table a map[string]any, an array a []any.
+func plainTOML(v any) any {
+	switch x := v.(type) {
+	case *tomlw.Table:
+		m := make(map[string]any, x.Len())
+		for _, k := range x.Keys() {
+			val, _ := x.Get(k)
+			m[k] = plainTOML(val)
+		}
+		return m
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = plainTOML(e)
+		}
+		return out
+	}
+	return v
+}
+
+// aliasApplyItem is one alias of an `alias apply` file with its window change.
+type aliasApplyItem struct {
+	req modeladmin.AliasRequest
+	wc  modeladmin.WindowChange
+}
+
+// runAliasApply is `wt-model alias apply`: `alias set` for every alias of a
+// file, all or nothing. Every alias is checked before anything is asked; a
+// dry run prints each one's `alias set --dry-run` block (or `no change:`);
+// a real run asks one question for every shrinking window, writes the
+// changed aliases in one registry write (modeladmin.SetAliases, each with
+// its shrink re-check) and runs one route sync.
+func (h *host) runAliasApply(ctx context.Context, out, errOut io.Writer, rec servestate.Store, path string, acceptSmaller, dryRun bool) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read the alias file: %w", err)
+	}
+	reqs, err := parseAliasFile(data)
+	if err != nil {
+		return fmt.Errorf("%s: %w; nothing was changed", path, err)
+	}
+	cfg, loadErr := h.hostConfig()
+	if loadErr != nil {
+		return config.ConfigError(loadErr)
+	}
+	// Every alias is checked first, so a dry run refuses what the real run
+	// refuses (a stale or redirect alias is never "no change"), and a bad
+	// alias anywhere in the file refuses it before anything is asked.
+	for _, r := range reqs {
+		if err := modeladmin.CheckAlias(cfg, r); err != nil {
+			return fmt.Errorf("%s: %w; nothing was changed", path, err)
+		}
+	}
+	ix := h.tiersIndex()
+	items := make([]aliasApplyItem, 0, len(reqs))
+	var shrinking []aliasApplyItem
+	for _, r := range reqs {
+		it := aliasApplyItem{req: r, wc: modeladmin.AliasWindowChange(cfg, ix, r)}
+		items = append(items, it)
+		if it.wc.Shrinks {
+			shrinking = append(shrinking, it)
+		}
+	}
+	if dryRun {
+		for _, it := range items {
+			if modeladmin.AliasTargetsEqual(cfg, it.req.ID, it.req.Targets) {
+				fmt.Fprintf(out, "no change: %s\n", it.req.ID)
+				continue
+			}
+			wc := it.wc
+			if err := h.printAliasDryRun(out, wc.After, wc.Alias, wc.Old, wc.New, wc.Had, wc.Shrinks); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if len(shrinking) > 0 && !acceptSmaller {
+		sessions := h.clientSessions(ctx, errOut, rec, nil)()
+		sentences := make([]string, 0, len(shrinking))
+		for _, it := range shrinking {
+			count := -1
+			if sessions != nil {
+				count = sessions[it.req.ID]
+			}
+			sentences = append(sentences, it.wc.ShrinkSentence(it.req.ID, count))
+		}
+		question := "Applying " + path + " makes " + strconv.Itoa(len(shrinking)) + " alias window(s) smaller:\n  " +
+			strings.Join(sentences, "\n  ") + "\nApply it anyway?"
+		ok, err := h.confirmRemove(question)
+		if errors.Is(err, cli.ErrNoTerminal) {
+			for _, s := range sentences {
+				fmt.Fprintf(errOut, "wt-model: note: %s\n", s)
+			}
+		}
+		if err != nil {
+			return cli.NoTerminalRefusal(err, "--accept-smaller-window", "nothing was changed")
+		}
+		if !ok {
+			return cli.Declined("nothing was changed")
+		}
+	}
+	writes := make([]modeladmin.AliasRequest, 0, len(items))
+	for _, it := range items {
+		r := it.req
+		r.Guard = aliasShrinkGuard(ix, r, acceptSmaller, it.wc.Shrinks, it.wc.Old, it.wc.New)
+		writes = append(writes, r)
+	}
+	changed, err := modeladmin.SetAliases(writes)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	for _, r := range reqs {
+		if slices.Contains(changed, r.ID) {
+			fmt.Fprintf(out, "set alias: %s\n", r.ID)
+		} else {
+			fmt.Fprintf(out, "no change: %s\n", r.ID)
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
 	return h.syncAndWarn(out, errOut, nil)
 }
 
