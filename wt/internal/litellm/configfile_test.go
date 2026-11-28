@@ -1083,6 +1083,10 @@ func TestEnsureSettingsSkipsAnAliasedOrMergedRouterSettings(t *testing.T) {
 const (
 	whyAlias = "is a YAML alias"
 	whyMerge = "comes from a root merge key (<<)"
+	// whyRepeated and whyNotMapping are the reasons for a literal block (#761,
+	// #762), deliberate literal copies of the production reasons.
+	whyRepeated   = "is read through repeated merge keys (<<)"
+	whyNotMapping = "is not a mapping"
 
 	affinityOffLine     = "router_settings.optional_pre_call_checks has no session_affinity, so session affinity is off and a model group may send one conversation to several deployments; add session_affinity to the list to turn it on"
 	litellmSettingsDone = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
@@ -1323,11 +1327,13 @@ func TestSkipWarningsFailClosedOnRepeatedMergeKeys(t *testing.T) {
 		gsNull = "{cancel_on_disconnect: null}"
 	)
 	for _, b := range []struct {
-		key, full, partial, rest string
-		line                     func(string) string
+		key, full, partial, rest, explicit string
+		line                               func(string) string
 	}{
-		{"router_settings", full, "{num_retries: 2}", settledWithoutAffinity, affinitySkipLine},
-		{"general_settings", gsFull, "{store_model_in_db: true}", litellmSettingsDone + affinitySettings, cancelSkipLine},
+		{"router_settings", full, "{num_retries: 2}", settledWithoutAffinity,
+			"  optional_pre_call_checks: [session_affinity]\n  deployment_affinity_ttl_seconds: 14400\n  session_affinity_repin_on_failover: true\n", affinitySkipLine},
+		{"general_settings", gsFull, "{store_model_in_db: true}", litellmSettingsDone + affinitySettings,
+			"  cancel_on_disconnect: true\n  store_model_in_db: true\n", cancelSkipLine},
 	} {
 		nulled := noTTL
 		if b.key == "general_settings" {
@@ -1340,6 +1346,12 @@ func TestSkipWarningsFailClosedOnRepeatedMergeKeys(t *testing.T) {
 			"block: full then null (b)":              {"k: &k " + b.full + "\nn: &n " + nulled + "\nr: &r {<<: *k, <<: *n}\n" + b.key + ": *r\n", whyAlias},
 			"block: null then full (c)":              {"k: &k " + b.full + "\nn: &n " + nulled + "\nr: &r {<<: *n, <<: *k}\n" + b.key + ": *r\n", whyAlias},
 			"block merges a mapping with two merges": {"k: &k " + b.full + "\nn: &n " + nulled + "\nm: &m {<<: *k, <<: *n}\nr: &r {<<: *m}\n" + b.key + ": *r\n", whyAlias},
+			// A literal block (#761): PyYAML takes the last repeated "<<", mergedGet the
+			// first, so wt cannot say what the proxy sees and treats it as unreadable.
+			"literal: full then partial":            {"a: &a " + b.full + "\nb: &b " + b.partial + "\n" + b.key + ":\n  <<: *a\n  <<: *b\n", whyRepeated},
+			"literal: partial then full":            {"a: &a " + b.full + "\nb: &b " + b.partial + "\n" + b.key + ":\n  <<: *b\n  <<: *a\n", whyRepeated},
+			"literal: source with two merges":       {"a: &a " + b.full + "\nb: &b " + b.partial + "\nc: &c {<<: *a, <<: *b}\n" + b.key + ":\n  <<: *c\n", whyRepeated},
+			"literal: every key written explicitly": {"a: &a " + b.full + "\nb: &b " + b.partial + "\n" + b.key + ":\n  <<: *a\n  <<: *b\n" + b.explicit, whyRepeated},
 		} {
 			t.Run(b.key+"/"+name, func(t *testing.T) {
 				f, err := Open(writeConfig(t, tc.body+"model_list: []\n"+b.rest))
@@ -1625,6 +1637,148 @@ func TestEnsureSettingsDoesNotWriteOverAnOptOutAnAliasedListSupplies(t *testing.
 				if strings.Contains(out, "session_affinity_repin_on_failover: true") {
 					t.Errorf("wt wrote repin true over the list's false:\n%s", out)
 				}
+			}
+		})
+	}
+}
+
+// TestEnsureSettingsNeverWritesOverAValueASecondMergeSupplies is the real #761
+// harm: a literal block with two "<<" keys where the first source nulls (or
+// omits) a key and the second sets it. PyYAML hands the proxy the second
+// source's value, mergedGet reads the first's null as absent, and wt used to
+// write a default beside the merges, which an explicit key beats, destroying
+// the user's opt-out. Now nothing is written, store_model_in_db included
+// (cancelOnDisconnectSkipped guards both), and the database-routes-off text
+// names the new reason.
+func TestEnsureSettingsNeverWritesOverAValueASecondMergeSupplies(t *testing.T) {
+	t.Run("router_settings", func(t *testing.T) {
+		f, err := Open(writeConfig(t, "a: &a {session_affinity_repin_on_failover: null}\nb: &b {session_affinity_repin_on_failover: false}\nrouter_settings:\n  <<: *a\n  <<: *b\nmodel_list: []\n"+settledWithoutAffinity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := routerSettingsToAdd(f.root()); len(got) != 0 {
+			t.Fatalf("routerSettingsToAdd = %v, want none", got)
+		}
+		f.EnsureSettings()
+		if f.Changed() {
+			t.Fatalf("EnsureSettings wrote into an ambiguous router_settings:\n%s", enc(t, f))
+		}
+	})
+	t.Run("general_settings", func(t *testing.T) {
+		f, err := Open(writeConfig(t, "a: &a {cancel_on_disconnect: null}\nb: &b {cancel_on_disconnect: false}\ngeneral_settings:\n  <<: *a\n  <<: *b\nmodel_list: []\n"+litellmSettingsDone+affinitySettings))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.EnsureSettings()
+		if f.Changed() {
+			t.Fatalf("EnsureSettings wrote into an ambiguous general_settings:\n%s", enc(t, f))
+		}
+		want := "general_settings " + whyRepeated + ", so wt did not write store_model_in_db: true; database routes are off and local routes stay in config.yaml with a restart per change"
+		if got := f.dbRoutesOffWarning(); got != want {
+			t.Fatalf("dbRoutesOffWarning = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestRepeatedMergeBlockMakesNoAffinityOffClaimInEitherOrder pins that a
+// literal router_settings with two "<<" keys draws only the skip warning, in
+// both orders: mergedGet would read the first source's checks list, claiming
+// "affinity is off" in one order and staying silent in the other while
+// PyYAML's last-wins reading says the opposite.
+func TestRepeatedMergeBlockMakesNoAffinityOffClaimInEitherOrder(t *testing.T) {
+	const defs = "k: &k {optional_pre_call_checks: [prompt_caching], deployment_affinity_ttl_seconds: 14400, session_affinity_repin_on_failover: true}\nn: &n {optional_pre_call_checks: [session_affinity]}\n"
+	for name, merges := range map[string]string{
+		"first without session_affinity": "  <<: *k\n  <<: *n\n",
+		"first with session_affinity":    "  <<: *n\n  <<: *k\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := Open(writeConfig(t, defs+"router_settings:\n"+merges+"model_list: []\n"+settledWithoutAffinity))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := f.settingsWarnings(), []string{affinitySkipLine(whyRepeated)}; !slices.Equal(got, want) {
+				t.Fatalf("settingsWarnings =\n%q\nwant\n%q", got, want)
+			}
+		})
+	}
+}
+
+// TestAReadableLiteralBlockIsStillFilled is the control for the #761 rule: a
+// literal block that is NOT read through repeated merge keys stays writable
+// and quiet, so the new skip case does not over-fire. One "<<" with a list of
+// sources (disjoint or overlapping), and a plain block under a root that
+// itself has repeated merges (the root's merges do not decide a literal key).
+func TestAReadableLiteralBlockIsStillFilled(t *testing.T) {
+	rest := "model_list: []\n" + settledWithoutAffinity
+	all := []string{"optional_pre_call_checks", "deployment_affinity_ttl_seconds", "session_affinity_repin_on_failover"}
+	for name, tc := range map[string]struct {
+		body string
+		want []string
+	}{
+		"one merge with a list of sources": {"a: &a {optional_pre_call_checks: [session_affinity]}\nb: &b {deployment_affinity_ttl_seconds: 14400}\nrouter_settings:\n  <<: [*a, *b]\n",
+			[]string{"session_affinity_repin_on_failover"}},
+		"root has repeated merges, the block is plain": {"a: &a {x: 1}\nb: &b {y: 2}\n<<: *a\n<<: *b\nrouter_settings: {num_retries: 2}\n", all},
+		"one merge, overlapping sources": {"a: &a {optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds: 14400}\nb: &b {deployment_affinity_ttl_seconds: 3600}\nrouter_settings:\n  <<: [*a, *b]\n",
+			[]string{"session_affinity_repin_on_failover"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := Open(writeConfig(t, tc.body+rest))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := routerSettingsToAdd(f.root()); !slices.Equal(got, tc.want) {
+				t.Fatalf("routerSettingsToAdd = %v, want %v", got, tc.want)
+			}
+			if got := f.settingsWarnings(); len(got) != 0 {
+				t.Fatalf("settingsWarnings = %q, want none", got)
+			}
+		})
+	}
+	t.Run("general_settings: one merge with a list of sources", func(t *testing.T) {
+		f, err := Open(writeConfig(t, "a: &a {cancel_on_disconnect: false}\nb: &b {database_url: postgresql://u@localhost/db}\ngeneral_settings:\n  <<: [*a, *b]\nmodel_list: []\n"+litellmSettingsDone+affinitySettings))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := f.settingsWarnings(); len(got) != 0 {
+			t.Fatalf("settingsWarnings = %q, want none", got)
+		}
+		f.EnsureSettings()
+		gs := mapGet(f.root(), "general_settings")
+		if v := mapGet(gs, "cancel_on_disconnect"); v != nil {
+			t.Errorf("a literal cancel_on_disconnect = %v was written; the merge supplies false", v.Value)
+		}
+		if v := mapGet(gs, "store_model_in_db"); v == nil || v.Value != "true" {
+			t.Errorf("store_model_in_db = %v, want a literal true", v)
+		}
+	})
+}
+
+// TestLiteralBlockAmbiguous pins the predicate: true only for a literal
+// mapping block read through more than one "<<" key (itself or a mapping its
+// merges reach); false for one merge, a null, an absent key, a scalar and a
+// whole-value alias (the shared-block case, judged by sharedBlockAmbiguous).
+func TestLiteralBlockAmbiguous(t *testing.T) {
+	const defs = "a: &a {x: 1}\nb: &b {y: 2}\nm: &m {<<: *a, <<: *b}\n"
+	for name, tc := range map[string]struct {
+		body string
+		want bool
+	}{
+		"two merges":        {"router_settings: {<<: *a, <<: *b}\n", true},
+		"a source with two": {"router_settings: {<<: *m}\n", true},
+		"one merge":         {"router_settings: {<<: *a}\n", false},
+		"a list of sources": {"router_settings: {<<: [*a, *b]}\n", false},
+		"null":              {"router_settings:\n", false},
+		"absent":            {"other: 1\n", false},
+		"scalar":            {"router_settings: 42\n", false},
+		"whole-value alias": {"router_settings: *m\n", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := Open(writeConfig(t, defs+tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := literalBlockAmbiguous(f.root(), "router_settings"); got != tc.want {
+				t.Fatalf("literalBlockAmbiguous = %v, want %v", got, tc.want)
 			}
 		})
 	}
