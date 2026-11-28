@@ -1,6 +1,7 @@
 package sessioneditor
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -8,22 +9,23 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
-// TestAgentForm_Add_Success verifies that a new agent is appended to
-// cfg.Agents when the form is saved with valid data.
-func TestAgentForm_Add_Success(t *testing.T) {
+// TestAgentForm_Add_NeedsOnlyAName verifies that a new agent saves with just a
+// name and gets no provider list and no default provider. Why: the eligibility
+// rule is derived, so the form has no provider inputs; a nil list (never an
+// empty one, which an older wt-model rejects as supported_providers = []) is
+// what a form-created entry must carry.
+func TestAgentForm_Add_NeedsOnlyAName(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{
 		Providers: []config.Provider{{ID: "agy"}},
 		Agents:    []config.Agent{},
 	}, nil)
 	enterAgentForm(m, config.Agent{}, true)
 	m.agName.SetValue("foo")
-	m.agProvidersInput.SetValue("agy")
-	m.agDefaultProviderInput.SetValue("agy")
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m2 := got.(*model)
-	if m2.phase != phaseList {
-		t.Fatalf("expected phaseList after save, got %d", m2.phase)
+	if m2.phase != phaseList || m2.formError != "" {
+		t.Fatalf("expected the save to go through, got phase %d, error %q", m2.phase, m2.formError)
 	}
 	if len(m2.cfg.Agents) != 1 {
 		t.Fatalf("expected 1 agent, got %d", len(m2.cfg.Agents))
@@ -32,56 +34,70 @@ func TestAgentForm_Add_Success(t *testing.T) {
 	if ag.Name != "foo" {
 		t.Errorf("name = %q, want foo", ag.Name)
 	}
-	if len(ag.SupportedProviders) != 1 || ag.SupportedProviders[0] != "agy" {
-		t.Errorf("supported_providers = %v, want [agy]", ag.SupportedProviders)
+	if ag.SupportedProviders != nil {
+		t.Errorf("supported_providers = %#v, want nil (never an empty list)", ag.SupportedProviders)
 	}
-	if ag.DefaultProvider != "agy" {
-		t.Errorf("default_provider = %q, want agy", ag.DefaultProvider)
-	}
-}
-
-// TestAgentForm_DefaultProvider_Constrained verifies that a default provider
-// outside the supported providers no longer blocks the save. Why: no reader
-// uses either field now (the eligibility rule derives a provider's agents), so
-// UpsertAgent checks only the name; the form's provider fields are removed in
-// a later change.
-func TestAgentForm_DefaultProvider_Constrained(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{
-		Providers: []config.Provider{{ID: "agy"}},
-		Agents:    []config.Agent{},
-	}, nil)
-	enterAgentForm(m, config.Agent{}, true)
-	m.agName.SetValue("foo")
-	m.agProvidersInput.SetValue("agy, claude")
-	m.agDefaultProviderInput.SetValue("codex") // not in supported
-
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m2 := got.(*model)
-	if m2.phase != phaseList || m2.formError != "" {
-		t.Fatalf("expected the save to go through, got phase %d, error %q", m2.phase, m2.formError)
+	if ag.DefaultProvider != "" {
+		t.Errorf("default_provider = %q, want empty", ag.DefaultProvider)
 	}
 }
 
-// TestAgentForm_NoProviders_BlocksSave verifies that an agent with no
-// supported providers now saves (the name is the only required field). Why:
-// the eligibility rule reads no list, so an empty one is a valid entry; the
-// test keeps its old name until the form drops the field.
-func TestAgentForm_NoProviders_BlocksSave(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{
-		Providers: []config.Provider{{ID: "agy"}},
-		Agents:    []config.Agent{},
-	}, nil)
+// TestAgentForm_EmptyNameErrors verifies that saving with an empty name stays
+// in the form, shows the error and puts the cursor on the Name field. Why: the
+// name is the only field that can be wrong now, so the error cursor always
+// goes to 0.
+func TestAgentForm_EmptyNameErrors(t *testing.T) {
+	m := newModel(testTheme(), &config.Config{}, nil)
 	enterAgentForm(m, config.Agent{}, true)
-	m.agName.SetValue("foo")
-	m.agProvidersInput.SetValue("")
+	m.formCursor = 1
+	m.focusAgentField()
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m2 := got.(*model)
-	if m2.phase != phaseList || m2.formError != "" {
-		t.Fatalf("expected the save to go through, got phase %d, error %q", m2.phase, m2.formError)
+	if m2.phase != phaseForm || m2.formError == "" {
+		t.Fatalf("expected the form to stay open with an error, got phase %d, error %q", m2.phase, m2.formError)
 	}
-	if len(m2.cfg.Agents) != 1 || m2.cfg.Agents[0].Name != "foo" || len(m2.cfg.Agents[0].SupportedProviders) != 0 {
-		t.Errorf("agents = %+v, want foo with no list", m2.cfg.Agents)
+	if m2.formCursor != 0 {
+		t.Errorf("formCursor = %d, want 0 (the name)", m2.formCursor)
+	}
+	if len(m2.cfg.Agents) != 0 {
+		t.Errorf("agents = %+v, want none", m2.cfg.Agents)
+	}
+}
+
+// TestAgentForm_FieldsAreNameAndInstalled verifies that the form shows only
+// Name and the read-only Installed line, and that Tab and Up cycle through
+// exactly those two. Why: the Supported Providers and Default Provider inputs
+// were removed with the derived eligibility rule (#763); a leftover label or a
+// wrap at the old size of 4 would leave dead cursor positions.
+func TestAgentForm_FieldsAreNameAndInstalled(t *testing.T) {
+	m := newModel(testTheme(), &config.Config{}, nil)
+	enterAgentForm(m, config.Agent{Name: "claude"}, false)
+	view := m.agentFormView()
+	for _, gone := range []string{"Supported Providers", "Default Provider"} {
+		if strings.Contains(view, gone) {
+			t.Errorf("form view still shows %q:\n%s", gone, view)
+		}
+	}
+	for _, want := range []string{"Name", "Installed"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("form view lacks %q:\n%s", want, view)
+		}
+	}
+
+	press := func(k tea.KeyType) {
+		got, _ := m.Update(tea.KeyMsg{Type: k})
+		m = got.(*model)
+	}
+	for i, want := range []int{1, 0, 1, 0} {
+		press(tea.KeyTab)
+		if m.formCursor != want {
+			t.Fatalf("after Tab %d: formCursor = %d, want %d", i+1, m.formCursor, want)
+		}
+	}
+	press(tea.KeyUp)
+	if m.formCursor != 1 {
+		t.Errorf("Up from 0: formCursor = %d, want 1", m.formCursor)
 	}
 }
 
@@ -95,7 +111,6 @@ func TestAgentForm_RenameExisting(t *testing.T) {
 	}, nil)
 	enterAgentForm(m, m.cfg.Agents[0], false)
 	m.agName.SetValue("new")
-	m.agProvidersInput.SetValue("agy")
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m2 := got.(*model)
@@ -107,6 +122,40 @@ func TestAgentForm_RenameExisting(t *testing.T) {
 	}
 	if m2.cfg.Agents[0].Name != "new" {
 		t.Errorf("name = %q, want new", m2.cfg.Agents[0].Name)
+	}
+}
+
+// TestAgentForm_EditKeepsTheStoredListUntouched verifies that renaming an
+// agent that carries a supported_providers list, a default_provider and the
+// Synthesized flag saves all three exactly as stored. Why: the form no longer
+// edits them, so it must not drop or rewrite what an older config.toml (or a
+// hand edit) holds; saveAgentForm starts from the stored entry.
+func TestAgentForm_EditKeepsTheStoredListUntouched(t *testing.T) {
+	stored := config.Agent{
+		Name:               "old",
+		SupportedProviders: []string{"agy", "claude"},
+		DefaultProvider:    "claude",
+		Synthesized:        true,
+	}
+	m := newModel(testTheme(), &config.Config{
+		Providers: []config.Provider{{ID: "agy"}, {ID: "claude"}},
+		Agents:    []config.Agent{stored},
+	}, nil)
+	enterAgentForm(m, m.cfg.Agents[0], false)
+	m.agName.SetValue("new")
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m2 := got.(*model)
+	if m2.phase != phaseList || m2.formError != "" {
+		t.Fatalf("expected the save to go through, got phase %d, error %q", m2.phase, m2.formError)
+	}
+	if len(m2.cfg.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(m2.cfg.Agents))
+	}
+	want := stored
+	want.Name = "new"
+	if !reflect.DeepEqual(m2.cfg.Agents[0], want) {
+		t.Errorf("agent = %#v, want %#v", m2.cfg.Agents[0], want)
 	}
 }
 

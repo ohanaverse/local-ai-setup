@@ -90,12 +90,10 @@ type model struct {
 	formError  string
 
 	// Agent form fields
-	agEdit                 config.Agent
-	agName                 textinput.Model
-	agProvidersInput       textinput.Model // comma-separated provider IDs
-	agDefaultProviderInput textinput.Model
-	agInstalledName        string // name we last looked up
-	agInstalled            bool   // cached result for agInstalledName
+	agEdit          config.Agent
+	agName          textinput.Model
+	agInstalledName string // name we last looked up
+	agInstalled     bool   // cached result for agInstalledName
 }
 
 func newModel(theme themes.Theme, cfg *config.Config, cfgErr error) *model {
@@ -406,8 +404,6 @@ func (m *model) resizeFormInputs() {
 		w = 10
 	}
 	m.agName.Width = w
-	m.agProvidersInput.Width = w
-	m.agDefaultProviderInput.Width = w
 }
 
 // resolveHome is the home directory f names: os.UserHomeDir when f is nil,
