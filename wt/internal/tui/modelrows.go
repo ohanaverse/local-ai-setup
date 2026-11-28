@@ -6,6 +6,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -168,22 +169,34 @@ func (r *tableRow) rate(ratings tiers.Index) {
 	}
 }
 
-// sortRows orders rows in place, in four bands (this order is also the
+// isAlias reports whether the row is an alias row (#596), by the Kind the
+// model server gave it, the test catalog.RegisteredOrdered makes. A row with
+// no wire row (one built from the registry) is never an alias.
+func isAlias(r tableRow) bool {
+	return r.Wire != nil && r.Wire.Kind == modelapi.KindAlias
+}
+
+// sortRows orders rows in place, in five bands (this order is also the
 // pickers' default selection, see below):
 //
 //  1. native models, alphabetical by id (#172: a native model carries no
 //     per-token price and is the agent's own subscription model);
 //  2. slot-profile rows, alphabetical by their id (profile/<name>);
-//  3. local models that are ready to answer (running, not still loading),
+//  3. alias rows, by their own tier score, highest first, a row with no score
+//     after the scored ones, ties by id; whatever their state (running,
+//     blocked, local or cloud) they stay in this band;
+//  4. local models that are ready to answer (running, not still loading),
 //     by tier score, highest first;
-//  4. every other model, by tier score, highest first.
+//  5. every other model, by tier score, highest first.
 //
-// A model with no score takes the best score of its family's scored rows for
-// its place only (its TIER cell still shows "-"), and sorts right after the
-// scored row it borrowed from, so a model added since the last modeltiers run
-// sits with its family instead of at the end of the list.
+// In bands 4 and 5 a model with no score takes the best score of its family's
+// scored rows for its place only (its TIER cell still shows "-"), and sorts
+// right after the scored row it borrowed from, so a model added since the
+// last modeltiers run sits with its family instead of at the end of the list.
+// An alias borrows nothing: every alias has the family "alias", so the rule
+// would hand an unscored one the best alias score.
 //
-// Within bands 3 and 4 a model with a tied score, or with no score, sorts by
+// Within bands 4 and 5 a model with a tied score, or with no score, sorts by
 // family (alphabetical, a model with no family after the named ones) and then
 // by id, so a family's models sit together instead of being split by provider
 // prefix; a model whose family has no scored row still sorts after every
@@ -193,8 +206,9 @@ func (r *tableRow) rate(ratings tiers.Index) {
 //
 // This order is also the pickers' default selection: newPickModel never calls
 // Select, so its highlighted row is index 0 (the first sorted row), and
-// enterModelPhase's no-rotation fallback picks the first actionable row. A
-// native model in the list therefore becomes what a bare Enter launches.
+// newModelList's no-rotation fallback picks the first row that is not blocked
+// (a stopped alias or model that needs a start counts). A native model in the
+// list therefore becomes what a bare Enter launches.
 func sortRows(rows []tableRow) {
 	// Ready, not Running: a model omlx is still loading is a start row (#259)
 	// and sorts with the other models, so it is never placed above them while
@@ -205,10 +219,12 @@ func sortRows(rows []tableRow) {
 			return 1
 		case r.Model.Native:
 			return 0
-		case r.Location == config.LocationLocal && r.Ready():
+		case isAlias(r):
 			return 2
+		case r.Location == config.LocationLocal && r.Ready():
+			return 3
 		}
-		return 3
+		return 4
 	}
 	// familyBest is the highest score among each family's scored rows, keyed
 	// by non-empty family only, so a row with no family never borrows.
@@ -234,7 +250,18 @@ func sortRows(rows []tableRow) {
 		if ba, bb := band(a), band(b); ba != bb {
 			return ba < bb
 		}
-		if band(a) >= 2 {
+		if band(a) == 2 {
+			// Aliases: own score only, scored before unscored, then id.
+			sa, oka := a.tier.Score()
+			sb, okb := b.tier.Score()
+			if oka != okb {
+				return oka
+			}
+			if oka && sa != sb {
+				return sa > sb
+			}
+		}
+		if band(a) >= 3 {
 			sa, oka, owna := place(a)
 			sb, okb, ownb := place(b)
 			if oka != okb {

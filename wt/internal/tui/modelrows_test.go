@@ -8,6 +8,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -90,6 +91,25 @@ func sortProfile(index int, name string) tableRow {
 		Profile: &catalog.ProfileRow{Check: c, Verdict: catalog.ActionLaunch}}}
 }
 
+// sortAlias is an alias row as the server's catalog gives it: wire Kind
+// alias, family "alias", at loc, with the given score.
+func sortAlias(id string, loc config.Location, running bool, score float64) tableRow {
+	// catalog.Row.Ready reads the wire state whenever there is a wire row, so a
+	// running alias must say so there, as the server's aliasAction does.
+	state := modelapi.StateStopped
+	if running {
+		state = modelapi.StateRunning
+	}
+	return tableRow{
+		Row: catalog.Row{
+			Location: loc, Running: running,
+			Model: config.Model{ID: id, Family: config.AliasProvider},
+			Wire:  &modelapi.Row{ID: id, Kind: modelapi.KindAlias, State: state},
+		},
+		tier: sortEntry(score),
+	}
+}
+
 func assertOrder(t *testing.T, rows []tableRow, want string) {
 	t.Helper()
 	if got := strings.Join(rowIDs(rows), ","); got != want {
@@ -97,20 +117,68 @@ func assertOrder(t *testing.T, rows []tableRow, want string) {
 	}
 }
 
-// TestSortRowsBands pins the four bands in one table: native, then slot
-// profiles, then running local models, then everything else. Every band's
-// rows are given a score that would put them in another place if the score
-// ordered across bands, so only the band decides who is above whom.
+// TestSortRowsBands pins the five bands in one table: native, then slot
+// profiles, then aliases, then running local models, then everything else.
+// Every band's rows are given a score that would put them in another place if
+// the score ordered across bands, so only the band decides who is above whom.
 func TestSortRowsBands(t *testing.T) {
 	rows := []tableRow{
 		sortCloud("cloud-top", 99),
 		sortLocal("local-idle", false, false, 98),
 		sortLocal("local-run", true, false, 1),
+		sortAlias("alias/a", config.LocationCloud, false, 1),
 		sortProfile(0, "p"),
 		sortNative("native", 0),
 	}
 	sortRows(rows)
-	assertOrder(t, rows, "native,profile/p,local-run,cloud-top,local-idle")
+	assertOrder(t, rows, "native,profile/p,alias/a,local-run,cloud-top,local-idle")
+}
+
+// TestSortRowsAliasesByScoreThenID pins the order inside the alias band: the
+// score the TIER column shows, highest first, ties by id, and an alias with
+// no score after every scored one. All of them share the family "alias", so
+// this also pins that an unscored alias does not borrow the best alias score
+// the way an unscored model borrows its family's.
+func TestSortRowsAliasesByScoreThenID(t *testing.T) {
+	rows := []tableRow{
+		sortAlias("alias/low", config.LocationCloud, false, 20),
+		sortAlias("alias/none-b", config.LocationCloud, false, -1),
+		sortAlias("alias/tie-b", config.LocationCloud, false, 45),
+		sortAlias("alias/top", config.LocationCloud, false, 70),
+		sortAlias("alias/none-a", config.LocationCloud, false, -1),
+		sortAlias("alias/tie-a", config.LocationCloud, false, 45),
+	}
+	sortRows(rows)
+	assertOrder(t, rows, "alias/top,alias/tie-a,alias/tie-b,alias/low,alias/none-a,alias/none-b")
+}
+
+// TestSortRowsUnscoredAliasesSortByID pins the no-tiers.toml case: every
+// alias is unscored, so the band is alphabetical by id.
+func TestSortRowsUnscoredAliasesSortByID(t *testing.T) {
+	rows := []tableRow{
+		sortAlias("alias/b", config.LocationCloud, false, -1),
+		sortAlias("alias/a", config.LocationCloud, false, -1),
+	}
+	sortRows(rows)
+	assertOrder(t, rows, "alias/a,alias/b")
+}
+
+// TestSortRowsAliasBandIgnoresStateAndOtherScores pins that an alias's place
+// is the band and its own score alone: a running local alias is in the alias
+// band (below a profile, above a running local model scored far higher), and
+// a blocked alias keeps its place by score.
+func TestSortRowsAliasBandIgnoresStateAndOtherScores(t *testing.T) {
+	blocked := sortAlias("alias/blocked", config.LocationCloud, false, 50)
+	blocked.Wire.State, blocked.Wire.Action = modelapi.StateBlocked, modelapi.ActionBlock
+	rows := []tableRow{
+		sortCloud("c", 98),
+		sortLocal("m/run", true, false, 99),
+		sortAlias("alias/run", config.LocationLocal, true, 10),
+		blocked,
+		sortProfile(0, "p"),
+	}
+	sortRows(rows)
+	assertOrder(t, rows, "profile/p,alias/blocked,alias/run,m/run,c")
 }
 
 // TestSortRowsNativeAlphabetical pins that native rows sort by id, whatever
