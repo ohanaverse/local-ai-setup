@@ -310,7 +310,7 @@ func TestSave_ValidatesOnlyTheSessionRules(t *testing.T) {
 
 // TestSaveNeverWritesASynthesizedAgent pins the spec's rule for the session
 // load: config.LoadSession adds an in-memory agent for each driver with no
-// entry (AllProviders), and a save through the real saveCmd must write only
+// entry (Synthesized), and a save through the real saveCmd must write only
 // the file's own agents. A synthesized claude written to config.toml would
 // pin claude to whatever providers it was saved with and stop accepting every
 // provider.
@@ -350,11 +350,11 @@ func TestSaveNeverWritesASynthesizedAgent(t *testing.T) {
 	}
 }
 
-// slicesContainsSynth reports whether agents holds a synthesized (AllProviders)
+// slicesContainsSynth reports whether agents holds a synthesized (Synthesized)
 // agent named name.
 func slicesContainsSynth(agents []config.Agent, name string) bool {
 	for _, a := range agents {
-		if a.Name == name && a.AllProviders {
+		if a.Name == name && a.Synthesized {
 			return true
 		}
 	}

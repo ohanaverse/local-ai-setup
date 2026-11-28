@@ -738,13 +738,18 @@ func (a ModelArtifact) Target() string {
 
 // Agent is a supported AI coding tool.
 type Agent struct {
-	Name               string   `toml:"name"`
-	SupportedProviders []string `toml:"supported_providers"`        // hard constraint
-	DefaultProvider    string   `toml:"default_provider,omitempty"` // optional
-	// AllProviders marks an in-memory agent LoadSession synthesized for a
-	// driver config.toml does not list: it accepts every provider. Never
-	// persisted.
-	AllProviders bool `toml:"-"`
+	Name string `toml:"name"`
+	// SupportedProviders and DefaultProvider are ignored by every reader (the
+	// eligibility rule derives a provider's agents from the provider and the
+	// model). They stay decoded and are written back untouched so an older
+	// binary still parses the file; a later change deletes them. An entry
+	// with no list is valid, and a nil slice is omitted on save, never
+	// written as an empty list (an older wt-model rejects one).
+	SupportedProviders []string `toml:"supported_providers"`
+	DefaultProvider    string   `toml:"default_provider,omitempty"`
+	// Synthesized marks an in-memory agent LoadSession made for a driver
+	// config.toml does not list. Never persisted.
+	Synthesized bool `toml:"-"`
 }
 
 // ── Config ────────────────────────────────────────────────
@@ -940,9 +945,9 @@ func (c *Config) ValidateAll() error {
 }
 
 // ValidateSession reports, joined, every problem a session-side save can
-// repair without a registry: default_tag set; each agent named, unique, with
-// at least one supported provider and its default provider in that list.
-// Provider ids are not checked; AllProviders agents are skipped.
+// repair without a registry: default_tag set; each agent named and unique.
+// An agent needs no provider list; the ids in one are not checked;
+// Synthesized agents are skipped.
 func (c *Config) ValidateSession() error {
 	var errs []error
 	if c.DefaultTag == "" {
@@ -1041,16 +1046,18 @@ func (c *Config) validate() []error {
 	return errs
 }
 
-// validateAgents is the one agent loop: known == nil skips the
-// unknown-provider check (a session reads no registry) and the agents
-// LoadSession synthesized (AllProviders), which exist only in memory and are
-// never written. ValidateAll passes the registry's provider ids and never sees
-// a synthesized agent: config.Load makes none.
+// validateAgents is the one agent loop: an agent must be named and unique, and
+// needs no provider list. known == nil skips the unknown-provider check (a
+// session reads no registry) and the agents LoadSession synthesized
+// (Synthesized), which exist only in memory and are never written; a non-nil
+// known reports an id still listed that it lacks. ValidateAll passes the
+// registry's provider ids and never sees a synthesized agent: config.Load
+// makes none.
 func (c *Config) validateAgents(known map[string]bool) []error {
 	var errs []error
 	agentNames := map[string]bool{}
 	for _, a := range c.Agents {
-		if known == nil && a.AllProviders {
+		if known == nil && a.Synthesized {
 			continue
 		}
 		if a.Name == "" {
@@ -1060,18 +1067,12 @@ func (c *Config) validateAgents(known map[string]bool) []error {
 			errs = append(errs, fmt.Errorf("duplicate agent name %q", a.Name))
 		}
 		agentNames[a.Name] = true
-		if len(a.SupportedProviders) == 0 {
-			errs = append(errs, fmt.Errorf("agent %q: must have at least one supported provider", a.Name))
-		}
 		if known != nil {
 			for _, pid := range a.SupportedProviders {
 				if !known[pid] {
 					errs = append(errs, fmt.Errorf("agent %q: unknown provider %q", a.Name, pid))
 				}
 			}
-		}
-		if a.DefaultProvider != "" && !slices.Contains(a.SupportedProviders, a.DefaultProvider) {
-			errs = append(errs, fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider))
 		}
 	}
 	return errs
@@ -1382,21 +1383,11 @@ func (e locationErr) Is(target error) bool { return target == ErrLocation }
 func locationError(msg string) error { return locationErr{msg: msg} }
 
 // UpsertAgent adds a when oldName is empty, or updates the agent named
-// oldName. It validates name, supported providers, and default provider.
+// oldName. It checks only the name and, on a rename, that the new name is free;
+// a provider list is not read.
 func (c *Config) UpsertAgent(a Agent, oldName string) error {
 	if a.Name == "" {
 		return fmt.Errorf("agent name is empty")
-	}
-	if len(a.SupportedProviders) == 0 {
-		return fmt.Errorf("agent %q: must have at least one supported provider", a.Name)
-	}
-	for _, pid := range a.SupportedProviders {
-		if c.ProviderByID(pid) == nil {
-			return fmt.Errorf("agent %q: provider %q does not exist", a.Name, pid)
-		}
-	}
-	if a.DefaultProvider != "" && !slices.Contains(a.SupportedProviders, a.DefaultProvider) {
-		return fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider)
 	}
 	// Rename check: if oldName differs, ensure new name is not taken.
 	if oldName != "" && oldName != a.Name {
@@ -1480,10 +1471,10 @@ func writeConfigFile(cfg *Config) error {
 	trimmed := *cfg
 	trimmed.Providers = nil
 	trimmed.Models = nil
-	// Agents LoadSession synthesized (AllProviders) exist only in memory.
+	// Agents LoadSession synthesized (Synthesized) exist only in memory.
 	trimmed.Agents = make([]Agent, 0, len(cfg.Agents))
 	for _, a := range cfg.Agents {
-		if !a.AllProviders {
+		if !a.Synthesized {
 			trimmed.Agents = append(trimmed.Agents, a)
 		}
 	}

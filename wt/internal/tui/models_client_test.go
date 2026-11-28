@@ -212,7 +212,7 @@ func wireRow(id, family string, mut func(*modelapi.Row)) modelapi.Row {
 // remoteConfig is the session config the picker reads: one agent that takes
 // every provider, and the default tag the header names.
 func remoteConfig() *config.Config {
-	return &config.Config{DefaultTag: "code", Agents: []config.Agent{{Name: "claude", AllProviders: true}}}
+	return &config.Config{DefaultTag: "code", Agents: []config.Agent{{Name: "claude", Synthesized: true}}}
 }
 
 // remoteModel is the picker on the agent screen with the server fake attached,

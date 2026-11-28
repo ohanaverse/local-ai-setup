@@ -40,9 +40,11 @@ func TestAgentForm_Add_Success(t *testing.T) {
 	}
 }
 
-// TestAgentForm_DefaultProvider_Constrained verifies that the default
-// provider must be one of the supported providers. This prevents
-// inconsistent agent configurations.
+// TestAgentForm_DefaultProvider_Constrained verifies that a default provider
+// outside the supported providers no longer blocks the save. Why: no reader
+// uses either field now (the eligibility rule derives a provider's agents), so
+// UpsertAgent checks only the name; the form's provider fields are removed in
+// a later change.
 func TestAgentForm_DefaultProvider_Constrained(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{
 		Providers: []config.Provider{{ID: "agy"}},
@@ -55,17 +57,15 @@ func TestAgentForm_DefaultProvider_Constrained(t *testing.T) {
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m2 := got.(*model)
-	if m2.phase != phaseForm {
-		t.Fatalf("expected to stay in form, got phase %d", m2.phase)
-	}
-	if m2.formError == "" {
-		t.Fatal("expected error for invalid default provider")
+	if m2.phase != phaseList || m2.formError != "" {
+		t.Fatalf("expected the save to go through, got phase %d, error %q", m2.phase, m2.formError)
 	}
 }
 
 // TestAgentForm_NoProviders_BlocksSave verifies that an agent with no
-// supported providers cannot be saved. Every agent needs at least one
-// provider to be launchable.
+// supported providers now saves (the name is the only required field). Why:
+// the eligibility rule reads no list, so an empty one is a valid entry; the
+// test keeps its old name until the form drops the field.
 func TestAgentForm_NoProviders_BlocksSave(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{
 		Providers: []config.Provider{{ID: "agy"}},
@@ -77,11 +77,11 @@ func TestAgentForm_NoProviders_BlocksSave(t *testing.T) {
 
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m2 := got.(*model)
-	if m2.phase != phaseForm {
-		t.Fatalf("expected to stay in form, got phase %d", m2.phase)
+	if m2.phase != phaseList || m2.formError != "" {
+		t.Fatalf("expected the save to go through, got phase %d, error %q", m2.phase, m2.formError)
 	}
-	if m2.formError == "" {
-		t.Fatal("expected error for empty supported providers")
+	if len(m2.cfg.Agents) != 1 || m2.cfg.Agents[0].Name != "foo" || len(m2.cfg.Agents[0].SupportedProviders) != 0 {
+		t.Errorf("agents = %+v, want foo with no list", m2.cfg.Agents)
 	}
 }
 

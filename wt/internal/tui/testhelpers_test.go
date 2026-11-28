@@ -443,7 +443,7 @@ func remotePickerFor(t *testing.T, agent string, rows ...modelapi.Row) model {
 	t.Helper()
 	tempStateDir(t)
 	stubUsageStore(t)
-	cfg := &config.Config{DefaultTag: "code", Agents: []config.Agent{{Name: agent, AllProviders: true}}}
+	cfg := &config.Config{DefaultTag: "code", Agents: []config.Agent{{Name: agent, Synthesized: true}}}
 	f := &fakeModels{cat: modelapi.Catalog{Schema: 1, Generated: "2026-11-16T12:00:00Z", Rows: rows},
 		gw: agents.Gateway{Origin: "http://127.0.0.1:1", Token: "gateway-token"}}
 	m := model{cfg: cfg, client: f,

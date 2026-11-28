@@ -602,10 +602,12 @@ func TestValidate_AgentUnknownProvider(t *testing.T) {
 	}
 }
 
-// DefaultProvider must be in the agent's SupportedProviders list. If it
-// isn't, --default would select a provider the agent can't use, producing a
-// confusing runtime error instead of a clear config validation error.
-func TestValidate_DefaultProviderNotInSupported(t *testing.T) {
+// DefaultProvider is ignored by every reader now (the eligibility rule derives
+// a provider's agents), so one outside the agent's SupportedProviders is no
+// longer a validation error. Why: the field is only kept decoded and written
+// back so an older binary parses the file; refusing a config over a value
+// nothing reads would block launches for no benefit.
+func TestValidate_DefaultProviderOutsideListIsIgnored(t *testing.T) {
 	cfg := &Config{
 		DefaultTag: "code",
 		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}, {ID: "claude", Name: "Claude"}},
@@ -613,27 +615,23 @@ func TestValidate_DefaultProviderNotInSupported(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"ollama"}, DefaultProvider: "claude"},
 		},
 	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for default provider not in supported_providers")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a default provider outside the list was refused: %v", err)
 	}
 }
 
-// An agent with no supported_providers is unusable: the launcher cannot pick
-// a model for it. Validate must reject this so the user sees a clear error
-// instead of a runtime "no eligible models" message during launch.
-func TestValidate_AgentRequiresProvider(t *testing.T) {
+// An agent with no supported_providers is valid: the list is no longer read,
+// the launcher derives eligibility from the provider and the model. Why: the
+// old rule demanded a list so the launcher could pick a model; the derived rule
+// needs none, and an entry with only a name must load.
+func TestValidate_AgentWithNoListIsValid(t *testing.T) {
 	cfg := &Config{
 		DefaultTag: "code",
 		Providers:  []Provider{{ID: "ollama", Name: "Ollama", Auth: AuthConfig{Type: "none"}}},
 		Agents:     []Agent{{Name: "lonely"}},
 	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected validation error for empty supported_providers")
-	}
-	if !strings.Contains(err.Error(), "must have at least one supported provider") {
-		t.Errorf("error = %q, want it to mention 'supported provider'", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("an agent with no supported_providers was refused: %v", err)
 	}
 }
 

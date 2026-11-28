@@ -55,7 +55,7 @@ token_file = "~/tok"
 }
 
 // TestLoadSessionSynthesizesDriverAgents proves a driver with no entry gets an
-// in-memory all-providers agent, an explicit entry is kept as written, and a
+// in-memory synthesized agent, an explicit entry is kept as written, and a
 // PatchSave never writes a synthesized agent.
 func TestLoadSessionSynthesizesDriverAgents(t *testing.T) {
 	path := sessionHome(t, `default_tag = "code"
@@ -73,11 +73,11 @@ token_file = "/t"
 		t.Fatal(err)
 	}
 	pi, err := cfg.AgentByName("pi")
-	if err != nil || !pi.AllProviders {
+	if err != nil || !pi.Synthesized {
 		t.Fatalf("pi = %+v, %v", pi, err)
 	}
 	cl, err := cfg.AgentByName("claude")
-	if err != nil || cl.AllProviders || len(cl.SupportedProviders) != 1 || cl.SupportedProviders[0] != "ollama" {
+	if err != nil || cl.Synthesized || len(cl.SupportedProviders) != 1 || cl.SupportedProviders[0] != "ollama" {
 		t.Errorf("claude widened or lost: %+v, %v", cl, err)
 	}
 	if err := cfg.PatchSave(func(fresh *Config) { fresh.DefaultTag = "design" }); err != nil {
@@ -90,16 +90,16 @@ token_file = "/t"
 }
 
 // TestPatchSaveNeverWritesASynthesizedAgent proves an editor save that hands
-// back every in-memory agent (the synthesized AllProviders ones included)
+// back every in-memory agent (the synthesized Synthesized ones included)
 // writes only the agents config.toml held, so a session save never turns a
-// synthesized all-providers agent into a real entry.
+// synthesized agent into a real entry.
 func TestPatchSaveNeverWritesASynthesizedAgent(t *testing.T) {
 	path := sessionHome(t, "default_tag = \"code\"\n\n[[agents]]\nname = \"codex\"\nsupported_providers = [\"openrouter\"]\n")
 	cfg, err := LoadSession("claude")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a, err := cfg.AgentByName("claude"); err != nil || !a.AllProviders {
+	if a, err := cfg.AgentByName("claude"); err != nil || !a.Synthesized {
 		t.Fatalf("claude = %+v, %v", a, err)
 	}
 	if err := cfg.PatchSave(func(fresh *Config) { fresh.Agents = cfg.Agents }); err != nil {
@@ -114,6 +114,52 @@ func TestPatchSaveNeverWritesASynthesizedAgent(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `name = "claude"`) || strings.Contains(string(raw), `name = 'claude'`) {
 		t.Errorf("synthesized agent was written:\n%s", raw)
+	}
+}
+
+// TestAgentWithoutAListRoundTrips proves an agent entry with only a name loads,
+// passes ValidateSession, and survives an unrelated PatchSave without gaining a
+// supported_providers line, while the other agent's list and default stay as
+// written. Why: an older wt-model rejects an empty supported_providers = [],
+// and BurntSushi/toml omits a nil slice, so the field's tag must stay as it is;
+// this pins that the save does not turn "no list" into an empty one.
+func TestAgentWithoutAListRoundTrips(t *testing.T) {
+	path := sessionHome(t, `default_tag = "code"
+
+[[agents]]
+name = "x"
+
+[[agents]]
+name = "y"
+supported_providers = ["ollama", "omlx"]
+default_provider = "omlx"
+`)
+	cfg, err := LoadSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.ValidateSession(); err != nil {
+		t.Fatalf("ValidateSession refused an agent with no list: %v", err)
+	}
+	x, err := cfg.AgentByName("x")
+	if err != nil || len(x.SupportedProviders) != 0 || x.Synthesized {
+		t.Fatalf("x = %+v, %v", x, err)
+	}
+	if err := cfg.PatchSave(func(fresh *Config) { fresh.DefaultTag = "design" }); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if n := strings.Count(text, "supported_providers"); n != 1 {
+		t.Errorf("supported_providers appears %d times, want 1 (only y's):\n%s", n, text)
+	}
+	for _, want := range []string{`name = "x"`, `supported_providers = ["ollama", "omlx"]`, `default_provider = "omlx"`, `default_tag = "design"`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("%q missing:\n%s", want, text)
+		}
 	}
 }
 
@@ -175,7 +221,7 @@ token_file = "~/tok"
 }
 
 // TestWholeFileSaveNeverWritesSynthesizedAgents proves Save of a LoadSession
-// config drops the in-memory all-providers agents (R13) while keeping an
+// config drops the in-memory synthesized agents (R13) while keeping an
 // explicit entry, so a whole-file save cannot persist them.
 func TestWholeFileSaveNeverWritesSynthesizedAgents(t *testing.T) {
 	path := sessionHome(t, `default_tag = "code"

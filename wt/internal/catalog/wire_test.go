@@ -106,10 +106,10 @@ func TestEligibleWireSushiForEveryAgent(t *testing.T) {
 	}
 }
 
-// TestEligibleWireAllProvidersExcludesOthersNative pins that an AllProviders
+// TestEligibleWireSynthesizedExcludesOthersNative pins that an Synthesized
 // claude sees its own native row and every non-native row, not copilot's.
-func TestEligibleWireAllProvidersExcludesOthersNative(t *testing.T) {
-	a := config.Agent{Name: "claude", AllProviders: true}
+func TestEligibleWireSynthesizedExcludesOthersNative(t *testing.T) {
+	a := config.Agent{Name: "claude", Synthesized: true}
 	if got := wid(EligibleWire(eligRows(), a, "", "")); !slices.Equal(got, []string{"a", "b", "c"}) {
 		t.Errorf("got %v", got)
 	}
@@ -155,7 +155,7 @@ func TestEligibleWireAliasNeedsEveryTargetProvider(t *testing.T) {
 			t.Errorf("codex %v: %v, want [a b alias/both alias/one alias/sushi]", codex.SupportedProviders, got)
 		}
 	}
-	claude := config.Agent{Name: "claude", AllProviders: true}
+	claude := config.Agent{Name: "claude", Synthesized: true}
 	if got := wid(EligibleWire(rows, claude, "", "")); !slices.Equal(got, []string{"a", "b", "c", "alias/both", "alias/one", "alias/sushi"}) {
 		t.Errorf("claude: %v", got)
 	}
@@ -174,7 +174,7 @@ func TestEligibleWireAliasNeedsEveryTargetProvider(t *testing.T) {
 // agy takes only its own native row; any other native row reaches only the
 // agent of that name; and every other row reaches every agent, whatever its
 // SupportedProviders list says (a list never narrows) and for a synthesized
-// (AllProviders) agent too.
+// (Synthesized) agent too.
 func TestProviderEligible(t *testing.T) {
 	type tc struct {
 		name     string
@@ -214,13 +214,13 @@ func TestProviderEligible(t *testing.T) {
 			add(config.Agent{Name: n}, p, false, true)
 		}
 		add(config.Agent{Name: "codex", SupportedProviders: []string{"ollama"}}, p, false, true)
-		add(config.Agent{Name: "pi", AllProviders: true}, p, false, true)
+		add(config.Agent{Name: "pi", Synthesized: true}, p, false, true)
 	}
 
 	for _, c := range cases {
 		if got := providerEligible(c.agent, c.provider, c.native); got != c.want {
 			t.Errorf("%s (native=%v, list=%v, all=%v): got %v, want %v",
-				c.name, c.native, c.agent.SupportedProviders, c.agent.AllProviders, got, c.want)
+				c.name, c.native, c.agent.SupportedProviders, c.agent.Synthesized, got, c.want)
 		}
 	}
 }
