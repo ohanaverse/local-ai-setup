@@ -120,7 +120,7 @@ groups sorted by name. Each row shows the agent's name and one of
 > eligibility.** This editor exists to add the missing `config.toml` entry,
 > so a `✗ not configured` row here is exactly what it says. But a launch
 > needs no entry: eligibility is derived from the model row, never from the
-> entry (every non-native row goes to every agent, an agent's own native row
+> entry (every non-native row goes to every agent but agy, an agent's own native row
 > to it alone, a Claude-subscription row to claude only), and an `[[agents]]`
 > entry marks an agent as configured and nothing else. Only an uninstalled
 > agent is truly blocked in the launcher.
@@ -132,8 +132,11 @@ by entry:
 
 - **Agents** — the editable field is `Name`; `Installed` is read-only. The
   form has no provider fields: an entry's `supported_providers` and
-  `default_provider` keys are still parsed and written back as found, and
-  ignored (older binaries need them). When `config.toml` carries a customized
+  `default_provider` keys are still parsed and written back as found (older
+  binaries need them) and decide no agent's eligibility; the host still reads
+  `supported_providers` to seed registry rows and refuses a listed provider
+  that has no row (`wt-model model init` seeds the rows wt has a default
+  for). When `config.toml` carries a customized
   (person-edited, not wt-written) `supported_providers` list, wt prints one
   stderr note per such agent per process:
   `wt: note: config.toml: agent <name>: supported_providers is no longer used and is ignored (eligibility is derived from the provider and the model)`.

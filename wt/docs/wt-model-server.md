@@ -855,7 +855,7 @@ allowed every provider (each agent a session synthesizes) finds it eligible,
 so a launch with no `-M` counts it among the launchable models (one model plus
 an alias over it is then "multiple models match"), and
 a launch of it goes to the gateway under the alias id, which LiteLLM routes;
-an agent whose `config.toml` lists its providers never sees it. A server from before aliases sends a local row's
+an agent whose `config.toml` listed its providers never saw it (that older behavior is gone: a current client derives eligibility from the row, and offers an alias to every agent but agy, to claude alone when a target is on the subscription). A server from before aliases sends a local row's
 `context` from the tiers file, not the registry, so update the server before
 its clients: a newer client against an older server may declare a window for
 claude that no registry value set.
