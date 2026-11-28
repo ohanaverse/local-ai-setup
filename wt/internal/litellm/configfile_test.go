@@ -253,7 +253,7 @@ func TestEnsureSettingsWritesCancelOnDisconnect(t *testing.T) {
 // TestEnsureSettingsKeepsAnExplicitCancelOnDisconnect pins the one opt-out:
 // a hand-written value (false) survives, like the other presence-based keys.
 func TestEnsureSettingsKeepsAnExplicitCancelOnDisconnect(t *testing.T) {
-	f, err := Open(writeConfig(t, "model_list: []\ngeneral_settings:\n  cancel_on_disconnect: false\n  store_model_in_db: true\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"))
+	f, err := Open(writeConfig(t, "model_list: []\ngeneral_settings:\n  cancel_on_disconnect: false\n  store_model_in_db: true\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"+affinitySettings))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestEnsureSettingsKeepsTheAnchorOnAnEmptyBlock(t *testing.T) {
 // root-level merge supplies is not shadowed by a fresh literal block (which
 // would replace it wholesale and drop its database_url).
 func TestEnsureSettingsHonorsMergedGeneralSettings(t *testing.T) {
-	const settled = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	const settled = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n" + affinitySettings
 	for name, body := range map[string]string{
 		"inherited false": "base: &b {cancel_on_disconnect: false}\ngeneral_settings:\n  <<: *b\n  database_url: postgresql://u@localhost/db\n  store_model_in_db: true\n" + settled,
 		"inherited true":  "base: &b {cancel_on_disconnect: true}\ngeneral_settings:\n  <<: *b\n  database_url: postgresql://u@localhost/db\n  store_model_in_db: true\n" + settled,
@@ -331,7 +331,7 @@ func TestEnsureSettingsHonorsMergedGeneralSettings(t *testing.T) {
 // alias, or supplied by a root merge key) are reported, so the user learns the
 // cancel protection is off, and that an ordinary layout reports nothing.
 func TestSettingsWarningsNameTheLayoutsThatSkipCancelOnDisconnect(t *testing.T) {
-	const settled = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	const settled = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n" + affinitySettings
 	for name, tc := range map[string]struct {
 		body string
 		want string
@@ -839,5 +839,270 @@ func TestIsManagedRequiresStrictBool(t *testing.T) {
 		if r.Managed {
 			t.Errorf("%s: Managed = true, want false for a non-bool wt_managed", r.ID)
 		}
+	}
+}
+
+// stepABlock is the router_settings block Step A wrote by hand on the
+// developer's machine (comment included): wt must find nothing to add to it.
+const stepABlock = `router_settings:
+  # Step A: one conversation stays on one deployment of a model group
+  optional_pre_call_checks: [session_affinity]
+  deployment_affinity_ttl_seconds: 14400
+  session_affinity_repin_on_failover: true
+`
+
+// routerSettingsOf decodes f's router_settings block, failing the test when
+// it is not a mapping.
+func routerSettingsOf(t *testing.T, f *File) map[string]any {
+	t.Helper()
+	rs := mapGet(f.root(), "router_settings")
+	if rs == nil || rs.Kind != yaml.MappingNode {
+		t.Fatalf("router_settings is not a mapping:\n%s", enc(t, f))
+	}
+	return decode(t, rs)
+}
+
+// TestEnsureSettingsAddsTheAffinityBlockToAFreshConfig pins that a config.yaml
+// with no router_settings gets the three session-affinity keys, with Step A's
+// values, in a new block at the end of the file: without them a fresh machine
+// has no sticky routing and a model group spreads one conversation over
+// several deployments.
+func TestEnsureSettingsAddsTheAffinityBlockToAFreshConfig(t *testing.T) {
+	f, err := Open(writeConfig(t, "model_list: []\n"+settledWithoutAffinity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"optional_pre_call_checks", "deployment_affinity_ttl_seconds", "session_affinity_repin_on_failover"}
+	if got := routerSettingsToAdd(f.root()); !slices.Equal(got, want) {
+		t.Fatalf("routerSettingsToAdd = %v, want %v", got, want)
+	}
+	f.EnsureSettings()
+	root := f.root()
+	if last := root.Content[len(root.Content)-2].Value; last != "router_settings" {
+		t.Fatalf("last top-level key = %q, want router_settings:\n%s", last, enc(t, f))
+	}
+	rs := routerSettingsOf(t, f)
+	if checks, ok := rs["optional_pre_call_checks"].([]any); !ok || !slices.Equal(checks, []any{"session_affinity"}) {
+		t.Errorf("optional_pre_call_checks = %#v, want [session_affinity]", rs["optional_pre_call_checks"])
+	}
+	if rs["deployment_affinity_ttl_seconds"] != 14400 || rs["session_affinity_repin_on_failover"] != true || len(rs) != 3 {
+		t.Errorf("router_settings = %v, want the three affinity keys only", rs)
+	}
+	if got := routerSettingsToAdd(f.root()); len(got) != 0 {
+		t.Errorf("routerSettingsToAdd after the write = %v, want none", got)
+	}
+	f2, _ := Open(writeConfig(t, enc(t, f)))
+	f2.EnsureSettings()
+	if f2.Changed() {
+		t.Fatalf("EnsureSettings is not idempotent on the block it wrote:\n%s", enc(t, f2))
+	}
+}
+
+// TestEnsureSettingsLeavesTheStepABlockAlone pins that the block already on
+// the developer's machine (Step A's hand-written one, with its comment) needs
+// no change, so the first sync with this code neither writes config.yaml nor
+// restarts the proxy, and says nothing about it.
+func TestEnsureSettingsLeavesTheStepABlockAlone(t *testing.T) {
+	f, err := Open(writeConfig(t, "model_list: []\n"+settledWithoutAffinity+stepABlock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := routerSettingsToAdd(f.root()); len(got) != 0 {
+		t.Fatalf("routerSettingsToAdd = %v, want none", got)
+	}
+	if w := f.settingsWarnings(); len(w) != 0 {
+		t.Fatalf("settingsWarnings = %q, want none", w)
+	}
+	f.EnsureSettings()
+	if f.Changed() {
+		t.Fatalf("EnsureSettings changed the Step A block:\n%s", enc(t, f))
+	}
+}
+
+// TestEnsureSettingsFillsOnlyTheMissingAffinityKeys pins that a block holding
+// only the checks list gets the other two keys and keeps its list exactly as
+// written: wt fills gaps, it never rewrites what the user put there.
+func TestEnsureSettingsFillsOnlyTheMissingAffinityKeys(t *testing.T) {
+	f, err := Open(writeConfig(t, "model_list: []\n"+settledWithoutAffinity+"router_settings:\n  optional_pre_call_checks: [session_affinity] # mine\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := routerSettingsToAdd(f.root()), []string{"deployment_affinity_ttl_seconds", "session_affinity_repin_on_failover"}; !slices.Equal(got, want) {
+		t.Fatalf("routerSettingsToAdd = %v, want %v", got, want)
+	}
+	f.EnsureSettings()
+	out := enc(t, f)
+	if !strings.Contains(out, "optional_pre_call_checks: [session_affinity] # mine") {
+		t.Errorf("the hand-written list was rewritten:\n%s", out)
+	}
+	rs := routerSettingsOf(t, f)
+	if rs["deployment_affinity_ttl_seconds"] != 14400 || rs["session_affinity_repin_on_failover"] != true || len(rs) != 3 {
+		t.Errorf("router_settings = %v, want the two missing keys added", rs)
+	}
+}
+
+// TestEnsureSettingsKeepsAnAffinityOptOut pins the opt-out: a hand-written
+// session_affinity_repin_on_failover: false and a TTL of the user's own stay
+// as written, because value-enforcing them would leave no way to turn them off.
+func TestEnsureSettingsKeepsAnAffinityOptOut(t *testing.T) {
+	f, err := Open(writeConfig(t, "model_list: []\n"+settledWithoutAffinity+"router_settings:\n  optional_pre_call_checks: [session_affinity]\n  deployment_affinity_ttl_seconds: 3600\n  session_affinity_repin_on_failover: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.EnsureSettings()
+	if f.Changed() {
+		t.Fatalf("an affinity opt-out was rewritten:\n%s", enc(t, f))
+	}
+	if rs := routerSettingsOf(t, f); rs["deployment_affinity_ttl_seconds"] != 3600 || rs["session_affinity_repin_on_failover"] != false {
+		t.Fatalf("router_settings = %v, want ttl 3600 and repin false kept", rs)
+	}
+}
+
+// TestEnsureSettingsNeverExtendsTheChecksList pins that a checks list without
+// session_affinity is the user's choice and is never extended, and that the
+// sync's warnings then say affinity is off, so the choice is not silent.
+func TestEnsureSettingsNeverExtendsTheChecksList(t *testing.T) {
+	f, err := Open(writeConfig(t, "model_list: []\n"+settledWithoutAffinity+"router_settings:\n  optional_pre_call_checks: [prompt_caching]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.EnsureSettings()
+	rs := routerSettingsOf(t, f)
+	if checks, ok := rs["optional_pre_call_checks"].([]any); !ok || !slices.Equal(checks, []any{"prompt_caching"}) {
+		t.Fatalf("optional_pre_call_checks = %#v, want [prompt_caching] untouched", rs["optional_pre_call_checks"])
+	}
+	w := f.settingsWarnings()
+	if len(w) != 1 || !strings.Contains(w[0], "session affinity is off") || !strings.Contains(w[0], "session_affinity") {
+		t.Fatalf("settingsWarnings = %q, want one line saying session affinity is off", w)
+	}
+}
+
+// TestEnsureSettingsAffinityNullAndScalarCases pins the null and scalar rules:
+// an empty router_settings and an empty checks key read as absent and are
+// filled, while a scalar checks value is something the user wrote and is left
+// alone.
+func TestEnsureSettingsAffinityNullAndScalarCases(t *testing.T) {
+	t.Run("null block", func(t *testing.T) {
+		f, err := Open(writeConfig(t, "model_list: []\n"+settledWithoutAffinity+"router_settings:\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.EnsureSettings()
+		rs := routerSettingsOf(t, f)
+		if len(rs) != 3 || rs["deployment_affinity_ttl_seconds"] != 14400 || rs["session_affinity_repin_on_failover"] != true {
+			t.Fatalf("router_settings = %v, want the three affinity keys", rs)
+		}
+		if strings.Count(enc(t, f), "router_settings:") != 1 {
+			t.Fatalf("duplicate block:\n%s", enc(t, f))
+		}
+	})
+	t.Run("null checks key", func(t *testing.T) {
+		f, err := Open(writeConfig(t, "model_list: []\n"+settledWithoutAffinity+"router_settings:\n  optional_pre_call_checks:\n  deployment_affinity_ttl_seconds: 14400\n  session_affinity_repin_on_failover: true\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := routerSettingsToAdd(f.root()); !slices.Equal(got, []string{"optional_pre_call_checks"}) {
+			t.Fatalf("routerSettingsToAdd = %v, want the checks key", got)
+		}
+		f.EnsureSettings()
+		if checks, ok := routerSettingsOf(t, f)["optional_pre_call_checks"].([]any); !ok || !slices.Equal(checks, []any{"session_affinity"}) {
+			t.Fatalf("optional_pre_call_checks = %#v, want [session_affinity]", checks)
+		}
+	})
+	t.Run("scalar checks", func(t *testing.T) {
+		f, err := Open(writeConfig(t, "model_list: []\n"+settledWithoutAffinity+"router_settings:\n  optional_pre_call_checks: session_affinity\n  deployment_affinity_ttl_seconds: 14400\n  session_affinity_repin_on_failover: true\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.EnsureSettings()
+		if f.Changed() {
+			t.Fatalf("a scalar optional_pre_call_checks was rewritten:\n%s", enc(t, f))
+		}
+	})
+}
+
+// TestEnsureSettingsSkipsAnAliasedOrMergedRouterSettings pins that a
+// router_settings shared with other keys (a whole-value alias) or supplied by
+// a root merge key is never written, because a write would change the shared
+// block or shadow it, and that the sync's warnings say session affinity was
+// not written and why.
+func TestEnsureSettingsSkipsAnAliasedOrMergedRouterSettings(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want string
+	}{
+		"alias":      {"base: &r {num_retries: 2}\nrouter_settings: *r\nmodel_list: []\n" + settledWithoutAffinity, "is a YAML alias"},
+		"root merge": {"base: &b\n  router_settings:\n    num_retries: 2\n<<: *b\nmodel_list: []\n" + settledWithoutAffinity, "root merge key"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := Open(writeConfig(t, tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := routerSettingsToAdd(f.root()); len(got) != 0 {
+				t.Fatalf("routerSettingsToAdd = %v, want none for a skipped block", got)
+			}
+			w := f.settingsWarnings()
+			if len(w) != 1 || !strings.Contains(w[0], "router_settings") || !strings.Contains(w[0], "session affinity") || !strings.Contains(w[0], tc.want) {
+				t.Fatalf("settingsWarnings = %q, want one naming router_settings, session affinity and %q", w, tc.want)
+			}
+			f.EnsureSettings()
+			if f.Changed() {
+				t.Fatalf("EnsureSettings wrote through a shared router_settings:\n%s", enc(t, f))
+			}
+		})
+	}
+}
+
+// TestSaveKeepsAHandWrittenRouterSettingsMeaning pins that a hand-written
+// router_settings (comments, an anchor, a key wt does not name) comes back
+// from EnsureSettings, Save and a reopen with every key, value, comment and
+// anchor intact, in its own order, and nothing added: wt must never lose or
+// reorder what the user wrote there.
+func TestSaveKeepsAHandWrittenRouterSettingsMeaning(t *testing.T) {
+	const block = `router_settings:
+  # retries first
+  num_retries: 2
+  optional_pre_call_checks: &checks [session_affinity] # sticky
+  deployment_affinity_ttl_seconds: 14400
+  session_affinity_repin_on_failover: true
+other_checks: *checks
+`
+	p := writeConfig(t, "model_list: []\n"+settledWithoutAffinity+block)
+	f, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.EnsureSettings()
+	if f.Changed() {
+		t.Fatalf("EnsureSettings changed a complete hand-written block:\n%s", enc(t, f))
+	}
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+	g, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := readFile(t, p)
+	for _, want := range []string{"# retries first", "&checks", "# sticky", "other_checks: *checks"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lost %q:\n%s", want, out)
+		}
+	}
+	rs := mapGet(g.root(), "router_settings")
+	var keys []string
+	for i := 0; i+1 < len(rs.Content); i += 2 {
+		keys = append(keys, rs.Content[i].Value)
+	}
+	if want := []string{"num_retries", "optional_pre_call_checks", "deployment_affinity_ttl_seconds", "session_affinity_repin_on_failover"}; !slices.Equal(keys, want) {
+		t.Fatalf("router_settings keys = %v, want %v", keys, want)
+	}
+	m := routerSettingsOf(t, g)
+	if m["num_retries"] != 2 || m["deployment_affinity_ttl_seconds"] != 14400 || m["session_affinity_repin_on_failover"] != true {
+		t.Fatalf("router_settings = %v", m)
+	}
+	if checks, ok := m["optional_pre_call_checks"].([]any); !ok || !slices.Equal(checks, []any{"session_affinity"}) {
+		t.Fatalf("optional_pre_call_checks = %#v", m["optional_pre_call_checks"])
 	}
 }

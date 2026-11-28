@@ -764,6 +764,11 @@ type SyncPlan struct {
 	// Aliases is what the sync would do with each alias (#596), sorted by
 	// id; filled by PlanSync alone, and only when the database half answers.
 	Aliases []AliasPlan
+	// affinityKeys names the router_settings keys the sync would add for
+	// session affinity (routerSettingsToAdd of the file before EnsureSettings),
+	// in write order; filled by PlanSync alone. The text dry run says why it
+	// restarts with them; the JSON carries no field for it.
+	affinityKeys []string
 	// markedOnly holds the Remove ids owned by marker alone (not named like a
 	// managed registry id): Sync drops only their marked rows.
 	markedOnly map[string]bool
@@ -1184,7 +1189,9 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 	}
 	// The real sync saves, and restarts the proxy, exactly when the document
 	// it carried the plan out on (settings included) differs from the one it
-	// read: the same test, on the discarded copy.
+	// read: the same test, on the discarded copy. The affinity keys it would
+	// add are read first, so the text can say why it restarts.
+	plan.affinityKeys = routerSettingsToAdd(f.root())
 	f.EnsureSettings()
 	plan.Restart = f.Changed()
 	return plan, nil

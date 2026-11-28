@@ -12,9 +12,17 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
+// affinitySettings is the session-affinity router_settings block as Step A
+// wrote it by hand and EnsureSettings writes it: present, it needs no change.
+const affinitySettings = "router_settings:\n  optional_pre_call_checks: [session_affinity]\n  deployment_affinity_ttl_seconds: 14400\n  session_affinity_repin_on_failover: true\n"
+
+// settledWithoutAffinity is every settled settings block but router_settings,
+// for the tests of the affinity keys themselves.
+const settledWithoutAffinity = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n"
+
 // settledSettings is the settings block EnsureSettings leaves alone, so a
 // write that changes no row leaves config.yaml byte-identical.
-const settledSettings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n"
+const settledSettings = settledWithoutAffinity + affinitySettings
 
 // dbOpts is opts with Options.Admin pointed at a fresh fake LiteLLM model API.
 func dbOpts(t *testing.T, body string) (Options, *int, string, *fakeDBServer) {

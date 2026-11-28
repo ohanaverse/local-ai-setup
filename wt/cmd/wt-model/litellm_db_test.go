@@ -319,7 +319,8 @@ func TestServeStartReconcilesDatabaseRoutes(t *testing.T) {
 	seedProxyHome(t, srv.URL, "sk-test", 0o600)
 	litellmEnv(t, "model_list: []\n"+
 		"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"+
-		"general_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n")
+		"general_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n"+
+		"router_settings:\n  optional_pre_call_checks: [session_affinity]\n  deployment_affinity_ttl_seconds: 14400\n  session_affinity_repin_on_failover: true\n")
 	probe := func(*config.Config) localmodels.Snapshot {
 		return localmodels.Snapshot{
 			Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
@@ -382,7 +383,8 @@ func TestSyncDryRunReadsTheDatabaseAndWritesNothing(t *testing.T) {
 	seedConfig(t, false)
 	litellmEnv(t, "model_list: []\n"+
 		"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"+
-		"general_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n")
+		"general_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n"+
+		"router_settings:\n  optional_pre_call_checks: [session_affinity]\n  deployment_affinity_ttl_seconds: 14400\n  session_affinity_repin_on_failover: true\n")
 	h := testHost()
 	h.adminFor = func(*config.Config) *litellm.AdminClient { return adminFromPair(srv.URL, "sk-test") }
 	stubProbeInventory(h, localmodels.Snapshot{
@@ -412,7 +414,8 @@ func TestSyncDryRunReadsTheDatabaseAndWritesNothing(t *testing.T) {
 // ran would add store_model_in_db to it (and owe a restart).
 const preStoreYAML = "model_list: []\n" +
 	"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n" +
-	"general_settings:\n  cancel_on_disconnect: true\n"
+	"general_settings:\n  cancel_on_disconnect: true\n" +
+	"router_settings:\n  optional_pre_call_checks: [session_affinity]\n  deployment_affinity_ttl_seconds: 14400\n  session_affinity_repin_on_failover: true\n"
 
 // TestServeStartSyncSkipsWhenItCannotSeeTheDatabase pins the start sync's
 // gate (#598 review): at login serve listens before the proxy and its

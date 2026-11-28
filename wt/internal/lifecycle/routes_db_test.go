@@ -23,6 +23,10 @@ litellm_settings:
 general_settings:
   cancel_on_disconnect: true
   store_model_in_db: true
+router_settings:
+  optional_pre_call_checks: [session_affinity]
+  deployment_affinity_ttl_seconds: 14400
+  session_affinity_repin_on_failover: true
 `
 
 // TestStartPrintsTheDatabaseFallbackLine pins that a start's route hook

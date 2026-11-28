@@ -712,15 +712,128 @@ func cancelOnDisconnectSkipped(root *yaml.Node) string {
 	return ""
 }
 
-// settingsWarnings reports the launcher-required settings EnsureSettings
-// could not write, so a sync tells the user the protection is off instead of
-// leaving it silent. Sync reports it beside ollamaServeWarnings.
-func (f *File) settingsWarnings() []string {
-	why := cancelOnDisconnectSkipped(f.root())
-	if why == "" {
+// affinityTTLSeconds is router_settings.deployment_affinity_ttl_seconds as wt
+// writes it: 4 h, the Step A value (LiteLLM's own default is 3600).
+const affinityTTLSeconds = 14400
+
+// sessionAffinityCheck is the optional_pre_call_checks entry that turns
+// LiteLLM's session affinity on.
+const sessionAffinityCheck = "session_affinity"
+
+// affinitySettingKeys are the router_settings keys ensureRouterSettings
+// writes, in write order.
+var affinitySettingKeys = []string{"optional_pre_call_checks", "deployment_affinity_ttl_seconds", "session_affinity_repin_on_failover"}
+
+// affinityValue is the value wt writes for one of affinitySettingKeys.
+func affinityValue(key string) *yaml.Node {
+	switch key {
+	case "optional_pre_call_checks":
+		seq := stringSeq([]string{sessionAffinityCheck})
+		seq.Style = yaml.FlowStyle
+		return seq
+	case "deployment_affinity_ttl_seconds":
+		n, _ := toNode(affinityTTLSeconds) // a literal int never fails
+		return n
+	}
+	return boolNode(true)
+}
+
+// routerSettingsSkipped says why ensureRouterSettings leaves the document
+// alone, or "" when it does not: router_settings is a whole-value alias or
+// comes from a root merge key, so a write would change a block other keys
+// share (or shadow it with a literal one). Same shape as
+// cancelOnDisconnectSkipped.
+func routerSettingsSkipped(root *yaml.Node) string {
+	rs := mapGet(root, "router_settings")
+	switch {
+	case rs == nil && mergedGet(root, "router_settings") != nil:
+		return "comes from a root merge key (<<)"
+	case rs != nil && rs.Kind == yaml.AliasNode:
+		return "is a YAML alias"
+	}
+	return ""
+}
+
+// routerSettingsToAdd names the affinitySettingKeys ensureRouterSettings
+// would write now, in write order: each one absent or null (read through
+// merge keys, a whole-value alias resolved), in a router_settings that is
+// absent, null or a mapping. A skipped block (routerSettingsSkipped) or one
+// that is not a mapping gets none. It never mutates, so a dry run may call it.
+func routerSettingsToAdd(root *yaml.Node) []string {
+	if routerSettingsSkipped(root) != "" {
 		return nil
 	}
-	return []string{"general_settings " + why + ", so wt did not write cancel_on_disconnect: true; set it there by hand or the proxy keeps generating for abandoned non-streamed requests (#399)"}
+	rs := mapGet(root, "router_settings")
+	if rs != nil && !isNull(rs) && rs.Kind != yaml.MappingNode {
+		return nil
+	}
+	var out []string
+	for _, k := range affinitySettingKeys {
+		if v := aliasValue(mergedGet(rs, k)); v == nil || isNull(v) {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// ensureRouterSettings writes LiteLLM's session-affinity settings into
+// router_settings where they are missing: optional_pre_call_checks:
+// [session_affinity], deployment_affinity_ttl_seconds: 14400 and
+// session_affinity_repin_on_failover: true, so one conversation stays on one
+// deployment of a model group. Only absent or null keys are written
+// (routerSettingsToAdd); a hand-written value, false or a list without
+// session_affinity included, is the opt-out and is never touched, and a
+// present list is never extended. Only the file is read: a router_settings
+// kept in LiteLLM's database is not consulted (a key here shadows it).
+func ensureRouterSettings(root *yaml.Node) {
+	keys := routerSettingsToAdd(root)
+	if len(keys) == 0 {
+		return
+	}
+	rs := ensureMapping(root, "router_settings")
+	for _, k := range keys {
+		mapSet(rs, k, affinityValue(k))
+	}
+}
+
+// affinityOffWarning says session affinity is off because a hand-written
+// router_settings.optional_pre_call_checks list has no session_affinity, or
+// "" otherwise. Only a real mapping block is judged (a skipped one has its own
+// warning) and only a list (a scalar is left alone and not interpreted).
+func affinityOffWarning(root *yaml.Node) string {
+	rs := mapGet(root, "router_settings")
+	if rs == nil || rs.Kind != yaml.MappingNode {
+		return ""
+	}
+	checks := aliasValue(mergedGet(rs, "optional_pre_call_checks"))
+	if checks == nil || checks.Kind != yaml.SequenceNode {
+		return ""
+	}
+	for _, c := range checks.Content {
+		if c := aliasValue(c); c != nil && c.Kind == yaml.ScalarNode && c.Value == sessionAffinityCheck {
+			return ""
+		}
+	}
+	return "router_settings.optional_pre_call_checks has no session_affinity, so session affinity is off and a model group may send one conversation to several deployments; add session_affinity to the list to turn it on"
+}
+
+// settingsWarnings reports the launcher-required settings EnsureSettings
+// could not write, so a sync tells the user the protection is off instead of
+// leaving it silent, and a session affinity the user's checks list turns off.
+// Sync reports it beside ollamaServeWarnings.
+func (f *File) settingsWarnings() []string {
+	root := f.root()
+	var out []string
+	if why := cancelOnDisconnectSkipped(root); why != "" {
+		out = append(out, "general_settings "+why+", so wt did not write cancel_on_disconnect: true; set it there by hand or the proxy keeps generating for abandoned non-streamed requests (#399)")
+	}
+	if why := routerSettingsSkipped(root); why != "" {
+		out = append(out, "router_settings "+why+", so wt did not write the session affinity settings (optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds, session_affinity_repin_on_failover); set them there by hand or a model group may send one conversation to several deployments")
+	}
+	if w := affinityOffWarning(root); w != "" {
+		out = append(out, w)
+	}
+	return out
 }
 
 // storeState is what general_settings.store_model_in_db says, read the way
@@ -793,7 +906,8 @@ func (f *File) dbRoutesOffWarning() string {
 
 // EnsureSettings applies the launcher-required LiteLLM settings: two
 // value-enforced litellm_settings keys, presence-based
-// general_settings.cancel_on_disconnect and store_model_in_db, and
+// general_settings.cancel_on_disconnect and store_model_in_db, the
+// presence-based session-affinity router_settings (ensureRouterSettings), and
 // presence-based per-row params
 // (additional_drop_params on ollama_chat/ rows, use_chat_completions_api on
 // loopback openai/ rows). Tolerates hand-edited degenerate shapes.
@@ -809,6 +923,7 @@ func (f *File) EnsureSettings() {
 	}
 	ensureCancelOnDisconnect(root)
 	ensureStoreModelInDB(root)
+	ensureRouterSettings(root)
 	ml := f.modelListSeq()
 	if ml == nil {
 		return

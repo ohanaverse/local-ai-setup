@@ -161,7 +161,8 @@ func TestLitellmSyncLeavesUnreachableFamilyAlone(t *testing.T) {
 	// The row carries an api_base so the write has nothing to repair (#202):
 	// this test is about the family's routes being left alone.
 	body := "model_list:\n  - model_name: ollama/gemma:9b\n    litellm_params: {model: ollama_chat/gemma:9b, api_base: \"http://localhost:11434\", additional_drop_params: [reasoning_effort]}\n" +
-		"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n"
+		"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n" +
+		"router_settings:\n  optional_pre_call_checks: [session_affinity]\n  deployment_affinity_ttl_seconds: 14400\n  session_affinity_repin_on_failover: true\n"
 	p := litellmEnv(t, body)
 	stubProbeInventory(h, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusUnreachable},
@@ -902,6 +903,10 @@ litellm_settings:
 general_settings:
   cancel_on_disconnect: true
   store_model_in_db: true
+router_settings:
+  optional_pre_call_checks: [session_affinity]
+  deployment_affinity_ttl_seconds: 14400
+  session_affinity_repin_on_failover: true
 `
 	reg := config.Model{ID: "omlx/reg", ProviderID: "omlx", ModelName: "reg"}
 	noLocation := litellmTestConfig()

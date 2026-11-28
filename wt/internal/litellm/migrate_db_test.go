@@ -15,7 +15,7 @@ import (
 
 // preStoreSettings is the settings block a config.yaml written before #598
 // carries: settled in every other key, but without store_model_in_db.
-const preStoreSettings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n"
+const preStoreSettings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n" + affinitySettings
 
 // markedLocalRows is two wt-written local rows as a pre-#598 sync left them in
 // config.yaml, plus the cloud row, all as Sync builds them for testConfig.
@@ -79,7 +79,7 @@ func TestEnsureSettingsAddsStoreModelInDBWhenAbsent(t *testing.T) {
 // never rewritten, and a sync with the API configured then calls no API at
 // all, keeps the local route in config.yaml and says why in one warning.
 func TestEnsureSettingsKeepsExplicitFalse(t *testing.T) {
-	const settled = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	const settled = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n" + affinitySettings
 	for name, gs := range map[string]string{
 		"literal":   "general_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: false\n",
 		"inherited": "base: &b {store_model_in_db: false}\ngeneral_settings:\n  <<: *b\n  cancel_on_disconnect: true\n",

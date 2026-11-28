@@ -179,6 +179,11 @@ func ReportSyncPlan(out, errOut io.Writer, plan SyncPlan, warnings []string, asJ
 		case len(plan.Move) > 0 && plan.Restart:
 			fmt.Fprintln(out, "config.yaml: the moved rows would leave it; the proxy would restart once")
 		}
+		// So does adding the session-affinity router_settings (text only:
+		// the JSON has no field for it).
+		if len(plan.affinityKeys) > 0 {
+			fmt.Fprintf(out, "config.yaml: would add router_settings.%s (session affinity); the proxy would restart once\n", strings.Join(plan.affinityKeys, ", router_settings."))
+		}
 		for _, e := range doc.Plan.Errors {
 			fmt.Fprintf(errOut, "%s: %s\n", e.ID, e.Error)
 		}
