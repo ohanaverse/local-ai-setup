@@ -891,7 +891,10 @@ func TestEnsureSettingsAddsTheAffinityBlockToAFreshConfig(t *testing.T) {
 	if got := routerSettingsToAdd(f.root()); len(got) != 0 {
 		t.Errorf("routerSettingsToAdd after the write = %v, want none", got)
 	}
-	f2, _ := Open(writeConfig(t, enc(t, f)))
+	f2, err := Open(writeConfig(t, enc(t, f)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	f2.EnsureSettings()
 	if f2.Changed() {
 		t.Fatalf("EnsureSettings is not idempotent on the block it wrote:\n%s", enc(t, f2))
@@ -980,7 +983,8 @@ func TestEnsureSettingsNeverExtendsTheChecksList(t *testing.T) {
 // TestEnsureSettingsAffinityNullAndScalarCases pins the null and scalar rules:
 // an empty router_settings and an empty checks key read as absent and are
 // filled, while a scalar checks value is something the user wrote and is left
-// alone.
+// alone (and draws no affinity-off warning), and a key a merge key inside
+// router_settings supplies counts as present and is not written again.
 func TestEnsureSettingsAffinityNullAndScalarCases(t *testing.T) {
 	t.Run("null block", func(t *testing.T) {
 		f, err := Open(writeConfig(t, "model_list: []\n"+settledWithoutAffinity+"router_settings:\n"))
@@ -1017,6 +1021,26 @@ func TestEnsureSettingsAffinityNullAndScalarCases(t *testing.T) {
 		f.EnsureSettings()
 		if f.Changed() {
 			t.Fatalf("a scalar optional_pre_call_checks was rewritten:\n%s", enc(t, f))
+		}
+		if w := f.settingsWarnings(); len(w) != 0 {
+			t.Fatalf("settingsWarnings = %q, want none: a scalar checks value is not interpreted as a list without session_affinity", w)
+		}
+	})
+	t.Run("merge key inside router_settings", func(t *testing.T) {
+		f, err := Open(writeConfig(t, "model_list: []\n"+settledWithoutAffinity+"base: &a\n  optional_pre_call_checks: [session_affinity]\n  deployment_affinity_ttl_seconds: 14400\nrouter_settings:\n  <<: *a\n  num_retries: 2\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := routerSettingsToAdd(f.root()); !slices.Equal(got, []string{"session_affinity_repin_on_failover"}) {
+			t.Fatalf("routerSettingsToAdd = %v, want only the key the merge does not supply", got)
+		}
+		f.EnsureSettings()
+		out := enc(t, f)
+		if strings.Count(out, "optional_pre_call_checks:") != 1 || strings.Count(out, "deployment_affinity_ttl_seconds:") != 1 || strings.Count(out, "session_affinity_repin_on_failover:") != 1 {
+			t.Fatalf("a key supplied by the merge was written again, or the missing one was not written once:\n%s", out)
+		}
+		if got := routerSettingsToAdd(f.root()); len(got) != 0 {
+			t.Fatalf("routerSettingsToAdd after the write = %v, want none", got)
 		}
 	})
 }

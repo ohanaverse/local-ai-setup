@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -88,5 +89,32 @@ func TestPlanSyncSaysWhyItRestartsForAffinity(t *testing.T) {
 	}
 	if settled.Restart || out.Len() != 0 {
 		t.Fatalf("settled plan restart=%v text %q, want no restart and no line", settled.Restart, out.String())
+	}
+}
+
+// TestPlanSyncAffinityLineSharesTheRestartWithEnableDB pins that when the dry
+// run has already said the proxy would restart once (the EnableDB line, or the
+// Move-with-Restart line), the affinity line says it shares that restart
+// instead of announcing a second one: a fresh machine hits both, and two lines
+// each saying "restart once" read as two restarts.
+func TestPlanSyncAffinityLineSharesTheRestartWithEnableDB(t *testing.T) {
+	for name, plan := range map[string]SyncPlan{
+		"enable db":    {EnableDB: true, Restart: true, affinityKeys: []string{"optional_pre_call_checks"}},
+		"move restart": {Move: []string{"ollama/x"}, Restart: true, affinityKeys: []string{"optional_pre_call_checks"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := ReportSyncPlan(&out, io.Discard, plan, nil, false); err != nil {
+				t.Fatal(err)
+			}
+			text := out.String()
+			if n := strings.Count(text, "restart once"); n != 1 {
+				t.Fatalf("%d occurrences of \"restart once\", want exactly 1:\n%s", n, text)
+			}
+			const want = "config.yaml: would add router_settings.optional_pre_call_checks (session affinity), in the same restart\n"
+			if !strings.HasSuffix(text, want) {
+				t.Fatalf("output does not end with the shared-restart affinity line %q:\n%s", want, text)
+			}
+		})
 	}
 }
