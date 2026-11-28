@@ -20,11 +20,14 @@ import (
 // it lists the catalog, narrows it to what agent can use (tags, family) and
 // keeps the launch rows that are neither aliases nor subscription rows (a
 // no-pin launch never chooses either: a Claude subscription model is
-// pin-only, #597). The second result is the list rotation walks: registered
-// rows only, in Order, never a blocked or start row, an alias, a subscription
-// row or a discovered model. One launchable row is the answer; several are
-// "multiple models match"; when the only launchable rows were subscription
-// rows the error says to name one with -M.
+// pin-only, #597). The second result, registered, is the registered subset of
+// those launchable rows (never a blocked or start row, an alias, a
+// subscription row or a discovered model); its one use is that, with several
+// launchable rows, a non-empty registered sends the launch to the picker (off
+// a terminal, to the refusal naming -M) instead of the "multiple models
+// match" error. One launchable row is the answer; several are "multiple
+// models match"; when the only launchable rows were subscription rows the
+// error says to name one with -M.
 //
 // Its errors (Catalog, Resolve, a block reason, an ineligible pin) come back
 // WITHOUT a still clause: the caller adds it.
@@ -63,8 +66,8 @@ func resolveModelRemote(ctx context.Context, ms *modelSession, agent config.Agen
 	// A no-pin launch never chooses an alias (decision 14) or a subscription
 	// row (#597: pin-only, so the owner's subscription is never spent
 	// unasked): the picker lists them and -M launches them, but neither is
-	// the one launchable row nor a rotation entry.
-	var launchable, rotation []modelapi.Row
+	// the one launchable row nor in registered.
+	var launchable, registered []modelapi.Row
 	subscriptionOnly := false
 	for _, r := range catalog.Launchable(eligible) {
 		if r.Kind == modelapi.KindAlias {
@@ -76,7 +79,7 @@ func resolveModelRemote(ctx context.Context, ms *modelSession, agent config.Agen
 		}
 		launchable = append(launchable, r)
 		if r.Registered {
-			rotation = append(rotation, r)
+			registered = append(registered, r)
 		}
 	}
 	switch {
@@ -87,7 +90,7 @@ func resolveModelRemote(ctx context.Context, ms *modelSession, agent config.Agen
 	case len(launchable) == 0:
 		return modelapi.Row{}, nil, fmt.Errorf("no cloud or running local model for agent %q — start one with `wt -M <id>`", agent.Name)
 	case len(launchable) > 1:
-		return modelapi.Row{}, rotation, fmt.Errorf("multiple models match for agent %q", agent.Name)
+		return modelapi.Row{}, registered, fmt.Errorf("multiple models match for agent %q", agent.Name)
 	}
-	return launchable[0], rotation, nil
+	return launchable[0], registered, nil
 }

@@ -110,9 +110,9 @@ func (r *Rotation) RecordProfile(agent, profileID string) error {
 
 // NextFromOrder returns the first model after the last launched one, in
 // ordered's order and wrapping, that is in eligible; index 0 when the last
-// launched model is not in ordered. A session builds ordered from the model
-// server's catalog (catalog.RegisteredOrdered: registered rows only, in the
-// registry's order), so a discovered model is never rotated into.
+// launched model is not in ordered. A caller builds ordered from registered
+// rows only, in the registry's order, so a discovered model is never rotated
+// into.
 //
 // Rotation never launches on its own authority: the picker calls this only
 // to position its cursor, and the non-TUI launch only to pick among the

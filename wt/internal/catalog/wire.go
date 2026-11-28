@@ -129,26 +129,6 @@ func Launchable(rows []modelapi.Row) []modelapi.Row {
 	return out
 }
 
-// RegisteredOrdered is the registered rows as models, in Order: the list
-// rotation walks. A discovered model is never in it, and neither is an alias
-// row (decision 14: a launch with no pin never rotates onto an alias; the
-// picker and -M alias/x list and launch one), nor a subscription row (#597:
-// rotation serves every agent, and only claude may use the subscription).
-func RegisteredOrdered(rows []modelapi.Row) []config.Model {
-	var reg []modelapi.Row
-	for _, r := range rows {
-		if r.Registered && r.Kind != modelapi.KindAlias && !UsesSubscription(r) {
-			reg = append(reg, r)
-		}
-	}
-	slices.SortStableFunc(reg, func(x, y modelapi.Row) int { return x.Order - y.Order })
-	out := make([]config.Model, 0, len(reg))
-	for _, r := range reg {
-		out = append(out, ToModel(r))
-	}
-	return out
-}
-
 // NonNativeModels is the rows a gateway syncer lists (pi's models.json): every
 // row that is not a native model, as models, in the catalog's order. A row
 // that uses the subscription (UsesSubscription) is left out: only claude may

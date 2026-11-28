@@ -6,9 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
@@ -588,22 +586,5 @@ func TestNextFromOrderMatchesRegistryRotation(t *testing.T) {
 	}
 	if _, ok := r.NextFromOrder(nil, ordered); ok {
 		t.Error("empty eligible returned a model")
-	}
-}
-
-// TestNextFromOrderSkipsDiscovered pins that a discovered running row is never
-// the rotation pick when the caller orders registered rows only.
-func TestNextFromOrderSkipsDiscovered(t *testing.T) {
-	rows := []modelapi.Row{
-		{ID: "a", Order: 0, Registered: true},
-		{ID: "disc", Order: 1, Discovered: true},
-		{ID: "b", Order: 2, Registered: true},
-	}
-	ordered := catalog.RegisteredOrdered(rows)
-	eligible := ordered
-	r := NewAt(t.TempDir())
-	_ = r.RecordFor("", "a")
-	if got, _ := r.NextFromOrder(eligible, ordered); got.ID != "b" {
-		t.Errorf("next = %q, want b", got.ID)
 	}
 }

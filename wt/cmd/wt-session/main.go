@@ -277,7 +277,7 @@ func rootCmdWith(h hooks) *cobra.Command {
 			"  wt smoke [model]             # smoke-test every agent that supports a model",
 		// ArbitraryArgs overrides cobra's default legacyArgs validator, which
 		// rejects any leading positional arg that isn't a registered
-		// subcommand name (config, start, rotate, …). Without this, passthrough
+		// subcommand name (config, start, smoke, …). Without this, passthrough
 		// commands given without `--` (e.g. `shell-wt npm test`) fail with
 		// "unknown command \"npm\" for \"wt\"" even though Find() would never
 		// have routed them to a subcommand anyway.
@@ -567,8 +567,8 @@ func rootCmdWith(h hooks) *cobra.Command {
 			//
 			// It needs no repository. The one thing a --cwd launch takes
 			// from git is the checkout root, and that root only says
-			// whether to install the main guard (runLaunchPath): rotation
-			// and usage state are keyed by model, agent and pid,
+			// whether to install the main guard (runLaunchPath): usage
+			// state is keyed by model, agent and pid,
 			// never by a repository or a branch (claude's config_content
 			// backup is keyed by the absolute settings path, so it cannot
 			// collide either). So a
@@ -652,7 +652,7 @@ func rootCmdWith(h hooks) *cobra.Command {
 	cmd.Flags().Bool("check-guard", false, "Check if the main guard is installed and exit")
 	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
-	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), litellmCmd(), profileCmd(a), modelCmd(a), worktreesCmd(a), removeCmd(a), rescueCmd(a), restoreRootCmd(a), jobCmd(a))
+	cmd.AddCommand(removedRotateCmd(), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), litellmCmd(), profileCmd(a), modelCmd(a), worktreesCmd(a), removeCmd(a), rescueCmd(a), restoreRootCmd(a), jobCmd(a))
 	addMovedStubs(cmd, movedCommands)
 	silenceUsageOnError(cmd)
 	return cmd

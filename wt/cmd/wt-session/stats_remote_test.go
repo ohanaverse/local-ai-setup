@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,7 +12,6 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
@@ -226,82 +223,6 @@ func TestPriceNoticeUsesServerClock(t *testing.T) {
 	stale := &modelapi.Pricing{Updated: serverNow.Add(-(7*24*time.Hour + time.Hour)).UTC().Format(time.RFC3339)}
 	if got := remotePriceNote(t, stale, skew); !strings.Contains(got, "token pricing last refreshed") {
 		t.Errorf("stamp stale on the server's clock printed %q", got)
-	}
-}
-
-// TestRotateListsCatalogRowsByOrder proves `wt rotate TAG` with an endpoint
-// walks the server's catalog rows that carry the tag, in Order (not the
-// order the server listed them in), registered rows only: with no launch
-// recorded it names the first, and after a recorded launch the next one,
-// wrapping at the end. A tag no row carries is the same error as before.
-func TestRotateListsCatalogRowsByOrder(t *testing.T) {
-	mk := func(id string, order int, tags string, reg bool) modelapi.Row {
-		r := localRow(id, "running", "launch", nil)
-		r.Order, r.Registered, r.Tags = order, reg, strings.Fields(tags)
-		return r
-	}
-	f := newFakeModelServer(t,
-		mk("omlx/c", 3, "code", true), mk("omlx/a", 1, "code", true), mk("omlx/x", 2, "other", true),
-		mk("omlx/b", 2, "code", true), mk("omlx/found", 0, "code", false))
-	a := pointAtFake(t, f, "")
-	a.hooks.newClient = fastModelClient
-	next := func(tag string) string {
-		var err error
-		out := captureFile(t, &os.Stdout, func() {
-			cmd := rotateCmd(a)
-			cmd.SetArgs([]string{tag})
-			cmd.SetErr(&bytes.Buffer{})
-			err = cmd.Execute()
-		})
-		if err != nil {
-			return "ERR " + err.Error()
-		}
-		return strings.TrimSpace(out)
-	}
-	if got := next("code"); got != "omlx/a" {
-		t.Errorf("no launch recorded: %q, want the first by Order (omlx/a)", got)
-	}
-	for _, step := range [][2]string{{"omlx/a", "omlx/b"}, {"omlx/b", "omlx/c"}, {"omlx/c", "omlx/a"}} {
-		if err := os.WriteFile(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt", "rotation.state"), []byte(step[0]+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if got := next("code"); got != step[1] {
-			t.Errorf("after %s: %q, want %s", step[0], got, step[1])
-		}
-	}
-	if got := next("nothing"); got != fmt.Sprintf("ERR no models tagged %q", "nothing") {
-		t.Errorf("unknown tag: %q", got)
-	}
-	if f.count("GET /control/v1/catalog") == 0 {
-		t.Errorf("rotate never asked the server: %v", f.reqs())
-	}
-}
-
-// TestRotateSkipsSubscriptionRows proves `wt rotate TAG` never walks onto a
-// subscription row (or an alias with a subscription target), even one that
-// carries the tag and comes first by Order: rotation serves every agent and
-// only claude may use the owner's subscription (#597, decision 6).
-func TestRotateSkipsSubscriptionRows(t *testing.T) {
-	sub := localRow("claude-haiku-5-5", "stopped", "launch", nil)
-	sub.ProviderID, sub.Location, sub.Order = config.SubscriptionProvider, "cloud", 0
-	group := modelapi.Row{ID: "alias/haiku", GatewayID: "alias/haiku", ProviderID: config.AliasProvider, Kind: modelapi.KindAlias,
-		Location: "cloud", Registered: true, Action: "launch", State: "running", Order: 1, Tags: []string{"code"},
-		Targets: []modelapi.AliasTarget{{ID: "claude-haiku-5-5", Order: 1, ProviderID: config.SubscriptionProvider}}}
-	plain := localRow("omlx/a", "running", "launch", nil)
-	plain.Order = 2
-	f := newFakeModelServer(t, sub, group, plain)
-	a := pointAtFake(t, f, "")
-	a.hooks.newClient = fastModelClient
-	models, err := rotateModelsRemote(context.Background(), a, "code")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ids []string
-	for _, m := range models {
-		ids = append(ids, m.ID)
-	}
-	if strings.Join(ids, ",") != "omlx/a" {
-		t.Errorf("rotation list = %v, want [omlx/a]", ids)
 	}
 }
 
