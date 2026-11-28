@@ -533,40 +533,50 @@ func TestPollSurvivesBriefOutageThenLosesServer(t *testing.T) {
 	}
 }
 
-// TestPollCountsHungRequestsTowardPollGrace pins that polls that hang until
-// the per-request timeout count as outage time on the client's clock: the
-// sleeper here never advances the clock, so only the hung requests' (fake)
-// duration can reach the grace.
-func TestPollCountsHungRequestsTowardPollGrace(t *testing.T) {
+// TestPollCountsFailedPollsTowardPollGrace pins that a poll that fails after
+// a long time in flight counts that time as outage time on the client's
+// clock: the sleeper here never advances the clock, so only the failing
+// requests' (fake) duration can reach the grace. It covers the transport
+// failure path only; a poll that expires by its own timeout is not driven
+// here (that needs a real timer, which this test avoids on purpose).
+//
+// The duration is fake on purpose and the failure is a cut connection, not a
+// real hang cut off by a short WithRequestTimeout: that timeout is the
+// client's one bound for every call, the handshake ping and the start POST
+// included, so a 30 ms one failed those on a loaded machine (a stall of 30 ms
+// is enough) with an *UnreachableError out of RunStart before any poll ran.
+// With no real timer in the test, nothing it asserts depends on the machine's
+// speed.
+func TestPollCountsFailedPollsTowardPollGrace(t *testing.T) {
 	jf := newJobFake(t)
 	fc := newFakeClock()
 	fc.still = true
 	var mu sync.Mutex
-	hung := 0
-	jf.job = func(_ http.ResponseWriter, r *http.Request, id string, n int) *modelapi.JobStatus {
+	failed := 0
+	jf.job = func(w http.ResponseWriter, _ *http.Request, id string, n int) *modelapi.JobStatus {
 		if n == 0 {
 			return running(id)
 		}
 		mu.Lock()
-		hung++
-		h := hung
+		failed++
+		h := failed
 		mu.Unlock()
-		if h > 50 { // a driver that ignores hung time would spin; end it
+		if h > 50 { // a driver that ignores failed-poll time would spin; end it
 			return done(id)
 		}
-		fc.advance(10 * time.Second)
-		<-r.Context().Done()
+		fc.advance(10 * time.Second) // each handler call advances the fake clock 10 s...
+		cut(w)                       // ...then fails (the transport may retry a cut GET, so a poll can call this twice)
 		return nil
 	}
-	_, err := jf.driver(fc, WithRequestTimeout(30*time.Millisecond)).RunStart(ctx(), modelapi.StartRequest{Model: "omlx/m"}, &fakeAnswerer{}, nil)
+	_, err := jf.driver(fc).RunStart(ctx(), modelapi.StartRequest{Model: "omlx/m"}, &fakeAnswerer{}, nil)
 	var le *LostServerError
 	if !errors.As(err, &le) || le.JobID != "j1" {
 		t.Fatalf("err = %v, want *LostServerError", err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if hung > 20 {
-		t.Errorf("%d hung polls before giving up", hung)
+	if failed > 20 {
+		t.Errorf("%d failed polls before giving up", failed)
 	}
 }
 

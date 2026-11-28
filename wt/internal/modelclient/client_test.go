@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -536,10 +537,19 @@ func TestEndReturnsWithinBoundWhenServerIsDown(t *testing.T) {
 	start = time.Now()
 	err = New(Endpoint{URL: hung.URL, Token: tok}).End(cancelled, "s")
 	if !errors.As(err, &ue) || time.Since(start) > 3500*time.Millisecond {
-		t.Errorf("hung: err = %v after %v", err, time.Since(start))
+		t.Fatalf("hung: err = %v after %v", err, time.Since(start))
 	}
-	if !strings.Contains(err.Error(), "timed out after 3s") {
-		t.Errorf("hung: %q does not name the 3s bound that expired", err.Error())
+	// The text names the time that was left on End's 3 s context when the
+	// request was sent (modelping.Send: the bound that expires first, rounded
+	// to 10 ms), so it reads "3s" only if nothing ran between End starting
+	// the clock and the send, which a loaded machine does not grant ("2.99s"
+	// after 5 ms). Accept what the elapsed-time check above allows: no more
+	// than 3 s, no less than 3 s less its 500 ms slack.
+	m := regexp.MustCompile(`timed out after ([0-9.]+)s`).FindStringSubmatch(err.Error())
+	if m == nil {
+		t.Errorf("hung: %q does not name the bound that expired", err.Error())
+	} else if secs, perr := strconv.ParseFloat(m[1], 64); perr != nil || secs > 3 || secs < 2.5 {
+		t.Errorf("hung: %q names a %ss bound, want what is left of End's 3 s (2.5 to 3)", err.Error(), m[1])
 	}
 	if hits.Load() != 1 {
 		t.Errorf("the DELETE reached the server %d times, want 1", hits.Load())
