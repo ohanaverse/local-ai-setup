@@ -157,6 +157,16 @@
   checks list without `session_affinity`) now judges an aliased or root-merged
   `router_settings` too, not only a literal one (but not one read through
   repeated `<<` keys).
+- A `<<` merge in `config.yaml` whose value aliases a list of mappings
+  (`<<: *overrides`) is now read like an inline list. It was ignored, so wt
+  could write `session_affinity_repin_on_failover: true` over a `false` the
+  list supplied (#760). A literal `router_settings` or `general_settings`
+  with more than one `<<` key is no longer written into and draws the skip
+  warning (`is read through repeated merge keys (<<)`), since the proxy's
+  loader lets the last key win where wt took the first (#761); and a literal
+  one that is not a mapping now draws it too (`is not a mapping`, #762).
+  Fold repeated merges into one list (`<<: [*a, *b]`) to have wt fill the
+  keys again (Refs #758).
 - A LiteLLM key rotate on the Setup tab of `wt-model setup` no longer refuses
   a loaded `local.wt-model.serve` LaunchAgent just because its plist is not
   marked `managed by wt` (#708): the plan leaves that hand-written plist as

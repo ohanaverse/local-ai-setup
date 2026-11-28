@@ -930,7 +930,7 @@ func sharedBlockLacks(root *yaml.Node, block string, keys ...string) bool {
 // session_affinity, or "" otherwise. Only a mapping block is judged (one that
 // is not has the skip warning or nothing to judge) and only a list (a scalar
 // is left alone and not interpreted). settingsWarnings passes nil for a
-// shared block read through repeated merge keys (sharedBlockAmbiguous): wt
+// block read through repeated merge keys (sharedBlockAmbiguous): wt
 // cannot tell which list the proxy got, so it makes no claim (the skip warning
 // is said instead).
 func affinityOffWarning(rs *yaml.Node) string {
