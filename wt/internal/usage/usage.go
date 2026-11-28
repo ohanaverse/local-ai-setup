@@ -5,8 +5,10 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,10 +36,11 @@ type event struct {
 }
 
 // Store is what the consumers that take a store through an interface need:
-// rotation records launches, the picker reads counts for the models it
-// lists. It is not the whole surface of *StoreImpl. AllCounts is left out on
-// purpose (#289): its one caller, `wt stats`, holds the concrete type, and a
-// member here is a method every test double has to implement.
+// launches are recorded (through RecordLaunch, which calls RecordFor, or
+// RecordFor alone), and the picker reads counts for the models it lists. It
+// is not the whole surface of *StoreImpl. AllCounts, RecordLaunch and
+// LastPicked are left out on purpose (#289): their callers hold the concrete
+// type, and a member here is a method every test double has to implement.
 type Store interface {
 	RecordFor(agent, modelID string) error
 	Counts(modelIDs []string) map[string]UsageCounts
@@ -59,6 +62,41 @@ func NewStoreAt(dir string) *StoreImpl {
 
 func (s *StoreImpl) path() string {
 	return filepath.Join(s.dir, "usage.jsonl")
+}
+
+// pickedPath is <dir>/last-picked.state, the id of the last row launched
+// (a model's or a slot profile's): the row the picker's marker sits on.
+func (s *StoreImpl) pickedPath() string {
+	return filepath.Join(s.dir, "last-picked.state")
+}
+
+// RecordLaunch records one launch of id (a registry model id or a
+// profile/<name> id) for agent: it writes id to last-picked.state, then always
+// appends the usage event through RecordFor. The usage event is best-effort
+// and its error is ignored; the launch goes ahead either way, so it is counted
+// either way. Only a marker that could not be written is returned.
+func (s *StoreImpl) RecordLaunch(agent, id string) error {
+	pickedErr := config.WriteFileAtomic(s.pickedPath(), []byte(id+"\n"), 0o600)
+	_ = s.RecordFor(agent, id)
+	if pickedErr != nil {
+		return fmt.Errorf("last-picked.state not saved: %w", pickedErr)
+	}
+	return nil
+}
+
+// LastPicked is the row id the picker's marker sits on: the content of
+// last-picked.state, trimmed. A missing or empty file is ("", false); no other
+// file is read.
+func (s *StoreImpl) LastPicked() (string, bool) {
+	data, err := os.ReadFile(s.pickedPath())
+	if err != nil {
+		return "", false
+	}
+	id := strings.TrimSpace(string(data))
+	if id == "" {
+		return "", false
+	}
+	return id, true
 }
 
 // now is the package clock: the timestamp RecordFor writes and the instant
