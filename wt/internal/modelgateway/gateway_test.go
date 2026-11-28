@@ -97,6 +97,44 @@ func TestGatewaySwapsCredentials(t *testing.T) {
 	}
 }
 
+// TestGatewayForwardsSessionHeadersUnchanged pins that the per-conversation
+// ids and the User-Agent an agent sends reach LiteLLM untouched. LiteLLM's
+// session affinity reads these headers to keep one conversation on one
+// deployment, and the gateway has only a credential deny list
+// (upstreamAuthHeaders), so nothing else is stripped; this keeps a later
+// header filter from silently breaking affinity.
+func TestGatewayForwardsSessionHeadersUnchanged(t *testing.T) {
+	sent := map[string]string{
+		"x-claude-code-session-id": "claude-session-1",
+		"x-litellm-session-id":     "litellm-session-2",
+		"x-session-id":             "plain-session-3",
+		"session-id":               "codex-session-4",
+		"thread-id":                "codex-thread-5",
+		"User-Agent":               "agent-test/1.2.3",
+	}
+	var got http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+	}))
+	defer up.Close()
+	gw := newGateway(t, up)
+	hdr := map[string]string{"Authorization": "Bearer " + testToken}
+	for k, v := range sent {
+		hdr[k] = v
+	}
+	if status := do(t, "POST", gw.URL+"/v1/messages", hdr).StatusCode; status != 200 {
+		t.Fatalf("status %d", status)
+	}
+	for k, want := range sent {
+		if have := got.Get(k); have != want {
+			t.Errorf("upstream saw %s %q, want %q", k, have, want)
+		}
+	}
+	if auth := got.Get("Authorization"); auth != "Bearer "+testKey {
+		t.Errorf("upstream saw Authorization %q, want the LiteLLM key", auth)
+	}
+}
+
 // TestGatewayAcceptsXAPIKey pins that Anthropic-style clients, which send
 // x-api-key, are accepted.
 func TestGatewayAcceptsXAPIKey(t *testing.T) {
