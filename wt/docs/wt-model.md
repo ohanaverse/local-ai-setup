@@ -430,12 +430,17 @@ it. The one other key is `redirect_to =
 "alias/<new>"`, which `alias rename` writes in place of `targets` (an alias
 holds one or the other, never both); see **Renaming** below. `order` left out is the target's
 position, from 1. A target names exactly one registry model; no alias or native
-model is a target; at most one target is local. An alias id never equals a
-model id, and provider id `alias` and model ids under `alias/` are refused.
+model is a target; an alias may name several local targets (a start starts each
+in turn) of a Pool or Shared provider such as oMLX or Ollama, but never two local targets of one
+Exclusive-tenancy family such as mtplx, which runs one model at a time
+(`config.AliasFault`). An alias id never equals a model id, and provider id
+`alias` and model ids under `alias/` are refused.
 
 ```bash
 wt-model alias list [--json]
+wt-model alias list --toml
 wt-model alias set <alias/name> --target ID[:ORDER]... [--accept-smaller-window] [--dry-run]
+wt-model alias apply <file> [--dry-run] [--accept-smaller-window]
 wt-model alias rename <alias/old> <alias/new> [--dry-run]
 wt-model alias rm <alias/name>... | --finished [--yes] [--force-in-use]
 ```
@@ -487,12 +492,64 @@ write, so the preview says what the write does. When the database half cannot
 run (the proxy does not answer, `store_model_in_db` is off) the preview says
 so instead of rows, in the write's own words.
 
+`list --toml` prints the existing aliases as `[[aliases]]` tables in exactly the
+shape `apply` reads, and nothing else (it asks neither the model server nor the
+proxy): every target carries an explicit `order`, in `alias list`'s order, and
+notes are not printed. A redirect, a malformed alias and one that fails the
+alias rules (for example a target that names no model) are left out, and one
+stderr note names them (`wt-model: note: 2 aliases skipped: <id> (<why>), <id> (<why>)`, `1 alias` for one).
+It is exclusive with `--json` (exit 1). `wt-model alias list --toml >
+groups.toml` captures a machine's groups; `wt-model alias apply groups.toml` on
+another registry replays them, and on the same one answers `no change` for
+every alias.
+
+`apply <file>` is `set` for many aliases in one registry write. The file holds
+`[[aliases]]` tables as `registry.toml` does and nothing else: `id`,
+`targets = [{ model = "<registry id>", order = N }, ...]` (an `order` left out
+is the target's position, from 1) and an optional `notes` string, which is
+accepted and ignored; any other top-level key or table, a `redirect_to`, an id
+given twice and a file with no alias are refused, each as `<file>: <why>;
+nothing was changed`. A sample file:
+[alias-apply.sample.toml](../../docs/contracts/alias-apply.sample.toml).
+
+```toml
+[[aliases]]
+id = "alias/example-pro"
+targets = [
+    { model = "openrouter/example-large", order = 1 },
+    { model = "openrouter/example-small", order = 2 },
+]
+```
+
+Every alias is checked first, as `set` checks it (a target must already be a
+registered model; no alias or native target; no two local targets of one
+Exclusive family; an id that is currently a redirect refuses the file), so one
+bad alias anywhere refuses the whole file and nothing is changed or asked. An
+alias whose effective targets are the ones the file names (the same models at
+the same orders) is `no change`: it is not rewritten, and the registry keeps
+the spelling it has. The rest are written in one registry update and one route
+sync runs, only when something changed. The output is one line per alias in
+file order, `set alias: <id>` or `no change: <id>`. `--dry-run` prints each
+changed alias's plan as `set --dry-run` does (`would set alias: <id>`, targets,
+window change and rows; `no change: <id>` for the others) and changes nothing.
+When any window gets smaller, or unknown where it was known, **one** question
+names every such alias and asks y/N (default No); `--accept-smaller-window`
+answers yes, and without a terminal or on an answer of no it exits 3 with
+nothing changed. As with `set`, the window is checked again inside the write.
+Exit codes as `set`: 0 done (also when the routes could not be written and a
+warning says so), 1 a plain error or a refused file, 3 approval missing.
+
+What `apply` does not do: it **never removes** an alias the file omits (use
+`rm`), and it creates **no models**, no slot profile and no provider rows:
+register the targets first (`wt-model model add`, `wt-model cloud-sync`) and
+add a slot profile on each session machine with `wt profile slots add`.
+
 `rm` removes the aliases and, through the sync that follows, their rows; the
 models they target are not touched. It asks on the terminal (`--yes` skips;
 without either it refuses, exit 3). An alias that client sessions use also
 needs `--force-in-use`. When one id is not an alias none is removed.
 
-Exit codes of `set`, `rename` and `rm`: 0 done (also when the routes could not be
+Exit codes of `set`, `apply`, `rename` and `rm`: 0 done (also when the routes could not be
 written: a warning says so), 1 a plain error (a bad target, a refused alias,
 a failed registry write), 3 approval missing, nothing changed.
 

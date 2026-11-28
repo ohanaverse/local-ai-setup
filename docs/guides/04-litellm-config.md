@@ -321,6 +321,8 @@ An alias is a registry id `alias/<name>` that a slot profile, pi or codex names 
 - **Install order.** An older `wt-model` refuses every registry write once `[[aliases]]` exists, and ignores alias rows (its start, stop and sync neither add nor remove them). Run `make install` and restart the `wt-model serve` LaunchAgent before the first `alias set`. After editing its plist, `launchctl bootout` then `bootstrap` the job: a `kickstart` alone keeps the old loaded definition.
 - **Hand edits.** Alias rows are compared by the hash wt stamped on them, so an edit in the admin UI that keeps the stamp is not noticed; a row that lost it is replaced. A row under `wta:alias/` without wt's marker is never deleted: remove it by hand.
 
+- **Several aliases at once.** `wt-model alias apply <file>` creates or replaces every alias of a TOML file of `[[aliases]]` tables in one registry write and one route sync (add `--dry-run` first); it is all-or-nothing, a file that already matches is `no change`, it never removes an alias the file omits and it creates no models. `wt-model alias list --toml > groups.toml` captures a machine's aliases in exactly the shape `apply` reads. A sample is `docs/contracts/alias-apply.sample.toml`; the file format, flags and exit codes: [wt/docs/wt-model.md](../../wt/docs/wt-model.md#wt-model-alias).
+
 #### Worked example: tiered groups with session affinity
 
 A fallback group is an alias whose targets carry three tiers: the order is the tier, and targets that share an order are a pool the proxy picks from at random. This set uses the Claude subscription first, then a pool of Ollama cloud models, then a pool of OpenRouter models; the two `open-*` groups skip the subscription tier.
@@ -367,6 +369,18 @@ A pin beats `order`. The pin moves to the fallback only while the original deplo
 wt sets no session header; the client sends it, and the gateway forwards it unchanged (a test pins that). LiteLLM reads Claude Code's own `x-claude-code-session-id` header, `x-session-id`, and codex's `session-id` and `thread-id`, so claude, codex and opencode launched by wt need no extra header; pi sends none yet. A request with no session id gets a fresh generated one and is never pinned. Sending `x-litellm-session-id` pins a script's requests the same way.
 
 Checks (illustrative, from 2026-11-27; counts differ per run): twelve requests to a group with no session id were answered by several models of its first pool and none from the next tier; six requests with one `x-litellm-session-id` were all answered by one model; a request to a Claude slot group sent without a Claude login (so the subscription row cannot answer) was answered by a model of the order 2 pool, and further requests with the same session id stayed on it. Read which model answered from LiteLLM's spend log (`session_id`, `model` and `model_group` columns of `LiteLLM_SpendLogs`; rows appear after about 30 seconds) or the admin UI's Logs page.
+
+#### Setting up the groups on a fresh machine
+
+To give a second machine the groups of the first, in this order (the models must exist before an alias can name them, and `apply` creates none):
+
+1. On the machine that has the groups, capture them: `wt-model alias list --toml > groups.toml`. Copy the file over.
+2. Register the models the groups name. Subscription and pool models one by one with `wt-model model add <provider> <name> --family <family>` (guide 02), and Ollama's cloud models with `wt-model cloud-sync` (start with `--dry-run`). `wt-model model list` shows what is registered.
+3. Preview, then apply: `wt-model alias apply groups.toml --dry-run`, then `wt-model alias apply groups.toml`. A target that names no model refuses the whole file and nothing is changed, so the dry run names what is still missing. A second apply of the same file answers `no change` for every alias.
+4. On each machine that launches the groups, add the slot profile (session side, `slot-profiles.toml`, a different file from the registry): the `wt profile slots add claude-fallback ...` command of the worked example above.
+5. Check with the commands already in this section: `wt-model alias list` (TARGETS, ROUTED) and `wt-model litellm list` (the alias rows appear under the alias id).
+
+Known gap: an alias's window is the smallest of its targets' windows and is unknown until every target has one, which on a fresh machine means until `tiers.toml` exists (`modeltiers run`, guide 12) or the models carry their own: `wt-model model edit <id> --context-window N`. An alias with an unknown window still routes, but a claude launch declares no window for it. Applying a file over groups that already have a known window asks once before it shrinks any (`--accept-smaller-window` answers yes).
 
 ## Verification
 
