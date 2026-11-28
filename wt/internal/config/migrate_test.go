@@ -344,16 +344,17 @@ default_tag = "code"
 
 [[agents]]
 name = "claude"
-supported_providers = ["ollama"]
-default_provider = "ollama"
+supported_providers = ["google"]
+default_provider = "google"
 `)
 		writeRegistry(t, tmp, `
 [[providers]]
-id = "ollama"
-name = "Ollama"
-auth = { type = "none", base_url = "http://localhost:11434" }
+id = "agy"
+name = "Antigravity"
+location = "cloud"
+auth = { type = "native" }
 `)
-		// First Load applies any fixups.
+		// First Load applies any fixups (renames google to agy on disk).
 		if _, err := Load(); err != nil {
 			t.Fatalf("first Load: %v", err)
 		}
