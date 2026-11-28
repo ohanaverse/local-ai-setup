@@ -93,7 +93,7 @@ type catalogLoadedMsg struct {
 	eligible int                     // rows the agent can use; 0 sends the picker back
 	pinErr   string                  // a -M pin the server or the agent cannot use
 	tbl      modelTable              // the sorted, rendered table
-	cursor   string                  // the id the cursor lands on; "" is the first actionable row
+	cursor   string                  // the id the cursor lands on; "" is the first row that is not blocked
 	// pricing is the catalog's pricing member (nil when no model is priced
 	// from OpenRouter): the post-launch notice reads it instead of fetching
 	// the catalog again.

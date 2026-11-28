@@ -141,7 +141,7 @@ Themes apply to the TUI picker, CLI tables, and `wt config theme list` output. S
 
 Works for `claude-wt`, `codex-wt`, `copilot-wt`, `opencode-wt`, and `pi-wt`.
 
-Every launch, a single model or a slot profile, is recorded by one call (`usage.RecordLaunch`). Any tag can filter the picker with `-T`, not just `code` and `design`. The picker's cursor does not follow the history: it opens on the first row that is not blocked (a stopped local model counts, Enter starts it), or on the `-M` pin.
+Every launch, a single model or a slot profile, is recorded by one call (`(*usage.StoreImpl).RecordLaunch`). Any tag can filter the picker with `-T`, not just `code` and `design`. The picker's cursor does not follow the history: it opens on the first row that is not blocked (a stopped local model counts, Enter starts it), or on the `-M` pin.
 
 - `~/.config/agent-wt/last-picked.state` holds the row the picker's `> ` marker sits on. Every launch writes it, a slot-profile launch included
 - `~/.config/agent-wt/usage.jsonl` gets one agent-tagged event per launch (the 1D/7D/30D columns, `wt stats`)

@@ -1662,8 +1662,8 @@ func TagsToString(tags []string) string {
 }
 
 // FirstTag returns the first comma-delimited tag from s, or fallback if s is
-// empty. It is the shared form of the slot tag component: both the non-TUI launch
-// path and the TUI picker derive the slot tag from -T the same way.
+// empty. The picker uses it for its active tag: the first -T tag, else
+// default_tag.
 func FirstTag(s, fallback string) string {
 	parts := ParseFilterList(s)
 	if len(parts) == 0 {

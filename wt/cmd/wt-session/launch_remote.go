@@ -26,8 +26,9 @@ var launchCommand = launchCommandImpl
 // server (#615): the native model and a zero Gateway, so the agent's own
 // configuration decides the model and no gateway token reaches it. It prints
 // the one native note, registers no client session and records no usage or
-// last-picked state (there is no model id). Everything else a launch does (the worktree,
-// the guard, claims, --yolo, passthrough args, the summary) is unchanged.
+// last-picked state (there is no model id). Everything else a launch does (the
+// worktree, the guard, claims, --yolo, passthrough args, the summary) is
+// unchanged.
 func launchNative(a *app, agent, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string, pp *precomputedProfiles) error {
 	m := agents.NativeModel()
 	cmd, _, err := a.hooks.build(agent, m, worktreePath, yolo, agents.Gateway{}, nil, extraArgs)
@@ -75,9 +76,9 @@ const launchStill = "nothing was launched"
 //  4. run a start job only when catalog.NeedsStart says so (a start row, or a
 //     running local model the gateway is known not to list; an unknown route
 //     never starts, R7), answering its questions with cliAnswerer;
-//  5. build the agent against the gateway, record the launch (last-picked marker
-//     and usage), run it with
-//     the heartbeat going, and end the client session before any exit.
+//  5. build the agent against the gateway, record the launch (last-picked
+//     marker and usage), run it with the heartbeat going, and end the client
+//     session before any exit.
 //
 // A start that fails takes the model out of the client session and ends it;
 // Ctrl-C during the start detaches from the job (it keeps running on the
@@ -126,9 +127,9 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	if err != nil && pinned == "" && len(registered) > 0 {
 		// Several launchable models and no -M: the user picks, as on the
 		// registry path. On a terminal runLaunchPath opens the model server's
-		// picker (its cursor on the first row that is not blocked); without one this is
-		// the registry path's refusal (P5), naming -M. Nothing is registered
-		// or started yet.
+		// picker (its cursor on the first row that is not blocked); without
+		// one this is the registry path's refusal (P5), naming -M. Nothing is
+		// registered or started yet.
 		if stdinTTY() {
 			return errRemoteNeedsPicker
 		}
