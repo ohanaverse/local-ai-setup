@@ -1,0 +1,24 @@
+# A sample file for `wt-model alias apply <file>`: [[aliases]] tables exactly
+# as registry.toml holds them, and nothing else (any other key or table is
+# refused). Each targets entry names a registry model (`wt-model model list`);
+# order is its LiteLLM order, 1 first tried, and an order left out is the
+# target's position in the list. notes is accepted and ignored. apply creates
+# no models and removes no alias absent from the file.
+#
+# The model ids are placeholders: register your own models first, then point
+# the targets at them. Held by wt/cmd/wt-model's TestAliasApplySampleFileParses.
+
+[[aliases]]
+id = "alias/example-pro"
+notes = "a priority group: the large model first, the small one when it fails"
+targets = [
+    { model = "openrouter/example-large", order = 1 },
+    { model = "openrouter/example-small", order = 2 },
+]
+
+[[aliases]]
+id = "alias/example-fast"
+targets = [
+    { model = "openrouter/example-small" },
+    { model = "openrouter/example-large" },
+]

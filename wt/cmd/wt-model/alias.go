@@ -12,6 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +26,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/servestate"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
 	"github.com/spf13/cobra"
 )
 
@@ -45,12 +49,12 @@ func aliasCmd(h *host, rec servestate.Store) *cobra.Command {
 			"working as a redirect until its sessions end. `wt-model model` has an Aliases\n" +
 			"tab that does the same on a terminal.",
 	}
-	c.AddCommand(aliasListCmd(h, rec), aliasSetCmd(h, rec), aliasRenameCmd(h), aliasRmCmd(h, rec))
+	c.AddCommand(aliasListCmd(h, rec), aliasSetCmd(h, rec), aliasApplyCmd(h, rec), aliasRenameCmd(h), aliasRmCmd(h, rec))
 	return c
 }
 
 func aliasListCmd(h *host, rec servestate.Store) *cobra.Command {
-	var asJSON bool
+	var asJSON, asTOML bool
 	c := &cobra.Command{
 		Use:   "list",
 		Short: "List the registry's aliases with their targets, window, client sessions and routes",
@@ -70,19 +74,65 @@ func aliasListCmd(h *host, rec servestate.Store) *cobra.Command {
 			"cannot use (malformed, or a target that names no model) is listed, and a\n" +
 			"warning says why. No output carries a route's parameters.\n\n" +
 			"Flags:\n" +
-			"  --json   print one JSON document (docs/contracts/alias-list.sample.json)\n\n" +
+			"  --json   print one JSON document (docs/contracts/alias-list.sample.json)\n" +
+			"  --toml   print the aliases as [[aliases]] tables in the shape `alias apply`\n" +
+			"           reads, each target with an explicit order, and nothing else (no\n" +
+			"           server or proxy is asked): `alias list --toml > aliases.toml`\n" +
+			"           captures a machine's groups, and `alias apply aliases.toml`\n" +
+			"           replays them (`no change` for an equivalent alias the registry\n" +
+			"           already holds, whatever its spelling). Only aliases apply would\n" +
+			"           accept are printed: a redirect, a malformed alias and one with a\n" +
+			"           target naming no model are left out, and one stderr note names\n" +
+			"           them. Notes are not printed. Exclusive with --json\n\n" +
 			"Exit codes:\n" +
 			"  0  done\n" +
-			"  1  the registry could not be read",
-		Example:      "  wt-model alias list\n  wt-model alias list --json",
+			"  1  the registry could not be read, or --json and --toml were both given",
+		Example:      "  wt-model alias list\n  wt-model alias list --json\n  wt-model alias list --toml > aliases.toml",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if asJSON && asTOML {
+				cmd.SilenceUsage = false
+				return errors.New("--json and --toml cannot be used together: pass one")
+			}
+			if asTOML {
+				return h.runAliasListTOML(cmd.OutOrStdout(), cmd.ErrOrStderr())
+			}
 			return h.runAliasList(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), rec, asJSON)
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "print one JSON document (docs/contracts/alias-list.sample.json)")
+	c.Flags().BoolVar(&asTOML, "toml", false, "print the aliases in the shape alias apply reads (exclusive with --json)")
 	return c
+}
+
+// runAliasListTOML is `wt-model alias list --toml`: the text from
+// modeladmin.AliasesTOML on out and, when it left aliases out, one note on
+// errOut naming each with its reason. It reads the registry only.
+func (h *host) runAliasListTOML(out, errOut io.Writer) error {
+	cfg, loadErr := h.hostConfig()
+	if loadErr != nil {
+		return config.ConfigError(loadErr)
+	}
+	text, skipped, err := modeladmin.AliasesTOML(cfg)
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(out, text); err != nil {
+		return err
+	}
+	if len(skipped) > 0 {
+		parts := make([]string, 0, len(skipped))
+		for _, s := range skipped {
+			parts = append(parts, cli.VisibleID(s.ID)+" ("+cli.VisibleID(s.Why)+")")
+		}
+		noun := "aliases"
+		if len(skipped) == 1 {
+			noun = "alias"
+		}
+		fmt.Fprintf(errOut, "wt-model: note: %d %s skipped: %s\n", len(skipped), noun, strings.Join(parts, ", "))
+	}
+	return nil
 }
 
 // aliasListJSON is `wt-model alias list --json`'s one document (J1, J4).
@@ -353,6 +403,273 @@ func (h *host) runAliasSet(ctx context.Context, out, errOut io.Writer, rec serve
 	return h.syncAndWarn(out, errOut, nil)
 }
 
+func aliasApplyCmd(h *host, rec servestate.Store) *cobra.Command {
+	var acceptSmaller, dryRun bool
+	c := &cobra.Command{
+		Use:   "apply <file>",
+		Short: "Create or replace several aliases from one file, in one registry write",
+		Long: "Create every alias the file holds, or replace its whole target list: `alias\n" +
+			"set` for many aliases at once. The file holds [[aliases]] tables exactly as\n" +
+			"registry.toml does (id = \"alias/<name>\", targets = [{ model = \"ID\", order = N }],\n" +
+			"an optional notes, which is ignored) and nothing else: any other key or table\n" +
+			"is refused. An order left out is the target's position in its list\n" +
+			"(docs/contracts/alias-apply.sample.toml is a sample). It never removes aliases\n" +
+			"absent from the file and creates no models: register the targets first.\n\n" +
+			"Every alias is checked as `alias set` checks it before anything is asked or\n" +
+			"written, and one that fails (a target that names no model, a redirect id, an\n" +
+			"id given twice) refuses the whole file. An alias whose targets already mean\n" +
+			"the same (the same models at the same orders) is `no change` and is not\n" +
+			"rewritten. The rest are written in one registry write, and the LiteLLM routes\n" +
+			"are synced once afterwards; when the database cannot be reached the registry\n" +
+			"is still written, a warning says so, and `wt-model litellm sync` adds the\n" +
+			"rows later.\n\n" +
+			"When any alias's window would get smaller, or unknown where it was known, one\n" +
+			"question names each of them (client sessions already running keep the window\n" +
+			"they launched with); --accept-smaller-window answers yes.\n\n" +
+			"Flags:\n" +
+			"  --accept-smaller-window   apply it even when a window gets smaller or unknown\n" +
+			"  --dry-run                 say what would happen and change nothing\n\n" +
+			"Exit codes:\n" +
+			"  0  done (also when the routes could not be written; a warning says so)\n" +
+			"  1  a plain error: a file that cannot be read or is refused, a registry write\n" +
+			"     that failed\n" +
+			"  3  approval missing: a window gets smaller and there is no terminal to ask\n" +
+			"     (or the answer was no); nothing was changed",
+		Example: "  wt-model alias apply aliases.toml --dry-run\n" +
+			"  wt-model alias apply aliases.toml\n" +
+			"  wt-model alias apply aliases.toml --accept-smaller-window",
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return h.runAliasApply(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), rec, args[0], acceptSmaller, dryRun)
+		},
+	}
+	c.Flags().BoolVar(&acceptSmaller, "accept-smaller-window", false, "apply it even when an alias's window gets smaller or unknown")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "say what would happen and change nothing")
+	return c
+}
+
+// parseAliasFile reads an `alias apply` file: [[aliases]] tables only, each
+// judged by the registry's own reader (config.Alias.UnmarshalTOML), so apply
+// and `alias set` refuse the same shapes. notes is accepted and dropped; an
+// order the file leaves out stays 0 (written without an order key, read as
+// the position). It refuses invalid TOML, any top-level key but aliases, an
+// entry that is not a table, a malformed alias, a redirect_to (apply sets
+// targets; `alias rename` makes a redirect), an id given twice and a file
+// with no alias. Its errors do not name the file; the caller adds it.
+func parseAliasFile(data []byte) ([]modeladmin.AliasRequest, error) {
+	doc, err := tomlw.Decode(data)
+	if err != nil {
+		return nil, fmt.Errorf("not valid TOML: %w", err)
+	}
+	for _, k := range doc.Keys() {
+		if k != "aliases" {
+			return nil, fmt.Errorf("unknown top-level key %q (an alias file holds [[aliases]] tables only)", k)
+		}
+	}
+	errEmpty := errors.New("no [[aliases]] table, so there is nothing to apply")
+	raw, ok := doc.Get("aliases")
+	if !ok {
+		return nil, errEmpty
+	}
+	entries, ok := raw.([]any)
+	if !ok {
+		return nil, errors.New("aliases is not an array of tables (write [[aliases]] tables)")
+	}
+	if len(entries) == 0 {
+		return nil, errEmpty
+	}
+	var reqs []modeladmin.AliasRequest
+	where := map[string]int{}
+	for i, e := range entries {
+		row, ok := e.(*tomlw.Table)
+		if !ok {
+			return nil, fmt.Errorf("aliases[%d] is not a table", i)
+		}
+		plain, _ := plainTOML(row).(map[string]any)
+		var a config.Alias
+		_ = a.UnmarshalTOML(plain)
+		switch {
+		case a.Malformed != "":
+			return nil, fmt.Errorf("aliases[%d]: alias %q: %s", i, a.ID, a.Malformed)
+		case a.RedirectTo != "":
+			return nil, fmt.Errorf("aliases[%d]: alias %q: redirect_to is not accepted here: apply sets targets (`wt-model alias rename` makes a redirect)", i, a.ID)
+		}
+		if j, dup := where[a.ID]; dup {
+			return nil, fmt.Errorf("alias %q is listed more than once (aliases[%d] and aliases[%d])", a.ID, j, i)
+		}
+		where[a.ID] = i
+		// The reader fills an omitted order with the position; the request
+		// keeps it omitted, as `alias set --target ID` does.
+		rows, _ := plain["targets"].([]any)
+		targets := slices.Clone(a.Targets)
+		for k := range targets {
+			if k < len(rows) {
+				if t, isMap := rows[k].(map[string]any); isMap {
+					if _, has := t["order"]; !has {
+						targets[k].Order = 0
+					}
+				}
+			}
+		}
+		reqs = append(reqs, modeladmin.AliasRequest{ID: a.ID, Targets: targets})
+	}
+	return reqs, nil
+}
+
+// plainTOML is a tomlw document value as BurntSushi's decoder hands it to an
+// UnmarshalTOML method: a table a map[string]any, an array a []any.
+func plainTOML(v any) any {
+	switch x := v.(type) {
+	case *tomlw.Table:
+		m := make(map[string]any, x.Len())
+		for _, k := range x.Keys() {
+			val, _ := x.Get(k)
+			m[k] = plainTOML(val)
+		}
+		return m
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = plainTOML(e)
+		}
+		return out
+	}
+	return v
+}
+
+// aliasApplyItem is one alias of an `alias apply` file with its window change.
+type aliasApplyItem struct {
+	req modeladmin.AliasRequest
+	wc  modeladmin.WindowChange
+}
+
+// runAliasApply is `wt-model alias apply`: `alias set` for every alias of a
+// file, all or nothing. Every alias is checked before anything is asked; a
+// dry run runs the write's apply over a copy of the registry
+// (modeladmin.PlanAliases), so it refuses what the write refuses, and prints
+// each changed alias's `alias set --dry-run` block (or `no change:`) and one
+// `dry run: nothing was changed` footer for the whole file;
+// a real run asks one question for every shrinking window, writes the
+// changed aliases in one registry write (modeladmin.SetAliases, each with
+// its shrink re-check) and runs one route sync, only when something changed.
+func (h *host) runAliasApply(ctx context.Context, out, errOut io.Writer, rec servestate.Store, path string, acceptSmaller, dryRun bool) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// The path leads, as in every other refusal; the PathError's own copy
+		// of it would say it twice.
+		why := err
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			why = pe.Err
+		}
+		return fmt.Errorf("%s: cannot read the alias file: %w; nothing was changed", path, why)
+	}
+	reqs, err := parseAliasFile(data)
+	if err != nil {
+		return fmt.Errorf("%s: %w; nothing was changed", path, err)
+	}
+	cfg, loadErr := h.hostConfig()
+	if loadErr != nil {
+		return config.ConfigError(loadErr)
+	}
+	// Every alias is checked first, so a dry run refuses what the real run
+	// refuses (a stale or redirect alias is never "no change"), and a bad
+	// alias anywhere in the file refuses it before anything is asked.
+	for _, r := range reqs {
+		if err := modeladmin.CheckAlias(cfg, r); err != nil {
+			return fmt.Errorf("%s: %w; nothing was changed", path, err)
+		}
+	}
+	ix := h.tiersIndex()
+	items := make([]aliasApplyItem, 0, len(reqs))
+	var shrinking []aliasApplyItem
+	for _, r := range reqs {
+		it := aliasApplyItem{req: r, wc: modeladmin.AliasWindowChange(cfg, ix, r)}
+		items = append(items, it)
+		if it.wc.Shrinks {
+			shrinking = append(shrinking, it)
+		}
+	}
+	if dryRun {
+		// The write's own apply over a detached copy of the registry: the
+		// same ids change and the same refusals (an alias apply cannot
+		// repair) come back in the same words.
+		changed, err := modeladmin.PlanAliases(reqs)
+		if err != nil {
+			return aliasApplyError(path, err)
+		}
+		for _, it := range items {
+			if !slices.Contains(changed, it.req.ID) {
+				fmt.Fprintf(out, "no change: %s\n", it.req.ID)
+				continue
+			}
+			wc := it.wc
+			h.printAliasDryRunBlock(out, wc.After, wc.Alias, wc.Old, wc.New, wc.Had, wc.Shrinks)
+		}
+		fmt.Fprintln(out, "dry run: nothing was changed")
+		return nil
+	}
+	if len(shrinking) > 0 && !acceptSmaller {
+		sessions := h.clientSessions(ctx, errOut, rec, nil)()
+		sentences := make([]string, 0, len(shrinking))
+		for _, it := range shrinking {
+			count := -1
+			if sessions != nil {
+				count = sessions[it.req.ID]
+			}
+			sentences = append(sentences, it.wc.ShrinkSentence(it.req.ID, count))
+		}
+		question := "Applying " + path + " makes " + strconv.Itoa(len(shrinking)) + " alias window(s) smaller or unknown:\n  " +
+			strings.Join(sentences, "\n  ") + "\nApply it anyway?"
+		ok, err := h.confirmRemove(question)
+		if errors.Is(err, cli.ErrNoTerminal) {
+			for _, s := range sentences {
+				fmt.Fprintf(errOut, "wt-model: note: %s\n", s)
+			}
+		}
+		if err != nil {
+			return cli.NoTerminalRefusal(err, "--accept-smaller-window", "nothing was changed")
+		}
+		if !ok {
+			return cli.Declined("nothing was changed")
+		}
+	}
+	writes := make([]modeladmin.AliasRequest, 0, len(items))
+	for _, it := range items {
+		r := it.req
+		r.Guard = aliasShrinkGuard(ix, r, acceptSmaller, it.wc.Shrinks, it.wc.Old, it.wc.New)
+		writes = append(writes, r)
+	}
+	changed, err := modeladmin.SetAliases(writes)
+	if err != nil {
+		return aliasApplyError(path, err)
+	}
+	for _, r := range reqs {
+		if slices.Contains(changed, r.ID) {
+			fmt.Fprintf(out, "set alias: %s\n", r.ID)
+		} else {
+			fmt.Fprintf(out, "no change: %s\n", r.ID)
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	return h.syncAndWarn(out, errOut, nil)
+}
+
+// aliasApplyError is a refusal of the registry write (or of its dry-run
+// plan) as `apply` words it: the file first, then the reason, ending in
+// `; nothing was changed`, which the write is all or nothing about; a reason
+// whose own text already says so (the shrink re-check, an alias apply cannot
+// repair) does not get it twice.
+func aliasApplyError(path string, err error) error {
+	if strings.Contains(err.Error(), "nothing was changed") {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return fmt.Errorf("%s: %w; nothing was changed", path, err)
+}
+
 // aliasShrinkGuard is the shrink check run again inside the registry write
 // (#689): the window decision above read the registry before the lock, so a
 // concurrent `model edit --context-window` could turn an approved (or
@@ -387,6 +704,15 @@ func aliasShrinkGuard(ix tiers.Index, req modeladmin.AliasRequest, acceptSmaller
 // subscription target is live only while the write's subscription check is
 // clean, and is skipped with the check's own reason otherwise.
 func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alias, oldW, newW int, had, shrinks bool) error {
+	h.printAliasDryRunBlock(out, cfg, a, oldW, newW, had, shrinks)
+	fmt.Fprintln(out, "dry run: nothing was changed")
+	return nil
+}
+
+// printAliasDryRunBlock is printAliasDryRun without its footer, so `alias
+// apply --dry-run` can print one block per changed alias and one footer for
+// the whole file.
+func (h *host) printAliasDryRunBlock(out io.Writer, cfg *config.Config, a config.Alias, oldW, newW int, had, shrinks bool) {
 	fmt.Fprintf(out, "would set alias: %s\n", a.ID)
 	for _, t := range cfg.AliasTargets(a) {
 		fmt.Fprintf(out, "  target %s order %d\n", t.Model, t.Order)
@@ -401,8 +727,6 @@ func (h *host) printAliasDryRun(out io.Writer, cfg *config.Config, a config.Alia
 	}
 	fmt.Fprintln(out, line)
 	h.printAliasRows(out, cfg, a)
-	fmt.Fprintln(out, "dry run: nothing was changed")
-	return nil
 }
 
 // printAliasRows is the rows half of a dry run: each database row the

@@ -1,6 +1,7 @@
 package modeladmin
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"regexp"
@@ -139,6 +140,211 @@ func SetAlias(r AliasRequest) (changed bool, err error) {
 		return d.SetAliasTargets(r.ID, r.targetRows())
 	})
 }
+
+// AliasTargetsEqual reports whether the registry in cfg already holds alias id
+// with exactly targets: the same set of (model, effective order) pairs as
+// Config.AliasTargets gives, an omitted order (0) being the target's 1-based
+// position in its list. The list order among targets that share an order does
+// not matter. An alias cfg does not have is never equal, and neither is a
+// malformed one (the reader keeps the targets it could read, but the alias is
+// frozen until it is rewritten) or a redirect (its targets are its target
+// alias's, not its own).
+func AliasTargetsEqual(cfg *config.Config, id string, targets []config.AliasTarget) bool {
+	cur, ok := cfg.AliasByID(id)
+	if !ok || cur.Malformed != "" || cur.RedirectTo != "" {
+		return false
+	}
+	have := effectiveTargets(cfg.AliasTargets(cur))
+	want := effectiveTargets(targets)
+	return slices.Equal(have, want)
+}
+
+// effectiveTargets is ts with every omitted order filled in with the 1-based
+// position, sorted by (order, model) so that the list order among equal
+// orders is gone.
+func effectiveTargets(ts []config.AliasTarget) []config.AliasTarget {
+	out := slices.Clone(ts)
+	for i := range out {
+		if out[i].Order < 1 {
+			out[i].Order = i + 1
+		}
+	}
+	slices.SortFunc(out, func(a, b config.AliasTarget) int {
+		if c := cmp.Compare(a.Order, b.Order); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Model, b.Model)
+	})
+	return out
+}
+
+// SetAliases writes every request in one registry update, all or nothing: each
+// request is checked (CheckAlias, then its Guard) against the document with
+// the earlier requests of the call already applied, and any failure refuses
+// all and changes nothing. A request whose effective targets already equal the
+// registry's well-formed alias (AliasTargetsEqual) is skipped, so the file
+// keeps its own spelling and, when every request is equal, is not written at
+// all. A malformed registry alias is never equal: one whose fault is in its
+// targets is rewritten, which repairs it; one whose fault is elsewhere in its
+// table (an unknown key, a non-string notes), which a rewrite of the targets
+// keeps, refuses the call with the remedy (applyAliasRequests). changed lists
+// the ids written, in request order. An id given twice is refused. The apply
+// is pure (config.UpdateRegistry may run it up to three times), so a Guard
+// must be pure too.
+func SetAliases(reqs []AliasRequest) (changed []string, err error) {
+	if err := refuseDuplicateIDs(reqs); err != nil {
+		return nil, err
+	}
+	var ids []string
+	wrote, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
+		var err error
+		ids, err = applyAliasRequests(d, reqs)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !wrote {
+		return nil, nil
+	}
+	return ids, nil
+}
+
+// PlanAliases is what SetAliases would do, without writing: the same apply
+// (applyAliasRequests) over a detached copy of the registry
+// (config.ReadRegistryDoc), so a dry run reports the ids the write would
+// change and refuses what it would refuse, in the same words. Guards are not
+// run: they re-check approvals a dry run never asks for.
+func PlanAliases(reqs []AliasRequest) (changed []string, err error) {
+	if err := refuseDuplicateIDs(reqs); err != nil {
+		return nil, err
+	}
+	d, err := config.ReadRegistryDoc()
+	if err != nil {
+		return nil, err
+	}
+	plain := make([]AliasRequest, len(reqs))
+	for i, r := range reqs {
+		r.Guard = nil
+		plain[i] = r
+	}
+	return applyAliasRequests(d, plain)
+}
+
+// refuseDuplicateIDs refuses a call that names one alias id twice.
+func refuseDuplicateIDs(reqs []AliasRequest) error {
+	seen := map[string]bool{}
+	for _, r := range reqs {
+		if seen[r.ID] {
+			return fmt.Errorf("alias %q is given more than once", r.ID)
+		}
+		seen[r.ID] = true
+	}
+	return nil
+}
+
+// applyAliasRequests applies reqs to d in order and returns the ids whose
+// alias it changed: each is checked (CheckAlias, then its Guard) against d
+// with the earlier ones applied, an equal one is skipped, the rest get their
+// targets rewritten. An alias still malformed after its rewrite (its fault is
+// outside the targets, which SetAliasTargets keeps) is refused, naming the
+// fault and the remedy, so nothing is reported as set that was not repaired.
+// It is pure over d.
+func applyAliasRequests(d *config.RegistryDoc, reqs []AliasRequest) ([]string, error) {
+	var ids []string
+	for _, r := range reqs {
+		if err := CheckAlias(d.RefConfig(), r); err != nil {
+			return nil, err
+		}
+		if r.Guard != nil {
+			if err := r.Guard(d.RefConfig()); err != nil {
+				return nil, err
+			}
+		}
+		if AliasTargetsEqual(d.RefConfig(), r.ID, r.Targets) {
+			continue
+		}
+		before, had := d.RefConfig().AliasByID(r.ID)
+		if !had {
+			row := tomlw.NewTable()
+			row.Set("id", r.ID)
+			row.Set("targets", []any{})
+			if err := d.AddAlias(row); err != nil {
+				return nil, err
+			}
+		}
+		if err := d.SetAliasTargets(r.ID, r.targetRows()); err != nil {
+			return nil, err
+		}
+		after, _ := d.RefConfig().AliasByID(r.ID)
+		if after.Malformed != "" {
+			return nil, fmt.Errorf("alias %q is malformed outside its targets (%s), which apply does not rewrite: edit the alias in %s by hand, or run `wt-model alias rm %s` and apply again; nothing was changed",
+				r.ID, after.Malformed, config.RegistryPath(), r.ID)
+		}
+		if !had || before.Malformed != "" || !slices.Equal(before.Targets, after.Targets) {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids, nil
+}
+
+// SkippedAlias is an alias AliasesTOML leaves out, and why (one short line).
+type SkippedAlias struct{ ID, Why string }
+
+// AliasesTOML is the registry's aliases as `alias apply` reads them: one
+// [[aliases]] table each, in the order `alias list` lists them, with an id and
+// targets as inline tables holding model and an explicit order (the effective
+// one, Config.AliasTargets with an omitted order read as the position), so the
+// registry's own spelling never matters. Only aliases apply would accept are
+// printed: a redirect, a malformed alias and one config.AliasFault refuses
+// are returned in skipped, in the same order, with a short reason each. notes
+// are not printed (they are not loaded). With nothing to print text is empty.
+func AliasesTOML(cfg *config.Config) (text string, skipped []SkippedAlias, err error) {
+	var rows []any
+	for _, a := range cfg.Aliases {
+		switch {
+		case a.RedirectTo != "":
+			skipped = append(skipped, SkippedAlias{a.ID, "a redirect to " + a.RedirectTo})
+			continue
+		case a.Malformed != "":
+			skipped = append(skipped, SkippedAlias{a.ID, "malformed: " + oneLine(a.Malformed)})
+			continue
+		}
+		if ferr := config.AliasFault(cfg, a); ferr != nil {
+			why := strings.TrimPrefix(oneLine(ferr.Error()), fmt.Sprintf("alias %q: ", a.ID))
+			skipped = append(skipped, SkippedAlias{a.ID, why})
+			continue
+		}
+		targets := make([]any, 0, len(a.Targets))
+		for i, t := range cfg.AliasTargets(a) {
+			order := t.Order
+			if order < 1 {
+				order = i + 1
+			}
+			row := tomlw.NewTable()
+			row.Set("model", t.Model)
+			row.Set("order", int64(order))
+			targets = append(targets, row)
+		}
+		row := tomlw.NewTable()
+		row.Set("id", a.ID)
+		row.Set("targets", targets)
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		return "", skipped, nil
+	}
+	root := tomlw.NewTable()
+	root.Set("aliases", rows)
+	b, err := tomlw.Encode(root)
+	if err != nil {
+		return "", nil, fmt.Errorf("writing the aliases as TOML: %w", err)
+	}
+	return string(b), skipped, nil
+}
+
+// oneLine is s with every run of whitespace one space.
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // RemoveAliases removes the aliases ids from the registry in one write, all
 // or nothing: an id the registry does not have (config.ErrAliasNotFound)
