@@ -71,28 +71,35 @@ func eligRows() []modelapi.Row {
 	}
 }
 
-// TestEligibleWireByProviderTagFamily pins provider, tag and family filters
-// as Config.EligibleModelsIn applies them.
+// TestEligibleWireByProviderTagFamily pins that provider, tag and family
+// filters apply on top of the derived rule: codex, with no list, is offered
+// every non-native row (and no other agent's native one), and the tag and
+// family filters then narrow that.
 func TestEligibleWireByProviderTagFamily(t *testing.T) {
-	a := config.Agent{Name: "codex", SupportedProviders: []string{"ollama", "copilot"}}
-	if got := wid(EligibleWire(eligRows(), a, "", "")); !slices.Equal(got, []string{"b", "d"}) {
+	a := config.Agent{Name: "codex"}
+	if got := wid(EligibleWire(eligRows(), a, "", "")); !slices.Equal(got, []string{"a", "b"}) {
 		t.Errorf("providers: %v", got)
 	}
-	if got := wid(EligibleWire(eligRows(), a, "y", "")); !slices.Equal(got, []string{"b"}) {
-		t.Errorf("tags: %v", got)
+	if got := wid(EligibleWire(eligRows(), a, "y", "")); !slices.Equal(got, []string{"a", "b"}) {
+		t.Errorf("tag y: %v", got)
 	}
-	if got := wid(EligibleWire(eligRows(), a, "", "f1")); !slices.Equal(got, []string{"d"}) {
+	if got := wid(EligibleWire(eligRows(), a, "x", "")); !slices.Equal(got, []string{"a"}) {
+		t.Errorf("tag x: %v", got)
+	}
+	if got := wid(EligibleWire(eligRows(), a, "", "f1")); !slices.Equal(got, []string{"a"}) {
 		t.Errorf("family: %v", got)
 	}
 }
 
-// TestEligibleWireSushiForClaudeAndPi pins that sushi rows reach claude and
-// pi through SushiAgents even when the agent lists no sushi provider.
-func TestEligibleWireSushiForClaudeAndPi(t *testing.T) {
-	for _, name := range []string{"claude", "pi", "codex"} {
+// TestEligibleWireSushiForEveryAgent pins that a sushi row reaches every agent
+// that is not native-only (claude, pi, codex, opencode, copilot), whatever
+// list the agent carries, and never agy, whose only offer is its own native
+// row. Sushi used to be reserved to claude and pi by a table.
+func TestEligibleWireSushiForEveryAgent(t *testing.T) {
+	for _, name := range []string{"claude", "pi", "codex", "opencode", "copilot", "agy"} {
 		a := config.Agent{Name: name, SupportedProviders: []string{"none"}}
 		got := wid(EligibleWire(eligRows(), a, "", ""))
-		want := name != "codex"
+		want := name != "agy"
 		if slices.Contains(got, "a") != want {
 			t.Errorf("%s: %v", name, got)
 		}
@@ -109,10 +116,11 @@ func TestEligibleWireAllProvidersExcludesOthersNative(t *testing.T) {
 }
 
 // TestEligibleWireOrdersByOrder pins that the result follows Row.Order, not
-// the input order.
+// the input order: claude gets sushi (0), ollama (1) and its own native row
+// (3), and copilot's native row (2) is not offered to it.
 func TestEligibleWireOrdersByOrder(t *testing.T) {
-	a := config.Agent{Name: "x", SupportedProviders: []string{"claude", "ollama", "sushi", "copilot"}}
-	if got := wid(EligibleWire(eligRows(), a, "", "")); !slices.Equal(got, []string{"a", "b", "d", "c"}) {
+	a := config.Agent{Name: "claude"}
+	if got := wid(EligibleWire(eligRows(), a, "", "")); !slices.Equal(got, []string{"a", "b", "c"}) {
 		t.Errorf("got %v", got)
 	}
 }
@@ -124,10 +132,11 @@ func aliasRow(id, loc string, order int, targets ...modelapi.AliasTarget) modela
 }
 
 // TestEligibleWireAliasNeedsEveryTargetProvider pins that an alias row (whose
-// own provider id is "alias", which no agent lists) reaches an agent exactly
-// when every one of its targets' providers would: a group with one target
-// the agent cannot use would fall back, through the gateway, onto a model
-// the agent was never meant to run. An AllProviders agent takes every alias.
+// own provider id is "alias") reaches an agent exactly when every one of its
+// targets' providers would, by the derived rule: codex gets every alias
+// whose targets are non-native, whatever list it carries; a synthesized
+// claude gets the same plus its own native row; agy, which takes only its own
+// native row, gets none; and an alias with no targets reaches nobody.
 func TestEligibleWireAliasNeedsEveryTargetProvider(t *testing.T) {
 	both := aliasRow("alias/both", "cloud", 5,
 		modelapi.AliasTarget{ID: "ollama/x", Order: 1, ProviderID: "ollama", Location: "cloud"},
@@ -138,25 +147,111 @@ func TestEligibleWireAliasNeedsEveryTargetProvider(t *testing.T) {
 		modelapi.AliasTarget{ID: "sushi/p", Order: 1, ProviderID: "sushi", Location: "local"})
 	rows := append(eligRows(), both, ollamaOnly, sushi)
 
-	codex := config.Agent{Name: "codex", SupportedProviders: []string{"ollama"}}
-	if got := wid(EligibleWire(rows, codex, "", "")); !slices.Equal(got, []string{"b", "alias/one"}) {
-		t.Errorf("codex (ollama only): %v, want [b alias/one]", got)
+	for _, codex := range []config.Agent{
+		{Name: "codex"},
+		{Name: "codex", SupportedProviders: []string{"ollama"}},
+	} {
+		if got := wid(EligibleWire(rows, codex, "", "")); !slices.Equal(got, []string{"a", "b", "alias/both", "alias/one", "alias/sushi"}) {
+			t.Errorf("codex %v: %v, want [a b alias/both alias/one alias/sushi]", codex.SupportedProviders, got)
+		}
 	}
-	wide := config.Agent{Name: "codex", SupportedProviders: []string{"ollama", "omlx"}}
-	if got := wid(EligibleWire(rows, wide, "", "")); !slices.Equal(got, []string{"b", "alias/both", "alias/one"}) {
-		t.Errorf("codex (ollama, omlx): %v, want both aliases", got)
+	claude := config.Agent{Name: "claude", AllProviders: true}
+	if got := wid(EligibleWire(rows, claude, "", "")); !slices.Equal(got, []string{"a", "b", "c", "alias/both", "alias/one", "alias/sushi"}) {
+		t.Errorf("claude: %v", got)
 	}
-	pi := config.Agent{Name: "pi", SupportedProviders: []string{"none"}}
-	if got := wid(EligibleWire(rows, pi, "", "")); !slices.Equal(got, []string{"a", "alias/sushi"}) {
-		t.Errorf("pi (sushi through SushiAgents): %v, want [a alias/sushi]", got)
-	}
-	all := config.Agent{Name: "claude", AllProviders: true}
-	if got := wid(EligibleWire(rows, all, "", "")); !slices.Equal(got, []string{"a", "b", "c", "alias/both", "alias/one", "alias/sushi"}) {
-		t.Errorf("AllProviders: %v", got)
+	agy := config.Agent{Name: "agy"}
+	if got := wid(EligibleWire(rows, agy, "", "")); len(got) != 0 {
+		t.Errorf("agy: %v, want none", got)
 	}
 	empty := aliasRow("alias/none", "cloud", 8)
-	if got := wid(EligibleWire([]modelapi.Row{empty}, all, "", "")); len(got) != 0 {
+	if got := wid(EligibleWire([]modelapi.Row{empty}, claude, "", "")); len(got) != 0 {
 		t.Errorf("an alias with no targets reached an agent: %v", got)
+	}
+}
+
+// TestProviderEligible pins the four-clause rule, one clause per group of
+// rows: the subscription row reaches claude alone (a list never admits it);
+// agy takes only its own native row; any other native row reaches only the
+// agent of that name; and every other row reaches every agent, whatever its
+// SupportedProviders list says (a list never narrows) and for a synthesized
+// (AllProviders) agent too.
+func TestProviderEligible(t *testing.T) {
+	type tc struct {
+		name     string
+		agent    config.Agent
+		provider string
+		native   bool
+		want     bool
+	}
+	var cases []tc
+	add := func(a config.Agent, provider string, native, want bool) {
+		cases = append(cases, tc{a.Name + "/" + provider, a, provider, native, want})
+	}
+	for _, n := range []string{"claude", "codex", "pi", "opencode", "copilot", "agy"} {
+		add(config.Agent{Name: n}, config.SubscriptionProvider, false, n == "claude")
+	}
+	add(config.Agent{Name: "codex", SupportedProviders: []string{config.SubscriptionProvider}}, config.SubscriptionProvider, false, false)
+
+	add(config.Agent{Name: "agy"}, "agy", true, true)
+	add(config.Agent{Name: "agy"}, "claude", true, false)
+	for _, p := range []string{"ollama", "sushi", "openrouter"} {
+		add(config.Agent{Name: "agy"}, p, false, false)
+	}
+	add(config.Agent{Name: "agy"}, "agy", false, false)
+
+	for _, n := range []string{"claude", "codex", "pi", "opencode"} {
+		add(config.Agent{Name: n}, "claude", true, n == "claude")
+	}
+	for _, n := range []string{"copilot", "claude", "codex", "pi", "opencode"} {
+		add(config.Agent{Name: n}, "copilot", true, n == "copilot")
+	}
+	for _, n := range []string{"codex", "claude", "pi", "opencode", "copilot"} {
+		add(config.Agent{Name: n}, "codex", true, n == "codex")
+	}
+
+	for _, p := range []string{"ollama", "openrouter", "sushi", "omlx", "mtplx", "rec"} {
+		for _, n := range []string{"claude", "codex", "copilot", "pi", "opencode"} {
+			add(config.Agent{Name: n}, p, false, true)
+		}
+		add(config.Agent{Name: "codex", SupportedProviders: []string{"ollama"}}, p, false, true)
+		add(config.Agent{Name: "pi", AllProviders: true}, p, false, true)
+	}
+
+	for _, c := range cases {
+		if got := providerEligible(c.agent, c.provider, c.native); got != c.want {
+			t.Errorf("%s (native=%v, list=%v, all=%v): got %v, want %v",
+				c.name, c.native, c.agent.SupportedProviders, c.agent.AllProviders, got, c.want)
+		}
+	}
+}
+
+// TestProviderEligibleAliasTargets pins that an alias is judged by its
+// targets through the same rule: ollama and sushi targets reach every agent
+// but agy, a subscription target makes the alias claude-only, and an alias
+// with no targets reaches nobody.
+func TestProviderEligibleAliasTargets(t *testing.T) {
+	plain := aliasRow("alias/p", "local", 1,
+		modelapi.AliasTarget{ID: "ollama/x", Order: 1, ProviderID: "ollama"},
+		modelapi.AliasTarget{ID: "sushi/p", Order: 2, ProviderID: "sushi"})
+	sub := aliasRow("alias/s", "cloud", 2,
+		modelapi.AliasTarget{ID: "claude-subscription/x", Order: 1, ProviderID: config.SubscriptionProvider},
+		modelapi.AliasTarget{ID: "ollama/x", Order: 2, ProviderID: "ollama"})
+	none := aliasRow("alias/n", "cloud", 3)
+	rows := []modelapi.Row{plain, sub, none}
+
+	for _, c := range []struct {
+		agent string
+		want  []string
+	}{
+		{"claude", []string{"alias/p", "alias/s"}},
+		{"codex", []string{"alias/p"}},
+		{"pi", []string{"alias/p"}},
+		{"opencode", []string{"alias/p"}},
+		{"agy", nil},
+	} {
+		if got := wid(EligibleWire(rows, config.Agent{Name: c.agent}, "", "")); !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, want %v", c.agent, got, c.want)
+		}
 	}
 }
 

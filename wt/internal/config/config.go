@@ -912,6 +912,21 @@ const SubscriptionProvider = provider.IDClaudeSubscription
 // claude, the one agent that holds a claude.ai login to forward.
 var SubscriptionAgents = []string{"claude"}
 
+// NativeOnlyAgents are the agents that can run nothing but their own native
+// provider's row: agy's driver ignores the model it is handed, so the only
+// honest offer is agy's native row. It lives in this leaf package, not in
+// internal/agents, because internal/catalog (which applies the eligibility
+// rule) and cmd/wt-model may not import internal/agents (the depcheck ratchet);
+// internal/agents' TestNativeTablesMatchTheDrivers pins it to the drivers.
+var NativeOnlyAgents = []string{"agy"}
+
+// NativeCapableAgents are the agents that have a native provider (a row named
+// for the agent, run with the agent's own login and no gateway): everything
+// but pi and opencode. A native provider id equals its driver name. It lives
+// in this leaf package for the same reason as NativeOnlyAgents, and
+// internal/agents' TestNativeTablesMatchTheDrivers pins it to the drivers.
+var NativeCapableAgents = []string{"claude", "codex", "copilot", "agy"}
+
 // IsSubscriptionProvider reports whether id is the Claude subscription
 // provider.
 func IsSubscriptionProvider(id string) bool { return id == SubscriptionProvider }
