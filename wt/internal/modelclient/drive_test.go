@@ -533,10 +533,12 @@ func TestPollSurvivesBriefOutageThenLosesServer(t *testing.T) {
 	}
 }
 
-// TestPollCountsHungRequestsTowardPollGrace pins that a poll that fails after
+// TestPollCountsFailedPollsTowardPollGrace pins that a poll that fails after
 // a long time in flight counts that time as outage time on the client's
 // clock: the sleeper here never advances the clock, so only the failing
-// requests' (fake) duration can reach the grace.
+// requests' (fake) duration can reach the grace. It covers the transport
+// failure path only; a poll that expires by its own timeout is not driven
+// here (that needs a real timer, which this test avoids on purpose).
 //
 // The duration is fake on purpose and the failure is a cut connection, not a
 // real hang cut off by a short WithRequestTimeout: that timeout is the
@@ -545,25 +547,25 @@ func TestPollSurvivesBriefOutageThenLosesServer(t *testing.T) {
 // is enough) with an *UnreachableError out of RunStart before any poll ran.
 // With no real timer in the test, nothing it asserts depends on the machine's
 // speed.
-func TestPollCountsHungRequestsTowardPollGrace(t *testing.T) {
+func TestPollCountsFailedPollsTowardPollGrace(t *testing.T) {
 	jf := newJobFake(t)
 	fc := newFakeClock()
 	fc.still = true
 	var mu sync.Mutex
-	hung := 0
+	failed := 0
 	jf.job = func(w http.ResponseWriter, _ *http.Request, id string, n int) *modelapi.JobStatus {
 		if n == 0 {
 			return running(id)
 		}
 		mu.Lock()
-		hung++
-		h := hung
+		failed++
+		h := failed
 		mu.Unlock()
-		if h > 50 { // a driver that ignores hung time would spin; end it
+		if h > 50 { // a driver that ignores failed-poll time would spin; end it
 			return done(id)
 		}
-		fc.advance(10 * time.Second) // the request has been in flight 10 s...
-		cut(w)                       // ...when it fails
+		fc.advance(10 * time.Second) // each handler call advances the fake clock 10 s...
+		cut(w)                       // ...then fails (the transport may retry a cut GET, so a poll can call this twice)
 		return nil
 	}
 	_, err := jf.driver(fc).RunStart(ctx(), modelapi.StartRequest{Model: "omlx/m"}, &fakeAnswerer{}, nil)
@@ -573,8 +575,8 @@ func TestPollCountsHungRequestsTowardPollGrace(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if hung > 20 {
-		t.Errorf("%d hung polls before giving up", hung)
+	if failed > 20 {
+		t.Errorf("%d failed polls before giving up", failed)
 	}
 }
 

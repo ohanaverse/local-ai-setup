@@ -246,10 +246,16 @@ func TestHeartbeatTimesOutOnAHungServer(t *testing.T) {
 	}
 	var n notes
 	o, ticks := tickOpts(&n)
-	s := sf.client(WithRequestTimeout(30*time.Millisecond)).NewSession([]string{"a"}, o)
+	// The short bound goes on after Start: the client's timeout covers every
+	// call, Register included, and 30 ms is little enough for a loaded
+	// machine to fail it before any beat runs. The loop reads the field only
+	// when a tick arrives, so setting it before the first tick is ordered by
+	// the channel send.
+	s := sf.client().NewSession([]string{"a"}, o)
 	if err := s.Start(ctx()); err != nil {
 		t.Fatal(err)
 	}
+	s.c.timeout = 30 * time.Millisecond
 	for i := 0; i < 4; i++ {
 		tick(t, ticks)
 	}

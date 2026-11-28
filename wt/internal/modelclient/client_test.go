@@ -537,7 +537,7 @@ func TestEndReturnsWithinBoundWhenServerIsDown(t *testing.T) {
 	start = time.Now()
 	err = New(Endpoint{URL: hung.URL, Token: tok}).End(cancelled, "s")
 	if !errors.As(err, &ue) || time.Since(start) > 3500*time.Millisecond {
-		t.Errorf("hung: err = %v after %v", err, time.Since(start))
+		t.Fatalf("hung: err = %v after %v", err, time.Since(start))
 	}
 	// The text names the time that was left on End's 3 s context when the
 	// request was sent (modelping.Send: the bound that expires first, rounded
