@@ -8,8 +8,9 @@ import (
 )
 
 // removedRotateCmd is the hidden stub `wt rotate` became when rotation was
-// removed (2026-11-27): the model picker opens on the first row that is not
-// blocked, so there is no "model after the last-launched" left to print.
+// removed (2026-11-27): the model picker opens on the row the last launch picked
+// (else the first row that is not blocked), so there is no "model after the
+// last-launched" left to print.
 // Without the stub the root, which accepts any positional arguments, would
 // take `rotate code` as agent arguments and open the picker. It needs no
 // model server; flag parsing is off and any arguments are accepted, so
@@ -21,7 +22,7 @@ func removedRotateCmd() *cobra.Command {
 		Args:        cobra.ArbitraryArgs,
 		Annotations: map[string]string{removedCmdAnnotation: "2026-11-27 (rotation removed)"},
 		RunE: func(*cobra.Command, []string) error {
-			return exitcode.New(1, errors.New("rotate was removed: the model picker no longer rotates, it opens on the first row that is not blocked; nothing was changed"), false)
+			return exitcode.New(1, errors.New("rotate was removed: the model picker no longer rotates, it opens on what you launched last; nothing was changed"), false)
 		},
 	}
 }

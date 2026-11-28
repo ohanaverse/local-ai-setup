@@ -86,7 +86,8 @@ func (s *StoreImpl) RecordLaunch(agent, id string) error {
 
 // LastPicked is the row id the picker's marker sits on: the content of
 // last-picked.state, trimmed. A missing or empty file is ("", false); no other
-// file is read.
+// file is read. The picker's cursor starts on this row when the table shows it
+// and it is not blocked.
 func (s *StoreImpl) LastPicked() (string, bool) {
 	data, err := os.ReadFile(s.pickedPath())
 	if err != nil {

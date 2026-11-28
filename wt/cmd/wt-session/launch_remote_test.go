@@ -590,7 +590,7 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 
 // TestSeveralMatchesOpenThePickerOnTheServer pins the endpoint path's -A X
 // launch with no -M and several launchable models: on a terminal it opens the
-// model server's picker (whose cursor lands on the first unblocked row), as
+// model server's picker (whose cursor, with no previous launch, lands on the first unblocked row), as
 // the registry path opens its picker, instead of launching a model the user
 // never saw; without a terminal it refuses as the registry path does.
 func TestSeveralMatchesOpenThePickerOnTheServer(t *testing.T) {

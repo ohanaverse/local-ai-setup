@@ -51,8 +51,9 @@ func singleModelList(m config.Model) list.Model {
 }
 
 // phaseModelWithList builds a model in phaseModel with m.models populated
-// for the given agent+tag, with the cursor on the first row that is not
-// blocked (row 0 when every row is). Tests that exercise the list or the
+// for the given agent+tag, with the cursor where the catalog command puts it: the row
+// last-picked.state names when it is shown and not blocked, else the first row
+// that is not blocked (row 0 when every row is). Tests that exercise the list or the
 // View use this helper instead of constructing model literals. It routes
 // through the production list-build path (buildTable, the table renderer
 // the catalog load uses too) so tests exercise the compact, divider-free
@@ -75,39 +76,21 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	if len(models) == 0 {
 		t.Fatalf("phaseModelWithList: no models for agent %q tag %q", agent, tag)
 	}
-	// Mirror the catalog command: the marker's row is last-picked.state's.
+	// Mirror the catalog command: the marker's row is last-picked.state's, and
+	// the cursor goes through the production list builder with the same
+	// remembered-row rule (usableRowID), so this helper cannot drift from it.
 	lastID, _ := usage.NewStore().LastPicked()
-	items := buildTable(tableInput{models: models, usage: newUsageStore()}, lastID).items
-	delegate := themes.ListDelegate(themes.Default)
-	delegate.ShowDescription = false
-	delegate.SetSpacing(0)
-	// Cast []*modelItem to []list.Item
-	listItems := make([]list.Item, len(items))
-	for i, it := range items {
-		listItems[i] = it
-	}
-	ml := list.New(listItems, delegate, 80, 24)
-
+	tbl := buildTable(tableInput{models: models, usage: newUsageStore()}, lastID)
 	m := model{
 		cfg:    cfg,
 		phase:  phaseModel,
 		agent:  agent,
 		tag:    tag,
-		models: ml,
+		theme:  themes.Default,
 		width:  80,
 		height: 24,
 	}
-
-	// Position the cursor like newModelList with no pin: the first row that
-	// is not blocked, else row 0.
-	pos := 0
-	for i, it := range items {
-		if it.blocked == "" {
-			pos = i
-			break
-		}
-	}
-	m.models.Select(pos)
+	m.models = m.newModelList(tbl, usableRowID(tbl, lastID))
 	return m
 }
 
@@ -374,36 +357,37 @@ func TestUnknownAgentLaunchShowsError(t *testing.T) {
 	}
 }
 
-// TestSelectedEntryMsgPositionsCursorOnTheFirstUnblockedRow asserts the
-// cursor lands on the first row that is not blocked after a prior launch,
-// not on the model after the one launched last: the picker no longer
-// rotates. It drives the phaseAgent step into phaseModel: selectEntryMsg
+// TestSelectedEntryMsgPositionsCursorOnTheLastPickedRow asserts the cursor
+// lands on the row the last launch picked (last-picked.state), not on the
+// model after it and not on the first row: the picker remembers the previous
+// selection. It drives the phaseAgent step into phaseModel: selectEntryMsg
 // lands in phaseAgent, the phaseAgent Enter handler builds m.models and
 // positions the cursor.
-func TestSelectedEntryMsgPositionsCursorOnTheFirstUnblockedRow(t *testing.T) {
+func TestSelectedEntryMsgPositionsCursorOnTheLastPickedRow(t *testing.T) {
 	dir := tempStateDir(t)
 	// State: last=ollama/gemma4:9b. The selector table sorts its unscored
-	// rows by id (14b, 9b, design) and none is blocked, so the cursor is
-	// 14b at index 0 — assert on the selected model, not an index.
+	// rows by id (14b, 9b, design) and none is blocked, so the first row
+	// would be 14b at index 0 and the remembered row is 9b at index 1 —
+	// assert on the selected model, not an index.
 	stubUsageStore(t)
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
 	gotModel := drivePhaseAgentEnter(t, m, "claude")
-	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" {
-		t.Errorf("cursor on %q (index %d), want ollama/gemma4:14b", got, gotModel.models.Index())
+	if got := selectedModelID(gotModel); got != "ollama/gemma4:9b" {
+		t.Errorf("cursor on %q (index %d), want the last-picked row ollama/gemma4:9b", got, gotModel.models.Index())
 	}
 }
 
 // TestPhaseModelWithListBuildsAndPositionsCursor asserts the test
-// helper populates m.models and positions the cursor on the first row that
-// is not blocked, whatever was launched last. The helper routes through the
-// production list-build path (buildTable, the same builder the catalog load
-// uses), so this is a smoke test of the shared infrastructure.
+// helper populates m.models and positions the cursor on the row last
+// launched. The helper routes through the production list-build path
+// (buildTable and newModelList with usableRowID, the same as the catalog
+// load), so this is a smoke test of the shared infrastructure.
 func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	dir := tempStateDir(t)
-	// last-picked.state names gemma4:9b; the sorted first row, gemma4:14b,
-	// is not blocked, so the cursor lands there.
+	// last-picked.state names gemma4:9b, which is not blocked, so the
+	// cursor lands on it rather than on the sorted first row, gemma4:14b.
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
 	m := phaseModelWithList(t, cfg, "claude", "code")
@@ -414,17 +398,16 @@ func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	}
 	// The table sorts rows itself, so assert on the model under the cursor
 	// rather than a hard-coded list position.
-	if got := selectedModelID(m); got != "ollama/gemma4:14b" {
-		t.Errorf("cursor on %q (index %d), want ollama/gemma4:14b", got, m.models.Index())
+	if got := selectedModelID(m); got != "ollama/gemma4:9b" {
+		t.Errorf("cursor on %q (index %d), want the last-launched row ollama/gemma4:9b", got, m.models.Index())
 	}
 }
 
 // TestModelPickerMarksLastLaunchedRow drives the production
 // phaseAgent → catalog command path with a seeded last-picked.state and
-// asserts the last-launched marker lands on the last-launched row while the
-// cursor lands on the first row that is not blocked — the two are different
-// rows here, and confusing them would mean the marker moved the cursor or
-// the cursor's row claimed to be the one just used.
+// asserts the last-launched marker lands on the last-launched row and that the
+// cursor opens on that same row (not the sorted first row, 14b), so the
+// previous selection is the current one.
 func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 	dir := tempStateDir(t)
 	stubUsageStore(t) // hermetic usage counts: stable sort
@@ -452,8 +435,8 @@ func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 	if markerIdx != 1 {
 		t.Errorf("marker row = %d, want 1 (ollama/gemma4:9b)", markerIdx)
 	}
-	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" {
-		t.Errorf("cursor on %q, want the first unblocked row ollama/gemma4:14b", got)
+	if got := selectedModelID(gotModel); got != "ollama/gemma4:9b" {
+		t.Errorf("cursor on %q, want the last-launched row ollama/gemma4:9b", got)
 	}
 }
 

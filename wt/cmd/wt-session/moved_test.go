@@ -251,7 +251,7 @@ func TestAddMovedStubsFindsOrAddsTheParent(t *testing.T) {
 // as agent arguments and open the picker. The command is hidden and carries
 // its removal date, so `wt --help` no longer lists it.
 func TestRemovedRotateExitsOneAndChangesNothing(t *testing.T) {
-	const want = "wt: rotate was removed: the model picker no longer rotates, it opens on the first row that is not blocked; nothing was changed"
+	const want = "wt: rotate was removed: the model picker no longer rotates, it opens on what you launched last; nothing was changed"
 	for _, args := range [][]string{{"rotate", "code"}, {"rotate", "--json"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			home, marker, h := noServerHome(t)

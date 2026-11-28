@@ -642,21 +642,71 @@ func markedIDs(m model) []string {
 }
 
 // TestPickerCursorStartsOnTheFirstRowThatIsNotBlocked pins the picker's
-// starting cursor without -M: the first row in sorted order that is not
-// blocked, and a row the server would have to start counts. Neither the
-// last-picked row nor a leftover rotation.state moves it, so a bare Enter
-// always takes the top usable row instead of cycling through the list.
+// starting cursor without -M and with no previous launch: the first row in
+// sorted order that is not blocked, and a row the server would have to start
+// counts. A leftover rotation.state from an older wt moves nothing, so a
+// first Enter takes the top usable row.
 func TestPickerCursorStartsOnTheFirstRowThatIsNotBlocked(t *testing.T) {
 	f := &fakeModels{cat: cursorCatalog()}
 	m := remoteModel(t, f, 80, 24)
-	if err := usage.NewStore().RecordLaunch("claude", "openrouter/a"); err != nil {
-		t.Fatal(err)
-	}
 	writeLeftoverRotationState(t, "openrouter/a")
 	m, cmd := m.enterModelPhaseForAgent()
 	m = settle(t, m, cmd)
 	if got := selectedModelID(m); got != "omlx/qwen3.8" || m.models.Index() != 0 {
 		t.Errorf("cursor = %q at %d, want omlx/qwen3.8 at 0 (the first row, a start row, is not blocked)", got, m.models.Index())
+	}
+}
+
+// TestPickerCursorStartsOnTheLastPickedRow pins that the picker opens on the
+// row the last launch recorded (last-picked.state, the row the "> " marker
+// draws on), not on the first row, so the model chosen last time is the
+// current selection and a bare Enter repeats it.
+func TestPickerCursorStartsOnTheLastPickedRow(t *testing.T) {
+	f := &fakeModels{cat: cursorCatalog()}
+	m := remoteModel(t, f, 80, 24)
+	if err := usage.NewStore().RecordLaunch("claude", "openrouter/b"); err != nil {
+		t.Fatal(err)
+	}
+	m, cmd := m.enterModelPhaseForAgent()
+	m = settle(t, m, cmd)
+	if got := selectedModelID(m); got != "openrouter/b" {
+		t.Errorf("cursor = %q, want the last-picked row openrouter/b", got)
+	}
+	if got := markedIDs(m); !slices.Equal(got, []string{"openrouter/b"}) {
+		t.Errorf("marked rows = %v, want [openrouter/b]: the marker and the cursor share the row", got)
+	}
+}
+
+// TestPickerCursorFallsBackWhenTheLastPickedRowCannotBeUsed pins the two ways
+// the remembered row can fail the cursor: the row is not in this table (another
+// agent's model, a model since removed or filtered out) or it is blocked now.
+// Either way the cursor takes the first row that is not blocked, never a row
+// that cannot be launched, and the marker still names the last pick when its
+// row is shown.
+func TestPickerCursorFallsBackWhenTheLastPickedRowCannotBeUsed(t *testing.T) {
+	blocked := cursorCatalog()
+	blocked.Rows[2].Action, blocked.Rows[2].BlockReason = modelapi.ActionBlock, "not available"
+	for _, tc := range []struct {
+		name, last string
+		cat        modelapi.Catalog
+		marked     []string
+	}{
+		{"not in the table", "openrouter/gone", cursorCatalog(), nil},
+		{"blocked", "openrouter/b", blocked, []string{"openrouter/b"}},
+	} {
+		f := &fakeModels{cat: tc.cat}
+		m := remoteModel(t, f, 80, 24)
+		if err := usage.NewStore().RecordLaunch("claude", tc.last); err != nil {
+			t.Fatal(err)
+		}
+		m, cmd := m.enterModelPhaseForAgent()
+		m = settle(t, m, cmd)
+		if got := selectedModelID(m); got != "omlx/qwen3.8" || m.models.Index() != 0 {
+			t.Errorf("%s: cursor = %q at %d, want the first row that is not blocked, omlx/qwen3.8 at 0", tc.name, got, m.models.Index())
+		}
+		if got := markedIDs(m); !slices.Equal(got, tc.marked) {
+			t.Errorf("%s: marked rows = %v, want %v", tc.name, got, tc.marked)
+		}
 	}
 }
 
@@ -706,9 +756,9 @@ func TestPickerCursorIsRowZeroWhenEveryRowIsBlocked(t *testing.T) {
 }
 
 // TestPickerMarkerFollowsLastPicked pins the "> " marker through the real
-// catalog command: it sits on the row last-picked.state names (here not the
-// cursor's row), and a leftover rotation.state with no last-picked.state
-// marks nothing, so an old file cannot fabricate a "last used" row.
+// catalog command: it sits on the row last-picked.state names, and a leftover
+// rotation.state with no last-picked.state marks nothing and moves no cursor,
+// so an old file cannot fabricate a "last used" row.
 func TestPickerMarkerFollowsLastPicked(t *testing.T) {
 	f := &fakeModels{cat: cursorCatalog()}
 	m := remoteModel(t, f, 80, 24)
@@ -721,9 +771,6 @@ func TestPickerMarkerFollowsLastPicked(t *testing.T) {
 	if got := markedIDs(m); !slices.Equal(got, []string{"openrouter/b"}) {
 		t.Errorf("marked rows = %v, want [openrouter/b] (last-picked.state)", got)
 	}
-	if got := selectedModelID(m); got == "openrouter/b" {
-		t.Errorf("cursor = %q: the marker's row must not decide the cursor", got)
-	}
 
 	g := &fakeModels{cat: cursorCatalog()}
 	n := remoteModel(t, g, 80, 24)
@@ -732,6 +779,9 @@ func TestPickerMarkerFollowsLastPicked(t *testing.T) {
 	n = settle(t, n, cmd)
 	if got := markedIDs(n); len(got) != 0 {
 		t.Errorf("marked rows = %v, want none (no last-picked.state)", got)
+	}
+	if got := selectedModelID(n); got == "openrouter/a" {
+		t.Errorf("cursor = %q: a leftover rotation.state must not place the cursor", got)
 	}
 }
 

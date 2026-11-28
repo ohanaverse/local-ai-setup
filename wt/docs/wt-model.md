@@ -573,7 +573,7 @@ existing row and warns. Rows are compared by the hash stamped on them, so a
 hand edit in the LiteLLM UI that keeps the stamp is not detected. Two aliases
 with one id fail the registry load, the one case where a bad alias does.
 
-**Launching.** `-M alias/<name>`, the picker and slot profiles list and launch an alias like a model. A launch with no pin never picks an alias: it launches the one launchable model, or, with several, hands a terminal launch to the picker and refuses one without a terminal. The picker lists aliases in their own band after the slot profiles and opens its cursor on one when it is the first row that is not blocked.
+**Launching.** `-M alias/<name>`, the picker and slot profiles list and launch an alias like a model. A launch with no pin never picks an alias: it launches the one launchable model, or, with several, hands a terminal launch to the picker and refuses one without a terminal. The picker lists aliases in their own band after the slot profiles and opens its cursor on one when it is the row the last launch picked (and not blocked) or, with no such row, the first row that is not blocked.
 
 The Aliases tab of `wt-model model` does the same set and remove on a terminal (see [The Aliases tab](#the-aliases-tab-wt-model-model)).
 

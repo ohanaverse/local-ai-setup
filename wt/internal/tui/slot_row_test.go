@@ -73,8 +73,10 @@ func slotRowChecks() []profiles.SlotCheck {
 // TestSortRowsPutsProfilesBetweenNativeAndTheRest pins the picker's bands
 // with real slot-profile rows: native rows, then profile rows alphabetically
 // by id (not in file order), then alias rows, then running local models, then
-// every other row. The sort order is also the default selection, so a profile
-// sorted above a native row would become what a bare Enter picks.
+// every other row. The sort order is also the default selection when nothing
+// usable was remembered (a first launch, or a remembered row that is gone or
+// blocked), so a profile sorted above a native row would become what a bare
+// Enter picks then.
 func TestSortRowsPutsProfilesBetweenNativeAndTheRest(t *testing.T) {
 	profile := func(index int, name string, verdict catalog.Action) tableRow {
 		c := slotCheckFor(index, name, "opus", map[string]string{"opus": "openrouter/a"})

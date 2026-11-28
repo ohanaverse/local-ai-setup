@@ -8,7 +8,7 @@ The `wt` binary (`cmd/wt-session/`) launches an AI coding agent CLI (claude, cod
 
 1. **Where** — `--root` (the primary checkout, from anywhere), `--cwd` (the current directory; no git repository needed), `-W <name>` (named worktree; a new name is created and said so, `--new` is a no-op), or the worktree picker (internal/cleanup's rows: the root, the default branch and held rows included, each launchable). Outside a repository `-W` refuses (`not in a git repo`).
 2. **What** — `-A <name>`: an LLM agent, or `shell` for a plain command. **Never defaulted**: omitting `-A` always shows the agent/command picker.
-3. **Which model** — `-M <provider>/<name>`, filtered by `-T <tags>` / `-F <family>`, or picked (the picker's cursor opens on the `-M` pin, else the first row that is not blocked; the `> ` marker shows the last launch).
+3. **Which model** — `-M <provider>/<name>`, filtered by `-T <tags>` / `-F <family>`, or picked (the picker's cursor opens on the `-M` pin, else the row the last launch picked, which is where the `> ` marker sits, else the first row that is not blocked).
 
 `bin/*-wt` are shims that forward to `wt` (`claude-wt` → `wt --agent claude`), so `wt` must be on `$PATH`. All logic lives in Go.
 
@@ -166,9 +166,9 @@ Read [docs/internals/local-models.md](docs/internals/local-models.md#lifecycle-i
 
 ## Launch history (Go)
 
-Each successful launch, a single model or a slot profile, calls `usage.NewStore().RecordLaunch(agent, id)`: it writes `~/.config/agent-wt/last-picked.state` (the row the picker's `> ` marker sits on) and appends the agent-tagged event to `usage.jsonl`. `LastPicked()` reads that file only, and only the marker uses it: nothing positions the picker's cursor from it.
+Each successful launch, a single model or a slot profile, calls `usage.NewStore().RecordLaunch(agent, id)`: it writes `~/.config/agent-wt/last-picked.state` (the row the picker's `> ` marker sits on) and appends the agent-tagged event to `usage.jsonl`. `LastPicked()` reads that file only; the marker and the picker's starting cursor use it (the cursor only when that row is shown, not blocked and offered to this agent). Nothing reads `rotation.state`.
 
-- **The sort order is also the default selection** — the picker's cursor opens on the `-M` pin, else the first row of the sorted list that is not blocked (a start row counts), so changing `sortRows` changes what a bare Enter picks. The marker is plain ASCII `> ` (Unicode misaligns CJK terminals).
+- **The sort order is also the default selection** — the picker's cursor opens on the `-M` pin, else the row the last launch picked (`last-picked.state`, where the `> ` marker sits) when this table shows it and it is not blocked, else the first row of the sorted list that is not blocked (a start row counts; every row blocked, row 0), so changing `sortRows` changes what a first-ever or fallback Enter picks. The marker is plain ASCII `> ` (Unicode misaligns CJK terminals).
 
 Details and pinned tests: [docs/internals/local-models.md](docs/internals/local-models.md#launch-history-go).
 
