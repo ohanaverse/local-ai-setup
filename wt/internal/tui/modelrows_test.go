@@ -94,11 +94,17 @@ func sortProfile(index int, name string) tableRow {
 // sortAlias is an alias row as the server's catalog gives it: wire Kind
 // alias, family "alias", at loc, with the given score.
 func sortAlias(id string, loc config.Location, running bool, score float64) tableRow {
+	// catalog.Row.Ready reads the wire state whenever there is a wire row, so a
+	// running alias must say so there, as the server's aliasAction does.
+	state := modelapi.StateStopped
+	if running {
+		state = modelapi.StateRunning
+	}
 	return tableRow{
 		Row: catalog.Row{
 			Location: loc, Running: running,
 			Model: config.Model{ID: id, Family: config.AliasProvider},
-			Wire:  &modelapi.Row{ID: id, Kind: modelapi.KindAlias},
+			Wire:  &modelapi.Row{ID: id, Kind: modelapi.KindAlias, State: state},
 		},
 		tier: sortEntry(score),
 	}

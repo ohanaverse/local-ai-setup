@@ -47,7 +47,7 @@ One sensible way: add a band to `sortRows` (`wt/internal/tui/modelrows.go`). The
 
 ## Constraints
 
-`wt/CLAUDE.md`: "the sort order is also the default selection — changing `sortRows` changes what a bare Enter picks." This change moves a default only where the client picker has no rotation to follow (a first launch, or a state file naming a model no longer listed): the first unblocked row is then an alias when no native or profile row is unblocked, where before it was a model. The standalone pickers hold no alias rows, so their row 0 is unchanged. `make pre-pr` is the gate (CI is off).
+`wt/CLAUDE.md`: "the sort order is also the default selection — changing `sortRows` changes what a bare Enter picks." This change moves a default only where the client picker has no rotation to follow. `NextFromOrder` already copes with a first launch and with a state file naming a model no longer listed (it starts at the first launchable registered model), so the table's first unblocked row decides the cursor only when no launchable registered row exists at all; it is then an alias when no native or profile row is unblocked, where before it was a model. The standalone pickers hold no alias rows, so their row 0 is unchanged. `make pre-pr` is the gate (CI is off).
 
 ## Left to the builder
 
