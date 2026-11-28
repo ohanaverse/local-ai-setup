@@ -937,9 +937,9 @@ func TestPlanSyncRejectsNonSequenceModelList(t *testing.T) {
 // the plan path would create it, flip File.Changed, and make a no-op sync write
 // config.yaml and restart the proxy, dropping in-flight requests.
 func TestPlanSyncAcceptsAbsentModelListWithoutTouchingIt(t *testing.T) {
-	// litellm_settings and general_settings are seeded so EnsureSettings
-	// cannot add them and be the thing that changes the file.
-	const settings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n"
+	// litellm_settings, general_settings and router_settings are seeded so
+	// EnsureSettings cannot add them and be the thing that changes the file.
+	const settings = settledSettings
 	empty := &config.Config{}
 	for _, body := range []string{settings, "model_list:\n" + settings} {
 		o, restarts, p := opts(t, body)
@@ -1395,6 +1395,10 @@ litellm_settings:
 general_settings:
   cancel_on_disconnect: true
   store_model_in_db: true
+router_settings:
+  optional_pre_call_checks: [session_affinity]
+  deployment_affinity_ttl_seconds: 14400
+  session_affinity_repin_on_failover: true
 `
 	o, restarts, p := opts(t, body)
 	cfg := testConfig()
@@ -1441,5 +1445,30 @@ func TestSyncAddsCancelOnDisconnectToAnExistingConfigWithOneRestart(t *testing.T
 	res, err = Sync(empty, nil, o)
 	if err != nil || res.Changed || *restarts != 1 {
 		t.Fatalf("second Sync: err=%v changed=%v restarts=%d, want nil/false/1", err, res.Changed, *restarts)
+	}
+}
+
+// TestSyncKeepsAHandWrittenRouterSettings pins that a config.yaml already
+// holding Step A's hand-written router_settings, with nothing else to change,
+// is not rewritten by a sync: the bytes and the mtime stay and the proxy is
+// not restarted. That is the developer's machine on the first sync with the
+// affinity keys, and a restart there drains every in-flight request.
+func TestSyncKeepsAHandWrittenRouterSettings(t *testing.T) {
+	body := "model_list: []\n" + settledWithoutAffinity + stepABlock
+	o, restarts, p := opts(t, body)
+	old := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Sync(&config.Config{}, nil, o)
+	if err != nil || res.Changed || *restarts != 0 {
+		t.Fatalf("Sync: err=%v changed=%v restarts=%d, want nil/false/0", err, res.Changed, *restarts)
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, p); got != body || !st.ModTime().Equal(old) {
+		t.Fatalf("config.yaml rewritten (mtime %v, want %v):\n%s", st.ModTime(), old, got)
 	}
 }

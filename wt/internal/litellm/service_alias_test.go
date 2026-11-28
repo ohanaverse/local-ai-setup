@@ -499,7 +499,7 @@ func TestLaunchEnsureNeverReachesTheAliasHalf(t *testing.T) {
 // is never written to config.yaml; the write still goes on and one warning
 // names the reason and the repair.
 func TestAliasNeverWrittenToConfigYaml(t *testing.T) {
-	const off = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: false\n"
+	const off = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: false\n" + affinitySettings
 	for _, tc := range []struct {
 		name  string
 		admin bool

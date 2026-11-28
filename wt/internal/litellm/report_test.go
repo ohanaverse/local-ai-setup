@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -38,5 +39,82 @@ func TestSyncAfterWriteSkipsAMachineWithoutLiteLLM(t *testing.T) {
 	got := SyncAfterWrite(io.Discard, io.Discard, func(*config.Config) localmodels.Snapshot { probed = true; return localmodels.Snapshot{} }, nil)
 	if got != "" || probed {
 		t.Fatalf("got %q, probed %v; want \"\" and no probe", got, probed)
+	}
+}
+
+// TestPlanSyncSaysWhyItRestartsForAffinity pins the dry run's explanation of
+// the restart the affinity keys cost: a config.yaml lacking them plans a
+// restart and the text names each key it would add in one line, while the JSON
+// rendering stays exactly what it was (no new field, so the litellm-cli
+// contract does not move), and a config that already has them says nothing.
+func TestPlanSyncSaysWhyItRestartsForAffinity(t *testing.T) {
+	o, restarts, p := opts(t, "model_list: []\n"+settledWithoutAffinity)
+	plan, err := PlanSync(&config.Config{}, nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Restart || *restarts != 0 || readFile(t, p) != "model_list: []\n"+settledWithoutAffinity {
+		t.Fatalf("plan restart=%v restarts=%d, want a planned restart and nothing written", plan.Restart, *restarts)
+	}
+	var out, errOut bytes.Buffer
+	if err := ReportSyncPlan(&out, &errOut, plan, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	const line = "config.yaml: would add router_settings.optional_pre_call_checks, router_settings.deployment_affinity_ttl_seconds, router_settings.session_affinity_repin_on_failover (session affinity); the proxy would restart once\n"
+	if out.String() != line || errOut.Len() != 0 {
+		t.Fatalf("text out = %q err = %q, want exactly %q", out.String(), errOut.String(), line)
+	}
+
+	var withKeys, without bytes.Buffer
+	if err := ReportSyncPlan(&withKeys, io.Discard, plan, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	bare := plan
+	bare.affinityKeys = nil
+	if err := ReportSyncPlan(&without, io.Discard, bare, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if withKeys.String() != without.String() {
+		t.Fatalf("JSON changed with affinityKeys:\n%s\nvs\n%s", withKeys.String(), without.String())
+	}
+
+	o2, _, _ := opts(t, "model_list: []\n"+settledSettings)
+	settled, err := PlanSync(&config.Config{}, nil, o2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := ReportSyncPlan(&out, io.Discard, settled, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if settled.Restart || out.Len() != 0 {
+		t.Fatalf("settled plan restart=%v text %q, want no restart and no line", settled.Restart, out.String())
+	}
+}
+
+// TestPlanSyncAffinityLineSharesTheRestartWithEnableDB pins that when the dry
+// run has already said the proxy would restart once (the EnableDB line, or the
+// Move-with-Restart line), the affinity line says it shares that restart
+// instead of announcing a second one: a fresh machine hits both, and two lines
+// each saying "restart once" read as two restarts.
+func TestPlanSyncAffinityLineSharesTheRestartWithEnableDB(t *testing.T) {
+	for name, plan := range map[string]SyncPlan{
+		"enable db":    {EnableDB: true, Restart: true, affinityKeys: []string{"optional_pre_call_checks"}},
+		"move restart": {Move: []string{"ollama/x"}, Restart: true, affinityKeys: []string{"optional_pre_call_checks"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := ReportSyncPlan(&out, io.Discard, plan, nil, false); err != nil {
+				t.Fatal(err)
+			}
+			text := out.String()
+			if n := strings.Count(text, "restart once"); n != 1 {
+				t.Fatalf("%d occurrences of \"restart once\", want exactly 1:\n%s", n, text)
+			}
+			const want = "config.yaml: would add router_settings.optional_pre_call_checks (session affinity), in the same restart\n"
+			if !strings.HasSuffix(text, want) {
+				t.Fatalf("output does not end with the shared-restart affinity line %q:\n%s", want, text)
+			}
+		})
 	}
 }

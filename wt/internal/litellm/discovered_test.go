@@ -144,6 +144,10 @@ litellm_settings:
 general_settings:
   cancel_on_disconnect: true
   store_model_in_db: true
+router_settings:
+  optional_pre_call_checks: [session_affinity]
+  deployment_affinity_ttl_seconds: 14400
+  session_affinity_repin_on_failover: true
 `
 
 // TestApplyChangeNeverReplacesHandWrittenDiscoveredName pins the Phase B
@@ -220,7 +224,7 @@ func TestPrepareModelRejectsFamilylessDiscoveredID(t *testing.T) {
 			t.Errorf("prepareModel(%q) = %v, %v; want a rejection", bad.ID, node, err)
 		}
 	}
-	const body = "model_list: []\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n"
+	const body = "model_list: []\n" + settledSettings
 	o, restarts, p := opts(t, body)
 	res, err := ApplyChange(cfg, Change{Add: []config.Model{m}}, o)
 	if err != nil {
@@ -286,6 +290,10 @@ litellm_settings:
 general_settings:
   cancel_on_disconnect: true
   store_model_in_db: true
+router_settings:
+  optional_pre_call_checks: [session_affinity]
+  deployment_affinity_ttl_seconds: 14400
+  session_affinity_repin_on_failover: true
 `
 	o, restarts, p := opts(t, body)
 	res, err := ApplyChange(cfg, Change{RemoveFamilies: []string{""}}, o)

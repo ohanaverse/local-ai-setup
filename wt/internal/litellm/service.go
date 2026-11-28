@@ -609,6 +609,11 @@ func applyPlanned(plan func(*File) (add []plannedAdd, remove []plannedRemove, ho
 		}
 		// The scan runs after the repair (applyTo), so what it finds is the rows
 		// the repair does not reach. Only a caller that reports it pays for it.
+		// settingsWarnings runs after EnsureSettings here and before it in
+		// PlanSync; the affinity warnings are the same either way: the skip
+		// test does not depend on what EnsureSettings wrote, and the
+		// affinity-off warning fires only for a present non-null list, which
+		// wt never writes.
 		if o.reportOllamaServe {
 			res.ollamaServe = append(f.ollamaServeWarnings(loadProxyEnv()), f.settingsWarnings()...)
 		}
@@ -764,6 +769,11 @@ type SyncPlan struct {
 	// Aliases is what the sync would do with each alias (#596), sorted by
 	// id; filled by PlanSync alone, and only when the database half answers.
 	Aliases []AliasPlan
+	// affinityKeys names the router_settings keys the sync would add for
+	// session affinity (routerSettingsToAdd of the file before EnsureSettings),
+	// in write order; filled by PlanSync alone. The text dry run says why it
+	// restarts with them; the JSON carries no field for it.
+	affinityKeys []string
 	// markedOnly holds the Remove ids owned by marker alone (not named like a
 	// managed registry id): Sync drops only their marked rows.
 	markedOnly map[string]bool
@@ -1184,7 +1194,9 @@ func PlanSync(cfg *config.Config, local []config.Model, o Options) (SyncPlan, er
 	}
 	// The real sync saves, and restarts the proxy, exactly when the document
 	// it carried the plan out on (settings included) differs from the one it
-	// read: the same test, on the discarded copy.
+	// read: the same test, on the discarded copy. The affinity keys it would
+	// add are read first, so the text can say why it restarts.
+	plan.affinityKeys = routerSettingsToAdd(f.root())
 	f.EnsureSettings()
 	plan.Restart = f.Changed()
 	return plan, nil

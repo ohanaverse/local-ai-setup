@@ -173,11 +173,25 @@ func ReportSyncPlan(out, errOut io.Writer, plan SyncPlan, warnings []string, asJ
 		}
 		// The two database cases cost a restart a reader would not expect
 		// from the lines above, so the plan says so (#598).
+		restartSaid := true
 		switch {
 		case plan.EnableDB:
 			fmt.Fprintln(out, "config.yaml: would set general_settings.store_model_in_db: true; the proxy would restart once, and local routes move to the database on the sync after")
 		case len(plan.Move) > 0 && plan.Restart:
 			fmt.Fprintln(out, "config.yaml: the moved rows would leave it; the proxy would restart once")
+		default:
+			restartSaid = false
+		}
+		// So does adding the session-affinity router_settings (text only:
+		// the JSON has no field for it). When a line above already announced
+		// the one restart, this write rides on it: saying "restart once" twice
+		// would read as two restarts.
+		if len(plan.affinityKeys) > 0 {
+			tail := "; the proxy would restart once"
+			if restartSaid {
+				tail = ", in the same restart"
+			}
+			fmt.Fprintf(out, "config.yaml: would add router_settings.%s (session affinity)%s\n", strings.Join(plan.affinityKeys, ", router_settings."), tail)
 		}
 		for _, e := range doc.Plan.Errors {
 			fmt.Fprintf(errOut, "%s: %s\n", e.ID, e.Error)

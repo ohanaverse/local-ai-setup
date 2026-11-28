@@ -61,7 +61,8 @@ tags = []
 // storeYAML is a settled config.yaml with database models on.
 const storeYAML = "model_list: []\n" +
 	"litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n" +
-	"general_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n"
+	"general_settings:\n  cancel_on_disconnect: true\n  store_model_in_db: true\n" +
+	"router_settings:\n  optional_pre_call_checks: [session_affinity]\n  deployment_affinity_ttl_seconds: 14400\n  session_affinity_repin_on_failover: true\n"
 
 // aliasEnv is a throwaway machine for the alias commands: the registry
 // (WT_REGISTRY) and config.yaml (WT_LITELLM_CONFIG) in a scratch directory,
