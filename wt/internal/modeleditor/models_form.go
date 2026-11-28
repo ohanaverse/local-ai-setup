@@ -118,7 +118,7 @@ func (f *modelForm) value(field int) string {
 
 // editable reports whether the cursor can land on a field. The provider and
 // the model name are fixed once a model exists (or was found on disk): usage
-// history, rotation and profiles key on the id they make.
+// history and profiles key on the id they make.
 func (f *modelForm) editable(field int) bool {
 	return f.mode == modelFormAdd || (field != mfProvider && field != mfName)
 }

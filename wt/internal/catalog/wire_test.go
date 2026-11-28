@@ -160,25 +160,6 @@ func TestEligibleWireAliasNeedsEveryTargetProvider(t *testing.T) {
 	}
 }
 
-// TestRotationSkipsAliasRows pins decision 14: alias rows are registered
-// (they count in stats families) but RegisteredOrdered, the list a no-pin
-// launch rotates over, leaves them out, so wt never rotates onto an alias
-// the user did not ask for; the picker and -M alias/x still launch one.
-func TestRotationSkipsAliasRows(t *testing.T) {
-	rows := []modelapi.Row{
-		{ID: "z", Order: 2, Registered: true, Action: "launch"},
-		aliasRow("alias/x", "cloud", 3, modelapi.AliasTarget{ID: "z", Order: 1, ProviderID: "openrouter", Location: "cloud"}),
-		{ID: "y", Order: 1, Registered: true, Action: "launch"},
-	}
-	var ids []string
-	for _, m := range RegisteredOrdered(rows) {
-		ids = append(ids, m.ID)
-	}
-	if !slices.Equal(ids, []string{"y", "z"}) {
-		t.Errorf("rotation list = %v, want [y z] (no alias)", ids)
-	}
-}
-
 // TestNeedsStartRules pins which wire rows need a start before launch.
 func TestNeedsStartRules(t *testing.T) {
 	for _, c := range []struct {
@@ -211,9 +192,11 @@ func TestNeedsStartUnknownRouting(t *testing.T) {
 	}
 }
 
-// TestLaunchableAndRegisteredOrdered pins Launchable (action launch) and
-// RegisteredOrdered (registered rows only, in Order).
-func TestLaunchableAndRegisteredOrdered(t *testing.T) {
+// TestLaunchableKeepsOnlyLaunchRows pins Launchable: it keeps the rows whose
+// action is launch, registered or discovered, in the order given, and drops a
+// start row. A no-pin launch picks only among these rows, so a start row in
+// the result would start a model nobody named.
+func TestLaunchableKeepsOnlyLaunchRows(t *testing.T) {
 	rows := []modelapi.Row{
 		{ID: "z", Order: 2, Registered: true, Action: "launch"},
 		{ID: "d", Order: 0, Discovered: true, Action: "launch"},
@@ -221,13 +204,6 @@ func TestLaunchableAndRegisteredOrdered(t *testing.T) {
 	}
 	if got := wid(Launchable(rows)); !slices.Equal(got, []string{"z", "d"}) {
 		t.Errorf("launchable %v", got)
-	}
-	var ids []string
-	for _, m := range RegisteredOrdered(rows) {
-		ids = append(ids, m.ID)
-	}
-	if !slices.Equal(ids, []string{"y", "z"}) {
-		t.Errorf("registered %v", ids)
 	}
 }
 

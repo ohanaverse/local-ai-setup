@@ -27,7 +27,7 @@ import (
 )
 
 // compactModelList builds a 78x22 list.Model from buildTable rows for models
-// (no config, inventory or rotation marker; header as the list title via
+// (no config, inventory or last-picked marker; header as the list title via
 // styleTableTitle) with themes.ListDelegate at ShowDescription=false and
 // Spacing 0 — the production picker layout. Tests use it instead of
 // hand-rolling list.New so filter/wrap/cursor assertions run against it.
@@ -273,10 +273,10 @@ func answerOnStdio(t *testing.T, answer string) func() string {
 }
 
 // TestConfigHomeIsNotTheDevelopersOwn pins TestMain's throwaway config home:
-// everything wt keeps under its config directory — rotation.state, usage.jsonl,
+// everything wt keeps under its config directory — last-picked.state, usage.jsonl,
 // profile backups and locks — resolves into a temp directory
 // for this package's tests, never ~/.config. Without it a test that launches a
-// stub agent rewrites the developer's real rotation state on every run.
+// stub agent rewrites the developer's real last-picked state on every run.
 func TestConfigHomeIsNotTheDevelopersOwn(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

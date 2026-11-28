@@ -5,8 +5,8 @@
 # later step could create the directories for its own reasons. No test may
 # create them: a fresh runner has none, so finding one means a test wrote
 # under the home directory instead of a temp one — on a developer's machine
-# that same test rewrites live state (wt's rotation.state and usage.jsonl
-# were being overwritten by every `go test` until #221).
+# that same test rewrites live state (wt's rotation.state, since removed, and
+# usage.jsonl were being overwritten by every `go test` until #221).
 #
 # wt puts agent-wt, local-ai and wt-model under XDG_CONFIG_HOME when it is set
 # (llmbench writes under ~/.config/local-ai whatever it is), so that base is

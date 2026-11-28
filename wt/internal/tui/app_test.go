@@ -20,16 +20,15 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // testConfig returns a Config with one agent (claude, supporting the
 // ollama provider) and a two-model code tag group plus one design model.
-// Tests across the picker, rotation, and launch need a real catalog so
-// the agent filter, tag filter, and rotation all have something to
-// operate on.
+// Tests across the picker and launch need a real catalog so the agent
+// filter and tag filter have something to operate on.
 func testConfig() *config.Config {
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -250,7 +249,7 @@ func TestEnterSelectsEntry(t *testing.T) {
 // handler in PR 2 — full transition tests for that handler are added in
 // the follow-up task.
 func TestSelectedEntryMsgTransitionsToAgentPhase(t *testing.T) {
-	tempStateDir(t) // isolate XDG_CONFIG_HOME so rotation state is fresh
+	tempStateDir(t) // isolate XDG_CONFIG_HOME so the last-picked state is fresh
 	m := model{cfg: testConfig(), width: 80, height: 24}
 	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: "/tmp/feature"}})
 	gotModel := got.(model)
@@ -272,7 +271,7 @@ func TestSelectedEntryMsgTransitionsToAgentPhase(t *testing.T) {
 // the worktree only once the person continues, so a declined gate creates
 // nothing.
 func TestSelectedEntryMsgBareBranchPlansTheCreation(t *testing.T) {
-	tempStateDir(t) // isolate XDG_CONFIG_HOME so rotation state is fresh
+	tempStateDir(t) // isolate XDG_CONFIG_HOME so the last-picked state is fresh
 	root := t.TempDir()
 	gitInit(t, root)
 	if out, err := exec.Command("git", "-C", root, "branch", "feature").CombinedOutput(); err != nil {
@@ -543,7 +542,7 @@ func TestQDoesNotQuitWhileFilteringModelList(t *testing.T) {
 // check and launches the highlighted model. Before the fix, the top-level
 // "enter" case switched on m.phase and ran the launch path unconditionally,
 // so a keystroke meant to commit the filter query instead launched (and,
-// via launchAndRecord, could commit rotation/usage state for) whatever
+// via launchAndRecord, could commit last-picked/usage state for) whatever
 // model happened to be highlighted underneath the filter overlay.
 func TestEnterWhileFilteringAppliesFilterNotLaunch(t *testing.T) {
 	stubUsageStore(t) // buildTable scans the usage store
@@ -759,7 +758,7 @@ func TestRetryAfterASlotAbortDispatchesARunCommand(t *testing.T) {
 // run command's closure hands the terminal back (input restarts at
 // RestoreTerminal) just before launchDoneMsg is processed, so a KeyMsg already
 // queued is handled before the QuitMsg and would commit a duplicate run
-// command — a second agent, a second rotation/usage record — against a
+// command — a second agent, a second last-picked/usage record — against a
 // released guard. What this pin observes: the guard's state after each
 // outcome, and that a selection fed during teardown dispatches nothing. What
 // it cannot observe: the queued-key race itself — that ordering is
@@ -1087,9 +1086,9 @@ func TestPrePathInitSkipsWorktreePicker(t *testing.T) {
 // a pinned --agent: the worktree picker is skipped and the model phase opens
 // directly.
 func TestPrePathInitPinnedGoesToModel(t *testing.T) {
-	// Isolate usage (seam) and rotation (XDG) state: the pinned-agent path
+	// Isolate usage (seam) and last-picked (XDG) state: the pinned-agent path
 	// loads the catalog, which scans usage.jsonl for the list build and
-	// reads rotation.state for cursor positioning.
+	// reads last-picked.state for the marker.
 	tempStateDir(t)
 	stubUsageStore(t)
 	requireBinary(t, "claude")
@@ -1361,7 +1360,8 @@ func TestSessionRegisteredBeforeStartAndEndedOnExit(t *testing.T) {
 // TestRemoteLaunchRunsTheAgentOnTheGateway pins the launch half of the API
 // path, the non-TUI remote launch's steps in the run command: the agent is
 // built against the server's gateway with the model's gateway id, the client
-// session holds the model before the agent runs, the rotation is recorded,
+// session holds the model before the agent runs, the launch is recorded (the
+// last-picked marker and one usage event, no rotation.state),
 // and nothing on the registry path (the refcount, the stop picker) is touched.
 func TestRemoteLaunchRunsTheAgentOnTheGateway(t *testing.T) {
 	f := &fakeModels{cat: startRowCatalog()}
@@ -1391,8 +1391,15 @@ func TestRemoteLaunchRunsTheAgentOnTheGateway(t *testing.T) {
 	if h := f.history(); !reflect.DeepEqual(h, []string{"register openrouter/glm-5.3"}) {
 		t.Errorf("calls = %v, want the client session registered by the run command", h)
 	}
-	if last, _ := rotation.New().Last(); last != "openrouter/glm-5.3" {
-		t.Errorf("rotation last = %q, want the launched model recorded", last)
+	stateDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt")
+	if data, _ := os.ReadFile(filepath.Join(stateDir, "last-picked.state")); string(data) != "openrouter/glm-5.3\n" {
+		t.Errorf("last-picked.state = %q, want the launched model recorded", data)
+	}
+	if n := usage.NewStoreAt(stateDir).CountsForAgent("claude", []string{"openrouter/glm-5.3"})["openrouter/glm-5.3"].ThirtyDay; n != 1 {
+		t.Errorf("usage events for the launched model = %d, want 1", n)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "rotation.state")); err == nil {
+		t.Error("rotation.state written by a launch, want it never written")
 	}
 }
 

@@ -19,10 +19,10 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // ModelClient is what the picker needs from the model server: the catalog, one
@@ -85,7 +85,7 @@ func (a clientAdapter) Gateway() agents.Gateway {
 }
 
 // catalogLoadedMsg is a finished fetch: the table already built (the
-// usage and rotation reads happen in the command, never in Update), or the
+// usage and last-picked reads happen in the command, never in Update), or the
 // reason the picker goes back to the agent screen.
 type catalogLoadedMsg struct {
 	gen      int
@@ -93,7 +93,7 @@ type catalogLoadedMsg struct {
 	eligible int                     // rows the agent can use; 0 sends the picker back
 	pinErr   string                  // a -M pin the server or the agent cannot use
 	tbl      modelTable              // the sorted, rendered table
-	cursor   string                  // the id the cursor lands on; "" is the first actionable row
+	cursor   string                  // the id the cursor lands on; "" is the first row that is not blocked
 	// pricing is the catalog's pricing member (nil when no model is priced
 	// from OpenRouter): the post-launch notice reads it instead of fetching
 	// the catalog again.
@@ -271,25 +271,11 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 				refs[tr.Model.ID] = tr.Wire.Sessions
 			}
 		}
-		rot := rotation.New()
-		lastID, _ := rot.LastPicked()
+		// last-picked.state is only the marker's row; the cursor is the pin,
+		// else newModelList's first row that is not blocked.
+		lastID, _ := usage.NewStore().LastPicked()
 		msg.tbl = renderTable(rows, r.agent.Name, refs, lastID)
-		if r.pinned != "" {
-			msg.cursor = r.pinned
-			return msg
-		}
-		// The rotation is the non-TUI endpoint launch's: the launchable
-		// registered rows in the server's order (resolveModelRemote's list).
-		// A row the server would have to start is never the rotation's next.
-		var launchable []modelapi.Row
-		for _, r := range catalog.Launchable(eligible) {
-			if r.Registered {
-				launchable = append(launchable, r)
-			}
-		}
-		if next, ok := rot.NextFromOrder(catalog.RegisteredOrdered(launchable), catalog.RegisteredOrdered(cat.Rows)); ok {
-			msg.cursor = next.ID
-		}
+		msg.cursor = r.pinned
 		return msg
 	}
 }

@@ -13,7 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // launchCommand is a command agent's launch (shell): no model layer, so no
@@ -25,9 +25,10 @@ var launchCommand = launchCommandImpl
 // launchNative launches a model-driven agent in native mode, with no model
 // server (#615): the native model and a zero Gateway, so the agent's own
 // configuration decides the model and no gateway token reaches it. It prints
-// the one native note, registers no client session and records no rotation or
-// usage (there is no model id). Everything else a launch does (the worktree,
-// the guard, claims, --yolo, passthrough args, the summary) is unchanged.
+// the one native note, registers no client session and records no usage or
+// last-picked state (there is no model id). Everything else a launch does (the
+// worktree, the guard, claims, --yolo, passthrough args, the summary) is
+// unchanged.
 func launchNative(a *app, agent, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string, pp *precomputedProfiles) error {
 	m := agents.NativeModel()
 	cmd, _, err := a.hooks.build(agent, m, worktreePath, yolo, agents.Gateway{}, nil, extraArgs)
@@ -67,16 +68,17 @@ const launchStill = "nothing was launched"
 //     resolve, else the catalog's one launchable row); a -M pin of a slot
 //     profile (slotPinRemote) goes to launchSlotProfileRemote instead;
 //  2. several launchable rows and no pin: on a terminal, errRemoteNeedsPicker
-//     (the caller opens the picker, whose cursor is the rotation's next
-//     row); without one the registry path's pickerNeedsTTYError;
+//     (the caller opens the picker, whose cursor is the first row that is
+//     not blocked); without one the registry path's pickerNeedsTTYError;
 //  3. register the client session with the model before any start, so the
 //     server's idle scan counts it; a failed register is one `wt: note:` and
 //     the launch goes on (client sessions are advisory);
 //  4. run a start job only when catalog.NeedsStart says so (a start row, or a
 //     running local model the gateway is known not to list; an unknown route
 //     never starts, R7), answering its questions with cliAnswerer;
-//  5. build the agent against the gateway, record the rotation, run it with
-//     the heartbeat going, and end the client session before any exit.
+//  5. build the agent against the gateway, record the launch (last-picked
+//     marker and usage), run it with the heartbeat going, and end the client
+//     session before any exit.
 //
 // A start that fails takes the model out of the client session and ends it;
 // Ctrl-C during the start detaches from the job (it keeps running on the
@@ -121,13 +123,13 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 		return remoteExit(err) // openModels' errors carry the still clause
 	}
 
-	row, rot, err := resolveModelRemote(ctx, ms, *ag, tags, family, pinned)
-	if err != nil && pinned == "" && len(rot) > 0 {
+	row, hasRegistered, err := resolveModelRemote(ctx, ms, *ag, tags, family, pinned)
+	if err != nil && pinned == "" && hasRegistered {
 		// Several launchable models and no -M: the user picks, as on the
 		// registry path. On a terminal runLaunchPath opens the model server's
-		// picker (its cursor on the rotation's next row); without one this is
-		// the registry path's refusal (P5), naming -M. Nothing is registered
-		// or started yet.
+		// picker (its cursor on the first row that is not blocked); without
+		// one this is the registry path's refusal (P5), naming -M. Nothing is
+		// registered or started yet.
 		if stdinTTY() {
 			return errRemoteNeedsPicker
 		}
@@ -180,8 +182,8 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 		end()
 		return remoteExit(modelclient.Still(err, launchStill))
 	}
-	if rerr := rotation.New().RecordFor(agent, m.ID); rerr != nil {
-		// RecordFor names the file that failed.
+	if rerr := usage.NewStore().RecordLaunch(agent, m.ID); rerr != nil {
+		// RecordLaunch names the file that failed.
 		fmt.Fprintf(osStderr, "wt: note: %v\n", rerr)
 	}
 	return runLaunch(cmd, agent, m, cfg, pp, extraArgs, runTail{End: end, PriceNote: remotePriceNoteFunc(ctx, ms), HeaderMode: info.HeaderMode})

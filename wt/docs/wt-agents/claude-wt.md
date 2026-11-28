@@ -2,7 +2,7 @@
 
 ## Overview
 
-`claude-wt` is the worktree launcher for [Claude Code](https://claude.ai/code), Anthropic's official CLI. Claude Code reads global identity, skills, and session state from `~/.claude/` and tracks OAuth state in `~/.claude.json`. See [README](README.md) for launcher flags and model rotation.
+`claude-wt` is the worktree launcher for [Claude Code](https://claude.ai/code), Anthropic's official CLI. Claude Code reads global identity, skills, and session state from `~/.claude/` and tracks OAuth state in `~/.claude.json`. See [README](README.md) for launcher flags and model picking.
 
 ## Installation
 
@@ -60,7 +60,7 @@ The `--model` value is the model's gateway id — its full registry id (e.g. `ol
 
 ### Claude subscription models (header mode)
 
-A `claude-subscription` model (for example `claude-opus-5-5`, an illustrative id; the host adds them with `wt-model model add claude-subscription …`, [wt-model.md](../wt-model.md#claude-subscription-models)) runs on your own Claude subscription through the gateway. It is offered only to claude, and wt never chooses or rotates onto one by itself (pin it with `-M`, pick it in the picker or name it in a slot profile); every launch first runs the pre-launch checks of [wt-session.md](../wt-session.md#claude-subscription-header-mode): this machine's opt-in, a safe endpoint, the server's mode, the launch profile, Claude Code 2.1.227 or newer, and a claude.ai login. The subscription is your own login only: never share or pool it through a model server.
+A `claude-subscription` model (for example `claude-opus-5-5`, an illustrative id; the host adds them with `wt-model model add claude-subscription …`, [wt-model.md](../wt-model.md#claude-subscription-models)) runs on your own Claude subscription through the gateway. It is offered only to claude, and wt never chooses one by itself (pin it with `-M`, pick it in the picker or name it in a slot profile); every launch first runs the pre-launch checks of [wt-session.md](../wt-session.md#claude-subscription-header-mode): this machine's opt-in, a safe endpoint, the server's mode, the launch profile, Claude Code 2.1.227 or newer, and a claude.ai login. The subscription is your own login only: never share or pool it through a model server.
 
 Header mode sets:
 

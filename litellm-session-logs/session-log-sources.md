@@ -1145,7 +1145,7 @@ prints each decoded `Step` (deferred — not built here).
 ## shell
 
 `shell-wt` (`wt --agent shell`) launches a plain shell command. It keeps **no
-session record**, and wt's agent table marks it neither rotating nor resuming.
+session record**, and wt's agent table marks it as having no model layer and no resume.
 Nothing to document.
 
 ---

@@ -460,7 +460,7 @@ func TestLoad_BadTOML(t *testing.T) {
 	}
 }
 
-// DefaultTag drives which rotation group is used when the user doesn't
+// DefaultTag drives which tag group is used when the user doesn't
 // specify --code or --design. An empty tag means the tool has no way to
 // select models, so it must be rejected at validation time.
 func TestValidate_EmptyDefaultTag(t *testing.T) {
@@ -502,7 +502,7 @@ func TestValidate_EmptyProviderID(t *testing.T) {
 }
 
 // Model IDs are the unique keys for the registry. Duplicates would cause
-// silent overwrites or ambiguous lookups when the TUI or rotation tries to
+// silent overwrites or ambiguous lookups when the TUI or a launch tries to
 // select a model.
 func TestValidate_DuplicateModelID(t *testing.T) {
 	cfg := &Config{
@@ -684,7 +684,7 @@ func TestValidate_ValidFullConfig(t *testing.T) {
 	}
 }
 
-// ModelsWithTag is the primary filter for rotation (--code / --design).
+// ModelsWithTag is the primary filter for the tag groups (--code / --design).
 // It must return only models with the given tag, include models that have
 // the tag alongside others, and return empty for unknown tags.
 func TestModelsWithTag(t *testing.T) {

@@ -182,7 +182,7 @@ func TestPatchModelLeavesAnEqualValueAlone(t *testing.T) {
 
 // TestPatchModelRefusals pins the errors a caller can act on: an id that is
 // not there is ErrModelNotFound (the CLI's "unknown id" exit), the id itself
-// cannot be patched (history, rotation and profiles key on it), and a dotted
+// cannot be patched (history and profiles key on it), and a dotted
 // key cannot go through a value that is not a table.
 func TestPatchModelRefusals(t *testing.T) {
 	doc := parseDoc(t, docRegistry)

@@ -2,7 +2,7 @@
 
 ## Overview
 
-`pi-wt` is the worktree launcher for [pi](https://github.com/mariozechner/pi-coding-agent), a provider-agnostic AI coding agent built by Mario Zechner. pi reads its provider list and model catalogue from `~/.pi/agent/models.json` at startup and presents whichever models are reachable with the current credentials. See [README](README.md) for launcher flags and model rotation.
+`pi-wt` is the worktree launcher for [pi](https://github.com/mariozechner/pi-coding-agent), a provider-agnostic AI coding agent built by Mario Zechner. pi reads its provider list and model catalogue from `~/.pi/agent/models.json` at startup and presents whichever models are reachable with the current credentials. See [README](README.md) for launcher flags and model picking.
 
 ## Installation
 

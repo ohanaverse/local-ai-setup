@@ -17,8 +17,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // slotUnknownKeyNote is what wt says about a key of slot-profiles.toml the
@@ -334,7 +334,7 @@ func launchSlotProfileRemote(ctx context.Context, a *app, agent, worktreePath st
 		end()
 		return remoteExit(modelclient.Still(err, launchStill))
 	}
-	if rerr := rotation.New().RecordProfile(agent, row.Model.ID); rerr != nil {
+	if rerr := usage.NewStore().RecordLaunch(agent, row.Model.ID); rerr != nil {
 		fmt.Fprintf(osStderr, "wt: note: %v\n", rerr)
 	}
 	return runSlotAgentCmd(cmd, agent, row, cleanup, runTail{End: end})

@@ -14,7 +14,7 @@ import (
 // binaries that need it (cmd/wt-session, internal/tui and internal/config) call it
 // from their TestMain: their tests launch stub agents, record usage, take
 // profile locks and load the config, and without this every run rewrote the
-// real rotation.state with a test model and appended wt-stub launches to the
+// real last-picked.state with a test model and appended wt-stub launches to the
 // real usage.jsonl. WT_REGISTRY and MODELMAN_REGISTRY are cleared for the same
 // reason: either would send Load to the developer's registry whatever XDG
 // says. A test that sets its own XDG_CONFIG_HOME (t.Setenv) still wins.

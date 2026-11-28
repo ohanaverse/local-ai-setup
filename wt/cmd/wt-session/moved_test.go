@@ -241,3 +241,71 @@ func TestAddMovedStubsFindsOrAddsTheParent(t *testing.T) {
 		addMovedStubs(root, []movedCommand{{"model list", "model list"}})
 	}()
 }
+
+// TestRemovedRotateExitsOneAndChangesNothing pins the stub `wt rotate` became
+// when rotation was removed (2026-11-27): with no model server configured,
+// `wt rotate code` and `wt rotate --json` each print exactly the one removal
+// line and exit 1, open no picker, build no agent command (noServerHome's
+// hooks fail the test on either), run no agent and leave the config home as
+// it was. Without the stub the root's ArbitraryArgs would take "rotate code"
+// as agent arguments and open the picker. The command is hidden and carries
+// its removal date, so `wt --help` no longer lists it.
+func TestRemovedRotateExitsOneAndChangesNothing(t *testing.T) {
+	const want = "wt: rotate was removed: the model picker no longer rotates, it opens on the first row that is not blocked; nothing was changed"
+	for _, args := range [][]string{{"rotate", "code"}, {"rotate", "--json"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			home, marker, h := noServerHome(t)
+			cfgDir := filepath.Join(home, ".config", "agent-wt")
+			before := dirSnapshot(t, cfgDir)
+			out, code := runRootWith(t, h, args...)
+			if code != 1 {
+				t.Errorf("exit = %d, want 1\n%s", code, out)
+			}
+			if lines := wtLines(out); len(lines) != 1 || lines[0] != want || strings.Count(out, "rotate was removed") != 1 {
+				t.Errorf("output %q, want exactly the one line %q", out, want)
+			}
+			if fileExists(marker) {
+				t.Error("an agent process ran")
+			}
+			if after := dirSnapshot(t, cfgDir); after != before {
+				t.Errorf("the config home changed:\nbefore %s\nafter  %s", before, after)
+			}
+		})
+	}
+	c, _, err := rootCmdWith(testHooks()).Find([]string{"rotate"})
+	if err != nil || c == nil || c.Name() != "rotate" {
+		t.Fatalf("rotate is not registered: %v, %v", c, err)
+	}
+	if !c.Hidden || !c.DisableFlagParsing || !c.SilenceUsage || c.Annotations[removedCmdAnnotation] != "2026-11-27 (rotation removed)" {
+		t.Errorf("rotate: hidden=%v flags-off=%v silence=%v annotation=%q", c.Hidden, c.DisableFlagParsing, c.SilenceUsage, c.Annotations[removedCmdAnnotation])
+	}
+	help, err := runWT(t, "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(help, "rotate") {
+		t.Errorf("wt --help still names rotate:\n%s", help)
+	}
+}
+
+// dirSnapshot is every file under dir with its contents, as one string, so a
+// test can tell that a command wrote, removed or changed nothing there.
+func dirSnapshot(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		b.WriteString(p + "=" + string(data) + "\n")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}

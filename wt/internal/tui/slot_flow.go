@@ -15,7 +15,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // slotAbortMsg: the applier failed after the terminal was released. ids are
@@ -82,8 +82,8 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func()
 			}
 		}
 		// The commit point: the applier succeeded and the agent runs next.
-		// Both writes are best-effort, as launchAndRecord's are.
-		if err := rotation.New().RecordProfile(agent, row.Model.ID); err != nil {
+		// The record is best-effort, as launchAndRecord's is.
+		if err := usage.NewStore().RecordLaunch(agent, row.Model.ID); err != nil {
 			fmt.Fprintf(os.Stderr, "note: %v\n", err)
 		}
 		cmd.Stdin = os.Stdin

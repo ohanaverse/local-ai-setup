@@ -22,7 +22,7 @@ func realNewUsageStore() usage.Store { return usage.NewStore() }
 
 // modelItem adapts a config.Model to a list.Item for the model picker.
 // The compact representation is baked onto .line; marked records the
-// rotation's last-launched row and ref is the live "in use" session count
+// last-launched row and ref is the live "in use" session count
 // (issue #73) — both are composed into the rendered prefix by Title()
 // rather than baked into .line, so FilterValue (fuzzy matching) and every
 // .line consumer see the unprefixed format.

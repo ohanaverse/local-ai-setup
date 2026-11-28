@@ -162,7 +162,6 @@ func TestEachModelNeedingPathRefuses(t *testing.T) {
 		{"stop MODEL", []string{"stop", "omlx/q"}, false, "nothing was stopped"},
 		{"job", []string{"job", "job-1"}, false, "the job was not read"},
 		{"smoke", []string{"smoke", "openrouter/x/y"}, false, smokeStill},
-		{"rotate TAG", []string{"rotate", "code"}, false, "nothing was printed"},
 		{"model list --server", []string{"model", "list", "--server"}, false, "nothing was listed"},
 		{"profile slots add", []string{"profile", "slots", "add", "mine", "--slot", "sonnet=openrouter/x/y"}, false, slotEditStill},
 		{"profile slots candidates", []string{"profile", "slots", "candidates"}, false, candidatesStill},

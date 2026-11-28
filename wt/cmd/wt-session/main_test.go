@@ -1059,7 +1059,7 @@ func TestRootHelpListsModelSubcommands(t *testing.T) {
 	}
 	for _, want := range []string{
 		"start", "stop", "smoke",
-		"config", "litellm", "profile", "stats", "rotate",
+		"config", "litellm", "profile", "stats",
 		"wt start", "wt stop", "wt smoke",
 	} {
 		if !strings.Contains(out, want) {

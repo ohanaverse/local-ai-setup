@@ -1443,7 +1443,8 @@ func launchOnFake(t *testing.T) *app {
 
 // TestLaunchRecordsUsageForAgent verifies the non-TUI launch path records a
 // usage event tagged with the launching agent, so per-pair 1d/7d/30d counts
-// include launches made through -W/--cwd.
+// include launches made through -W/--cwd, leaves the picker's marker on the
+// launched model in last-picked.state and writes no rotation.state.
 func TestLaunchRecordsUsageForAgent(t *testing.T) {
 	fakeAgentOnPath(t, "claude")
 	a := launchOnFake(t)
@@ -1452,9 +1453,16 @@ func TestLaunchRecordsUsageForAgent(t *testing.T) {
 			t.Fatalf("launchFilteredRemote: %v", err)
 		}
 	})
-	store := usage.NewStoreAt(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt"))
+	stateDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt")
+	store := usage.NewStoreAt(stateDir)
 	if got := store.CountsForAgent("claude", []string{"claude/opus"})["claude/opus"]; got.ThirtyDay != 1 {
 		t.Fatalf("claude pair 30d = %d, want 1", got.ThirtyDay)
+	}
+	if data, _ := os.ReadFile(filepath.Join(stateDir, "last-picked.state")); string(data) != "claude/opus\n" {
+		t.Errorf("last-picked.state = %q, want %q", data, "claude/opus\n")
+	}
+	if fileExists(filepath.Join(stateDir, "rotation.state")) {
+		t.Error("rotation.state written by a launch, want it never written")
 	}
 	if got := store.CountsForAgent("codex", []string{"claude/opus"})["claude/opus"]; got.ThirtyDay != 0 {
 		t.Fatalf("codex pair 30d = %d, want 0", got.ThirtyDay)

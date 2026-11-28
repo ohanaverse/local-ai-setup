@@ -27,7 +27,7 @@ var adminBanned = []string{
 // sessionBanned is the set cmd/wt-model must not link: the session half.
 var sessionBanned = []string{
 	"internal/tui", "internal/cleanup",
-	"internal/agents", "internal/rotation", "internal/rescue",
+	"internal/agents", "internal/rescue",
 	"internal/rootmove", "internal/removal", "internal/modelclient",
 	"internal/sessioneditor",
 }

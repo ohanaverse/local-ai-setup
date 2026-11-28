@@ -304,7 +304,6 @@ func TestOneShotCommandsRefuseNamingWtConfigAndNeverOpenTheEditor(t *testing.T) 
 		args  []string
 		still string
 	}{
-		{"rotate", []string{"rotate", "code"}, "nothing was printed"},
 		{"job", []string{"job", "job-1"}, "the job was not read"},
 		{"start", []string{"start", "openrouter/x/y"}, "nothing was started"},
 		{"stop", []string{"stop", "omlx/q"}, "nothing was stopped"},

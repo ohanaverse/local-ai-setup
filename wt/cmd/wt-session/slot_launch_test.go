@@ -72,7 +72,7 @@ func slotMixed() map[string]string {
 }
 
 // slotLaunchEnv gives one test its own config home and worktree. It returns
-// wt's state directory inside that home (where usage.jsonl, rotation.state,
+// wt's state directory inside that home (where usage.jsonl and
 // last-picked.state would be written) and the worktree.
 func slotLaunchEnv(t *testing.T) (stateDir, worktree string) {
 	t.Helper()
@@ -311,16 +311,20 @@ func TestRunSlotAgentCmdReturnsARunError(t *testing.T) {
 	}
 }
 
-// TestLaunchSlotProfileRecordsTheProfile verifies the bookkeeping of a profile
-// launch: one usage event under the profile's id, last-picked.state naming
-// the profile, rotation.state byte-identical. The profile then shows its
-// launches in the picker and in `wt stats`, and the rotation of single-model
-// launches is not disturbed.
-func TestLaunchSlotProfileRecordsTheProfile(t *testing.T) {
+// TestLaunchSlotProfileRecordsTheProfileAsLastPicked verifies the bookkeeping
+// of a profile launch: one usage event under the profile's id and
+// last-picked.state naming the profile (so the picker's > marker lands on the
+// profile row, moved off the single model launched before), and no
+// rotation.state: nothing on a launch path writes it, and a stale one left by
+// an older wt is neither read nor changed.
+func TestLaunchSlotProfileRecordsTheProfileAsLastPicked(t *testing.T) {
 	r, _ := slotRig(t, map[string]string{"opus": "openrouter/a", "sonnet": "openrouter/a", "haiku": "openrouter/b"})
 	stateDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt")
-	rotationState := filepath.Join(stateDir, "rotation.state")
-	if err := os.WriteFile(rotationState, []byte("openrouter/b\n"), 0o600); err != nil {
+	if err := usage.NewStoreAt(stateDir).RecordLaunch("claude", "openrouter/b"); err != nil {
+		t.Fatal(err)
+	}
+	staleRotation := filepath.Join(stateDir, "rotation.state")
+	if err := os.WriteFile(staleRotation, []byte("openrouter/b\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -339,8 +343,8 @@ func TestLaunchSlotProfileRecordsTheProfile(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(stateDir, "last-picked.state")); string(data) != "profile/mix\n" {
 		t.Errorf("last-picked.state = %q, want %q", data, "profile/mix\n")
 	}
-	if data, _ := os.ReadFile(rotationState); string(data) != "openrouter/b\n" {
-		t.Errorf("rotation.state = %q, want it byte-identical (%q)", data, "openrouter/b\n")
+	if data, _ := os.ReadFile(staleRotation); string(data) != "openrouter/b\n" {
+		t.Errorf("rotation.state = %q, want the pre-seeded file byte-identical (%q)", data, "openrouter/b\n")
 	}
 }
 
@@ -579,7 +583,7 @@ func TestRunLaunchPathRepeatsSlotWarningsAfterTheTUI(t *testing.T) {
 // TestBrokenSlotFileLeavesModelLaunchesAlone is Review Focus 1. With a TOML
 // typo in slot-profiles.toml, or one profile with a malformed name, a pinned
 // single-model launch on the model server behaves exactly as before (it runs
-// and records the rotation), wt prints exactly one warning line for the
+// and records the launch), wt prints exactly one warning line for the
 // problem, and `-M profile/<name>` (no usable slot profile by that name, so
 // a model id the server does not know) exits 1 naming the pin. A
 // hand-written file must never be able to break the launches that do not
@@ -613,8 +617,8 @@ func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
 				t.Fatalf("newApp() error = %v: a broken slot file must not stop wt", aerr)
 			}
 
-			rotationState := func() string {
-				data, _ := os.ReadFile(filepath.Join(stateDir, "rotation.state"))
+			lastPicked := func() string {
+				data, _ := os.ReadFile(filepath.Join(stateDir, "last-picked.state"))
 				return strings.TrimSpace(string(data))
 			}
 
@@ -630,8 +634,8 @@ func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
 			if err != nil {
 				t.Fatalf("pinned launch error = %v", err)
 			}
-			if got := rotationState(); got != "openrouter/a" {
-				t.Errorf("rotation.state = %q after the pinned launch, want openrouter/a", got)
+			if got := lastPicked(); got != "openrouter/a" {
+				t.Errorf("last-picked.state = %q after the pinned launch, want openrouter/a", got)
 			}
 			if got := strings.Count(stderr, tc.warning); got != 1 {
 				t.Errorf("warning printed %d times, want exactly once; stderr = %q", got, stderr)

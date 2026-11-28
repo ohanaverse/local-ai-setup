@@ -590,7 +590,7 @@ func TestPickerGetsTheModelServerOnlyWhenOneIsConfigured(t *testing.T) {
 
 // TestSeveralMatchesOpenThePickerOnTheServer pins the endpoint path's -A X
 // launch with no -M and several launchable models: on a terminal it opens the
-// model server's picker (whose cursor lands on the rotation's next row), as
+// model server's picker (whose cursor lands on the first unblocked row), as
 // the registry path opens its picker, instead of launching a model the user
 // never saw; without a terminal it refuses as the registry path does.
 func TestSeveralMatchesOpenThePickerOnTheServer(t *testing.T) {
@@ -623,7 +623,7 @@ func TestSeveralMatchesOpenThePickerOnTheServer(t *testing.T) {
 	}
 
 	// Without a terminal the registry path's rule (P5): refuse, naming -M,
-	// and launch nothing; never a silent rotation.
+	// and launch nothing; never a silent pick.
 	stubStdinTTY(t, false)
 	called = false
 	err := runLaunchPath(cmd, r.a, "claude", "", "", "", nil, t.TempDir(), "")

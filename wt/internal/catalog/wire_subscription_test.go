@@ -66,19 +66,6 @@ func TestNonNativeModelsDropsSubscriptionRows(t *testing.T) {
 	}
 }
 
-// TestRotationSkipsSubscriptionRows pins that a no-pin launch never rotates
-// onto a subscription row: rotation serves every agent, and only claude may
-// use one (the user names a subscription model with -M or the picker).
-func TestRotationSkipsSubscriptionRows(t *testing.T) {
-	var ids []string
-	for _, m := range RegisteredOrdered(subRows()) {
-		ids = append(ids, m.ID)
-	}
-	if !slices.Equal(ids, []string{"ollama/x"}) {
-		t.Errorf("rotation list = %v, want [ollama/x]", ids)
-	}
-}
-
 // TestUsesSubscription pins the one predicate a session uses to tell a
 // subscription row: its own provider, or any alias target's provider, is
 // the subscription provider. Anything else, an empty row included, is not.

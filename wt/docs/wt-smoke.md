@@ -26,7 +26,7 @@ wt smoke claude-haiku-5-5 --subscription  # a Claude subscription model: only wh
   picker over every currently eligible model (cloud, local and running, or
   local and idle — an idle pick is started first; blocked rows are
   unselectable), using the same decorated, sorted list (family,
-  usage, cost, tags, rotation marker) the `wt` agent flow's model picker
+  usage, cost, tags, last-launched marker) the `wt` agent flow's model picker
   renders — unlike that flow, the list here is never narrowed to one
   agent's supported providers, since `wt smoke` picks the model first and
   derives its eligible agents from that choice afterward.

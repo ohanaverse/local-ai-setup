@@ -86,7 +86,7 @@ With no model server configured the spend cells show `-` and one note says why (
 - **An arbitrary `--days N`.** The windows are `1d`, `7d` and `30d`.
 - **Markdown output.** `wt stats` prints a plain table, or one JSON document with `--json`.
 - **The Reconciliation sections.** Read them off the table (Step 2).
-- **The "Last wt launch" line.** `cat ~/.config/agent-wt/last-picked.state` shows it: the row launched last, a model or a slot profile, and nothing more. `rotation.state` beside it is the last single-model launch (guide 06).
+- **The "Last wt launch" line.** `cat ~/.config/agent-wt/last-picked.state` shows it: the row launched last, a model or a slot profile, and nothing more.
 
 Totals can differ at the edges of a window from a report made with the old command: wt compares the proxy's timestamps as UTC, and leaves out a request logged exactly at the start of the window, as it leaves out a launch at that instant.
 
@@ -105,7 +105,7 @@ Totals can differ at the edges of a window from a report made with the old comma
 ## Gotchas
 
 - **Only LiteLLM-routed traffic produces spend.** A native launch (the agent's own subscription model) never appears in LiteLLM spend: it is a row with launches and `0` requests. Expect those when some of your launches are native.
-- **`rotation.state` is the *last* single-model launch, nothing more** — one global slot; `esc`/canceled prompts and slot-profile launches never touch it. It is not a usage summary (guide 06), and `wt stats` does not print it.
+- **`last-picked.state` is the *last* launch, nothing more** — one line, a model or a slot profile; `esc`/canceled prompts never touch it. It is not a usage summary (guide 06), and `wt stats` does not print it.
 - **A slot profile is a row with launches and no spend.** A launch of `profile/<name>` (guide 06 §10) is counted on its own row, and the spend columns there read `-`. The proxy logs the session's requests under the slot models, so the spend is on their rows, which can show requests without a launch. wt does not attribute spend back to a profile.
 - **Point-in-time snapshot.** Every model launch appends to `usage.jsonl` and LiteLLM logs to Postgres asynchronously — rerun tomorrow (or in a minute) and the numbers shift. There is no live/budget dashboard here.
 
@@ -113,7 +113,7 @@ Totals can differ at the edges of a window from a report made with the old comma
 
 - Full reference for the command: [wt/docs/wt-stats.md](../../wt/docs/wt-stats.md).
 - Design of the report `wt stats` replaced (history): `~/github/ohanaverse/local-ai-setup/docs/superpowers/modelman/specs/2026-08-28-modelman-usage-design.md` — data sources, window rules, and the SQL it ran against `LiteLLM_SpendLogs`.
-- Launch/rotation side of the data: [06-wt-agents-and-models](06-wt-agents-and-models.md) (picker, `rotation.state` life cycle, `usage.jsonl` writer).
+- Launch side of the data: [06-wt-agents-and-models](06-wt-agents-and-models.md) (picker, `last-picked.state` and `usage.jsonl` writers).
 - LiteLLM wiring and spend logging setup: [01-initial-setup](01-initial-setup.md), [04-litellm-config](04-litellm-config.md).
 - Raw request/response text for one specific session (not aggregate spend): `litellm-session-logs/` at the repo root — a standalone pipeline that pulls a session's rows from `LiteLLM_SpendLogs` and rebuilds a readable chat transcript; see `litellm-session-logs/CLAUDE.md`.
 - This is a leaf guide — nothing further builds on it in `docs/guides/`.

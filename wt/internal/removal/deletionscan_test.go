@@ -41,7 +41,6 @@ var fileOpAllowed = map[string]allowedFileOps{
 	"internal/litellm/configfile.go":        {5, "atomic write of LiteLLM's config.yaml: temp file removed on failure, renamed over the target"},
 	"internal/modelsetup/env.go":            {1, "realFS.Remove, the FS seam behind modelsetup.Apply's StepRemovePlist: removes only wt's own managed LaunchAgent plist (local.wt-model.serve.plist), never user data"},
 	"internal/profiles/configcontent.go":    {12, "restores an agent config file a profile's config_content replaced and removes its own backups"},
-	"internal/rotation/rotation.go":         {1, "removes legacy rotation-*.state files after migrating them into rotation.state"},
 	"internal/scratchdir/scratchdir.go":     {1, "removes the throwaway directory its own MkdirTemp made: the GIT_INDEX_FILE copies internal/cleanup's read-only containment and diffstat checks run against"},
 	"internal/servestate/record.go":         {1, "Store.Remove: removes wt-model serve's own runtime record (serve.json in the wt-model home) on clean shutdown, only when it names this pid"},
 	"internal/sessionclaim/sessionclaim.go": {3, "removes claims under wt-sessions/: this process's own claim (Join's and Hold's release) and stale claims (dead or reused pids, malformed)"},

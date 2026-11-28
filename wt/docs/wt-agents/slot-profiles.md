@@ -303,9 +303,9 @@ some columns omitted.
   profile's local model through the usual start screen, replace dialog
   included, then launches. On a blocked row it shows the reason.
 - **The `> ` marker** sits on the row you launched last, a profile row
-  included. When that row is a profile that is present and not blocked, the
-  cursor starts on it. Profiles do not rotate: rotation still walks the
-  registry models, from where the last single-model launch left it.
+  included. It only marks: the cursor does not follow it, it opens on the
+  first row that is not blocked (or the `-M` pin), which is a profile row
+  when no native model row is ahead of it.
 - **Filters.** Under `-T` or `-F` profile rows are hidden.
 - A table with a profile row never auto-launches its single row.
 
@@ -338,7 +338,7 @@ claude-wt -W feat --new -M profile/mixed
   reason that names the holder.
 
 Without `-M`, a launch that skips the picker never chooses a profile.
-`wt start`, `wt smoke` and rotation ignore slot profiles.
+`wt start` and `wt smoke` ignore slot profiles.
 
 ## What a launch does
 
@@ -549,8 +549,7 @@ What the 2026-10-13 run with Claude Code 2.1.296 showed of the session:
 | Record | A profile launch writes |
 |---|---|
 | `usage.jsonl` | One event under `profile/<name>`. It feeds the row's 1D / 7D / 30D columns and `wt stats` |
-| `rotation.state` | Nothing. It stays the id of the last single-model launch |
-| `last-picked.state` | `profile/<name>`. This file holds the picker's `> ` marker; a single-model launch writes it too |
+| `last-picked.state` | `profile/<name>`. This file holds the picker's `> ` marker; a single-model launch writes it too, through the same call as the usage event |
 | LiteLLM spend | Nothing new. The proxy logs each request under the slot model's registry id |
 
 `wt stats` shows a profile as a row of its own, with its launches and `-`

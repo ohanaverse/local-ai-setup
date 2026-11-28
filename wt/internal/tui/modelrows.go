@@ -170,8 +170,8 @@ func (r *tableRow) rate(ratings tiers.Index) {
 }
 
 // isAlias reports whether the row is an alias row (#596), by the Kind the
-// model server gave it, the test catalog.RegisteredOrdered makes. A row with
-// no wire row (one built from the registry) is never an alias.
+// model server gave it. A row with no wire row (one built from the registry)
+// is never an alias.
 func isAlias(r tableRow) bool {
 	return r.Wire != nil && r.Wire.Kind == modelapi.KindAlias
 }
@@ -206,7 +206,7 @@ func isAlias(r tableRow) bool {
 //
 // This order is also the pickers' default selection: newPickModel never calls
 // Select, so its highlighted row is index 0 (the first sorted row), and
-// newModelList's no-rotation fallback picks the first row that is not blocked
+// newModelList without a -M pin picks the first row that is not blocked
 // (a stopped alias or model that needs a start counts). A native model in the
 // list therefore becomes what a bare Enter launches.
 func sortRows(rows []tableRow) {

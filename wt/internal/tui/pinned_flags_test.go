@@ -120,19 +120,19 @@ func TestSlotStartTakesTheFlagsOnlyWhenTheProfileIsThePin(t *testing.T) {
 	}
 }
 
-// TestALaunchThatNeverCommitsLeavesRotationAlone pins that the client picker
+// TestALaunchThatNeverCommitsRecordsNothing pins that the client picker
 // records a launch only at its commit point: Enter on a launch row starts the
 // prep and records nothing, and esc out of the launching screen (the prep
-// called off) leaves rotation.state and last-picked.state unwritten, as does
-// a prep that fails. Without it the cursor would advance past a model the
-// user never ran (the "rotation advances on cancelled launches" bug).
-func TestALaunchThatNeverCommitsLeavesRotationAlone(t *testing.T) {
+// called off) leaves last-picked.state and usage.jsonl unwritten (and
+// rotation.state, which nothing writes), as does a prep that fails. Without
+// it the marker would move to a model the user never ran.
+func TestALaunchThatNeverCommitsRecordsNothing(t *testing.T) {
 	f := &fakeModels{cat: startRowCatalog()}
 	m := remoteTable(t, f)
 	dir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-wt")
 	unrecorded := func(when string) {
 		t.Helper()
-		for _, name := range []string{"rotation.state", "last-picked.state"} {
+		for _, name := range []string{"rotation.state", "last-picked.state", "usage.jsonl"} {
 			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 				t.Errorf("%s: %s was written before any launch committed", when, name)
 			}

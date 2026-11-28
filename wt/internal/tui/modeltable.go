@@ -53,7 +53,7 @@ var colDropOrder = []int{col30D, col7D, col1D, colCtx, colCost, colTier, colLoc,
 // something.
 var unratedDropOrder = []int{colTier, col30D, col7D, col1D, colCtx, colCost, colLoc, colFamily}
 
-const rowPrefixWidth = 4 // ref column (2) + rotation marker (2), composed by modelItem.Title()
+const rowPrefixWidth = 4 // ref column (2) + last-picked marker (2), composed by modelItem.Title()
 
 // timePricedMark follows the COST cell of a model that has cost.time_prices
 // rows: the prices shown are the ones in force when the table was built, and

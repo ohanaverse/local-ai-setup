@@ -121,7 +121,7 @@ live in [litellm-troubleshooting.md](litellm-troubleshooting.md).
 
 ## Scope
 
-These docs cover the agents launched by `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, `agy-wt`, `opencode-wt`, and `shell-wt`. The launcher contract (flags, rotation, install) lives in the Go tool — see the root [`CLAUDE.md`](../../CLAUDE.md). These per-agent docs add per-agent context (config files, auth, model selection) that does not fit there.
+These docs cover the agents launched by `claude-wt`, `codex-wt`, `copilot-wt`, `pi-wt`, `agy-wt`, `opencode-wt`, and `shell-wt`. The launcher contract (flags, model picking, install) lives in the Go tool — see the root [`CLAUDE.md`](../../CLAUDE.md). These per-agent docs add per-agent context (config files, auth, model selection) that does not fit there.
 
 LiteLLM-routed launches have their own failure modes (model-id grammar
 mismatches, litellm bridge bugs) — see [litellm-troubleshooting.md](litellm-troubleshooting.md) for the driver matrix, known litellm issues, and the debugging playbook.
@@ -172,8 +172,9 @@ defaulted (it always comes from `-A` or the agent+command picker).
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit. |
 
 With no flags, `wt` presents the worktree picker, then the agent+command
-picker, then the model picker (for agents). Multiple eligible models
-rotate on successive launches via a single global rotation state file. Each picker is
+picker, then the model picker (for agents). The model picker's
+cursor opens on the first row that is not blocked (or the `-M` pin); the `> ` marker
+shows the last launch. Each picker is
 skipped only when its selection is already resolved: `-W`/`--cwd` skip the
 worktree picker, `-A` skips the agent+command picker, and `-M` skips the
 model picker. With `-W` or `--cwd` and `-A` but no `-M`, wt launches
@@ -243,7 +244,7 @@ agent starts in**, which is not always the one you typed the command in:
 the worktree picker is never shown there. `--cwd` needs none. Outside a
 repository it is the same launch as inside one (agent and model pickers,
 `-M` pins and slot profiles, the model server's gateway, automatic profiles,
-rotation and usage records, the summary afterwards) with one difference:
+the launch record (`last-picked.state` and `usage.jsonl`), the summary afterwards) with one difference:
 the [main guard](../../README.md#main-guard) is a git hook, so it is installed
 only when the directory is inside a checkout. Nothing wt records about a
 launch is keyed by a repository or a branch (the one directory-keyed item,
@@ -392,9 +393,9 @@ The original bash launchers supported `-w`/`--worktree`, `--code`,
 of `-W`; the others are not supported by `wt`. The `--no-guard` and
 `--check-guard` flags ARE supported by `wt` (see
 [shell-wt.md](./shell-wt.md#supported-flags)) — they were bash-only originally
-and now work via the Go binary. Model rotation is now a single global
-sequence (implicit on launch in the TUI, or `wt rotate <tag>` for
-debugging) — the earlier per-slot `(agent, tag, family)` scheme was
-retired; the main guard is managed by `internal/guard`. The bash
-model-rotation and pi `models.json` auto-sync behavior described in
-earlier versions of this doc has been ported to Go.
+and now work via the Go binary. Model rotation was retired: the
+picker's cursor opens on the first row that is not blocked, and the debug
+subcommand is gone. The earlier per-slot `(agent, tag, family)` scheme was
+retired before that; the main guard is managed by `internal/guard`. The pi
+`models.json` auto-sync behavior described in earlier versions of this doc has
+been ported to Go.
