@@ -1283,11 +1283,38 @@ auth = { type = "native" }
 // provider the registry lacks, and keeps the agents in file order. Why: the
 // keys are no longer read, so the old "agent lists a provider the registry
 // does not have" refusal must be gone, or a machine that has not re-saved its
-// config.toml would stop loading.
+// config.toml would stop loading. It also proves the three calls leave the
+// file byte-identical, with its mode: loading is never a silent write, so the
+// old keys leave a machine only through a save the user asked for (a later
+// "drop the old keys" fixup in migrateConfigSchema must fail here).
 func TestLoadIgnoresLegacyAgentKeys(t *testing.T) {
 	tmp := t.TempDir()
 	writeRegistry(t, tmp, oldAgentKeysRegistry)
 	must(t, Path(), oldAgentKeysConfig)
+	before, err := os.Stat(Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Whatever the checks below report, the file must still be the fixture.
+	defer func() {
+		t.Helper()
+		got, err := os.ReadFile(Path())
+		if err != nil {
+			t.Errorf("reading config.toml back: %v", err)
+			return
+		}
+		if string(got) != oldAgentKeysConfig {
+			t.Errorf("a load rewrote config.toml; it now reads:\n%s", got)
+		}
+		after, err := os.Stat(Path())
+		if err != nil {
+			t.Errorf("stat config.toml: %v", err)
+			return
+		}
+		if after.Mode() != before.Mode() {
+			t.Errorf("config.toml mode = %v after the loads, want %v", after.Mode(), before.Mode())
+		}
+	}()
 
 	names := func(c *Config) []string {
 		var out []string
@@ -1361,7 +1388,11 @@ func TestPatchSaveDropsTheOldAgentKeysOnly(t *testing.T) {
 			t.Errorf("%q missing after the save:\n%s", want, text)
 		}
 	}
-	if st, err := os.Stat(Path()); err != nil || st.Mode().Perm() != 0o600 {
-		t.Errorf("config.toml mode = %v (%v), want 0600 with an inline token", st.Mode().Perm(), err)
+	st, err := os.Stat(Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("config.toml mode = %v, want 0600 with an inline token", st.Mode().Perm())
 	}
 }

@@ -34,7 +34,7 @@ func modelInitCmd(h *host) *cobra.Command {
 			"                         one is offered only to the agent it is named for;\n" +
 			"                         delete its [[providers]] block (or its line, when the\n" +
 			"                         file lists providers inline) from registry.toml if\n" +
-			"                         you do not want it, `model init` adds it back)\n\n" +
+			"                         you do not want it; `model init` adds it back)\n\n" +
 			"Seeding reads no config.toml. pi and opencode have no native provider and\n" +
 			"get no row. The route sync after a change still loads config.toml, and a\n" +
 			"file it cannot read is that sync's warning.\n\n" +
@@ -46,7 +46,7 @@ func modelInitCmd(h *host) *cobra.Command {
 		// A registry that cannot be read or written is not a usage mistake.
 		SilenceUsage: true,
 		// No config gate: this is the command that repairs a missing
-		// registry, and it reads no config.toml.
+		// registry. Seeding reads no config.toml (the route sync after a write does).
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return h.runModelInit(cmd.OutOrStdout(), cmd.ErrOrStderr(), initJSON)
 		},

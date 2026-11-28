@@ -116,6 +116,33 @@ func TestAgentForm_RenameExisting(t *testing.T) {
 	}
 }
 
+// TestAgentForm_RenameKeepsSynthesized verifies that renaming an agent whose
+// Synthesized flag is true through the form leaves the flag true. Why:
+// saveAgentForm copies the stored entry and changes only the name, and the
+// flag is what keeps a synthesized agent out of the next save (the editor
+// writes only listed agents); a rename that cleared it would write an agent
+// the user never listed.
+func TestAgentForm_RenameKeepsSynthesized(t *testing.T) {
+	m := newModel(testTheme(), &config.Config{
+		Providers: []config.Provider{{ID: "agy"}},
+		Agents:    []config.Agent{{Name: "old", Synthesized: true}},
+	}, nil)
+	enterAgentForm(m, m.cfg.Agents[0], false)
+	m.agName.SetValue("new")
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m2 := got.(*model)
+	if m2.phase != phaseList {
+		t.Fatalf("expected phaseList after rename, got %d (error %q)", m2.phase, m2.formError)
+	}
+	if len(m2.cfg.Agents) != 1 || m2.cfg.Agents[0].Name != "new" {
+		t.Fatalf("agents = %+v, want one agent named new", m2.cfg.Agents)
+	}
+	if !m2.cfg.Agents[0].Synthesized {
+		t.Errorf("Synthesized = false after the rename, want true: %+v", m2.cfg.Agents[0])
+	}
+}
+
 // TestAgentForm_InstalledReadOnly verifies that the installed field
 // has no editable textinput cursor marker, confirming it is display-only.
 func TestAgentForm_InstalledReadOnly(t *testing.T) {

@@ -92,8 +92,9 @@ func TestEligibleWireByProviderTagFamily(t *testing.T) {
 }
 
 // TestEligibleWireSushiForEveryAgent pins that a sushi row reaches every agent
-// that is not native-only (claude, pi, codex, opencode, copilot), and never agy, whose only offer is its own native
-// row. Sushi used to be reserved to claude and pi by a table.
+// that is not native-only (claude, pi, codex, opencode, copilot), and never
+// agy, whose only offer is its own native row. Sushi used to be reserved to
+// claude and pi by a table.
 func TestEligibleWireSushiForEveryAgent(t *testing.T) {
 	for _, name := range []string{"claude", "pi", "codex", "opencode", "copilot", "agy"} {
 		a := config.Agent{Name: name}

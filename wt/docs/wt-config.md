@@ -134,8 +134,9 @@ by entry:
   form has no provider fields: an entry holds only its name. The
   `supported_providers` and `default_provider` keys that older builds wrote are
   no longer read or written; a `config.toml` that still has them loads, and the
-  keys disappear at the next save of `config.toml` (this tab, the Mode tab or
-  `wt-model setup`). A re-saved file has agent entries with only `name`, which a
+  keys disappear at the next save of `config.toml` (this tab, the Mode tab,
+  `wt-model setup`, or the first load that drops a legacy `[gateway]` block).
+  A re-saved file has agent entries with only `name`, which a
   build older than the eligibility change (#763, PR 1) cannot load: run
   `make install` from a root on `main` on every machine before saving.
 
