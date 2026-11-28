@@ -68,8 +68,9 @@ const launchStill = "nothing was launched"
 //     resolve, else the catalog's one launchable row); a -M pin of a slot
 //     profile (slotPinRemote) goes to launchSlotProfileRemote instead;
 //  2. several launchable rows and no pin: on a terminal, errRemoteNeedsPicker
-//     (the caller opens the picker, whose cursor is the first row that is
-//     not blocked); without one the registry path's pickerNeedsTTYError;
+//     (the caller opens the picker, whose cursor is the row the last launch
+//     picked when usable, else the first row that is not blocked); without
+//     one the registry path's pickerNeedsTTYError;
 //  3. register the client session with the model before any start, so the
 //     server's idle scan counts it; a failed register is one `wt: note:` and
 //     the launch goes on (client sessions are advisory);
@@ -127,9 +128,10 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 	if err != nil && pinned == "" && hasRegistered {
 		// Several launchable models and no -M: the user picks, as on the
 		// registry path. On a terminal runLaunchPath opens the model server's
-		// picker (its cursor on the first row that is not blocked); without
-		// one this is the registry path's refusal (P5), naming -M. Nothing is
-		// registered or started yet.
+		// picker (its cursor on the row the last launch picked when usable,
+		// else the first row that is not blocked); without one this is the
+		// registry path's refusal (P5), naming -M. Nothing is registered or
+		// started yet.
 		if stdinTTY() {
 			return errRemoteNeedsPicker
 		}

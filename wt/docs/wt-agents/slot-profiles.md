@@ -303,8 +303,9 @@ some columns omitted.
   profile's local model through the usual start screen, replace dialog
   included, then launches. On a blocked row it shows the reason.
 - **The `> ` marker** sits on the row you launched last, a profile row
-  included. It only marks: the cursor does not follow it, it opens on the
-  first row that is not blocked (or the `-M` pin), which is a profile row
+  included. The cursor opens on the `-M` pin, else on that row when this
+  table shows it and it is not blocked (so a bare Enter repeats a profile
+  launch), else on the first row that is not blocked, which is a profile row
   when no native model row is ahead of it.
 - **Filters.** Under `-T` or `-F` profile rows are hidden.
 - A table with a profile row never auto-launches its single row.

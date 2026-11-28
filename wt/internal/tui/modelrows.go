@@ -204,11 +204,15 @@ func isAlias(r tableRow) bool {
 // so rows that look tied are ordered by family and id. Cost and usage no
 // longer order anything.
 //
-// This order is also the pickers' default selection: newPickModel never calls
-// Select, so its highlighted row is index 0 (the first sorted row), and
-// newModelList without a -M pin picks the first row that is not blocked
-// (a stopped alias or model that needs a start counts). A native model in the
-// list therefore becomes what a bare Enter launches.
+// This order is also the pickers' default selection when nothing usable was
+// remembered: newPickModel never calls Select, so its highlighted row is index
+// 0 (the first sorted row), and the client picker (fetchCatalogCmd's usableRowID,
+// then newModelList) without a -M pin starts on the row the last launch
+// picked when the table shows it and it is not blocked,
+// else on the first row that is not blocked (a stopped alias or model that
+// needs a start counts). A native model in the list therefore becomes what a
+// bare Enter launches on the first-ever launch, or when the remembered row is
+// gone, blocked or not offered to this agent.
 func sortRows(rows []tableRow) {
 	// Ready, not Running: a model omlx is still loading is a start row (#259)
 	// and sorts with the other models, so it is never placed above them while

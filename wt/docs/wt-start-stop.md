@@ -568,8 +568,8 @@ launch"); with no mode chosen, or a half-configured server, it refuses. A launch
 server's catalog. A launch that names its directory and its agent (`-W`,
 `--cwd`, `--root` with `-A`) skips the picker: a `-M` pin is resolved by the
 server; without one the server's one launchable model launches, and when
-several match a terminal launch opens the picker (its cursor on the first row that is not
-blocked) and one without a terminal refuses, naming `-M` (`multiple models match`
+several match a terminal launch opens the picker (its cursor on the row the last launch picked when that is shown and not
+blocked, else on the first row that is not blocked) and one without a terminal refuses, naming `-M` (`multiple models match`
 when none of them is registered). A model is started only for a pin of an idle model, or for a running
 local model the server says the gateway does not list; a running model whose
 route the server could not read launches as it is. Before the start, the launch

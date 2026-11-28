@@ -93,7 +93,7 @@ type catalogLoadedMsg struct {
 	eligible int                     // rows the agent can use; 0 sends the picker back
 	pinErr   string                  // a -M pin the server or the agent cannot use
 	tbl      modelTable              // the sorted, rendered table
-	cursor   string                  // the id the cursor lands on; "" is the first row that is not blocked
+	cursor   string                  // the id the cursor lands on (the -M pin, else the usable last-picked row); "" is the first row that is not blocked
 	// pricing is the catalog's pricing member (nil when no model is priced
 	// from OpenRouter): the post-launch notice reads it instead of fetching
 	// the catalog again.
@@ -271,11 +271,15 @@ func fetchCatalogCmd(r catalogRequest) tea.Cmd {
 				refs[tr.Model.ID] = tr.Wire.Sessions
 			}
 		}
-		// last-picked.state is only the marker's row; the cursor is the pin,
-		// else newModelList's first row that is not blocked.
+		// The cursor is the pin, else the row the last launch picked (the
+		// marker's row, last-picked.state) when this table shows it and it is
+		// not blocked, else newModelList's first row that is not blocked.
 		lastID, _ := usage.NewStore().LastPicked()
 		msg.tbl = renderTable(rows, r.agent.Name, refs, lastID)
 		msg.cursor = r.pinned
+		if msg.cursor == "" {
+			msg.cursor = usableRowID(msg.tbl, lastID)
+		}
 		return msg
 	}
 }
@@ -458,8 +462,26 @@ func (m model) handleCatalogMsg(msg tea.Msg) (model, tea.Cmd) {
 	return m, nil
 }
 
-// newModelList is the picker's list for tbl with the cursor on cursor, else
-// on the first row that is not blocked.
+// usableRowID is id when tbl has a row of that id that is not blocked, else "":
+// the remembered row the cursor may start on. A row the table does not show
+// (another agent's model, one removed or filtered out since) or one that is
+// blocked now would leave the cursor on something that cannot be launched, so
+// the caller falls back to the first row that is not blocked.
+func usableRowID(tbl modelTable, id string) string {
+	if id == "" {
+		return ""
+	}
+	for _, it := range tbl.items {
+		if it.model.ID == id && it.blocked == "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// newModelList is the picker's list for tbl with the cursor on cursor (the -M
+// pin, else the remembered row usableRowID found), else on the first row that
+// is not blocked, else row 0 when every row is blocked.
 func (m model) newModelList(tbl modelTable, cursor string) list.Model {
 	delegate := themes.ListDelegate(m.theme)
 	delegate.ShowDescription = false

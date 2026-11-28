@@ -99,7 +99,7 @@ wt --help
   -A, --agent string           Agent or command to launch (claude, codex, copilot, pi, agy, opencode, shell)
 ```
 
-Model-picker screen keys (footer, current source): `[↑/↓] navigate   [enter] launch or start   [q] quit` — a non-running local row is *started* through the lifecycle engine. The header shows `agent : <agent>` / `tag   : <slot-tag>`, where the slot tag is the first `-T` value or `default_tag` from `~/.config/agent-wt/config.toml` — it labels the tag slot, not necessarily an active filter (with no `-T`, `default_tag = "code"` is displayed while *all* agent-eligible models are listed). The picker cursor starts on the first row that is not blocked (or on the `-M` pin), in the picker's sort order ([06-wt-agents-and-models](06-wt-agents-and-models.md) §2); `enter` launches or starts; there is no `r` re-roll key.
+Model-picker screen keys (footer, current source): `[↑/↓] navigate   [enter] launch or start   [q] quit` — a non-running local row is *started* through the lifecycle engine. The header shows `agent : <agent>` / `tag   : <slot-tag>`, where the slot tag is the first `-T` value or `default_tag` from `~/.config/agent-wt/config.toml` — it labels the tag slot, not necessarily an active filter (with no `-T`, `default_tag = "code"` is displayed while *all* agent-eligible models are listed). The picker cursor starts on the `-M` pin, else on the row launched last (the `> ` marker's row) when it is shown and not blocked, else on the first row that is not blocked, in the picker's sort order ([06-wt-agents-and-models](06-wt-agents-and-models.md) §2); `enter` launches or starts; there is no `r` re-roll key.
 
 Editing `family`/`tags` changes what `wt` offers on the **next launch** — the picker snapshot is rebuilt from the registry each run.
 
@@ -137,7 +137,7 @@ It prints the id of every model tagged `code`, which is what `wt -T code` offers
 - **Display names are read by nothing.** They never change what `wt` shows.
 - **Family/tag structure is canonical in `registry.toml`.** Change a model's family and tags with `wt-model model edit` or the Models tab ([02-providers-and-models](02-providers-and-models.md) Step 1); a `[[families]]` display name is a hand edit, and nothing reads it today.
 - **`~/.config/local-ai/families/` is LEGACY** (per-family YAML manifests such as `ornith-1.5.yaml` — migration inputs only; legacy manifests did carry `display_name`, e.g. `Qwen 3.8`). Per [00-config-map](00-config-map.md): don't resurrect it.
-- **TUI behavior:** there is no `d` tag-toggle key. The `> ` marker in the picker is read from `last-picked.state` (one line, the row launched last).
+- **TUI behavior:** there is no `d` tag-toggle key. The `> ` marker in the launcher's picker is read from `last-picked.state` (one line, the row launched last).
 - **A `wt` binary built before the registry-consumer merge (2026-08-28) serves a stale catalog.** Symptom: the picker lists tagged models (or `-T code` narrows the list) although `registry.toml` has no tags: the old build serves tagged models from `~/.config/agent-wt/config.toml` `[[models]]` blocks, so its catalog can be missing models the registry has (and list ones it doesn't). Rebuild with `make install` from `wt/` (it builds over the PATH copy at `~/.local/bin/wt`, not GOPATH, which `~/.local/bin` shadows; see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4); a current build makes `registry.toml` authoritative.
 
 ## Going deeper

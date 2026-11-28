@@ -173,8 +173,9 @@ defaulted (it always comes from `-A` or the agent+command picker).
 
 With no flags, `wt` presents the worktree picker, then the agent+command
 picker, then the model picker (for agents). The model picker's
-cursor opens on the first row that is not blocked (or the `-M` pin); the `> ` marker
-shows the last launch. Each picker is
+cursor opens on the `-M` pin, else on the row the last launch picked (the row the `> `
+marker shows) when this table shows it and it is not blocked, else on the first row
+that is not blocked. Each picker is
 skipped only when its selection is already resolved: `-W`/`--cwd` skip the
 worktree picker, `-A` skips the agent+command picker, and `-M` skips the
 model picker. With `-W` or `--cwd` and `-A` but no `-M`, wt launches
@@ -394,7 +395,8 @@ of `-W`; the others are not supported by `wt`. The `--no-guard` and
 `--check-guard` flags ARE supported by `wt` (see
 [shell-wt.md](./shell-wt.md#supported-flags)) — they were bash-only originally
 and now work via the Go binary. Model rotation was retired: the
-picker's cursor opens on the first row that is not blocked, and the debug
+picker's cursor opens on the row the last launch picked when it is shown and not
+blocked, else on the first row that is not blocked, and the debug
 subcommand is gone. The earlier per-slot `(agent, tag, family)` scheme was
 retired before that; the main guard is managed by `internal/guard`. The pi
 `models.json` auto-sync behavior described in earlier versions of this doc has

@@ -89,7 +89,7 @@ All launchers support:
 | `--check-guard` | Report whether the main guard is installed |
 | `--no-guard` | Remove the main-branch commit guard and exit |
 
-Model choice happens inside the TUI — there are no `--code`/`--design`/`--native` flags. Use `-T <tag>` to filter to a tag group, then `up`/`down` to pick a model; the cursor opens on the `-M` pin, else the first row that is not blocked.
+Model choice happens inside the TUI — there are no `--code`/`--design`/`--native` flags. Use `-T <tag>` to filter to a tag group, then `up`/`down` to pick a model; the cursor opens on the `-M` pin, else the row launched last (the `> ` marker's row) when it is shown and not blocked, else the first row that is not blocked.
 
 ## Commands
 
@@ -141,7 +141,7 @@ Themes apply to the TUI picker, CLI tables, and `wt config theme list` output. S
 
 Works for `claude-wt`, `codex-wt`, `copilot-wt`, `opencode-wt`, and `pi-wt`.
 
-Every launch, a single model or a slot profile, is recorded by one call (`(*usage.StoreImpl).RecordLaunch`). Any tag can filter the picker with `-T`, not just `code` and `design`. The picker's cursor does not follow the history: it opens on the first row that is not blocked (a stopped local model counts, Enter starts it), or on the `-M` pin.
+Every launch, a single model or a slot profile, is recorded by one call (`(*usage.StoreImpl).RecordLaunch`). Any tag can filter the picker with `-T`, not just `code` and `design`. The picker's cursor follows the last launch: it opens on the `-M` pin, else on the row the `> ` marker sits on when it is shown and not blocked, else on the first row that is not blocked (a stopped local model counts, Enter starts it).
 
 - `~/.config/agent-wt/last-picked.state` holds the row the picker's `> ` marker sits on. Every launch writes it, a slot-profile launch included
 - `~/.config/agent-wt/usage.jsonl` gets one agent-tagged event per launch (the 1D/7D/30D columns, `wt stats`)
