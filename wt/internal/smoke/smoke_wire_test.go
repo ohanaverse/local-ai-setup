@@ -43,7 +43,7 @@ func wireFixtureRows() []modelapi.Row {
 // smoke run must offer exactly what can run: a blocked row would be started
 // and fail, and a shell row is no agent.
 func TestCandidatesWireRules(t *testing.T) {
-	ags := []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}, {Name: "shell", Synthesized: true}}
+	ags := []config.Agent{{Name: "claude"}, {Name: "shell", Synthesized: true}}
 	var got []string
 	cands, _ := CandidatesWire(wireFixtureRows(), ags, "")
 	for _, c := range cands {

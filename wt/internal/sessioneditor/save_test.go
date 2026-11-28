@@ -29,7 +29,7 @@ func TestSave_AtomicWrite(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "ollama"}},
-		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Agents:     []config.Agent{{Name: "claude"}},
 	}, nil)
 	m.dirty = true
 
@@ -81,8 +81,8 @@ func TestSave_ValidationFails_BlocksWrite(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{
 		DefaultTag: "code",
 		Agents: []config.Agent{
-			{Name: "a", SupportedProviders: []string{"x"}},
-			{Name: "a", SupportedProviders: []string{"x"}},
+			{Name: "a"},
+			{Name: "a"},
 		},
 	}, nil)
 	m.dirty = true
@@ -183,9 +183,8 @@ func TestSave_PreservesConcurrentLitellmChange(t *testing.T) {
 	if err := os.MkdirAll(registryDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The agy provider row (native) is kept alongside ollama so a config.toml
-	// that names an agy agent still validates; migrateConfigSchema only
-	// renames google to agy and no longer adds an agy agent on Load.
+	// The agy provider row (native) is kept alongside ollama: Load adds no
+	// agent of its own, and the rows are what an agy agent would be offered.
 	registryToml := `providers = [{id = "ollama", name = "Ollama"}, {id = "agy", name = "Agy", auth = {type = "native"}}]
 models = []
 `
@@ -205,7 +204,7 @@ models = []
 		t.Fatal(err)
 	}
 	m := newModel(testTheme(), editorCfg, nil)
-	m.cfg.Agents = append(m.cfg.Agents, config.Agent{Name: "claude", SupportedProviders: []string{"ollama"}})
+	m.cfg.Agents = append(m.cfg.Agents, config.Agent{Name: "claude"})
 	m.dirty = true
 
 	// Concurrently a host-side write updates the [litellm] table from its own
@@ -275,27 +274,26 @@ func TestSave_FailureKeepsDirty(t *testing.T) {
 }
 
 // TestSave_ValidatesOnlyTheSessionRules pins the session editor's save rule:
-// it validates with config.ValidateSession, so an agent naming a provider no
-// registry is loaded for still saves (wt config reads no registry, and every
-// provider id would look unknown), while a session rule such as two agents
-// with one name refuses the save with a "validation: " status and no registry
-// hint.
+// it validates with config.ValidateSession, so a named agent saves with no
+// registry loaded (wt config reads none), while a session rule such as two
+// agents with one name refuses the save with a "validation: " status and no
+// registry hint.
 func TestSave_ValidatesOnlyTheSessionRules(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{
 		DefaultTag: "code",
-		Agents:     []config.Agent{{Name: "a", SupportedProviders: []string{"nosuch"}, DefaultProvider: "nosuch"}},
+		Agents:     []config.Agent{{Name: "a"}},
 	}, nil)
 	m.dirty = true
 	got, cmd := m.handleSave()
 	if cmd == nil || !got.(*model).saving {
-		t.Fatalf("an agent naming an unloaded provider was not saved: status %q", got.(*model).status)
+		t.Fatalf("a named agent was not saved: status %q", got.(*model).status)
 	}
 
 	m = newModel(testTheme(), &config.Config{
 		DefaultTag: "code",
 		Agents: []config.Agent{
-			{Name: "a", SupportedProviders: []string{"x"}},
-			{Name: "a", SupportedProviders: []string{"x"}},
+			{Name: "a"},
+			{Name: "a"},
 		},
 	}, nil)
 	m.dirty = true
@@ -319,7 +317,7 @@ func TestSaveNeverWritesASynthesizedAgent(t *testing.T) {
 	if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const toml = "default_tag = \"code\"\n\n[[agents]]\nname = \"codex\"\nsupported_providers = [\"ollama\"]\ndefault_provider = \"ollama\"\n"
+	const toml = "default_tag = \"code\"\n\n[[agents]]\nname = \"codex\"\n"
 	if err := os.WriteFile(config.Path(), []byte(toml), 0o644); err != nil {
 		t.Fatal(err)
 	}

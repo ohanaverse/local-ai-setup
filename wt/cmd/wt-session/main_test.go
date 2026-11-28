@@ -1111,7 +1111,7 @@ func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 	// config.toml has a real pi entry, narrowed to the server's provider,
 	// and no registry.toml is written at all.
 	pointAtFake(t, newFakeModelServer(t, wireRow("openrouter/a", "launch", 1), wireRow("openrouter/b", "launch", 2)),
-		"\n[[agents]]\nname = \"pi\"\nsupported_providers = [\"openrouter\"]\n")
+		"\n[[agents]]\nname = \"pi\"\n")
 
 	var gotAgent string
 	oldTuiRun := tuiRun

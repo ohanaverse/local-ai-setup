@@ -35,12 +35,10 @@ type AddRequest struct {
 // AddResult is what an add did.
 type AddResult struct {
 	ID string
-	// ProvidersAdded are the provider rows seeding added in the same write;
-	// ProvidersUnseeded the providers a configured agent lists that wt has no
-	// default row for (config.SeedRegistryDefaults).
-	ProvidersAdded    []string
-	ProvidersUnseeded []string
-	Warnings          []string
+	// ProvidersAdded are the provider rows seeding added in the same write
+	// (config.SeedRegistryDefaults).
+	ProvidersAdded []string
+	Warnings       []string
 }
 
 // addPlan is an add that passed every check that needs no registry: the
@@ -239,9 +237,9 @@ func Add(req AddRequest, env config.SeedEnv) (AddResult, error) {
 			return err
 		}
 		// After the model is in: seeding adds the default row of a provider
-		// a model references.
+		// a model references, or the native row of an agent it names.
 		var err error
-		res.ProvidersAdded, res.ProvidersUnseeded, err = config.SeedRegistryDefaults(d, env)
+		res.ProvidersAdded, err = config.SeedRegistryDefaults(d, env)
 		if err != nil {
 			return err
 		}
@@ -399,8 +397,8 @@ func tableString(t *tomlw.Table, key string) string {
 // describe adds what a user can do about a registry refusal that names a
 // provider with no row, for an add and for an edit of a row that has the gap
 // (the edit cannot repair it: provider_id is not editable). Seeding added none: a model's reference seeds only
-// the providers wt has a default row for, and wt has no command that writes
-// any other provider row. Every other refusal is passed through as it is —
+// the providers wt has a default row for and the native row of claude, codex,
+// copilot or agy, and wt has no command that writes any other provider row (pi and opencode have no native provider). Every other refusal is passed through as it is —
 // an id the registry holds twice (config.ErrModelAmbiguous) already says
 // what to repair and where.
 func describe(err error, providerID string) error {

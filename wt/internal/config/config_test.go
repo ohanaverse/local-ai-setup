@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -381,8 +382,6 @@ default_tag = "design"
 
 [[agents]]
 name = "claude"
-supported_providers = ["ollama"]
-default_provider = "ollama"
 `)
 	writeRegistry(t, tmp, `
 [[providers]]
@@ -440,9 +439,6 @@ tags = ["code", "design"]
 	}
 	if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "claude" {
 		t.Fatalf("expected the one agent config.toml names (claude; migration adds none), got %+v", cfg.Agents)
-	}
-	if cfg.Agents[0].DefaultProvider != "ollama" {
-		t.Errorf("agent default = %q, want %q", cfg.Agents[0].DefaultProvider, "ollama")
 	}
 }
 
@@ -576,8 +572,8 @@ func TestValidate_DuplicateAgentName(t *testing.T) {
 		DefaultTag: "code",
 		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}},
 		Agents: []Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "claude"},
+			{Name: "claude"},
 		},
 	}
 	err := cfg.Validate()
@@ -586,44 +582,10 @@ func TestValidate_DuplicateAgentName(t *testing.T) {
 	}
 }
 
-// An agent's SupportedProviders must only reference providers that exist.
-// Otherwise the cascading filter (agent → providers → models) breaks: the
-// TUI would show provider options that can't be resolved.
-func TestValidate_AgentUnknownProvider(t *testing.T) {
-	cfg := &Config{
-		DefaultTag: "code",
-		Agents: []Agent{
-			{Name: "claude", SupportedProviders: []string{"ghost"}},
-		},
-	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for agent referencing unknown provider")
-	}
-}
-
-// DefaultProvider is ignored by every reader now (the eligibility rule derives
-// a provider's agents), so one outside the agent's SupportedProviders is no
-// longer a validation error. Why: the field is only kept decoded and written
-// back so an older binary parses the file; refusing a config over a value
-// nothing reads would block launches for no benefit.
-func TestValidate_DefaultProviderOutsideListIsIgnored(t *testing.T) {
-	cfg := &Config{
-		DefaultTag: "code",
-		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}, {ID: "claude", Name: "Claude"}},
-		Agents: []Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}, DefaultProvider: "claude"},
-		},
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("a default provider outside the list was refused: %v", err)
-	}
-}
-
-// An agent with no supported_providers is valid: the list is no longer read,
-// the launcher derives eligibility from the provider and the model. Why: the
-// old rule demanded a list so the launcher could pick a model; the derived rule
-// needs none, and an entry with only a name must load.
+// An agent entry with only a name is valid: eligibility is derived from the
+// provider and the model, and an agent names no provider. Why: the old rule
+// demanded a provider list so the launcher could pick a model; the derived
+// rule needs none, and an entry with only a name must load.
 func TestValidate_AgentWithNoListIsValid(t *testing.T) {
 	cfg := &Config{
 		DefaultTag: "code",
@@ -631,7 +593,7 @@ func TestValidate_AgentWithNoListIsValid(t *testing.T) {
 		Agents:     []Agent{{Name: "lonely"}},
 	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("an agent with no supported_providers was refused: %v", err)
+		t.Fatalf("an agent with only a name was refused: %v", err)
 	}
 }
 
@@ -674,7 +636,7 @@ func TestValidate_ValidFullConfig(t *testing.T) {
 			{ID: "openrouter/gemma-4-9b", Family: "gemma4", ProviderID: "openrouter", ModelName: "gemma-4-9b", Tags: []string{"code"}},
 		},
 		Agents: []Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama", "openrouter"}, DefaultProvider: "ollama"},
+			{Name: "claude"},
 		},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -743,8 +705,8 @@ func TestProviderByID(t *testing.T) {
 func TestAgentByName(t *testing.T) {
 	cfg := &Config{
 		Agents: []Agent{
-			{Name: "claude", SupportedProviders: []string{"claude"}},
-			{Name: "pi", SupportedProviders: []string{"openrouter"}},
+			{Name: "claude"},
+			{Name: "pi"},
 		},
 	}
 	a, err := cfg.AgentByName("claude")
@@ -901,8 +863,6 @@ default_tag = "code"
 
 [[agents]]
 name = "claude"
-supported_providers = ["ollama"]
-default_provider = "ollama"
 `)
 	writeRegistry(t, tmp, `
 [[providers]]
@@ -1071,7 +1031,7 @@ func locationTypoConfig() *Config {
 			{ID: "acme/inherits", ProviderID: "acme", ModelName: "inherits"},
 			{ID: "acme/overrides", ProviderID: "acme", ModelName: "overrides", Location: LocationCloud},
 		},
-		Agents: []Agent{{Name: "claude", SupportedProviders: []string{"ollama", "acme"}}},
+		Agents: []Agent{{Name: "claude"}},
 	}
 }
 
@@ -1283,21 +1243,156 @@ func TestOpenRouterPricedModel(t *testing.T) {
 	}
 }
 
-// TestFinalizeCfgLeavesAgentListsAlone verifies finalizeCfg no longer appends
-// "sushi" to an agent's supported_providers when the registry holds a sushi
-// model. Eligibility of sushi is now derived by one rule in internal/catalog,
-// so a Config's agent lists must stay exactly what config.toml said; the old
-// in-memory derivation would hide a stale list and re-add what a user removed.
-func TestFinalizeCfgLeavesAgentListsAlone(t *testing.T) {
-	cfg := &Config{Agents: []Agent{{Name: "claude", SupportedProviders: []string{"claude", "ollama"}}}}
-	providers := []Provider{{ID: "sushi"}}
-	models := []Model{{ID: "sushi/p", ProviderID: "sushi", ModelName: "p"}}
-	out, err := finalizeCfg(cfg, providers, models, nil)
+// oldAgentKeysConfig is a config.toml written by a build that still wrote
+// supported_providers and default_provider: three agents, one list naming a
+// provider the registry below lacks (ollama), one naming none that exists.
+const oldAgentKeysConfig = `default_tag = "code"
+
+[[agents]]
+name = "claude"
+supported_providers = ["claude", "ollama"]
+default_provider = "claude"
+
+[[agents]]
+name = "agy"
+supported_providers = ["agy"]
+
+[[agents]]
+name = "codex"
+supported_providers = ["no-such-provider"]
+
+[model-server]
+mode = "remote"
+url = "https://models.example:8443"
+token = "inline-secret"
+`
+
+// oldAgentKeysRegistry holds one native row and no ollama row, so a list that
+// names ollama (or anything else) has nothing to match.
+const oldAgentKeysRegistry = `
+[[providers]]
+id = "claude"
+name = "Claude"
+location = "cloud"
+auth = { type = "native" }
+`
+
+// TestLoadIgnoresLegacyAgentKeys proves a config.toml that still carries
+// supported_providers and default_provider on every agent loads through Load,
+// LoadSession and ValidateAll with no error, even when a list names a
+// provider the registry lacks, and keeps the agents in file order. Why: the
+// keys are no longer read, so the old "agent lists a provider the registry
+// does not have" refusal must be gone, or a machine that has not re-saved its
+// config.toml would stop loading. It also proves the three calls leave the
+// file byte-identical, with its mode: loading is never a silent write, so the
+// old keys leave a machine only through a save the user asked for (a later
+// "drop the old keys" fixup in migrateConfigSchema must fail here).
+func TestLoadIgnoresLegacyAgentKeys(t *testing.T) {
+	tmp := t.TempDir()
+	writeRegistry(t, tmp, oldAgentKeysRegistry)
+	must(t, Path(), oldAgentKeysConfig)
+	before, err := os.Stat(Path())
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := out.Agents[0].SupportedProviders
-	if len(got) != 2 || got[0] != "claude" || got[1] != "ollama" {
-		t.Errorf("claude's supported_providers = %v, want [claude ollama] unchanged", got)
+	// Whatever the checks below report, the file must still be the fixture.
+	defer func() {
+		t.Helper()
+		got, err := os.ReadFile(Path())
+		if err != nil {
+			t.Errorf("reading config.toml back: %v", err)
+			return
+		}
+		if string(got) != oldAgentKeysConfig {
+			t.Errorf("a load rewrote config.toml; it now reads:\n%s", got)
+		}
+		after, err := os.Stat(Path())
+		if err != nil {
+			t.Errorf("stat config.toml: %v", err)
+			return
+		}
+		if after.Mode() != before.Mode() {
+			t.Errorf("config.toml mode = %v after the loads, want %v", after.Mode(), before.Mode())
+		}
+	}()
+
+	names := func(c *Config) []string {
+		var out []string
+		for _, a := range c.Agents {
+			out = append(out, a.Name)
+		}
+		return out
+	}
+	want := []string{"claude", "agy", "codex"}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := names(cfg); !slices.Equal(got, want) {
+		t.Errorf("Load agents = %v, want %v", got, want)
+	}
+	if err := cfg.ValidateAll(); err != nil {
+		t.Errorf("ValidateAll: %v", err)
+	}
+	scfg, err := LoadSession()
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	// LoadSession adds the drivers config.toml does not list after the listed
+	// ones, so the listed three keep their file order at the front.
+	if got := names(scfg); len(got) < 3 || !slices.Equal(got[:3], want) {
+		t.Errorf("LoadSession agents = %v, want %v first", got, want)
+	}
+}
+
+// TestPatchSaveDropsTheOldAgentKeysOnly proves one PatchSave of an unrelated
+// field rewrites a file that has the old agent keys without them: no
+// supported_providers and no default_provider remain, the three [[agents]]
+// names stay in order, the changed default_tag is there, and a
+// [model-server] table with an inline token still makes the file 0600. Why:
+// this is the one place the keys leave a machine, and the save must neither
+// keep them nor take anything else along.
+func TestPatchSaveDropsTheOldAgentKeysOnly(t *testing.T) {
+	tmp := t.TempDir()
+	writeRegistry(t, tmp, oldAgentKeysRegistry)
+	must(t, Path(), oldAgentKeysConfig)
+
+	cfg, err := LoadSession()
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if err := cfg.PatchSave(func(fresh *Config) { fresh.DefaultTag = "design" }); err != nil {
+		t.Fatalf("PatchSave: %v", err)
+	}
+	raw, err := os.ReadFile(Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, gone := range []string{"supported_providers", "default_provider"} {
+		if strings.Contains(text, gone) {
+			t.Errorf("%s survived the save:\n%s", gone, text)
+		}
+	}
+	last := -1
+	for _, name := range []string{`name = "claude"`, `name = "agy"`, `name = "codex"`} {
+		i := strings.Index(text, name)
+		if i < 0 || i < last {
+			t.Fatalf("%s missing or out of order:\n%s", name, text)
+		}
+		last = i
+	}
+	for _, want := range []string{`default_tag = "design"`, "[model-server]", `token = "inline-secret"`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("%q missing after the save:\n%s", want, text)
+		}
+	}
+	st, err := os.Stat(Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("config.toml mode = %v, want 0600 with an inline token", st.Mode().Perm())
 	}
 }

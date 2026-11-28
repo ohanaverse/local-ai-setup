@@ -41,7 +41,7 @@ func testConfig() *config.Config {
 			{ID: "ollama/gemma4:design", ModelName: "gemma4:design", ProviderID: "ollama", Tags: []string{"design"}},
 		},
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "claude"},
 		},
 	}
 	return cfg
@@ -482,7 +482,7 @@ func TestQDoesNotQuitWhileFiltering(t *testing.T) {
 // app on the first 'q' while the worktree-list screen guarded it fine.
 func TestQDoesNotQuitWhileFilteringAgentList(t *testing.T) {
 	cfg := &config.Config{
-		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Agents: []config.Agent{{Name: "claude"}},
 	}
 	m := model{phase: phaseAgent, cfg: cfg, width: 80, height: 24}
 	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)

@@ -54,7 +54,7 @@ wt-model model rm ollama/qwen3:8b
 wt-model model list                                            # 3. what the registry has, and what is on disk without an entry (STATUS new)
 ```
 
-1. **`wt-model model init`** creates `registry.toml` when it is missing and appends the default `[[providers]]` row for each provider it finds a use for (an installed `ollama`/`omlx`/`mtplx`/`rec`/`sushi`, a provider a model or a configured agent names, a native row per configured agent — `wt-model model init --help` has the full list). It never changes a row that exists, so running it again is safe. `wt-model model add` adds a missing default row too, in the same write as the model.
+1. **`wt-model model init`** creates `registry.toml` when it is missing and appends the default `[[providers]]` row for each provider it finds a use for (an installed `ollama`/`omlx`/`mtplx`/`rec`/`sushi`, a provider a model names) and a native row for each of claude, codex, copilot and agy, installed or not (an unused native row is inert; to drop one, delete its `[[providers]]` block, or its line when the file lists providers inline, from `registry.toml` — `model init` adds it back; seeding reads no `config.toml`) — `wt-model model init --help` has the full list. It never changes a row that exists, so running it again is safe. `wt-model model add` adds a missing default row too, in the same write as the model, and the native row of a model that names claude, codex, copilot or agy (no other native row).
 2. **Add, edit, remove.** `wt-model model add <provider> <name> --family <family>` registers a model under a derived id — the id wt already shows an unregistered local model under, or `<provider>/<name>` with `/` written `--` for a cloud model — and `--id` overrides it. `wt-model model edit <id>` changes family, tags, location and prices, and nothing else in the row; the id, the provider and the name are fixed. `wt-model model rm <id>` removes the row and prints where the weights are: wt never deletes them (Step 5). The Models tab does the same from a form. Every flag and key: `wt/docs/wt-model.md`.
 3. **Routes follow by themselves.** Each command syncs the LiteLLM routes once after its write, and the tab once when you quit (Step 6). A sync that could not run is a warning; the registry change stands.
 
@@ -74,7 +74,7 @@ What to keep in mind:
 
 ### 2. Add a cloud provider (OpenRouter)
 
-`registry.toml` is canonical. For OpenRouter the provider block is written for you: `wt-model model init` adds it when a model or a configured agent names openrouter, and the first `wt-model model add openrouter …` adds it in the same write as the model. The block of any other cloud provider is a hand edit — a provider row is one of the things wt has no command for (Step 1). Do not add a second `openrouter` row: the one wt writes has `secret_ref = "OPENROUTER_API_KEY"`, the name of the environment variable wt reads the key from — export the variable, or change `secret_ref` on the row that is there to where you keep the key. The TOML shape:
+`registry.toml` is canonical. For OpenRouter the provider block is written for you: `wt-model model init` adds it when a model names openrouter, and the first `wt-model model add openrouter …` adds it in the same write as the model. The block of any other cloud provider is a hand edit — a provider row is one of the things wt has no command for (Step 1). Do not add a second `openrouter` row: the one wt writes has `secret_ref = "OPENROUTER_API_KEY"`, the name of the environment variable wt reads the key from — export the variable, or change `secret_ref` on the row that is there to where you keep the key. The TOML shape:
 
 ```toml
 [[providers]]
@@ -239,7 +239,7 @@ rec doctor                          # rec's own hardware and installation check
 rec pull                            # download the model without starting a server (rec's own tool, like Step 5)
 rec auth token > /dev/null && echo key-ok   # the key wt reads; never print it into chat or docs
 wt-model model add rec flint --family <family>
-wt-model model init                       # adds the rec provider row once a model or agent references rec; a `rec` on PATH alone never does (SoX ships its own)
+wt-model model init                       # adds the rec provider row once a model references rec; a `rec` on PATH alone never does (SoX ships its own)
 wt start rec/flint                  # spawns `rec serve --port 11500` and waits for `rec status` to say ready
 wt-model stop rec                         # runs `rec stop`
 ```

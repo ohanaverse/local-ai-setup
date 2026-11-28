@@ -71,17 +71,15 @@ func (c *Config) IgnoredLitellmKeys() []string {
 
 // LoadSession reads config.toml only, for the session client: Agents,
 // DefaultTag, [launch], [litellm] (inert) and [model-server]. It needs no
-// registry and does not validate supported_providers. The agent reference
-// migration runs in memory (the file is untouched), and each name in
-// driverNames with no agent entry gets an in-memory agent marked Synthesized;
-// an explicit entry is kept as written. Nothing synthesized is ever written:
-// saves re-read the file (PatchSave).
+// registry. It migrates nothing (the file is untouched and no agent is
+// rewritten), and each name in driverNames with no agent entry gets an
+// in-memory agent marked Synthesized; an explicit entry is kept as written.
+// Nothing synthesized is ever written: saves re-read the file (PatchSave).
 func LoadSession(driverNames ...string) (*Config, error) {
 	cfg, _, err := readConfigFile()
 	if err != nil {
 		return nil, err
 	}
-	migrateAgentRefs(cfg)
 	for _, name := range driverNames {
 		if slices.ContainsFunc(cfg.Agents, func(a Agent) bool { return a.Name == name }) {
 			continue

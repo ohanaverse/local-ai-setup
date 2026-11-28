@@ -80,9 +80,8 @@ func (m *model) focusAgentField() {
 }
 
 // saveAgentForm validates and applies the agent form to cfg. It starts from
-// the stored entry (m.agEdit) and changes only the name, so an entry's
-// supported_providers, default_provider and Synthesized flag stay as found
-// (nil stays nil): the form has no input for the first two.
+// the stored entry (m.agEdit) and changes only the name, so the Synthesized
+// flag stays as found: the form has no other input.
 func (m *model) saveAgentForm() (tea.Model, tea.Cmd) {
 	updated := m.agEdit
 	updated.Name = strings.TrimSpace(m.agName.Value())

@@ -157,6 +157,18 @@ base_url = "http://127.0.0.1:12345/v1"
 
 It has no `protocols` and no `secret_ref`.
 
+Init also adds a native provider row (`auth.type = "native"`, `location =
+"cloud"`) for each of claude, codex, copilot and agy, whether or not that agent
+is installed on this machine; pi and opencode have no native provider and get
+none. The set is fixed: seeding reads no `config.toml`. (The route sync that follows
+a change still loads it, so on a machine with a LiteLLM `config.yaml` an
+unreadable `config.toml` is that sync's warning, `LiteLLM routes not synced:
+…`.) A native row is offered only to the agent it is named for, so an
+unused one is inert. No command removes a provider row, so a row you do not
+want is deleted from `registry.toml` by hand (its `[[providers]]` block, or its
+line when the file lists its providers inline); `wt-model model init` adds it
+back.
+
 ## `wt-model model add <provider> <name> --family <family>`
 
 `<name>` is the model as its provider lists it: an ollama tag (`qwen3:8b`), the
@@ -196,8 +208,10 @@ llmbench's `eval-sushi-vs-ollama` suite names; only a cloud id spells its slash
 In the same write wt adds the default provider row the model needs when it is
 missing — for ollama, omlx, mtplx, rec, sushi and openrouter (openrouter's holds no key,
 only `auth.secret_ref = "OPENROUTER_API_KEY"`, the environment variable wt
-reads the key from) — and any other row `wt-model model init` would add. A provider
-wt has no default row for is refused: add its `[[providers]]` block to
+reads the key from) — and, for a model of claude, codex, copilot or agy, that
+agent's native row. It adds no other agent's native row (one deleted by hand
+stays deleted until `wt-model model init`). A provider
+wt has no default row for (pi and opencode have no native provider) is refused: add its `[[providers]]` block to
 `registry.toml` first. A second entry for an artifact that is already
 registered is refused too. A value that cannot be used is refused before
 anything else happens.

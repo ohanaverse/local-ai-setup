@@ -114,8 +114,8 @@ func TestEnterKey_OpensEditFormForSelectedItem(t *testing.T) {
 	// Config has zeta first, alpha second.
 	m := newModel(testTheme(), &config.Config{
 		Agents: []config.Agent{
-			{Name: "zeta", SupportedProviders: []string{"ollama"}},
-			{Name: "alpha", SupportedProviders: []string{"ollama"}},
+			{Name: "zeta"},
+			{Name: "alpha"},
 		},
 	}, nil)
 	m.ready = true
@@ -206,7 +206,7 @@ func TestStatusWrapsInsteadOfBeingCutOff(t *testing.T) {
 		DefaultTag: "code",
 		Agents:     []config.Agent{{Name: "claude"}, {Name: "codex"}, {Name: "pi"}, {Name: "opencode"}},
 	}
-	locErr := fmt.Errorf("toml: line 12 (last key \"agents.supported_providers\"): incompatible types: TOML value has type string; destination has type slice; fix the entry in /tmp/somewhere/config.toml")
+	locErr := fmt.Errorf("toml: line 12 (last key \"agents.name\"): incompatible types: TOML value has type integer; destination has type string; fix the entry in /tmp/somewhere/config.toml")
 	// 60 columns is the narrowest checked: below the title's own width this
 	// screen was already too wide for the terminal, status or no status.
 	for _, size := range []struct{ w, h int }{{80, 24}, {60, 24}, {120, 12}, {200, 50}} {

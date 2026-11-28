@@ -88,7 +88,7 @@ func TestRegistryPathExpandsTildeInTheRegistryOverride(t *testing.T) {
 func TestLoad_JoinsRegistry(t *testing.T) {
 	dir := t.TempDir()
 	writeRegistry(t, dir, minimalRegistry)
-	must(t, Path(), "default_tag = \"code\"\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"ollama\"]\n")
+	must(t, Path(), "default_tag = \"code\"\n[[agents]]\nname = \"claude\"\n")
 
 	cfg, err := Load()
 	if err != nil {
@@ -201,7 +201,7 @@ func TestSave_OmitsProvidersAndModels(t *testing.T) {
 		DefaultTag: "code",
 		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}},
 		Models:     []Model{{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}},
-		Agents:     []Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Agents:     []Agent{{Name: "claude"}},
 	}
 	if err := Save(cfg); err != nil {
 		t.Fatalf("Save: %v", err)

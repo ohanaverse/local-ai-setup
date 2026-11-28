@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -222,6 +223,49 @@ supports_function_calling = true
 		}
 		if got := read(t, path); !strings.Contains(got, "id = \"openrouter\"\nname = \"OpenRouter\"\nlocation = \"cloud\"\n\n[providers.auth]\ntype = \"api_key\"\nsecret_ref = \"OPENROUTER_API_KEY\"\n") {
 			t.Errorf("the seeded row should name the key's environment variable, never a key:\n%s", got)
+		}
+	})
+}
+
+// TestAddNativeModelCreatesItsProviderRow verifies that adding a model on
+// claude, codex, copilot or agy (the agents with a native provider) creates
+// that native provider row in the same write, so a registry wt can load comes
+// out; only that agent's row is added, not the other three. pi has no native
+// provider, so an add on it is refused with ErrNoProviderRow and the hint
+// describe gives, and writes nothing: that is the pinned behavior.
+func TestAddNativeModelCreatesItsProviderRow(t *testing.T) {
+	for _, id := range []string{"claude", "codex", "copilot", "agy"} {
+		t.Run(id, func(t *testing.T) {
+			path := scratchRegistry(t, "")
+			res, err := Add(AddRequest{ProviderID: id, ModelName: "native", Fields: Fields{Family: ptr(id)}}, config.SeedEnv{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.ID != id+"/native" || !slices.Equal(res.ProvidersAdded, []string{id}) {
+				t.Errorf("result = %+v, want id %s/native and only the %s row seeded", res, id, id)
+			}
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("wt cannot load the registry it just wrote: %v\n%s", err, read(t, path))
+			}
+			if p := cfg.ProviderByID(id); len(cfg.Providers) != 1 || p == nil || p.Auth.Type != "native" || p.Location != "cloud" {
+				t.Errorf("providers = %+v, want %s's native cloud row alone", cfg.Providers, id)
+			}
+			if err := cfg.ValidateAll(); err != nil {
+				t.Errorf("the registry should validate: %v", err)
+			}
+		})
+	}
+
+	t.Run("pi is refused", func(t *testing.T) {
+		path := scratchRegistry(t, "")
+		_, err := Add(AddRequest{ProviderID: "pi", ModelName: "native", Fields: Fields{Family: ptr("pi")}}, config.SeedEnv{})
+		if !errors.Is(err, config.ErrNoProviderRow) || !strings.Contains(err.Error(), `add a [[providers]] block for "pi"`) {
+			t.Fatalf("err = %v, want ErrNoProviderRow with describe's hint", err)
+		}
+		if b, statErr := os.ReadFile(path); statErr == nil && len(b) != 0 {
+			t.Errorf("a refused add wrote the registry:\n%s", b)
 		}
 	})
 }

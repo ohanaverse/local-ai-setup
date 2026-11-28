@@ -57,7 +57,7 @@ func seedConfig(t *testing.T, litellm bool) {
 	}
 	write("local-ai/registry.toml", minimalRegistry)
 	if litellm {
-		write("agent-wt/config.toml", "[[agents]]\nname = \"agy\"\nsupported_providers = [\"agy\"]\ndefault_provider = \"agy\"\n\n[litellm]\nenabled = true\nurl = \"http://127.0.0.1:4000\"\napi_key = \"sk-test\"\n")
+		write("agent-wt/config.toml", "[[agents]]\nname = \"agy\"\n\n[litellm]\nenabled = true\nurl = \"http://127.0.0.1:4000\"\napi_key = \"sk-test\"\n")
 	}
 }
 

@@ -305,7 +305,7 @@ func modelTestConfig() *config.Config {
 			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}},
 		},
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"claude", "omlx"}},
+			{Name: "claude"},
 		},
 	}
 }

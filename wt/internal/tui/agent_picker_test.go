@@ -30,8 +30,8 @@ func stubInstalled(names ...string) func() {
 func TestBuildAgentList(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"claude"}},
-			{Name: "codex", SupportedProviders: []string{"openai"}},
+			{Name: "claude"},
+			{Name: "codex"},
 		},
 	}
 	items := buildAgentList(cfg)
@@ -132,7 +132,7 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 			{ID: "ollama/llama3:design", ModelName: "llama3:design", ProviderID: "ollama", Family: "llama3", Tags: []string{"design"}},
 		},
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "claude"},
 		},
 	}
 
@@ -193,7 +193,7 @@ func singleModelConfig() *config.Config {
 			{ID: "ollama/gemma4:cloud", ModelName: "gemma4:cloud", ProviderID: "ollama", Family: "gemma4", Location: config.LocationCloud, Tags: []string{"code"}},
 		},
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "claude"},
 		},
 	}
 	return cfg
@@ -237,8 +237,8 @@ func selectAgentRow(m *model, name string) {
 func TestBuildAgentListShowsIssues(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
-			{Name: "definitely-not-installed", SupportedProviders: []string{"ollama"}},
+			{Name: "claude"},
+			{Name: "definitely-not-installed"},
 		},
 	}
 	t.Cleanup(stubInstalled("claude"))
@@ -271,7 +271,7 @@ func TestBuildAgentListShowsIssues(t *testing.T) {
 func TestPhaseAgentEnterBlocksUnconfiguredAgent(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "claude"},
 		},
 	}
 	t.Cleanup(stubInstalled("claude"))
@@ -300,8 +300,8 @@ func TestPhaseAgentEnterBlocksUnconfiguredAgent(t *testing.T) {
 func TestPhaseAgentEnterBlocksUninstalledAgent(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
-			{Name: "definitely-not-installed", SupportedProviders: []string{"ollama"}},
+			{Name: "claude"},
+			{Name: "definitely-not-installed"},
 		},
 	}
 	t.Cleanup(stubInstalled("claude"))
@@ -328,7 +328,7 @@ func TestPhaseAgentEnterBlocksUninstalledAgent(t *testing.T) {
 func TestBuildAgentListAdapter(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "claude"},
 		},
 	}
 	t.Cleanup(stubInstalled("claude"))
@@ -356,7 +356,7 @@ func TestBuildAgentListAdapter(t *testing.T) {
 func TestBuildAgentListUninstalledStaysBlockedNotPassthrough(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
+			{Name: "claude"},
 		},
 	}
 	t.Cleanup(stubInstalled("claude")) // opencode is not installed

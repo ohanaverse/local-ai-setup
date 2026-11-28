@@ -22,19 +22,22 @@ func modelInitCmd(h *host) *cobra.Command {
 		Long: "Create the model registry if it does not exist, and add the provider rows wt\n" +
 			"needs and the registry lacks:\n\n" +
 			"  - ollama, omlx, mtplx, sushi: when the command is installed, or a model\n" +
-			"                         or a configured agent uses it\n" +
-			"  - mlx_lm_server, rec:  when a model or a configured agent uses it (an\n" +
-			"                         installed `rec` proves nothing: SoX has one too)\n" +
-			"  - openrouter:          when a model or a configured agent uses it; the row\n" +
-			"                         holds no key, only auth.secret_ref =\n" +
-			"                         \"OPENROUTER_API_KEY\", the environment variable wt\n" +
-			"                         reads the key from (edit it in registry.toml if\n" +
-			"                         you keep the key elsewhere)\n" +
-			"  - each configured agent: a native provider row under the agent's name\n\n" +
-			"A provider an agent lists that wt has no default row for is named in the\n" +
-			"output and left for you to add to registry.toml.\n\n" +
-			"A config.toml that cannot be read is a warning: no row is added for its\n" +
-			"agents until it is fixed and the command is run again.\n\n" +
+			"                         uses it\n" +
+			"  - mlx_lm_server, rec:  when a model uses it (an installed `rec` proves\n" +
+			"                         nothing: SoX has one too)\n" +
+			"  - openrouter:          when a model uses it; the row holds no key, only\n" +
+			"                         auth.secret_ref = \"OPENROUTER_API_KEY\", the\n" +
+			"                         environment variable wt reads the key from (edit\n" +
+			"                         it in registry.toml if you keep the key elsewhere)\n" +
+			"  - claude, codex, copilot, agy: a native provider row each, whether or\n" +
+			"                         not the agent is installed on this machine (an unused\n" +
+			"                         one is offered only to the agent it is named for;\n" +
+			"                         delete its [[providers]] block (or its line, when the\n" +
+			"                         file lists providers inline) from registry.toml if\n" +
+			"                         you do not want it; `model init` adds it back)\n\n" +
+			"Seeding reads no config.toml. pi and opencode have no native provider and\n" +
+			"get no row. The route sync after a change still loads config.toml, and a\n" +
+			"file it cannot read is that sync's warning.\n\n" +
 			"A row that exists is never changed, so running it again is safe. When it\n" +
 			"changes the registry it then syncs the LiteLLM routes once; a sync that\n" +
 			"cannot run is a warning, and the exit status is still 0.",
@@ -43,7 +46,7 @@ func modelInitCmd(h *host) *cobra.Command {
 		// A registry that cannot be read or written is not a usage mistake.
 		SilenceUsage: true,
 		// No config gate: this is the command that repairs a missing
-		// registry, and it reads config.toml itself, tolerating a broken one.
+		// registry. Seeding reads no config.toml (the route sync after a write does).
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return h.runModelInit(cmd.OutOrStdout(), cmd.ErrOrStderr(), initJSON)
 		},
@@ -58,10 +61,7 @@ type modelInitJSON struct {
 	Created        bool     `json:"created"`
 	Changed        bool     `json:"changed"`
 	ProvidersAdded []string `json:"providers_added"`
-	// ProvidersUnseeded are providers an agent lists that have no row and no
-	// default: wt reports a config error until the user adds them.
-	ProvidersUnseeded []string `json:"providers_unseeded"`
-	Warnings          []string `json:"warnings"`
+	Warnings       []string `json:"warnings"`
 }
 
 // runModelInit implements `wt-model model init` over h's seedEnv and route
@@ -72,11 +72,17 @@ func (h *host) runModelInit(out, errOut io.Writer, asJSON bool) error {
 	missing := os.IsNotExist(statErr)
 
 	env := h.seedEnv()
-	var added, unseeded []string
+	var added []string
 	changed, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
 		// Assigned afresh on every run: apply may run more than once.
 		var err error
-		added, unseeded, err = config.SeedRegistryDefaults(d, env)
+		added, err = config.SeedRegistryDefaults(d, env)
+		if err != nil {
+			return err
+		}
+		// The fixed native set, after the defaults, in the same write.
+		natives, err := config.SeedNativeProviders(d)
+		added = append(added, natives...)
 		return err
 	})
 	if err != nil {
@@ -84,12 +90,8 @@ func (h *host) runModelInit(out, errOut io.Writer, asJSON bool) error {
 	}
 	doc := modelInitJSON{
 		Registry: path, Created: missing && changed, Changed: changed,
-		ProvidersAdded:    append([]string{}, added...),
-		ProvidersUnseeded: append([]string{}, unseeded...),
-		Warnings:          []string{},
-	}
-	if env.ConfigErr != nil {
-		doc.Warnings = append(doc.Warnings, "config.toml could not be read, so no provider row was added for its agents (fix it and run `wt-model model init` again): "+env.ConfigErr.Error())
+		ProvidersAdded: append([]string{}, added...),
+		Warnings:       []string{},
 	}
 	// The sync's own lines follow the registry lines in text mode and are
 	// left out of the JSON document; its probe warnings go to stderr either way.
@@ -112,9 +114,6 @@ func (h *host) runModelInit(out, errOut io.Writer, asJSON bool) error {
 	}
 	if len(added) == 0 {
 		fmt.Fprintln(out, "nothing to add")
-	}
-	for _, id := range unseeded {
-		fmt.Fprintf(out, "no default row for provider: %s (an agent lists it; add it to registry.toml by hand)\n", id)
 	}
 	_, _ = io.Copy(out, &syncOut)
 	for _, w := range doc.Warnings {

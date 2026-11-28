@@ -45,7 +45,7 @@ func noServerHome(t *testing.T) (home, marker string, h hooks) {
 			t.Fatal(err)
 		}
 	}
-	cfgBody := "default_tag = \"code\"\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"openrouter\"]\n"
+	cfgBody := "default_tag = \"code\"\n[[agents]]\nname = \"claude\"\n"
 	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgBody), 0o644); err != nil {
 		t.Fatal(err)
 	}

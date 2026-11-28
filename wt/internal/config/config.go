@@ -736,20 +736,14 @@ func (a ModelArtifact) Target() string {
 
 // ── Agent ─────────────────────────────────────────────────
 
-// Agent is a supported AI coding tool.
+// Agent is a supported AI coding tool. An entry names an agent and nothing
+// else: which providers an agent reaches is derived from the provider and the
+// model, never listed. A config.toml written by an older build may still carry
+// supported_providers and default_provider on an entry; they are not decoded
+// into the struct, so nothing reads them and the next save of config.toml
+// drops them.
 type Agent struct {
 	Name string `toml:"name"`
-	// SupportedProviders and DefaultProvider decide no agent's eligibility
-	// (the rule derives a provider's agents from the provider and the model).
-	// Two host-side readers remain until a later change deletes the fields:
-	// registry seeding (seedAgents adds a default row for a listed provider)
-	// and Validate (validateAgents with a registry refuses a listed id that
-	// has no row). They stay decoded and are written back untouched so an older
-	// binary still parses the file; a later change deletes them. An entry
-	// with no list is valid, and a nil slice is omitted on save, never
-	// written as an empty list (an older wt-model rejects one).
-	SupportedProviders []string `toml:"supported_providers"`
-	DefaultProvider    string   `toml:"default_provider,omitempty"`
 	// Synthesized marks an in-memory agent LoadSession made for a driver
 	// config.toml does not list. Never persisted.
 	Synthesized bool `toml:"-"`
@@ -862,12 +856,11 @@ func Load() (*Config, error) {
 	// the schema-migration probe both take real time, and a concurrent
 	// PatchSave-based writer landing in that window must not be clobbered by
 	// a stale whole-file save (issue #143 follow-up).
-	fresh, changed, err := lockedApply(migrateConfigSchema)
+	// The changed result is dropped on purpose: dropLegacyGateway prints its own
+	// notice, so no generic "migrated" message belongs here.
+	fresh, _, err := lockedApply(migrateConfigSchema)
 	if err != nil {
 		return nil, fmt.Errorf("schema migration: %w", err)
-	}
-	if changed {
-		fmt.Fprintln(os.Stderr, BinaryName+": migrated config to native-provider alignment (renamed google→agy)")
 	}
 
 	// Join the registry LAST so wt never mutates registry data
@@ -928,8 +921,7 @@ var NativeOnlyAgents = []string{"agy"}
 // but pi and opencode. A native provider id equals its driver name. It lives
 // in this leaf package for the same reason as NativeOnlyAgents, and
 // internal/agents' TestNativeTablesMatchTheDrivers pins it to the drivers.
-// It has no production reader yet: PR 2's wt-model seeding reads it, and today
-// only that test does.
+// SeedNativeProviders seeds one native row for each of them.
 var NativeCapableAgents = []string{"claude", "codex", "copilot", "agy"}
 
 // IsSubscriptionProvider reports whether id is the Claude subscription
@@ -951,14 +943,13 @@ func (c *Config) ValidateAll() error {
 
 // ValidateSession reports, joined, every problem a session-side save can
 // repair without a registry: default_tag set; each agent named and unique.
-// An agent needs no provider list; the ids in one are not checked;
-// Synthesized agents are skipped.
+// An agent names no provider; Synthesized agents are skipped.
 func (c *Config) ValidateSession() error {
 	var errs []error
 	if c.DefaultTag == "" {
 		errs = append(errs, fmt.Errorf("default_tag must not be empty"))
 	}
-	return errors.Join(append(errs, c.validateAgents(nil)...)...)
+	return errors.Join(append(errs, c.validateAgents()...)...)
 }
 
 // validate collects every validation problem in c, in a stable order.
@@ -1046,23 +1037,20 @@ func (c *Config) validate() []error {
 	}
 
 	// Agents
-	errs = append(errs, c.validateAgents(provIDs)...)
+	errs = append(errs, c.validateAgents()...)
 
 	return errs
 }
 
-// validateAgents is the one agent loop: an agent must be named and unique, and
-// needs no provider list. known == nil skips the unknown-provider check (a
-// session reads no registry) and the agents LoadSession synthesized
-// (Synthesized), which exist only in memory and are never written; a non-nil
-// known reports an id still listed that it lacks. ValidateAll passes the
-// registry's provider ids and never sees a synthesized agent: config.Load
-// makes none.
-func (c *Config) validateAgents(known map[string]bool) []error {
+// validateAgents is the one agent loop, shared by ValidateSession and
+// validate: an agent must be named and unique, and names no provider. It skips
+// the agents LoadSession synthesized (Synthesized), which exist only in memory
+// and are never written; config.Load makes none, so ValidateAll never sees one.
+func (c *Config) validateAgents() []error {
 	var errs []error
 	agentNames := map[string]bool{}
 	for _, a := range c.Agents {
-		if known == nil && a.Synthesized {
+		if a.Synthesized {
 			continue
 		}
 		if a.Name == "" {
@@ -1072,13 +1060,6 @@ func (c *Config) validateAgents(known map[string]bool) []error {
 			errs = append(errs, fmt.Errorf("duplicate agent name %q", a.Name))
 		}
 		agentNames[a.Name] = true
-		if known != nil {
-			for _, pid := range a.SupportedProviders {
-				if !known[pid] {
-					errs = append(errs, fmt.Errorf("agent %q: unknown provider %q", a.Name, pid))
-				}
-			}
-		}
 	}
 	return errs
 }
@@ -1388,8 +1369,7 @@ func (e locationErr) Is(target error) bool { return target == ErrLocation }
 func locationError(msg string) error { return locationErr{msg: msg} }
 
 // UpsertAgent adds a when oldName is empty, or updates the agent named
-// oldName. It checks only the name and, on a rename, that the new name is free;
-// a provider list is not read.
+// oldName. It checks only the name and, on a rename, that the new name is free.
 func (c *Config) UpsertAgent(a Agent, oldName string) error {
 	if a.Name == "" {
 		return fmt.Errorf("agent name is empty")

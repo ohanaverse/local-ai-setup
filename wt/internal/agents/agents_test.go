@@ -730,8 +730,8 @@ func TestSeederCapability(t *testing.T) {
 func TestListEntries(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
-			{Name: "definitely-not-installed", SupportedProviders: []string{"ollama"}},
+			{Name: "claude"},
+			{Name: "definitely-not-installed"},
 		},
 	}
 
@@ -810,8 +810,8 @@ func TestListEntries(t *testing.T) {
 func TestIssueFor(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"ollama"}},
-			{Name: "definitely-not-installed", SupportedProviders: []string{"ollama"}},
+			{Name: "claude"},
+			{Name: "definitely-not-installed"},
 		},
 	}
 	installed := func(bin string) bool { return bin == "claude" }

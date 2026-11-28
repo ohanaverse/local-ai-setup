@@ -572,10 +572,7 @@ ls ~/.config/local-ai/benchmarks/latest.toml    # llmbench's latest-run pointers
   url and `api_key: ***` with the key's last four characters. There is no
   routing switch to turn on: every session routes through the model server
   ([wt-session.md](../../wt/docs/wt-session.md)), and `wt litellm on` is a
-  retired stub that exits 1. If wt then stops with
-  `config error: agent "agy": unknown provider "agy"`, run `wt-model model init`:
-  that command adds the provider row the `agy` entry in `config.toml` names to
-  `registry.toml`. The key is on the command
+  retired stub that exits 1. The key is on the command
   line, the only form wt offers, so it lands in your shell history: start
   the line with a space if your shell is set to skip such lines
   (`HISTCONTROL=ignorespace` in bash, `setopt HIST_IGNORE_SPACE` in zsh), or

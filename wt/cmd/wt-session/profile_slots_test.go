@@ -254,7 +254,7 @@ func TestProfileShowSlotProfile(t *testing.T) {
 // an empty report that reads as "nothing would apply".
 func TestProfileShowSlotProfileErrors(t *testing.T) {
 	withPi := slotShowApp(t)
-	hostCfgOf(withPi).Agents = append(hostCfgOf(withPi).Agents, config.Agent{Name: "pi", SupportedProviders: []string{"openrouter", "omlx"}})
+	hostCfgOf(withPi).Agents = append(hostCfgOf(withPi).Agents, config.Agent{Name: "pi"})
 	broken := slotShowApp(t)
 	broken.slotChecks = nil
 	broken.slotLoadErr = errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")

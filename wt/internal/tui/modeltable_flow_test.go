@@ -52,7 +52,7 @@ func TestEnterModelPhaseAllLocalNoneRunningShowsStartableRows(t *testing.T) {
 			{ID: "omlx/a", ProviderID: "omlx", ModelName: "a", Family: "a", Tags: []string{"code"}},
 			{ID: "omlx/b", ProviderID: "omlx", ModelName: "b", Family: "b", Tags: []string{"code"}},
 		},
-		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+		Agents: []config.Agent{{Name: "pi"}},
 	}
 	got := flowEnter(t, model{cfg: local, width: 80, height: 24}, "pi")
 	if got.phase != phaseModel {

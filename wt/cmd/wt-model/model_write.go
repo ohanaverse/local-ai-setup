@@ -85,8 +85,9 @@ func modelAddCmd(h *host) *cobra.Command {
 			"one argument each: --serve-arg --profile --serve-arg turbo); see\n" +
 			"`wt-model model edit --help`.\n\n" +
 			"A missing default provider row (ollama, omlx, mlx_lm_server, mtplx, rec,\n" +
-			"sushi, openrouter) is added in the same write; a provider wt has no default\n" +
-			"row for must have its [[providers]] block in registry.toml first. For an\n" +
+			"sushi, openrouter) is added in the same write, and so is the native row of a\n" +
+			"model of claude, codex, copilot or agy; a provider wt has no default row\n" +
+			"for must have its [[providers]] block in registry.toml first. For an\n" +
 			"ollama model wt runs `ollama show` once and records whether the model\n" +
 			"supports tools and vision; if that fails the model is added without them\n" +
 			"and a warning says so.\n\n" +
@@ -204,9 +205,6 @@ func (h *host) runModelAdd(out, errOut io.Writer, cfg *config.Config, req modela
 	}
 	for _, p := range res.ProvidersAdded {
 		fmt.Fprintf(out, "added provider: %s\n", p)
-	}
-	for _, p := range res.ProvidersUnseeded {
-		fmt.Fprintf(out, "no default row for provider: %s (an agent lists it; add it to registry.toml by hand)\n", p)
 	}
 	warnings = append(warnings, res.Warnings...)
 	return h.syncAndWarn(out, errOut, warnings)

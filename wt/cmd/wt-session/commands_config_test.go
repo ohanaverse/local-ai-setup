@@ -112,7 +112,7 @@ func TestWtConfigShowsSessionValidationOnOpen(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := "default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"ollama\"]\n\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"ollama\"]\n"
+	body := "default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\n\n[[agents]]\nname = \"claude\"\n"
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

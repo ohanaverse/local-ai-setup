@@ -131,24 +131,14 @@ Press `Enter` on any row to open an edit form for that entry. Forms vary
 by entry:
 
 - **Agents** — the editable field is `Name`; `Installed` is read-only. The
-  form has no provider fields: an entry's `supported_providers` and
-  `default_provider` keys are still parsed and written back as found (older
-  binaries need them) and decide no agent's eligibility; the host still reads
-  `supported_providers` to seed registry rows and refuses a listed provider
-  that has no row (`wt-model model init` seeds the rows wt has a default
-  for). When `config.toml` carries a customized
-  (person-edited, not wt-written) `supported_providers` list, wt prints one
-  stderr note per such agent per process:
-  `wt: note: config.toml: agent <name>: supported_providers is no longer used and is ignored (eligibility is derived from the provider and the model)`.
-  To silence it, trim the list to the stock shape (`[<agent>, ollama]`), or
-  remove the key from the agent entry; removing is safe once every machine's
-  `wt-model` is at or after this change (an older one refuses an agent entry
-  with no list, so update every machine first). A list already in a stock
-  shape (`[<agent>, ollama]`, `[<agent>, ollama, sushi]`, agy's `[agy]`, pi's
-  and opencode's `[ollama]` / `[ollama, sushi]`) prints nothing.
-  An agent added here is written without a list, which a `wt-model` older than
-  this change cannot load: run `make install` on every machine before adding
-  one.
+  form has no provider fields: an entry holds only its name. The
+  `supported_providers` and `default_provider` keys that older builds wrote are
+  no longer read or written; a `config.toml` that still has them loads, and the
+  keys disappear at the next save of `config.toml` (this tab, the Mode tab,
+  `wt-model setup`, or the first load that drops a legacy `[gateway]` block).
+  A re-saved file has agent entries with only `name`, which a
+  build older than the eligibility change (#763, PR 1) cannot load: run
+  `make install` from a root on `main` on every machine before saving.
 
 `Tab` / `Shift+Tab` cycles form fields. `Ctrl+S` saves the changes and
 returns to the list. `Esc` cancels without saving.

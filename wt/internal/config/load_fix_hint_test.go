@@ -93,7 +93,7 @@ func TestLoadFixHint(t *testing.T) {
 	emptyProviderID := first(t, Config{Providers: []Provider{{Location: LocationLocal}}})
 	emptyModelID := first(t, Config{Providers: []Provider{local}, Models: []Model{{ProviderID: "omlx", ModelName: "m"}}})
 	noLocation := first(t, Config{Providers: []Provider{{ID: "omlx"}}, Models: []Model{{ID: "omlx/m", ProviderID: "omlx", ModelName: "m"}}})
-	agentProvider := first(t, Config{Agents: []Agent{{Name: "pi", SupportedProviders: []string{"ghost"}}}})
+	agentName := first(t, Config{Agents: []Agent{{Name: "pi"}, {Name: "pi"}}})
 
 	// The registry's directory is a regular file: lstat fails, and not with
 	// "no such file".
@@ -129,7 +129,7 @@ func TestLoadFixHint(t *testing.T) {
 		{"provider with an empty id", emptyProviderID, ErrRegistryEntry, entry + registry},
 		{"model with an empty id", emptyModelID, ErrRegistryEntry, entry + registry},
 		{"model with no location", noLocation, ErrRegistryEntry, entry + registry},
-		{"agent with an unknown provider (config.toml)", agentProvider, nil, wtConfig},
+		{"agent with a repeated name (config.toml)", agentName, nil, wtConfig},
 		{"config.toml parse error", cfgParse, nil, wtConfig},
 		{"config.toml validation error", errors.New("default_tag must not be empty"), nil, wtConfig},
 		// Joined errors: registry error first, then config.toml error
@@ -175,8 +175,8 @@ func TestLoadFixHint(t *testing.T) {
 	if got, want := noModelName.Error(), `model "omlx/m": model_name is required`; got != want {
 		t.Errorf("model_name error = %q, want %q", got, want)
 	}
-	if errors.Is(agentProvider, ErrRegistryEntry) {
-		t.Errorf("an agent error (%v) is marked as a registry entry error: agents are config.toml's", agentProvider)
+	if errors.Is(agentName, ErrRegistryEntry) {
+		t.Errorf("an agent error (%v) is marked as a registry entry error: agents are config.toml's", agentName)
 	}
 }
 
