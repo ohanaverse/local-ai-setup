@@ -20,54 +20,55 @@ import (
 // it lists the catalog, narrows it to what agent can use (tags, family) and
 // keeps the launch rows that are neither aliases nor subscription rows (a
 // no-pin launch never chooses either: a Claude subscription model is
-// pin-only, #597). The second result, registered, is the registered subset of
-// those launchable rows (never a blocked or start row, an alias, a
-// subscription row or a discovered model); its one use is that, with several
-// launchable rows, a non-empty registered sends the launch to the picker (off
-// a terminal, to the refusal naming -M) instead of the "multiple models
-// match" error. One launchable row is the answer; several are "multiple
-// models match"; when the only launchable rows were subscription rows the
-// error says to name one with -M.
+// pin-only, #597). The second result, hasRegistered, says whether any of
+// those launchable rows is registered (never a blocked or start row, an
+// alias, a subscription row or a discovered model); its one use is that, with
+// several launchable rows, a true hasRegistered sends the launch to the
+// picker (off a terminal, to the refusal naming -M) instead of the "multiple
+// models match" error. One launchable row is the answer; several are
+// "multiple models match"; when the only launchable rows were subscription
+// rows the error says to name one with -M.
 //
 // Its errors (Catalog, Resolve, a block reason, an ineligible pin) come back
 // WITHOUT a still clause: the caller adds it.
-func resolveModelRemote(ctx context.Context, ms *modelSession, agent config.Agent, tags, family, pinned string) (modelapi.Row, []modelapi.Row, error) {
+func resolveModelRemote(ctx context.Context, ms *modelSession, agent config.Agent, tags, family, pinned string) (modelapi.Row, bool, error) {
 	if agents.IsCommand(agent.Name) {
-		return modelapi.Row{}, nil, errCommandAgent
+		return modelapi.Row{}, false, errCommandAgent
 	}
 	if pinned != "" {
 		row, err := ms.client.Resolve(ctx, pinned)
 		if err != nil {
-			return modelapi.Row{}, nil, err
+			return modelapi.Row{}, false, err
 		}
 		if len(catalog.EligibleWire([]modelapi.Row{row}, agent, tags, family)) == 0 {
-			return modelapi.Row{}, nil, fmt.Errorf("model %q is not in the eligible list for agent %q", pinned, agent.Name)
+			return modelapi.Row{}, false, fmt.Errorf("model %q is not in the eligible list for agent %q", pinned, agent.Name)
 		}
 		if row.Action == modelapi.ActionBlock {
 			// A subscription row an off or older server blocked says why
 			// in decision 2's words, not the row's (an older server's is
 			// "unmapped", #597).
 			if r := subscriptionBlockedReason(ctx, ms, []modelapi.Row{row}); r != "" {
-				return modelapi.Row{}, nil, errors.New(r)
+				return modelapi.Row{}, false, errors.New(r)
 			}
 			reason := row.BlockReason
 			if reason == "" {
 				reason = fmt.Sprintf("model %q is blocked", row.ID)
 			}
-			return modelapi.Row{}, nil, errors.New(reason)
+			return modelapi.Row{}, false, errors.New(reason)
 		}
-		return row, nil, nil
+		return row, false, nil
 	}
 	cat, err := ms.client.Catalog(ctx)
 	if err != nil {
-		return modelapi.Row{}, nil, err
+		return modelapi.Row{}, false, err
 	}
 	eligible := catalog.EligibleWire(cat.Rows, agent, tags, family)
 	// A no-pin launch never chooses an alias (decision 14) or a subscription
 	// row (#597: pin-only, so the owner's subscription is never spent
 	// unasked): the picker lists them and -M launches them, but neither is
-	// the one launchable row nor in registered.
-	var launchable, registered []modelapi.Row
+	// the one launchable row nor counted in hasRegistered.
+	var launchable []modelapi.Row
+	hasRegistered := false
 	subscriptionOnly := false
 	for _, r := range catalog.Launchable(eligible) {
 		if r.Kind == modelapi.KindAlias {
@@ -79,18 +80,18 @@ func resolveModelRemote(ctx context.Context, ms *modelSession, agent config.Agen
 		}
 		launchable = append(launchable, r)
 		if r.Registered {
-			registered = append(registered, r)
+			hasRegistered = true
 		}
 	}
 	switch {
 	case len(eligible) == 0:
-		return modelapi.Row{}, nil, fmt.Errorf("no models match agent %q with tags %q and family %q", agent.Name, tags, family)
+		return modelapi.Row{}, false, fmt.Errorf("no models match agent %q with tags %q and family %q", agent.Name, tags, family)
 	case len(launchable) == 0 && subscriptionOnly:
-		return modelapi.Row{}, nil, fmt.Errorf("the only launchable models for agent %q use your Claude subscription, which wt never picks on its own — name one with `wt -M <id>`", agent.Name)
+		return modelapi.Row{}, false, fmt.Errorf("the only launchable models for agent %q use your Claude subscription, which wt never picks on its own — name one with `wt -M <id>`", agent.Name)
 	case len(launchable) == 0:
-		return modelapi.Row{}, nil, fmt.Errorf("no cloud or running local model for agent %q — start one with `wt -M <id>`", agent.Name)
+		return modelapi.Row{}, false, fmt.Errorf("no cloud or running local model for agent %q — start one with `wt -M <id>`", agent.Name)
 	case len(launchable) > 1:
-		return modelapi.Row{}, registered, fmt.Errorf("multiple models match for agent %q", agent.Name)
+		return modelapi.Row{}, hasRegistered, fmt.Errorf("multiple models match for agent %q", agent.Name)
 	}
-	return launchable[0], registered, nil
+	return launchable[0], hasRegistered, nil
 }

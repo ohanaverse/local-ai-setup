@@ -23,11 +23,12 @@ func openFake(t *testing.T, f *fakeModelServer) *modelSession {
 	return ms
 }
 
-// TestResolveModelRemoteNoPin proves an unpinned resolve builds the registered
-// rows from the server's catalog: registered launch rows only, in Order, with
-// blocked rows, start rows and a running discovered model left out, and that
-// several launchable rows are an ambiguity error that still returns them (the
-// non-empty registered is what sends a terminal launch to the picker).
+// TestResolveModelRemoteNoPin proves an unpinned resolve reads the server's
+// catalog: several launchable rows are an ambiguity error that still reports
+// hasRegistered (true is what sends a terminal launch to the picker), and
+// blocked rows, start rows and a running discovered model neither launch nor
+// count as registered (two discovered launch rows are ambiguous but
+// hasRegistered stays false).
 func TestResolveModelRemoteNoPin(t *testing.T) {
 	blocked := wireRow("openrouter/blk", modelapi.ActionBlock, 1)
 	blocked.BlockReason = "no route"
@@ -39,22 +40,26 @@ func TestResolveModelRemoteNoPin(t *testing.T) {
 		wireRow("openrouter/c", modelapi.ActionLaunch, 5), blocked, start, disc,
 		wireRow("openrouter/a", modelapi.ActionLaunch, 3))
 	ms := openFake(t, f)
-	_, registered, err := resolveModelRemote(context.Background(), ms, remoteAgent(), "", "", "")
+	_, hasRegistered, err := resolveModelRemote(context.Background(), ms, remoteAgent(), "", "", "")
 	if err == nil || !strings.Contains(err.Error(), "multiple models match") {
 		t.Fatalf("err = %v, want the ambiguity error", err)
 	}
-	var ids []string
-	for _, r := range registered {
-		ids = append(ids, r.ID)
+	if !hasRegistered {
+		t.Error("hasRegistered = false, want true with two registered launch rows")
 	}
-	if got := strings.Join(ids, ","); got != "openrouter/a,openrouter/c" {
-		t.Errorf("registered = %s, want openrouter/a,openrouter/c", got)
+	// Two running discovered models are ambiguous but none is registered.
+	disc2 := wireRow("omlx/disc2", modelapi.ActionLaunch, 0)
+	disc2.Registered, disc2.Discovered = false, true
+	f.Rows = []modelapi.Row{disc, disc2, blocked, start}
+	_, hasRegistered, err = resolveModelRemote(context.Background(), ms, remoteAgent(), "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "multiple models match") || hasRegistered {
+		t.Errorf("two discovered rows: hasRegistered=%v err=%v, want the ambiguity error and false", hasRegistered, err)
 	}
 	// A single launchable row is the answer.
 	f.Rows = []modelapi.Row{wireRow("openrouter/a", modelapi.ActionLaunch, 3), blocked, start}
-	row, registered, err := resolveModelRemote(context.Background(), ms, remoteAgent(), "", "", "")
-	if err != nil || row.ID != "openrouter/a" || len(registered) != 1 {
-		t.Errorf("row=%q registered=%d err=%v", row.ID, len(registered), err)
+	row, hasRegistered, err := resolveModelRemote(context.Background(), ms, remoteAgent(), "", "", "")
+	if err != nil || row.ID != "openrouter/a" || !hasRegistered {
+		t.Errorf("row=%q hasRegistered=%v err=%v", row.ID, hasRegistered, err)
 	}
 	// Nothing launchable is an error.
 	f.Rows = []modelapi.Row{blocked, start}
@@ -192,14 +197,14 @@ func TestResolveModelRemoteNoPinNeverPicksAnAlias(t *testing.T) {
 	f := newFakeModelServer(t, wireRow("openrouter/a", modelapi.ActionLaunch, 1), alias)
 	ms := openFake(t, f)
 	ctx := context.Background()
-	row, registered, err := resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
-	if err != nil || row.ID != "openrouter/a" || len(registered) != 1 || registered[0].ID != "openrouter/a" {
-		t.Errorf("model + alias: row=%q registered=%v err=%v, want openrouter/a launched directly", row.ID, registered, err)
+	row, hasRegistered, err := resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
+	if err != nil || row.ID != "openrouter/a" || !hasRegistered {
+		t.Errorf("model + alias: row=%q hasRegistered=%v err=%v, want openrouter/a launched directly", row.ID, hasRegistered, err)
 	}
 	f.Rows = []modelapi.Row{alias}
-	row, registered, err = resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
-	if err == nil || !strings.Contains(err.Error(), "no cloud or running local model") || row.ID != "" || len(registered) != 0 {
-		t.Errorf("lone alias: row=%q registered=%d err=%v, want the zero-launchable error", row.ID, len(registered), err)
+	row, hasRegistered, err = resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "no cloud or running local model") || row.ID != "" || hasRegistered {
+		t.Errorf("lone alias: row=%q hasRegistered=%v err=%v, want the zero-launchable error", row.ID, hasRegistered, err)
 	}
 	row, _, err = resolveModelRemote(ctx, ms, remoteAgent(), "", "", "alias/x")
 	if err != nil || row.ID != "alias/x" {
@@ -227,17 +232,17 @@ func TestResolveModelRemoteNoPinNeverPicksASubscriptionRow(t *testing.T) {
 	f := newFakeModelServer(t, sub, group)
 	ms := openFake(t, f)
 	ctx := context.Background()
-	row, registered, err := resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
-	if err == nil || row.ID != "" || len(registered) != 0 {
-		t.Fatalf("only a subscription row: row=%q registered=%d err=%v, want an error and no launch", row.ID, len(registered), err)
+	row, hasRegistered, err := resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
+	if err == nil || row.ID != "" || hasRegistered {
+		t.Fatalf("only a subscription row: row=%q hasRegistered=%v err=%v, want an error and no launch", row.ID, hasRegistered, err)
 	}
 	if !strings.Contains(err.Error(), "-M") || !strings.Contains(err.Error(), "Claude subscription") || strings.Contains(err.Error(), "no cloud or running local model") {
 		t.Errorf("only a subscription row: err = %q, want it to say a Claude subscription model is named with -M", err)
 	}
 	f.Rows = []modelapi.Row{sub, group, wireRow("openrouter/a", modelapi.ActionLaunch, 1)}
-	row, registered, err = resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
-	if err != nil || row.ID != "openrouter/a" || len(registered) != 1 || registered[0].ID != "openrouter/a" {
-		t.Errorf("mixed: row=%q registered=%v err=%v, want openrouter/a launched directly", row.ID, registered, err)
+	row, hasRegistered, err = resolveModelRemote(ctx, ms, remoteAgent(), "", "", "")
+	if err != nil || row.ID != "openrouter/a" || !hasRegistered {
+		t.Errorf("mixed: row=%q hasRegistered=%v err=%v, want openrouter/a launched directly", row.ID, hasRegistered, err)
 	}
 	row, _, err = resolveModelRemote(ctx, ms, remoteAgent(), "", "", "claude-haiku-5-5")
 	if err != nil || row.ID != "claude-haiku-5-5" {

@@ -123,8 +123,8 @@ func launchFilteredRemote(ctx context.Context, a *app, agent, worktreePath strin
 		return remoteExit(err) // openModels' errors carry the still clause
 	}
 
-	row, registered, err := resolveModelRemote(ctx, ms, *ag, tags, family, pinned)
-	if err != nil && pinned == "" && len(registered) > 0 {
+	row, hasRegistered, err := resolveModelRemote(ctx, ms, *ag, tags, family, pinned)
+	if err != nil && pinned == "" && hasRegistered {
 		// Several launchable models and no -M: the user picks, as on the
 		// registry path. On a terminal runLaunchPath opens the model server's
 		// picker (its cursor on the first row that is not blocked); without
