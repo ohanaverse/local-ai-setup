@@ -24,6 +24,21 @@ func seed(t *testing.T, env SeedEnv) (added []string, changed bool) {
 	return added, changed
 }
 
+// seedNatives runs SeedNativeProviders inside UpdateRegistry, as the helper
+// above does for SeedRegistryDefaults.
+func seedNatives(t *testing.T) (added []string, changed bool) {
+	t.Helper()
+	changed, err := UpdateRegistry(func(d *RegistryDoc) error {
+		var err error
+		added, err = SeedNativeProviders(d)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seeding natives: %v", err)
+	}
+	return added, changed
+}
+
 // TestSeedWritesTheDefaultRows pins every default row byte for byte: each
 // provider's name, location, auth and base_url, its keys in schema order, the
 // rows placed ahead of the models. The expected text is what the registries
@@ -39,8 +54,8 @@ family = "f"
 provider_id = "mlx_lm_server"
 model_name = "org/target"
 `)
-	added, changed := seed(t, SeedEnv{Agents: []string{"claude", "agy"}, OnPath: onPath("ollama", "omlx", "mtplx")})
-	if want := []string{"ollama", "omlx", "mlx_lm_server", "mtplx", "claude", "agy"}; !slices.Equal(added, want) || !changed {
+	added, changed := seed(t, SeedEnv{OnPath: onPath("ollama", "omlx", "mtplx")})
+	if want := []string{"ollama", "omlx", "mlx_lm_server", "mtplx"}; !slices.Equal(added, want) || !changed {
 		t.Fatalf("added = %v (changed %v), want %v", added, changed, want)
 	}
 	const want = `[[providers]]
@@ -83,22 +98,6 @@ model_dir = "~/.mtplx/models"
 [providers.auth]
 type = "none"
 base_url = "http://localhost:8003/v1"
-
-[[providers]]
-id = "claude"
-name = "Claude"
-location = "cloud"
-
-[providers.auth]
-type = "native"
-
-[[providers]]
-id = "agy"
-name = "Agy"
-location = "cloud"
-
-[providers.auth]
-type = "native"
 
 [[models]]
 id = "mlx_lm_server/pair"
@@ -145,6 +144,12 @@ family = "f"
 provider_id = "omlx"
 model_name = "m"
 `
+	const ollamaModel = `[[models]]
+id = "ollama/m"
+family = "f"
+provider_id = "ollama"
+model_name = "m"
+`
 	const openrouterModel = `[[models]]
 id = "openrouter/m"
 family = "f"
@@ -158,13 +163,12 @@ model_name = "org/m"
 		want     []string
 	}{
 		{"nothing installed, nothing referenced", "", SeedEnv{}, nil},
-		{"a nil OnPath means nothing is installed", "", SeedEnv{Agents: []string{"claude"}}, []string{"claude"}},
+		{"a nil OnPath means nothing is installed", "", SeedEnv{}, nil},
 		{"only what is on PATH", "", SeedEnv{OnPath: onPath("mtplx")}, []string{"mtplx"}},
 		{"mlx_lm_server is never taken from PATH", "", SeedEnv{OnPath: func(string) bool { return true }}, []string{"ollama", "omlx", "mtplx", "sushi"}},
 		{"an installed omlx is covered by an omlx-6bit row", sixBit, SeedEnv{OnPath: onPath("omlx", "ollama")}, []string{"ollama"}},
 		{"but a model that references omlx gets the row", sixBit + omlxModel, SeedEnv{OnPath: onPath("omlx")}, []string{"omlx"}},
-		{"an agent whose name is already a provider is skipped", sixBit, SeedEnv{Agents: []string{"omlx-6bit", "", "pi"}}, []string{"pi"}},
-		{"an agent named like a default provider gets the default row, once", "", SeedEnv{Agents: []string{"ollama"}, OnPath: onPath("ollama")}, []string{"ollama"}},
+		{"a model that references a default provider gets its row, once", ollamaModel, SeedEnv{OnPath: onPath("ollama")}, []string{"ollama"}},
 		{"openrouter is not seeded from PATH", "", SeedEnv{OnPath: func(string) bool { return true }}, []string{"ollama", "omlx", "mtplx", "sushi"}},
 		{"a model that references openrouter gets the row", openrouterModel, SeedEnv{}, []string{"openrouter"}},
 	}
@@ -176,34 +180,6 @@ model_name = "org/m"
 				t.Errorf("added = %v, want %v", added, c.want)
 			}
 		})
-	}
-}
-
-// TestSeedAnAgentNamedAfterAProviderGetsThatProvidersRow pins what the agent
-// trigger writes for an agent whose name is a provider with a default row,
-// when nothing else asks for that provider. The agent's "own" row would be a
-// native cloud row under the id `ollama` or `openrouter`, and every model of
-// that provider would then resolve through it: no address, no key, wrong
-// location. The provider's default row is written instead, once.
-func TestSeedAnAgentNamedAfterAProviderGetsThatProvidersRow(t *testing.T) {
-	path := scratchRegistry(t, "")
-	added, _ := seed(t, SeedEnv{Agents: []string{"openrouter", "ollama", "pi"}})
-	if want := []string{"ollama", "openrouter", "pi"}; !slices.Equal(added, want) {
-		t.Fatalf("added = %v, want %v", added, want)
-	}
-	got := readFile(t, path)
-	if n := strings.Count(got, `type = "native"`); n != 1 {
-		t.Errorf("%d native rows, want pi's only:\n%s", n, got)
-	}
-	for _, want := range []string{
-		"id = \"ollama\"\nname = \"Ollama\"\nlocation = \"local\"\n",
-		"base_url = \"http://localhost:11434\"\n",
-		"id = \"openrouter\"\nname = \"OpenRouter\"\nlocation = \"cloud\"\n",
-		"type = \"api_key\"\nsecret_ref = \"OPENROUTER_API_KEY\"\n",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the seeded registry lacks %q:\n%s", want, got)
-		}
 	}
 }
 
@@ -230,13 +206,13 @@ name = "oMLX"
 type = "none"
 `
 	path := scratchRegistry(t, custom)
-	env := SeedEnv{Agents: []string{"claude"}, OnPath: onPath("ollama", "omlx")}
+	env := SeedEnv{OnPath: onPath("ollama", "omlx")}
 	added, changed := seed(t, env)
-	if !slices.Equal(added, []string{"claude"}) || !changed {
-		t.Fatalf("first run: added %v (changed %v), want [claude]", added, changed)
+	if len(added) != 0 || changed {
+		t.Fatalf("first run: added %v (changed %v), want nothing: both providers have a row", added, changed)
 	}
 	after := readFile(t, path)
-	if !strings.HasPrefix(after, custom) {
+	if after != custom {
 		t.Errorf("existing rows were edited:\n%s", after)
 	}
 	added, changed = seed(t, env)
@@ -272,61 +248,117 @@ func TestSeedCreatesAMissingRegistry(t *testing.T) {
 	}
 }
 
-// TestSeedAgentNamesAreTheNamesInConfigToml pins which agents get a provider
-// row: the names config.toml carries, read as written and nothing else (no
-// list is read, and an agy native row is not created from nothing). The
-// end-to-end check is that a registry seeded from those names loads and
-// validates. A config.toml that cannot be read names nothing, and says why,
-// so seeding still works beside a broken one and the caller can tell the user.
-func TestSeedAgentNamesAreTheNamesInConfigToml(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", home)
-	if names, err := seedAgents(); names != nil || err != nil {
-		t.Errorf("with no config.toml: agents = %v, err = %v, want none and no error", names, err)
+// TestSeedNativeProvidersAddsTheFixedSet pins the native rows an empty
+// registry gets: claude, codex, copilot and agy, in that order, each written
+// as a native cloud row, and no row for pi or opencode (they have no native
+// provider). The set is fixed, not read from config.toml, so a machine gets
+// the same four whether or not the agents are installed or configured. A
+// second call adds nothing and changes nothing.
+func TestSeedNativeProvidersAddsTheFixedSet(t *testing.T) {
+	path := scratchRegistry(t, "")
+	added, changed := seedNatives(t)
+	if want := []string{"claude", "codex", "copilot", "agy"}; !slices.Equal(added, want) || !changed {
+		t.Fatalf("added = %v (changed %v), want %v", added, changed, want)
 	}
-	must(t, Path(), "default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\n")
-	names, err := seedAgents()
-	if err != nil {
-		t.Fatal(err)
+	// Four short rows fit tomli-w's inline-table limit, so a registry that
+	// holds only these is laid out the way tomli-w lays it out: one inline
+	// row each (a layout every reader and the next edit already handle).
+	const want = `providers = [
+    { id = "claude", name = "Claude", location = "cloud", auth = { type = "native" } },
+    { id = "codex", name = "Codex", location = "cloud", auth = { type = "native" } },
+    { id = "copilot", name = "Copilot", location = "cloud", auth = { type = "native" } },
+    { id = "agy", name = "Agy", location = "cloud", auth = { type = "native" } },
+]
+`
+	if got := readFile(t, path); got != want {
+		t.Errorf("seeded registry:\n%s\nwant:\n%s", got, want)
 	}
-	if want := []string{"claude"}; !slices.Equal(names, want) {
-		t.Fatalf("agents = %v, want %v", names, want)
+	added, changed = seedNatives(t)
+	if len(added) != 0 || changed {
+		t.Errorf("second call: added %v (changed %v), want nothing", added, changed)
 	}
-	env := DefaultSeedEnv()
-	env.OnPath = nil // this machine's PATH is not the test's business
-	if added, _ := seed(t, env); !slices.Equal(added, []string{"claude"}) {
-		t.Fatalf("added = %v, want [claude]", added)
+	if got := readFile(t, path); got != want {
+		t.Error("a second call changed the file")
 	}
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load after seeding: %v", err)
+}
+
+// TestSeedNativeProvidersLeavesExistingRowsAlone pins that seeding the native
+// set only appends: a hand-edited claude row and a pi native row (not in the
+// fixed set) stay byte for byte, and the three missing members are appended
+// after them. A user's own edit of a native row must survive every `model
+// init`. The hand-edited name is long on purpose: a registry of only short
+// rows is re-laid out inline by the writer, which would hide a byte-for-byte
+// comparison.
+func TestSeedNativeProvidersLeavesExistingRowsAlone(t *testing.T) {
+	const custom = `[[providers]]
+id = "claude"
+name = "My Claude, hand-edited with a name long enough to keep its row out of the inline layout"
+location = "cloud"
+
+[providers.auth]
+type = "native"
+
+[[providers]]
+id = "pi"
+name = "Pi"
+location = "cloud"
+
+[providers.auth]
+type = "native"
+`
+	path := scratchRegistry(t, custom)
+	added, changed := seedNatives(t)
+	if want := []string{"codex", "copilot", "agy"}; !slices.Equal(added, want) || !changed {
+		t.Fatalf("added = %v (changed %v), want %v", added, changed, want)
 	}
-	if err := cfg.ValidateAll(); err != nil {
-		t.Errorf("the seeded registry should validate against config.toml: %v", err)
+	got := readFile(t, path)
+	if !strings.HasPrefix(got, custom) {
+		t.Errorf("existing rows were edited:\n%s", got)
+	}
+	if strings.Count(got, `id = "pi"`) != 1 || strings.Count(got, `id = "claude"`) != 1 {
+		t.Errorf("a row was duplicated:\n%s", got)
+	}
+}
+
+// TestSeedAddsTheNativeRowAModelReferences pins the other trigger for a native
+// row: a registry model that names claude (one added with `wt-model model add
+// claude native ...`) gets the claude row from SeedRegistryDefaults, and only
+// that native one. A model on pi gets no row: pi has no native provider, so
+// the add stays refused with ErrNoProviderRow instead of seeding a row no
+// agent could use.
+func TestSeedAddsTheNativeRowAModelReferences(t *testing.T) {
+	const claudeModel = `[[models]]
+id = "claude/native"
+family = "claude"
+provider_id = "claude"
+model_name = "native"
+`
+	const piModel = `[[models]]
+id = "pi/native"
+family = "pi"
+provider_id = "pi"
+model_name = "native"
+`
+	path := scratchRegistry(t, claudeModel)
+	added, changed := seed(t, SeedEnv{})
+	if want := []string{"claude"}; !slices.Equal(added, want) || !changed {
+		t.Fatalf("added = %v (changed %v), want %v", added, changed, want)
+	}
+	if got := readFile(t, path); strings.Count(got, `type = "native"`) != 1 || !strings.Contains(got, `{ id = "claude", name = "Claude", location = "cloud", auth = { type = "native" } }`) {
+		t.Errorf("want one native row, claude's:\n%s", got)
 	}
 
-	// An unreadable config.toml names nothing, and says why: the caller
-	// reports it, or the user sees "nothing to add" with no reason.
-	if err := os.WriteFile(Path(), []byte("this is not toml [[["), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	names, err = seedAgents()
-	if names != nil {
-		t.Errorf("with an unreadable config.toml: agents = %v, want none", names)
-	}
-	if err == nil || !strings.Contains(err.Error(), "parse config") {
-		t.Errorf("with an unreadable config.toml: err = %v, want the parse error", err)
-	}
-	if env := DefaultSeedEnv(); env.ConfigErr == nil || len(env.Agents) != 0 || !strings.Contains(env.ConfigErr.Error(), "parse config") {
-		t.Errorf("DefaultSeedEnv with an unreadable config.toml: ConfigErr = %v, agents = %v", env.ConfigErr, env.Agents)
+	scratchRegistry(t, piModel)
+	if added, changed := seed(t, SeedEnv{}); len(added) != 0 || changed {
+		t.Errorf("a model on pi: added %v (changed %v), want nothing", added, changed)
 	}
 }
 
 // TestSeedMakesAFreshConfigLoad is the first run on a machine that has a
 // config.toml and no registry, end to end: nothing is installed and the file
-// names two agents. Seeding adds each agent's native row and nothing else (no
-// provider comes from a list any more), and after it Load succeeds and the
-// config validates, so a fresh machine is usable after one init.
+// names two agents. Seeding reads none of it: the defaults add nothing and
+// SeedNativeProviders adds the four native rows, and after both Load succeeds
+// and the config validates, so a fresh machine is usable after one init.
 func TestSeedMakesAFreshConfigLoad(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
@@ -342,8 +374,12 @@ name = "opencode"
 	env := DefaultSeedEnv()
 	env.OnPath = nil // nothing is installed
 	added, _ := seed(t, env)
-	if want := []string{"claude", "opencode"}; !slices.Equal(added, want) {
-		t.Fatalf("added = %v, want %v (no ollama, no openrouter)", added, want)
+	if len(added) != 0 {
+		t.Fatalf("defaults added = %v, want nothing (no ollama, no openrouter)", added)
+	}
+	added, _ = seedNatives(t)
+	if want := []string{"claude", "codex", "copilot", "agy"}; !slices.Equal(added, want) {
+		t.Fatalf("natives added = %v, want %v (no opencode row: it has no native provider)", added, want)
 	}
 	cfg, err := Load()
 	if err != nil {
@@ -378,6 +414,7 @@ supported_providers = ["opencode"]
 	env := DefaultSeedEnv()
 	env.OnPath = nil // nothing is installed
 	seed(t, env)
+	seedNatives(t)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load after seeding: %v", err)

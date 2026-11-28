@@ -22,14 +22,14 @@ import (
 func TestModelInitCreatesTheRegistryAndSaysWhatItAdded(t *testing.T) {
 	h := testHost()
 	registry := modelHome(t, "")
-	stubSeedEnv(h, config.SeedEnv{Agents: []string{"claude"}, OnPath: onPath("ollama")})
+	stubSeedEnv(h, config.SeedEnv{OnPath: onPath("ollama")})
 	synced := stubRouteSync(h, "")
 
 	var out, errOut bytes.Buffer
 	if err := h.runModelInit(&out, &errOut, false); err != nil {
 		t.Fatalf("runModelInit: %v", err)
 	}
-	want := "registry: " + registry + " (created)\nadded provider: ollama\nadded provider: claude\n"
+	want := "registry: " + registry + " (created)\nadded provider: ollama\nadded provider: claude\nadded provider: codex\nadded provider: copilot\nadded provider: agy\n"
 	if out.String() != want || errOut.Len() != 0 {
 		t.Errorf("stdout = %q, stderr = %q; want stdout %q and no stderr", out.String(), errOut.String(), want)
 	}
@@ -40,8 +40,10 @@ func TestModelInitCreatesTheRegistryAndSaysWhatItAdded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load after init: %v", err)
 	}
-	if cfg.ProviderByID("ollama") == nil || cfg.ProviderByID("claude") == nil {
-		t.Errorf("providers after init = %+v, want ollama and claude", cfg.Providers)
+	for _, id := range []string{"ollama", "claude", "codex", "copilot", "agy"} {
+		if cfg.ProviderByID(id) == nil {
+			t.Errorf("providers after init = %+v, want %s", cfg.Providers, id)
+		}
 	}
 
 	// A second run finds nothing to do, writes nothing and syncs nothing.
@@ -80,7 +82,7 @@ func TestModelInitJSON(t *testing.T) {
 	if err := h.runModelInit(&out, &errOut, true); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"registry":"` + registry + `","created":true,"changed":true,"providers_added":["mtplx"],"warnings":["LiteLLM routes not synced: proxy down"]}` + "\n"
+	want := `{"registry":"` + registry + `","created":true,"changed":true,"providers_added":["mtplx","claude","codex","copilot","agy"],"warnings":["LiteLLM routes not synced: proxy down"]}` + "\n"
 	if out.String() != want || errOut.Len() != 0 {
 		t.Errorf("stdout = %s stderr = %q\nwant stdout %s and no stderr", out.String(), errOut.String(), want)
 	}
@@ -99,9 +101,10 @@ func TestModelInitJSON(t *testing.T) {
 
 // TestModelInitMakesAFreshConfigUsable pins that on a machine with a
 // config.toml and no registry, one run of the command leaves wt able to load
-// and validate its config. Nothing is installed and the file names two agents
-// with no provider lists: each agent gets its native row, and no ollama or
-// openrouter row appears because nothing asks for one.
+// and validate its config. Nothing is installed and the file names only pi
+// and claude, with no provider lists: init reads none of it, so the four
+// native rows are added (pi has no native provider, so no pi row), and no
+// ollama or openrouter row appears because nothing asks for one.
 func TestModelInitMakesAFreshConfigUsable(t *testing.T) {
 	h := testHost()
 	registry := modelHome(t, "")
@@ -119,7 +122,7 @@ name = "pi"
 	if err := os.WriteFile(config.Path(), []byte(agents), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The real reading of config.toml, on a machine with nothing installed.
+	// The real seed environment, on a machine with nothing installed.
 	env := config.DefaultSeedEnv()
 	env.OnPath = nil
 	stubSeedEnv(h, env)
@@ -129,7 +132,7 @@ name = "pi"
 	if err := h.runModelInit(&out, &errOut, false); err != nil {
 		t.Fatalf("runModelInit: %v", err)
 	}
-	want := "registry: " + registry + " (created)\nadded provider: claude\nadded provider: pi\n"
+	want := "registry: " + registry + " (created)\nadded provider: claude\nadded provider: codex\nadded provider: copilot\nadded provider: agy\n"
 	if out.String() != want || errOut.Len() != 0 {
 		t.Errorf("stdout = %q, stderr = %q; want stdout %q and no stderr", out.String(), errOut.String(), want)
 	}
@@ -139,6 +142,9 @@ name = "pi"
 	}
 	if err := cfg.ValidateAll(); err != nil {
 		t.Errorf("the config should validate after init: %v", err)
+	}
+	if cfg.ProviderByID("pi") != nil {
+		t.Error("init added a pi row, but pi has no native provider")
 	}
 }
 
@@ -189,14 +195,56 @@ func TestModelInitSeedsAnOpenRouterRowThatFailsLoudlyWithoutItsKey(t *testing.T)
 	}
 }
 
-// TestModelInitWarnsWhenConfigTomlCannotBeRead pins what the user is told
-// when config.toml is there and does not parse. The command still seeds what
-// it can and exits 0, but it must say that no agent got a row and why:
-// without the warning the output is the same "nothing to add" a healthy
-// machine prints, and the next wt command fails on the config.
-func TestModelInitWarnsWhenConfigTomlCannotBeRead(t *testing.T) {
+// TestModelInitIgnoresConfigToml pins that init no longer reads config.toml
+// at all: a config.toml that does not parse produces no warning (stderr is
+// empty, --json has "warnings":[]) and the same output as a machine with no
+// config.toml, namely the four native rows. Before, an unreadable file
+// meant no agent got a row and the user had to be told why; the set is now
+// fixed, so there is nothing to tell. The next wt command still fails on the
+// broken file, which is the right place to say so.
+func TestModelInitIgnoresConfigToml(t *testing.T) {
+	wantText := func(registry string) string {
+		return "registry: " + registry + " (created)\nadded provider: claude\nadded provider: codex\nadded provider: copilot\nadded provider: agy\n"
+	}
+	for _, c := range []struct {
+		name   string
+		config string // "" writes no config.toml
+	}{
+		{"an unparseable config.toml", "this is not toml [[["},
+		{"no config.toml", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := testHost()
+			registry := modelHome(t, "")
+			if c.config != "" {
+				if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(config.Path(), []byte(c.config), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env := config.DefaultSeedEnv()
+			env.OnPath = nil
+			stubSeedEnv(h, env)
+			stubRouteSync(h, "")
+
+			var out, errOut bytes.Buffer
+			if err := h.runModelInit(&out, &errOut, false); err != nil {
+				t.Fatalf("runModelInit: %v", err)
+			}
+			if out.String() != wantText(registry) || errOut.Len() != 0 {
+				t.Errorf("stdout = %q, stderr = %q; want stdout %q and no stderr", out.String(), errOut.String(), wantText(registry))
+			}
+			if _, err := os.Stat(registry); err != nil {
+				t.Errorf("the registry was not created: %v", err)
+			}
+		})
+	}
+
+	// --json: no warning either, with the config.toml broken.
 	h := testHost()
-	registry := modelHome(t, "")
+	modelHome(t, "")
 	if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -207,30 +255,12 @@ func TestModelInitWarnsWhenConfigTomlCannotBeRead(t *testing.T) {
 	env.OnPath = nil
 	stubSeedEnv(h, env)
 	stubRouteSync(h, "")
-
 	var out, errOut bytes.Buffer
-	if err := h.runModelInit(&out, &errOut, false); err != nil {
-		t.Fatalf("runModelInit: %v", err)
-	}
-	// A first run that adds nothing still creates the registry, and says so.
-	if want := "registry: " + registry + " (created)\nnothing to add\n"; out.String() != want {
-		t.Errorf("stdout = %q, want %q", out.String(), want)
-	}
-	if _, err := os.Stat(registry); err != nil {
-		t.Errorf("the registry was not created: %v", err)
-	}
-	const wantWarn = "warning: config.toml could not be read, so no provider row was added for its agents (fix it and run `wt-model model init` again): parse config: "
-	if !strings.HasPrefix(errOut.String(), wantWarn) || strings.Count(errOut.String(), "\n") != 1 {
-		t.Errorf("stderr = %q, want one line starting %q", errOut.String(), wantWarn)
-	}
-
-	out.Reset()
-	errOut.Reset()
 	if err := h.runModelInit(&out, &errOut, true); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"warnings":["config.toml could not be read`) || errOut.Len() != 0 {
-		t.Errorf("--json: stdout = %s stderr = %q, want the warning in the document only", out.String(), errOut.String())
+	if !strings.Contains(out.String(), `"warnings":[]`) || errOut.Len() != 0 {
+		t.Errorf("--json: stdout = %s stderr = %q, want no warnings", out.String(), errOut.String())
 	}
 }
 
@@ -372,7 +402,7 @@ func TestModelCommandGroupOnWtModel(t *testing.T) {
 	stubRouteSync(h, "")
 
 	out, err := runWTModelOn(t, h, "model", "init", "--json")
-	if err != nil || !strings.Contains(out, `"providers_added":["ollama"]`) {
+	if err != nil || !strings.Contains(out, `"providers_added":["ollama","claude","codex","copilot","agy"]`) {
 		t.Errorf("wt-model model init --json = %q, %v", out, err)
 	}
 	if _, err = runWTModelOn(t, h, "model", "bogus"); err == nil || !strings.Contains(err.Error(), `unknown command "bogus" for "wt-model model"`) {

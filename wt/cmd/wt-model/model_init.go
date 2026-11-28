@@ -29,9 +29,13 @@ func modelInitCmd(h *host) *cobra.Command {
 			"                         auth.secret_ref = \"OPENROUTER_API_KEY\", the\n" +
 			"                         environment variable wt reads the key from (edit\n" +
 			"                         it in registry.toml if you keep the key elsewhere)\n" +
-			"  - each configured agent: a native provider row under the agent's name\n\n" +
-			"A config.toml that cannot be read is a warning: no row is added for its\n" +
-			"agents until it is fixed and the command is run again.\n\n" +
+			"  - claude, codex, copilot, agy: a native provider row each, whether or\n" +
+			"                         not the agent is installed on this machine (an unused\n" +
+			"                         one is offered only to the agent it is named for;\n" +
+			"                         delete its [[providers]] block from registry.toml if\n" +
+			"                         you do not want it, `model init` adds it back)\n\n" +
+			"config.toml is not read. pi and opencode have no native provider and get\n" +
+			"no row.\n\n" +
 			"A row that exists is never changed, so running it again is safe. When it\n" +
 			"changes the registry it then syncs the LiteLLM routes once; a sync that\n" +
 			"cannot run is a warning, and the exit status is still 0.",
@@ -40,7 +44,7 @@ func modelInitCmd(h *host) *cobra.Command {
 		// A registry that cannot be read or written is not a usage mistake.
 		SilenceUsage: true,
 		// No config gate: this is the command that repairs a missing
-		// registry, and it reads config.toml itself, tolerating a broken one.
+		// registry, and it reads no config.toml.
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return h.runModelInit(cmd.OutOrStdout(), cmd.ErrOrStderr(), initJSON)
 		},
@@ -71,6 +75,12 @@ func (h *host) runModelInit(out, errOut io.Writer, asJSON bool) error {
 		// Assigned afresh on every run: apply may run more than once.
 		var err error
 		added, err = config.SeedRegistryDefaults(d, env)
+		if err != nil {
+			return err
+		}
+		// The fixed native set, after the defaults, in the same write.
+		natives, err := config.SeedNativeProviders(d)
+		added = append(added, natives...)
 		return err
 	})
 	if err != nil {
@@ -80,9 +90,6 @@ func (h *host) runModelInit(out, errOut io.Writer, asJSON bool) error {
 		Registry: path, Created: missing && changed, Changed: changed,
 		ProvidersAdded: append([]string{}, added...),
 		Warnings:       []string{},
-	}
-	if env.ConfigErr != nil {
-		doc.Warnings = append(doc.Warnings, "config.toml could not be read, so no provider row was added for its agents (fix it and run `wt-model model init` again): "+env.ConfigErr.Error())
 	}
 	// The sync's own lines follow the registry lines in text mode and are
 	// left out of the JSON document; its probe warnings go to stderr either way.
