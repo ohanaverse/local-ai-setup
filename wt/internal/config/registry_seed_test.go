@@ -286,11 +286,11 @@ func TestSeedCreatesAMissingRegistry(t *testing.T) {
 }
 
 // TestSeedAgentNamesFollowWhatLoadWillValidate pins which agents get a
-// provider row. They come from config.toml; and when config.toml exists agy
-// is always among them, because Load's schema migration adds an agy agent to
-// every existing config.toml and a registry with no agy provider then fails
-// validation with `unknown provider "agy"`. The end-to-end check is that a
-// registry seeded from this list loads and validates. A config.toml that
+// provider row. They come from config.toml alone: Load's schema migration
+// adds no agent, so a config.toml with only claude names claude and nothing
+// else (an agy native row is no longer created here until PR 2 of #763). The
+// end-to-end check is that a registry seeded from this list loads and
+// validates. A config.toml that
 // cannot be read names nothing, so seeding still works beside a broken one.
 func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 	home := t.TempDir()
@@ -303,13 +303,13 @@ func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"claude", "agy"}; !slices.Equal(names, want) || !slices.Equal(providers, want) {
+	if want := []string{"claude"}; !slices.Equal(names, want) || !slices.Equal(providers, want) {
 		t.Fatalf("agents = %v, providers = %v, want %v for both", names, providers, want)
 	}
 	env := DefaultSeedEnv()
 	env.OnPath = nil // this machine's PATH is not the test's business
-	if added, _ := seed(t, env); !slices.Equal(added, []string{"claude", "agy"}) {
-		t.Fatalf("added = %v, want [claude agy]", added)
+	if added, _ := seed(t, env); !slices.Equal(added, []string{"claude"}) {
+		t.Fatalf("added = %v, want [claude]", added)
 	}
 	cfg, err := Load()
 	if err != nil {
@@ -392,11 +392,10 @@ base_url = "https://openrouter.ai/api/v1"
 }
 
 // TestSeedMakesAFreshConfigLoad is the first run on a machine that has a
-// config.toml and no registry, end to end: nothing is installed, one agent
-// lists openrouter, and the opencode agent is one Load's migration rewires to
-// ollama. After seeding, Load succeeds and the config validates — without the
-// agent trigger every wt command would stop on `unknown provider "ollama"`
-// and `unknown provider "openrouter"` until the user wrote both rows by hand.
+// config.toml and no registry, end to end: nothing is installed and one agent
+// lists openrouter. After seeding, Load succeeds and the config validates —
+// without the agent trigger every wt command would stop on `unknown provider
+// "openrouter"` until the user wrote the row by hand.
 // A provider wt has no default row for is the one case seeding cannot fix:
 // it is reported, and validation names it.
 func TestSeedMakesAFreshConfigLoad(t *testing.T) {
@@ -407,19 +406,15 @@ func TestSeedMakesAFreshConfigLoad(t *testing.T) {
 [[agents]]
 name = "claude"
 supported_providers = ["claude", "openrouter"]
-
-[[agents]]
-name = "opencode"
-supported_providers = ["opencode"]
 `
 	must(t, Path(), agents)
 	env := DefaultSeedEnv()
 	env.OnPath = nil // nothing is installed
-	if want := []string{"claude", "openrouter", "ollama", "agy"}; !slices.Equal(env.AgentProviders, want) {
+	if want := []string{"claude", "openrouter"}; !slices.Equal(env.AgentProviders, want) {
 		t.Fatalf("providers the agents list = %v, want %v", env.AgentProviders, want)
 	}
 	added, unseeded, _ := seedReport(t, env)
-	if want := []string{"ollama", "openrouter", "claude", "opencode", "agy"}; !slices.Equal(added, want) {
+	if want := []string{"openrouter", "claude"}; !slices.Equal(added, want) {
 		t.Fatalf("added = %v, want %v", added, want)
 	}
 	if len(unseeded) != 0 {

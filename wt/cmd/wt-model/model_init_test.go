@@ -145,7 +145,7 @@ supported_providers = ["ollama"]
 	}
 	want := "registry: " + registry + " (created)\n" +
 		"added provider: ollama\nadded provider: openrouter\n" +
-		"added provider: claude\nadded provider: pi\nadded provider: agy\n"
+		"added provider: claude\nadded provider: pi\n"
 	if out.String() != want || errOut.Len() != 0 {
 		t.Errorf("stdout = %q, stderr = %q; want stdout %q and no stderr", out.String(), errOut.String(), want)
 	}

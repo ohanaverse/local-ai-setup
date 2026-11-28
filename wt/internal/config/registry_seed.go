@@ -44,12 +44,11 @@ func DefaultSeedEnv() SeedEnv {
 }
 
 // seedAgents lists the agents config.toml names and the providers they
-// list, as the next Load will see them: Load's schema migration adds an agy
-// agent to every existing config.toml and rewrites two older spellings
-// (google becomes agy; the opencode agent lists ollama only), and it runs
-// only once the registry loads, so on a fresh machine it has not run yet. A
-// registry seeded from the file as written would then fail validation on the
-// very next run. A missing or unreadable config.toml names nothing — seeding
+// list, as the next Load will see them: Load's schema migration rewrites one
+// older spelling (google becomes agy; it adds no agent and rewires no list),
+// and it runs only once the registry loads, so on a fresh machine it has not
+// run yet. A registry seeded from the file as written would then fail
+// validation on the very next run. A missing or unreadable config.toml names nothing — seeding
 // tolerates an absent wt setup — and an unreadable one is also returned as
 // err, for the caller to report.
 // Nothing is written: the migration is applied to this read only.

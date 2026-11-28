@@ -309,9 +309,10 @@ var noNativeAgents = map[string]bool{
 }
 
 // migrateConfigSchema applies idempotent fixups to an already-decoded cfg:
-//  1. Rename the legacy "google" agent references to "agy".
-//  2. Ensure an agy agent exists.
-//  3. Rewire the opencode agent to ollama only.
+//  1. Rename the legacy "google" agent references to "agy" (the only agent
+//     rewrite: agent eligibility is derived, so no agent is added and no
+//     provider list is rewired).
+//  4. Notice + drop wt's legacy [gateway] block.
 //
 // Provider and model data are owned by the registry and are reloaded from
 // it after migration, so provider/model-level fixups are intentionally
@@ -338,10 +339,11 @@ func migrateConfigSchema(cfg *Config) (bool, error) {
 }
 
 // migrateAgentRefs is the part of migrateConfigSchema that rewrites
-// cfg.Agents (fixups 1 to 3), with no file access and no output. Registry
-// seeding calls it on its own read of config.toml to learn which providers
-// the agents will name once Load has migrated the file. Reports whether it
-// changed cfg.
+// cfg.Agents (fixup 1, the google-to-agy rename, the only agent rewrite),
+// with no file access and no output. Registry seeding calls it on its own
+// read of config.toml to learn which providers the agents will name once
+// Load has migrated the file. It adds no agent and rewrites no other list.
+// Reports whether it changed cfg.
 func migrateAgentRefs(cfg *Config) bool {
 	changed := false
 
@@ -362,18 +364,6 @@ func migrateAgentRefs(cfg *Config) bool {
 		if rewired {
 			changed = true
 		}
-	}
-
-	// ── Fixup 2: ensure an agy agent exists ──────────────────────────
-	if upsertAgent(cfg, "agy", []string{"agy"}, "agy", true) {
-		changed = true
-	}
-
-	// ── Fixup 3: rewire the opencode agent to ollama only ────────────
-	// insertIfMissing is false: unlike agy, opencode never gets a fresh
-	// agent entry created here if it doesn't already exist.
-	if upsertAgent(cfg, "opencode", []string{"ollama"}, "ollama", false) {
-		changed = true
 	}
 
 	return changed

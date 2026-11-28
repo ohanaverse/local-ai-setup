@@ -864,7 +864,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("schema migration: %w", err)
 	}
 	if changed {
-		fmt.Fprintln(os.Stderr, BinaryName+": migrated config to native-provider alignment (renamed google→agy, rewired opencode to ollama-only)")
+		fmt.Fprintln(os.Stderr, BinaryName+": migrated config to native-provider alignment (renamed google→agy)")
 	}
 
 	// Join the registry LAST so wt never mutates registry data

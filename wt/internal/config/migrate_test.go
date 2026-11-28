@@ -288,12 +288,12 @@ func TestMigrate_AgySeedingIsIdempotent(t *testing.T) {
 	t.Fatal("expected agy agent in migrated config")
 }
 
-// TestMigrateConfigSchema covers the three idempotent fixups applied to an
-// already-decoded config (rename google→agy, ensure agy provider/model/agent,
-// remove opencode native). A user with an older config.toml must end up with
-// the new shape after a single Load(), and a second Load() must not touch
-// the file. Failing this test means users with old configs would silently
-// keep references to the dropped google/opencode-native entities.
+// TestMigrateConfigSchema covers the idempotent fixup applied to an
+// already-decoded config (rename google→agy; the legacy [gateway] notice is
+// covered elsewhere). A user with an older config.toml must end up with the
+// new shape after a single Load(), and a second Load() must not touch the
+// file. Failing this test means users with old configs would silently keep
+// references to the dropped google entity.
 func TestMigrateConfigSchema(t *testing.T) {
 	tmp := t.TempDir()
 	cfgDir := filepath.Join(tmp, "agent-wt")
@@ -338,35 +338,6 @@ auth = { type = "native" }
 		}
 	})
 
-	t.Run("strip opencode native", func(t *testing.T) {
-		writeCfg(t, `
-default_tag = "code"
-
-[[agents]]
-name = "opencode"
-supported_providers = ["opencode"]
-default_provider = "opencode"
-`)
-		writeRegistry(t, tmp, `
-[[providers]]
-id = "ollama"
-name = "Ollama"
-auth = { type = "none", base_url = "http://localhost:11434" }
-`)
-		cfg, err := Load()
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-
-		a, err := cfg.AgentByName("opencode")
-		if err != nil {
-			t.Fatalf("opencode agent missing: %v", err)
-		}
-		if !slices.Equal(a.SupportedProviders, []string{"ollama"}) || a.DefaultProvider != "ollama" {
-			t.Errorf("opencode agent = %+v, want supported=[ollama] default=ollama", a)
-		}
-	})
-
 	t.Run("idempotent", func(t *testing.T) {
 		writeCfg(t, `
 default_tag = "code"
@@ -382,7 +353,7 @@ id = "ollama"
 name = "Ollama"
 auth = { type = "none", base_url = "http://localhost:11434" }
 `)
-		// First Load applies any fixups (adds the agy agent).
+		// First Load applies any fixups.
 		if _, err := Load(); err != nil {
 			t.Fatalf("first Load: %v", err)
 		}
@@ -470,5 +441,48 @@ func TestWrongFileGatewayNoticeNamesTheMovedConfigHome(t *testing.T) {
 	want := filepath.Join(xdg, "wt-model", "config.toml")
 	if !strings.Contains(msg, "under [gateway] in "+want+",") || strings.Contains(msg, "~/.config") {
 		t.Errorf("notice = %q, want it to name %s", msg, want)
+	}
+}
+
+// TestMigrateAgentRefsAddsNoAgyAgent pins that migration no longer invents an
+// agy agent: a config with only a claude agent comes back unchanged and
+// reports no change, so an agent set the user chose is never padded.
+func TestMigrateAgentRefsAddsNoAgyAgent(t *testing.T) {
+	cfg := &Config{Agents: []Agent{{Name: "claude", SupportedProviders: []string{"ollama"}, DefaultProvider: "ollama"}}}
+	if migrateAgentRefs(cfg) {
+		t.Error("migrateAgentRefs reported a change on a config with nothing to rename")
+	}
+	if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "claude" {
+		t.Errorf("agents = %+v, want only claude", cfg.Agents)
+	}
+}
+
+// TestMigrateAgentRefsLeavesOpencodeAlone pins that migration no longer
+// rewires opencode to ollama only: eligibility is derived, so an opencode
+// agent listing other providers keeps its list as written.
+func TestMigrateAgentRefsLeavesOpencodeAlone(t *testing.T) {
+	cfg := &Config{Agents: []Agent{{Name: "opencode", SupportedProviders: []string{"claude", "openrouter"}}}}
+	if migrateAgentRefs(cfg) {
+		t.Error("migrateAgentRefs reported a change on an opencode agent")
+	}
+	if got := cfg.Agents[0].SupportedProviders; !slices.Equal(got, []string{"claude", "openrouter"}) {
+		t.Errorf("opencode providers = %v, want [claude openrouter]", got)
+	}
+}
+
+// TestMigrateAgentRefsRenamesGoogle pins the one fixup that remains: the
+// legacy provider id google becomes agy in a list and in a default provider,
+// the call reports a change, and a second call (self-extinguishing) does not.
+func TestMigrateAgentRefsRenamesGoogle(t *testing.T) {
+	cfg := &Config{Agents: []Agent{{Name: "agy", SupportedProviders: []string{"google"}, DefaultProvider: "google"}}}
+	if !migrateAgentRefs(cfg) {
+		t.Error("migrateAgentRefs reported no change on a google reference")
+	}
+	a := cfg.Agents[0]
+	if !slices.Equal(a.SupportedProviders, []string{"agy"}) || a.DefaultProvider != "agy" {
+		t.Errorf("agent = %+v, want supported=[agy] default=agy", a)
+	}
+	if migrateAgentRefs(cfg) {
+		t.Error("second migrateAgentRefs reported a change")
 	}
 }

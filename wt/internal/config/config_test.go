@@ -438,8 +438,8 @@ tags = ["code", "design"]
 	if cfg.Models[0].Family != "test" {
 		t.Errorf("model family = %q, want %q", cfg.Models[0].Family, "test")
 	}
-	if len(cfg.Agents) != 2 {
-		t.Fatalf("expected 2 agents (claude + agy from schema migration), got %d", len(cfg.Agents))
+	if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "claude" {
+		t.Fatalf("expected the one agent config.toml names (claude; migration adds none), got %+v", cfg.Agents)
 	}
 	if cfg.Agents[0].DefaultProvider != "ollama" {
 		t.Errorf("agent default = %q, want %q", cfg.Agents[0].DefaultProvider, "ollama")
