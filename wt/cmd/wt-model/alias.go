@@ -78,8 +78,9 @@ func aliasListCmd(h *host, rec servestate.Store) *cobra.Command {
 			"  --toml   print the aliases as [[aliases]] tables in the shape `alias apply`\n" +
 			"           reads, each target with an explicit order, and nothing else (no\n" +
 			"           server or proxy is asked): `alias list --toml > aliases.toml`\n" +
-			"           captures a machine's groups and `alias apply aliases.toml` replays\n" +
-			"           them as `no change` on any registry. Only aliases apply would\n" +
+			"           captures a machine's groups, and `alias apply aliases.toml`\n" +
+			"           replays them (`no change` for an equivalent alias the registry\n" +
+			"           already holds, whatever its spelling). Only aliases apply would\n" +
 			"           accept are printed: a redirect, a malformed alias and one with a\n" +
 			"           target naming no model are left out, and one stderr note names\n" +
 			"           them. Notes are not printed. Exclusive with --json\n\n" +
@@ -619,7 +620,7 @@ func (h *host) runAliasApply(ctx context.Context, out, errOut io.Writer, rec ser
 			}
 			sentences = append(sentences, it.wc.ShrinkSentence(it.req.ID, count))
 		}
-		question := "Applying " + path + " makes " + strconv.Itoa(len(shrinking)) + " alias window(s) smaller:\n  " +
+		question := "Applying " + path + " makes " + strconv.Itoa(len(shrinking)) + " alias window(s) smaller or unknown:\n  " +
 			strings.Join(sentences, "\n  ") + "\nApply it anyway?"
 		ok, err := h.confirmRemove(question)
 		if errors.Is(err, cli.ErrNoTerminal) {
