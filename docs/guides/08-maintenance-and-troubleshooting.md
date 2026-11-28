@@ -574,7 +574,7 @@ ls ~/.config/local-ai/benchmarks/latest.toml    # llmbench's latest-run pointers
   ([wt-session.md](../../wt/docs/wt-session.md)), and `wt litellm on` is a
   retired stub that exits 1. If wt then stops with
   `config error: agent "agy": unknown provider "agy"`, run `wt-model model init`:
-  that command adds the provider row the ensured `agy` agent needs to
+  that command adds the provider row the `agy` entry in `config.toml` names to
   `registry.toml`. The key is on the command
   line, the only form wt offers, so it lands in your shell history: start
   the line with a space if your shell is set to skip such lines

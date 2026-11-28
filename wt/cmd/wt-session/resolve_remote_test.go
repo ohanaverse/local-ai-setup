@@ -12,7 +12,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 )
 
-func remoteAgent() config.Agent { return config.Agent{Name: "claude", AllProviders: true} }
+func remoteAgent() config.Agent { return config.Agent{Name: "claude", Synthesized: true} }
 
 func openFake(t *testing.T, f *fakeModelServer) *modelSession {
 	t.Helper()
@@ -260,7 +260,7 @@ func TestResolveModelRemotePinIneligibleBeforeBlock(t *testing.T) {
 	sub.State, sub.BlockReason = modelapi.StateBlocked, "subscription passthrough is off on the model server ([gateway] subscription_passthrough in ~/.config/wt-model/config.toml)"
 	f := newFakeModelServer(t, sub)
 	ms := openFake(t, f)
-	pi := config.Agent{Name: "pi", AllProviders: true}
+	pi := config.Agent{Name: "pi", Synthesized: true}
 	_, _, err := resolveModelRemote(context.Background(), ms, pi, "", "", "claude-haiku-5-5")
 	if err == nil || !strings.Contains(err.Error(), "not in the eligible list for agent \"pi\"") {
 		t.Errorf("pi pin of a blocked subscription row: err = %v, want the not-eligible error", err)

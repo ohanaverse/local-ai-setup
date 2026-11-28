@@ -438,8 +438,8 @@ tags = ["code", "design"]
 	if cfg.Models[0].Family != "test" {
 		t.Errorf("model family = %q, want %q", cfg.Models[0].Family, "test")
 	}
-	if len(cfg.Agents) != 2 {
-		t.Fatalf("expected 2 agents (claude + agy from schema migration), got %d", len(cfg.Agents))
+	if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "claude" {
+		t.Fatalf("expected the one agent config.toml names (claude; migration adds none), got %+v", cfg.Agents)
 	}
 	if cfg.Agents[0].DefaultProvider != "ollama" {
 		t.Errorf("agent default = %q, want %q", cfg.Agents[0].DefaultProvider, "ollama")
@@ -602,10 +602,12 @@ func TestValidate_AgentUnknownProvider(t *testing.T) {
 	}
 }
 
-// DefaultProvider must be in the agent's SupportedProviders list. If it
-// isn't, --default would select a provider the agent can't use, producing a
-// confusing runtime error instead of a clear config validation error.
-func TestValidate_DefaultProviderNotInSupported(t *testing.T) {
+// DefaultProvider is ignored by every reader now (the eligibility rule derives
+// a provider's agents), so one outside the agent's SupportedProviders is no
+// longer a validation error. Why: the field is only kept decoded and written
+// back so an older binary parses the file; refusing a config over a value
+// nothing reads would block launches for no benefit.
+func TestValidate_DefaultProviderOutsideListIsIgnored(t *testing.T) {
 	cfg := &Config{
 		DefaultTag: "code",
 		Providers:  []Provider{{ID: "ollama", Name: "Ollama"}, {ID: "claude", Name: "Claude"}},
@@ -613,27 +615,23 @@ func TestValidate_DefaultProviderNotInSupported(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"ollama"}, DefaultProvider: "claude"},
 		},
 	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for default provider not in supported_providers")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a default provider outside the list was refused: %v", err)
 	}
 }
 
-// An agent with no supported_providers is unusable: the launcher cannot pick
-// a model for it. Validate must reject this so the user sees a clear error
-// instead of a runtime "no eligible models" message during launch.
-func TestValidate_AgentRequiresProvider(t *testing.T) {
+// An agent with no supported_providers is valid: the list is no longer read,
+// the launcher derives eligibility from the provider and the model. Why: the
+// old rule demanded a list so the launcher could pick a model; the derived rule
+// needs none, and an entry with only a name must load.
+func TestValidate_AgentWithNoListIsValid(t *testing.T) {
 	cfg := &Config{
 		DefaultTag: "code",
 		Providers:  []Provider{{ID: "ollama", Name: "Ollama", Auth: AuthConfig{Type: "none"}}},
 		Agents:     []Agent{{Name: "lonely"}},
 	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected validation error for empty supported_providers")
-	}
-	if !strings.Contains(err.Error(), "must have at least one supported provider") {
-		t.Errorf("error = %q, want it to mention 'supported provider'", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("an agent with no supported_providers was refused: %v", err)
 	}
 }
 
@@ -861,52 +859,6 @@ func TestSave(t *testing.T) {
 	}
 }
 
-// TestModelsForAgentFiltersByProvider asserts ModelsForAgent returns only
-// models whose ProviderID is in the agent's supported_providers list.
-// Without this filter the TUI list would show models the active agent
-// cannot drive (e.g. claude/native listed for the codex agent).
-func TestModelsForAgentFiltersByProvider(t *testing.T) {
-	cfg := &Config{
-		Providers: []Provider{
-			{ID: "ollama"},
-			{ID: "claude"},
-		},
-		Models: []Model{
-			{ID: "claude/native", ProviderID: "claude", ModelName: "native"},
-			{ID: "ollama/a:9b", ProviderID: "ollama", Tags: []string{"code"}},
-			{ID: "ollama/b:9b", ProviderID: "ollama", Tags: []string{"code"}},
-		},
-		Agents: []Agent{
-			{Name: "codex", SupportedProviders: []string{"ollama"}},
-		},
-	}
-	got, err := cfg.ModelsForAgent("codex")
-	if err != nil {
-		t.Fatalf("ModelsForAgent: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("len = %d, want 2 (claude/native filtered out)", len(got))
-	}
-	for _, m := range got {
-		if m.ProviderID != "ollama" {
-			t.Errorf("got model %q with provider %q, want only ollama", m.ID, m.ProviderID)
-		}
-	}
-}
-
-// TestModelsForAgentUnknownAgent asserts that asking for a non-existent
-// agent returns an error rather than panicking. The TUI uses this to
-// surface a clear error if --agent points at a typo.
-func TestModelsForAgentUnknownAgent(t *testing.T) {
-	cfg := &Config{
-		Agents: []Agent{{Name: "claude"}},
-	}
-	_, err := cfg.ModelsForAgent("nope")
-	if err == nil {
-		t.Fatal("expected error for unknown agent, got nil")
-	}
-}
-
 // TestDeriveNative marks models whose provider authenticates natively
 // (auth.type == "native") as Native, and leaves others non-native. This is
 // the single source of truth for native-ness: a model is native iff its
@@ -1079,19 +1031,6 @@ func TestDiscoveredModelID(t *testing.T) {
 	// mtplx artifact is the repo id form (org/name), not the directory form (org--name)
 	if got := DiscoveredModelID("mtplx", "Youssofal/Qwen3.8-27B-MTPLX"); got != "mtplx/Youssofal/Qwen3.8-27B-MTPLX" {
 		t.Errorf("got %q", got)
-	}
-}
-
-// TestAgentSupportsProvider verifies the agent's supported_providers list is
-// the check, and an unknown agent supports nothing — the selector uses it to
-// decide which discovered models an agent may show.
-func TestAgentSupportsProvider(t *testing.T) {
-	cfg := &Config{Agents: []Agent{{Name: "claude", SupportedProviders: []string{"ollama", "omlx"}}}}
-	if !cfg.AgentSupportsProvider("claude", "omlx") {
-		t.Error("claude should support omlx")
-	}
-	if cfg.AgentSupportsProvider("claude", "mtplx") || cfg.AgentSupportsProvider("nope", "omlx") {
-		t.Error("unsupported provider / unknown agent must be false")
 	}
 }
 
@@ -1341,5 +1280,24 @@ func TestOpenRouterPricedModel(t *testing.T) {
 		if got := tc.cfg.OpenRouterPricedModel(); got != tc.want {
 			t.Errorf("%s: OpenRouterPricedModel = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestFinalizeCfgLeavesAgentListsAlone verifies finalizeCfg no longer appends
+// "sushi" to an agent's supported_providers when the registry holds a sushi
+// model. Eligibility of sushi is now derived by one rule in internal/catalog,
+// so a Config's agent lists must stay exactly what config.toml said; the old
+// in-memory derivation would hide a stale list and re-add what a user removed.
+func TestFinalizeCfgLeavesAgentListsAlone(t *testing.T) {
+	cfg := &Config{Agents: []Agent{{Name: "claude", SupportedProviders: []string{"claude", "ollama"}}}}
+	providers := []Provider{{ID: "sushi"}}
+	models := []Model{{ID: "sushi/p", ProviderID: "sushi", ModelName: "p"}}
+	out, err := finalizeCfg(cfg, providers, models, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.Agents[0].SupportedProviders
+	if len(got) != 2 || got[0] != "claude" || got[1] != "ollama" {
+		t.Errorf("claude's supported_providers = %v, want [claude ollama] unchanged", got)
 	}
 }

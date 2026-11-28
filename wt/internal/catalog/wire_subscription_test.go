@@ -26,7 +26,7 @@ func subRows() []modelapi.Row {
 // TestSubscriptionRowsOnlyForClaude pins decision 6 and Global Constraints:
 // a subscription row, and an alias with any subscription target, reach only
 // the claude agent. Neither SupportedProviders naming claude-subscription nor
-// AllProviders admits it for pi, codex, opencode or copilot, because a
+// Synthesized admits it for pi, codex, opencode or copilot, because a
 // non-claude agent cannot send a claude.ai login and would spend the owner's
 // subscription with the wrong credentials (or leak it to another tool).
 func TestSubscriptionRowsOnlyForClaude(t *testing.T) {
@@ -39,12 +39,12 @@ func TestSubscriptionRowsOnlyForClaude(t *testing.T) {
 	}{
 		{"claude explicit", config.Agent{Name: "claude", SupportedProviders: []string{config.SubscriptionProvider, "ollama"}}, withSub},
 		{"claude without the provider listed", config.Agent{Name: "claude", SupportedProviders: []string{"ollama"}}, withSub},
-		{"claude AllProviders", config.Agent{Name: "claude", AllProviders: true}, withSub},
-		{"pi AllProviders", config.Agent{Name: "pi", AllProviders: true}, without},
+		{"claude Synthesized", config.Agent{Name: "claude", Synthesized: true}, withSub},
+		{"pi Synthesized", config.Agent{Name: "pi", Synthesized: true}, without},
 		{"pi naming claude-subscription", config.Agent{Name: "pi", SupportedProviders: []string{config.SubscriptionProvider, "ollama"}}, without},
-		{"codex", config.Agent{Name: "codex", SupportedProviders: []string{config.SubscriptionProvider, "ollama"}, AllProviders: true}, without},
-		{"opencode", config.Agent{Name: "opencode", SupportedProviders: []string{config.SubscriptionProvider, "ollama"}, AllProviders: true}, without},
-		{"copilot", config.Agent{Name: "copilot", SupportedProviders: []string{config.SubscriptionProvider, "ollama"}, AllProviders: true}, without},
+		{"codex", config.Agent{Name: "codex", SupportedProviders: []string{config.SubscriptionProvider, "ollama"}, Synthesized: true}, without},
+		{"opencode", config.Agent{Name: "opencode", SupportedProviders: []string{config.SubscriptionProvider, "ollama"}, Synthesized: true}, without},
+		{"copilot", config.Agent{Name: "copilot", SupportedProviders: []string{config.SubscriptionProvider, "ollama"}, Synthesized: true}, without},
 	} {
 		if got := wid(EligibleWire(subRows(), c.agent, "", "")); !slices.Equal(got, c.want) {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)

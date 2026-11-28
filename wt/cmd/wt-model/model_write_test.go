@@ -759,12 +759,14 @@ func writeAgentsToml(t *testing.T, registry string) string {
 	return path
 }
 
-// TestSushiAddListsSushiForClaudeAndPi verifies registering a sushi model adds
-// "sushi" to the supported_providers of the agents that can run it and only
-// those that lack it, says so, and that any other add leaves config.toml alone.
-func TestSushiAddListsSushiForClaudeAndPi(t *testing.T) {
+// TestSushiAddLeavesConfigTomlAlone verifies registering a sushi model never
+// reads or rewrites config.toml and prints no supported_providers line. Sushi
+// eligibility is derived from the registry by one rule, so the add has no
+// per-agent list to maintain; the old behavior (appending "sushi" to claude's
+// supported_providers and saying so) must not come back.
+func TestSushiAddLeavesConfigTomlAlone(t *testing.T) {
 	sushi := modeladmin.AddRequest{ProviderID: "sushi", ModelName: "beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw", Fields: modeladmin.Fields{Family: sp("qwen3.8")}}
-	t.Run("sushi add", func(t *testing.T) {
+	t.Run("config.toml bytes are identical after an add", func(t *testing.T) {
 		h := testHost()
 		registry := modelHome(t, "")
 		stubSeedEnv(h, config.SeedEnv{})
@@ -774,18 +776,14 @@ func TestSushiAddListsSushiForClaudeAndPi(t *testing.T) {
 		if err := h.runModelAdd(&out, &errOut, nil, sushi); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out.String(), "added sushi to supported_providers of: claude\n") || errOut.Len() != 0 {
-			t.Errorf("stdout = %q, stderr = %q; want only claude named (pi already lists sushi)", out.String(), errOut.String())
+		if strings.Contains(out.String(), "supported_providers") || errOut.Len() != 0 {
+			t.Errorf("stdout = %q, stderr = %q; want no supported_providers line and no warning", out.String(), errOut.String())
 		}
-		got := mustRead(t, cfgPath)
-		if !strings.Contains(got, `supported_providers = ["claude", "ollama", "sushi"]`) {
-			t.Errorf("claude not updated:\n%s", got)
-		}
-		if strings.Count(got, `"sushi"`) != 2 || strings.Contains(got, `["ollama", "sushi", "sushi"]`) {
-			t.Errorf("sushi must be listed once per agent, and not for opencode:\n%s", got)
+		if mustRead(t, cfgPath) != agentsToml {
+			t.Errorf("a sushi add changed config.toml:\n%s", mustRead(t, cfgPath))
 		}
 	})
-	t.Run("second sushi add changes nothing", func(t *testing.T) {
+	t.Run("a second add changes nothing", func(t *testing.T) {
 		h := testHost()
 		registry := modelHome(t, "")
 		stubSeedEnv(h, config.SeedEnv{})
@@ -806,32 +804,21 @@ func TestSushiAddListsSushiForClaudeAndPi(t *testing.T) {
 			t.Errorf("a second add rewrote config.toml or announced a change; stdout = %q", out.String())
 		}
 	})
-	t.Run("another provider", func(t *testing.T) {
+	t.Run("no config.toml is created", func(t *testing.T) {
 		h := testHost()
 		registry := modelHome(t, "")
 		stubSeedEnv(h, config.SeedEnv{})
 		stubRouteSync(h, "")
-		cfgPath := writeAgentsToml(t, registry)
-		var out, errOut bytes.Buffer
-		req := modeladmin.AddRequest{ProviderID: "omlx", ModelName: "Qwen3.8-27B-4bit", Fields: modeladmin.Fields{Family: sp("qwen3.8")}}
-		if err := h.runModelAdd(&out, &errOut, nil, req); err != nil {
-			t.Fatal(err)
-		}
-		if mustRead(t, cfgPath) != agentsToml {
-			t.Error("a non-sushi add changed config.toml")
-		}
-	})
-	t.Run("no config.toml", func(t *testing.T) {
-		h := testHost()
-		modelHome(t, "")
-		stubSeedEnv(h, config.SeedEnv{})
-		stubRouteSync(h, "")
+		cfgPath := filepath.Join(filepath.Dir(filepath.Dir(registry)), "agent-wt", "config.toml")
 		var out, errOut bytes.Buffer
 		if err := h.runModelAdd(&out, &errOut, nil, sushi); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(out.String(), "supported_providers") || errOut.Len() != 0 {
-			t.Errorf("stdout = %q, stderr = %q; want no change and no warning without a config.toml", out.String(), errOut.String())
+		if _, err := os.Stat(cfgPath); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("config.toml was created by a sushi add (stat err = %v)", err)
+		}
+		if strings.Contains(out.String(), "supported_providers") {
+			t.Errorf("stdout = %q; want no supported_providers line", out.String())
 		}
 	})
 }

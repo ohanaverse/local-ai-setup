@@ -25,6 +25,7 @@ agent needs a `[[agents]]` entry.
 3. Register from the driver file's own `init()` with `register("<name>", func() Driver { return <name>Driver{} })` (`register` is defined in `internal/agents/agents.go`)
 4. Add a model-id regression test (`Test<Name>OllamaPrefix`) using a model with distinct `ID`/`ModelName` to catch wrong id passthrough
 5. Add the agent to the capability table in `wt/docs/internals/agents.md`
+6. Decide whether the agent has a native provider (a row named for it, run on the agent's own login) and update `config.NativeCapableAgents` (and `config.NativeOnlyAgents` for an agent that can run nothing else) in `internal/config/config.go`; `TestNativeTablesMatchTheDrivers` (`internal/agents/native_tables_test.go`) fails for a new driver until they match
 
 **Key gotchas:**
 - The model ref comes from `Route.ModelRef` — `GatewayRoute` already picked the gateway id (`m.GatewayID`, else `m.ID`); don't re-derive it. There are no direct routes: every non-native launch goes through the model server's gateway, which speaks every wire protocol LiteLLM does

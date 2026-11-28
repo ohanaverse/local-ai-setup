@@ -99,9 +99,8 @@ func TestBuildAgentListOrdering(t *testing.T) {
 
 // TestPhaseModelHonorsFilters verifies that when the TUI's `phaseAgent`
 // Enter handler advances to `phaseModel`, the picker list is narrowed
-// by the active -T (tags) and -F (family) filters via
-// cfg.EligibleModels. Without EligibleModels, the picker would show
-// every model for the agent+default-tag regardless of the CLI filter
+// by the active -T (tags) and -F (family) filters. Without them, the
+// picker would show every model for the default tag regardless of the CLI filter
 // flags — defeating the entire PR 3b "Filter inputs" promise.
 //
 // The test builds the config inline (rather than via a reusable
@@ -182,7 +181,7 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 // singleModelConfig returns a config where the claude agent has exactly
 // one eligible code model. Used by the single-model picker-skip tests
 // below; mirrors the catalog-narrowing shape of TestPhaseModelHonorsFilters
-// but with one item, so EligibleModels returns a 1-element slice. The model
+// but with one item, so the eligible list is a 1-element slice. The model
 // is an ollama cloud model (location=cloud on the local ollama provider) so
 // its row is a launch row — a lone start row never triggers the picker-skip
 // shortcut.

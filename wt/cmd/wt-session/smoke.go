@@ -701,8 +701,6 @@ func runSmokeRemote(cmd *cobra.Command, a *app, args []string, tf smokeToolFlags
 			// change there cannot spend the plan unasked.
 			return false, fmt.Errorf("%s %s", m.ID, smoke.SubscriptionSkipReason)
 		}
-		// Only claude ever runs a subscription row (Global Constraints).
-		eligible = slices.DeleteFunc(slices.Clone(eligible), func(ag string) bool { return !slices.Contains(config.SubscriptionAgents, ag) })
 	}
 	if len(eligible) == 0 {
 		return false, fmt.Errorf("model %q has no currently eligible agents", m.ID)

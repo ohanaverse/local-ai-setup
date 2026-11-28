@@ -120,12 +120,12 @@ func TestPatchSavePreservesConcurrentDefaultTagChange(t *testing.T) {
 // TestEditorSavePreservesConcurrentLockedApplyChange is the reverse of
 // TestLockedApplyPreservesConcurrentEditorChange: an editor save against a
 // snapshot taken before a concurrent Load migration write must not revert
-// that write's agy-agent fixup when it persists its own change. (The
+// that write's google-to-agy rename when it persists its own change. (The
 // editor-vs-`wt litellm set` pair this test used to pin disappears with the
 // wt-model config home: `set` no longer touches config.toml at all.)
 func TestEditorSavePreservesConcurrentLockedApplyChange(t *testing.T) {
 	scratchRegistry(t, "providers = []\nmodels = []\n")
-	must(t, Path(), "default_tag = \"code\"\n")
+	must(t, Path(), legacyGoogleConfig)
 
 	// The editor opens its snapshot first — readConfigFile, not Load, so the
 	// migration below still has something to persist.
@@ -134,14 +134,15 @@ func TestEditorSavePreservesConcurrentLockedApplyChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// ...then Load's schema-migration write runs (the config.toml fixture has
-	// no "agy" agent, so migrateConfigSchema always reports a change).
+	// ...then Load's schema-migration write runs (the config.toml fixture's
+	// claude agent lists the legacy "google", so migrateConfigSchema reports
+	// a change).
 	if _, changed, err := lockedApply(func(fresh *Config) (bool, error) {
 		return migrateConfigSchema(fresh)
 	}); err != nil {
 		t.Fatal(err)
 	} else if !changed {
-		t.Fatal("expected the agy-agent fixup to report a change")
+		t.Fatal("expected the google-to-agy fixup to report a change")
 	}
 
 	// Now the editor persists its own change from its stale snapshot.
@@ -149,15 +150,17 @@ func TestEditorSavePreservesConcurrentLockedApplyChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Read the file before any Load: Load re-runs the migration and would
+	// rewrite a stale "google" to "agy" on disk itself, hiding a clobber.
+	if got := onDiskProviders(t, "claude"); !slices.Equal(got, []string{"agy"}) {
+		t.Fatalf("concurrent migration fixup was clobbered: config.toml lists %v for claude, want [agy]", got)
+	}
 	reloaded, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reloaded.DefaultTag != "design" {
 		t.Fatal("editor's own change was lost")
-	}
-	if !hasAgent(reloaded.Agents, "agy") {
-		t.Fatalf("concurrent migration fixup was clobbered: %+v", reloaded.Agents)
 	}
 }
 
@@ -172,7 +175,7 @@ func TestEditorSavePreservesConcurrentLockedApplyChange(t *testing.T) {
 // this third writer.
 func TestLockedApplyPreservesConcurrentEditorChange(t *testing.T) {
 	scratchRegistry(t, "providers = []\nmodels = []\n")
-	must(t, Path(), "default_tag = \"code\"\n")
+	must(t, Path(), legacyGoogleConfig)
 
 	// An editor save runs to completion (a locked read-modify-write) before
 	// lockedApply below ever takes the lock. PatchSave only needs a *Config
@@ -184,9 +187,9 @@ func TestLockedApplyPreservesConcurrentEditorChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Load's schema-migration write now runs. The config.toml fixture has no
-	// "agy" agent, so migrateConfigSchema always reports a change here,
-	// independent of the concurrent editor write above.
+	// Load's schema-migration write now runs. The config.toml fixture's claude
+	// agent lists the legacy "google", so migrateConfigSchema reports a change
+	// here, independent of the concurrent editor write above.
 	fresh, changed, err := lockedApply(func(fresh *Config) (bool, error) {
 		return migrateConfigSchema(fresh)
 	})
@@ -194,12 +197,17 @@ func TestLockedApplyPreservesConcurrentEditorChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !changed {
-		t.Fatal("expected the agy-agent fixup to report a change")
+		t.Fatal("expected the google-to-agy fixup to report a change")
 	}
 	if fresh.DefaultTag != "design" {
 		t.Fatalf("lockedApply clobbered the concurrent editor change: %q", fresh.DefaultTag)
 	}
 
+	// Read the file before any Load (see the sibling test): Load would
+	// re-migrate and hide a lost rename.
+	if got := onDiskProviders(t, "claude"); !slices.Equal(got, []string{"agy"}) {
+		t.Fatalf("schema migration's own rename was lost: config.toml lists %v for claude, want [agy]", got)
+	}
 	reloaded, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -207,9 +215,29 @@ func TestLockedApplyPreservesConcurrentEditorChange(t *testing.T) {
 	if reloaded.DefaultTag != "design" {
 		t.Fatalf("concurrent editor change lost on disk: %q", reloaded.DefaultTag)
 	}
-	if !hasAgent(reloaded.Agents, "agy") {
-		t.Fatalf("schema migration's own agy fixup was lost: %+v", reloaded.Agents)
+}
+
+// legacyGoogleConfig is a config.toml with a claude agent still listing the
+// retired provider id "google": the one thing migrateConfigSchema rewrites.
+const legacyGoogleConfig = "default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"google\"]\n"
+
+// onDiskProviders returns the named agent's supported_providers as written in
+// config.toml, nil if absent. It reads the raw file (readConfigFile), never
+// Load: Load re-runs the migration, persists it and returns the migrated copy,
+// so a stale save that wrote "google" back would still read "agy" through it.
+// Call it before any Load in the test.
+func onDiskProviders(t *testing.T, name string) []string {
+	t.Helper()
+	cfg, exists, err := readConfigFile()
+	if err != nil || !exists {
+		t.Fatalf("readConfigFile: exists=%v err=%v", exists, err)
 	}
+	for _, a := range cfg.Agents {
+		if a.Name == name {
+			return a.SupportedProviders
+		}
+	}
+	return nil
 }
 
 func hasAgent(agents []Agent, name string) bool {

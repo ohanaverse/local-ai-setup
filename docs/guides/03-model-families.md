@@ -79,10 +79,10 @@ Tags are set with `wt-model model edit <id> --tags code` (or `--tags code,design
 - `-F/--family` — model's `family` must equal one of the listed families (OR within the flag);
 - both set → AND;
 - neither set → **no filter** (the full agent-eligible catalog is listed);
-- a discovered local model (on disk, no registry entry) has no family or tags, so any `-T`/`-F` hides it; with no filter every on-disk model of a provider the agent supports is listed;
+- a discovered local model (on disk, no registry entry) has no family or tags, so any `-T`/`-F` hides it; with no filter every on-disk model the agent is offered is listed;
 - filter empties the list → picker status: `no models for agent "…" in tag "…" — edit your config`.
 
-(Verified in wt source: `internal/config/config.go`, `EligibleModels`; the discovered-model rule is `internal/localmodels/catalog.go` `CatalogRows`, `CatalogInput.HideDiscovered`.)
+(Verified in wt source: the discovered-model rule is `internal/localmodels/catalog.go` `CatalogRows`, `CatalogInput.HideDiscovered`.)
 
 ### 4. How the `wt` picker derives its options
 

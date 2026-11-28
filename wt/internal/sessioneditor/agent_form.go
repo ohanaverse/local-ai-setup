@@ -20,8 +20,6 @@ func enterAgentForm(m *model, ag config.Agent, isNew bool) {
 
 	m.agName = editorkit.NewTextInput(ag.Name, "Name")
 	m.agName.Focus()
-	m.agProvidersInput = editorkit.NewTextInput(config.TagsToString(ag.SupportedProviders), "Supported Providers")
-	m.agDefaultProviderInput = editorkit.NewTextInput(ag.DefaultProvider, "Default Provider")
 	m.refreshAgentInstalled()
 }
 
@@ -49,70 +47,54 @@ func (m *model) handleAgentFormUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlS:
 			return m.saveAgentForm()
 		case tea.KeyTab, tea.KeyDown:
-			m.formCursor = (m.formCursor + 1) % 4
+			m.formCursor = (m.formCursor + 1) % agentFormFields
 			m.focusAgentField()
 			return m, nil
 		case tea.KeyUp:
-			m.formCursor = (m.formCursor + 3) % 4
+			m.formCursor = (m.formCursor + agentFormFields - 1) % agentFormFields
 			m.focusAgentField()
 			return m, nil
 		}
 
-		switch m.formCursor {
-		case 0:
+		// Only the name takes typing; the Installed line is display-only.
+		if m.formCursor == 0 {
 			var cmd tea.Cmd
 			m.agName, cmd = m.agName.Update(msg)
 			m.refreshAgentInstalled()
-			return m, cmd
-		case 1:
-			var cmd tea.Cmd
-			m.agProvidersInput, cmd = m.agProvidersInput.Update(msg)
-			return m, cmd
-		case 2:
-			var cmd tea.Cmd
-			m.agDefaultProviderInput, cmd = m.agDefaultProviderInput.Update(msg)
 			return m, cmd
 		}
 	}
 	return m, nil
 }
 
-// focusAgentField focuses/blurs inputs based on formCursor.
+// agentFormFields is the number of cursor positions in the agent form: the
+// Name input and the read-only Installed line.
+const agentFormFields = 2
+
+// focusAgentField focuses/blurs the name input based on formCursor.
 func (m *model) focusAgentField() {
 	m.agName.Blur()
-	m.agProvidersInput.Blur()
-	m.agDefaultProviderInput.Blur()
-	switch m.formCursor {
-	case 0:
+	if m.formCursor == 0 {
 		m.agName.Focus()
-	case 1:
-		m.agProvidersInput.Focus()
-	case 2:
-		m.agDefaultProviderInput.Focus()
 	}
 }
 
-// saveAgentForm validates and applies the agent form to cfg.
+// saveAgentForm validates and applies the agent form to cfg. It starts from
+// the stored entry (m.agEdit) and changes only the name, so an entry's
+// supported_providers, default_provider and Synthesized flag stay as found
+// (nil stays nil): the form has no input for the first two.
 func (m *model) saveAgentForm() (tea.Model, tea.Cmd) {
 	updated := m.agEdit
 	updated.Name = strings.TrimSpace(m.agName.Value())
-	updated.SupportedProviders = config.ParseFilterList(m.agProvidersInput.Value())
-	updated.DefaultProvider = strings.TrimSpace(m.agDefaultProviderInput.Value())
 
 	oldName := ""
 	if !m.formIsNew {
 		oldName = m.agEdit.Name
 	}
 	if err := m.cfg.UpsertAgent(updated, oldName); err != nil {
+		// An error is always about the name.
 		m.formError = err.Error()
-		switch {
-		case updated.Name == "":
-			m.formCursor = 0
-		case len(updated.SupportedProviders) == 0:
-			m.formCursor = 1
-		default:
-			m.formCursor = 2
-		}
+		m.formCursor = 0
 		m.focusAgentField()
 		return m, nil
 	}
@@ -139,9 +121,7 @@ func (m *model) agentFormView() string {
 
 	fields := []editorkit.FormField{
 		{Label: "Name", Value: m.agName.View(), Focus: m.formCursor == 0},
-		{Label: "Supported Providers", Value: m.agProvidersInput.View(), Focus: m.formCursor == 1},
-		{Label: "Default Provider", Value: m.agDefaultProviderInput.View(), Focus: m.formCursor == 2},
-		{Label: "Installed", Value: installedStr, Focus: m.formCursor == 3},
+		{Label: "Installed", Value: installedStr, Focus: m.formCursor == 1},
 	}
 
 	var b strings.Builder

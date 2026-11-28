@@ -116,6 +116,29 @@ func TestAgentsTab_InstalledAnnotation(t *testing.T) {
 	}
 }
 
+// TestAgentsTabShowsNoProviderColumns verifies that an item's title and
+// description carry neither the supported-provider list nor a "default:" line,
+// even when the stored entry has both. Why: eligibility is derived (#763), so
+// the list is no longer something the tab can truthfully show; the title is
+// the name and the marker, the description only an issue.
+func TestAgentsTabShowsNoProviderColumns(t *testing.T) {
+	it := agentItem{
+		agent:      config.Agent{Name: "foo", SupportedProviders: []string{"agy", "claude"}, DefaultProvider: "claude"},
+		configured: true,
+		installed:  true,
+	}
+	if got, want := it.Title(), "foo  ✓ installed"; got != want {
+		t.Errorf("Title() = %q, want %q", got, want)
+	}
+	if got := it.Description(); got != "" {
+		t.Errorf("Description() = %q, want empty", got)
+	}
+	it.issue = "binary missing"
+	if got := it.Description(); got != "binary missing" {
+		t.Errorf("Description() = %q, want the issue", got)
+	}
+}
+
 // stubCommandDriver is a test driver that reports IsCommand() == true.
 type stubCommandDriver struct{}
 

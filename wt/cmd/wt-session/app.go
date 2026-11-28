@@ -57,6 +57,27 @@ func warnIgnoredLitellmKeys(w io.Writer, cfg *config.Config) {
 	}
 }
 
+// ignoredAgentListsNoted is set once this process has printed the notes for
+// customized supported_providers lists: they are printed once per process,
+// however many command trees the process builds (tests build many).
+var ignoredAgentListsNoted atomic.Bool
+
+// warnIgnoredAgentLists prints, once per process, one note per agent whose
+// config.toml entry carries a customized supported_providers list
+// (config.IgnoredAgentLists). The list is kept in the file and written back
+// untouched, but eligibility is derived from the provider and the model, so
+// the edit does nothing. A list wt itself wrote is never noted. Only
+// supported_providers is named; default_provider is not noted separately.
+func warnIgnoredAgentLists(w io.Writer, cfg *config.Config) {
+	names := cfg.IgnoredAgentLists()
+	if len(names) == 0 || ignoredAgentListsNoted.Swap(true) {
+		return
+	}
+	for _, name := range names {
+		fmt.Fprintf(w, "wt: note: config.toml: agent %s: supported_providers is no longer used and is ignored (eligibility is derived from the provider and the model)\n", name)
+	}
+}
+
 // hooks are the per-app replacements for the work a test must not do for
 // real: build and start an agent, dial a model server, read the terminal,
 // wait between polls. The zero value is the real behavior and is what
@@ -334,6 +355,7 @@ func newApp() (*app, error) {
 	if scfg, err := a.sessionCfg(); err == nil {
 		warnIgnoredLaunchKeys(osStderr, scfg)
 		warnIgnoredLitellmKeys(osStderr, scfg)
+		warnIgnoredAgentLists(osStderr, scfg)
 	}
 	// Load the active theme. I/O and TOML parse errors are hard failures.
 	// An unknown or empty theme name falls back to Default so a typo in

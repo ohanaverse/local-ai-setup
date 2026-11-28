@@ -70,15 +70,16 @@ func FromWire(r modelapi.Row) Row {
 	return row
 }
 
-// EligibleWire is Config.EligibleModelsIn over wire rows: those the agent can
-// use, filtered by tags and family, in Order. A sushi row reaches the agents
-// in config.SushiAgents; an AllProviders agent takes every row but another
-// agent's native one (the ProviderID == a.Name test relies on the convention
-// that a native provider id equals its agent driver name: agy, claude,
-// copilot). No protocol filter is applied (R5). An alias row (#596) is
-// eligible when it has targets and every target's provider passes the same
-// test (a target is never native: it is reached through the gateway), so a
-// group never falls back onto a model the agent could not run itself.
+// EligibleWire is the set of wire rows an agent can use, filtered by tags and
+// family, in Order. Eligibility is derived by providerEligible, not read from
+// a list on the agent: a row is offered unless it is the subscription's (claude
+// only) or another agent's native row, and agy sees only its own native row.
+// The ProviderID == a.Name test relies on the convention that a native
+// provider id equals its agent driver name: agy, claude, codex, copilot. No
+// protocol filter is applied (R5). An alias row (#596) is eligible when it has
+// targets and every target's provider passes the same test (a target is never
+// native: it is reached through the gateway), so a group never falls back onto
+// a model the agent could not run itself.
 func EligibleWire(rows []modelapi.Row, a config.Agent, tags, family string) []modelapi.Row {
 	tagSet := config.ParseFilterList(tags)
 	familySet := config.ParseFilterList(family)
@@ -105,17 +106,26 @@ func EligibleWire(rows []modelapi.Row, a config.Agent, tags, family string) []mo
 	return out
 }
 
-// providerEligible is EligibleWire's provider test for one provider id. The
-// subscription clause comes first (decision 6): a claude-subscription row
-// reaches only config.SubscriptionAgents, whatever SupportedProviders or
-// AllProviders say, so an alias with a subscription target is claude-only too.
+// providerEligible is EligibleWire's provider test for one provider id: four
+// clauses, in this order, and no list on the agent is read.
+//
+//  1. A claude-subscription row reaches only config.SubscriptionAgents (decision
+//     6), so an alias with a subscription target is claude-only too.
+//  2. A native-only agent (config.NativeOnlyAgents: agy) takes only its own
+//     native row.
+//  3. Any other native row reaches only the agent it is named for.
+//  4. Every other row reaches every agent.
 func providerEligible(a config.Agent, providerID string, native bool) bool {
 	if config.IsSubscriptionProvider(providerID) {
 		return slices.Contains(config.SubscriptionAgents, a.Name)
 	}
-	return slices.Contains(a.SupportedProviders, providerID) ||
-		(a.AllProviders && (!native || providerID == a.Name)) ||
-		(providerID == "sushi" && slices.Contains(config.SushiAgents, a.Name))
+	if slices.Contains(config.NativeOnlyAgents, a.Name) {
+		return native && providerID == a.Name
+	}
+	if native {
+		return providerID == a.Name
+	}
+	return true
 }
 
 // Launchable keeps the rows that can be launched as they are.

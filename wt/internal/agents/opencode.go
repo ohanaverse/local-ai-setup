@@ -46,8 +46,8 @@ func (opencodeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	if yolo {
 		lc.Args = append(lc.Args, opencodeDriver{}.YoloFlag())
 	}
-	// Native dispatch: opencode is ollama-only in normal use, so it never
-	// received a Native model before the unconfigured-agent passthrough
+	// Native dispatch: opencode has no native provider of its own, so it
+	// never received a Native model before the unconfigured-agent passthrough
 	// sentinel (issue #147). Without this guard, a native launch would
 	// still emit OPENCODE_CONFIG_CONTENT pointing at an empty gateway base
 	// URL instead of a bare `opencode` command.

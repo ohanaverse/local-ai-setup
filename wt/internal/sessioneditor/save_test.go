@@ -183,9 +183,9 @@ func TestSave_PreservesConcurrentLitellmChange(t *testing.T) {
 	if err := os.MkdirAll(registryDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// migrateConfigSchema unconditionally ensures an "agy" agent on Load
-	// (wt/CLAUDE.md's "Fixture gotcha"), so the registry needs a matching
-	// agy provider (native) alongside ollama for the added claude agent.
+	// The agy provider row (native) is kept alongside ollama so a config.toml
+	// that names an agy agent still validates; migrateConfigSchema only
+	// renames google to agy and no longer adds an agy agent on Load.
 	registryToml := `providers = [{id = "ollama", name = "Ollama"}, {id = "agy", name = "Agy", auth = {type = "native"}}]
 models = []
 `
@@ -310,7 +310,7 @@ func TestSave_ValidatesOnlyTheSessionRules(t *testing.T) {
 
 // TestSaveNeverWritesASynthesizedAgent pins the spec's rule for the session
 // load: config.LoadSession adds an in-memory agent for each driver with no
-// entry (AllProviders), and a save through the real saveCmd must write only
+// entry (Synthesized), and a save through the real saveCmd must write only
 // the file's own agents. A synthesized claude written to config.toml would
 // pin claude to whatever providers it was saved with and stop accepting every
 // provider.
@@ -350,11 +350,11 @@ func TestSaveNeverWritesASynthesizedAgent(t *testing.T) {
 	}
 }
 
-// slicesContainsSynth reports whether agents holds a synthesized (AllProviders)
+// slicesContainsSynth reports whether agents holds a synthesized (Synthesized)
 // agent named name.
 func slicesContainsSynth(agents []config.Agent, name string) bool {
 	for _, a := range agents {
-		if a.Name == name && a.AllProviders {
+		if a.Name == name && a.Synthesized {
 			return true
 		}
 	}

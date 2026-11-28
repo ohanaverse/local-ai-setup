@@ -738,13 +738,21 @@ func (a ModelArtifact) Target() string {
 
 // Agent is a supported AI coding tool.
 type Agent struct {
-	Name               string   `toml:"name"`
-	SupportedProviders []string `toml:"supported_providers"`        // hard constraint
-	DefaultProvider    string   `toml:"default_provider,omitempty"` // optional
-	// AllProviders marks an in-memory agent LoadSession synthesized for a
-	// driver config.toml does not list: it accepts every provider. Never
-	// persisted.
-	AllProviders bool `toml:"-"`
+	Name string `toml:"name"`
+	// SupportedProviders and DefaultProvider decide no agent's eligibility
+	// (the rule derives a provider's agents from the provider and the model).
+	// Two host-side readers remain until a later change deletes the fields:
+	// registry seeding (seedAgents adds a default row for a listed provider)
+	// and Validate (validateAgents with a registry refuses a listed id that
+	// has no row). They stay decoded and are written back untouched so an older
+	// binary still parses the file; a later change deletes them. An entry
+	// with no list is valid, and a nil slice is omitted on save, never
+	// written as an empty list (an older wt-model rejects one).
+	SupportedProviders []string `toml:"supported_providers"`
+	DefaultProvider    string   `toml:"default_provider,omitempty"`
+	// Synthesized marks an in-memory agent LoadSession made for a driver
+	// config.toml does not list. Never persisted.
+	Synthesized bool `toml:"-"`
 }
 
 // ── Config ────────────────────────────────────────────────
@@ -859,7 +867,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("schema migration: %w", err)
 	}
 	if changed {
-		fmt.Fprintln(os.Stderr, BinaryName+": migrated config to native-provider alignment (renamed google→agy, rewired opencode to ollama-only)")
+		fmt.Fprintln(os.Stderr, BinaryName+": migrated config to native-provider alignment (renamed google→agy)")
 	}
 
 	// Join the registry LAST so wt never mutates registry data
@@ -893,14 +901,9 @@ func cfgOrNilOnMissingRegistry(cfg *Config, err error) *Config {
 func finalizeCfg(cfg *Config, providers []Provider, models []Model, aliases []Alias) (*Config, error) {
 	cfg.Providers, cfg.Models, cfg.Aliases = providers, models, aliases
 	deriveNative(cfg)
-	deriveSushiAgents(cfg)
 	applyProxyState(cfg)
 	return cfg, nil
 }
-
-// SushiAgents are the agents that can run a Sushi model: claude (through
-// LiteLLM, as Sushi serves only openai-chat) and pi (direct).
-var SushiAgents = []string{"claude", "pi"}
 
 // SubscriptionProvider is the provider id of models served on the owner's
 // own Claude subscription (#597; provider.IDClaudeSubscription): keyless
@@ -912,34 +915,26 @@ const SubscriptionProvider = provider.IDClaudeSubscription
 // claude, the one agent that holds a claude.ai login to forward.
 var SubscriptionAgents = []string{"claude"}
 
+// NativeOnlyAgents are the agents that can run nothing but their own native
+// provider's row: agy's driver ignores the model it is handed, so the only
+// honest offer is agy's native row. It lives in this leaf package, not in
+// internal/agents, because internal/catalog (which applies the eligibility
+// rule) and cmd/wt-model may not import internal/agents (the depcheck ratchet);
+// internal/agents' TestNativeTablesMatchTheDrivers pins it to the drivers.
+var NativeOnlyAgents = []string{"agy"}
+
+// NativeCapableAgents are the agents that have a native provider (a row named
+// for the agent, run with the agent's own login and no gateway): everything
+// but pi and opencode. A native provider id equals its driver name. It lives
+// in this leaf package for the same reason as NativeOnlyAgents, and
+// internal/agents' TestNativeTablesMatchTheDrivers pins it to the drivers.
+// It has no production reader yet: PR 2's wt-model seeding reads it, and today
+// only that test does.
+var NativeCapableAgents = []string{"claude", "codex", "copilot", "agy"}
+
 // IsSubscriptionProvider reports whether id is the Claude subscription
 // provider.
 func IsSubscriptionProvider(id string) bool { return id == SubscriptionProvider }
-
-// deriveSushiAgents lists the sushi provider in SushiAgents' in-memory
-// supported_providers when the registry holds a sushi model and the agent
-// does not name it. A stock config.toml has no sushi entry, and without one
-// `wt smoke` and the pickers report no agent supports the model; deriving it
-// here covers a pack registered by the `wt-model model` Models screen, by hand, or
-// on a restored registry, where `wt-model model add` never ran. Nothing is written.
-// An agent config.toml does not name is skipped, and so is one with no
-// supported_providers at all (an empty list is its own validation error). To
-// keep sushi away from an agent, remove the registry's sushi models.
-func deriveSushiAgents(cfg *Config) {
-	if !slices.ContainsFunc(cfg.Models, func(m Model) bool { return m.ProviderID == "sushi" }) {
-		return
-	}
-	if !slices.ContainsFunc(cfg.Providers, func(p Provider) bool { return p.ID == "sushi" }) {
-		return // an agent naming a provider the registry lacks fails validation
-	}
-	for _, name := range SushiAgents {
-		a, err := cfg.AgentByName(name)
-		if err != nil || len(a.SupportedProviders) == 0 || slices.Contains(a.SupportedProviders, "sushi") {
-			continue
-		}
-		a.SupportedProviders = append(slices.Clone(a.SupportedProviders), "sushi")
-	}
-}
 
 // Validate returns an error describing the first invalid entry.
 func (c *Config) Validate() error {
@@ -955,9 +950,9 @@ func (c *Config) ValidateAll() error {
 }
 
 // ValidateSession reports, joined, every problem a session-side save can
-// repair without a registry: default_tag set; each agent named, unique, with
-// at least one supported provider and its default provider in that list.
-// Provider ids are not checked; AllProviders agents are skipped.
+// repair without a registry: default_tag set; each agent named and unique.
+// An agent needs no provider list; the ids in one are not checked;
+// Synthesized agents are skipped.
 func (c *Config) ValidateSession() error {
 	var errs []error
 	if c.DefaultTag == "" {
@@ -1056,16 +1051,18 @@ func (c *Config) validate() []error {
 	return errs
 }
 
-// validateAgents is the one agent loop: known == nil skips the
-// unknown-provider check (a session reads no registry) and the agents
-// LoadSession synthesized (AllProviders), which exist only in memory and are
-// never written. ValidateAll passes the registry's provider ids and never sees
-// a synthesized agent: config.Load makes none.
+// validateAgents is the one agent loop: an agent must be named and unique, and
+// needs no provider list. known == nil skips the unknown-provider check (a
+// session reads no registry) and the agents LoadSession synthesized
+// (Synthesized), which exist only in memory and are never written; a non-nil
+// known reports an id still listed that it lacks. ValidateAll passes the
+// registry's provider ids and never sees a synthesized agent: config.Load
+// makes none.
 func (c *Config) validateAgents(known map[string]bool) []error {
 	var errs []error
 	agentNames := map[string]bool{}
 	for _, a := range c.Agents {
-		if known == nil && a.AllProviders {
+		if known == nil && a.Synthesized {
 			continue
 		}
 		if a.Name == "" {
@@ -1075,18 +1072,12 @@ func (c *Config) validateAgents(known map[string]bool) []error {
 			errs = append(errs, fmt.Errorf("duplicate agent name %q", a.Name))
 		}
 		agentNames[a.Name] = true
-		if len(a.SupportedProviders) == 0 {
-			errs = append(errs, fmt.Errorf("agent %q: must have at least one supported provider", a.Name))
-		}
 		if known != nil {
 			for _, pid := range a.SupportedProviders {
 				if !known[pid] {
 					errs = append(errs, fmt.Errorf("agent %q: unknown provider %q", a.Name, pid))
 				}
 			}
-		}
-		if a.DefaultProvider != "" && !slices.Contains(a.SupportedProviders, a.DefaultProvider) {
-			errs = append(errs, fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider))
 		}
 	}
 	return errs
@@ -1226,16 +1217,6 @@ func (c *Config) OpenRouterPricedModel() bool {
 		}
 	}
 	return false
-}
-
-// AgentSupportsProvider reports whether the named agent lists providerID in
-// supported_providers. An unknown agent supports nothing.
-func (c *Config) AgentSupportsProvider(agentName, providerID string) bool {
-	a, err := c.AgentByName(agentName)
-	if err != nil {
-		return false
-	}
-	return slices.Contains(a.SupportedProviders, providerID)
 }
 
 // ProviderByID returns the provider with the given id, or nil if not found.
@@ -1407,21 +1388,11 @@ func (e locationErr) Is(target error) bool { return target == ErrLocation }
 func locationError(msg string) error { return locationErr{msg: msg} }
 
 // UpsertAgent adds a when oldName is empty, or updates the agent named
-// oldName. It validates name, supported providers, and default provider.
+// oldName. It checks only the name and, on a rename, that the new name is free;
+// a provider list is not read.
 func (c *Config) UpsertAgent(a Agent, oldName string) error {
 	if a.Name == "" {
 		return fmt.Errorf("agent name is empty")
-	}
-	if len(a.SupportedProviders) == 0 {
-		return fmt.Errorf("agent %q: must have at least one supported provider", a.Name)
-	}
-	for _, pid := range a.SupportedProviders {
-		if c.ProviderByID(pid) == nil {
-			return fmt.Errorf("agent %q: provider %q does not exist", a.Name, pid)
-		}
-	}
-	if a.DefaultProvider != "" && !slices.Contains(a.SupportedProviders, a.DefaultProvider) {
-		return fmt.Errorf("agent %q: default provider %q not in supported_providers", a.Name, a.DefaultProvider)
 	}
 	// Rename check: if oldName differs, ensure new name is not taken.
 	if oldName != "" && oldName != a.Name {
@@ -1505,10 +1476,10 @@ func writeConfigFile(cfg *Config) error {
 	trimmed := *cfg
 	trimmed.Providers = nil
 	trimmed.Models = nil
-	// Agents LoadSession synthesized (AllProviders) exist only in memory.
+	// Agents LoadSession synthesized (Synthesized) exist only in memory.
 	trimmed.Agents = make([]Agent, 0, len(cfg.Agents))
 	for _, a := range cfg.Agents {
-		if !a.AllProviders {
+		if !a.Synthesized {
 			trimmed.Agents = append(trimmed.Agents, a)
 		}
 	}
@@ -1609,31 +1580,6 @@ func lockedApply(apply func(fresh *Config) (bool, error)) (fresh *Config, change
 	return fresh, changed, err
 }
 
-// ModelsForAgent returns the models whose ProviderID is in the named
-// agent's supported_providers list. Order matches cfg.Models.
-//
-// Errors:
-//   - agent not found in cfg.Agents
-//   - agent references a provider not in cfg.Providers (only reachable
-//     if Validate was bypassed)
-func (c *Config) ModelsForAgent(agentName string) ([]Model, error) {
-	a, err := c.AgentByName(agentName)
-	if err != nil {
-		return nil, err
-	}
-	allowed := map[string]bool{}
-	for _, pid := range a.SupportedProviders {
-		allowed[pid] = true
-	}
-	var out []Model
-	for _, m := range c.Models {
-		if allowed[m.ProviderID] {
-			out = append(out, m)
-		}
-	}
-	return out, nil
-}
-
 // ParseFilterList splits a comma-delimited string, trimming whitespace and
 // dropping empty entries. Empty or whitespace-only input returns nil.
 // Used by the -T/--tags and -F/--family CLI flags.
@@ -1670,62 +1616,4 @@ func FirstTag(s, fallback string) string {
 		return fallback
 	}
 	return parts[0]
-}
-
-// EligibleModels returns the models usable by agent after applying tag
-// and family filters. Order matches cfg.Models.
-//
-// Semantics:
-//   - Provider filter is hard: only models whose ProviderID is in
-//     agent.SupportedProviders are considered.
-//   - tags == "" → no tag filter.
-//   - tags != "" → model must have at least one matching tag.
-//   - family == "" → no family filter.
-//   - family != "" → model.Family must equal one of the listed families.
-//   - When both are non-empty: tags and family are AND-combined.
-//
-// Errors:
-//   - agent not found
-func (c *Config) EligibleModels(agentName, tags, family string) ([]Model, error) {
-	return c.EligibleModelsIn(agentName, nil, tags, family)
-}
-
-// EligibleModelsIn is the single full-catalog traversal shared by
-// EligibleModels and the TUI model picker. It applies the tag/family
-// filters to a caller-supplied full catalog (agentName's models) and returns
-// the eligible slice — so a caller that needs both the full catalog (for
-// cross-filter family count aggregation) and the eligible subset only walks
-// the registry once. Order matches the provided catalog's order.
-//
-// See EligibleModels for the filter semantics.
-func (c *Config) EligibleModelsIn(agentName string, ms []Model, tags, family string) ([]Model, error) {
-	if ms == nil {
-		var err error
-		ms, err = c.ModelsForAgent(agentName)
-		if err != nil {
-			return nil, err
-		}
-	}
-	tagSet := map[string]bool{}
-	for _, t := range ParseFilterList(tags) {
-		tagSet[t] = true
-	}
-	familySet := map[string]bool{}
-	for _, f := range ParseFilterList(family) {
-		familySet[f] = true
-	}
-	var out []Model
-	for _, m := range ms {
-		if len(tagSet) > 0 && !slices.ContainsFunc(m.Tags, func(t string) bool { return tagSet[t] }) {
-			continue
-		}
-		if len(familySet) > 0 && !familySet[m.Family] {
-			continue
-		}
-		if !c.InCatalog(m) {
-			continue
-		}
-		out = append(out, m)
-	}
-	return out, nil
 }

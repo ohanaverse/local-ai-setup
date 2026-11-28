@@ -35,21 +35,9 @@ func (a agentItem) Title() string {
 	default:
 		marker = "✗ not installed"
 	}
-	providers := config.TagsToString(a.agent.SupportedProviders)
-	if providers == "" {
-		providers = "-"
-	}
-	return fmt.Sprintf("%s  (%s)  %s", a.agent.Name, providers, marker)
+	return fmt.Sprintf("%s  %s", a.agent.Name, marker)
 }
-func (a agentItem) Description() string {
-	if a.issue != "" {
-		return a.issue
-	}
-	if a.agent.DefaultProvider != "" {
-		return "default: " + a.agent.DefaultProvider
-	}
-	return ""
-}
+func (a agentItem) Description() string { return a.issue }
 
 // buildAgentsList constructs the agents list from the shared
 // agents.ListEntries helper. It merges configured agents with registered

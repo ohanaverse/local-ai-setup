@@ -336,9 +336,15 @@ These refuse, as above, when none is configured, before anything starts:
 - `wt profile slots add|set|candidates` and `wt profile show -M ...`.
 
 A model-driven agent with no `[[agents]]` entry in `config.toml` is not an
-exception: on a session every driver has an agent, eligible for every row
-the server lists except another agent's native row, and an entry only
-narrows that (`supported_providers`).
+exception: on a session every driver has an agent, and an `[[agents]]` entry
+marks it as configured and nothing more. Eligibility is derived from the
+row, never from a list: every non-native row (sushi and paid OpenRouter rows
+included) is offered to every agent but agy, an agent's own native row to it
+alone (agy sees nothing else), and a Claude-subscription row to claude only.
+The `supported_providers` and `default_provider` keys of an entry are still
+parsed and written back, and decide nothing here; only the host reads them
+(registry seeding, and a registry load that refuses a listed provider with no
+row).
 
 ## Native launch: native mode
 

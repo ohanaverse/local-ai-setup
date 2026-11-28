@@ -69,9 +69,13 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	if os.Getenv("XDG_CONFIG_HOME") == "" {
 		t.Fatal("phaseModelWithList: XDG_CONFIG_HOME is not isolated; call tempStateDir(t) first or the marker reads the host's real last-picked.state")
 	}
-	models, err := cfg.EligibleModels(agent, tag, "")
-	if err != nil {
-		t.Fatalf("EligibleModels: %v", err)
+	// The tag and catalog-membership filters the model picker applies; the
+	// agent's own list no longer filters models.
+	var models []config.Model
+	for _, m := range cfg.Models {
+		if m.HasTag(tag) && cfg.InCatalog(m) {
+			models = append(models, m)
+		}
 	}
 	if len(models) == 0 {
 		t.Fatalf("phaseModelWithList: no models for agent %q tag %q", agent, tag)
@@ -208,7 +212,7 @@ func TestPinnedAgentErrorRenderedOnList(t *testing.T) {
 		DefaultTag: "code",
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-		// No models — cfg.EligibleModels returns an empty list.
+		// No models — the picker's list is empty.
 	}
 	m := model{cfg: cfg, initialAgent: "claude", width: 80, height: 24}
 	// Load the worktree list first so m.ready is true; the pinned-path
@@ -571,25 +575,5 @@ func buildTestConfigWithModels(models ...config.Model) *config.Config {
 		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models:     models,
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
-	}
-}
-
-// TestEligibleModelsIncludesUnflagged asserts that cfg.EligibleModels returns
-// every model whose provider resolves — no stored flag gates catalog
-// membership (#179: configured means exposed); a model nothing has marked
-// ready is listed too. Before #179 an unflagged model was hidden from
-// the picker; a regression would again make configured models invisible
-// until someone flagged them.
-func TestEligibleModelsIncludesUnflagged(t *testing.T) {
-	cfg := buildTestConfigWithModels(
-		config.Model{ID: "ollama/flagged", ModelName: "flagged", ProviderID: "ollama", Tags: []string{"code"}},
-		config.Model{ID: "ollama/unflagged", ModelName: "unflagged", ProviderID: "ollama", Tags: []string{"code"}},
-	)
-	models, err := cfg.EligibleModels("claude", "code", "")
-	if err != nil {
-		t.Fatalf("EligibleModels: %v", err)
-	}
-	if len(models) != 2 || models[0].ID != "ollama/flagged" || models[1].ID != "ollama/unflagged" {
-		t.Fatalf("expected both configured models, got %v", models)
 	}
 }

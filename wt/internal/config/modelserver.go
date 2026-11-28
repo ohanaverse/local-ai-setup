@@ -73,9 +73,9 @@ func (c *Config) IgnoredLitellmKeys() []string {
 // DefaultTag, [launch], [litellm] (inert) and [model-server]. It needs no
 // registry and does not validate supported_providers. The agent reference
 // migration runs in memory (the file is untouched), and each name in
-// driverNames with no agent entry gets an in-memory agent that accepts every
-// provider (AllProviders); an explicit entry is kept as written. Nothing
-// synthesized is ever written: saves re-read the file (PatchSave).
+// driverNames with no agent entry gets an in-memory agent marked Synthesized;
+// an explicit entry is kept as written. Nothing synthesized is ever written:
+// saves re-read the file (PatchSave).
 func LoadSession(driverNames ...string) (*Config, error) {
 	cfg, _, err := readConfigFile()
 	if err != nil {
@@ -86,7 +86,7 @@ func LoadSession(driverNames ...string) (*Config, error) {
 		if slices.ContainsFunc(cfg.Agents, func(a Agent) bool { return a.Name == name }) {
 			continue
 		}
-		cfg.Agents = append(cfg.Agents, Agent{Name: name, AllProviders: true})
+		cfg.Agents = append(cfg.Agents, Agent{Name: name, Synthesized: true})
 	}
 	// The proxy pair is host state a session never reads (the spec's
 	// "No session-behavior change" anti-goal): no wt-model home is opened

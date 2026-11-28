@@ -155,7 +155,7 @@ func TestGatewayMatrixCopilot(t *testing.T) {
 }
 
 // TestGatewayMatrixOpenCode pins opencode's Build across the matrix (no
-// native cell — opencode is ollama-only after the native-provider alignment):
+// native cell — opencode has no native provider of its own):
 // the gateway route builds inline JSON with the wt-declared
 // @ai-sdk/openai-compatible provider pointed at the gateway /v1 with the registry
 // id as the provider models-map key. The JSON is parsed rather than substring-
