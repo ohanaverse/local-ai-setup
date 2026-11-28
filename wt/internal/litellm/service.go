@@ -610,10 +610,10 @@ func applyPlanned(plan func(*File) (add []plannedAdd, remove []plannedRemove, ho
 		// The scan runs after the repair (applyTo), so what it finds is the rows
 		// the repair does not reach. Only a caller that reports it pays for it.
 		// settingsWarnings runs after EnsureSettings here and before it in
-		// PlanSync; the affinity warnings are the same either way: the skip
-		// test does not depend on what EnsureSettings wrote, and the
-		// affinity-off warning fires only for a present non-null list, which
-		// wt never writes.
+		// PlanSync; the warnings are the same either way: a skip warning
+		// reads only a shared block EnsureSettings skipped and so never
+		// writes, and the affinity-off warning fires only for a present
+		// non-null list, which wt never writes.
 		if o.reportOllamaServe {
 			res.ollamaServe = append(f.ollamaServeWarnings(loadProxyEnv()), f.settingsWarnings()...)
 		}

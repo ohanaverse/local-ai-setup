@@ -796,12 +796,101 @@ func ensureRouterSettings(root *yaml.Node) {
 	}
 }
 
+// resolvedBlock is root's top-level block key as LiteLLM's YAML loader sees
+// it: written literally, a whole-value alias resolved, or supplied by a root
+// merge key. It is nil when the key is nowhere, and may be any node kind (a
+// dangling alias stays an alias node).
+func resolvedBlock(root *yaml.Node, key string) *yaml.Node {
+	return aliasValue(mergedGet(root, key))
+}
+
+// mergeAmbiguous says whether m, or any mapping its merge keys reach (followed
+// down to depth, like mergedGet), has more than one "<<" key. LiteLLM's loader
+// (PyYAML) applies repeated merge keys in order, so the last one wins a key two
+// of them supply, while mergedGet takes the first: on such a mapping wt's
+// reading and the proxy's can differ, and a check that must not call a
+// protection on treats the block as unreadable. One "<<" key with a list of
+// sources is not ambiguous under PyYAML 6.0.3, the version LiteLLM's
+// environment has had: both take the first source that has the key. A later
+// PyYAML (6.0.4 de-duplicates merged keys differently, so a long key two
+// sources of one list supply goes to the last) would read such a list
+// differently from mergedGet, and this check would need to treat it as
+// ambiguous too.
+func mergeAmbiguous(m *yaml.Node, depth int) bool {
+	m = aliasValue(m)
+	if m == nil || m.Kind != yaml.MappingNode {
+		return false
+	}
+	merges := 0
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if k := m.Content[i]; k.Kind != yaml.ScalarNode || k.Tag != "!!merge" {
+			continue
+		}
+		if merges++; merges > 1 {
+			return true
+		}
+		if depth == 0 {
+			continue
+		}
+		sources := []*yaml.Node{m.Content[i+1]}
+		if sources[0].Kind == yaml.SequenceNode {
+			sources = sources[0].Content
+		}
+		for _, s := range sources {
+			if mergeAmbiguous(s, depth-1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sharedBlockAmbiguous says whether a skipped shared block (a whole-value
+// alias or a root merge) is read through a mapping with repeated merge keys
+// (mergeAmbiguous): the block itself or what it merges, and for a root merge
+// the root and what it merges too, since the root's merges decide which block
+// the proxy gets. Literal blocks and the write paths do not ask it.
+func sharedBlockAmbiguous(root *yaml.Node, block string) bool {
+	if mapGet(root, block) == nil && mergeAmbiguous(root, mergeDepth) {
+		return true
+	}
+	return mergeAmbiguous(resolvedBlock(root, block), mergeDepth)
+}
+
+// sharedBlockLacks says whether a block EnsureSettings skipped (a whole-value
+// alias or a root merge, so a write would change what other keys share) still
+// leaves one of keys unset: the block is not a mapping (absent, null, a
+// scalar, a list or a dangling alias: fail closed, since wt cannot say what
+// it holds), it is read through repeated merge keys (sharedBlockAmbiguous:
+// fail closed too, since LiteLLM may read another value than wt), or one key
+// is absent or null in it. Keys are read through merge keys with a whole-value
+// alias resolved, the rule the write path uses, so any non-null value, false
+// included, counts as set (the opt-out). The skip warnings fire only when it
+// says yes (#758): a shared block that already carries the keys has the
+// protection on and draws no false alarm.
+func sharedBlockLacks(root *yaml.Node, block string, keys ...string) bool {
+	b := resolvedBlock(root, block)
+	if b == nil || b.Kind != yaml.MappingNode || sharedBlockAmbiguous(root, block) {
+		return true
+	}
+	for _, k := range keys {
+		if v := aliasValue(mergedGet(b, k)); v == nil || isNull(v) {
+			return true
+		}
+	}
+	return false
+}
+
 // affinityOffWarning says session affinity is off because a hand-written
-// router_settings.optional_pre_call_checks list has no session_affinity, or
-// "" otherwise. Only a real mapping block is judged (a skipped one has its own
-// warning) and only a list (a scalar is left alone and not interpreted).
-func affinityOffWarning(root *yaml.Node) string {
-	rs := mapGet(root, "router_settings")
+// optional_pre_call_checks list in rs, router_settings as LiteLLM reads it
+// (resolvedBlock: literal, aliased or root-merged alike), has no
+// session_affinity, or "" otherwise. Only a mapping block is judged (one that
+// is not has the skip warning or nothing to judge) and only a list (a scalar
+// is left alone and not interpreted). settingsWarnings passes nil for a
+// shared block read through repeated merge keys (sharedBlockAmbiguous): wt
+// cannot tell which list the proxy got, so it makes no claim (the skip warning
+// is said instead).
+func affinityOffWarning(rs *yaml.Node) string {
 	if rs == nil || rs.Kind != yaml.MappingNode {
 		return ""
 	}
@@ -818,19 +907,27 @@ func affinityOffWarning(root *yaml.Node) string {
 }
 
 // settingsWarnings reports the launcher-required settings EnsureSettings
-// could not write, so a sync tells the user the protection is off instead of
-// leaving it silent, and a session affinity the user's checks list turns off.
-// Sync reports it beside ollamaServeWarnings.
+// could not write and that the config does not already set, so a sync tells
+// the user the protection is off instead of leaving it silent, and a session
+// affinity the user's checks list turns off. A skipped shared block that
+// already carries the keys draws no warning (sharedBlockLacks). Sync reports
+// it beside ollamaServeWarnings.
 func (f *File) settingsWarnings() []string {
 	root := f.root()
 	var out []string
-	if why := cancelOnDisconnectSkipped(root); why != "" {
+	if why := cancelOnDisconnectSkipped(root); why != "" && sharedBlockLacks(root, "general_settings", "cancel_on_disconnect") {
 		out = append(out, "general_settings "+why+", so wt did not write cancel_on_disconnect: true; set it there by hand or the proxy keeps generating for abandoned non-streamed requests (#399)")
 	}
+	rs := resolvedBlock(root, "router_settings")
 	if why := routerSettingsSkipped(root); why != "" {
-		out = append(out, "router_settings "+why+", so wt did not write the session affinity settings (optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds, session_affinity_repin_on_failover); set them there by hand or a model group may send one conversation to several deployments")
+		if sharedBlockLacks(root, "router_settings", affinitySettingKeys...) {
+			out = append(out, "router_settings "+why+", so wt did not write the session affinity settings (optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds, session_affinity_repin_on_failover); set them there by hand or a model group may send one conversation to several deployments")
+		}
+		if sharedBlockAmbiguous(root, "router_settings") {
+			rs = nil
+		}
 	}
-	if w := affinityOffWarning(root); w != "" {
+	if w := affinityOffWarning(rs); w != "" {
 		out = append(out, w)
 	}
 	return out
