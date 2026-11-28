@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -18,8 +20,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelping"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // fakeModels is a ModelClient that answers from memory: no network, no port.
@@ -606,28 +608,130 @@ func waitStarts(t *testing.T, f *fakeModels, n int) []modelapi.StartRequest {
 	}
 }
 
-// TestPickerRotationCursorSkipsStartRows pins that the picker's cursor and
-// the non-TUI endpoint launch rotate over the same list: the launchable
-// registered rows in the server's order. A start row is never the
-// rotation's next, so the cursor after the last launchable row wraps to the
-// first launchable one, not to a model that would have to be started.
-func TestPickerRotationCursorSkipsStartRows(t *testing.T) {
-	cat := modelapi.Catalog{Schema: 1, Generated: "2026-11-16T12:00:00Z", Rows: []modelapi.Row{
+// cursorCatalog is a start row (a stopped local model) above two launch rows,
+// for the cursor and marker tests. All three are unscored and not running
+// locally, so they sort by family: qwen, x, y puts the start row first.
+func cursorCatalog() modelapi.Catalog {
+	return modelapi.Catalog{Schema: 1, Generated: "2026-11-16T12:00:00Z", Rows: []modelapi.Row{
 		wireRow("omlx/qwen3.8", "qwen", func(r *modelapi.Row) {
 			r.Location, r.State, r.Action, r.Order = "local", modelapi.StateStopped, modelapi.ActionStart, 1
 		}),
-		wireRow("openrouter/a", "a", func(r *modelapi.Row) { r.Order = 2 }),
-		wireRow("openrouter/b", "b", func(r *modelapi.Row) { r.Order = 3 }),
+		wireRow("openrouter/a", "x", func(r *modelapi.Row) { r.Order = 2 }),
+		wireRow("openrouter/b", "y", func(r *modelapi.Row) { r.Order = 3 }),
+	}}
+}
+
+// writeLeftoverRotationState writes a rotation.state into the isolated config
+// directory, as an older wt left it on disk. Nothing reads that file any more.
+func writeLeftoverRotationState(t *testing.T, id string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(config.Dir(), "rotation.state"), []byte(id+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// markedIDs is the ids of the rows that draw the last-picked marker.
+func markedIDs(m model) []string {
+	var ids []string
+	for _, it := range m.models.Items() {
+		if mi := it.(*modelItem); mi.marked {
+			ids = append(ids, mi.model.ID)
+		}
+	}
+	return ids
+}
+
+// TestPickerCursorStartsOnTheFirstRowThatIsNotBlocked pins the picker's
+// starting cursor without -M: the first row in sorted order that is not
+// blocked, and a row the server would have to start counts. Neither the
+// last-picked row nor a leftover rotation.state moves it, so a bare Enter
+// always takes the top usable row instead of cycling through the list.
+func TestPickerCursorStartsOnTheFirstRowThatIsNotBlocked(t *testing.T) {
+	f := &fakeModels{cat: cursorCatalog()}
+	m := remoteModel(t, f, 80, 24)
+	if err := usage.NewStore().RecordLaunch("claude", "openrouter/a"); err != nil {
+		t.Fatal(err)
+	}
+	writeLeftoverRotationState(t, "openrouter/a")
+	m, cmd := m.enterModelPhaseForAgent()
+	m = settle(t, m, cmd)
+	if got := selectedModelID(m); got != "omlx/qwen3.8" || m.models.Index() != 0 {
+		t.Errorf("cursor = %q at %d, want omlx/qwen3.8 at 0 (the first row, a start row, is not blocked)", got, m.models.Index())
+	}
+}
+
+// TestPickerCursorIsThePinnedRow pins that a -M pin is the cursor the catalog
+// command hands over, not the first unblocked row nor the last-picked one:
+// the pin is the user's own choice and the table must open on it.
+func TestPickerCursorIsThePinnedRow(t *testing.T) {
+	cat := cursorCatalog()
+	f := &fakeModels{cat: cat, resolveRow: cat.Rows[2]}
+	m := remoteModel(t, f, 80, 24)
+	if err := usage.NewStore().RecordLaunch("claude", "openrouter/a"); err != nil {
+		t.Fatal(err)
+	}
+	m.pinnedModel = "openrouter/b"
+	m, cmd := m.enterModelPhaseForAgent()
+	msg, ok := cmd().(catalogLoadedMsg)
+	if !ok {
+		t.Fatal("the catalog command did not load the catalog")
+	}
+	if msg.cursor != "openrouter/b" {
+		t.Errorf("msg.cursor = %q, want the pin openrouter/b", msg.cursor)
+	}
+	if got := selectedModelID(model{models: m.newModelList(msg.tbl, msg.cursor)}); got != "openrouter/b" {
+		t.Errorf("cursor = %q, want the pinned row openrouter/b", got)
+	}
+}
+
+// TestPickerCursorIsRowZeroWhenEveryRowIsBlocked pins the picker's cursor when
+// no row can be used: the first row, so the table still opens with a row
+// under the cursor whose Enter says why it is blocked.
+func TestPickerCursorIsRowZeroWhenEveryRowIsBlocked(t *testing.T) {
+	block := func(r *modelapi.Row) { r.Action, r.BlockReason = modelapi.ActionBlock, "not available" }
+	cat := modelapi.Catalog{Schema: 1, Generated: "2026-11-16T12:00:00Z", Rows: []modelapi.Row{
+		wireRow("openrouter/a", "a", block),
+		wireRow("openrouter/b", "b", block),
 	}}
 	f := &fakeModels{cat: cat}
 	m := remoteModel(t, f, 80, 24)
-	if err := rotation.New().RecordFor("claude", "openrouter/b"); err != nil {
-		t.Fatal(err)
-	}
 	m, cmd := m.enterModelPhaseForAgent()
 	m = settle(t, m, cmd)
-	if got := selectedModelID(m); got != "openrouter/a" {
-		t.Errorf("cursor = %q, want openrouter/a (the start row is not in the rotation)", got)
+	if m.phase != phaseModel {
+		t.Fatalf("phase = %v, status %q: want the table", m.phase, m.status)
+	}
+	if got := selectedModelID(m); got != "openrouter/a" || m.models.Index() != 0 {
+		t.Errorf("cursor = %q at %d, want openrouter/a at 0", got, m.models.Index())
+	}
+}
+
+// TestPickerMarkerFollowsLastPicked pins the "> " marker through the real
+// catalog command: it sits on the row last-picked.state names (here not the
+// cursor's row), and a leftover rotation.state with no last-picked.state
+// marks nothing, so an old file cannot fabricate a "last used" row.
+func TestPickerMarkerFollowsLastPicked(t *testing.T) {
+	f := &fakeModels{cat: cursorCatalog()}
+	m := remoteModel(t, f, 80, 24)
+	if err := usage.NewStore().RecordLaunch("claude", "openrouter/b"); err != nil {
+		t.Fatal(err)
+	}
+	writeLeftoverRotationState(t, "openrouter/a")
+	m, cmd := m.enterModelPhaseForAgent()
+	m = settle(t, m, cmd)
+	if got := markedIDs(m); !slices.Equal(got, []string{"openrouter/b"}) {
+		t.Errorf("marked rows = %v, want [openrouter/b] (last-picked.state)", got)
+	}
+	if got := selectedModelID(m); got == "openrouter/b" {
+		t.Errorf("cursor = %q: the marker's row must not decide the cursor", got)
+	}
+
+	g := &fakeModels{cat: cursorCatalog()}
+	n := remoteModel(t, g, 80, 24)
+	writeLeftoverRotationState(t, "openrouter/a")
+	n, cmd = n.enterModelPhaseForAgent()
+	n = settle(t, n, cmd)
+	if got := markedIDs(n); len(got) != 0 {
+		t.Errorf("marked rows = %v, want none (no last-picked.state)", got)
 	}
 }
 

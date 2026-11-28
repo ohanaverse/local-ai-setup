@@ -9,16 +9,15 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // tempStateDir creates an isolated agent-wt state directory under a temp
-// XDG_CONFIG_HOME. rotation.New/Last and the picker's ▶ marker read the
-// global rotation.state from config.Dir(), so tests touching the picker or
-// rotation must isolate state or they become dependent on the host's real
-// ~/.config/agent-wt files.
+// XDG_CONFIG_HOME. The picker's "> " marker reads last-picked.state from
+// config.Dir(), so tests touching the picker must isolate state or they
+// become dependent on the host's real ~/.config/agent-wt files.
 func tempStateDir(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "agent-wt")
@@ -29,12 +28,12 @@ func tempStateDir(t *testing.T) string {
 	return dir
 }
 
-// seedState writes the global rotation.state file with the given last-
-// launched model ID. Tests use this to simulate prior launches.
+// seedState records a launch of modelID in dir (last-picked.state and a usage
+// event), as a prior launch would. Tests use this to simulate prior launches.
 func seedState(t *testing.T, dir, modelID string) {
 	t.Helper()
-	if err := rotation.NewAt(dir).RecordFor("", modelID); err != nil {
-		t.Fatalf("seed rotation state: %v", err)
+	if err := usage.NewStoreAt(dir).RecordLaunch("", modelID); err != nil {
+		t.Fatalf("seed last-picked state: %v", err)
 	}
 }
 
@@ -52,22 +51,22 @@ func singleModelList(m config.Model) list.Model {
 }
 
 // phaseModelWithList builds a model in phaseModel with m.models populated
-// for the given agent+tag, with the cursor on the globally rotated model.
-// Tests that exercise rotation, the list, or the View use this helper
-// instead of constructing model literals. It routes through the production
-// list-build path (buildTable, the table renderer
+// for the given agent+tag, with the cursor on the first row that is not
+// blocked (row 0 when every row is). Tests that exercise the list or the
+// View use this helper instead of constructing model literals. It routes
+// through the production list-build path (buildTable, the table renderer
 // the catalog load uses too) so tests exercise the compact, divider-free
 // item layout the picker actually renders. The usage counts come through
 // the newUsageStore seam so callers that stub the seam (or isolate
 // XDG_CONFIG_HOME via tempStateDir) never read the host's real usage.jsonl.
-// Requires tempStateDir(t) isolation: the helper reads rotation state
-// (cursor positioning and the ▶ marker) from config.Dir(), and asserts
-// that isolation is actually in place — calling it without tempStateDir
-// fails fast instead of silently reading the host's real rotation.state.
+// Requires tempStateDir(t) isolation: the helper reads last-picked.state
+// (the "> " marker) from config.Dir(), and asserts that isolation is
+// actually in place — calling it without tempStateDir fails fast instead of
+// silently reading the host's real last-picked.state.
 func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) model {
 	t.Helper()
 	if os.Getenv("XDG_CONFIG_HOME") == "" {
-		t.Fatal("phaseModelWithList: XDG_CONFIG_HOME is not isolated; call tempStateDir(t) first or the cursor/marker read the host's real rotation.state")
+		t.Fatal("phaseModelWithList: XDG_CONFIG_HOME is not isolated; call tempStateDir(t) first or the marker reads the host's real last-picked.state")
 	}
 	models, err := cfg.EligibleModels(agent, tag, "")
 	if err != nil {
@@ -76,9 +75,8 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 	if len(models) == 0 {
 		t.Fatalf("phaseModelWithList: no models for agent %q tag %q", agent, tag)
 	}
-	// Mirror production enterModelPhase: read the last-launched ID from
-	// rotation state so tests exercise the same marker wiring.
-	lastID, _ := rotation.New().Last()
+	// Mirror the catalog command: the marker's row is last-picked.state's.
+	lastID, _ := usage.NewStore().LastPicked()
 	items := buildTable(tableInput{models: models, usage: newUsageStore()}, lastID).items
 	delegate := themes.ListDelegate(themes.Default)
 	delegate.ShowDescription = false
@@ -100,36 +98,13 @@ func phaseModelWithList(t *testing.T, cfg *config.Config, agent, tag string) mod
 		height: 24,
 	}
 
-	// Map model IDs to their dense list indices (0..n-1).
-	idIndex := make(map[string]int, len(models))
-	for i, it := range items {
-		idIndex[it.model.ID] = i
-	}
-
-	// Position the cursor like production enterModelPhase: the rotation's
-	// next-to-use model among the table's launchable rows (in table order),
-	// else the first launchable row.
-	var launchable []config.Model
-	first := -1
+	// Position the cursor like newModelList with no pin: the first row that
+	// is not blocked, else row 0.
+	pos := 0
 	for i, it := range items {
 		if it.blocked == "" {
-			launchable = append(launchable, it.model)
-			if first < 0 {
-				first = i
-			}
-		}
-	}
-	pos := 0
-	if first >= 0 {
-		pos = first
-	}
-	// Rotation positions the cursor only when the last-launched model is a
-	// registry model; otherwise the first launchable row stays selected.
-	if lastID != "" && config.IndexModelByID(cfg.Models, lastID) >= 0 {
-		if next, ok := rotation.New().NextFromOrder(launchable, cfg.Models); ok {
-			if idx, ok := idIndex[next.ID]; ok {
-				pos = idx
-			}
+			pos = i
+			break
 		}
 	}
 	m.models.Select(pos)
@@ -399,17 +374,17 @@ func TestUnknownAgentLaunchShowsError(t *testing.T) {
 	}
 }
 
-// TestSelectedEntryMsgPositionsCursorAtNextToUse asserts the cursor lands
-// on the rotation's next-to-use model, not necessarily index 0. PR 2
-// split the picker into a phaseAgent step followed by a phaseModel step,
-// so this test now drives both: selectEntryMsg lands in phaseAgent, the
-// phaseAgent Enter handler builds m.models and positions the cursor.
-func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
+// TestSelectedEntryMsgPositionsCursorOnTheFirstUnblockedRow asserts the
+// cursor lands on the first row that is not blocked after a prior launch,
+// not on the model after the one launched last: the picker no longer
+// rotates. It drives the phaseAgent step into phaseModel: selectEntryMsg
+// lands in phaseAgent, the phaseAgent Enter handler builds m.models and
+// positions the cursor.
+func TestSelectedEntryMsgPositionsCursorOnTheFirstUnblockedRow(t *testing.T) {
 	dir := tempStateDir(t)
-	// State: last=ollama/gemma4:9b. The rotation's next-to-use is gemma4:14b.
-	// The selector table sorts its unscored rows by id (14b, 9b, design), so
-	// 14b sits at list index 0 — assert on the selected model, not a
-	// registry-order index.
+	// State: last=ollama/gemma4:9b. The selector table sorts its unscored
+	// rows by id (14b, 9b, design) and none is blocked, so the cursor is
+	// 14b at index 0 — assert on the selected model, not an index.
 	stubUsageStore(t)
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
@@ -421,15 +396,14 @@ func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 }
 
 // TestPhaseModelWithListBuildsAndPositionsCursor asserts the test
-// helper populates m.models and positions the cursor on the rotation's
-// next-to-use model. The helper routes through the production list-build
-// path (buildTable, the same builder enterModelPhase uses),
-// so this is a smoke test of the shared infrastructure.
+// helper populates m.models and positions the cursor on the first row that
+// is not blocked, whatever was launched last. The helper routes through the
+// production list-build path (buildTable, the same builder the catalog load
+// uses), so this is a smoke test of the shared infrastructure.
 func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	dir := tempStateDir(t)
-	// State file: rotation.state holding a single model-id-per-line
-	// ("ollama/gemma4:9b\n"). Last() reads that line and NextFromOrder
-	// returns the next model (gemma4:14b). The cursor lands on gemma4:14b.
+	// last-picked.state names gemma4:9b; the sorted first row, gemma4:14b,
+	// is not blocked, so the cursor lands there.
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
 	m := phaseModelWithList(t, cfg, "claude", "code")
@@ -446,11 +420,11 @@ func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 }
 
 // TestModelPickerMarksLastLaunchedRow drives the production
-// phaseAgent → enterModelPhase path with a seeded rotation.state and
+// phaseAgent → catalog command path with a seeded last-picked.state and
 // asserts the last-launched marker lands on the last-launched row while the
-// cursor lands on the rotation's next-to-use row — the two are different
-// rows, and confusing them would mean the picker highlighted what to reuse
-// instead of what was just used.
+// cursor lands on the first row that is not blocked — the two are different
+// rows here, and confusing them would mean the marker moved the cursor or
+// the cursor's row claimed to be the one just used.
 func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 	dir := tempStateDir(t)
 	stubUsageStore(t) // hermetic usage counts: stable sort
@@ -479,18 +453,18 @@ func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 		t.Errorf("marker row = %d, want 1 (ollama/gemma4:9b)", markerIdx)
 	}
 	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" {
-		t.Errorf("cursor on %q, want rotation-next row ollama/gemma4:14b", got)
+		t.Errorf("cursor on %q, want the first unblocked row ollama/gemma4:14b", got)
 	}
 }
 
-// TestModelPickerNoMarkerWithoutRotationState drives the production
-// phaseAgent → enterModelPhase path with NO rotation.state present and
+// TestModelPickerNoMarkerWithoutLastPicked drives the production
+// phaseAgent → catalog command path with NO last-picked.state present and
 // asserts no row carries the last-launched marker — a regression that
-// substituted a non-empty fallback when rotation.Last() fails would
+// substituted a non-empty fallback when the file is missing would
 // otherwise pass the seeded-state test while fabricating a "last used"
 // signal.
-func TestModelPickerNoMarkerWithoutRotationState(t *testing.T) {
-	tempStateDir(t) // isolate: no seedState — rotation.state must be absent
+func TestModelPickerNoMarkerWithoutLastPicked(t *testing.T) {
+	tempStateDir(t) // isolate: no seedState — last-picked.state must be absent
 	stubUsageStore(t)
 	cfg := testConfig()
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
@@ -502,7 +476,7 @@ func TestModelPickerNoMarkerWithoutRotationState(t *testing.T) {
 			continue
 		}
 		if strings.HasPrefix(title[2:], markerMarked) {
-			t.Errorf("row %d unexpectedly marked with no rotation state: %q", i, it.(*modelItem).Title())
+			t.Errorf("row %d unexpectedly marked with no last-picked.state: %q", i, it.(*modelItem).Title())
 		}
 	}
 }
@@ -524,14 +498,12 @@ func TestModelPickerNoMarkerWithoutRotationState(t *testing.T) {
 // m.models.Update(msg) in phaseModel, so up/down were dead keys.
 // This is the regression guard for the up/down bug.
 func TestPhaseModelUpDownMovesCursor(t *testing.T) {
-	// Isolate rotation state so the host's real ~/.config/agent-wt
-	// rotation file can't position the cursor away from the first model
-	// row and break the precondition assertion.
+	// Isolate the state directory so the host's real ~/.config/agent-wt
+	// files cannot reach the picker.
 	tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
-	// With no rotation state the cursor lands on the registry-first model,
-	// which the table may sort below the top row; pin it to the top row
-	// explicitly so the up/down assertions are about movement only.
+	// Pin the cursor to the top row explicitly so the up/down assertions
+	// are about movement only.
 	m.models.Select(0)
 	if m.models.Index() != 0 {
 		t.Fatalf("precondition: cursor = %d, want 0", m.models.Index())
@@ -549,12 +521,9 @@ func TestPhaseModelUpDownMovesCursor(t *testing.T) {
 }
 
 // TestNoRKeyInModelPhase asserts pressing 'r' in phaseModel is a
-// no-op. Rotation now advances via launchAndRecord on a committed
-// launch (callers go through launchAndRecord, not on Enter or any
-// explicit key), so the picker must ignore the standalone 'r' key.
-// This test guards against accidental re-introduction of an
-// in-picker rotation key (which would conflict with the current
-// implicit-on-commit model).
+// no-op: a launch is recorded only when it is committed, never on a key,
+// so the picker must ignore the standalone 'r' key. This test guards
+// against accidental re-introduction of an in-picker rotation key.
 func TestNoRKeyInModelPhase(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:9b")
@@ -572,10 +541,9 @@ func TestNoRKeyInModelPhase(t *testing.T) {
 }
 
 // TestSelectedEntryNoLastStartsAtZero asserts the picker lands the cursor on
-// the first launchable table row (index 0, ollama/gemma4:14b) when no
-// rotation state exists: rotation positions the cursor only when a
-// last-launched registry model exists, so a fresh install must not jump to
-// the registry-first model. This is the cold-start path.
+// the first launchable table row (index 0, ollama/gemma4:14b) when nothing
+// was launched before, so a fresh install starts on the sorted top row and
+// not on the registry-first model. This is the cold-start path.
 // PR 2 added a phaseAgent step between worktree selection and the model
 // picker, so the test now drives both transitions to reach phaseModel.
 func TestSelectedEntryNoLastStartsAtZero(t *testing.T) {
@@ -591,106 +559,6 @@ func TestSelectedEntryNoLastStartsAtZero(t *testing.T) {
 		t.Errorf("cursor on %q at index %d, want ollama/gemma4:14b at 0 (first launchable row)", got, gotModel.models.Index())
 	}
 }
-
-// TestSelectedEntryPositionsAfterLast asserts the picker lands
-// the cursor on the model after the one returned by rotation.Last. The last
-// id is gemma4:14b, whose registry-next (gemma4:design) is NOT the first
-// launchable row, so the test fails if rotation positioning is skipped.
-// Every picker entry is "one past where we left off" because the
-// rotation is global — rotation.Last reads the global state file
-// and rotation.FirstAfter advances past it. PR 2 added a phaseAgent
-// step, so the test drives both transitions to reach phaseModel.
-func TestSelectedEntryPositionsAfterLast(t *testing.T) {
-	dir := tempStateDir(t)
-	seedState(t, dir, "ollama/gemma4:14b")
-	stubRunning(t, "ollama/gemma4:9b", "ollama/gemma4:14b", "ollama/gemma4:design")
-	cfg := testConfig()
-	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
-	gotModel := drivePhaseAgentEnter(t, m, "claude")
-	if gotModel.phase != phaseModel {
-		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
-	}
-	// Registry order is 9b, 14b, design. Last launched was gemma4:14b, so the
-	// next-to-show is gemma4:design (not the first table row, 14b).
-	if got := selectedModelID(gotModel); got != "ollama/gemma4:design" {
-		t.Errorf("cursor on %q, want ollama/gemma4:design (after gemma4:14b)", got)
-	}
-}
-
-// TestSelectedEntryLastMissingFallsBackToZero asserts the
-// picker lands on the first launchable row (ollama/gemma4:14b) when the saved
-// rotation.Last model is no longer in the registry (config changed since
-// last launch). PR 2 added a
-// phaseAgent step, so the test drives both transitions to reach
-// phaseModel.
-func TestSelectedEntryLastMissingFallsBackToZero(t *testing.T) {
-	dir := tempStateDir(t)
-	seedState(t, dir, "ollama/removed:cloud")
-	stubUsageStore(t)
-	cfg := testConfig()
-	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
-	gotModel := drivePhaseAgentEnter(t, m, "claude")
-	if gotModel.phase != phaseModel {
-		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
-	}
-	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" {
-		t.Errorf("cursor on %q, want ollama/gemma4:14b (first launchable row)", got)
-	}
-}
-
-// TestSelectedEntryLastDiscoveredIDFallsBackToFirstRow asserts a
-// last-launched id that belongs to a discovered (non-registry) model leaves
-// the cursor on the first launchable row. Such ids are never in cfg.Models, so
-// without the registry guard NextFromOrder would jump to the registry-first
-// model (gemma4:9b) instead.
-func TestSelectedEntryLastDiscoveredIDFallsBackToFirstRow(t *testing.T) {
-	dir := tempStateDir(t)
-	seedState(t, dir, config.DiscoveredModelID("omlx", "Some-Unregistered-4bit"))
-	stubUsageStore(t)
-	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
-	gotModel := drivePhaseAgentEnter(t, m, "claude")
-	if gotModel.phase != phaseModel {
-		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
-	}
-	if got := selectedModelID(gotModel); got != "ollama/gemma4:14b" || gotModel.models.Index() != 0 {
-		t.Errorf("cursor on %q at index %d, want ollama/gemma4:14b at 0", got, gotModel.models.Index())
-	}
-}
-
-// TestSelectedEntryLastLastInListWrapsToZero asserts the
-// picker wraps to the next model when rotation.Last is near the
-// end of the snapshot. Without wrap, the cursor would advance past
-// the end of the list forever. PR 3b: the picker now sources
-// models from cfg.EligibleModels without an implicit tag filter,
-// so all 3 testConfig models (2 code + 1 design) are in the
-// snapshot; wrapping past gemma4:14b (index 1) lands on
-// gemma4:design (index 2).
-func TestSelectedEntryLastLastInListWrapsToZero(t *testing.T) {
-	dir := tempStateDir(t)
-	seedState(t, dir, "ollama/gemma4:14b")
-	stubRunning(t, "ollama/gemma4:9b", "ollama/gemma4:14b", "ollama/gemma4:design")
-	cfg := testConfig()
-	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
-	gotModel := drivePhaseAgentEnter(t, m, "claude")
-	if gotModel.phase != phaseModel {
-		t.Fatalf("phase = %v, want phaseModel", gotModel.phase)
-	}
-	// 3 items (2 code + 1 design). Wrap from gemma4:14b (index 1) → gemma4:design (index 2).
-	if gotModel.models.Index() != 2 {
-		t.Errorf("cursor index = %d, want 2 (wrap to next when last-launched is not last)", gotModel.models.Index())
-	}
-}
-
-// TestToggleTagRebuildsRotation was removed in PR 3b Task 3 along
-// with the `d` tag-toggle key. The picker now builds its rotation
-// snapshot exactly once per picker entry from the -T-filtered
-// catalog (via rotation.Last to read the prior launch and
-// rotation.FirstAfter to advance past it); there is no longer an
-// in-picker path that rebuilds the snapshot on a tag toggle. The
-// global rotation state file (rotation.state) is exercised by
-// TestPhaseModelWithListBuildsAndPositionsCursor,
-// TestSelectedEntryPositionsAfterLast, and
-// TestNextEntryAfterLaunchAdvancesCursor.
 
 // TestPinnedModelWithoutAgentValidatesAfterAgentPick drives the full picker
 // flow (worktree pick → agent pick) with a pinned -M model and an unpinned
