@@ -182,58 +182,108 @@ func effectiveTargets(ts []config.AliasTarget) []config.AliasTarget {
 // request is checked (CheckAlias, then its Guard) against the document with
 // the earlier requests of the call already applied, and any failure refuses
 // all and changes nothing. A request whose effective targets already equal the
-// registry's well-formed alias (AliasTargetsEqual; a malformed alias is always
-// rewritten, which repairs it) is skipped, so the file keeps its own
-// spelling and, when every request is equal, is not written at all. changed
-// lists the ids written, in request order. An id given twice is refused. The
-// apply is pure (config.UpdateRegistry may run it up to three times), so a
-// Guard must be pure too.
+// registry's well-formed alias (AliasTargetsEqual) is skipped, so the file
+// keeps its own spelling and, when every request is equal, is not written at
+// all. A malformed registry alias is never equal: one whose fault is in its
+// targets is rewritten, which repairs it; one whose fault is elsewhere in its
+// table (an unknown key, a non-string notes), which a rewrite of the targets
+// keeps, refuses the call with the remedy (applyAliasRequests). changed lists
+// the ids written, in request order. An id given twice is refused. The apply
+// is pure (config.UpdateRegistry may run it up to three times), so a Guard
+// must be pure too.
 func SetAliases(reqs []AliasRequest) (changed []string, err error) {
-	seen := map[string]bool{}
-	for _, r := range reqs {
-		if seen[r.ID] {
-			return nil, fmt.Errorf("alias %q is given more than once", r.ID)
-		}
-		seen[r.ID] = true
+	if err := refuseDuplicateIDs(reqs); err != nil {
+		return nil, err
 	}
 	var ids []string
 	wrote, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
-		ids = nil
-		for _, r := range reqs {
-			if err := CheckAlias(d.RefConfig(), r); err != nil {
-				return err
-			}
-			if r.Guard != nil {
-				if err := r.Guard(d.RefConfig()); err != nil {
-					return err
-				}
-			}
-			if AliasTargetsEqual(d.RefConfig(), r.ID, r.Targets) {
-				continue
-			}
-			if !slices.ContainsFunc(d.Aliases(), func(t *tomlw.Table) bool {
-				id, _ := t.Get("id")
-				return id == r.ID
-			}) {
-				row := tomlw.NewTable()
-				row.Set("id", r.ID)
-				row.Set("targets", []any{})
-				if err := d.AddAlias(row); err != nil {
-					return err
-				}
-			}
-			if err := d.SetAliasTargets(r.ID, r.targetRows()); err != nil {
-				return err
-			}
-			ids = append(ids, r.ID)
-		}
-		return nil
+		var err error
+		ids, err = applyAliasRequests(d, reqs)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	if !wrote {
 		return nil, nil
+	}
+	return ids, nil
+}
+
+// PlanAliases is what SetAliases would do, without writing: the same apply
+// (applyAliasRequests) over a detached copy of the registry
+// (config.ReadRegistryDoc), so a dry run reports the ids the write would
+// change and refuses what it would refuse, in the same words. Guards are not
+// run: they re-check approvals a dry run never asks for.
+func PlanAliases(reqs []AliasRequest) (changed []string, err error) {
+	if err := refuseDuplicateIDs(reqs); err != nil {
+		return nil, err
+	}
+	d, err := config.ReadRegistryDoc()
+	if err != nil {
+		return nil, err
+	}
+	plain := make([]AliasRequest, len(reqs))
+	for i, r := range reqs {
+		r.Guard = nil
+		plain[i] = r
+	}
+	return applyAliasRequests(d, plain)
+}
+
+// refuseDuplicateIDs refuses a call that names one alias id twice.
+func refuseDuplicateIDs(reqs []AliasRequest) error {
+	seen := map[string]bool{}
+	for _, r := range reqs {
+		if seen[r.ID] {
+			return fmt.Errorf("alias %q is given more than once", r.ID)
+		}
+		seen[r.ID] = true
+	}
+	return nil
+}
+
+// applyAliasRequests applies reqs to d in order and returns the ids whose
+// alias it changed: each is checked (CheckAlias, then its Guard) against d
+// with the earlier ones applied, an equal one is skipped, the rest get their
+// targets rewritten. An alias still malformed after its rewrite (its fault is
+// outside the targets, which SetAliasTargets keeps) is refused, naming the
+// fault and the remedy, so nothing is reported as set that was not repaired.
+// It is pure over d.
+func applyAliasRequests(d *config.RegistryDoc, reqs []AliasRequest) ([]string, error) {
+	var ids []string
+	for _, r := range reqs {
+		if err := CheckAlias(d.RefConfig(), r); err != nil {
+			return nil, err
+		}
+		if r.Guard != nil {
+			if err := r.Guard(d.RefConfig()); err != nil {
+				return nil, err
+			}
+		}
+		if AliasTargetsEqual(d.RefConfig(), r.ID, r.Targets) {
+			continue
+		}
+		before, had := d.RefConfig().AliasByID(r.ID)
+		if !had {
+			row := tomlw.NewTable()
+			row.Set("id", r.ID)
+			row.Set("targets", []any{})
+			if err := d.AddAlias(row); err != nil {
+				return nil, err
+			}
+		}
+		if err := d.SetAliasTargets(r.ID, r.targetRows()); err != nil {
+			return nil, err
+		}
+		after, _ := d.RefConfig().AliasByID(r.ID)
+		if after.Malformed != "" {
+			return nil, fmt.Errorf("alias %q is malformed outside its targets (%s), which apply does not rewrite: edit the alias in %s by hand, or run `wt-model alias rm %s` and apply again; nothing was changed",
+				r.ID, after.Malformed, config.RegistryPath(), r.ID)
+		}
+		if !had || before.Malformed != "" || !slices.Equal(before.Targets, after.Targets) {
+			ids = append(ids, r.ID)
+		}
 	}
 	return ids, nil
 }

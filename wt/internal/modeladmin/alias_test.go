@@ -695,6 +695,46 @@ func TestSetAliasesRewritesAMalformedAliasWhoseTargetsMatch(t *testing.T) {
 	}
 }
 
+// TestSetAliasesRefusesAMalformedAliasItCannotRepair pins the limit of the
+// repair: SetAliases rewrites only an alias's targets, so a fault elsewhere
+// in its table (an unknown key such as priority, a non-string notes) survives
+// the write. Such a request is refused, naming the alias, its fault and the
+// remedy, and nothing is written: alone (where the targets already match and
+// the write would be a silent no-op), beside a second alias that does change
+// (where reporting it as changed would be a false `set alias:`), and with
+// different targets.
+func TestSetAliasesRefusesAMalformedAliasItCannotRepair(t *testing.T) {
+	for name, extra := range map[string]string{
+		"unknown key":      "priority = 2\n",
+		"non-string notes": "notes = 3\n",
+	} {
+		for _, tc := range []struct {
+			name string
+			reqs []AliasRequest
+		}{
+			{"same targets alone", []AliasRequest{{ID: "alias/m", Targets: targets("openrouter/big", 1)}}},
+			// The registry's own spelling: SetAliasTargets is a no-op here.
+			{"same spelling alone", []AliasRequest{{ID: "alias/m", Targets: targets("openrouter/big", 0)}}},
+			{"same spelling beside a changing alias", []AliasRequest{{ID: "alias/n", Targets: targets("openrouter/small", 1)}, {ID: "alias/m", Targets: targets("openrouter/big", 0)}}},
+			{"beside a changing alias", []AliasRequest{{ID: "alias/n", Targets: targets("openrouter/small", 1)}, {ID: "alias/m", Targets: targets("openrouter/big", 1)}}},
+			{"different targets", []AliasRequest{{ID: "alias/m", Targets: targets("openrouter/small", 1)}}},
+		} {
+			t.Run(name+"/"+tc.name, func(t *testing.T) {
+				path := scratchRegistry(t, aliasRegistry+"\n[[aliases]]\nid = \"alias/m\"\n"+extra+"targets = [{ model = \"openrouter/big\" }]\n")
+				before := read(t, path)
+				changed, err := SetAliases(tc.reqs)
+				if err == nil || !strings.Contains(err.Error(), `alias "alias/m"`) || !strings.Contains(err.Error(), "wt-model alias rm alias/m") ||
+					!strings.HasSuffix(err.Error(), "; nothing was changed") {
+					t.Fatalf("SetAliases = %v, %v; want a refusal naming alias/m and the remedy", changed, err)
+				}
+				if changed != nil || read(t, path) != before {
+					t.Errorf("changed %v, registry changed %v", changed, read(t, path) != before)
+				}
+			})
+		}
+	}
+}
+
 // aliasRegistryForExport is aliasRegistry holding one good alias without
 // explicit orders, one with explicit orders, a redirect, a malformed alias
 // (an unknown key) and a faulty one (a target naming no model).

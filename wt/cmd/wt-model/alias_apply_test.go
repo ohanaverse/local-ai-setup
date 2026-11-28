@@ -565,6 +565,70 @@ func TestAliasListTOMLNoteThenApplyRepairsTheAlias(t *testing.T) {
 	}
 }
 
+// aliasRegistryTableFault is aliasRegistry holding alias/m, malformed by a key
+// outside its targets (priority), which a rewrite of the targets cannot
+// remove; its readable target is openrouter/big.
+const aliasRegistryTableFault = aliasRegistry + `
+[[aliases]]
+id = "alias/m"
+priority = 2
+targets = [{ model = "openrouter/big" }]
+`
+
+// TestAliasApplyRefusesAMalformedAliasItCannotRepair pins that apply never
+// says `set alias:` or `no change:` for an alias it could not repair: a fault
+// outside the targets survives the rewrite, so the whole file is refused,
+// exit 1, the error names the alias, its fault and the remedy, no route sync
+// runs and the registry bytes are unchanged, alone and beside an alias that
+// would change.
+func TestAliasApplyRefusesAMalformedAliasItCannotRepair(t *testing.T) {
+	sameSpelling := "[[aliases]]\nid = \"alias/m\"\ntargets = [{ model = \"openrouter/big\" }]\n"
+	other := "\n[[aliases]]\nid = \"alias/n\"\ntargets = [{ model = \"openrouter/small\" }]\n"
+	for name, body := range map[string]string{
+		"alone":                                 repairFile,
+		"beside a changing alias":               repairFile + other,
+		"same spelling alone":                   sameSpelling,
+		"same spelling beside a changing alias": sameSpelling + other,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, _, path := aliasEnv(t, aliasRegistryTableFault)
+			before := mustRead(t, path)
+			syncs := countRouteSync(h)
+			file := writeAliasFile(t, body)
+			out, _, err := execAlias(t, h, "alias", "apply", file)
+			if err == nil || exitcode.Of(err) != 1 || !strings.HasPrefix(err.Error(), file+": ") || !strings.Contains(err.Error(), `alias "alias/m"`) ||
+				!strings.Contains(err.Error(), `unknown key "priority"`) || !strings.Contains(err.Error(), "wt-model alias rm alias/m") ||
+				!strings.HasSuffix(err.Error(), "; nothing was changed") || strings.Count(err.Error(), "nothing was changed") != 1 {
+				t.Fatalf("err %v (exit %d) stdout %q", err, exitcode.Of(err), out)
+			}
+			if strings.Contains(out, "set alias:") || strings.Contains(out, "no change:") || *syncs != 0 || mustRead(t, path) != before {
+				t.Errorf("stdout %q syncs %d registry changed %v", out, *syncs, mustRead(t, path) != before)
+			}
+		})
+	}
+}
+
+// TestAliasApplyDryRunRefusesWhatApplyRefusesForATableLevelFault pins that the
+// dry run and the real run agree on an alias apply cannot repair: the dry run
+// exits 1 with exactly the real run's error instead of printing `would set
+// alias:`, and writes nothing.
+func TestAliasApplyDryRunRefusesWhatApplyRefusesForATableLevelFault(t *testing.T) {
+	for _, body := range []string{repairFile, "[[aliases]]\nid = \"alias/m\"\ntargets = [{ model = \"openrouter/big\" }]\n"} {
+		h, _, path := aliasEnv(t, aliasRegistryTableFault)
+		before := mustRead(t, path)
+		file := writeAliasFile(t, body)
+		dry, _, dryErr := execAlias(t, h, "alias", "apply", file, "--dry-run")
+		_, _, realErr := execAlias(t, h, "alias", "apply", file)
+		if dryErr == nil || realErr == nil || exitcode.Of(dryErr) != 1 || dryErr.Error() != realErr.Error() ||
+			!strings.Contains(dryErr.Error(), "wt-model alias rm alias/m") {
+			t.Fatalf("%q: dry err %v, real err %v; want the same refusal naming the remedy", body, dryErr, realErr)
+		}
+		if strings.Contains(dry, "would set alias:") || strings.Contains(dry, "no change:") || mustRead(t, path) != before {
+			t.Errorf("%q: dry run said %q or the registry changed", body, dry)
+		}
+	}
+}
+
 // TestAliasApplyShrinkIsRecheckedInsideTheWrite is
 // TestAliasSetShrinkIsRecheckedInsideTheWrite for a file (#689): the shrinks
 // approved at the one question are (old, new) pairs read before the lock, so

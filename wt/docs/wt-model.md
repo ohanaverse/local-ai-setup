@@ -508,9 +508,14 @@ every alias.
 `targets = [{ model = "<registry id>", order = N }, ...]` (an `order` left out
 is the target's position, from 1) and an optional `notes` string, which is
 accepted and ignored; any other top-level key or table, a `redirect_to`, an id
-given twice and a file with no alias are refused. Every refusal, a file that
-cannot be read and one refused inside the registry write included, reads
-`<file>: <why>; nothing was changed`. A sample file:
+given twice and a file with no alias are refused. A refusal of the file, a
+file that cannot be read and one refused inside the registry write included,
+reads `<file>: <why>; nothing was changed` and changes nothing. Three
+refusals read differently and change nothing either: a registry that cannot
+be loaded is the registry's own error, a missing approval is `approval
+missing: ...; nothing was changed` (exit 3, below), and the window re-check
+inside the write ends `the window changed since the check; nothing was
+changed, rerun`. A sample file:
 [alias-apply.sample.toml](../../docs/contracts/alias-apply.sample.toml).
 
 ```toml
@@ -529,14 +534,21 @@ bad alias anywhere refuses the whole file and nothing is changed or asked. An
 alias whose effective targets are the ones the file names (the same models at
 the same orders) is `no change`: it is not rewritten, and the registry keeps
 the spelling it has. An alias the registry holds malformed is never `no
-change`, even when the targets it could read match: it is rewritten, which
-repairs it (`list --toml` names such an alias in its note; write the corrected
-table to a file and `apply` it). The rest are written in one registry update and one route
+change`, even when the targets it could read match (`list --toml` names such
+an alias in its note). When the fault is in its `targets` (an order of 0, an
+unknown key in a target), `apply` rewrites the targets, which repairs it:
+write the corrected table to a file and `apply` it. A fault elsewhere in the
+alias table (an unknown key such as `priority`, a non-string `notes`)
+survives a rewrite of the targets, so `apply` refuses the whole file, naming
+the alias and its fault, with the remedy: edit the alias in `registry.toml`
+by hand, or `wt-model alias rm <id>` and apply again. The rest are written in one registry update and one route
 sync runs, only when something changed. The output is one line per alias in
 file order, `set alias: <id>` or `no change: <id>`. `--dry-run` prints each
 changed alias's plan as `set --dry-run` does (`would set alias: <id>`, targets,
 window change and rows; `no change: <id>` for the others), then one `dry run:
-nothing was changed` line for the whole file, and changes nothing.
+nothing was changed` line for the whole file, and changes nothing; it runs
+the write's own apply over a copy of the registry, so it refuses what the
+real run refuses (an alias `apply` cannot repair included) in the same words.
 When any window gets smaller, or unknown where it was known, **one** question
 names every such alias and asks y/N (default No); `--accept-smaller-window`
 answers yes, and without a terminal or on an answer of no it exits 3 with

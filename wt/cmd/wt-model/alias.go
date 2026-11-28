@@ -545,8 +545,10 @@ type aliasApplyItem struct {
 
 // runAliasApply is `wt-model alias apply`: `alias set` for every alias of a
 // file, all or nothing. Every alias is checked before anything is asked; a
-// dry run prints each one's `alias set --dry-run` block (or `no change:`)
-// and one `dry run: nothing was changed` footer for the whole file;
+// dry run runs the write's apply over a copy of the registry
+// (modeladmin.PlanAliases), so it refuses what the write refuses, and prints
+// each changed alias's `alias set --dry-run` block (or `no change:`) and one
+// `dry run: nothing was changed` footer for the whole file;
 // a real run asks one question for every shrinking window, writes the
 // changed aliases in one registry write (modeladmin.SetAliases, each with
 // its shrink re-check) and runs one route sync, only when something changed.
@@ -589,8 +591,15 @@ func (h *host) runAliasApply(ctx context.Context, out, errOut io.Writer, rec ser
 		}
 	}
 	if dryRun {
+		// The write's own apply over a detached copy of the registry: the
+		// same ids change and the same refusals (an alias apply cannot
+		// repair) come back in the same words.
+		changed, err := modeladmin.PlanAliases(reqs)
+		if err != nil {
+			return aliasApplyError(path, err)
+		}
 		for _, it := range items {
-			if modeladmin.AliasTargetsEqual(cfg, it.req.ID, it.req.Targets) {
+			if !slices.Contains(changed, it.req.ID) {
 				fmt.Fprintf(out, "no change: %s\n", it.req.ID)
 				continue
 			}
@@ -633,12 +642,7 @@ func (h *host) runAliasApply(ctx context.Context, out, errOut io.Writer, rec ser
 	}
 	changed, err := modeladmin.SetAliases(writes)
 	if err != nil {
-		// The registry write is all or nothing; the shrink re-check's own
-		// text already says so, every other refusal gets the suffix.
-		if strings.Contains(err.Error(), "nothing was changed") {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-		return fmt.Errorf("%s: %w; nothing was changed", path, err)
+		return aliasApplyError(path, err)
 	}
 	for _, r := range reqs {
 		if slices.Contains(changed, r.ID) {
@@ -651,6 +655,18 @@ func (h *host) runAliasApply(ctx context.Context, out, errOut io.Writer, rec ser
 		return nil
 	}
 	return h.syncAndWarn(out, errOut, nil)
+}
+
+// aliasApplyError is a refusal of the registry write (or of its dry-run
+// plan) as `apply` words it: the file first, then the reason, ending in
+// `; nothing was changed`, which the write is all or nothing about; a reason
+// whose own text already says so (the shrink re-check, an alias apply cannot
+// repair) does not get it twice.
+func aliasApplyError(path string, err error) error {
+	if strings.Contains(err.Error(), "nothing was changed") {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return fmt.Errorf("%s: %w; nothing was changed", path, err)
 }
 
 // aliasShrinkGuard is the shrink check run again inside the registry write
