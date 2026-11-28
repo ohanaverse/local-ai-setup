@@ -144,6 +144,16 @@
 
 ### Fixed
 
+- `wt-model litellm sync` and `sync --dry-run` no longer warn that wt did not
+  write the session affinity settings when `router_settings` is a YAML alias
+  or comes from a root `<<` merge key and the shared block already sets all
+  three keys (any value, `false` included), nor that it did not write
+  `cancel_on_disconnect: true` when such a shared `general_settings` already
+  sets it (Refs #758). The warning still fires, with the same text, while a
+  key is absent or null there or the shared block is not a mapping wt can
+  read, and wt still never writes through the shared block. The affinity-off
+  warning (a checks list without `session_affinity`) now judges an aliased or
+  root-merged `router_settings` too, not only a literal one.
 - A LiteLLM key rotate on the Setup tab of `wt-model setup` no longer refuses
   a loaded `local.wt-model.serve` LaunchAgent just because its plist is not
   marked `managed by wt` (#708): the plan leaves that hand-written plist as

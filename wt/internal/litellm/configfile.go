@@ -796,12 +796,43 @@ func ensureRouterSettings(root *yaml.Node) {
 	}
 }
 
+// resolvedBlock is root's top-level block key as LiteLLM's YAML loader sees
+// it: written literally, a whole-value alias resolved, or supplied by a root
+// merge key. It is nil when the key is nowhere, and may be any node kind (a
+// dangling alias stays an alias node).
+func resolvedBlock(root *yaml.Node, key string) *yaml.Node {
+	return aliasValue(mergedGet(root, key))
+}
+
+// sharedBlockLacks says whether a block EnsureSettings skipped (a whole-value
+// alias or a root merge, so a write would change what other keys share) still
+// leaves one of keys unset: the block is not a mapping (absent, null, a
+// scalar, a list or a dangling alias: fail closed, since wt cannot say what
+// it holds), or one key is absent or null in it. Keys are read through merge
+// keys with a whole-value alias resolved, the rule the write path uses, so any
+// non-null value, false included, counts as set (the opt-out). The skip
+// warnings fire only when it says yes (#758): a shared block that already
+// carries the keys has the protection on and draws no false alarm.
+func sharedBlockLacks(root *yaml.Node, block string, keys ...string) bool {
+	b := resolvedBlock(root, block)
+	if b == nil || b.Kind != yaml.MappingNode {
+		return true
+	}
+	for _, k := range keys {
+		if v := aliasValue(mergedGet(b, k)); v == nil || isNull(v) {
+			return true
+		}
+	}
+	return false
+}
+
 // affinityOffWarning says session affinity is off because a hand-written
-// router_settings.optional_pre_call_checks list has no session_affinity, or
-// "" otherwise. Only a real mapping block is judged (a skipped one has its own
-// warning) and only a list (a scalar is left alone and not interpreted).
-func affinityOffWarning(root *yaml.Node) string {
-	rs := mapGet(root, "router_settings")
+// optional_pre_call_checks list in rs, router_settings as LiteLLM reads it
+// (resolvedBlock: literal, aliased or root-merged alike), has no
+// session_affinity, or "" otherwise. Only a mapping block is judged (one that
+// is not has the skip warning or nothing to judge) and only a list (a scalar
+// is left alone and not interpreted).
+func affinityOffWarning(rs *yaml.Node) string {
 	if rs == nil || rs.Kind != yaml.MappingNode {
 		return ""
 	}
@@ -818,19 +849,21 @@ func affinityOffWarning(root *yaml.Node) string {
 }
 
 // settingsWarnings reports the launcher-required settings EnsureSettings
-// could not write, so a sync tells the user the protection is off instead of
-// leaving it silent, and a session affinity the user's checks list turns off.
-// Sync reports it beside ollamaServeWarnings.
+// could not write and that the config does not already set, so a sync tells
+// the user the protection is off instead of leaving it silent, and a session
+// affinity the user's checks list turns off. A skipped shared block that
+// already carries the keys draws no warning (sharedBlockLacks). Sync reports
+// it beside ollamaServeWarnings.
 func (f *File) settingsWarnings() []string {
 	root := f.root()
 	var out []string
-	if why := cancelOnDisconnectSkipped(root); why != "" {
+	if why := cancelOnDisconnectSkipped(root); why != "" && sharedBlockLacks(root, "general_settings", "cancel_on_disconnect") {
 		out = append(out, "general_settings "+why+", so wt did not write cancel_on_disconnect: true; set it there by hand or the proxy keeps generating for abandoned non-streamed requests (#399)")
 	}
-	if why := routerSettingsSkipped(root); why != "" {
+	if why := routerSettingsSkipped(root); why != "" && sharedBlockLacks(root, "router_settings", affinitySettingKeys...) {
 		out = append(out, "router_settings "+why+", so wt did not write the session affinity settings (optional_pre_call_checks: [session_affinity], deployment_affinity_ttl_seconds, session_affinity_repin_on_failover); set them there by hand or a model group may send one conversation to several deployments")
 	}
-	if w := affinityOffWarning(root); w != "" {
+	if w := affinityOffWarning(resolvedBlock(root, "router_settings")); w != "" {
 		out = append(out, w)
 	}
 	return out

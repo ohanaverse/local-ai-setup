@@ -1,6 +1,7 @@
 package litellm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -1445,6 +1446,44 @@ func TestSyncAddsCancelOnDisconnectToAnExistingConfigWithOneRestart(t *testing.T
 	res, err = Sync(empty, nil, o)
 	if err != nil || res.Changed || *restarts != 1 {
 		t.Fatalf("second Sync: err=%v changed=%v restarts=%d, want nil/false/1", err, res.Changed, *restarts)
+	}
+}
+
+// TestSyncIsSilentOnASharedBlockThatCarriesTheKeys pins #758 end to end: the
+// issue's config (router_settings a whole-value alias of an anchored block
+// that holds the three affinity keys), and the same with general_settings
+// shared too, goes through Sync and PlanSync with no warning, no write (the
+// bytes stay) and no restart, and the dry run says nothing would change.
+// Before the fix every sync printed the skip warning for a protection that
+// was on.
+func TestSyncIsSilentOnASharedBlockThatCarriesTheKeys(t *testing.T) {
+	const issue = "base: &r\n  optional_pre_call_checks: [session_affinity]\n  deployment_affinity_ttl_seconds: 14400\n  session_affinity_repin_on_failover: true\nrouter_settings: *r\n"
+	for name, body := range map[string]string{
+		"issue config":       "model_list: []\n" + settledWithoutAffinity + issue,
+		"both blocks shared": "model_list: []\n" + litellmSettingsDone + "gs: &g {cancel_on_disconnect: true, store_model_in_db: true}\ngeneral_settings: *g\n" + issue,
+	} {
+		t.Run(name, func(t *testing.T) {
+			o, restarts, p := opts(t, body)
+			plan, err := PlanSync(&config.Config{}, nil, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out, errOut bytes.Buffer
+			if err := ReportSyncPlan(&out, &errOut, plan, nil, false); err != nil {
+				t.Fatal(err)
+			}
+			if plan.Restart || len(plan.Warnings) != 0 || len(plan.affinityKeys) != 0 || out.Len() != 0 || errOut.Len() != 0 {
+				t.Fatalf("plan restart=%v warnings=%q affinityKeys=%v text=%q err=%q, want no change and no warning",
+					plan.Restart, plan.Warnings, plan.affinityKeys, out.String(), errOut.String())
+			}
+			res, err := Sync(&config.Config{}, nil, o)
+			if err != nil || res.Changed || *restarts != 0 || len(res.Warnings) != 0 {
+				t.Fatalf("Sync: err=%v changed=%v restarts=%d warnings=%q, want nil/false/0/none", err, res.Changed, *restarts, res.Warnings)
+			}
+			if got := readFile(t, p); got != body {
+				t.Fatalf("config.yaml rewritten:\n%s", got)
+			}
+		})
 	}
 }
 
