@@ -92,12 +92,11 @@ func TestEligibleWireByProviderTagFamily(t *testing.T) {
 }
 
 // TestEligibleWireSushiForEveryAgent pins that a sushi row reaches every agent
-// that is not native-only (claude, pi, codex, opencode, copilot), whatever
-// list the agent carries, and never agy, whose only offer is its own native
+// that is not native-only (claude, pi, codex, opencode, copilot), and never agy, whose only offer is its own native
 // row. Sushi used to be reserved to claude and pi by a table.
 func TestEligibleWireSushiForEveryAgent(t *testing.T) {
 	for _, name := range []string{"claude", "pi", "codex", "opencode", "copilot", "agy"} {
-		a := config.Agent{Name: name, SupportedProviders: []string{"none"}}
+		a := config.Agent{Name: name}
 		got := wid(EligibleWire(eligRows(), a, "", ""))
 		want := name != "agy"
 		if slices.Contains(got, "a") != want {
@@ -134,7 +133,7 @@ func aliasRow(id, loc string, order int, targets ...modelapi.AliasTarget) modela
 // TestEligibleWireAliasNeedsEveryTargetProvider pins that an alias row (whose
 // own provider id is "alias") reaches an agent exactly when every one of its
 // targets' providers would, by the derived rule: codex gets every alias
-// whose targets are non-native, whatever list it carries; a synthesized
+// whose targets are non-native; a synthesized
 // claude gets the same plus its own native row; agy, which takes only its own
 // native row, gets none; and an alias with no targets reaches nobody.
 func TestEligibleWireAliasNeedsEveryTargetProvider(t *testing.T) {
@@ -147,13 +146,9 @@ func TestEligibleWireAliasNeedsEveryTargetProvider(t *testing.T) {
 		modelapi.AliasTarget{ID: "sushi/p", Order: 1, ProviderID: "sushi", Location: "local"})
 	rows := append(eligRows(), both, ollamaOnly, sushi)
 
-	for _, codex := range []config.Agent{
-		{Name: "codex"},
-		{Name: "codex", SupportedProviders: []string{"ollama"}},
-	} {
-		if got := wid(EligibleWire(rows, codex, "", "")); !slices.Equal(got, []string{"a", "b", "alias/both", "alias/one", "alias/sushi"}) {
-			t.Errorf("codex %v: %v, want [a b alias/both alias/one alias/sushi]", codex.SupportedProviders, got)
-		}
+	codex := config.Agent{Name: "codex"}
+	if got := wid(EligibleWire(rows, codex, "", "")); !slices.Equal(got, []string{"a", "b", "alias/both", "alias/one", "alias/sushi"}) {
+		t.Errorf("codex: %v, want [a b alias/both alias/one alias/sushi]", got)
 	}
 	claude := config.Agent{Name: "claude", Synthesized: true}
 	if got := wid(EligibleWire(rows, claude, "", "")); !slices.Equal(got, []string{"a", "b", "c", "alias/both", "alias/one", "alias/sushi"}) {
@@ -170,11 +165,10 @@ func TestEligibleWireAliasNeedsEveryTargetProvider(t *testing.T) {
 }
 
 // TestProviderEligible pins the four-clause rule, one clause per group of
-// rows: the subscription row reaches claude alone (a list never admits it);
+// rows: the subscription row reaches claude alone;
 // agy takes only its own native row; any other native row reaches only the
-// agent of that name; and every other row reaches every agent, whatever its
-// SupportedProviders list says (a list never narrows) and for a synthesized
-// (Synthesized) agent too.
+// agent of that name; and every other row reaches every agent, a synthesized
+// (Synthesized) one too.
 func TestProviderEligible(t *testing.T) {
 	type tc struct {
 		name     string
@@ -190,7 +184,6 @@ func TestProviderEligible(t *testing.T) {
 	for _, n := range []string{"claude", "codex", "pi", "opencode", "copilot", "agy"} {
 		add(config.Agent{Name: n}, config.SubscriptionProvider, false, n == "claude")
 	}
-	add(config.Agent{Name: "codex", SupportedProviders: []string{config.SubscriptionProvider}}, config.SubscriptionProvider, false, false)
 
 	add(config.Agent{Name: "agy"}, "agy", true, true)
 	add(config.Agent{Name: "agy"}, "claude", true, false)
@@ -213,14 +206,13 @@ func TestProviderEligible(t *testing.T) {
 		for _, n := range []string{"claude", "codex", "copilot", "pi", "opencode"} {
 			add(config.Agent{Name: n}, p, false, true)
 		}
-		add(config.Agent{Name: "codex", SupportedProviders: []string{"ollama"}}, p, false, true)
 		add(config.Agent{Name: "pi", Synthesized: true}, p, false, true)
 	}
 
 	for _, c := range cases {
 		if got := providerEligible(c.agent, c.provider, c.native); got != c.want {
-			t.Errorf("%s (native=%v, list=%v, synthesized=%v): got %v, want %v",
-				c.name, c.native, c.agent.SupportedProviders, c.agent.Synthesized, got, c.want)
+			t.Errorf("%s (native=%v, synthesized=%v): got %v, want %v",
+				c.name, c.native, c.agent.Synthesized, got, c.want)
 		}
 	}
 }

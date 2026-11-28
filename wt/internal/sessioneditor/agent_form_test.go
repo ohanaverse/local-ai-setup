@@ -1,7 +1,6 @@
 package sessioneditor
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 
@@ -10,10 +9,8 @@ import (
 )
 
 // TestAgentForm_Add_NeedsOnlyAName verifies that a new agent saves with just a
-// name and gets no provider list and no default provider. Why: the eligibility
-// rule is derived, so the form has no provider inputs; a nil list (never an
-// empty one, which an older wt-model rejects as supported_providers = []) is
-// what a form-created entry must carry.
+// name. Why: the eligibility rule is derived and an agent entry holds nothing
+// else, so the form has no other input and a bare name must save.
 func TestAgentForm_Add_NeedsOnlyAName(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{
 		Providers: []config.Provider{{ID: "agy"}},
@@ -33,12 +30,6 @@ func TestAgentForm_Add_NeedsOnlyAName(t *testing.T) {
 	ag := m2.cfg.Agents[0]
 	if ag.Name != "foo" {
 		t.Errorf("name = %q, want foo", ag.Name)
-	}
-	if ag.SupportedProviders != nil {
-		t.Errorf("supported_providers = %#v, want nil (never an empty list)", ag.SupportedProviders)
-	}
-	if ag.DefaultProvider != "" {
-		t.Errorf("default_provider = %q, want empty", ag.DefaultProvider)
 	}
 }
 
@@ -107,7 +98,7 @@ func TestAgentForm_FieldsAreNameAndInstalled(t *testing.T) {
 func TestAgentForm_RenameExisting(t *testing.T) {
 	m := newModel(testTheme(), &config.Config{
 		Providers: []config.Provider{{ID: "agy"}},
-		Agents:    []config.Agent{{Name: "old", SupportedProviders: []string{"agy"}}},
+		Agents:    []config.Agent{{Name: "old"}},
 	}, nil)
 	enterAgentForm(m, m.cfg.Agents[0], false)
 	m.agName.SetValue("new")
@@ -122,40 +113,6 @@ func TestAgentForm_RenameExisting(t *testing.T) {
 	}
 	if m2.cfg.Agents[0].Name != "new" {
 		t.Errorf("name = %q, want new", m2.cfg.Agents[0].Name)
-	}
-}
-
-// TestAgentForm_EditKeepsTheStoredListUntouched verifies that renaming an
-// agent that carries a supported_providers list, a default_provider and the
-// Synthesized flag saves all three exactly as stored. Why: the form no longer
-// edits them, so it must not drop or rewrite what an older config.toml (or a
-// hand edit) holds; saveAgentForm starts from the stored entry.
-func TestAgentForm_EditKeepsTheStoredListUntouched(t *testing.T) {
-	stored := config.Agent{
-		Name:               "old",
-		SupportedProviders: []string{"agy", "claude"},
-		DefaultProvider:    "claude",
-		Synthesized:        true,
-	}
-	m := newModel(testTheme(), &config.Config{
-		Providers: []config.Provider{{ID: "agy"}, {ID: "claude"}},
-		Agents:    []config.Agent{stored},
-	}, nil)
-	enterAgentForm(m, m.cfg.Agents[0], false)
-	m.agName.SetValue("new")
-
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m2 := got.(*model)
-	if m2.phase != phaseList || m2.formError != "" {
-		t.Fatalf("expected the save to go through, got phase %d, error %q", m2.phase, m2.formError)
-	}
-	if len(m2.cfg.Agents) != 1 {
-		t.Fatalf("expected 1 agent, got %d", len(m2.cfg.Agents))
-	}
-	want := stored
-	want.Name = "new"
-	if !reflect.DeepEqual(m2.cfg.Agents[0], want) {
-		t.Errorf("agent = %#v, want %#v", m2.cfg.Agents[0], want)
 	}
 }
 

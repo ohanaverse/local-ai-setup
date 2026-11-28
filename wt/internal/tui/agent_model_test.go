@@ -135,7 +135,7 @@ func drivePhaseAgentEnter(t *testing.T, m model, agentName string) model {
 func TestSelectedEntryMsgEmptyListStaysOnList(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Agents:     []config.Agent{{Name: "claude"}},
 		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		// No models with provider "ollama".
 	}
@@ -160,7 +160,7 @@ func TestSelectedEntryMsgEmptyListStaysOnList(t *testing.T) {
 func TestSelectedEntryMsgEmptyListSetsActionableStatus(t *testing.T) {
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Agents:     []config.Agent{{Name: "claude"}},
 		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 	}
 	m := model{cfg: cfg, phase: phaseList, width: 80, height: 24}
@@ -179,7 +179,7 @@ func TestPinnedAgentEmptyListStatusUsesFirstActiveTag(t *testing.T) {
 	requireBinary(t, "claude")
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Agents:     []config.Agent{{Name: "claude"}},
 		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 	}
 	m := model{
@@ -210,7 +210,7 @@ func TestPinnedAgentErrorRenderedOnList(t *testing.T) {
 	defer stubInstalled("claude")()
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Agents:     []config.Agent{{Name: "claude"}},
 		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		// No models — the picker's list is empty.
 	}
@@ -574,6 +574,6 @@ func buildTestConfigWithModels(models ...config.Model) *config.Config {
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models:     models,
-		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+		Agents:     []config.Agent{{Name: "claude"}},
 	}
 }

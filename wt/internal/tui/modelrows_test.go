@@ -23,7 +23,7 @@ func rowsTestCfg() *config.Config {
 			{ID: "ollama", Location: config.LocationLocal},
 			{ID: "mtplx", Location: config.LocationLocal},
 		},
-		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"openrouter", "omlx", "ollama"}}},
+		Agents: []config.Agent{{Name: "claude"}},
 	}
 	return cfg
 }

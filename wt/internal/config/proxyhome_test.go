@@ -370,15 +370,17 @@ func TestResolveProxyNeverQuotesAnUnquotedURL(t *testing.T) {
 
 // TestResolveProxyLegacyNeedsNoMigrations pins the legacy read's contract:
 // readConfigFile only — no Load, no schema migration, no write. The fixture
-// is a config.toml Load would rewrite (its google agent is renamed to agy),
-// so a byte change here would mean resolution migrated the file behind the
-// user's back.
+// is a config.toml Load would rewrite (it carries a legacy [gateway] block,
+// which Load drops), so a byte change here would mean resolution migrated the
+// file behind the user's back.
 func TestResolveProxyLegacyNeedsNoMigrations(t *testing.T) {
 	const legacyBody = `default_tag = "code"
 
 [[agents]]
 name = "google"
-supported_providers = ["ollama"]
+
+[gateway]
+enabled = true
 
 [litellm]
 url = "http://legacy:4000"

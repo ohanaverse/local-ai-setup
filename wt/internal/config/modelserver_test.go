@@ -31,7 +31,6 @@ func TestLoadSessionNeedsNoRegistry(t *testing.T) {
 
 [[agents]]
 name = "claude"
-supported_providers = ["no-such-provider"]
 
 [model-server]
 url = "http://127.0.0.1:9"
@@ -49,7 +48,7 @@ token_file = "~/tok"
 		t.Errorf("model server = %+v", ms)
 	}
 	a, err := cfg.AgentByName("claude")
-	if err != nil || a.SupportedProviders[0] != "no-such-provider" {
+	if err != nil || a.Name != "claude" {
 		t.Errorf("claude agent = %+v, %v", a, err)
 	}
 }
@@ -62,7 +61,6 @@ func TestLoadSessionSynthesizesDriverAgents(t *testing.T) {
 
 [[agents]]
 name = "claude"
-supported_providers = ["ollama"]
 
 [model-server]
 url = "http://127.0.0.1:9"
@@ -77,7 +75,7 @@ token_file = "/t"
 		t.Fatalf("pi = %+v, %v", pi, err)
 	}
 	cl, err := cfg.AgentByName("claude")
-	if err != nil || cl.Synthesized || len(cl.SupportedProviders) != 1 || cl.SupportedProviders[0] != "ollama" {
+	if err != nil || cl.Synthesized {
 		t.Errorf("claude widened or lost: %+v, %v", cl, err)
 	}
 	if err := cfg.PatchSave(func(fresh *Config) { fresh.DefaultTag = "design" }); err != nil {
@@ -94,7 +92,7 @@ token_file = "/t"
 // writes only the agents config.toml held, so a session save never turns a
 // synthesized agent into a real entry.
 func TestPatchSaveNeverWritesASynthesizedAgent(t *testing.T) {
-	path := sessionHome(t, "default_tag = \"code\"\n\n[[agents]]\nname = \"codex\"\nsupported_providers = [\"openrouter\"]\n")
+	path := sessionHome(t, "default_tag = \"code\"\n\n[[agents]]\nname = \"codex\"\n")
 	cfg, err := LoadSession("claude")
 	if err != nil {
 		t.Fatal(err)
@@ -114,77 +112,6 @@ func TestPatchSaveNeverWritesASynthesizedAgent(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `name = "claude"`) || strings.Contains(string(raw), `name = 'claude'`) {
 		t.Errorf("synthesized agent was written:\n%s", raw)
-	}
-}
-
-// TestAgentWithoutAListRoundTrips proves an agent entry with only a name loads,
-// passes ValidateSession, and survives an unrelated PatchSave without gaining a
-// supported_providers line, while the other agent's list and default stay as
-// written. Why: an older wt-model rejects an empty supported_providers = [],
-// and BurntSushi/toml omits a nil slice, so the field's tag must stay as it is;
-// this pins that the save does not turn "no list" into an empty one.
-func TestAgentWithoutAListRoundTrips(t *testing.T) {
-	path := sessionHome(t, `default_tag = "code"
-
-[[agents]]
-name = "x"
-
-[[agents]]
-name = "y"
-supported_providers = ["ollama", "omlx"]
-default_provider = "omlx"
-`)
-	cfg, err := LoadSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cfg.ValidateSession(); err != nil {
-		t.Fatalf("ValidateSession refused an agent with no list: %v", err)
-	}
-	x, err := cfg.AgentByName("x")
-	if err != nil || len(x.SupportedProviders) != 0 || x.Synthesized {
-		t.Fatalf("x = %+v, %v", x, err)
-	}
-	if err := cfg.PatchSave(func(fresh *Config) { fresh.DefaultTag = "design" }); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(raw)
-	if n := strings.Count(text, "supported_providers"); n != 1 {
-		t.Errorf("supported_providers appears %d times, want 1 (only y's):\n%s", n, text)
-	}
-	for _, want := range []string{`name = "x"`, `supported_providers = ["ollama", "omlx"]`, `default_provider = "omlx"`, `default_tag = "design"`} {
-		if !strings.Contains(text, want) {
-			t.Errorf("%q missing:\n%s", want, text)
-		}
-	}
-}
-
-// TestLoadSessionMigratesAgentRefsInMemory proves the legacy google reference
-// reads as agy while the file on disk stays untouched.
-func TestLoadSessionMigratesAgentRefsInMemory(t *testing.T) {
-	body := `default_tag = "code"
-
-[[agents]]
-name = "claude"
-supported_providers = ["google", "ollama"]
-default_provider = "google"
-`
-	path := sessionHome(t, body)
-	cfg, err := LoadSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, err := cfg.AgentByName("claude")
-	if err != nil || a.SupportedProviders[0] != "agy" || a.DefaultProvider != "agy" {
-		t.Errorf("claude = %+v, %v", a, err)
-	}
-	raw, _ := os.ReadFile(path)
-	if string(raw) != body {
-		t.Errorf("file changed:\n%s", raw)
 	}
 }
 
@@ -228,7 +155,6 @@ func TestWholeFileSaveNeverWritesSynthesizedAgents(t *testing.T) {
 
 [[agents]]
 name = "claude"
-supported_providers = ["ollama"]
 
 [model-server]
 url = "http://127.0.0.1:9"
@@ -390,7 +316,6 @@ func TestUpdateModelServerPreservesOtherTables(t *testing.T) {
 
 [[agents]]
 name = "claude"
-supported_providers = ["no-such-provider"]
 
 [launch]
 exit_prompt = "never"
@@ -453,7 +378,6 @@ func TestUpdateModelServerRefusesATypeErrorElsewhere(t *testing.T) {
 func TestUpdateModelServerWorksWhenConfigFailsValidationButParses(t *testing.T) {
 	path := sessionHome(t, `[[agents]]
 name = "claude"
-supported_providers = ["no-such-provider"]
 `)
 	err := UpdateModelServer(func(cur ModelServerState) (ModelServerState, error) {
 		cur.Mode = "local"

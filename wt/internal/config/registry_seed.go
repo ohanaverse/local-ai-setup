@@ -95,7 +95,8 @@ const OpenRouterKeyEnv = provider.OpenRouterKeyEnv
 //     gets its own default row: a native row under `ollama` would take the
 //     id every ollama model resolves through.
 //
-// What an agent's supported_providers list says decides no row.
+// An agent's entry in config.toml names the agent and nothing else; a
+// supported_providers key an older build wrote is not read.
 //
 // It runs on the document UpdateRegistry hands an apply function, so a caller
 // can seed and make its own change in one locked write:

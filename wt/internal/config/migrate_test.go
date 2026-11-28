@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -277,103 +278,62 @@ func TestMigrate_AgySeedingIsIdempotent(t *testing.T) {
 		t.Fatalf("expected exactly 1 agy/native model, got %d", agyNativeModels)
 	}
 
+	agyAgents := 0
 	for _, a := range cfg.Agents {
 		if a.Name == "agy" {
-			if len(a.SupportedProviders) != 1 || a.SupportedProviders[0] != "agy" || a.DefaultProvider != "agy" {
-				t.Fatalf("agy agent not restricted to agy provider: %+v", a)
-			}
-			return
+			agyAgents++
 		}
 	}
-	t.Fatal("expected agy agent in migrated config")
+	if agyAgents != 1 {
+		t.Fatalf("expected exactly 1 agy agent, got %d in %+v", agyAgents, cfg.Agents)
+	}
 }
 
-// TestMigrateConfigSchema covers the idempotent fixup applied to an
-// already-decoded config (rename google→agy; the legacy [gateway] notice is
-// covered elsewhere). A user with an older config.toml must end up with the
-// new shape after a single Load(), and a second Load() must not touch the
-// file. Failing this test means users with old configs would silently keep
-// references to the dropped google entity.
-func TestMigrateConfigSchema(t *testing.T) {
+// TestMigrateConfigSchemaOnlyProbesTheGatewayBlock proves the schema fixup
+// that is left looks at the legacy [gateway] block and nothing else: a file
+// with the block reports changed true, one without it false, and neither adds
+// or edits an agent (an agent whose old list holds google is still read as an
+// agent named as written, since nothing reads the list). Why: the google to
+// agy rename and the agent rewiring are gone, so a fixup that touched an
+// agent would write a config.toml nobody asked to change.
+func TestMigrateConfigSchemaOnlyProbesTheGatewayBlock(t *testing.T) {
 	tmp := t.TempDir()
-	cfgDir := filepath.Join(tmp, "agent-wt")
-	os.MkdirAll(cfgDir, 0755)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-
-	writeCfg := func(t *testing.T, body string) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(body), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	t.Run("rename google to agy", func(t *testing.T) {
-		writeCfg(t, `
-default_tag = "code"
-
+	const agents = `
 [[agents]]
 name = "agy"
 supported_providers = ["google"]
 default_provider = "google"
-`)
-		writeRegistry(t, tmp, `
-[[providers]]
-id = "agy"
-name = "Antigravity"
-location = "cloud"
-auth = { type = "native" }
-`)
-		cfg, err := Load()
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-
-		// Agent rewired: google → agy.
-		a, err := cfg.AgentByName("agy")
-		if err != nil {
-			t.Fatalf("agy agent missing: %v", err)
-		}
-		if !slices.Equal(a.SupportedProviders, []string{"agy"}) || a.DefaultProvider != "agy" {
-			t.Errorf("agy agent = %+v, want supported=[agy] default=agy", a)
-		}
-	})
-
-	t.Run("idempotent", func(t *testing.T) {
-		writeCfg(t, `
-default_tag = "code"
 
 [[agents]]
-name = "claude"
-supported_providers = ["google"]
-default_provider = "google"
-`)
-		writeRegistry(t, tmp, `
-[[providers]]
-id = "agy"
-name = "Antigravity"
-location = "cloud"
-auth = { type = "native" }
-`)
-		// First Load applies any fixups (renames google to agy on disk).
-		if _, err := Load(); err != nil {
-			t.Fatalf("first Load: %v", err)
-		}
-		firstData, err := os.ReadFile(filepath.Join(cfgDir, "config.toml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Second Load must not rewrite the file.
-		if _, err := Load(); err != nil {
-			t.Fatalf("second Load: %v", err)
-		}
-		secondData, err := os.ReadFile(filepath.Join(cfgDir, "config.toml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(firstData) != string(secondData) {
-			t.Errorf("config.toml rewritten on second Load:\nbefore: %s\nafter:  %s", firstData, secondData)
-		}
-	})
+name = "opencode"
+`
+	for _, c := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"legacy gateway block", "default_tag = \"code\"\n\n[gateway]\nsubscription_passthrough = true\n" + agents, true},
+		{"no gateway block", "default_tag = \"code\"\n" + agents, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			must(t, Path(), c.body)
+			cfg := loadConfigFile(t, tmp)
+			before := slices.Clone(cfg.Agents)
+			changed, err := migrateConfigSchema(cfg)
+			if err != nil {
+				t.Fatalf("migrateConfigSchema: %v", err)
+			}
+			if changed != c.want {
+				t.Errorf("changed = %v, want %v", changed, c.want)
+			}
+			if !reflect.DeepEqual(before, cfg.Agents) {
+				t.Errorf("agents edited: before %+v, after %+v", before, cfg.Agents)
+			}
+			if len(cfg.Agents) != 2 || cfg.Agents[0].Name != "agy" || cfg.Agents[1].Name != "opencode" {
+				t.Errorf("agents = %+v, want agy and opencode as written", cfg.Agents)
+			}
+		})
+	}
 }
 
 // TestWrongFileGatewayKeyPointsAtTheHome pins decision 1's wrong-file notice:
@@ -445,45 +405,19 @@ func TestWrongFileGatewayNoticeNamesTheMovedConfigHome(t *testing.T) {
 	}
 }
 
-// TestMigrateAgentRefsAddsNoAgyAgent pins that migration no longer invents an
-// agy agent: a config with only a claude agent comes back unchanged and
-// reports no change, so an agent set the user chose is never padded.
-func TestMigrateAgentRefsAddsNoAgyAgent(t *testing.T) {
-	cfg := &Config{Agents: []Agent{{Name: "claude", SupportedProviders: []string{"ollama"}, DefaultProvider: "ollama"}}}
-	if migrateAgentRefs(cfg) {
-		t.Error("migrateAgentRefs reported a change on a config with nothing to rename")
+// TestEnsureAgent proves ensureAgent appends an agent named as given the first
+// time, reports true, and then finds it and reports false without a second
+// entry. Why: the legacy models.conf migration calls it for every agent it
+// seeds, and a duplicate name would fail validation of the file it writes.
+func TestEnsureAgent(t *testing.T) {
+	cfg := &Config{}
+	if !ensureAgent(cfg, "pi") {
+		t.Error("first ensureAgent reported no change")
 	}
-	if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "claude" {
-		t.Errorf("agents = %+v, want only claude", cfg.Agents)
+	if ensureAgent(cfg, "pi") {
+		t.Error("second ensureAgent reported a change")
 	}
-}
-
-// TestMigrateAgentRefsLeavesOpencodeAlone pins that migration no longer
-// rewires opencode to ollama only: eligibility is derived, so an opencode
-// agent listing other providers keeps its list as written.
-func TestMigrateAgentRefsLeavesOpencodeAlone(t *testing.T) {
-	cfg := &Config{Agents: []Agent{{Name: "opencode", SupportedProviders: []string{"claude", "openrouter"}}}}
-	if migrateAgentRefs(cfg) {
-		t.Error("migrateAgentRefs reported a change on an opencode agent")
-	}
-	if got := cfg.Agents[0].SupportedProviders; !slices.Equal(got, []string{"claude", "openrouter"}) {
-		t.Errorf("opencode providers = %v, want [claude openrouter]", got)
-	}
-}
-
-// TestMigrateAgentRefsRenamesGoogle pins the one fixup that remains: the
-// legacy provider id google becomes agy in a list and in a default provider,
-// the call reports a change, and a second call (self-extinguishing) does not.
-func TestMigrateAgentRefsRenamesGoogle(t *testing.T) {
-	cfg := &Config{Agents: []Agent{{Name: "agy", SupportedProviders: []string{"google"}, DefaultProvider: "google"}}}
-	if !migrateAgentRefs(cfg) {
-		t.Error("migrateAgentRefs reported no change on a google reference")
-	}
-	a := cfg.Agents[0]
-	if !slices.Equal(a.SupportedProviders, []string{"agy"}) || a.DefaultProvider != "agy" {
-		t.Errorf("agent = %+v, want supported=[agy] default=agy", a)
-	}
-	if migrateAgentRefs(cfg) {
-		t.Error("second migrateAgentRefs reported a change")
+	if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "pi" {
+		t.Errorf("agents = %+v, want one agent named pi", cfg.Agents)
 	}
 }

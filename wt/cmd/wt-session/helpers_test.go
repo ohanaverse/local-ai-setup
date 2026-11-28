@@ -114,7 +114,7 @@ func writeConfiguredAgent(t *testing.T, home, agentName, providerID string) {
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfgToml := "default_tag = \"code\"\n[[agents]]\nname = \"" + agentName + "\"\nsupported_providers = [\"" + providerID + "\"]\n"
+	cfgToml := "default_tag = \"code\"\n[[agents]]\nname = \"" + agentName + "\"\n"
 	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgToml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -122,10 +122,8 @@ func writeConfiguredAgent(t *testing.T, home, agentName, providerID string) {
 	if err := os.MkdirAll(regDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The agy provider row is kept so a config.toml that lists an "agy"
-	// agent (or its stock supported_providers list) still validates against
-	// the registry; migrateConfigSchema now only renames google to agy and
-	// no longer adds an agy agent on its own.
+	// The agy provider row is kept for the tests that launch the agy agent
+	// against this registry.
 	regToml := "[[providers]]\nid = \"" + providerID + "\"\nname = \"" + providerID + "\"\nlocation = \"local\"\nauth = { type = \"none\", base_url = \"http://localhost:11434\" }\n" +
 		"[[providers]]\nid = \"agy\"\nname = \"agy\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n"
 	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"), []byte(regToml), 0o644); err != nil {

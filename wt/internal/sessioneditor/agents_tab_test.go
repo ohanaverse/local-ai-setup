@@ -21,9 +21,9 @@ func TestAgentsTab_Sort_CommandsFirst(t *testing.T) {
 
 	cfg := &config.Config{
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"claude"}},
-			{Name: "shell", SupportedProviders: []string{"ollama"}},
-			{Name: "agy", SupportedProviders: []string{"agy"}},
+			{Name: "claude"},
+			{Name: "shell"},
+			{Name: "agy"},
 		},
 		Providers: []config.Provider{
 			{ID: "claude"},
@@ -123,7 +123,7 @@ func TestAgentsTab_InstalledAnnotation(t *testing.T) {
 // the name and the marker, the description only an issue.
 func TestAgentsTabShowsNoProviderColumns(t *testing.T) {
 	it := agentItem{
-		agent:      config.Agent{Name: "foo", SupportedProviders: []string{"agy", "claude"}, DefaultProvider: "claude"},
+		agent:      config.Agent{Name: "foo"},
 		configured: true,
 		installed:  true,
 	}
@@ -166,7 +166,7 @@ func TestBuildAgentsListAdapter(t *testing.T) {
 
 	cfg := &config.Config{
 		Agents: []config.Agent{
-			{Name: "claude", SupportedProviders: []string{"claude"}},
+			{Name: "claude"},
 		},
 	}
 	l := buildAgentsList(testTheme(), 80, 24, cfg)

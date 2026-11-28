@@ -341,9 +341,9 @@ marks it as configured and nothing more. Eligibility is derived from the
 row, never from a list: every non-native row (sushi and paid OpenRouter rows
 included) is offered to every agent but agy, an agent's own native row to it
 alone (agy sees nothing else), and a Claude-subscription row to claude only.
-The `supported_providers` and `default_provider` keys of an entry are still
-parsed and written back, and decide nothing here; only the host reads them
-(a registry load that refuses a listed provider with no row).
+The `supported_providers` and `default_provider` keys of an entry are no
+longer read or written; a file that still has them loads, and the next save of
+`config.toml` drops them.
 
 ## Native launch: native mode
 

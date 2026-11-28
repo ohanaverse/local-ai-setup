@@ -733,18 +733,12 @@ func TestModelEditServeArgFlags(t *testing.T) {
 // sushi, plus opencode, which no sushi add may touch.
 const agentsToml = `[[agents]]
   name = "claude"
-  supported_providers = ["claude", "ollama"]
-  default_provider = "claude"
 
 [[agents]]
   name = "pi"
-  supported_providers = ["ollama", "sushi"]
-  default_provider = "ollama"
 
 [[agents]]
   name = "opencode"
-  supported_providers = ["ollama"]
-  default_provider = "ollama"
 `
 
 func writeAgentsToml(t *testing.T, registry string) string {
@@ -760,10 +754,10 @@ func writeAgentsToml(t *testing.T, registry string) string {
 }
 
 // TestSushiAddLeavesConfigTomlAlone verifies registering a sushi model never
-// reads or rewrites config.toml and prints no supported_providers line. Sushi
-// eligibility is derived from the registry by one rule, so the add has no
-// per-agent list to maintain; the old behavior (appending "sushi" to claude's
-// supported_providers and saying so) must not come back.
+// reads or rewrites config.toml. Sushi eligibility is derived from the
+// registry by one rule, so the add has no per-agent state to maintain; the old
+// behavior (appending "sushi" to claude's provider list and saying so) must
+// not come back.
 func TestSushiAddLeavesConfigTomlAlone(t *testing.T) {
 	sushi := modeladmin.AddRequest{ProviderID: "sushi", ModelName: "beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw", Fields: modeladmin.Fields{Family: sp("qwen3.8")}}
 	t.Run("config.toml bytes are identical after an add", func(t *testing.T) {
@@ -776,8 +770,8 @@ func TestSushiAddLeavesConfigTomlAlone(t *testing.T) {
 		if err := h.runModelAdd(&out, &errOut, nil, sushi); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(out.String(), "supported_providers") || errOut.Len() != 0 {
-			t.Errorf("stdout = %q, stderr = %q; want no supported_providers line and no warning", out.String(), errOut.String())
+		if errOut.Len() != 0 {
+			t.Errorf("stderr = %q; want no warning", errOut.String())
 		}
 		if mustRead(t, cfgPath) != agentsToml {
 			t.Errorf("a sushi add changed config.toml:\n%s", mustRead(t, cfgPath))
@@ -800,8 +794,8 @@ func TestSushiAddLeavesConfigTomlAlone(t *testing.T) {
 		if err := h.runModelAdd(&out, &errOut, nil, other); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(out.String(), "supported_providers") || mustRead(t, cfgPath) != before {
-			t.Errorf("a second add rewrote config.toml or announced a change; stdout = %q", out.String())
+		if mustRead(t, cfgPath) != before {
+			t.Errorf("a second add rewrote config.toml; stdout = %q", out.String())
 		}
 	})
 	t.Run("no config.toml is created", func(t *testing.T) {
@@ -816,9 +810,6 @@ func TestSushiAddLeavesConfigTomlAlone(t *testing.T) {
 		}
 		if _, err := os.Stat(cfgPath); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("config.toml was created by a sushi add (stat err = %v)", err)
-		}
-		if strings.Contains(out.String(), "supported_providers") {
-			t.Errorf("stdout = %q; want no supported_providers line", out.String())
 		}
 	})
 }

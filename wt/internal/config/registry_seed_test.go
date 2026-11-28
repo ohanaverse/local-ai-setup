@@ -354,6 +354,44 @@ name = "opencode"
 	}
 }
 
+// TestSeedMakesAFreshConfigWithOldKeysLoad is TestSeedMakesAFreshConfigLoad
+// with the agent lists an older build wrote put back (claude lists openrouter,
+// which the seed never adds): after seeding, Load and ValidateAll succeed with
+// no ollama and no openrouter row. Why: the lists are no longer read, so a
+// machine whose config.toml still has them must not be refused for a provider
+// the registry lacks.
+func TestSeedMakesAFreshConfigWithOldKeysLoad(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	const agents = `default_tag = "code"
+
+[[agents]]
+name = "claude"
+supported_providers = ["claude", "openrouter"]
+default_provider = "claude"
+
+[[agents]]
+name = "opencode"
+supported_providers = ["opencode"]
+`
+	must(t, Path(), agents)
+	env := DefaultSeedEnv()
+	env.OnPath = nil // nothing is installed
+	seed(t, env)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load after seeding: %v", err)
+	}
+	if err := cfg.ValidateAll(); err != nil {
+		t.Errorf("ValidateAll with the old lists in config.toml: %v", err)
+	}
+	for _, id := range []string{"ollama", "openrouter"} {
+		if cfg.ProviderByID(id) != nil {
+			t.Errorf("seeding added a %s row for a list that is no longer read", id)
+		}
+	}
+}
+
 // TestPyTitleMatchesPython pins the port of str.title() against Python's own
 // answers, so the display name wt gives an agent's provider row is the one
 // older registries already hold for that agent.

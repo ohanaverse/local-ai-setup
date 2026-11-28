@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -100,9 +99,8 @@ func Migrate() (bool, error) {
 			models, natives := convertModels(vals, tag)
 			// Filter out models for natives that are skipped below (google is
 			// a pseudo-native; noNativeAgents have no native provider). Without
-			// this, the model lingers in cfg.Models and either fails validation
-			// (unknown provider) or gets renamed by migrateConfigSchema into a
-			// duplicate (google/native → agy/native).
+			// this, the model lingers in cfg.Models and fails validation
+			// (unknown provider).
 			filtered := models[:0]
 			for _, m := range models {
 				if m.ModelName == "native" && (m.Family == "google" || noNativeAgents[m.Family]) {
@@ -118,7 +116,7 @@ func Migrate() (bool, error) {
 				if noNativeAgents[n] {
 					// Skip native provider/model creation for agents that don't
 					// have a native provider after the schema alignment. The
-					// agent entry is added below, pinned to ollama.
+					// agent entry is added below.
 					continue
 				}
 				if n == "google" {
@@ -129,24 +127,22 @@ func Migrate() (bool, error) {
 				}
 				nativeSeen[n] = true
 				cfg.Providers = append(cfg.Providers, nativeProvider(n))
-				cfg.Agents = append(cfg.Agents, nativeAgent(n))
+				ensureAgent(cfg, n)
 			}
 		}
 	}
 
-	// Ensure an agent entry exists for each noNativeAgent, pinned to ollama.
-	// For "pi", this is the only entry (it never appeared as native:pi).
-	// For "opencode", this corrects configs that may have seeded opencode
-	// via the native loop before this fix; after the early continue above,
-	// opencode will never get a native provider here, so this loop just
-	// creates a missing entry or rewires an existing one to ollama-only.
+	// Ensure an agent entry exists for each noNativeAgent. For "pi", this is
+	// the only entry (it never appeared as native:pi). For "opencode", the
+	// early continue above means it never gets a native provider here, so
+	// this loop just creates a missing entry.
 	for name := range noNativeAgents {
-		upsertAgent(cfg, name, []string{"ollama"}, "ollama", true)
+		ensureAgent(cfg, name)
 	}
 
 	// Seed agy: provider + model + agent. Use the same naming scheme as
-	// the schema fixup so a fresh install ends up with the same shape that
-	// migrateConfigSchema would produce on an upgraded install.
+	// the registry seed so a fresh install ends up with the same rows an
+	// upgraded install has.
 	if cfg.ProviderByID("agy") == nil {
 		cfg.Providers = append(cfg.Providers, Provider{
 			ID:       "agy",
@@ -165,7 +161,7 @@ func Migrate() (bool, error) {
 		Location:   LocationCloud,
 		Tags:       []string{"code", "design"},
 	}})
-	upsertAgent(cfg, "agy", []string{"agy"}, "agy", true)
+	ensureAgent(cfg, "agy")
 
 	if err := saveFull(cfg); err != nil {
 		return false, err
@@ -239,15 +235,6 @@ func nativeProvider(agent string) Provider {
 	}
 }
 
-// nativeAgent creates an Agent entry for a native agent.
-func nativeAgent(agent string) Agent {
-	return Agent{
-		Name:               agent,
-		SupportedProviders: []string{agent, "ollama"},
-		DefaultProvider:    agent,
-	}
-}
-
 // addModels appends models, merging tags for models that share an ID.
 // A model can appear in both CODE_MODELS and DESIGN_MODELS; it should become
 // a single entry with both tags rather than two duplicate IDs.
@@ -298,75 +285,35 @@ func displayName(agent string) string {
 	}
 }
 
-// noNativeAgents lists agents that, after the native-provider alignment, have
-// no native provider: they only support ollama. The legacy migration skips
-// creating a native provider for these agents (in case a legacy models.conf
-// contains "native:opencode") and ensures each one has an agent entry pinned
-// to ollama only.
+// noNativeAgents lists agents that have no native provider after the
+// native-provider alignment. The legacy migration skips creating a native
+// provider for these agents (in case a legacy models.conf contains
+// "native:opencode") and ensures each one has an agent entry.
 var noNativeAgents = map[string]bool{
 	"pi":       true,
 	"opencode": true,
 }
 
-// migrateConfigSchema applies idempotent fixups to an already-decoded cfg:
-//  1. Rename the legacy "google" agent references to "agy" (the only agent
-//     rewrite: agent eligibility is derived, so no agent is added and no
-//     provider list is rewired).
-//  4. Notice + drop wt's legacy [gateway] block.
+// migrateConfigSchema applies the idempotent fixup that is left to an
+// already-decoded cfg: notice and drop wt's legacy [gateway] block. It edits
+// no agent: an agent names no provider, so the old google-to-agy rewrite and
+// the provider-list rewiring are gone.
 //
 // Provider and model data are owned by the registry and are reloaded from
 // it after migration, so provider/model-level fixups are intentionally
 // omitted here.
 //
-// Each fixup is self-extinguishing — once applied, the old pattern no longer
+// The fixup is self-extinguishing: once applied, the old pattern no longer
 // exists in cfg, so subsequent calls are no-ops. The boolean return is true
-// iff any fixup actually changed cfg.
+// iff the fixup changed cfg.
 func migrateConfigSchema(cfg *Config) (bool, error) {
-	changed := migrateAgentRefs(cfg)
-
-	// ── Fixup 4: notice + drop wt's legacy [gateway] block ───────────
 	// GatewayConfig was deleted (Task 9): LiteLLM routing is now a wt-owned
 	// [litellm] table (managed with `wt litellm ...`). The decoded Config
 	// simply has no Gateway field, so re-saving drops the block; this
 	// fixup only detects its presence to point the user at the new
 	// control surface. Self-extinguishing: after the triggered Save, the
 	// block is gone and the probe no longer matches.
-	if dropLegacyGateway(Path()) {
-		changed = true
-	}
-
-	return changed, nil
-}
-
-// migrateAgentRefs is the part of migrateConfigSchema that rewrites
-// cfg.Agents (fixup 1, the google-to-agy rename, the only agent rewrite),
-// with no file access and no output. Registry seeding calls it on its own
-// read of config.toml to learn which providers the agents will name once
-// Load has migrated the file. It adds no agent and rewrites no other list.
-// Reports whether it changed cfg.
-func migrateAgentRefs(cfg *Config) bool {
-	changed := false
-
-	// ── Fixup 1: rename "google" → "agy" in agent references ────────
-	for i := range cfg.Agents {
-		a := &cfg.Agents[i]
-		rewired := false
-		for j, p := range a.SupportedProviders {
-			if p == "google" {
-				a.SupportedProviders[j] = "agy"
-				rewired = true
-			}
-		}
-		if a.DefaultProvider == "google" {
-			a.DefaultProvider = "agy"
-			rewired = true
-		}
-		if rewired {
-			changed = true
-		}
-	}
-
-	return changed
+	return dropLegacyGateway(Path()), nil
 }
 
 // dropLegacyGateway detects a config.toml still carrying [gateway] (from
@@ -422,29 +369,13 @@ func legacyGatewayNotice(raw []byte) (string, bool) {
 	return BinaryName + ": found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by wt (see 'wt litellm status'); this block will be dropped on next save", true
 }
 
-// upsertAgent finds the agent named name in cfg.Agents (via AgentByName) and
-// rewrites its SupportedProviders/DefaultProvider to providers/
-// defaultProvider if they differ. If no such agent exists and insertIfMissing
-// is true, a new Agent is appended with those fields. Reports whether
-// cfg.Agents was actually mutated (an existing agent's fields were rewritten,
-// or a new agent was appended) — migrateConfigSchema uses this to drive its
-// idempotency tracking; the Migrate() call sites ignore it.
-func upsertAgent(cfg *Config, name string, providers []string, defaultProvider string, insertIfMissing bool) bool {
-	if a, err := cfg.AgentByName(name); err == nil {
-		if slices.Equal(a.SupportedProviders, providers) && a.DefaultProvider == defaultProvider {
-			return false
-		}
-		a.SupportedProviders = providers
-		a.DefaultProvider = defaultProvider
-		return true
-	}
-	if !insertIfMissing {
+// ensureAgent appends an Agent named name to cfg.Agents when none has that
+// name, and reports whether it did. The legacy models.conf migration calls it
+// for each agent it seeds; the result is ignored there.
+func ensureAgent(cfg *Config, name string) bool {
+	if _, err := cfg.AgentByName(name); err == nil {
 		return false
 	}
-	cfg.Agents = append(cfg.Agents, Agent{
-		Name:               name,
-		SupportedProviders: providers,
-		DefaultProvider:    defaultProvider,
-	})
+	cfg.Agents = append(cfg.Agents, Agent{Name: name})
 	return true
 }
