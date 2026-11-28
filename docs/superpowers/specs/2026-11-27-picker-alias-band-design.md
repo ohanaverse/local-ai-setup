@@ -20,7 +20,7 @@ Goals: aliases form one band between profiles and the running-local band, ordere
 
 Non-goals:
 - **The default selection does not change in this change.** The launcher picker's cursor still starts on rotation's next model (`models_client.go`, `NextFromOrder`); the sort is only its fallback. Making the first row the default is the next PR, which removes rotation (see "Next PR").
-- No change to rotation, `RegisteredOrdered` (a launch with no pin never rotates onto an alias), the non-TUI launch, the standalone pickers (`wt smoke`, `wt start`: their rows come from the registry and hold no alias rows), the server catalog or any wire type.
+- No change to rotation, `RegisteredOrdered` (a launch with no pin never rotates onto an alias), the non-TUI launch, the standalone pickers (`wt smoke`, `wt start`: their rows come from the model server's catalog as `config.Model`s, which drops the wire `Kind`, so `isAlias` never matches there and an alias sorts among the other models by its family, not in the alias band), the server catalog or any wire type.
 
 Anti-goal: an alias row must not move a native or profile row down, and no model row's order may change.
 
@@ -47,7 +47,7 @@ One sensible way: add a band to `sortRows` (`wt/internal/tui/modelrows.go`). The
 
 ## Constraints
 
-`wt/CLAUDE.md`: "the sort order is also the default selection — changing `sortRows` changes what a bare Enter picks." This change moves a default only where the client picker has no rotation to follow. `NextFromOrder` already copes with a first launch and with a state file naming a model no longer listed (it starts at the first launchable registered model), so the table's first unblocked row decides the cursor only when no launchable registered row exists at all; it is then an alias when no native or profile row is unblocked, where before it was a model. The standalone pickers hold no alias rows, so their row 0 is unchanged. `make pre-pr` is the gate (CI is off).
+`wt/CLAUDE.md`: "the sort order is also the default selection — changing `sortRows` changes what a bare Enter picks." This change moves a default only where the client picker has no rotation to follow. `NextFromOrder` already copes with a first launch and with a state file naming a model no longer listed (it starts at the first launchable registered model), so the table's first unblocked row decides the cursor only when no launchable registered row exists at all; it is then an alias when no native or profile row is unblocked, where before it was a model. The standalone pickers take `config.Model`s with no wire `Kind`, so `isAlias` never matches and their row 0 is unchanged (an alias there sorts by family, not in the alias band; making them match is a separate change that would move their row 0). `make pre-pr` is the gate (CI is off).
 
 ## Left to the builder
 

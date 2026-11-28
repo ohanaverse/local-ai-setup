@@ -206,8 +206,9 @@ func isAlias(r tableRow) bool {
 //
 // This order is also the pickers' default selection: newPickModel never calls
 // Select, so its highlighted row is index 0 (the first sorted row), and
-// enterModelPhase's no-rotation fallback picks the first actionable row. A
-// native model in the list therefore becomes what a bare Enter launches.
+// newModelList's no-rotation fallback picks the first row that is not blocked
+// (a stopped alias or model that needs a start counts). A native model in the
+// list therefore becomes what a bare Enter launches.
 func sortRows(rows []tableRow) {
 	// Ready, not Running: a model omlx is still loading is a start row (#259)
 	// and sorts with the other models, so it is never placed above them while
