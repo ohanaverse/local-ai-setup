@@ -741,11 +741,11 @@ type Agent struct {
 	Name string `toml:"name"`
 	// SupportedProviders and DefaultProvider decide no agent's eligibility
 	// (the rule derives a provider's agents from the provider and the model).
-	// Two host-side readers remain until a later change deletes the fields:
-	// registry seeding (seedAgents adds a default row for a listed provider)
-	// and Validate (validateAgents with a registry refuses a listed id that
-	// has no row). They stay decoded and are written back untouched so an older
-	// binary still parses the file; a later change deletes them. An entry
+	// One host-side reader remains until a later change deletes the fields:
+	// Validate (validateAgents with a registry refuses a listed id that has
+	// no row); registry seeding no longer reads them. They stay decoded and
+	// are written back untouched so an older binary still parses the file; a
+	// later change deletes them. An entry
 	// with no list is valid, and a nil slice is omitted on save, never
 	// written as an empty list (an older wt-model rejects one).
 	SupportedProviders []string `toml:"supported_providers"`

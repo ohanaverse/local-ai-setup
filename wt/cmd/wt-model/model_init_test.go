@@ -16,25 +16,20 @@ import (
 
 // TestModelInitCreatesTheRegistryAndSaysWhatItAdded pins the first run on a
 // new machine, as the user sees it: the registry is created, each provider
-// row added is named, a provider an agent lists that wt has no default row
-// for is named too (on every run, since it stays a config error until the
-// user adds it), and the routes are synced once. This is the command the
+// row added is named, and the routes are synced once. This is the command the
 // "model registry not found" error sends people to, so it has to work with
 // no registry and no config at all.
 func TestModelInitCreatesTheRegistryAndSaysWhatItAdded(t *testing.T) {
 	h := testHost()
 	registry := modelHome(t, "")
-	stubSeedEnv(h, config.SeedEnv{
-		Agents: []string{"claude"}, AgentProviders: []string{"claude", "corp-gateway"}, OnPath: onPath("ollama"),
-	})
+	stubSeedEnv(h, config.SeedEnv{Agents: []string{"claude"}, OnPath: onPath("ollama")})
 	synced := stubRouteSync(h, "")
-	const unseeded = "no default row for provider: corp-gateway (an agent lists it; add it to registry.toml by hand)\n"
 
 	var out, errOut bytes.Buffer
 	if err := h.runModelInit(&out, &errOut, false); err != nil {
 		t.Fatalf("runModelInit: %v", err)
 	}
-	want := "registry: " + registry + " (created)\nadded provider: ollama\nadded provider: claude\n" + unseeded
+	want := "registry: " + registry + " (created)\nadded provider: ollama\nadded provider: claude\n"
 	if out.String() != want || errOut.Len() != 0 {
 		t.Errorf("stdout = %q, stderr = %q; want stdout %q and no stderr", out.String(), errOut.String(), want)
 	}
@@ -55,7 +50,7 @@ func TestModelInitCreatesTheRegistryAndSaysWhatItAdded(t *testing.T) {
 	if err := h.runModelInit(&out, &errOut, false); err != nil {
 		t.Fatalf("second runModelInit: %v", err)
 	}
-	if want := "registry: " + registry + "\nnothing to add\n" + unseeded; out.String() != want {
+	if want := "registry: " + registry + "\nnothing to add\n"; out.String() != want {
 		t.Errorf("second run stdout = %q, want %q", out.String(), want)
 	}
 	if after, _ := os.ReadFile(registry); !bytes.Equal(before, after) {
@@ -69,11 +64,13 @@ func TestModelInitCreatesTheRegistryAndSaysWhatItAdded(t *testing.T) {
 // TestModelInitJSON pins the machine-readable document: one object, every
 // key always present, arrays never null — so a script can read
 // `.providers_added | length` without guarding. The route sync's own lines
-// stay out of it.
+// stay out of it, and the retired providers_unseeded key stays gone (a
+// script that still reads it gets null, not a list that no longer means
+// anything).
 func TestModelInitJSON(t *testing.T) {
 	h := testHost()
 	registry := modelHome(t, "")
-	stubSeedEnv(h, config.SeedEnv{AgentProviders: []string{"corp-gateway"}, OnPath: onPath("mtplx")})
+	stubSeedEnv(h, config.SeedEnv{OnPath: onPath("mtplx")})
 	h.syncRoutesAfterWrite = func(out, _ io.Writer) string {
 		io.WriteString(out, "some/model: routed\n")
 		return "LiteLLM routes not synced: proxy down"
@@ -83,37 +80,28 @@ func TestModelInitJSON(t *testing.T) {
 	if err := h.runModelInit(&out, &errOut, true); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"registry":"` + registry + `","created":true,"changed":true,"providers_added":["mtplx"],"providers_unseeded":["corp-gateway"],"warnings":["LiteLLM routes not synced: proxy down"]}` + "\n"
+	want := `{"registry":"` + registry + `","created":true,"changed":true,"providers_added":["mtplx"],"warnings":["LiteLLM routes not synced: proxy down"]}` + "\n"
 	if out.String() != want || errOut.Len() != 0 {
 		t.Errorf("stdout = %s stderr = %q\nwant stdout %s and no stderr", out.String(), errOut.String(), want)
 	}
+	if strings.Contains(out.String(), "providers_unseeded") {
+		t.Errorf("the retired providers_unseeded key is back: %s", out.String())
+	}
 	out.Reset()
 	if err := h.runModelInit(&out, &errOut, true); err != nil {
 		t.Fatal(err)
 	}
-	want = `{"registry":"` + registry + `","created":false,"changed":false,"providers_added":[],"providers_unseeded":["corp-gateway"],"warnings":[]}` + "\n"
+	want = `{"registry":"` + registry + `","created":false,"changed":false,"providers_added":[],"warnings":[]}` + "\n"
 	if out.String() != want {
 		t.Errorf("no-op stdout = %s\nwant %s", out.String(), want)
 	}
-
-	// With nothing unseeded the key is an empty array, like the others.
-	stubSeedEnv(h, config.SeedEnv{OnPath: onPath("mtplx")})
-	out.Reset()
-	if err := h.runModelInit(&out, &errOut, true); err != nil {
-		t.Fatal(err)
-	}
-	want = `{"registry":"` + registry + `","created":false,"changed":false,"providers_added":[],"providers_unseeded":[],"warnings":[]}` + "\n"
-	if out.String() != want {
-		t.Errorf("nothing unseeded: stdout = %s\nwant %s", out.String(), want)
-	}
 }
 
-// TestModelInitMakesAFreshConfigUsable is the reason `wt-model model init` seeds
-// for the providers agents list: on a machine with a config.toml and no
-// registry, one run of the command must leave wt able to load and validate
-// its config. Here ollama is not installed and no model uses it, and one
-// agent lists openrouter — the two rows a user used to have to write by hand
-// before any wt command would start.
+// TestModelInitMakesAFreshConfigUsable pins that on a machine with a
+// config.toml and no registry, one run of the command leaves wt able to load
+// and validate its config. Nothing is installed and the file names two agents
+// with no provider lists: each agent gets its native row, and no ollama or
+// openrouter row appears because nothing asks for one.
 func TestModelInitMakesAFreshConfigUsable(t *testing.T) {
 	h := testHost()
 	registry := modelHome(t, "")
@@ -124,11 +112,9 @@ func TestModelInitMakesAFreshConfigUsable(t *testing.T) {
 
 [[agents]]
 name = "claude"
-supported_providers = ["claude", "openrouter"]
 
 [[agents]]
 name = "pi"
-supported_providers = ["ollama"]
 `
 	if err := os.WriteFile(config.Path(), []byte(agents), 0o644); err != nil {
 		t.Fatal(err)
@@ -143,9 +129,7 @@ supported_providers = ["ollama"]
 	if err := h.runModelInit(&out, &errOut, false); err != nil {
 		t.Fatalf("runModelInit: %v", err)
 	}
-	want := "registry: " + registry + " (created)\n" +
-		"added provider: ollama\nadded provider: openrouter\n" +
-		"added provider: claude\nadded provider: pi\n"
+	want := "registry: " + registry + " (created)\nadded provider: claude\nadded provider: pi\n"
 	if out.String() != want || errOut.Len() != 0 {
 		t.Errorf("stdout = %q, stderr = %q; want stdout %q and no stderr", out.String(), errOut.String(), want)
 	}
@@ -167,8 +151,8 @@ supported_providers = ["ollama"]
 // holds the key.
 func TestModelInitSeedsAnOpenRouterRowThatFailsLoudlyWithoutItsKey(t *testing.T) {
 	h := testHost()
-	modelHome(t, "")
-	stubSeedEnv(h, config.SeedEnv{AgentProviders: []string{"openrouter"}})
+	modelHome(t, "[[models]]\nid = \"openrouter/m\"\nfamily = \"f\"\nprovider_id = \"openrouter\"\nmodel_name = \"org/m\"\ntags = []\n")
+	stubSeedEnv(h, config.SeedEnv{})
 	stubRouteSync(h, "")
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-test-not-a-real-key")
 	if err := h.runModelInit(io.Discard, io.Discard, false); err != nil {

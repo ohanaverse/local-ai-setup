@@ -13,22 +13,15 @@ func onPath(commands ...string) func(string) bool {
 
 func seed(t *testing.T, env SeedEnv) (added []string, changed bool) {
 	t.Helper()
-	added, _, changed = seedReport(t, env)
-	return added, changed
-}
-
-// seedReport is seed with the providers seeding had no row for.
-func seedReport(t *testing.T, env SeedEnv) (added, unseeded []string, changed bool) {
-	t.Helper()
 	changed, err := UpdateRegistry(func(d *RegistryDoc) error {
 		var err error
-		added, unseeded, err = SeedRegistryDefaults(d, env)
+		added, err = SeedRegistryDefaults(d, env)
 		return err
 	})
 	if err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
-	return added, unseeded, changed
+	return added, changed
 }
 
 // TestSeedWritesTheDefaultRows pins every default row byte for byte: each
@@ -131,12 +124,10 @@ model_name = "org/target"
 // nobody references and nothing installs gets no row (wt would probe a server
 // the machine does not have); mlx_lm_server never comes from PATH; an
 // installed omlx stays out when an omlx-6bit row already stands for that
-// server, but a model that references `omlx`, or an agent that lists it,
-// still gets its row. A provider an agent lists gets its default row whether
-// or not it is installed, because wt refuses a config whose agent lists a
-// provider with no row; openrouter comes from a model that references it or
-// an agent that lists it, never from PATH — `wt-model model add openrouter …` on a
-// registry with no openrouter row must not be refused for a row wt can write.
+// server, but a model that references `omlx` still gets its row; openrouter
+// comes from a model that references it, never from PATH — `wt-model model
+// add openrouter …` on a registry with no openrouter row must not be refused
+// for a row wt can write.
 func TestSeedAddsOnlyWhatTheMachineNeeds(t *testing.T) {
 	const sixBit = `[[providers]]
 id = "omlx-6bit"
@@ -174,10 +165,6 @@ model_name = "org/m"
 		{"but a model that references omlx gets the row", sixBit + omlxModel, SeedEnv{OnPath: onPath("omlx")}, []string{"omlx"}},
 		{"an agent whose name is already a provider is skipped", sixBit, SeedEnv{Agents: []string{"omlx-6bit", "", "pi"}}, []string{"pi"}},
 		{"an agent named like a default provider gets the default row, once", "", SeedEnv{Agents: []string{"ollama"}, OnPath: onPath("ollama")}, []string{"ollama"}},
-		{"an agent lists a default provider that is not installed", "", SeedEnv{AgentProviders: []string{"ollama", "mlx_lm_server"}}, []string{"ollama", "mlx_lm_server"}},
-		{"an agent lists omlx beside an omlx-6bit row", sixBit, SeedEnv{AgentProviders: []string{"omlx"}}, []string{"omlx"}},
-		{"an agent lists openrouter", "", SeedEnv{AgentProviders: []string{"openrouter"}}, []string{"openrouter"}},
-		{"an agent lists a provider that has its row", sixBit, SeedEnv{AgentProviders: []string{"omlx-6bit"}}, nil},
 		{"openrouter is not seeded from PATH", "", SeedEnv{OnPath: func(string) bool { return true }}, []string{"ollama", "omlx", "mtplx", "sushi"}},
 		{"a model that references openrouter gets the row", openrouterModel, SeedEnv{}, []string{"openrouter"}},
 	}
@@ -200,9 +187,9 @@ model_name = "org/m"
 // location. The provider's default row is written instead, once.
 func TestSeedAnAgentNamedAfterAProviderGetsThatProvidersRow(t *testing.T) {
 	path := scratchRegistry(t, "")
-	added, unseeded, _ := seedReport(t, SeedEnv{Agents: []string{"openrouter", "ollama", "pi"}})
-	if want := []string{"ollama", "openrouter", "pi"}; !slices.Equal(added, want) || len(unseeded) != 0 {
-		t.Fatalf("added = %v, unseeded = %v, want %v and none", added, unseeded, want)
+	added, _ := seed(t, SeedEnv{Agents: []string{"openrouter", "ollama", "pi"}})
+	if want := []string{"ollama", "openrouter", "pi"}; !slices.Equal(added, want) {
+		t.Fatalf("added = %v, want %v", added, want)
 	}
 	got := readFile(t, path)
 	if n := strings.Count(got, `type = "native"`); n != 1 {
@@ -285,26 +272,25 @@ func TestSeedCreatesAMissingRegistry(t *testing.T) {
 	}
 }
 
-// TestSeedAgentNamesFollowWhatLoadWillValidate pins which agents get a
-// provider row. They come from config.toml alone: Load's schema migration
-// adds no agent, so a config.toml with only claude names claude and nothing
-// else (an agy native row is no longer created here until PR 2 of #763). The
-// end-to-end check is that a registry seeded from this list loads and
-// validates. A config.toml that
-// cannot be read names nothing, so seeding still works beside a broken one.
-func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
+// TestSeedAgentNamesAreTheNamesInConfigToml pins which agents get a provider
+// row: the names config.toml carries, read as written and nothing else (no
+// list is read, and an agy native row is not created from nothing). The
+// end-to-end check is that a registry seeded from those names loads and
+// validates. A config.toml that cannot be read names nothing, and says why,
+// so seeding still works beside a broken one and the caller can tell the user.
+func TestSeedAgentNamesAreTheNamesInConfigToml(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	if names, providers, err := seedAgents(); names != nil || providers != nil || err != nil {
-		t.Errorf("with no config.toml: agents = %v, providers = %v, err = %v, want none and no error", names, providers, err)
+	if names, err := seedAgents(); names != nil || err != nil {
+		t.Errorf("with no config.toml: agents = %v, err = %v, want none and no error", names, err)
 	}
-	must(t, Path(), "default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\n")
-	names, providers, err := seedAgents()
+	must(t, Path(), "default_tag = \"code\"\n\n[[agents]]\nname = \"claude\"\n")
+	names, err := seedAgents()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"claude"}; !slices.Equal(names, want) || !slices.Equal(providers, want) {
-		t.Fatalf("agents = %v, providers = %v, want %v for both", names, providers, want)
+	if want := []string{"claude"}; !slices.Equal(names, want) {
+		t.Fatalf("agents = %v, want %v", names, want)
 	}
 	env := DefaultSeedEnv()
 	env.OnPath = nil // this machine's PATH is not the test's business
@@ -324,80 +310,23 @@ func TestSeedAgentNamesFollowWhatLoadWillValidate(t *testing.T) {
 	if err := os.WriteFile(Path(), []byte("this is not toml [[["), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	names, providers, err = seedAgents()
-	if names != nil || providers != nil {
-		t.Errorf("with an unreadable config.toml: agents = %v, providers = %v, want none", names, providers)
+	names, err = seedAgents()
+	if names != nil {
+		t.Errorf("with an unreadable config.toml: agents = %v, want none", names)
 	}
 	if err == nil || !strings.Contains(err.Error(), "parse config") {
 		t.Errorf("with an unreadable config.toml: err = %v, want the parse error", err)
 	}
-	if env := DefaultSeedEnv(); env.ConfigErr == nil || len(env.Agents) != 0 {
+	if env := DefaultSeedEnv(); env.ConfigErr == nil || len(env.Agents) != 0 || !strings.Contains(env.ConfigErr.Error(), "parse config") {
 		t.Errorf("DefaultSeedEnv with an unreadable config.toml: ConfigErr = %v, agents = %v", env.ConfigErr, env.Agents)
 	}
 }
 
-// TestSeedRowsForTheProvidersAgentsList pins the rows the agent trigger
-// writes and what it reports. A default local provider gets the same row it
-// would get if it were installed. openrouter gets a row with its address and
-// no key, only the name of the environment variable the key is read from: a
-// row with no secret_ref at all would give a LiteLLM route with an empty
-// api_key, where a named variable that is unset is refused out loud. A
-// provider wt has no default row for is left out
-// and reported, on every run, so the command can tell the user which row to
-// write by hand.
-func TestSeedRowsForTheProvidersAgentsList(t *testing.T) {
-	path := scratchRegistry(t, "")
-	env := SeedEnv{AgentProviders: []string{"ollama", "corp-gateway", "openrouter", "", "corp-gateway"}}
-	added, unseeded, changed := seedReport(t, env)
-	if want := []string{"ollama", "openrouter"}; !slices.Equal(added, want) || !changed {
-		t.Fatalf("added = %v (changed %v), want %v", added, changed, want)
-	}
-	if want := []string{"corp-gateway"}; !slices.Equal(unseeded, want) {
-		t.Errorf("unseeded = %v, want %v", unseeded, want)
-	}
-	const want = `[[providers]]
-id = "ollama"
-name = "Ollama"
-location = "local"
-protocols = [
-    "anthropic",
-    "openai-chat",
-]
-
-[providers.auth]
-type = "none"
-base_url = "http://localhost:11434"
-
-[[providers]]
-id = "openrouter"
-name = "OpenRouter"
-location = "cloud"
-
-[providers.auth]
-type = "api_key"
-secret_ref = "OPENROUTER_API_KEY"
-base_url = "https://openrouter.ai/api/v1"
-`
-	if got := readFile(t, path); got != want {
-		t.Errorf("seeded registry:\n%s\nwant:\n%s", got, want)
-	}
-
-	added, unseeded, changed = seedReport(t, env)
-	if len(added) != 0 || changed {
-		t.Errorf("second run: added %v (changed %v), want nothing", added, changed)
-	}
-	if want := []string{"corp-gateway"}; !slices.Equal(unseeded, want) {
-		t.Errorf("second run: unseeded = %v, want %v", unseeded, want)
-	}
-}
-
 // TestSeedMakesAFreshConfigLoad is the first run on a machine that has a
-// config.toml and no registry, end to end: nothing is installed and one agent
-// lists openrouter. After seeding, Load succeeds and the config validates —
-// without the agent trigger every wt command would stop on `unknown provider
-// "openrouter"` until the user wrote the row by hand.
-// A provider wt has no default row for is the one case seeding cannot fix:
-// it is reported, and validation names it.
+// config.toml and no registry, end to end: nothing is installed and the file
+// names two agents. Seeding adds each agent's native row and nothing else (no
+// provider comes from a list any more), and after it Load succeeds and the
+// config validates, so a fresh machine is usable after one init.
 func TestSeedMakesAFreshConfigLoad(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
@@ -405,20 +334,16 @@ func TestSeedMakesAFreshConfigLoad(t *testing.T) {
 
 [[agents]]
 name = "claude"
-supported_providers = ["claude", "openrouter"]
+
+[[agents]]
+name = "opencode"
 `
 	must(t, Path(), agents)
 	env := DefaultSeedEnv()
 	env.OnPath = nil // nothing is installed
-	if want := []string{"claude", "openrouter"}; !slices.Equal(env.AgentProviders, want) {
-		t.Fatalf("providers the agents list = %v, want %v", env.AgentProviders, want)
-	}
-	added, unseeded, _ := seedReport(t, env)
-	if want := []string{"openrouter", "claude"}; !slices.Equal(added, want) {
-		t.Fatalf("added = %v, want %v", added, want)
-	}
-	if len(unseeded) != 0 {
-		t.Errorf("unseeded = %v, want none", unseeded)
+	added, _ := seed(t, env)
+	if want := []string{"claude", "opencode"}; !slices.Equal(added, want) {
+		t.Fatalf("added = %v, want %v (no ollama, no openrouter)", added, want)
 	}
 	cfg, err := Load()
 	if err != nil {
@@ -426,34 +351,6 @@ supported_providers = ["claude", "openrouter"]
 	}
 	if err := cfg.ValidateAll(); err != nil {
 		t.Errorf("the seeded registry should validate against config.toml: %v", err)
-	}
-	// The one secret_ref seeding writes is a variable's name, never a key —
-	// even with a key in the environment.
-	if got := strings.Count(readFile(t, RegistryPath()), "secret_ref"); got != 1 {
-		t.Errorf("the seeded registry has %d secret_ref lines, want openrouter's only", got)
-	}
-	if ref := cfg.ProviderByID("openrouter").Auth.SecretRef; ref != OpenRouterKeyEnv {
-		t.Errorf("openrouter's secret_ref = %q, want the variable name %q", ref, OpenRouterKeyEnv)
-	}
-
-	// A provider with no default row: reported, not seeded, and still the
-	// one thing validation complains about.
-	if err := os.WriteFile(Path(), []byte(agents+"\n[[agents]]\nname = \"pi\"\nsupported_providers = [\"corp-gateway\"]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	env = DefaultSeedEnv()
-	env.OnPath = nil
-	added, unseeded, _ = seedReport(t, env)
-	if !slices.Equal(added, []string{"pi"}) || !slices.Equal(unseeded, []string{"corp-gateway"}) {
-		t.Fatalf("added = %v, unseeded = %v; want [pi] and [corp-gateway]", added, unseeded)
-	}
-	cfg, err = Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	const wantErr = `agent "pi": unknown provider "corp-gateway"`
-	if err := cfg.ValidateAll(); err == nil || err.Error() != wantErr {
-		t.Errorf("ValidateAll = %v, want only %q", err, wantErr)
 	}
 }
 

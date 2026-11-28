@@ -205,9 +205,6 @@ func (h *host) runModelAdd(out, errOut io.Writer, cfg *config.Config, req modela
 	for _, p := range res.ProvidersAdded {
 		fmt.Fprintf(out, "added provider: %s\n", p)
 	}
-	for _, p := range res.ProvidersUnseeded {
-		fmt.Fprintf(out, "no default row for provider: %s (an agent lists it; add it to registry.toml by hand)\n", p)
-	}
 	warnings = append(warnings, res.Warnings...)
 	return h.syncAndWarn(out, errOut, warnings)
 }

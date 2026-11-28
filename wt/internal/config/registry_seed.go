@@ -2,7 +2,6 @@ package config
 
 import (
 	"os/exec"
-	"slices"
 	"strings"
 	"unicode"
 
@@ -17,25 +16,21 @@ import (
 type SeedEnv struct {
 	// Agents are the agent names wt is configured with, in config.toml order.
 	Agents []string
-	// AgentProviders are the provider ids those agents list in
-	// supported_providers, as the next Load will validate them.
-	AgentProviders []string
 	// OnPath reports whether a command is installed. nil means none is.
 	OnPath func(command string) bool
 	// ConfigErr is why config.toml could not be read, when it is there and
-	// could not be. Agents and AgentProviders are then empty: seeding goes on
-	// without them, and the caller tells the user why no agent got a row.
+	// could not be. Agents is then empty: seeding goes on without it, and the
+	// caller tells the user why no agent got a row.
 	ConfigErr error
 }
 
-// DefaultSeedEnv describes the real machine: the agents in wt's config.toml,
-// the providers they list, and what exec.LookPath finds.
+// DefaultSeedEnv describes the real machine: the agents in wt's config.toml
+// and what exec.LookPath finds.
 func DefaultSeedEnv() SeedEnv {
-	names, providers, err := seedAgents()
+	names, err := seedAgents()
 	return SeedEnv{
-		Agents:         names,
-		AgentProviders: providers,
-		ConfigErr:      err,
+		Agents:    names,
+		ConfigErr: err,
 		OnPath: func(command string) bool {
 			_, err := exec.LookPath(command)
 			return err == nil
@@ -43,30 +38,21 @@ func DefaultSeedEnv() SeedEnv {
 	}
 }
 
-// seedAgents lists the agents config.toml names and the providers they
-// list, as the next Load will see them: Load's schema migration rewrites one
-// older spelling (google becomes agy; it adds no agent and rewires no list),
-// and it runs only once the registry loads, so on a fresh machine it has not
-// run yet. A registry seeded from the file as written would then fail
-// validation on the very next run. A missing or unreadable config.toml names nothing — seeding
+// seedAgents lists the agent names config.toml carries, in file order, and
+// reads nothing else from them: no list an agent carries decides a provider
+// row, and no schema migration is applied (the one it had renamed a name in
+// those lists). A missing or unreadable config.toml names nothing — seeding
 // tolerates an absent wt setup — and an unreadable one is also returned as
-// err, for the caller to report.
-// Nothing is written: the migration is applied to this read only.
-func seedAgents() (names, providers []string, err error) {
+// err, for the caller to report. Nothing is written.
+func seedAgents() (names []string, err error) {
 	cfg, exists, err := readConfigFile()
 	if err != nil || !exists {
-		return nil, nil, err
+		return nil, err
 	}
-	migrateAgentRefs(cfg)
 	for _, a := range cfg.Agents {
 		names = append(names, a.Name)
-		for _, id := range a.SupportedProviders {
-			if !slices.Contains(providers, id) {
-				providers = append(providers, id)
-			}
-		}
 	}
-	return names, providers, nil
+	return names, nil
 }
 
 // SeedableProviderIDs is every provider wt can add a default row for by
@@ -90,53 +76,45 @@ const OpenRouterKeyEnv = provider.OpenRouterKeyEnv
 // SeedRegistryDefaults adds the provider rows a working registry needs and
 // reports the ids it added, in the order it added them. It is the
 // default-provider rule (a model references the provider, or its command is
-// installed) plus one trigger, a provider a configured agent lists, and the
-// one seeding implementation in wt. It only ever appends rows: a row that
-// exists is never edited.
+// installed) and the one seeding implementation in wt. It only ever appends
+// rows: a row that exists is never edited.
 //
 //   - A default local provider (ollama, omlx, mlx_lm_server, mtplx, rec,
-//     sushi) gets its default row when a model references it, when an agent
-//     lists it, or — for the four whose seed names a command (ollama, omlx,
-//     mtplx, sushi) — when that command is on PATH. mlx_lm_server has no
-//     command and rec deliberately none (SoX ships its own `rec`). An
-//     installed omlx gets no row when an `omlx-6bit` row exists: the two are
-//     one server, and a second row would change which one discovery uses.
+//     sushi) gets its default row when a model references it or — for the
+//     four whose seed names a command (ollama, omlx, mtplx, sushi) — when
+//     that command is on PATH. mlx_lm_server has no command and rec
+//     deliberately none (SoX ships its own `rec`). An installed omlx gets no
+//     row when an `omlx-6bit` row exists: the two are one server, and a
+//     second row would change which one discovery uses.
 //   - A cloud provider with a default row (openrouter) gets it when a model
-//     references it or an agent lists it — never from PATH: it has no
-//     command. The row holds no key, only the name of the environment
-//     variable the key is read from (OpenRouterKeyEnv).
+//     references it — never from PATH: it has no command. The row holds no
+//     key, only the name of the environment variable the key is read from
+//     (OpenRouterKeyEnv).
 //   - Every agent in env.Agents gets a native cloud provider row under its
 //     own name — unless that name is one of the providers above, which then
 //     gets its own default row: a native row under `ollama` would take the
 //     id every ollama model resolves through.
 //
-// The agent trigger is what lets wt's own validation pass after seeding on a
-// machine that has a config.toml and no registry: Config.Validate refuses an
-// agent that lists a provider with no row. unseeded names the providers an
-// agent lists that still have no row, because wt has no default for them;
-// the caller tells the user, and those stay a hand edit of registry.toml.
+// What an agent's supported_providers list says decides no row.
 //
 // It runs on the document UpdateRegistry hands an apply function, so a caller
 // can seed and make its own change in one locked write:
 //
-//	var added, unseeded []string
+//	var added []string
 //	changed, err := config.UpdateRegistry(func(d *config.RegistryDoc) error {
 //		var err error
-//		added, unseeded, err = config.SeedRegistryDefaults(d, env)
+//		added, err = config.SeedRegistryDefaults(d, env)
 //		return err
 //	})
 //
 // Reads never seed: Load does not call this, and a missing registry stays
 // ErrRegistryMissing until `wt-model model init` or a write creates one.
-func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string, err error) {
+func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added []string, err error) {
 	existing := map[string]bool{}
 	for _, row := range d.rows("providers") {
 		existing[rowID(row)] = true
 	}
 	listed := map[string]bool{}
-	for _, id := range env.AgentProviders {
-		listed[id] = true
-	}
 	// An agent named after a provider with a default row asks for that row.
 	for _, name := range env.Agents {
 		listed[name] = true
@@ -173,7 +151,7 @@ func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string
 				continue
 			}
 			if err := add(provider.SeedRow(id)); err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 		}
 	}
@@ -186,15 +164,10 @@ func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string
 			"auth": map[string]any{"type": "native"},
 		}
 		if err := add(row); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
-	for _, id := range env.AgentProviders {
-		if id != "" && !existing[id] && !slices.Contains(unseeded, id) {
-			unseeded = append(unseeded, id)
-		}
-	}
-	return added, unseeded, nil
+	return added, nil
 }
 
 // pyTitle is Python's str.title(), the casing the name of an agent's

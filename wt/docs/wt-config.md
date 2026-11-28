@@ -134,9 +134,8 @@ by entry:
   form has no provider fields: an entry's `supported_providers` and
   `default_provider` keys are still parsed and written back as found (older
   binaries need them) and decide no agent's eligibility; the host still reads
-  `supported_providers` to seed registry rows and refuses a listed provider
-  that has no row (`wt-model model init` seeds the rows wt has a default
-  for). When `config.toml` carries a customized
+  `supported_providers` to refuse a listed provider that has no registry row
+  (a hand edit of `registry.toml`); it no longer seeds rows from the list. When `config.toml` carries a customized
   (person-edited, not wt-written) `supported_providers` list, wt prints one
   stderr note per such agent per process:
   `wt: note: config.toml: agent <name>: supported_providers is no longer used and is ignored (eligibility is derived from the provider and the model)`.

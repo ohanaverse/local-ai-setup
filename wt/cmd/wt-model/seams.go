@@ -36,8 +36,7 @@ type seams struct {
 	// makes it nil, so no test reaches a proxy unless it hands in a fake.
 	adminFor func(*config.Config) *litellm.AdminClient
 	// seedEnv describes the machine a registry write seeds provider rows
-	// for: the configured agents, the providers they list, and what is on
-	// PATH.
+	// for: the configured agents' names and what is on PATH.
 	seedEnv func() config.SeedEnv
 	// ollamaCaps is the best-effort capability lookup an add of an ollama
 	// model makes (modeladmin.OllamaCapabilities).

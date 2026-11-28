@@ -35,12 +35,10 @@ type AddRequest struct {
 // AddResult is what an add did.
 type AddResult struct {
 	ID string
-	// ProvidersAdded are the provider rows seeding added in the same write;
-	// ProvidersUnseeded the providers a configured agent lists that wt has no
-	// default row for (config.SeedRegistryDefaults).
-	ProvidersAdded    []string
-	ProvidersUnseeded []string
-	Warnings          []string
+	// ProvidersAdded are the provider rows seeding added in the same write
+	// (config.SeedRegistryDefaults).
+	ProvidersAdded []string
+	Warnings       []string
 }
 
 // addPlan is an add that passed every check that needs no registry: the
@@ -241,7 +239,7 @@ func Add(req AddRequest, env config.SeedEnv) (AddResult, error) {
 		// After the model is in: seeding adds the default row of a provider
 		// a model references.
 		var err error
-		res.ProvidersAdded, res.ProvidersUnseeded, err = config.SeedRegistryDefaults(d, env)
+		res.ProvidersAdded, err = config.SeedRegistryDefaults(d, env)
 		if err != nil {
 			return err
 		}
