@@ -375,7 +375,7 @@ Checks (illustrative, from 2026-11-27; counts differ per run): twelve requests t
 To give a second machine the groups of the first, in this order (the models must exist before an alias can name them, and `apply` creates none):
 
 1. On the machine that has the groups, capture them: `wt-model alias list --toml > groups.toml`. Copy the file over.
-2. Register the models the groups name. Subscription and pool models one by one with `wt-model model add <provider> <name> --family <family>` (guide 02), and Ollama's cloud models with `wt-model cloud-sync` (start with `--dry-run`). `wt-model model list` shows what is registered.
+2. Register the models the groups name. Pool models one by one with `wt-model model add <provider> <name> --family <family>` (guide 02); a `claude-subscription` model also needs its window, `wt-model model add claude-subscription <id> --family claude --context-window N` (the command in the worked example above), and Ollama's cloud models with `wt-model cloud-sync` (start with `--dry-run`). `wt-model model list` shows what is registered.
 3. Preview, then apply: `wt-model alias apply groups.toml --dry-run`, then `wt-model alias apply groups.toml`. A target that names no model refuses the whole file and nothing is changed, so the dry run names what is still missing. A second apply of the same file answers `no change` for every alias.
 4. On each machine that launches the groups, add the slot profile (session side, `slot-profiles.toml`, a different file from the registry): the `wt profile slots add claude-fallback ...` command of the worked example above.
 5. Check with the commands already in this section: `wt-model alias list` (TARGETS, ROUTED) and `wt-model litellm list` (the alias rows appear under the alias id).
