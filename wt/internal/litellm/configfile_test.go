@@ -1783,3 +1783,97 @@ func TestLiteralBlockAmbiguous(t *testing.T) {
 		})
 	}
 }
+
+// TestDBRoutesOffWarningTextIsUnchangedForANonMappingGeneralSettings pins the
+// text a literal non-mapping general_settings gets (#762). The branch that
+// produced it in dbRoutesOffWarning is deleted because the skip case now
+// fires first with the same bytes; this test passes before and after, so a
+// drift in the wording is caught.
+func TestDBRoutesOffWarningTextIsUnchangedForANonMappingGeneralSettings(t *testing.T) {
+	const want = "general_settings is not a mapping, so wt did not write store_model_in_db: true; database routes are off and local routes stay in config.yaml with a restart per change"
+	for _, v := range []string{"42", "[a, b]", "plain"} {
+		t.Run(v, func(t *testing.T) {
+			f, err := Open(writeConfig(t, "general_settings: "+v+"\nmodel_list: []\n"+litellmSettingsDone+affinitySettings))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := f.dbRoutesOffWarning(); got != want {
+				t.Fatalf("dbRoutesOffWarning = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestSkipWarningsNameALiteralBlockThatIsNotAMapping pins #762: a hand edit
+// that leaves router_settings or general_settings a scalar or a list (an empty
+// string included, which is not null) is skipped like a shared block: wt
+// writes nothing and the skip warning names the reason, instead of leaving the
+// user no signal that session affinity or cancel_on_disconnect was never set.
+func TestSkipWarningsNameALiteralBlockThatIsNotAMapping(t *testing.T) {
+	for _, b := range []struct {
+		key, rest string
+		line      func(string) string
+	}{
+		{"router_settings", settledWithoutAffinity, affinitySkipLine},
+		{"general_settings", litellmSettingsDone + affinitySettings, cancelSkipLine},
+	} {
+		for _, v := range []string{"42", "[a, b]", "plain", "\"\""} {
+			t.Run(b.key+"/"+v, func(t *testing.T) {
+				f, err := Open(writeConfig(t, b.key+": "+v+"\nmodel_list: []\n"+b.rest))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, want := f.settingsWarnings(), []string{b.line(whyNotMapping)}; !slices.Equal(got, want) {
+					t.Fatalf("settingsWarnings =\n%q\nwant\n%q", got, want)
+				}
+				if b.key == "router_settings" {
+					if got := routerSettingsToAdd(f.root()); len(got) != 0 {
+						t.Fatalf("routerSettingsToAdd = %v, want none", got)
+					}
+				}
+				before := enc(t, f)
+				f.EnsureSettings()
+				if f.Changed() || enc(t, f) != before {
+					t.Fatalf("EnsureSettings rewrote a non-mapping %s:\n%s", b.key, enc(t, f))
+				}
+			})
+		}
+	}
+}
+
+// TestANullOrMappingBlockStaysSilentAndIsFilled is the control for #762: a null
+// or mapping block (empty or holding unrelated keys) draws no skip warning and
+// still gets its keys written, so the non-mapping case does not over-fire.
+func TestANullOrMappingBlockStaysSilentAndIsFilled(t *testing.T) {
+	for _, b := range []struct {
+		key, mapping, rest string
+	}{
+		{"router_settings", "{num_retries: 2}", settledWithoutAffinity},
+		{"general_settings", "{database_url: postgresql://u@localhost/db}", litellmSettingsDone + affinitySettings},
+	} {
+		for name, v := range map[string]string{"null": "", "empty": " {}", "mapping": " " + b.mapping} {
+			t.Run(b.key+"/"+name, func(t *testing.T) {
+				f, err := Open(writeConfig(t, b.key+":"+v+"\nmodel_list: []\n"+b.rest))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := f.settingsWarnings(); len(got) != 0 {
+					t.Fatalf("settingsWarnings = %q, want none", got)
+				}
+				f.EnsureSettings()
+				m := decode(t, mapGet(f.root(), b.key))
+				if b.key == "router_settings" {
+					for _, k := range affinitySettingKeys {
+						if _, ok := m[k]; !ok {
+							t.Errorf("router_settings lacks %s after EnsureSettings: %v", k, m)
+						}
+					}
+					return
+				}
+				if m["cancel_on_disconnect"] != true || m["store_model_in_db"] != true {
+					t.Errorf("general_settings = %v, want cancel_on_disconnect and store_model_in_db true", m)
+				}
+			})
+		}
+	}
+}

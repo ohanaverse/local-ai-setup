@@ -712,10 +712,11 @@ func ensureCancelOnDisconnect(root *yaml.Node) {
 // cancelOnDisconnectSkipped says why ensureCancelOnDisconnect leaves the
 // document alone, or "" when it does not: general_settings is a whole-value
 // alias or comes from a root merge key, so a write would change a block other
-// keys share (or shadow it with a literal one), or it is a literal block read
-// through repeated "<<" keys, where wt's first-wins reading and the proxy's
-// last-wins one can differ and a default written beside the merges would beat
-// a value the proxy sees (#761).
+// keys share (or shadow it with a literal one), it is a literal block that is
+// not a mapping (#762), or it is a literal block read through repeated "<<"
+// keys, where wt's first-wins reading and the proxy's last-wins one can differ
+// and a default written beside the merges would beat a value the proxy sees
+// (#761).
 func cancelOnDisconnectSkipped(root *yaml.Node) string {
 	gs := mapGet(root, "general_settings")
 	switch {
@@ -723,6 +724,8 @@ func cancelOnDisconnectSkipped(root *yaml.Node) string {
 		return "comes from a root merge key (<<)"
 	case gs != nil && gs.Kind == yaml.AliasNode:
 		return "is a YAML alias"
+	case gs != nil && !isNull(gs) && gs.Kind != yaml.MappingNode:
+		return reasonNotMapping
 	case literalBlockAmbiguous(root, "general_settings"):
 		return reasonRepeatedMerge
 	}
@@ -758,8 +761,9 @@ func affinityValue(key string) *yaml.Node {
 // routerSettingsSkipped says why ensureRouterSettings leaves the document
 // alone, or "" when it does not: router_settings is a whole-value alias or
 // comes from a root merge key, so a write would change a block other keys
-// share (or shadow it with a literal one), or it is a literal block read
-// through repeated "<<" keys (#761). Same shape as cancelOnDisconnectSkipped.
+// share (or shadow it with a literal one), it is a literal block that is not a
+// mapping (#762), or it is a literal block read through repeated "<<" keys
+// (#761). Same shape as cancelOnDisconnectSkipped.
 func routerSettingsSkipped(root *yaml.Node) string {
 	rs := mapGet(root, "router_settings")
 	switch {
@@ -767,6 +771,8 @@ func routerSettingsSkipped(root *yaml.Node) string {
 		return "comes from a root merge key (<<)"
 	case rs != nil && rs.Kind == yaml.AliasNode:
 		return "is a YAML alias"
+	case rs != nil && !isNull(rs) && rs.Kind != yaml.MappingNode:
+		return reasonNotMapping
 	case literalBlockAmbiguous(root, "router_settings"):
 		return reasonRepeatedMerge
 	}
@@ -776,8 +782,9 @@ func routerSettingsSkipped(root *yaml.Node) string {
 // routerSettingsToAdd names the affinitySettingKeys ensureRouterSettings
 // would write now, in write order: each one absent or null (read through
 // merge keys, a whole-value alias resolved), in a router_settings that is
-// absent, null or a mapping. A skipped block (routerSettingsSkipped) or one
-// that is not a mapping gets none. It never mutates, so a dry run may call it.
+// absent, null or a mapping. A skipped block (routerSettingsSkipped, which
+// includes one that is not a mapping) gets none. It never mutates, so a dry run
+// may call it.
 func routerSettingsToAdd(root *yaml.Node) []string {
 	if routerSettingsSkipped(root) != "" {
 		return nil
@@ -864,6 +871,10 @@ func mergeAmbiguous(m *yaml.Node, depth int) bool {
 // reasonRepeatedMerge is the skip reason for a literal block read through
 // repeated "<<" keys (#761).
 const reasonRepeatedMerge = "is read through repeated merge keys (<<)"
+
+// reasonNotMapping is the skip reason for a literal block that is present, not
+// null and not a mapping (a scalar or a list; #762).
+const reasonNotMapping = "is not a mapping"
 
 // literalBlockAmbiguous says whether the top-level block key is written
 // literally as a mapping that is read through more than one "<<" key
@@ -1012,7 +1023,8 @@ func ensureStoreModelInDB(root *yaml.Node) {
 
 // dbRoutesOffWarning says why database routes are off for a config.yaml
 // whose store_model_in_db is not on and that EnsureSettings will not turn on
-// (a hand-written opt-out, or a shared general_settings it cannot write), or
+// (a hand-written opt-out, or a general_settings it cannot write: shared,
+// read through repeated merge keys, or not a mapping), or
 // "" when they are on or this write enables them. Reported only when the
 // caller would use them (Options.Admin set).
 func (f *File) dbRoutesOffWarning() string {
@@ -1026,9 +1038,6 @@ func (f *File) dbRoutesOffWarning() string {
 	}
 	if why := cancelOnDisconnectSkipped(root); why != "" {
 		return "general_settings " + why + ", so wt did not write store_model_in_db: true; " + off
-	}
-	if gs := mapGet(root, "general_settings"); gs != nil && !isNull(gs) && gs.Kind != yaml.MappingNode {
-		return "general_settings is not a mapping, so wt did not write store_model_in_db: true; " + off
 	}
 	return ""
 }

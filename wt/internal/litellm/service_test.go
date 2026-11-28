@@ -1593,3 +1593,56 @@ func TestSyncDoesNotWriteOverAnOptOutFromAnAliasedList(t *testing.T) {
 		t.Errorf("wt wrote repin true over the list's false:\n%s", out)
 	}
 }
+
+// TestSyncSurfacesAnUnreadableLiteralBlockSkipWarning pins #761 and #762 end to
+// end, like TestSyncSurfacesASharedBlockSkipWarning: a literal block that is
+// not a mapping, or is read through repeated "<<" keys, draws its skip warning
+// through both PlanSync (the dry run) and Sync, and nothing is written or
+// restarted.
+func TestSyncSurfacesAnUnreadableLiteralBlockSkipWarning(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want []string
+	}{
+		"router_settings not a mapping": {
+			"model_list: []\n" + settledWithoutAffinity + "router_settings: 42\n",
+			[]string{affinitySkipLine(whyNotMapping)},
+		},
+		"general_settings not a mapping": {
+			"model_list: []\n" + litellmSettingsDone + "general_settings: [a, b]\n" + affinitySettings,
+			[]string{cancelSkipLine(whyNotMapping)},
+		},
+		"router_settings repeated merges": {
+			"a: &a {num_retries: 2}\nb: &b {num_retries: 3}\nrouter_settings:\n  <<: *a\n  <<: *b\nmodel_list: []\n" + settledWithoutAffinity,
+			[]string{affinitySkipLine(whyRepeated)},
+		},
+		"general_settings repeated merges": {
+			"a: &a {store_model_in_db: true}\nb: &b {x: 1}\ngeneral_settings:\n  <<: *a\n  <<: *b\nmodel_list: []\n" + litellmSettingsDone + affinitySettings,
+			[]string{cancelSkipLine(whyRepeated)},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o, restarts, p := opts(t, tc.body)
+			plan, err := PlanSync(&config.Config{}, nil, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(plan.Warnings, tc.want) {
+				t.Fatalf("plan.Warnings =\n%q\nwant\n%q", plan.Warnings, tc.want)
+			}
+			res, err := Sync(&config.Config{}, nil, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(res.Warnings, tc.want) {
+				t.Fatalf("res.Warnings =\n%q\nwant\n%q", res.Warnings, tc.want)
+			}
+			if res.Changed || *restarts != 0 {
+				t.Fatalf("Sync changed=%v restarts=%d, want nothing written", res.Changed, *restarts)
+			}
+			if got := readFile(t, p); got != tc.body {
+				t.Fatalf("config.yaml rewritten:\n%s", got)
+			}
+		})
+	}
+}
