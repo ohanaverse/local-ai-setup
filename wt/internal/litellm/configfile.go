@@ -467,7 +467,8 @@ const mergeDepth = 8
 // itself wins, then each merged mapping in order. That is the value the YAML
 // loader LiteLLM reads config.yaml with hands it, so a key supplied by a merge
 // is present as far as the proxy is concerned even though the row does not
-// spell it.
+// spell it. A merge value that aliases an anchored list ("<<: *overrides") is
+// followed like an inline list (#760).
 func mergedGet(m *yaml.Node, key string) *yaml.Node {
 	return mergedGetDepth(m, key, mergeDepth)
 }
@@ -480,20 +481,31 @@ func mergedGetDepth(m *yaml.Node, key string, depth int) *yaml.Node {
 		if k := m.Content[i]; k.Kind != yaml.ScalarNode || k.Tag != "!!merge" {
 			continue
 		}
-		sources := []*yaml.Node{m.Content[i+1]}
-		if sources[0].Kind == yaml.SequenceNode {
-			sources = sources[0].Content
-		}
-		for _, s := range sources {
-			if s.Kind == yaml.AliasNode {
-				s = s.Alias
-			}
+		for _, s := range mergeSources(m.Content[i+1]) {
 			if v := mergedGetDepth(s, key, depth-1); v != nil {
 				return v
 			}
 		}
 	}
 	return nil
+}
+
+// mergeSources is the mappings one "<<" key's value merges, in order: the value
+// with its alias resolved, and when that is a list, each element resolved too.
+// Resolving the value before asking whether it is a list is what lets
+// "<<: *overrides" (an anchored list) be followed. An element that resolves to
+// nothing (an alias with no anchor) comes back as it is; the walkers ignore
+// anything that is not a mapping.
+func mergeSources(v *yaml.Node) []*yaml.Node {
+	v = aliasValue(v)
+	if v == nil || v.Kind != yaml.SequenceNode {
+		return []*yaml.Node{v}
+	}
+	out := make([]*yaml.Node, len(v.Content))
+	for i, e := range v.Content {
+		out[i] = aliasValue(e)
+	}
+	return out
 }
 
 // EnsureOllamaAPIBase gives every ollama row with no api_base the address
@@ -700,7 +712,11 @@ func ensureCancelOnDisconnect(root *yaml.Node) {
 // cancelOnDisconnectSkipped says why ensureCancelOnDisconnect leaves the
 // document alone, or "" when it does not: general_settings is a whole-value
 // alias or comes from a root merge key, so a write would change a block other
-// keys share (or shadow it with a literal one).
+// keys share (or shadow it with a literal one), it is a literal block that is
+// not a mapping (#762), or it is a literal block read through repeated "<<"
+// keys, where wt's first-wins reading and the proxy's last-wins one can differ
+// and a default written beside the merges would beat a value the proxy sees
+// (#761).
 func cancelOnDisconnectSkipped(root *yaml.Node) string {
 	gs := mapGet(root, "general_settings")
 	switch {
@@ -708,6 +724,10 @@ func cancelOnDisconnectSkipped(root *yaml.Node) string {
 		return "comes from a root merge key (<<)"
 	case gs != nil && gs.Kind == yaml.AliasNode:
 		return "is a YAML alias"
+	case gs != nil && !isNull(gs) && gs.Kind != yaml.MappingNode:
+		return reasonNotMapping
+	case literalBlockAmbiguous(root, "general_settings"):
+		return reasonRepeatedMerge
 	}
 	return ""
 }
@@ -741,8 +761,9 @@ func affinityValue(key string) *yaml.Node {
 // routerSettingsSkipped says why ensureRouterSettings leaves the document
 // alone, or "" when it does not: router_settings is a whole-value alias or
 // comes from a root merge key, so a write would change a block other keys
-// share (or shadow it with a literal one). Same shape as
-// cancelOnDisconnectSkipped.
+// share (or shadow it with a literal one), it is a literal block that is not a
+// mapping (#762), or it is a literal block read through repeated "<<" keys
+// (#761). Same shape as cancelOnDisconnectSkipped.
 func routerSettingsSkipped(root *yaml.Node) string {
 	rs := mapGet(root, "router_settings")
 	switch {
@@ -750,6 +771,10 @@ func routerSettingsSkipped(root *yaml.Node) string {
 		return "comes from a root merge key (<<)"
 	case rs != nil && rs.Kind == yaml.AliasNode:
 		return "is a YAML alias"
+	case rs != nil && !isNull(rs) && rs.Kind != yaml.MappingNode:
+		return reasonNotMapping
+	case literalBlockAmbiguous(root, "router_settings"):
+		return reasonRepeatedMerge
 	}
 	return ""
 }
@@ -757,8 +782,9 @@ func routerSettingsSkipped(root *yaml.Node) string {
 // routerSettingsToAdd names the affinitySettingKeys ensureRouterSettings
 // would write now, in write order: each one absent or null (read through
 // merge keys, a whole-value alias resolved), in a router_settings that is
-// absent, null or a mapping. A skipped block (routerSettingsSkipped) or one
-// that is not a mapping gets none. It never mutates, so a dry run may call it.
+// absent, null or a mapping. A skipped block (routerSettingsSkipped, which
+// includes one that is not a mapping) gets none. It never mutates, so a dry run
+// may call it.
 func routerSettingsToAdd(root *yaml.Node) []string {
 	if routerSettingsSkipped(root) != "" {
 		return nil
@@ -807,7 +833,8 @@ func resolvedBlock(root *yaml.Node, key string) *yaml.Node {
 // mergeAmbiguous says whether m, or any mapping its merge keys reach (followed
 // down to depth, like mergedGet), has more than one "<<" key. LiteLLM's loader
 // (PyYAML) applies repeated merge keys in order, so the last one wins a key two
-// of them supply, while mergedGet takes the first: on such a mapping wt's
+// of them supply, while mergedGet takes the first (a merge value that aliases a
+// list is searched like an inline one, through mergeSources): on such a mapping wt's
 // reading and the proxy's can differ, and a check that must not call a
 // protection on treats the block as unreadable. One "<<" key with a list of
 // sources is not ambiguous under PyYAML 6.0.3, the version LiteLLM's
@@ -832,11 +859,7 @@ func mergeAmbiguous(m *yaml.Node, depth int) bool {
 		if depth == 0 {
 			continue
 		}
-		sources := []*yaml.Node{m.Content[i+1]}
-		if sources[0].Kind == yaml.SequenceNode {
-			sources = sources[0].Content
-		}
-		for _, s := range sources {
+		for _, s := range mergeSources(m.Content[i+1]) {
 			if mergeAmbiguous(s, depth-1) {
 				return true
 			}
@@ -845,11 +868,29 @@ func mergeAmbiguous(m *yaml.Node, depth int) bool {
 	return false
 }
 
+// reasonRepeatedMerge is the skip reason for a literal block read through
+// repeated "<<" keys (#761).
+const reasonRepeatedMerge = "is read through repeated merge keys (<<)"
+
+// reasonNotMapping is the skip reason for a literal block that is present, not
+// null and not a mapping (a scalar or a list; #762).
+const reasonNotMapping = "is not a mapping"
+
+// literalBlockAmbiguous says whether the top-level block key is written
+// literally as a mapping that is read through more than one "<<" key
+// (mergeAmbiguous). The root's own merges are not consulted: an explicit key
+// beats them.
+func literalBlockAmbiguous(root *yaml.Node, block string) bool {
+	b := mapGet(root, block)
+	return b != nil && b.Kind == yaml.MappingNode && mergeAmbiguous(b, mergeDepth)
+}
+
 // sharedBlockAmbiguous says whether a skipped shared block (a whole-value
 // alias or a root merge) is read through a mapping with repeated merge keys
 // (mergeAmbiguous): the block itself or what it merges, and for a root merge
 // the root and what it merges too, since the root's merges decide which block
-// the proxy gets. Literal blocks and the write paths do not ask it.
+// the proxy gets. A literal block with repeated merges is a skipped shape too
+// (literalBlockAmbiguous), and resolvedBlock hands this the literal mapping.
 func sharedBlockAmbiguous(root *yaml.Node, block string) bool {
 	if mapGet(root, block) == nil && mergeAmbiguous(root, mergeDepth) {
 		return true
@@ -858,7 +899,9 @@ func sharedBlockAmbiguous(root *yaml.Node, block string) bool {
 }
 
 // sharedBlockLacks says whether a block EnsureSettings skipped (a whole-value
-// alias or a root merge, so a write would change what other keys share) still
+// alias or a root merge, so a write would change what other keys share, or a
+// literal block read through repeated merge keys, which it is not safe to
+// write into either) still
 // leaves one of keys unset: the block is not a mapping (absent, null, a
 // scalar, a list or a dangling alias: fail closed, since wt cannot say what
 // it holds), it is read through repeated merge keys (sharedBlockAmbiguous:
@@ -887,7 +930,7 @@ func sharedBlockLacks(root *yaml.Node, block string, keys ...string) bool {
 // session_affinity, or "" otherwise. Only a mapping block is judged (one that
 // is not has the skip warning or nothing to judge) and only a list (a scalar
 // is left alone and not interpreted). settingsWarnings passes nil for a
-// shared block read through repeated merge keys (sharedBlockAmbiguous): wt
+// block read through repeated merge keys (sharedBlockAmbiguous): wt
 // cannot tell which list the proxy got, so it makes no claim (the skip warning
 // is said instead).
 func affinityOffWarning(rs *yaml.Node) string {
@@ -980,7 +1023,8 @@ func ensureStoreModelInDB(root *yaml.Node) {
 
 // dbRoutesOffWarning says why database routes are off for a config.yaml
 // whose store_model_in_db is not on and that EnsureSettings will not turn on
-// (a hand-written opt-out, or a shared general_settings it cannot write), or
+// (a hand-written opt-out, or a general_settings it cannot write: shared,
+// read through repeated merge keys, or not a mapping), or
 // "" when they are on or this write enables them. Reported only when the
 // caller would use them (Options.Admin set).
 func (f *File) dbRoutesOffWarning() string {
@@ -994,9 +1038,6 @@ func (f *File) dbRoutesOffWarning() string {
 	}
 	if why := cancelOnDisconnectSkipped(root); why != "" {
 		return "general_settings " + why + ", so wt did not write store_model_in_db: true; " + off
-	}
-	if gs := mapGet(root, "general_settings"); gs != nil && !isNull(gs) && gs.Kind != yaml.MappingNode {
-		return "general_settings is not a mapping, so wt did not write store_model_in_db: true; " + off
 	}
 	return ""
 }
